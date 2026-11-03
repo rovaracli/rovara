@@ -172,8 +172,7 @@ export const BROKER_SETTINGS = {
   liveRedirect: { code: "rd", variable: "LIVE_REDIRECT_ENABLED" },
   // Live interaction F2 to F4: Fix with agent (diagnosis; switch `fd`, stack parameter LiveFixEnabled, "0" by default): the broker reads it as LIVE_FIX_ENABLED, and the diagnosis routes exist only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   liveFix: { code: "fd", variable: "LIVE_FIX_ENABLED" },
-  // DG-3: the most Rovara pays for Fix with agent's light diagnoses across all companies of the install in a UTC day, in cents (stack parameter LiveFixRovaraPaidDailyCents, 10000 by default; 0 pauses them). A number, so it is plain text. Packed setting, not a Lambda variable (ENV-ROOM).
-  liveFixRovaraPaidCents: { code: "fg", variable: "LIVE_FIX_ROVARA_PAID_DAILY_CENTS" },
+  // (2026-11-03: code `fg`, the install-wide daily ceiling on Rovara-paid diagnoses, is retired; a diagnosis runs on the company's own AI provider and Rovara pays nothing. Do not reuse the code.)
   // Team record (wire-team-record). Present ONLY when the install is synthesised with `agentxTeamRecord=enabled`; absent otherwise, and the broker reads absence as OFF. The broker treats the record as
   // on only when TEAM_RECORD_ENABLED is exactly "1". The embedding model id and the lake flag are install parameters of the storage (infra/lib/team-record-edition.ts).
   teamRecord: { code: "tn", variable: "TEAM_RECORD_ENABLED" },
@@ -208,6 +207,12 @@ export const BROKER_SETTINGS = {
   testAccounts: { code: "ta", variable: "TEST_ACCOUNTS_ENABLED" },
   // `pj`: a project may bring its own images (reviewed compose services, a model image). Needs `tx`.
   projectImages: { code: "pj", variable: "PROJECT_IMAGES_ENABLED" },
+  // Moved out of the broker's own Lambda variables to win back its 400 bytes of room (ENV-ROOM, the integration tip after 16 lanes took them): the GitHub App's credential name and id, the GitHub OAuth client id for the sign-in
+  // check, and the web features list. The first three are stack parameters that a named environment constrains to plain text (CloudFormation AllowedPattern); the legacy install still passes the variables whole.
+  githubAppCredentialRef: { code: "gr", variable: "GITHUB_APP_CREDENTIAL_REF" },
+  githubAppId: { code: "gi", variable: "GITHUB_APP_ID" },
+  developerGithubClientId: { code: "gc", variable: "DEVELOPER_GITHUB_CLIENT_ID" },
+  webFeatures: { code: "wf", variable: "WEB_FEATURES" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

@@ -70,7 +70,7 @@ describe("RunInputSchema", () => {
 
 describe("WorkOrigin and Payer", () => {
   it("lists the origins exactly", () => {
-    expect([...WORK_ORIGINS]).toEqual(["app", "cli", "mcp", "slack", "linear", "jira", "github_issue", "tracker", "offer", "test_run", "event", "schedule", "chain", "nightly"]);
+    expect([...WORK_ORIGINS]).toEqual(["app", "cli", "mcp", "slack", "linear", "jira", "github_issue", "tracker", "offer", "test_run", "event", "schedule", "chain", "nightly", "automatic"]);
     expect(WorkOriginSchema.safeParse("chain").success).toBe(true);
     expect(WorkOriginSchema.safeParse("email").success).toBe(false);
   });

@@ -1,6 +1,6 @@
 // Part of the broker (split out of ../broker.ts): write gate, model access (web and Slack), turn routing and budgets.
 
-import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, PER_TASK_BUDGET_USD, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place, DIAGNOSIS_LIGHT_BUDGET_USD } from "@agentx/contracts";
+import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, PER_TASK_BUDGET_USD, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE } from "@agentx/contracts";
 import { queryAllItems } from "../admin-reads.js";
 import { DynamoConnectorLedger, GITHUB_LEDGER, connectorLedgerKeys } from "../connector-ledger.js";
 import { callConnector } from "../connector-routes.js";
@@ -15,7 +15,7 @@ import { developerIdForSlackUser } from "../admin-actions.js";
 import { keyIdOf, mintKeyHealing } from "../../org/budget.js";
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../../spend/admission.js";
 import { forgetKey, registerKey, type RegisterGuard } from "../../spend/ledger.js";
-import { ROVARA_SOURCE_ID, budgetScopesFor, keyMember, mintTagsFor, paymentOfTaskResolved, resolvePayer } from "../../spend/payer.js";
+import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTaskResolved, resolvePayer } from "../../spend/payer.js";
 import { readProjectAi, readSpendPolicy } from "../../spend/settings.js";
 import { followMerges } from "../../agents/access.js";
 import type { AgentRouteDependencies } from "../../agents/routes.js";
@@ -25,6 +25,7 @@ import type { WriteGateRuntime } from "../../agents/write-gate.js";
 import { inGeography, stepForOperation } from "../../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
+import { chooseDiagnosisRoute } from "../../model-sources/diagnosis-provider.js";
 import { effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../../model-sources/routing.js";
 import { json } from "../json-reply.js";
 import { developerTaskRouteDependencies, type DeveloperCaller } from "../developer-routes.js";
@@ -528,8 +529,12 @@ export async function mintChatTurnKey(
   /** SY-7: conditions on the requester's standing, checked in the write that records the key (or, where no key is recorded, in one of their own right) and refused as REMOVED_FROM_ORG. */
   guard?: RegisterGuard,
   options: {
-    /** Live interaction F2 (Public light diagnosis): Rovara pays. DG-3: `claimKey` is called once, right before Rovara's own key is minted, and answers false when this diagnosis already took its one key (then none is minted). */
-    rovaraPays?: { claimKey(): Promise<boolean> };
+    /**
+     * Live interaction F2 (a light diagnosis): the turn runs on the company's own AI provider and is paid like any chat turn of the project, in the requester's name (2026-11-03: Rovara pays for no diagnosis).
+     * The route is chosen among the sources billed to the company (`chooseDiagnosisRoute`: its own, or Rovara's metered one), the key is capped at DIAGNOSIS_LIGHT_BUDGET_USD, and with no usable provider the turn is refused in fixed words. DG-3: `claimKey` is called
+     * once, right before the key is minted, and answers false when this diagnosis already took its one key (a retry, an SQS redelivery: then none is minted, so one diagnosis is one turn of the company's money).
+     */
+    diagnosis?: { claimKey(): Promise<boolean> };
   } = {},
 ): Promise<{ baseUrl: string; apiKey: string; expiresAt: number | string; route?: unknown; classifierModel?: ModelIdentifier | null }> {
   const modelAccess = dependencies.modelAccess;
@@ -547,32 +552,10 @@ export async function mintChatTurnKey(
     // With no routing nothing can name another model to the service, which would answer with the forbidden one it is configured with, and the key is not scoped to a list of models (an older service that ignores
     // `classifierModel` would call a forbidden classifier with it): a turn whose configured model or classifier is forbidden is refused.
     if (routing === undefined && (body.model !== undefined && forbidden(body.model) || body.classifierModel !== undefined && forbidden(body.classifierModel))) throw agentXError("MODEL_NOT_ALLOWED", TURN_MODEL_BLOCKED);
-    const routed = routing === undefined ? undefined : await routeTurn(routing, orgId, project, body, forbidden);
+    // A diagnosis is routed to the company's own provider or not at all (fixed words, before anything is admitted or charged).
+    const routed = options.diagnosis !== undefined ? await routeDiagnosisTurn(routing, orgId, project, body, forbidden)
+      : routing === undefined ? undefined : await routeTurn(routing, orgId, project, body, forbidden);
     const classifierModel = routed?.classifierModel;
-    // Live interaction F2 (Public light diagnosis): Rovara pays for its own support. Only a turn routed to Rovara's own AI is let through unmetered, on a key that can call that route alone and spend a
-    // fixed small amount; it is counted against none of the customer's budgets and does not need the trial or machine-time admission. A turn that routes anywhere else (the company's own source)
-    // is paid like any chat turn, below. The caller decides `rovaraPays` from the edition and the tier; nothing in a request can ask for it.
-    if (options.rovaraPays !== undefined && routed !== undefined && routed.route.sourceId === ROVARA_SOURCE_ID) {
-      // No key record is written for Rovara's own support turn, so any standing conditions are asserted in a write of their own before the key is minted (fail closed).
-      if (guard !== undefined && guard.checks.length > 0) {
-        try {
-          for (let attempt = 0; ; attempt += 1) {
-            try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: guard.checks })); break; }
-            catch (error) { if (attempt === 0 && isTransactionConflict(error)) continue; throw error; }
-          }
-        } catch (error) {
-          if (failedIndexes(error)?.size) throw guard.refusal();
-          throw error;
-        }
-      }
-      // DG-3: one key per diagnosis. A repeat of this call (a retry, a redelivery) finds the claim taken and mints nothing: fail closed, never a second $0.25 key.
-      if (!(await options.rovaraPays.claimKey())) throw agentXError("RUNTIME_UNAVAILABLE", "this diagnosis already has its model key");
-      const support = await mintKeyHealing(
-        { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
-        { orgId: orgId, purpose: "turn", refId: body.turnId, maxBudgetUsd: DIAGNOSIS_LIGHT_BUDGET_USD, ttlSeconds: TURN_KEY_TTL_SECONDS, models: routed.models, rovaraPaid: true },
-      );
-      return { baseUrl: modelAccess.proxyUrl, apiKey: support.key, expiresAt: support.expiresAt, ...(routed.wire === undefined ? {} : { route: routed.wire }), ...(classifierModel === undefined ? {} : { classifierModel }) };
-    }
     const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, orgId, project, requester);
     const developerId = slack === undefined ? await linkedRequester(dependencies, orgId, requester) : keyMember(slack.payer);
     // Ruling R50: a turn is admitted like any chat work (which also syncs the proxy, the lazy half of syncBudgets), and its key is
@@ -582,8 +565,10 @@ export async function mintChatTurnKey(
       { orgId: orgId, payer: slack?.payer ?? (developerId === undefined ? { kind: "project", project: project } : { kind: "member", developerId }),
         project: project, agentId: ROVARA_CODE_AGENT_ID, agentName: ROVARA_CODE_NAME, path: "CHAT" },
     );
-    const maxBudgetUsd = Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd);
+    const maxBudgetUsd = Math.min(options.diagnosis === undefined ? PER_TURN_BUDGET_USD : DIAGNOSIS_LIGHT_BUDGET_USD, admitted.maxBudgetUsd);
     const tags = slack === undefined ? undefined : routed === undefined ? mintTagsFor({ ...slack, origin: "slack" }) : { ...mintTagsFor({ ...slack, origin: "slack" }), source: routed.route.sourceId };
+    // DG-3: one key per diagnosis. A repeat of this call (a retry, a redelivery) finds the claim taken and mints nothing: fail closed, never a second key and a second turn of the company's money.
+    if (options.diagnosis !== undefined && !(await options.diagnosis.claimKey())) throw agentXError("RUNTIME_UNAVAILABLE", "this diagnosis already has its model key");
     const minted = await mintKeyHealing(
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
       { orgId: orgId, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.turnId, maxBudgetUsd, ttlSeconds: TURN_KEY_TTL_SECONDS,
@@ -716,6 +701,18 @@ async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: st
   // `routeOnWire` leaves out a Rovara catalog model the worker reaches by its own name, but the service's own configured model is not that one when it was replaced or is forbidden.
   const wire = routeOnWire(route, model) ?? (sendRoute && route.api !== undefined ? { alias: route.alias, api: route.api, catalog: route.catalog } : undefined);
   return { route, models: [...new Set([route.alias, ...(classifierRoute?.alias === undefined ? [] : [classifierRoute.alias])])], ...(wire === undefined ? {} : { wire }), ...(classifierModel === undefined ? {} : { classifierModel }) };
+}
+
+/**
+ * A diagnosis turn's model: chosen among the sources billed to the company (`chooseDiagnosisRoute`: its own, or Rovara's metered source, never a person's plan). The route always travels on the wire, because the chat service
+ * would otherwise answer with the model it is configured with, which the key may not call. A diagnosis has no tools, so it has no classifier (`classifierModel: null`). No usable provider: MODEL_NOT_ALLOWED in the fixed words.
+ */
+async function routeDiagnosisTurn(
+  routing: RoutingDependencies | undefined, orgId: OrgId, project: string, body: { model?: ModelIdentifier | undefined }, forbidden: (model: ModelIdentifier) => boolean,
+): Promise<{ route: ModelRoute; models: string[]; wire: InvocationModelRoute; classifierModel: null }> {
+  const chosen = routing === undefined ? undefined : await chooseDiagnosisRoute(routing, orgId, project, forbidden, [body.model]);
+  if (chosen === undefined || chosen.route.api === undefined) throw agentXError("MODEL_NOT_ALLOWED", DIAGNOSIS_NO_PROVIDER_MESSAGE);
+  return { route: chosen.route, models: [chosen.route.alias], wire: { alias: chosen.route.alias, api: chosen.route.api, catalog: chosen.route.catalog }, classifierModel: null };
 }
 
 /** What one Slack turn's key may spend, and how long it lasts (a turn holds a queue message for at most 15 minutes). */

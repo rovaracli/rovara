@@ -162,9 +162,12 @@ export class ControlPlaneStack extends Stack {
       default: '["agentx-admin"]',
       description: "JSON string array of claim values that grant AgentX administrator access",
     });
+    // A named environment's broker is given these two in its settings (BrokerSettings, ENV-ROOM), which are joined unescaped, so the parameter admits plain text only. The legacy install keeps them whole.
+    const plainText = naming.env === undefined ? {} : { allowedPattern: "^[A-Za-z0-9._:-]{0,64}$" };
     const githubAppCredentialRef = new CfnParameter(this, "GitHubAppCredentialRef", {
       type: "String",
       default: "github-agentx-sdlc",
+      ...plainText,
     });
     // No account or installation: the broker looks up the App's installation per repository owner (#123).
     // Empty: the broker reads the id from the private-key secret's appId. agentx init deploys the
@@ -173,6 +176,7 @@ export class ControlPlaneStack extends Stack {
       type: "String",
       default: "",
       description: "GitHub App id; empty reads it from the private-key secret's appId",
+      ...plainText,
     });
     const githubAppPrivateKeySecretArn = new CfnParameter(this, "GitHubAppPrivateKeySecretArn", {
       type: "String",
@@ -246,10 +250,13 @@ export class ControlPlaneStack extends Stack {
       ADMIN_CLAIM: adminClaim.valueAsString,
       ADMIN_VALUES: adminValues.valueAsString,
       CALLBACK_SIGNING_KEY: callbackSigningKey.valueAsString,
-      GITHUB_APP_CREDENTIAL_REF: githubAppCredentialRef.valueAsString,
-      GITHUB_APP_ID: githubAppId.valueAsString,
+      ...(naming.env === undefined ? { GITHUB_APP_CREDENTIAL_REF: githubAppCredentialRef.valueAsString, GITHUB_APP_ID: githubAppId.valueAsString } : {}),
       GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
     });
+    if (naming.env !== undefined) {
+      BrokerSettings.of(broker).add("githubAppCredentialRef", githubAppCredentialRef.valueAsString);
+      BrokerSettings.of(broker).add("githubAppId", githubAppId.valueAsString);
+    }
     // Only the install's private MCP settings may be added here; any other name (a reserved variable) stops synth instead of being overwritten.
     for (const [name, value] of Object.entries(checkedBrokerEnvironment(props?.brokerEnvironment))) broker.addEnvironment(name, value);
     if (naming.env !== undefined) {
@@ -286,6 +293,11 @@ export class ControlPlaneStack extends Stack {
       actions: ["codebuild:StartBuild", "codebuild:BatchGetBuilds"],
       resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: "agentx-*" })],
     }));
+    // Owner decision 2026-11-03: the broker learns which of Rovara's catalog models the account has enabled in Amazon Bedrock (an agreement per model) so no default choice offers one it cannot call. One read-only action: it names
+    // no resource type in the Service Authorization Reference (the runner's E2eModelDiscovery policy grants it the same way), reveals only a model's agreement and authorization status, and reaches no model or data. Named environments only (the model proxy is).
+    if (naming.env !== undefined) {
+      broker.addToRolePolicy(new iam.PolicyStatement({ actions: ["bedrock:GetFoundationModelAvailability"], resources: ["*"] }));
+    }
     // A named environment's broker derives its connector secret prefix from AGENTX_ENV (broker-environment.ts), so it is not given it.
     // A fixed name, so the default boundary's AssumeOrgRoles statement can name this role as one of the three that may be granted a cross-account assume.
     if (naming.env !== undefined) (broker.role!.node.defaultChild as iam.CfnRole).roleName = brokerRoleName(naming.env);
@@ -377,7 +389,7 @@ export class ControlPlaneStack extends Stack {
       broker.addEnvironment("AGENTX_CLOUD", "true");
       // The web app's company admin console (Settings: models, people, budgets, health, how we work) is shown only where the broker lists "admin" in
       // WEB_FEATURES (app-nav/nav.ts; owners and admins only). The other names (usage, chains, describe) are placeholder pages and stay off.
-      broker.addEnvironment("WEB_FEATURES", "admin");
+      BrokerSettings.of(broker).add("webFeatures", "admin");
     }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
@@ -1318,8 +1330,6 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("liveAsk", signInParameters.liveAskEnabled.valueAsString);
       // Live interaction F2 to F4: the Fix with agent switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("liveFix", signInParameters.liveFixEnabled.valueAsString);
-      // DG-3: the install-wide daily ceiling on Rovara-paid light diagnoses (cents), a packed setting like the switch above; the alarm that watches it is below.
-      brokerSettings.add("liveFixRovaraPaidCents", signInParameters.liveFixRovaraPaidDailyCents.valueAsString);
       // Proof and evidence, and decision cards (wire-proof): two switches, packed settings. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("proofEvidence", signInParameters.proofEvidenceEnabled.valueAsString);
       brokerSettings.add("decisionCards", signInParameters.decisionCardsEnabled.valueAsString);
@@ -1741,27 +1751,6 @@ export class ControlPlaneStack extends Stack {
         alarmDescription: "The selector that chooses who approves an autonomous chain run's write failed, so the write fell back to the default approvers (the run's owner and the project's maintainers). Check the broker logs for write_approver_selector.failed lines and the task they name.",
         metric: agentxSum("ChainWriteApproverSelectorFailures", Duration.minutes(5)),
         threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      }).addAlarmAction(notifyOperator);
-    }
-
-    // DG-3 (named environments only, where Fix with agent can exist): the broker logs `diagnosis.rovara_paid` for every light diagnosis Rovara pays for, with `globalDayPercent`, the day's Rovara-paid spend across
-    // all companies as a share of the install-wide ceiling (the stack parameter LiveFixRovaraPaidDailyCents). This metric keeps the highest share seen and the alarm fires at 80 percent, before the ceiling
-    // refuses diagnoses. (A day with no diagnoses reports nothing and is not breaching.)
-    if (naming.env !== undefined) {
-      broker.logGroup.addMetricFilter("DiagnosisRovaraPaidGlobalPercentMetric", {
-        filterPattern: logs.FilterPattern.stringValue("$.event", "=", "diagnosis.rovara_paid"),
-        metricNamespace: naming.metricsNamespace,
-        metricName: "DiagnosisRovaraPaidGlobalPercent",
-        metricValue: "$.globalDayPercent",
-      });
-      new cloudwatch.Alarm(this, "DiagnosisRovaraPaidGlobalAlarm", {
-        alarmName: naming.alarmName("DiagnosisRovaraPaidGlobal80"),
-        alarmDescription: "Rovara-paid Fix with agent diagnoses have reached 80 percent of today's install-wide ceiling (LiveFixRovaraPaidDailyCents). At 100 percent every company is told it is paused for the day. Check the broker logs for diagnosis.rovara_paid lines to see which company is spending; raise the stack parameter only after looking.",
-        metric: new cloudwatch.Metric({ namespace: naming.metricsNamespace, metricName: "DiagnosisRovaraPaidGlobalPercent", statistic: "Maximum", period: Duration.minutes(5) }),
-        threshold: DIAGNOSIS_ROVARA_PAID_GLOBAL_ALARM_PERCENT,
         evaluationPeriods: 1,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,

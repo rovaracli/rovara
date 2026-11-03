@@ -22,8 +22,8 @@ const KEY_ALLOWED_ROUTES = ["llm_api_routes"];
  */
 const KEY_INFERENCE_ROUTES: string[] = INFERENCE_PATHS.map((entry) => entry.path);
 const USER_ROLE = "internal_user_viewer";
-/** DG-1 S1: the LiteLLM team the Rovara-paid keys (a Public light diagnosis) answer to. It is limited to the Rovara AI catalog and belongs to no customer, so its spend is Rovara's own. */
-export const ROVARA_SUPPORT_TEAM_ID = "rovara-support";
+/** The LiteLLM team of the Rovara-paid diagnosis design (DG-1 S1, retired 2026-11-03). No key may answer to it; the audit blocks one that does. */
+const RETIRED_SUPPORT_TEAM_ID = "rovara-support";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_MESSAGE_LENGTH = 300;
 const KEY_INFO_AT_ONCE = 10;
@@ -254,16 +254,11 @@ export class ModelProxyClient implements ModelAccess {
     // Every key, with a model list or without, answers to a team: a team with no models means every model of every org, so the team is
     // always read first and must itself be limited to the org's own models and the catalog (or be limited to them here, see requireScopedTeam).
     const catalog = this.teamCatalog();
-    const team = input.rovaraPaid === true ? ROVARA_SUPPORT_TEAM_ID : input.orgId;
-    if (input.rovaraPaid === true) {
-      // Rovara's own spend: a scoped key naming catalog models only, under the support team (never the org's), with no user.
-      if (input.models === undefined || input.models.length === 0 || !input.models.every((model) => catalog.includes(model))) throw agentXError("CONFIG_INVALID", "a Rovara-paid key may name only Rovara AI catalog models");
-      if (input.developerId !== undefined) throw agentXError("CONFIG_INVALID", "a Rovara-paid key answers to no member");
-    } else if (input.models !== undefined) assertKeyModels(input.orgId, input.models, catalog);
+    const team = input.orgId;
+    if (input.models !== undefined) assertKeyModels(input.orgId, input.models, catalog);
     const master = await this.master();
     // validate_mint: a scoped key is only as narrow as its team lets it be.
-    if (input.rovaraPaid === true) await this.requireSupportTeam(master, catalog);
-    else await this.requireScopedTeam(master, input.orgId, catalog, input.models ?? []);
+    await this.requireScopedTeam(master, input.orgId, catalog, input.models ?? []);
     const tags = input.tags === undefined ? {} : Object.fromEntries(Object.entries(input.tags).filter(([, value]) => value !== undefined));
     const reply = await this.request("POST", "/key/generate", master, {
       team_id: team,
@@ -272,31 +267,13 @@ export class ModelProxyClient implements ModelAccess {
       ...(input.models === undefined ? {} : { models: [...input.models] }),
       allowed_routes: input.models === undefined ? KEY_ALLOWED_ROUTES : KEY_INFERENCE_ROUTES,
       duration: `${String(input.ttlSeconds)}s`,
-      metadata: { orgId: input.orgId, ...(input.developerId === undefined ? {} : { developerId: input.developerId }), purpose: input.purpose, refId: input.refId, ...(input.rovaraPaid === true ? { rovaraPaid: true } : {}), ...tags },
+      metadata: { orgId: input.orgId, ...(input.developerId === undefined ? {} : { developerId: input.developerId }), purpose: input.purpose, refId: input.refId, ...tags },
     });
     if (reply.status !== 200) throw refusal(reply);
     const key = isRecord(reply.body) ? reply.body.key : undefined;
     if (typeof key !== "string" || key === "") throw unavailable("model proxy answered with no key");
     if (input.models !== undefined) await this.verifyMinted(master, key, team, input.models);
     return { key, expiresAt: requestedAt + input.ttlSeconds * 1000 };
-  }
-
-  /**
-   * DG-1 S1: Rovara's support team exists and is limited to exactly the Rovara AI catalog (never empty, which would mean every model). A missing team is created and a stale one is brought back to the
-   * catalog; it carries no budget (each key has its own small cap, and Rovara's own daily ceiling per org is counted by the broker).
-   */
-  private async requireSupportTeam(master: string, catalog: readonly string[]): Promise<void> {
-    const reply = await this.request("GET", `/team/info?team_id=${encodeURIComponent(ROVARA_SUPPORT_TEAM_ID)}`, master, undefined);
-    if (reply.status !== 200 && reply.status !== 404 && !(reply.status === 400 && /\b(team)\b[^.]{0,40}(does not exist|doesn't exist|not found)/iu.test(proxyMessage(reply.body)))) throw refusal(reply);
-    const info = reply.status === 200 && isRecord(reply.body) ? reply.body.team_info : undefined;
-    const held = isRecord(info) && Array.isArray(info.models) ? info.models : undefined;
-    if (held !== undefined && sameModels(held, catalog)) return;
-    const body = { team_id: ROVARA_SUPPORT_TEAM_ID, models: [...catalog] };
-    if (held === undefined) await this.createOrUpdate(master, "/team/new", "/team/update", body);
-    else {
-      const updated = await this.request("POST", "/team/update", master, body);
-      if (updated.status !== 200) throw refusal(updated);
-    }
   }
 
   /**
@@ -420,12 +397,8 @@ export class ModelProxyClient implements ModelAccess {
     if (models.length === 0 && !scopedRoutes) return undefined;
     const team = typeof entry.team_id === "string" ? entry.team_id : undefined;
     const metadataOrg = isRecord(entry.metadata) ? entry.metadata.orgId : undefined;
-    // DG-1 S1: a key of Rovara's support team holds to the catalog alone (its metadata names the org it was minted for, so that is not compared).
-    if (team === ROVARA_SUPPORT_TEAM_ID) {
-      const supportViolation = models.length === 0 || !scopedRoutes || !models.every((model) => typeof model === "string" && !model.includes("*") && catalog.includes(model)) || (isRecord(entry.aliases) && Object.keys(entry.aliases).length > 0);
-      return { token: entry.token, violation: supportViolation };
-    }
-    const violation = team === undefined || models.length === 0 || !scopedRoutes
+    // 2026-11-03: Rovara pays for no model key. A key of the retired `rovara-support` team (the Rovara-paid diagnosis design, never shipped) is a violation whatever it names, and is blocked.
+    const violation = team === undefined || team === RETIRED_SUPPORT_TEAM_ID || models.length === 0 || !scopedRoutes
       || !models.every((model) => typeof model === "string" && ownOrCatalog(team, model, catalog))
       || (isRecord(entry.aliases) && Object.keys(entry.aliases).length > 0)
       || (typeof metadataOrg === "string" && metadataOrg !== team);

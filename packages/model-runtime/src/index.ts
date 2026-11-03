@@ -12,7 +12,7 @@ export { createE2EProviderInvoke } from "./e2e-provider-invoke.js";
 export type { E2EProviderInvoke, E2EProviderInvokeDependencies } from "./e2e-provider-invoke.js";
 export * from "./e2e-environment-guard.js";
 export * from "./e2e-route-derive.js";
-export { classifyProviderFailure, isNetworkCode, signalPattern, BEDROCK_SIGNAL_PATTERN, KEYED_SIGNAL_PATTERN } from "./provider-failure.js";
+export { classifyProviderFailure, isNetworkCode, signalPattern, BEDROCK_SIGNAL_PATTERN, KEYED_SIGNAL_PATTERN, MODEL_NOT_ENABLED_SIGNAL } from "./provider-failure.js";
 export type { ProviderFailureFacts } from "./provider-failure.js";
 import { CHATGPT_PLAN_LIMIT_ERROR, KEYED_MODEL_PROVIDERS, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, agentXError, isKeyedModelProvider, type InvocationModelRoute, type KeyedModelProvider, type ModelIdentifier, type ThinkingLevel } from "@agentx/contracts";
 import { InMemoryCredentialStore, createAssistantMessageEventStream, type Api, type Model, type SimpleStreamOptions, type TranscriptContext, type AssistantMessage, type AssistantMessageEventStream, type OpenAICompletionsCompat } from "@earendil-works/pi-ai";

@@ -1,37 +1,25 @@
-// DG-3 (Opus review of diag-kit-fixes): what Rovara can spend on Fix with agent's light diagnoses in Public is a hard ceiling.
-//   1. one Rovara-paid key per diagnosis (a retry or a redelivery mints nothing);
-//   2. an install-wide daily ceiling across all companies, counted atomically, with a safe default and a packed setting;
-//   3. the turn cap and the cents cap agree (the cents figure binds);
-//   4. the UTC day comes from the broker's own clock only, and a clock a little ahead never resets a counter;
-//   5. an erase never leaves an error blocked.
+// DG-3 (Opus review of diag-kit-fixes), after the owner's decision of 2026-11-03 that Rovara pays for no diagnosis (the install-wide Rovara-paid ceiling, the org counter and the `fg` setting are gone):
+//   1. one model key per diagnosis (a retry or a redelivery mints nothing), now the company's key and the company's money;
+//   2. the person's and the project's windows come from the broker's own clock only, and a clock a little ahead never resets a counter;
+//   3. an erase never leaves an error blocked;
+//   4. no counter of money is kept by Rovara: an admitted diagnosis writes the person, the project, the open place and the request, nothing else.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  BROKER_SETTINGS, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS, DIAGNOSIS_ROVARA_PAID_ORG_LIMITS, ErrorRefSchema, diagnosisGlobalDayKey,
-  diagnosisKey, diagnosisOpenKey, diagnosisRovaraPaidGlobalCents, errorRefKey, type OrgId,
-} from "../../packages/contracts/src/index.js";
-import { brokerSettingsFromEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
+import { DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, ErrorRefSchema, diagnosisKey, diagnosisOpenKey, errorRefKey, type OrgId } from "../../packages/contracts/src/index.js";
 import { startLightDiagnosis } from "../../packages/broker/src/diagnosis/light.js";
 import { admitDiagnosis, claimDiagnosisKey, eraseDiagnosisPerson, readDiagnosisRequest } from "../../packages/broker/src/diagnosis/store.js";
 import { ARJUN, ORG_A, PRIYA, diagnosisWorld, type DiagnosisWorld } from "../support/diagnosis-world.js";
 
 const DAY = 86_400_000;
-const TURN_CENTS = Math.round(DIAGNOSIS_LIGHT_BUDGET_USD * 100);
 const errorRef = (n: number) => ErrorRefSchema.parse({ kind: "operation_failed", code: `TASK_FAILED_${String(n)}`, subject: { taskId: randomUUID() }, at: "2026-10-22T09:00:00.000Z" });
 const orgs = Array.from({ length: 12 }, (_, index) => `org_${String(index).padStart(2, "0")}${"a".repeat(18)}`);
 const people = Array.from({ length: 12 }, (_, index) => `${String(index % 10)}${String(index)}`.padEnd(64, "a"));
-const big = { turnsPerDay: 100_000, centsPerDay: 10_000_000 };
 
-const admit = (w: DiagnosisWorld, orgId: OrgId, n: number, options: { global?: number; cap?: { turnsPerDay: number; centsPerDay: number }; who?: string } = {}) =>
-  admitDiagnosis(w.diagnosis, {
-    orgId, developerId: options.who ?? people[n % people.length]!, requestId: randomUUID(), tier: "light", errorRef: errorRef(n), project: `project-${String(n)}`,
-    rovaraPaid: options.cap ?? big, ...(options.global === undefined ? {} : { rovaraPaidGlobalCentsPerDay: options.global }),
-  });
+const admit = (w: DiagnosisWorld, orgId: OrgId, n: number, options: { who?: string } = {}) =>
+  admitDiagnosis(w.diagnosis, { orgId, developerId: options.who ?? people[n % people.length]!, requestId: randomUUID(), tier: "light", errorRef: errorRef(n), project: `project-${String(n)}` });
 const refused = (words: string) => expect.objectContaining({ code: "TOO_MANY_REQUESTS", message: expect.stringContaining(words) as string }) as unknown;
-const today = (w: DiagnosisWorld) => new Date(w.w.clock.now).toISOString().slice(0, 10);
-const globalCounter = (w: DiagnosisWorld, day = today(w)) => w.w.db.get(diagnosisGlobalDayKey(day));
 
-describe("DG-3 one Rovara-paid key per diagnosis", () => {
+describe("DG-3 one model key per diagnosis", () => {
   it("the first claim wins and every later one (a repeat of the call, a redelivery) is refused; another diagnosis has its own", async () => {
     const w = diagnosisWorld({ edition: "public" });
     const first = await startLightDiagnosis(w.diagnosis, w.caller(PRIYA), { requestId: randomUUID(), errorRef: w.ref() });
@@ -61,159 +49,7 @@ describe("DG-3 one Rovara-paid key per diagnosis", () => {
   });
 });
 
-describe("DG-3 an install-wide daily ceiling across all companies", () => {
-  it("counts every company's Rovara-paid turn (25 cents each) in one item for the UTC day, and refuses the turn that would pass the ceiling in its own words", async () => {
-    const w = diagnosisWorld();
-    for (let n = 0; n < 4; n += 1) await admit(w, orgs[n]!, n, { global: 100 });
-    expect(globalCounter(w)).toMatchObject({ count: 4, cents: 100 });
-    await expect(admit(w, orgs[5]!, 5, { global: 100 })).rejects.toEqual(refused(DIAGNOSIS_REFUSALS.globalRateLimited));
-    expect(globalCounter(w)).toMatchObject({ count: 4, cents: 100 });
-    // A refused request spent nothing anywhere: the company's own counter did not move either.
-    const orgCounter = w.w.db.get({ pk: `ORG#${orgs[5]!}#DIAGNOSISRATE`, sk: "light_org#all" });
-    expect(orgCounter).toBeUndefined();
-  });
-
-  it("holds under parallel requests from many companies: of eight at once, exactly the ones that fit are admitted", async () => {
-    const w = diagnosisWorld();
-    const results = await Promise.allSettled(orgs.slice(0, 8).map((orgId, n) => admit(w, orgId, n, { global: 100 })));
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(4);
-    expect(globalCounter(w)).toMatchObject({ count: 4, cents: 100 });
-  });
-
-  it("the company's own ceiling, the person's and the project's are answered in their own words before the install-wide one", async () => {
-    const w = diagnosisWorld();
-    await admit(w, orgs[0]!, 0, { global: 25, cap: { turnsPerDay: 100, centsPerDay: 1_500 } });
-    // The install is full, and so is this person: their own words.
-    await expect(admit(w, orgs[1]!, 1, { global: 25, who: people[0]! })).rejects.toEqual(refused(DIAGNOSIS_REFUSALS.globalRateLimited));
-    const small = { turnsPerDay: 1, centsPerDay: 1_500 };
-    await admit(w, orgs[2]!, 2, { global: 1_000, cap: small });
-    await expect(admit(w, orgs[2]!, 3, { global: 25, cap: small })).rejects.toEqual(refused(DIAGNOSIS_REFUSALS.orgRateLimited));
-  });
-
-  it("is counted for Public only: a request with no Rovara payment does not touch it", async () => {
-    const w = diagnosisWorld();
-    await admitDiagnosis(w.diagnosis, { orgId: orgs[0]!, developerId: people[0]!, requestId: randomUUID(), tier: "light", errorRef: errorRef(1), project: "web" });
-    expect(globalCounter(w)).toBeUndefined();
-  });
-
-  it("an open diagnosis of the same error and a repeat of a request spend nothing against it", async () => {
-    const w = diagnosisWorld({ edition: "public" });
-    await startLightDiagnosis(w.diagnosis, w.caller(PRIYA), { requestId: randomUUID(), errorRef: w.ref() });
-    await startLightDiagnosis(w.diagnosis, w.caller(ARJUN), { requestId: randomUUID(), errorRef: w.ref() });
-    expect(globalCounter(w)).toMatchObject({ count: 1, cents: 25 });
-  });
-
-  it("has a safe default that the route uses when nothing is configured, and the dependencies' figure when it is", async () => {
-    expect(DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS).toBe(10_000);
-    const w = diagnosisWorld({ edition: "public" });
-    // Default: the ceiling is the contract's, so a day with 9,975 cents counted takes one more turn and not two.
-    w.w.db.set({ ...diagnosisGlobalDayKey(today(w)), entityType: "DIAGNOSIS_RATE_GLOBAL", count: 399, cents: 9_975 });
-    await startLightDiagnosis(w.diagnosis, w.caller(PRIYA), { requestId: randomUUID(), errorRef: w.ref() });
-    expect(globalCounter(w)).toMatchObject({ count: 400, cents: 10_000 });
-    w.retried();
-    await expect(startLightDiagnosis(w.diagnosis, w.caller(ARJUN), { requestId: randomUUID(), errorRef: w.ref() })).rejects.toEqual(refused(DIAGNOSIS_REFUSALS.globalRateLimited));
-    // Configured: 0 pauses Rovara-paid diagnoses altogether, and queues nothing.
-    const paused = diagnosisWorld({ edition: "public" });
-    paused.diagnosis.rovaraPaidGlobalCents = 0;
-    await expect(startLightDiagnosis(paused.diagnosis, paused.caller(PRIYA), { requestId: randomUUID(), errorRef: paused.ref() })).rejects.toEqual(refused(DIAGNOSIS_REFUSALS.globalRateLimited));
-    expect(paused.sent).toHaveLength(0);
-    expect(globalCounter(paused)).toBeUndefined();
-  });
-
-  it("the Enterprise edition (the customer pays) never counts against it", async () => {
-    const w = diagnosisWorld({ edition: "enterprise" });
-    w.diagnosis.rovaraPaidGlobalCents = 0;
-    await expect(startLightDiagnosis(w.diagnosis, w.caller(PRIYA), { requestId: randomUUID(), errorRef: w.ref() })).resolves.toMatchObject({ state: "queued" });
-    expect(globalCounter(w)).toBeUndefined();
-  });
-
-  it("logs the day's spend as a share of the ceiling, which the 80 percent alarm watches", async () => {
-    const w = diagnosisWorld();
-    const lines: Array<Record<string, unknown>> = [];
-    w.diagnosis.log = (entry) => { lines.push(entry); };
-    await admit(w, orgs[0]!, 0, { global: 100 });
-    await admit(w, orgs[1]!, 1, { global: 100 });
-    await admit(w, orgs[2]!, 2, { global: 100 });
-    await admit(w, orgs[3]!, 3, { global: 100 });
-    const paid = lines.filter((line) => line["event"] === "diagnosis.rovara_paid");
-    expect(paid.map((line) => line["globalDayPercent"])).toEqual([25, 50, 75, 100]);
-    await expect(admit(w, orgs[4]!, 4, { global: 100 })).rejects.toThrow();
-    expect(lines.some((line) => line["event"] === "diagnosis.rovara_paid_global_full")).toBe(true);
-  });
-});
-
-describe("DG-3 the ceiling's setting", () => {
-  it("is a whole number of cents, and anything else is the default (never unlimited)", () => {
-    expect(diagnosisRovaraPaidGlobalCents("2500")).toBe(2_500);
-    expect(diagnosisRovaraPaidGlobalCents("0")).toBe(0);
-    expect(diagnosisRovaraPaidGlobalCents("1000000")).toBe(1_000_000);
-    for (const bad of [undefined, "", "-5", "1.5", "1e9", "1000001", "99999999", " 5", "abc", "0x10"]) expect(diagnosisRovaraPaidGlobalCents(bad), String(bad)).toBe(DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS);
-  });
-
-  it("is a packed broker setting (AGENTX_SETTINGS, code fg), not a Lambda variable of its own", () => {
-    expect(BROKER_SETTINGS.liveFixRovaraPaidCents).toEqual({ code: "fg", variable: "LIVE_FIX_ROVARA_PAID_DAILY_CENTS" });
-    const read = brokerSettingsFromEnvironment({ AGENTX_SETTINGS: "fd=1,fg=2500" });
-    expect(read.find((entry) => entry.spec.code === "fg")).toMatchObject({ value: "2500", spec: { variable: "LIVE_FIX_ROVARA_PAID_DAILY_CENTS" } });
-  });
-});
-
-describe("DG-3 which cap binds", () => {
-  it("the cents figure binds: a turn is counted at its key's full cap, so $15 ends the day at 60 turns and the 100-turn figure is only a backstop", () => {
-    const binding = Math.floor(DIAGNOSIS_ROVARA_PAID_ORG_LIMITS.centsPerDay / TURN_CENTS);
-    expect(binding).toBe(60);
-    expect(binding).toBeLessThan(DIAGNOSIS_ROVARA_PAID_ORG_LIMITS.turnsPerDay);
-    // The install-wide default is a whole number of turns too, and is at least one company's day.
-    expect(DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS % TURN_CENTS).toBe(0);
-    expect(DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS).toBeGreaterThanOrEqual(DIAGNOSIS_ROVARA_PAID_ORG_LIMITS.centsPerDay);
-  });
-
-  it("in the store: with the contract's limits a company is refused at the 61st turn by cents, not at the 100th by count", async () => {
-    const w = diagnosisWorld();
-    for (let n = 0; n < 60; n += 1) await admit(w, orgs[0]!, n, { cap: DIAGNOSIS_ROVARA_PAID_ORG_LIMITS, who: people[n % 12]!, global: 1_000_000 }).catch((error: unknown) => { throw new Error(`turn ${String(n + 1)} refused: ${String(error)}`); });
-    const counter = w.w.db.get({ pk: `ORG#${orgs[0]!}#DIAGNOSISRATE`, sk: "light_org#all" });
-    expect(counter).toMatchObject({ count: 60, cents: 1_500 });
-  });
-});
-
-describe("DG-3 the UTC day is the broker's own clock, and a clock ahead never resets a counter", () => {
-  const orgKey = (orgId: OrgId) => ({ pk: `ORG#${orgId}#DIAGNOSISRATE`, sk: "light_org#all" });
-
-  it("the install-wide day changes exactly at UTC midnight: 23:59:59.999 is one item and 00:00:00.000 the next", async () => {
-    const w = diagnosisWorld();
-    const midnight = Math.ceil(w.w.clock.now / DAY) * DAY;
-    w.w.clock.now = midnight - 1;
-    await admit(w, orgs[0]!, 0, { global: 100 });
-    w.w.clock.now = midnight;
-    await admit(w, orgs[1]!, 1, { global: 100 });
-    expect(globalCounter(w, new Date(midnight - 1).toISOString().slice(0, 10))).toMatchObject({ count: 1, cents: 25 });
-    expect(globalCounter(w, new Date(midnight).toISOString().slice(0, 10))).toMatchObject({ count: 1, cents: 25 });
-    // The day before is not reopened by anything that happens on the next, and the new day starts from nothing.
-    for (let n = 2; n < 5; n += 1) await admit(w, orgs[n]!, n, { global: 100 });
-    await expect(admit(w, orgs[6]!, 6, { global: 100 })).rejects.toThrow();
-    w.w.clock.now = midnight + DAY;
-    await expect(admit(w, orgs[6]!, 7, { global: 100 })).resolves.toMatchObject({ created: true });
-  });
-
-  it("an instance whose clock is a second ahead has already written the next day's window: an instance on time keeps counting in it, and the company's day is not reset", async () => {
-    const w = diagnosisWorld();
-    const midnight = Math.ceil(w.w.clock.now / DAY) * DAY;
-    const cap = { turnsPerDay: 100, centsPerDay: 75 };
-    // Two turns on the old day, on time.
-    w.w.clock.now = midnight - 5_000;
-    await admit(w, orgs[0]!, 0, { cap, global: 100_000 });
-    await admit(w, orgs[0]!, 1, { cap, global: 100_000 });
-    // A fast instance (its clock is 2 s past midnight) writes the next window.
-    w.w.clock.now = midnight + 1_000;
-    await admit(w, orgs[0]!, 2, { cap, global: 100_000 });
-    expect(w.w.db.get(orgKey(orgs[0]!))).toMatchObject({ windowStart: midnight, count: 1, cents: 25 });
-    // An instance on time (1 s before midnight) must not take that as an old window and start again from zero.
-    w.w.clock.now = midnight - 1_000;
-    await admit(w, orgs[0]!, 3, { cap, global: 100_000 });
-    await admit(w, orgs[0]!, 4, { cap, global: 100_000 });
-    expect(w.w.db.get(orgKey(orgs[0]!))).toMatchObject({ windowStart: midnight, count: 3, cents: 75 });
-    await expect(admit(w, orgs[0]!, 5, { cap, global: 100_000 })).rejects.toEqual(refused(DIAGNOSIS_REFUSALS.orgRateLimited));
-  });
-
+describe("DG-3 the windows are the broker's own clock, and a clock ahead never resets a counter", () => {
   it("the person's hour and the project's day are kept the same way", async () => {
     const w = diagnosisWorld();
     const hour = 3_600_000;
@@ -229,12 +65,14 @@ describe("DG-3 the UTC day is the broker's own clock, and a clock ahead never re
     expect(w.w.db.get(personKey)).toMatchObject({ windowStart: nextHour, count: DIAGNOSIS_RATE.lightPerPersonPerHour });
   });
 
-  it("a window that is far ahead (not skew) is not trusted: the counter starts again in this instance's own window", async () => {
+  it("a window that is far ahead (not skew) is not trusted: the person's counter starts again in this instance's own window", async () => {
     const w = diagnosisWorld();
-    const day = Math.floor(w.w.clock.now / DAY) * DAY;
-    w.w.db.set({ ...orgKey(orgs[0]!), entityType: "DIAGNOSIS_RATE", orgId: orgs[0]!, windowStart: day + 5 * DAY, count: 100, cents: 1_500 });
-    await expect(admit(w, orgs[0]!, 0, { cap: DIAGNOSIS_ROVARA_PAID_ORG_LIMITS, global: 100_000 })).resolves.toMatchObject({ created: true });
-    expect(w.w.db.get(orgKey(orgs[0]!))).toMatchObject({ windowStart: day, count: 1, cents: 25 });
+    const hour = 3_600_000;
+    const now = Math.floor(w.w.clock.now / hour) * hour;
+    const personKey = { pk: `ORG#${orgs[0]!}#DIAGNOSISRATE`, sk: `light_person#${people[0]!}` };
+    w.w.db.set({ ...personKey, entityType: "DIAGNOSIS_RATE", orgId: orgs[0]!, windowStart: now + 5 * hour, count: DIAGNOSIS_RATE.lightPerPersonPerHour });
+    await expect(admit(w, orgs[0]!, 0, { who: people[0]! })).resolves.toMatchObject({ created: true });
+    expect(w.w.db.get(personKey)).toMatchObject({ windowStart: now, count: 1 });
   });
 
   it("takes the day from the broker's clock only: the request carries no time the counters read", async () => {
@@ -320,5 +158,21 @@ describe("DG-3 erase never leaves an error blocked", () => {
     await eraseDiagnosisPerson(w.diagnosis, ORG_A, PRIYA);
     expect(openOf(w)).toMatchObject({ diagnosisId: second.diagnosisId });
     expect(blocked(w)).toBe(true);
+  });
+});
+
+describe("no counter of money is kept for a diagnosis (the company pays, 2026-11-03)", () => {
+  it("an admitted diagnosis writes the person's and the project's counters, the open place, the request and the person link, and no organization or install-wide money item", async () => {
+    const w = diagnosisWorld({ edition: "public" });
+    await admit(w, ORG_A, 0);
+    const keys = [...w.w.db.items.keys()];
+    expect(keys.filter((key) => key.includes("light_org") || key.includes("DIAGNOSISGLOBAL"))).toEqual([]);
+    expect(keys.some((key) => key.includes("light_person#")), "person counter").toBe(true);
+    expect(keys.some((key) => key.includes("light_project#")), "project counter").toBe(true);
+  });
+
+  it("the refusal words for an organization's day and an install-wide pause no longer exist", () => {
+    expect(DIAGNOSIS_REFUSALS).not.toHaveProperty("orgRateLimited");
+    expect(DIAGNOSIS_REFUSALS).not.toHaveProperty("globalRateLimited");
   });
 });

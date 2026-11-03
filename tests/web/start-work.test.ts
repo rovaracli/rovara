@@ -21,7 +21,7 @@ import { LAYER, howWeWorkView } from "./support/how-we-work-view.js";
 const id = "ses_bbbbbbbbbbbbbbbbbbbb", CODE = "/v1/app/projects/payments/code";
 const started = () => ({ status: 202, body: { task: taskFixture({ sessionId: id }), sessionId: id, sessionUrl: "https://cell.example/s/" + id } });
 function setup(value = projectFixture(), options: { theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse>; seed?: unknown } = {}) {
- const f = fakeHost(async request => request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.method === "GET" ? { status: 200, body: value } : options.send ? options.send(request) : started());
+ const f = fakeHost(async request => request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.path.endsWith("/setup-agent/limits") ? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } : request.method === "GET" ? { status: 200, body: value } : options.send ? options.send(request) : started());
  const query = createQueryClient();
  if (options.seed !== undefined) query.setQueryData([...howWeWorkKey("payments"), "view"], options.seed);
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });

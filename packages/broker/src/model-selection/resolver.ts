@@ -19,6 +19,8 @@ export interface VerifiedStageCandidate {
   evidence?: SourceModelEvidence | undefined;
   /** The kind of the company source the candidate came from, set from the live record. `qualified_endpoint` evidence counts only for an `endpoint` source. */
   sourceKind?: string | undefined;
+  /** Owner decision 2026-11-03: the account is known not to be able to call this model now (an Amazon Bedrock model it has not enabled). A default choice prefers any other candidate; an explicit choice still stands. See `resolveStageModel`. */
+  accountCannotUse?: true | undefined;
 }
 export interface StageModelInput {
   orgId: string;
@@ -83,7 +85,21 @@ export function stageCandidateVerified(input: StageModelInput, candidate: Verifi
 
 const projectDefaultChoice=(model:ModelSelection)=>StageModelChoiceSchema.safeParse({model:{provider:model.provider,modelId:model.modelId},...(model.thinkingLevel===undefined?{}:{thinkingLevel:model.thinkingLevel})});
 
+/**
+ * Owner decision 2026-11-03: Rovara picks only models the account can actually call. When some candidates are marked `accountCannotUse`, the choice is made without them first; if that finds a model it is the answer,
+ * recorded as a fallback from the model the choice would have been (so the task says why: the default model was not usable), and if it finds none (nothing else is usable, or a choice somebody made explicitly or locked
+ * names only an unusable model) the choice is made exactly as before, with them. So this never refuses what was accepted before, and never overrides what a person chose.
+ */
 export function resolveStageModel(input: StageModelInput): StageModelResult {
+  if (!input.candidates.some((candidate) => candidate.accountCannotUse === true)) return resolveStageModelOnce(input);
+  const usable = resolveStageModelOnce({ ...input, candidates: input.candidates.filter((candidate) => candidate.accountCannotUse !== true) });
+  const preferred = resolveStageModelOnce(input);
+  if (usable.kind === "refusal") return preferred;
+  if (preferred.kind === "refusal" || (same(usable.model, preferred.model) && usable.sourceId === preferred.sourceId)) return usable;
+  return usable.fallback !== undefined ? usable : { ...usable, fallback: { stage: input.stage, used: label(usable.model), wanted: label(preferred.model), reasonCode: "DEFAULT_MODEL_UNAVAILABLE" } };
+}
+
+function resolveStageModelOnce(input: StageModelInput): StageModelResult {
   const locked = input.companyLock !== undefined;
   const candidates = input.candidates.filter((candidate) => stageCandidateVerified(input, candidate));
   const permitted = (model: ModelIdentifier): StageModelRefusalCode | undefined => {

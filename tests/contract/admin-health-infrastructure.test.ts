@@ -295,6 +295,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/rovara-code/second-review-track.ts",
       // Saved project images: the start marker of a rebuild job and a closed build workspace's record expire after 30 days; only this file writes either expiry.
       "packages/broker/src/test-env/saved-env-markers.ts",
+      // 2026-11-03, chain merge: automatic runs. Their claim, month counter, started, ended and paused markers expire 62 days after they are written (cap.ts, start.ts, end.ts) and a run's watch 14 days (end.ts); each is a marker, none a durable record (the audit event is).
+      "packages/broker/src/automatic-runs/start.ts", "packages/broker/src/automatic-runs/end.ts", "packages/broker/src/automatic-runs/cap.ts",
+      // The Ask-in-Linear scrub: a comment kept after the tries ran out (400 days) and the resume cursor of the fix pass (30 days) expire by the TTL.
+      "packages/broker/src/agent-sessions/ask-linear-scrub.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

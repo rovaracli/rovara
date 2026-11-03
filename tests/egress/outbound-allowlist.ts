@@ -137,7 +137,7 @@ export const HOST_RULES: readonly HostRule[] = [
     ],
   },
   {
-    category: "aws-service-principal", why: "The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call).", files: ["infra/lib/saved-env-images.ts"],
+    category: "aws-service-principal", why: "The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call); and, as the iam:AWSServiceName condition on the deploy role's one service-linked-role statement for ECR's creation-template role (a policy value, not a call).", files: ["infra/lib/saved-env-images.ts", "packages/contracts/src/access-policies.ts"],
     hosts: ["ecr.amazonaws.com"],
   },
   {
