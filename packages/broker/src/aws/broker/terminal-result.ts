@@ -5,7 +5,8 @@ import { continueRedirectAfterStop } from "../../agent-sessions/redirect-hook.js
 import { clearLiveDeliveredSince } from "../../agent-sessions/steer.js";
 import { posix as posixPath } from "node:path";
 import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { TEST_ENV_DRAFT_RESULT_KEY, checksForSection, StandingFailuresSchema, nextStandingFailures, type StandingFailure, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskResultChecks, type CheckEntry, type LatestChecks, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, redactAndCap, redactText } from "@agentx/contracts";
+import { TEST_ENV_DRAFT_RESULT_KEY, TEST_SERVICES_USAGE_RESULT_KEY, checksForSection, StandingFailuresSchema, nextStandingFailures, type StandingFailure, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskResultChecks, type CheckEntry, type LatestChecks, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, redactAndCap, redactText } from "@agentx/contracts";
+import { keepCandidateUsage } from "../../org/test-env-candidate.js";
 import { recordPrepareFailureEvent } from "../operation-events.js";
 import { releaseFailedPreparation } from "../failed-preparation.js";
 import { closeSetupCheck } from "../setup-check-close.js";
@@ -236,9 +237,11 @@ function withSafeNoChangeFindings(result: unknown): unknown {
  * transaction, the setup draft's own result with it. The full result still goes to the end items that read the draft.
  */
 function withoutTestEnvDraft(result: unknown): unknown {
-  if (result === null || typeof result !== "object" || Array.isArray(result) || !(TEST_ENV_DRAFT_RESULT_KEY in result)) return result;
-  const { [TEST_ENV_DRAFT_RESULT_KEY]: _draft, ...rest } = result as Record<string, unknown>;
+  if (result === null || typeof result !== "object" || Array.isArray(result) || !(TEST_ENV_DRAFT_RESULT_KEY in result || TEST_SERVICES_USAGE_RESULT_KEY in result)) return result;
+  // Test services: a candidate check's usage record has its own home (`keepCandidateUsage`), so the operation's stored result never carries it.
+  const { [TEST_ENV_DRAFT_RESULT_KEY]: _draft, [TEST_SERVICES_USAGE_RESULT_KEY]: _usage, ...rest } = result as Record<string, unknown>;
   void _draft;
+  void _usage;
   return rest;
 }
 
@@ -414,6 +417,8 @@ export async function recordTerminalResult(
         : undefined;
       taskPointer = pointer;
       // P1 (su): a setup run's preparation report of where each repository stands is kept before the run's first operation is built from it (rovara-code/setup-agent.ts).
+      // Test services: a candidate check's usage record (a result carrying `testServicesUsage`; nothing otherwise), kept on the check that holds this workspace, scoped by the org.
+      if (operation.kind === "prepare") await keepCandidateUsage({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId: workspace.orgId, workspaceId: operation.workspaceId, result });
       if (operation.kind === "prepare" && terminalStatus === "SUCCEEDED" && pointer?.pendingWorkflowMode === "SETUP_AGENT") await keepSetupPreparedBase(dependencies, pointer.taskId, result, now, operation.preparePins);
       const completed = await completedTurnItems(dependencies, operation, pointer, terminalStatus, { result, error }, now);
       inlineEvidence.length = 0;

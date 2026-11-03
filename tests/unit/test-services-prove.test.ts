@@ -1,7 +1,7 @@
 // Test services, slice 1 T5: the Prove of an environment with dependencies. The two new steps ("start dependencies", "dependency usage check") are derived by the broker from the usage record the candidate check
 // reported; a check with no record proves nothing about them; an environment with dependencies is proved only when both passed; the record is kept, validated, on the candidate check; the plan for the check is pinned.
 import { describe, expect, it } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, TEST_ENV_REFUSALS, TestEnvironmentBodySchema, TestEnvProveReportSchema, testEnvDigest, testEnvIsProved, type OrgId, type TestServicesUsageRecord } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, TEST_ENV_REFUSALS, projectRevisionKey, TestEnvironmentBodySchema, TestEnvProveReportSchema, testEnvDigest, testEnvIsProved, type OrgId, type TestServicesUsageRecord } from "@agentx/contracts";
 import { candidateDependencyPlan } from "../../packages/broker/src/aws/developer-routes/test-environment-candidate.js";
 import { CANDIDATE_CHECK_ENTITY, candidateCheckKey, readCandidateCheck, recordCandidateUsage } from "../../packages/broker/src/org/test-env-candidate.js";
 import { BACKING_PLACES } from "../../packages/broker/src/test-env/backing-choice.js";
@@ -134,16 +134,25 @@ describe("the candidate check keeps the record", () => {
 });
 
 describe("the plan a candidate check carries", () => {
-  const source = { serviceCatalog: async () => verifiedCatalog(pinnedCatalog()) };
-  it("is pinned from the signed catalog for a proposal with dependencies, and nothing for one without", async () => {
-    const plan = await candidateDependencyPlan(source, body([postgres]), PROJECT, ON);
+  const catalogSource = async () => verifiedCatalog(pinnedCatalog());
+  const project = (devcontainer: boolean) => {
+    const db = new FakeDynamoDb();
+    db.set({ ...projectRevisionKey(ORG, PROJECT, 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z", runtimeBinding: {}, definition: { name: PROJECT, revision: 1, repositories: [{ name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [], orchestratorInstructions: "x", ...(devcontainer ? { devcontainer: { repository: "web" } } : {}) } });
+    return { documentClient: db, tableName: "t" };
+  };
+  const scope = { orgId: ORG, project: PROJECT };
+
+  it("is pinned from the signed catalog for a proposal with dependencies, and nothing (and no read) for one without", async () => {
+    const plan = await candidateDependencyPlan({ ...project(false), serviceCatalog: catalogSource }, body([postgres]), scope, ON);
     expect(plan?.map((entry) => [entry.id, entry.catalogId])).toEqual([["postgres", "postgres@16"]]);
-    expect(await candidateDependencyPlan({}, body(), PROJECT, ON)).toBeUndefined();
+    const unread = { documentClient: { send: async () => { throw new Error("must not be called"); } }, tableName: "t" };
+    expect(await candidateDependencyPlan(unread, body(), scope, ON)).toBeUndefined();
   });
 
-  it("refuses the check, in fixed words, with tx off or when the catalog cannot pin it", async () => {
-    await expect(candidateDependencyPlan(source, body([postgres]), PROJECT, { TEST_ENVIRONMENT_ENABLED: "1" })).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.not_available_yet);
-    await expect(candidateDependencyPlan({}, body([postgres]), PROJECT, ON)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.no_catalog);
+  it("refuses the check, in fixed words, with tx off, with no catalog, or for a project with a dev container", async () => {
+    await expect(candidateDependencyPlan({ ...project(false), serviceCatalog: catalogSource }, body([postgres]), scope, { TEST_ENVIRONMENT_ENABLED: "1" })).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.not_available_yet);
+    await expect(candidateDependencyPlan(project(false), body([postgres]), scope, ON)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.no_catalog);
+    await expect(candidateDependencyPlan({ ...project(true), serviceCatalog: catalogSource }, body([postgres]), scope, ON)).rejects.toThrow(/dev container/u);
   });
 });
 
