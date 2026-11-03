@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { TEST_REPORT_MAX_BYTES, TEST_REPORT_MAX_TESTS } from "../../packages/worker/src/verification/test-report.js";
+import { isValidTestId, testIdOf } from "@agentx/contracts";
+import { TEST_REPORT_MAX_BYTES, TEST_REPORT_MAX_TESTS, displayLine } from "../../packages/worker/src/verification/test-report.js";
 import { REPORT_FOLDER_MAX_FILES, readJunitFolder, readTestReportAt } from "../../packages/worker/src/verification/test-report-folder.js";
 
 // What Surefire writes: one TEST-<class>.xml per class.
@@ -167,13 +168,20 @@ describe("readJunitFolder inside a workspace root", () => {
     writeFileSync(join(dir, "r", "TEST-a.A.xml"), suite("a.A", OK("a.A", "t")));
     expect((await readTestReportAt(dir, "r" + "/".repeat(300))).report?.total).toBe(1);
   });
-  it("keeps the text of a report's file attribute out of the evidence when it holds a secret or a control character", async () => {
+  it("redacts a secret in a report's file attribute, and keeps a hidden character in the file as written but never as a valid test id (shown as one plain line)", async () => {
     const token = ["gh", "p_", "a".repeat(36)].join("");
     put("TEST-a.A.xml", suite("a.A", `<testcase name="t" classname="a.A" file="src/${token}/A.java"/><testcase name="u" classname="a.A" file="src/B\u202e.java"/><testcase name="v" classname="a.A" file="src/Fine.java"/>`));
     const result = await readJunitFolder(dir);
     expect(JSON.stringify(result.report)).not.toContain(token);
-    expect(JSON.stringify(result.report)).not.toContain("\u202e");
-    expect(result.report?.tests.map((test) => test.file)[2]).toBe("src/Fine.java");
+    // NH-1 re-check F2/F5: the file is kept as the report wrote it (a test's id is built from it, and an id must be the real one), so the hidden character stays in the parsed report; the id it makes is not valid,
+    // is never matched, and is shown only as one plain line (the evidence and the nightly use `isValidTestId` and `displayLine`).
+    const files = result.report?.tests.map((test) => test.file);
+    expect(files?.[1]).toBe("src/B\u202e.java");
+    const ids = result.report?.tests.map((test) => testIdOf(test)) ?? [];
+    expect(ids.map((id) => isValidTestId(id))).toEqual([true, false, true]);
+    expect(displayLine(ids[1]!)).not.toContain("\u202e");
+    expect(displayLine(ids[1]!)).toBe("src/B .java::u");
+    expect(files?.[2]).toBe("src/Fine.java");
   });
 });
 

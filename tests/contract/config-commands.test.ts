@@ -43,7 +43,9 @@ describe("agentx config list and get", () => {
     expect(rows.find((row) => row.key === "rovaraCode.v2")).toMatchObject({ value: "false", where: "stack parameter RovaraCodeV2Enabled on agentx-staging-control-plane" });
     expect(rows.find((row) => row.key === "liveSteer.enabled")).toMatchObject({ value: "0", where: "stack parameter LiveSteerEnabled on agentx-staging-control-plane" });
     expect(rows.find((row) => row.key === "liveRedirect.enabled")).toMatchObject({ value: "0", where: "stack parameter LiveRedirectEnabled on agentx-staging-control-plane" });
-    expect(rows).toHaveLength(33);
+    // The saved project images switch (SH22-SH26, `sv`), off by default.
+    expect(rows.find((row) => row.key === "savedEnv.enabled")).toMatchObject({ value: "0", where: "stack parameter SavedEnvEnabled on agentx-staging-control-plane" });
+    expect(rows).toHaveLength(34);
   });
 
   it("never shows the alert address itself, only that it is set", async () => {
