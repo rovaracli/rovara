@@ -13,6 +13,7 @@ docs/*
 !docs/learnings/
 !docs/capabilities/
 !docs/architecture/
+!docs/agents/
 !docs/runbooks/
 !docs/audit-ledger/
 !docs/enterprise/
