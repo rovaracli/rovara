@@ -6,6 +6,7 @@ import { testEnvDigest, type TestEnvironmentBody } from "../../packages/contract
 import { OMAR } from "../support/developer-task-broker.js";
 import { proposeTestEnvironment } from "../../packages/broker/src/org/test-environment.js";
 import { writeSetupRunProposal } from "../../packages/broker/src/rovara-code/setup-run-proposal.js";
+import { seedSetupRun } from "../support/candidate-check.js";
 import { checkedAtRunCommits } from "../../packages/broker/src/test-env/setup-run-pin.js";
 import { ENV, NAME, command, draftBody, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -16,26 +17,22 @@ const RUN_TASK = "11111111-1111-4111-8111-111111111111";
 const HEAD = "c".repeat(40); // what the bench's code host answers as the default-branch head
 const OLDER = "e".repeat(40);
 
-const body = (): TestEnvironmentBody => draftBody({
+const body = (smoke = "smoke"): TestEnvironmentBody => draftBody({
   repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900), command("make", ["deps"], 900)], checks: [
     { id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" },
-    { id: "smoke", label: "Smoke", command: command("make", ["smoke"], 600), kind: "smoke" },
+    { id: "smoke", label: "Smoke", command: command("make", [smoke], 600), kind: "smoke" },
   ] }],
 });
 const store = (t: Bench) => ({ documentClient: t.db, tableName: "state", now: () => Date.now() });
 const candidates = (t: Bench) => t.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK") as unknown as Array<{ workspaceId: string; pins?: Array<{ repository: string; commit: string }>; origin?: string }>;
 const prepareOf = (t: Bench, workspaceId: string) => String((t.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
 
-/** A setup run that read the repository at `base` (undefined: it kept no commit), and the proposal it made. */
-async function fromRun(t: Bench, base: string | undefined): Promise<string> {
-  const proposal = body();
+/** A setup run that read the repository at `base` (undefined: it kept no commit), and the proposal it made (`smoke` makes a different one). */
+async function fromRun(t: Bench, base: string | undefined, over: { smoke?: string; taskId?: string } = {}): Promise<string> {
+  const proposal = body(over.smoke);
   const digest = testEnvDigest(proposal);
-  t.db.set({
-    pk: `DEVTASK#${RUN_TASK}`, sk: "META", taskId: RUN_TASK, orgId: TEST_ORG, project: NAME, purpose: "setup_agent",
-    ...(base === undefined ? {} : { preparedBase: [{ repositoryId: "web", baseCommitSha: base }] }),
-  });
   await proposeTestEnvironment(store(t), { orgId: TEST_ORG, project: NAME, proposedBy: OMAR.developerId, role: "maintainer", body: proposal, origin: "setup_run", valueSources: [{ field: "repos[0].setupCommands[1]", source: { path: "package.json", line: 3 } }] });
-  await writeSetupRunProposal(store(t), TEST_ORG, NAME, { digest, taskId: RUN_TASK, requestId: randomUUID(), by: OMAR.developerId, reply: {} });
+  seedSetupRun(t.db, { orgId: TEST_ORG, project: NAME, digest, developerId: OMAR.developerId, base: base ?? null, taskId: over.taskId ?? RUN_TASK });
   return digest;
 }
 const check = (t: Bench, digest: string) => t.dev(OMAR, "POST", `${ENV}/check`, { digest, requestId: randomUUID() });
@@ -76,16 +73,28 @@ describe("the candidate check of a setup run's proposal is pinned", () => {
     });
   });
 
-  it("falls back to the broker-resolved head when the run recorded no commit, and keeps that pin", async () => {
+  it("is refused to start when the run recorded no commit: a re-run is asked for, no head is read to stand in", async () => {
     const t = await setupWizardBench({ autoCandidate: false });
     t.githubHead.mockResolvedValue(HEAD);
     await withSwitch("1", async () => {
       const digest = await fromRun(t, undefined);
-      expect((await check(t, digest)).status).toBe(202);
-      expect(sentPins(t)).toEqual([{ repository: "web", commit: HEAD }]);
-      expect(candidates(t)[0]!.pins).toEqual([{ repository: "web", commit: HEAD }]);
-      await finishCheck(t);
-      expect((await prove(t, digest)).status).toBe(200);
+      const refused = await check(t, digest);
+      expect(refused.status).toBe(409);
+      expect(errorOf(refused)).toMatchObject({ code: "CHANGE_STALE" });
+      expect(errorOf(refused).message).toContain("run setup again");
+      expect(candidates(t)).toEqual([]);
+      expect(t.githubHead).not.toHaveBeenCalled();
+    });
+  });
+
+  it("is refused to start when the marker names another proposal than this one", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    t.githubHead.mockResolvedValue(OLDER);
+    await withSwitch("1", async () => {
+      const first = await fromRun(t, OLDER);
+      await fromRun(t, OLDER, { smoke: "smoke-two", taskId: "33333333-3333-4333-8333-333333333333" });
+      expect((await check(t, first)).status).toBe(409);
+      expect(candidates(t)).toEqual([]);
     });
   });
 
@@ -93,7 +102,7 @@ describe("the candidate check of a setup run's proposal is pinned", () => {
     const t = await setupWizardBench({ autoCandidate: false });
     t.githubHead.mockRejectedValue(new Error("GitHub is down"));
     await withSwitch("1", async () => {
-      const digest = await fromRun(t, undefined);
+      const digest = await fromRun(t, OLDER);
       expect((await check(t, digest)).status).toBeGreaterThanOrEqual(500);
       expect(candidates(t)).toEqual([]);
     });
@@ -142,26 +151,65 @@ describe("a setup run's proposal is proved only by a check at the run's commits"
     });
   });
 
-  it("another person's or another project's task is not read as the run", async () => {
+  it("another project's task is not read as the run: with no run record nothing is proved, whatever pins the check kept", async () => {
     const t = await setupWizardBench({ autoCandidate: false });
     await withSwitch("1", async () => {
       const digest = await fromRun(t, OLDER);
       t.db.set({ ...(t.db.get(`DEVTASK#${RUN_TASK}`, "META") as Record<string, unknown>), project: "other" });
-      // No run record: the check's own broker-resolved pin is what is left, and a missing pin still refuses.
-      t.candidatePassed(digest, { pins: null });
+      for (const pins of [null, [{ repository: "web", commit: HEAD }], [{ repository: "web", commit: OLDER }]] as const) {
+        t.candidatePassed(digest, { pins, run: false });
+        expect((await prove(t, digest)).status, JSON.stringify(pins)).toBe(400);
+      }
+    });
+  });
+
+  it("a check that pinned only some of the project's code repositories proves nothing (the names come from the project, not from the check)", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    await withSwitch("1", async () => {
+      const [stored] = t.db.find((item) => item.entityType === "PROJECT") as unknown as Array<Record<string, unknown> & { definition: { repositories: unknown[] } }>;
+      t.db.set({ ...stored!, definition: { ...stored!.definition, repositories: [...stored!.definition.repositories, { name: "api", url: "https://github.com/acme/api.git", path: "repo/api", defaultBranch: "main", credentialRef: "github-app" }] } });
+      const digest = await fromRun(t, OLDER);
+      t.db.set({ ...(t.db.get(`DEVTASK#${RUN_TASK}`, "META") as Record<string, unknown>), preparedBase: [{ repositoryId: "web", baseCommitSha: OLDER }, { repositoryId: "api", baseCommitSha: OLDER }] });
+      t.candidatePassed(digest, { pins: [{ repository: "web", commit: OLDER }], run: false });
       expect((await prove(t, digest)).status).toBe(400);
-      t.candidatePassed(digest, { pins: [{ repository: "web", commit: HEAD }] });
+      t.candidatePassed(digest, { pins: [{ repository: "web", commit: OLDER }, { repository: "api", commit: OLDER }], run: false });
       expect((await prove(t, digest)).status).toBe(200);
+    });
+  });
+
+  it("run A writes D1 at X, main moves to Y, run B confirms D2: D1 is refused (Prove and a new check), D2 is checked at Y", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    await withSwitch("1", async () => {
+      t.githubHead.mockResolvedValue(OLDER);
+      const d1 = await fromRun(t, OLDER);
+      expect((await check(t, d1)).status).toBe(202);
+      await finishCheck(t);
+      expect((await prove(t, d1)).status).toBe(200);
+      // Main moves to Y and run B's confirm replaces the marker: its proposal D2 was written for Y.
+      t.githubHead.mockResolvedValue(HEAD);
+      const d2 = await fromRun(t, HEAD, { smoke: "smoke-two", taskId: "33333333-3333-4333-8333-333333333333" });
+      expect(d2).not.toBe(d1);
+      const proved = await prove(t, d1);
+      expect(proved.status).toBe(400);
+      expect(errorOf(proved).message).toContain("run setup again");
+      const again = await check(t, d1);
+      expect(again.status).toBe(409);
+      expect(errorOf(again)).toMatchObject({ code: "CHANGE_STALE" });
+      // D2 is checked at Y and proved.
+      expect((await check(t, d2)).status).toBe(202);
+      expect(sentPins(t)).toEqual([{ repository: "web", commit: HEAD }]);
+      await finishCheck(t);
+      expect((await prove(t, d2)).status).toBe(200);
     });
   });
 });
 
 describe("checkedAtRunCommits", () => {
   const pin = (repository: string, commit: string) => ({ repository, commit });
-  it("needs recorded pins; with a run record every repository must match exactly", () => {
+  it("needs recorded pins and a run record; every repository must match exactly", () => {
     expect(checkedAtRunCommits(undefined, undefined)).toBe(false);
     expect(checkedAtRunCommits([], undefined)).toBe(false);
-    expect(checkedAtRunCommits([pin("a", HEAD)], undefined)).toBe(true);
+    expect(checkedAtRunCommits([pin("a", HEAD)], undefined)).toBe(false);
     expect(checkedAtRunCommits([pin("a", HEAD)], [pin("a", HEAD)])).toBe(true);
     expect(checkedAtRunCommits([pin("a", HEAD)], [pin("a", OLDER)])).toBe(false);
     expect(checkedAtRunCommits([pin("a", HEAD)], [pin("a", HEAD), pin("b", HEAD)])).toBe(false);
