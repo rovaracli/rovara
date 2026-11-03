@@ -96,5 +96,11 @@ export const DesignReviewWorkerResultSchema = z.object({
   droppedFindings: z.array(z.object({ rawId: z.string().max(80), role: ReviewerRoleSchema, severity: z.enum(["blocker", "major", "nit"]), section: DesignSectionSchema, reason: z.literal("no_valid_citation") }).strict()).max(500),
   /** True when the 40-minute stage limit ended the operation before every reviewer had finished. */
   stageTimedOut: z.boolean(),
-}).strict();
+}).strict().superRefine((result, context) => {
+  // One outcome per role and per key slot (N3). The broker also checks them against ITS binding; this refuses the shape early.
+  const roles = result.reviewers.map((reviewer) => reviewer.role);
+  if (new Set(roles).size !== roles.length) context.addIssue({ code: "custom", path: ["reviewers"], message: "a reviewer role appears once in a result" });
+  const slots = result.reviewers.map((reviewer) => reviewer.keySlot);
+  if (new Set(slots).size !== slots.length) context.addIssue({ code: "custom", path: ["reviewers"], message: "a key slot appears once in a result" });
+});
 export type DesignReviewWorkerResult = z.infer<typeof DesignReviewWorkerResultSchema>;

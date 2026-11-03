@@ -346,11 +346,11 @@ describe("broker side: assembleRoundFindings", () => {
       ["critic" as const, { verified: false as const, failure: "tool_not_read_only" as const }],
       ["codebase" as const, { verified: true as const, sessionId: "s", filesRead: [], inputProof: "digest_only" as const }],
     ]);
-    const round = assembleRoundFindings({ result, verification, packets: new Map([...packets].map(([role, p]) => [role, p.items])), pins: {} });
+    const round = assembleRoundFindings({ binding, result, verification, packets: new Map([...packets].map(([role, p]) => [role, p.items])), pins: {} });
     expect(round.findings.flatMap((f) => f.rawIds)).toEqual(["codebase-2"]);
     expect(round.mergeSource).toBe("code");
     expect(round.reviewers).toEqual([
-      { role: "critic", counted: false, verified: false, notUsed: "tool_not_read_only" },
+      { role: "critic", counted: false, verified: false, verifyFailure: "tool_not_read_only", notUsed: "tool_not_read_only" },
       { role: "codebase", counted: true, verified: true, inputProof: "digest_only" },
     ]);
   });
@@ -360,9 +360,85 @@ describe("broker side: assembleRoundFindings", () => {
     const { ports } = fakePorts({ answers: { "slot-critic": [block([finding("1", { citations: [{ kind: "source", ref: "design.md", digest: "e".repeat(64) }] })])] } }, deliveries);
     const result = await runDesignReview(binding, ports);
     const tampered = { ...result, findings: [{ id: "m1", severity: "blocker", section: "§1", text: "Invented by the worker", citations: [{ kind: "design", section: "§1" }], fromReviewers: ["critic"], rawIds: ["critic-9"], fingerprint: "a".repeat(64) }] };
-    const round = assembleRoundFindings({ result: tampered, verification: new Map([["critic" as const, { verified: true as const, sessionId: "s", filesRead: [], inputProof: "proxy_first_call" as const }]]), packets: new Map([["critic" as const, packets.get("critic")!.items]]), pins: {} });
+    const round = assembleRoundFindings({ binding, result: tampered, verification: new Map([["critic" as const, { verified: true as const, sessionId: "s", filesRead: [], inputProof: "proxy_first_call" as const }]]), packets: new Map([["critic" as const, packets.get("critic")!.items]]), pins: {} });
     expect(round.findings).toEqual([]);
     expect(round.droppedFindings).toHaveLength(1);
+  });
+});
+
+describe("broker side: assembleRoundFindings, fix round 2 (N1, N3, N5)", () => {
+  const ok = (inputProof: "digest_only" | "proxy_first_call" = "digest_only") => ({ verified: true as const, sessionId: "s", filesRead: [], inputProof });
+  async function round(roles: ReviewerRole[], answers: Record<string, Array<string | Error>>) {
+    const made = await setup(roles, false);
+    const result = await runDesignReview(made.binding, fakePorts({ answers }, made.deliveries).ports);
+    const packets = new Map([...made.packets].map(([role, p]) => [role, p.items] as const));
+    const verification = new Map(roles.map((role) => [role, ok()] as const));
+    return { ...made, result, packets, verification };
+  }
+
+  it("N1: a reviewer the worker flagged is not counted even with a readable answer and a good report; the control reviewer still counts", async () => {
+    const made = await round(["critic", "codebase"], { "slot-critic": [block([finding("1")])], "slot-codebase": [block([finding("2")])] });
+    const control = assembleRoundFindings({ binding: made.binding, result: made.result, verification: made.verification, packets: made.packets, pins: {} });
+    expect(control.reviewers.map((r) => r.counted)).toEqual([true, true]);
+    for (const failure of ["sent_mismatch", "timeout", "stage_timeout", "packet_changed"] as const) {
+      const flagged = { ...made.result, reviewers: made.result.reviewers.map((r) => (r.role === "critic" ? { ...r, failure } : r)) };
+      const out = assembleRoundFindings({ binding: made.binding, result: flagged, verification: made.verification, packets: made.packets, pins: {} });
+      expect(out.reviewers.find((r) => r.role === "critic"), failure).toMatchObject({ counted: false, verified: false, verifyFailure: "unreadable_output", notUsed: "worker_flagged" });
+      expect(out.reviewers.find((r) => r.role === "codebase")).toMatchObject({ counted: true, verified: true });
+      expect(out.findings.flatMap((f) => f.rawIds)).toEqual(["codebase-2"]);
+    }
+    const notAnswered = { ...made.result, reviewers: made.result.reviewers.map((r) => (r.role === "critic" ? { ...r, status: "no_result" as const } : r)) };
+    expect(assembleRoundFindings({ binding: made.binding, result: notAnswered, verification: made.verification, packets: made.packets, pins: {} }).reviewers[0]).toMatchObject({ counted: false, notUsed: "worker_flagged" });
+  });
+
+  it("N1: a real sent_mismatch run (answer and report exist) is not counted", async () => {
+    const made = await setup(["critic"], false);
+    const result = await runDesignReview(made.binding, fakePorts({ answers: { "slot-critic": [block([finding("1")])] }, alterFirstUser: true }, made.deliveries).ports);
+    expect(result.reviewers[0]).toMatchObject({ failure: "sent_mismatch" });
+    expect(result.reviewers[0]!.answer).toBeDefined();
+    const out = assembleRoundFindings({ binding: made.binding, result, verification: new Map([["critic" as const, ok()]]), packets: new Map([["critic" as const, made.packets.get("critic")!.items]]), pins: {} });
+    expect(out.reviewers[0]).toMatchObject({ counted: false, verified: false });
+    expect(out.findings).toEqual([]);
+  });
+
+  it("N3: a duplicated role is refused as a whole without throwing; every reviewer counts as no result", async () => {
+    const made = await round(["critic", "codebase"], { "slot-critic": [block([finding("1")])], "slot-codebase": [block([finding("2")])] });
+    const critic = made.result.reviewers[0]!;
+    const dup = { ...made.result, reviewers: [critic, { ...critic, answer: block([finding("9", { text: "A different problem." })]) }, made.result.reviewers[1]!] };
+    const out = assembleRoundFindings({ binding: made.binding, result: dup, verification: made.verification, packets: made.packets, pins: {} });
+    expect(out.refused).toBe("duplicate_role");
+    expect(out.findings).toEqual([]);
+    expect(out.reviewers.map((r) => [r.role, r.counted, r.verified, r.verifyFailure])).toEqual([["critic", false, false, "unreadable_output"], ["codebase", false, false, "unreadable_output"]]);
+  });
+
+  it("N3: an unknown role and a key slot that is not the binding's are refused; reviewers missing from the result are not counted; the order is the binding's", async () => {
+    const made = await round(["critic", "codebase"], { "slot-critic": [block([finding("1")])], "slot-codebase": [block([finding("2")])] });
+    const [critic, codebase] = made.result.reviewers as [typeof made.result.reviewers[number], typeof made.result.reviewers[number]];
+    const base = { binding: made.binding, verification: made.verification, packets: made.packets, pins: {} };
+    expect(assembleRoundFindings({ ...base, result: { ...made.result, reviewers: [critic, codebase, { ...critic, role: "zoom_out" as const, keySlot: "slot-zoom_out" }] } }).refused).toBe("unknown_role");
+    expect(assembleRoundFindings({ ...base, result: { ...made.result, reviewers: [{ ...critic, keySlot: "slot-codebase" }, codebase] } }).refused).toBe("key_slot_mismatch");
+    const partial = assembleRoundFindings({ ...base, result: { ...made.result, reviewers: [codebase] } });
+    expect(partial.refused).toBeUndefined();
+    expect(partial.reviewers.map((r) => [r.role, r.counted])).toEqual([["critic", false], ["codebase", true]]);
+    const swapped = assembleRoundFindings({ ...base, result: { ...made.result, reviewers: [codebase, critic] } });
+    expect(swapped.reviewers.map((r) => r.role)).toEqual(["critic", "codebase"]);
+  });
+
+  it("N3: two different findings that would share an id do not throw out of the assembly", async () => {
+    const made = await round(["critic"], { "slot-critic": [block([finding("1")])] });
+    const out = assembleRoundFindings({ binding: made.binding, result: made.result, verification: made.verification, packets: made.packets, pins: {} });
+    expect(out.reviewers[0]).toMatchObject({ counted: true });
+    expect(DesignReviewWorkerResultSchema.safeParse({ ...made.result, reviewers: [made.result.reviewers[0]!, made.result.reviewers[0]!] }).success).toBe(false);
+    expect(DesignReviewWorkerResultSchema.safeParse(made.result).success).toBe(true);
+  });
+
+  it("N5: a verified reviewer whose answer is missing or unreadable is not verified, and the round has no verified reviewer", async () => {
+    const made = await round(["critic", "codebase"], { "slot-critic": [block([finding("1")])], "slot-codebase": [block([finding("2")])] });
+    const unreadable = { ...made.result, reviewers: made.result.reviewers.map((r) => ({ ...r, answer: "no block here" })) };
+    const out = assembleRoundFindings({ binding: made.binding, result: unreadable, verification: made.verification, packets: made.packets, pins: {} });
+    expect(out.reviewers.every((r) => !r.verified && !r.counted && r.verifyFailure === "unreadable_output")).toBe(true);
+    const missing = { ...made.result, reviewers: made.result.reviewers.map(({ answer: _answer, ...rest }) => rest) };
+    expect(assembleRoundFindings({ binding: made.binding, result: missing, verification: made.verification, packets: made.packets, pins: {} }).reviewers.every((r) => !r.verified)).toBe(true);
   });
 });
 
@@ -474,7 +550,7 @@ describe("integration of the DR3/DR4 proof fixes", () => {
       ["critic" as const, { verified: true as const, sessionId: "s1", filesRead: [], inputProof: "proxy_first_call" as const }],
       ["codebase" as const, { verified: true as const, sessionId: "s2", filesRead: [], inputProof: "digest_only" as const }],
     ]);
-    const round = assembleRoundFindings({ result, verification, packets: new Map([...packets].map(([role, p]) => [role, p.items])), pins: {} });
+    const round = assembleRoundFindings({ binding, result, verification, packets: new Map([...packets].map(([role, p]) => [role, p.items])), pins: {} });
     expect(round.reviewers.map((r) => [r.role, r.inputProof])).toEqual([["critic", "proxy_first_call"], ["codebase", "digest_only"]]);
     expect(round.mergeSource).toBe("model");
     expect(round.findings[0]!.rawFindings!.map((raw) => raw.text).sort()).toEqual(["Retries are unbounded.", "Retries have no limit."]);
@@ -482,11 +558,11 @@ describe("integration of the DR3/DR4 proof fixes", () => {
     // the Light Critic's answer has a paraphrase: read with it only when the broker's packet for that role carried the Light prompt
     const light = await setup(["critic"], false, "light");
     const lightResult = await runDesignReview(light.binding, fakePorts({ answers: { "slot-critic": [block([finding("1")], para)] } }, light.deliveries).ports);
-    const input = { result: lightResult, verification: new Map([["critic" as const, { verified: true as const, sessionId: "s", filesRead: [], inputProof: "digest_only" as const }]]), packets: new Map([["critic" as const, light.packets.get("critic")!.items]]), pins: {} };
+    const input = { binding: light.binding, result: lightResult, verification: new Map([["critic" as const, { verified: true as const, sessionId: "s", filesRead: [], inputProof: "digest_only" as const }]]), packets: new Map([["critic" as const, light.packets.get("critic")!.items]]), pins: {} };
     const withPrompt = assembleRoundFindings({ ...input, promptIds: new Map([["critic" as const, light.packets.get("critic")!.rolePrompt.id]]) });
-    expect(withPrompt.reviewers[0]).toMatchObject({ counted: true });
+    expect(withPrompt.reviewers[0]).toMatchObject({ counted: true, verified: true });
     expect(withPrompt.reviewers[0]!.paraphrase).toContain("An endpoint.");
-    expect(assembleRoundFindings({ ...input, promptIds: new Map([["critic" as const, "design-review-critic"]]) }).reviewers[0]).toMatchObject({ counted: false, notUsed: "unreadable_output" });
-    expect(assembleRoundFindings(input).reviewers[0]).toMatchObject({ counted: false, notUsed: "unreadable_output" });
+    expect(assembleRoundFindings({ ...input, promptIds: new Map([["critic" as const, "design-review-critic"]]) }).reviewers[0]).toMatchObject({ counted: false, verified: false, verifyFailure: "unreadable_output", notUsed: "unreadable_output" });
+    expect(assembleRoundFindings(input).reviewers[0]).toMatchObject({ counted: false, verified: false, verifyFailure: "unreadable_output", notUsed: "unreadable_output" });
   });
 });
