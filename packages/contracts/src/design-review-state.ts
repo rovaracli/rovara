@@ -170,3 +170,39 @@ export function designReviewDisagreements(review: WorkflowDesignReview | undefin
 export function designReviewRevisionsUsed(review: Pick<WorkflowDesignReview, "rounds">): number {
   return Math.min(DESIGN_REVIEW_ROUNDS_MAX, review.rounds.filter((round) => round.findings.length > 0 && designRoundResolved(round)).length);
 }
+
+/** The three places a design review waits on people (3.7): the question card, the cost hold's card, and the design card's decision. */
+export type DesignWaitKind = "answers" | "cost" | "decision";
+export interface DesignWait {
+  kind: DesignWaitKind;
+  /** When this wait began (or began again, after a person resumed it): the clock for the reminders and the park. */
+  since: string;
+  parkedAt?: string;
+  closedAt?: string;
+  resumedBy?: { actorId: string };
+}
+
+/**
+ * Which wait on people a workflow is in right now, or undefined. Pure, browser-safe, and read from the snapshot alone: the answers wait is PLAN/WAITING with the review "waiting_answers" (its record is
+ * `waiting`); the cost hold is PLAN_CRITIQUE/WAITING "waiting_cost"; the decision is PLAN_REVIEW/WAITING once the review has ended ("done", "not_run" or "stopped_at_cap"), in the design phase of a Full task.
+ * The last two keep a record only once parked or resumed, and only the one that names this very revision counts (a record from an earlier wait is ignored), so they start at the workflow's `updatedAt`.
+ */
+export function designWaitOf(workflow: {
+  stage: string; state: string; revision: number; updatedAt: string; path?: string | undefined; reviewPhase?: string | undefined; designReview?: WorkflowDesignReview | undefined;
+}): DesignWait | undefined {
+  const review = workflow.designReview;
+  if (review === undefined || workflow.path !== "FULL" || workflow.reviewPhase !== "DESIGN" || workflow.state !== "WAITING") return undefined;
+  const carry = (wait: NonNullable<WorkflowDesignReview["waiting"]>): Pick<DesignWait, "parkedAt" | "closedAt" | "resumedBy"> => ({
+    ...(wait.parkedAt === undefined ? {} : { parkedAt: wait.parkedAt }), ...(wait.closedAt === undefined ? {} : { closedAt: wait.closedAt }), ...(wait.resumedBy === undefined ? {} : { resumedBy: wait.resumedBy }),
+  });
+  if (workflow.stage === "PLAN" && review.status === "waiting_answers") {
+    const wait = review.waiting;
+    return wait === undefined || wait.closedAt !== undefined ? undefined : { kind: "answers", since: wait.since, ...carry(wait) };
+  }
+  const kind: DesignWaitKind | undefined = workflow.stage === "PLAN_CRITIQUE" && review.status === "waiting_cost" ? "cost"
+    : workflow.stage === "PLAN_REVIEW" && (review.status === "done" || review.status === "not_run" || review.status === "stopped_at_cap") ? "decision" : undefined;
+  if (kind === undefined) return undefined;
+  const wait = review.waiting;
+  if (wait !== undefined && wait.revision === workflow.revision && wait.closedAt === undefined) return { kind, since: wait.since, ...carry(wait) };
+  return { kind, since: workflow.updatedAt };
+}

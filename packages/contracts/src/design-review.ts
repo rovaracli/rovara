@@ -307,6 +307,8 @@ export const DESIGN_REVIEW_APPROVALS_MAX = 20;
 /** 3.7: a wait for answers is parked after 7 days and closed as "not decided" after 30 days parked. */
 export const DESIGN_REVIEW_PARK_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 export const DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS = 30 * 24 * 60 * 60 * 1000;
+/** 3.7 / Q5 (DR10): the reminders to the people a design waits on, after 24 hours and after 72 hours of waiting. */
+export const DESIGN_REVIEW_REMIND_AFTER_HOURS = [24, 72] as const;
 
 /** The person a transition names, as the broker authenticated them (the same shape as `answers.by`). */
 export const DesignReviewActorSchema = z.object({ actorId: z.string().min(1).max(128) }).strict();
@@ -342,9 +344,12 @@ export const EarlierDesignReviewSchema = z.object({
 }).strict();
 export type EarlierDesignReview = z.infer<typeof EarlierDesignReviewSchema>;
 
-/** A wait for answers (3.7): when it began, when it was parked (7 days), who resumed it, and when it was closed as not decided (30 days parked). */
+/**
+ * A wait on people (3.7): when it began, when it was parked (7 days), who resumed it, and when it was closed as not decided (30 days parked). A wait for answers always has one. The other two waits (the cost
+ * hold, and the design card's decision) have one only once they are parked or resumed (DR10), and it names the workflow `revision` it belongs to: a record for any other revision is history and is never read.
+ */
 export const DesignReviewWaitSchema = z.object({
-  since: Instant, parkedAt: Instant.optional(), resumedBy: DesignReviewActorSchema.optional(), closedAt: Instant.optional(),
+  since: Instant, parkedAt: Instant.optional(), resumedBy: DesignReviewActorSchema.optional(), closedAt: Instant.optional(), revision: z.number().int().min(1).optional(),
 }).strict();
 
 /** Beside `critique` on the workflow snapshot (wired in DR6). */
@@ -376,7 +381,7 @@ export const WorkflowDesignReviewSchema = z.object({
   });
   if (review.status === "not_run" && review.notRunReason === undefined) context.addIssue({ code: "custom", path: ["notRunReason"], message: "a review that did not run says why" });
   if (review.decidedBy === "person_skip" && review.skippedBy === undefined) context.addIssue({ code: "custom", path: ["skippedBy"], message: "a skip names the person who chose it" });
-  if (review.waiting !== undefined && review.status !== "waiting_answers") context.addIssue({ code: "custom", path: ["waiting"], message: "only a wait for answers has a wait record" });
+  if (review.waiting !== undefined && review.status !== "waiting_answers" && review.waiting.revision === undefined) context.addIssue({ code: "custom", path: ["waiting"], message: "only a wait for answers has a wait record without a revision" });
 });
 export type WorkflowDesignReview = z.infer<typeof WorkflowDesignReviewSchema>;
 

@@ -2,14 +2,14 @@
 // Pure: whether the task is shared is decided when a notice is delivered (Task 7).
 import type { AttributeValue } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-import { WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, type WorkflowSnapshot } from "@agentx/contracts";
 
 export interface StreamRecord {
   eventID?: string;
   eventName?: string;
   dynamodb?: { ApproximateCreationDateTime?: number; NewImage?: Record<string, AttributeValue>; OldImage?: Record<string, AttributeValue> };
 }
-export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report" | "spec_changed" | "spec_hold" | "settings_proof";
+export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report" | "spec_changed" | "spec_hold" | "settings_proof" | "design_wait";
 export interface Notice {
   /** Fixed per change, so a repeated delivery posts once (C9). */
   id: string;
@@ -38,6 +38,8 @@ export interface Notice {
   proofPart?: "saved" | "held";
   /** A workflow notice's revision: delivered only while the task is still at it, so a stale step is never said. */
   workflowRevision?: number;
+  /** DR10, a `design_wait` notice: which step of the wait it is (a reminder at 24 h or 72 h, the park, the close). The notifier reads the NOTIFY row of the task at `workflowRevision` and this step; the notice holds no text. */
+  designWaitStep?: "24h" | "72h" | "parked" | "closed";
   /** A workflow notice for the step a closed required pull request's reopening started: AgentX follows it again. */
   pullRequestReopened?: true;
   /** With `pullRequestReopened`: the pull requests that were reopened, by repository and number. */
@@ -123,6 +125,14 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
           ...(typeof afterRetry.manifestDigest === "string" ? { manifestDigest: afterRetry.manifestDigest } : {}) });
       }
       return notices;
+    }
+    // DR10: a design review that waits on people has a reminder, its park or its close to say. Once, when the row is written; the row holds the people and the codes, and the notifier words it.
+    case "DESIGN_WAIT_NOTIFY": {
+      const taskId = text(next.taskId);
+      const step = text(next.step);
+      if (previous !== undefined || taskId === "" || next.status !== "PENDING" || typeof next.workflowRevision !== "number" || !Number.isSafeInteger(next.workflowRevision) || next.workflowRevision < 1) return [];
+      if (step !== "24h" && step !== "72h" && step !== "parked" && step !== "closed") return [];
+      return [{ id: `${taskId}:design_wait:${next.workflowRevision}:${step}`, kind: "design_wait", taskId, at, workflowRevision: next.workflowRevision, designWaitStep: step }];
     }
     case "DEVELOPER_TASK_POINTER":
       return next.cancelledAt != null && previous?.cancelledAt == null
@@ -253,6 +263,28 @@ export function readStream(records: readonly StreamRecord[]): { notices: Notice[
     }
   }
   return { notices, skipped };
+}
+
+/** DR10: the tasks in a stream batch whose workflow is waiting on people, for the notifier to arm their wait rows. Only the newest image of a task matters (the write is conditional on the revision), so a batch costs one write for each. */
+export function designWaitArms(records: readonly StreamRecord[]): Array<{ taskId: string; orgId?: string; workflow: WorkflowSnapshot }> {
+  const latest = new Map<string, { taskId: string; orgId?: string; workflow: WorkflowSnapshot }>();
+  for (const entry of records) {
+    const image = entry.dynamodb?.NewImage;
+    if (image === undefined) continue;
+    try {
+      const next = unmarshall(image) as Record<string, unknown>;
+      const workflow = record(next.workflow);
+      // Cheap first: only a task that has a design review at all is parsed.
+      if (next.entityType !== "DEVELOPER_TASK" || workflow?.designReview === undefined || typeof next.taskId !== "string") continue;
+      const parsed = WorkflowSnapshotSchema.safeParse(workflow);
+      if (!parsed.success) continue;
+      const previous = latest.get(next.taskId);
+      if (previous === undefined || previous.workflow.revision <= parsed.data.revision) latest.set(next.taskId, { taskId: next.taskId, ...(typeof next.orgId === "string" ? { orgId: next.orgId } : {}), workflow: parsed.data });
+    } catch {
+      // A record that cannot be read is skipped here; `readStream` names it.
+    }
+  }
+  return [...latest.values()];
 }
 
 export function noticesFromStream(records: readonly StreamRecord[]): Notice[] {
