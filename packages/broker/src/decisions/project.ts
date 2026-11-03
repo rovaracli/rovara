@@ -228,7 +228,7 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
         const unpriced = item.design.why === "cost_unavailable";
         return {
           question: unpriced ? "Run the design review without a price?" : "The design review costs more than the limit. What now?",
-          next: unpriced ? "The price of the chosen model is not known, so the cost cannot be shown. Nothing runs until you choose." : `The design review is estimated at ${usd(item.design.estimateUsd ?? item.amountUsd)}; the limit is ${usd(item.design.capUsd)}. Nothing runs until you choose.`,
+          next: unpriced ? `The price of the chosen model is not known, so the cost cannot be shown. Nothing runs until you choose. If you run it, Rovara stops it as soon as the measured spend reaches ${usd(item.design.capUsd)}.` : `The design review is estimated at ${usd(item.design.estimateUsd ?? item.amountUsd)}; the limit is ${usd(item.design.capUsd)}. Nothing runs until you choose.`,
           ...(unpriced || item.design.estimateUsd === undefined ? {} : { costUsd: item.design.estimateUsd }),
           evidence: [
             chip("cost", "Estimate", unpriced ? "Cost unavailable" : usd(item.design.estimateUsd ?? item.amountUsd), unpriced ? "unknown" : "warning"),
@@ -330,10 +330,12 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
     return choices.length === 0 ? { actions: [{ ...open, label: "Open the details" }], recommended: "open" } : { actions: [...choices, { ...open, label: "Open the details" }], recommended: "choose" };
   }
   if (!APPROVABLE.has(item.kind)) return { actions: [open], recommended: "open" };
-  const approve: CardAction = { kind: "approve", label: "Approve", href: `${base}/approve`, method: "POST" };
+  // A design with an open blocker is never a one-tap approve (owner Q8): the action says a reason goes with it, the approve body takes `reason`, and the handler refuses an approval without one.
+  const openBlockers = item.kind === "approve_design" ? item.review?.blockers.length ?? 0 : 0;
+  const approve: CardAction = { kind: "approve", label: openBlockers > 0 ? "Approve with a reason" : "Approve", href: `${base}/approve`, method: "POST" };
   const reject: CardAction = { kind: "reject", label: "Not now", href: `${base}/reject`, method: "POST" };
-  // The recommendation follows the evidence: something failed, so look first.
-  const look = item.kind === "merge" && (item.proof.failed > 0 || item.ci === "failing");
+  // The recommendation follows the evidence: something failed, or a blocker is open, so look first.
+  const look = openBlockers > 0 || (item.kind === "merge" && (item.proof.failed > 0 || item.ci === "failing"));
   return look ? { actions: [open, reject, approve], recommended: "open" } : { actions: [approve, reject, open], recommended: "approve" };
 }
 

@@ -4,6 +4,7 @@
 //     projector asks `riskTierOf`, which reads the facts below. Model text never sets it.
 //   - `designQuestionsItem`: ONE `answer_question` card per round with up to three questions, each with what is unclear, short cited evidence, the options with consequences, and the recommendation with why.
 // Every line a model wrote (a finding's text, a question) is passed through `plainLine` by the projector; nothing here is executed or followed.
+import { createHash } from "node:crypto";
 import { DESIGN_REVIEW_QUESTIONS_MAX, type DesignCitation, type DesignFinding, type DesignQuestion, type DesignReason, type FindingResolution, type WorkflowDesignReview } from "@agentx/contracts";
 import type { DecisionItem, ItemBase } from "../decisions/project.js";
 import { plainLine } from "../decisions/text.js";
@@ -50,8 +51,19 @@ type CardBase = Omit<ItemBase, "details" | "answeredByRule" | "outcome">;
 
 /** The `approve_design` item for a design under review. `files` are the paths the design says it changes (§6); `review` the facts above. */
 export function designApproveItem(base: CardBase & { files: readonly string[]; review: DesignCardFacts }): DecisionItem {
-  const { files, review, ...rest } = base;
-  return { ...rest, kind: "approve_design", files, review };
+  const { files, review, contentVersion, ...rest } = base;
+  return { ...rest, contentVersion: designContentVersion(contentVersion, review), kind: "approve_design", files, review };
+}
+
+/**
+ * The version a person's look at the card is bound to: the source's own version (the design digest) AND a short hash of the open blockers and majors and how the review went (H1). A reason given for one
+ * blocker is bound to that look; a second blocker, a changed one or a re-run review makes a different version, so the earlier look and reason are worth nothing and the card is loaded again. Bounded to the 100
+ * characters a content version may have.
+ */
+export function designContentVersion(sourceVersion: string, review: DesignCardFacts): string {
+  const facts = createHash("sha256").update(JSON.stringify([review.blockers, review.majors, review.reviewers, review.disagreements, review.reasons, review.touches])).digest("hex").slice(0, 16);
+  const head = sourceVersion.length > 80 ? createHash("sha256").update(sourceVersion).digest("hex").slice(0, 32) : sourceVersion;
+  return `${head}:b${String(review.blockers.length)}:${facts}`;
 }
 
 function citationText(citation: DesignCitation): string {
