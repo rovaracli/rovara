@@ -247,6 +247,7 @@ export * from "./test-environment.js";
 export * from "./service-mocks.js";
 export * from "./test-env-dependency.js";
 export * from "./service-catalog.js";
+export * from "./test-account.js";
 export * from "./team-record-storage.js";
 export * from "./context-sources.js";
 export * from "./mcp-servers.js";
