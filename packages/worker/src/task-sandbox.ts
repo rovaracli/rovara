@@ -223,6 +223,15 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
   ];
 }
 
+/**
+ * Test services (slice 1, test-services-run.ts): what a run's dependencies add to the working sandbox. `wrapExec` gives every command the run's connection variables (an env file, last); `teardown` runs when the
+ * sandbox is disposed, before its container is removed: it takes the sandbox off the services network and stops the run's helpers, network and directory. Never set unless the task's plan has dependencies.
+ */
+export interface SandboxServices {
+  wrapExec(inner: ContainerExec): ContainerExec;
+  teardown(): Promise<void>;
+}
+
 export interface TaskSandboxOptions {
   /** The workspace root (canonical). */
   rootPath: string;
@@ -251,6 +260,8 @@ export class TaskSandbox {
   private readonly docker: DockerCli;
   private starting: Promise<void> | undefined;
   private disposed = false;
+  private services: SandboxServices | undefined;
+  private wrappedExec: ContainerExec | undefined;
 
   constructor(private readonly options: TaskSandboxOptions) {
     this.docker = options.docker ?? createDockerCli();
@@ -258,8 +269,17 @@ export class TaskSandbox {
     const exec = taskContainerExec(this.docker, this.name);
     this.exec = async (command, execOptions) => {
       await this.start();
-      return exec(command, execOptions);
+      return (this.wrappedExec ?? exec)(command, execOptions);
     };
+    this.rawExec = exec;
+  }
+
+  private readonly rawExec: ContainerExec;
+
+  /** Test services: from now on every command gets the run's variables, and `dispose()` tears the run down first. Call once, after `start()`. */
+  attachServices(services: SandboxServices): void {
+    this.services = services;
+    this.wrappedExec = services.wrapExec(this.rawExec);
   }
 
   /** Starts the container, once; a failed start stays failed. */
@@ -297,6 +317,8 @@ export class TaskSandbox {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    // Test services (TS-RUN-4): the run goes first (the sandbox leaves the services network, the helpers, the network and the run's directory go), whatever happens to the container after.
+    if (this.services !== undefined) await this.services.teardown().catch(() => undefined);
     if (this.starting === undefined) return;
     // A start still in flight finishes first, so the removal sees the container it creates.
     await this.starting.catch(() => undefined);

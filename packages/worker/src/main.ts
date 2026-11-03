@@ -34,6 +34,7 @@ import { createSavedEnvFallbackReporter, createSavedEnvLoginProvider } from "./s
 import { rememberCredentials, runSavedEnvRebuild } from "./saved-env/rebuild.js";
 import { savedEnvOptionsOf } from "./saved-env/use.js";
 import { createDockerCli } from "./swebench/containers.js";
+import { testServicesAtWorkerBoot } from "./test-services-run.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
 
 const rootPath = process.env.AGENTX_WORKSPACE_ROOT ?? "/mnt/workspace";
@@ -63,6 +64,8 @@ if (taskShellSelection().kind === "sandbox") {
     (removed) => { if (removed.containers + removed.networks > 0) console.log(JSON.stringify({ component: "worker", event: "setup-run.leftovers.removed", ...removed })); },
     (error: unknown) => { console.error(`could not remove leftover setup runs: ${error instanceof Error ? error.message : String(error)}`); },
   );
+  // Test services (TS-RN-3 rule 3): a killed worker's run networks and helpers (labelled, this workspace's only) go before any task starts, and the catalog images are pulled ahead. Does nothing on a worker with no test services configuration.
+  await testServicesAtWorkerBoot({ rootPath });
   // The empty volumes a dev container's start mounted over the worker's folders go with their container; any no container uses are removed.
   await removeLeftoverMaskVolumes().then(
     (removed) => { if (removed > 0) console.log(JSON.stringify({ component: "worker", event: "mask-volumes.leftovers.removed", removed })); },

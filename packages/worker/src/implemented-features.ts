@@ -1,4 +1,4 @@
-import { NIGHTLY_RUN_FEATURE, SECOND_REVIEWER_FEATURE, SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, type WorkerInvocationFeature } from "@agentx/contracts";
+import { NIGHTLY_RUN_FEATURE, SECOND_REVIEWER_FEATURE, SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, TEST_SERVICES_PLAN_FEATURE, type WorkerInvocationFeature } from "@agentx/contracts";
 
 /**
  * The optional invocation fields this worker implements, listed by hand and advertised on /ping. WORKER_INVOCATION_FEATURES
@@ -82,4 +82,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   SECOND_REVIEWER_FEATURE,
   // NH-1: the nightly run (nightly-run.ts): the Prove sequence over the approved environment, with one rerun of failures and the coverage map, reported through the nightly action.
   NIGHTLY_RUN_FEATURE,
+  // Test services, slice 1: a task plan's `dependencies` (real services from the signed catalog on the run's own network, sealed check rounds; test-services-run.ts). A worker with no test services configuration refuses such a plan with a fixed sentence.
+  TEST_SERVICES_PLAN_FEATURE,
 ] as const satisfies readonly WorkerInvocationFeature[];

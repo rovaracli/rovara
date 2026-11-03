@@ -56,6 +56,11 @@ export interface CheckRunners {
    * was about to run and every one after it is `not_run`. Absent: nothing changes. (Seeding a Prove run, `seedRun`, is a TS30 wiring item, not this port.)
    */
   resetBetweenChecks?(signal: AbortSignal): Promise<void>;
+  /**
+   * Test services (slice 1): the round that `runChecks` ran is over, whether it finished, failed or was stopped. Called once per `runChecks`, last, so a sealed round (the check sandbox up, the working sandbox off the services
+   * network) is always closed and the working sandbox put back, also for the TESTPROOF rerun and the baseline scans, which call `runChecks` themselves. Its rejection is ignored. Absent: nothing changes.
+   */
+  endRound?(): Promise<void>;
 }
 
 export interface CheckPlan {
@@ -154,6 +159,19 @@ interface PlannedCheck {
  * stopped round by its signal.
  */
 export async function runChecks(
+  plan: CheckPlan,
+  runners: CheckRunners,
+  options: { budgetMs: number; signal: AbortSignal; now?: () => number },
+): Promise<CheckRound> {
+  if (runners.endRound === undefined) return runChecksRound(plan, runners, options);
+  try {
+    return await runChecksRound(plan, runners, options);
+  } finally {
+    await Promise.resolve().then(() => runners.endRound?.()).catch(() => undefined);
+  }
+}
+
+async function runChecksRound(
   plan: CheckPlan,
   runners: CheckRunners,
   options: { budgetMs: number; signal: AbortSignal; now?: () => number },

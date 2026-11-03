@@ -1,0 +1,89 @@
+// A fake Docker daemon for the test-services orchestrator's tests (worker/src/test-services-run.ts). It keeps the little state the orchestrator reads back: which containers exist and which networks each is on (`docker
+// inspect`, `network connect` and `disconnect`), the services networks, and the env files at the moment of each `docker exec` (the run's files are removed as soon as the exec returns, so they are read inside the call).
+import { readFileSync } from "node:fs";
+import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
+
+export interface FakeServicesDockerOptions {
+  /** The pinned image is already on the host (`image inspect` answers). Default: no, so the orchestrator pulls. */
+  imagePresent?: boolean;
+  pullFails?: boolean;
+  /** `docker run` of a container whose name ends with this suffix fails (`-dns`, `-check`, or a helper's hash is not known: use `helper`). */
+  failRun?: "helper" | "dns" | "check";
+  /** `docker network connect` fails (the working sandbox cannot join). */
+  failConnect?: boolean;
+  /** Rows the listing commands (`ps`, `network ls`) answer, tab separated: id, family, created, workspace, expires. */
+  listing?: readonly string[];
+}
+
+export interface RecordedExec {
+  args: string[];
+  /** The content of the `--env-file` at the time of the call, when the call had one. */
+  envFile?: string;
+}
+
+export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
+  const calls: string[][] = [];
+  const containers = new Map<string, { networks: Set<string> }>();
+  const networks = new Set<string>();
+  const removedNetworks: string[] = [];
+  const execs: RecordedExec[] = [];
+  const pulls: string[] = [];
+  const answer = (exitCode = 0, stdout = "", stderr = ""): Promise<{ exitCode: number; stdout: string; stderr: string }> => Promise.resolve({ exitCode, stdout, stderr });
+  const docker: DockerCli = {
+    run(args) {
+      calls.push([...args]);
+      const [verb, second] = args;
+      if (verb === "network" && second === "inspect") return answer(0, "bridge {} false");
+      if (verb === "network" && second === "create") { networks.add(args[args.length - 1]!); return answer(); }
+      if (verb === "network" && second === "rm") { removedNetworks.push(args[2]!); networks.delete(args[2]!); return answer(); }
+      if (verb === "network" && second === "connect") {
+        if (options.failConnect === true) return answer(1, "", "no");
+        const container = args[args.length - 1]!;
+        const network = args[args.length - 2]!;
+        const found = containers.get(container) ?? { networks: new Set<string>() };
+        found.networks.add(network);
+        containers.set(container, found);
+        return answer();
+      }
+      if (verb === "network" && second === "disconnect") {
+        containers.get(args[args.length - 1]!)?.networks.delete(args[args.length - 2]!);
+        return answer();
+      }
+      if (verb === "network" && second === "ls") return answer(0, (options.listing ?? []).join("\n"));
+      if (verb === "ps") return answer(0, (options.listing ?? []).join("\n"));
+      if (verb === "inspect") {
+        const found = containers.get(args[args.length - 1]!);
+        return found === undefined ? answer(1, "", "No such object") : answer(0, JSON.stringify(Object.fromEntries([...found.networks].map((name) => [name, {}]))));
+      }
+      if (verb === "container" && second === "inspect") return containers.has(args[args.length - 1]!) ? answer(0, "id") : answer(1, "", "No such container");
+      if (verb === "image" && second === "inspect") return answer(options.imagePresent === true ? 0 : 1);
+      if (verb === "pull") { pulls.push(args[1]!); return answer(options.pullFails === true ? 1 : 0); }
+      if (verb === "run" && args.includes("--detach")) {
+        const name = args[args.indexOf("--name") + 1]!;
+        const network = args[args.indexOf("--network") + 1]!;
+        const kind = name.endsWith("-dns") ? "dns" : name.endsWith("-check") ? "check" : /-h[0-9a-f]{10}$/u.test(name) ? "helper" : "other";
+        if (options.failRun === kind) return answer(1, "", "boom");
+        containers.set(name, { networks: new Set([network]) });
+        return answer(0, `${name}-id`);
+      }
+      if (verb === "run" && args.includes("--rm")) return answer();
+      if (verb === "rm") {
+        for (const name of args.slice(1).filter((arg) => !arg.startsWith("-"))) containers.delete(name);
+        return answer();
+      }
+      if (verb === "exec") {
+        const file = args.indexOf("--env-file");
+        const recorded: RecordedExec = { args: [...args] };
+        if (file >= 0) {
+          try { recorded.envFile = readFileSync(args[file + 1]!, "utf8"); } catch { recorded.envFile = undefined; }
+        }
+        execs.push(recorded);
+        return answer();
+      }
+      return answer();
+    },
+  };
+  /** Every container and service network still there, by name (the working sandbox included). */
+  const left = (): { containers: string[]; networks: string[] } => ({ containers: [...containers.keys()], networks: [...networks] });
+  return { docker, calls, containers, networks, removedNetworks, execs, pulls, left, verbs: (verb: string) => calls.filter((call) => call[0] === verb) };
+}
