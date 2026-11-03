@@ -1,4 +1,4 @@
-import { MODEL_PROVIDERS, canonicalModelName, type E2EModelFailureClass, type ModelProvider } from "@agentx/contracts";
+import { MODEL_PROVIDERS, canonicalModelName, editionFromEnvironment, modelNotEnabledSentence, type Edition, type E2EModelFailureClass, type ModelProvider } from "@agentx/contracts";
 import { MODEL_NOT_ENABLED_SIGNAL, classifyProviderFailure } from "@agentx/model-runtime";
 import type { WorkerLogSink } from "./worker-log.js";
 
@@ -194,8 +194,8 @@ export function describeModelCallNote(note: ModelCallNote): string {
 }
 
 /** What a person should do next, from a failed call's class and status: fixed text. Used for the operation's error, beside `describeModelCallNote`. */
-export function modelFailureNextAction(note: Extract<ModelCallNote, { outcome: "failed" }>): string {
-  if (note.signal === MODEL_NOT_ENABLED_SIGNAL) return `${note.model ?? "This model"} isn't enabled for your AWS account. Enable it in the Bedrock console, or Rovara will use another model.`;
+export function modelFailureNextAction(note: Extract<ModelCallNote, { outcome: "failed" }>, edition: Edition | undefined = editionFromEnvironment()): string {
+  if (note.signal === MODEL_NOT_ENABLED_SIGNAL) return modelNotEnabledSentence(note.model, edition);
   if (note.status === 402) return "add credits to the model account, then retry";
   switch (note.class) {
     case "key-rejected": return note.chatgpt === true ? "connect ChatGPT again, then retry" : "check the model key and its permissions, then retry";

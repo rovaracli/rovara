@@ -65,6 +65,8 @@ const numberOf = (value: unknown): number | undefined => (typeof value === "numb
 export function createUsableModels(deps: UsableModelsDependencies): UsableModels {
   const catalog = catalogNames(deps.geography);
   const known = new Set([...catalog.values()].flat());
+  /** The probe in progress, when there is one (`refresh` never rejects). */
+  let probing: Promise<Record<string, unknown>> | undefined;
 
   async function read(): Promise<Record<string, unknown>> {
     const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: MODEL_USABILITY_KEY, ConsistentRead: true })) as { Item?: Record<string, unknown> };
@@ -110,7 +112,14 @@ export function createUsableModels(deps: UsableModelsDependencies): UsableModels
         const now = deps.now();
         let item = await read();
         const probedAt = numberOf(item.probedAt);
-        if (deps.probe !== undefined && (probedAt === undefined || now - probedAt >= PROBE_TTL_MS || probedAt > now)) item = await refresh(deps.probe, item);
+        if (deps.probe !== undefined && (probedAt === undefined || now - probedAt >= PROBE_TTL_MS || probedAt > now)) {
+          // Single flight: one probe at a time in this broker instance. A request that finds one running does not wait for it (each wait could be the full bound) and goes on with the record as it is.
+          if (probing === undefined) {
+            const started = refresh(deps.probe, item).finally(() => { probing = undefined; });
+            probing = started;
+            item = await started;
+          }
+        }
         const probeFresh = (numberOf(item.probeOkAt) ?? -Infinity) > now - PROBE_MAX_AGE_MS;
         const out = new Set<string>();
         for (const name of known) {

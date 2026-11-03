@@ -15,7 +15,7 @@ import { modelCallView } from "../../packages/broker/src/developer/model-call-vi
 import { describeModelCallNote, modelFailureNextAction, sanitizeModelCallEvent } from "../../packages/worker/src/model-call-monitor.js";
 import { failedTurn } from "../../packages/worker/src/session-events.js";
 import { secondReviewModelUnusable } from "../../packages/contracts/src/second-review.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, editionFromEnvironment, modelNotEnabledSentence } from "@agentx/contracts";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 
 const org = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
@@ -87,6 +87,27 @@ describe("the usable-model check", () => {
     now += 2;
     await models.unusable();
     expect(calls.length).toBe(asked * 2);
+  });
+
+  it("is single flight: while one request probes, the others do not probe and do not wait for it; they go on with the record they read", async () => {
+    const table = fakeTable();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calls: string[] = [];
+    const slow: AvailabilityProbe = async (foundationModelId) => { calls.push(foundationModelId); await gate; return onlySonnetProbe()(foundationModelId); };
+    const models = usable(table, () => 1_000_000, slow);
+    const first = models.unusable();
+    // The others return while the probe is still held, with nothing learned yet.
+    const others = await Promise.all([models.unusable(), models.unusable()]);
+    expect(others.map((set) => set.size)).toEqual([0, 0]);
+    const asked = calls.length;
+    expect(asked).toBeGreaterThan(5);
+    release();
+    expect((await first).size).toBe(CATALOG.length - 1);
+    expect(calls.length).toBe(asked);
+    // Done: the next request reads the saved answer and does not probe, and a probe due later starts a new flight.
+    expect((await models.unusable()).size).toBe(CATALOG.length - 1);
+    expect(calls.length).toBe(asked);
   });
 
   it("a probe that cannot run (no permission, unreachable) leaves every model usable and is not retried until the TTL", async () => {
@@ -212,10 +233,24 @@ describe("the refused call: a clear class and a safe message", () => {
 
   it("tells the owner what to do, in fixed words", () => {
     const sentence = "claude-opus-5-5 isn't enabled for your AWS account. Enable it in the Bedrock console, or Rovara will use another model.";
-    expect(modelFailureNextAction(note())).toBe(sentence);
-    expect(modelCallView({ modelCall: note() })).toEqual({ kind: "error", text: sentence });
+    expect(modelFailureNextAction(note(), "enterprise")).toBe(sentence);
+    expect(modelCallView({ modelCall: note() }, "enterprise")).toEqual({ kind: "error", text: sentence });
     const error = failedTurn({ stopReason: "error", errorMessage: "x" }, { note: note() });
-    expect(error?.message).toBe(`RUNTIME_UNAVAILABLE: the model call failed: key-rejected ModelNotEnabled HTTP 403 attempt 1; ${sentence}`);
+    // No edition in this process's environment (an EC2 worker has none): neither account is named.
+    expect(error?.message).toBe("RUNTIME_UNAVAILABLE: the model call failed: key-rejected ModelNotEnabled HTTP 403 attempt 1; claude-opus-5-5 isn't available on the AWS account behind this model route; Rovara will use another model.");
+  });
+
+  it("is worded by edition: Rovara Cloud runs the route on Rovara's account, so there is nothing for the customer to enable", () => {
+    const cloud = "claude-opus-5-5 isn't available on Rovara's AI right now; Rovara will use another model.";
+    expect(modelFailureNextAction(note(), "public")).toBe(cloud);
+    expect(modelCallView({ modelCall: note() }, "public")).toEqual({ kind: "error", text: cloud });
+    expect(modelCallView({ modelCall: note() }, "enterprise")?.text).not.toContain("Rovara's AI");
+    expect(`${cloud}${modelFailureNextAction(note(), "public")}`).not.toMatch(/AWS account|Bedrock console/u);
+    expect(modelNotEnabledSentence(undefined, "public")).toBe("This model isn't available on Rovara's AI right now; Rovara will use another model.");
+    expect(editionFromEnvironment({ ROVARA_EDITION: "public" })).toBe("public");
+    expect(editionFromEnvironment({ ROVARA_EDITION: "enterprise" })).toBe("enterprise");
+    expect(editionFromEnvironment({ ROVARA_EDITION: "bogus" })).toBeUndefined();
+    expect(editionFromEnvironment({})).toBeUndefined();
   });
 
   const failedNote = (found: ReturnType<typeof sanitizeModelCallEvent>) => {
@@ -229,7 +264,7 @@ describe("the refused call: a clear class and a safe message", () => {
     const everything = JSON.stringify([found, describeModelCallNote(failedNote(found)), modelFailureNextAction(failedNote(found)), modelCallView(found)]);
     expect(everything).not.toMatch(/SECRET|sk-ant|prompt|ignore previous|Bearer/u);
     // The model name must be a plain token.
-    expect(modelCallView({ modelCall: { ...note(), model: "<script>alert(1)</script>" } })?.text).toBe("This model isn't enabled for your AWS account. Enable it in the Bedrock console, or Rovara will use another model.");
+    expect(modelCallView({ modelCall: { ...note(), model: "<script>alert(1)</script>" } }, "enterprise")?.text).toBe("This model isn't enabled for your AWS account. Enable it in the Bedrock console, or Rovara will use another model.");
   });
 
   it("is not fooled by other failures: a 500 whose text repeats the phrase, or a throttle, is not 'not enabled'", () => {
