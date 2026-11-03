@@ -353,6 +353,7 @@ describe("the real ports (against fake commands and a fake ECR; nothing is run)"
       const port: CommandPort = {
         run: async (_file, args) => {
           log.push([...args]);
+          if (args[0] === "copy") return Buffer.alloc(0);
           if (args.includes("--config")) return served;
           if (args.includes("--raw")) return manifest;
           throw new Error("a parsed (non-raw) inspect must not be used");
@@ -372,6 +373,13 @@ describe("the real ports (against fake commands and a fake ECR; nothing is run)"
       expect(log[1]).toEqual(["inspect", "--raw", "--authfile", "/a", `docker://r.example.com/rovara-catalog/staging/svc/x@sha256:${digest}`]);
       expect(log[2]).toEqual(["inspect", "--raw", "--config", "--authfile", "/a", `docker://r.example.com/rovara-catalog/staging/svc/x@sha256:${digest}`]);
       expect(log.filter((args) => args[0] === "inspect" && !args.includes("--raw"))).toEqual([]);
+    });
+    it("reads the architecture and os from the config, whichever they are", async () => {
+      for (const [os, architecture] of [["linux", "amd64"], ["linux", "arm64"], ["windows", "amd64"]] as const) {
+        const config = Buffer.from(JSON.stringify({ architecture, os }));
+        const manifest = manifestWith(config);
+        expect((await mirror(manifest, config)).children).toEqual([{ platform: `${os}/${architecture}`, digest: sha256HexOf(manifest) }]);
+      }
     });
     it("refuses a config that does not hash to the digest the manifest names (the registry answered for another image)", async () => {
       const other = Buffer.from(JSON.stringify({ architecture: "amd64", os: "linux" }));

@@ -235,8 +235,8 @@ describe("resolving an image to start", () => {
   });
   it("refuses a RAW or copied catalog at run time: only the object loadSignedCatalog returned is verified", async () => {
     expect(await refusal(request({ catalog: pinnedCatalog() as unknown as VerifiedCatalog }))).toBe("not_verified");
-    expect(await refusal(request({ catalog: structuredClone(catalog) as VerifiedCatalog }))).toBe("not_verified");
-    expect(await refusal(request({ catalog: { ...catalog } as VerifiedCatalog }))).toBe("not_verified");
+    expect(await refusal(request({ catalog: structuredClone(catalog) }))).toBe("not_verified");
+    expect(await refusal(request({ catalog: { ...catalog } }))).toBe("not_verified");
     expect(await refusal(request({ catalog: JSON.parse(JSON.stringify(catalog)) as VerifiedCatalog }))).toBe("not_verified");
     expect(await refusal(request({ catalog: undefined as unknown as VerifiedCatalog }))).toBe("not_verified");
     expect(await refusal(request({ catalog }))).toBe("ok");
