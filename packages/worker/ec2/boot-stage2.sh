@@ -33,6 +33,45 @@ wall_between_run_networks() {
   iptables -C $rule 2>/dev/null || iptables -I $rule || return 1
   ! command -v ip6tables >/dev/null || ! ip6tables -S DOCKER-USER >/dev/null 2>&1 || ip6tables -C $rule 2>/dev/null || ip6tables -I $rule || return 1
 }
+# 4. TS-SEAL-2: nothing on a run bridge (rvi+) or a build bridge (rvb+) reaches the HOST over IPv6 either. The firewall unit's own ip6tables rule is best effort (a failure there only prints a line, and it is skipped when ip6tables is
+#    missing), so after the Docker restart this puts the INPUT drops in place or stops the boot. Each is inserted at the top of INPUT, once. Without a usable ip6tables the boot is allowed to go on only when the host has no IPv6 at
+#    all: IPv6 counts as off only when it is disabled for the interfaces that exist (conf/all) AND for those that will (conf/default, which a new bridge takes), or when the kernel has no IPv6.
+ipv6_active() {
+  [[ -e /proc/net/if_inet6 ]] || return 1
+  [[ $(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null) != 1 || $(cat /proc/sys/net/ipv6/conf/default/disable_ipv6 2>/dev/null) != 1 ]]
+}
+wall_ipv6_into_host() {
+  local bridge
+  if command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; then
+    for bridge in rvb+ rvi+; do
+      ip6tables -C INPUT -i $bridge -j DROP 2>/dev/null || ip6tables -I INPUT -i $bridge -j DROP || return 1
+    done
+  else
+    ! ipv6_active
+  fi
+}
+# 5. The walls above and the isolation DROP are not in the container firewall unit (boot.sh, at its size limit, writes that), so they would be lost at a host reboot or a Docker restart (a restart rebuilds Docker's chains) if
+#    only this one-time boot put them in place. A unit of its own re-applies them whenever the firewall unit runs, before the worker starts. An idle stop TERMINATES the instance and the next start launches a new one that runs boot.sh
+#    and this stage again; the unit covers what a new launch does not: a reboot of the same instance and a Docker restart.
+readonly RUN_WALLS_UNIT=rovara-run-walls.service
+install_run_walls_unit() {
+  install -d -o root -g root -m 0755 /usr/local/libexec
+  { printf 'set -e\n'; declare -f ipv6_active wall_between_run_networks wall_ipv6_into_host; printf 'wall_between_run_networks\nwall_ipv6_into_host\n'; } >/usr/local/libexec/rovara-run-walls || return 1
+  cat >"/etc/systemd/system/$RUN_WALLS_UNIT" <<UNIT || return 1
+[Unit]
+Description=Wall run networks off from each other and from the host over IPv6
+Requires=docker.service $FIREWALL_UNIT
+After=docker.service $FIREWALL_UNIT
+Before=$WORKER_UNIT
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /usr/local/libexec/rovara-run-walls
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl enable "$RUN_WALLS_UNIT"
+}
 
 # This optional preload is bounded; failure leaves the worker available.
 pull_contained_image() {
@@ -58,6 +97,35 @@ pull_executor_image() {
 }
 
 # Root-only: nothing here is secret today, but it must not become world-readable.
+# Test services (slice 1): the values the worker's service runner needs, for a named environment only. Nothing here is a secret and nothing comes from a customer setting:
+#   AGENTX_TEST_SERVICES_REGISTRY    the registry host of the worker image the control plane launched this worker with (the catalog repositories are in the same registry);
+#   AGENTX_TEST_SERVICES_ENV         the environment name, cut from the launch's log group `/agentx/<env>/worker` (written by the control plane);
+#   AGENTX_TEST_SERVICES_RUN_DIR     the tmpfs run directory the launcher makes (same path on the host and in the worker);
+#   AGENTX_TEST_SERVICES_CATALOG_DIR where the worker image holds catalog.json and catalog.sig.json (the trusted keys are compiled in, never read from here);
+#   AGENTX_TEST_SERVICES_ACCOUNT_ID  the AWS account this instance runs in, read HERE from the instance identity document (IMDSv2) because the worker container cannot reach the metadata service (the launcher rejects it) and has no
+#                                     credentials of its own to ask STS. Left out when the lookup fails: the worker then does not trust the staging-only catalog key.
+# AGENTX_SANDBOX_IMAGE (the worker's own image, the probe image) is already written by write_worker_environment.
+instance_account_id() {
+  local token document id
+  token=$(curl -fsS --max-time 3 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null) || return 1
+  document=$(curl -fsS --max-time 3 -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/dynamic/instance-identity/document 2>/dev/null) || return 1
+  id=$(printf '%s' "$document" | sed -n 's/.*"accountId" *: *"\([0-9]\{12\}\)".*/\1/p' | head -1)
+  [[ "$id" =~ ^[0-9]{12}$ ]] || return 1
+  printf '%s' "$id"
+}
+write_test_services_environment() {
+  local registry=${AGENTX_WORKER_IMAGE%%/*} environment account
+  [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 1
+  [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 1
+  environment=${BASH_REMATCH[1]}
+  {
+    printf 'AGENTX_TEST_SERVICES_REGISTRY=%s\n' "$registry"
+    printf 'AGENTX_TEST_SERVICES_ENV=%s\n' "$environment"
+    printf 'AGENTX_TEST_SERVICES_RUN_DIR=/run/agentx-test-services\n'
+    printf 'AGENTX_TEST_SERVICES_CATALOG_DIR=/opt/agentx/packages/worker/service-catalog\n'
+    if account=$(instance_account_id); then printf 'AGENTX_TEST_SERVICES_ACCOUNT_ID=%s\n' "$account"; fi
+  } >>"$WORKER_ENV_FILE"
+}
 write_worker_environment() {
   local region=$1
   install -d -m 0700 "$(dirname "$WORKER_ENV_FILE")"
@@ -190,6 +258,18 @@ worker_image=$(cat /etc/agentx/worker-image 2>/dev/null || true)
 docker_gid=$(stat -c %g "$DOCKER_SOCKET") || { log 'Docker socket unavailable'; exit 1; }
 require_model_proxy || { log 'no model proxy'; exit 1; }
 if named_environment; then block_imds || { log 'iptables failed'; exit 1; }; fi
+# Test services (slice 1): the run directory for the services' env files and seeds, a small tmpfs at the SAME path on the host and in the worker (the Docker daemon resolves the bind mounts the worker asks for against the host).
+# Made at every start, so it is there after a reboot too. Not fatal: without it the worker refuses runs that have dependencies, and everything else runs.
+readonly TEST_SERVICES_RUN_DIR=/run/agentx-test-services
+prepare_test_services_run_dir() {
+  install -d -o "$WORKER_UID" -g "$WORKER_GID" -m 0700 "$TEST_SERVICES_RUN_DIR" || return 1
+  mountpoint -q "$TEST_SERVICES_RUN_DIR" || mount -t tmpfs -o "size=64m,mode=0700,uid=$WORKER_UID,gid=$WORKER_GID,nosuid,nodev,noexec" tmpfs "$TEST_SERVICES_RUN_DIR" || return 1
+  mountpoint -q "$TEST_SERVICES_RUN_DIR"
+}
+test_services_run_dir=false
+if named_environment; then
+  if prepare_test_services_run_dir; then test_services_run_dir=true; else log 'test services run directory unavailable (not fatal)'; fi
+fi
 mapfile -t network_args < <(worker_network_args)
 runtime_ready=false
 if [[ -d "$RUNTIME_SOURCE" && ! -L "$RUNTIME_SOURCE" && $(stat -c %u:%g:%a "$RUNTIME_SOURCE" 2>/dev/null) == 0:0:755 ]]; then
@@ -225,6 +305,7 @@ else
 fi
 # Setup runs need the rvbs+ rules that the firewall step above may have had to withdraw: the worker is told "ready" or "unavailable" (any other value, or none, it treats as unavailable). Only a named environment has setup runs.
 if named_environment; then args+=(--env "AGENTX_SETUP_ISOLATION=$(setup_isolation_state)"); fi
+if [[ "$test_services_run_dir" == true ]]; then args+=(--volume "$TEST_SERVICES_RUN_DIR:$TEST_SERVICES_RUN_DIR"); fi
 args+=(--volume "$DOCKER_SOCKET:$DOCKER_SOCKET" --group-add "$docker_gid" --log-driver awslogs --log-opt awslogs-region="$(sed -n 's/^AWS_REGION=//p' "$WORKER_ENV_FILE")" --log-opt awslogs-group="$(cat /etc/agentx/log-group)" --log-opt awslogs-stream="$(sed -n 's/^AGENTX_WORKSPACE_ID=//p' "$WORKER_ENV_FILE")/$(sed -n 's/^AGENTX_SESSION_GENERATION=//p' "$WORKER_ENV_FILE")/$(cat /etc/agentx/instance-id)" "$worker_image")
 exec "$docker" "${args[@]}"
 LAUNCHER
@@ -235,14 +316,17 @@ LAUNCHER
 }
 
 write_worker_unit() {
-  local region=$1 instance_id=$2 docker
+  local region=$1 instance_id=$2 docker walls=""
   docker=$(command -v docker)
+  # A named environment's worker does not start unless the unit that restores the run network walls did (and is started again with it).
+  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then walls=$'Requires='"$RUN_WALLS_UNIT"$'\nAfter='"$RUN_WALLS_UNIT"; fi
   write_worker_launcher "$docker" "$instance_id"
   cat >"/etc/systemd/system/$WORKER_UNIT" <<EOF
 [Unit]
 Description=AgentX worker for workspace $AGENTX_WORKSPACE_ID generation $AGENTX_SESSION_GENERATION
 Requires=docker.service $FIREWALL_UNIT
 After=docker.service $FIREWALL_UNIT network-online.target
+$walls
 Wants=network-online.target
 RequiresMountsFor=$MOUNT_PATH
 
@@ -367,9 +451,12 @@ stage2_main() {
   BOOT_STEP="start the worker"
   write_worker_environment "$region"
   if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
+    write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"
     set_docker_address_pools || fail "could not set Docker's address pools"
     metadata_blocked || fail "the metadata block is missing after the Docker restart"
     wall_between_run_networks || fail "could not wall run networks off from each other"
+    wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"
+    install_run_walls_unit || fail "could not install the unit that restores the run network walls"
   fi
   write_worker_unit "$region" "$instance_id"
   systemctl daemon-reload

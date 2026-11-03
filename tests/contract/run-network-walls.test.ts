@@ -41,7 +41,11 @@ describe("the run network adds no firewall rule", () => {
     const stage2 = scripts["boot-stage2.sh"].split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
     const wall = fn("wall_between_run_networks");
     expect(wall).toContain("-i rvi+ -o rvi+");
-    expect(stage2.split("\n").filter(mentionsRvi)).toEqual(wall.split("\n").filter(mentionsRvi));
+    // TS-SEAL-2: the IPv6 INPUT drop is the one other function that names an rvi bridge.
+    const ipv6 = fn("wall_ipv6_into_host");
+    expect(ipv6).toContain("for bridge in rvb+ rvi+; do");
+    expect(ipv6).toContain("ip6tables -I INPUT -i $bridge -j DROP");
+    expect(stage2.split("\n").filter(mentionsRvi)).toEqual([...wall.split("\n").filter(mentionsRvi), ...ipv6.split("\n").filter(mentionsRvi)]);
     const block = fn("block_imds");
     expect(block).toContain("rvbs+");
     expect(block).not.toMatch(/\brvi\b/u);
@@ -117,10 +121,131 @@ esac
     expect(at("write_worker_environment")).toBeLessThan(at("set_docker_address_pools"));
     expect(at("set_docker_address_pools")).toBeLessThan(at("metadata_blocked"));
     expect(at("metadata_blocked")).toBeLessThan(at("wall_between_run_networks"));
-    expect(at("wall_between_run_networks")).toBeLessThan(at("write_worker_unit"));
+    expect(at("wall_between_run_networks")).toBeLessThan(at("wall_ipv6_into_host"));
+    expect(at("wall_ipv6_into_host")).toBeLessThan(at("install_run_walls_unit"));
+    expect(at("install_run_walls_unit")).toBeLessThan(at("write_worker_unit"));
     expect(at("write_worker_unit")).toBeLessThan(at("systemctl enable --now"));
     expect(at("systemctl enable --now")).toBeLessThan(at("start_e2e_qualification"));
-    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+fi/u);
+    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+write_test_services_environment \|\| log [^\n]*\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+wall_ipv6_into_host \|\| fail [^\n]*\n\s+install_run_walls_unit \|\| fail [^\n]*\n\s+fi/u);
+  });
+
+  // TS-SEAL-2: the IPv6 INPUT drop for the run bridges, run for real against fake iptables and ip6tables that keep their rules in files.
+  describe("the IPv6 drop into the host (TS-SEAL-2)", () => {
+    // Inserted at the top, rvb+ first and rvi+ second, so the file lists rvi+ above rvb+.
+    const RVI = "INPUT -i rvi+ -j DROP";
+    const RVB = "INPUT -i rvb+ -j DROP";
+    const ipv6Function = () => `${/^ipv6_active\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? ""}\n${fn("wall_ipv6_into_host")}`;
+    /** Runs the step with a fake ip6tables (or none, or one that cannot be used) and says whether IPv6 is active on the pretend host. */
+    const wallIpv6 = (options: { ip6tables: "works" | "missing" | "unusable"; ipv6Active: boolean; times?: number; before?: string[] }) => {
+      const directory = mkdtempSync(join(tmpdir(), "rovara-ipv6-"));
+      const bin = join(directory, "bin");
+      spawnSync("mkdir", ["-p", bin]);
+      for (const tool of options.ip6tables === "missing" ? [] : ["ip6tables"]) {
+        const body = options.ip6tables === "unusable" ? "#!/bin/bash\nexit 3\n" : FAKE.replace('op=$1; shift; rule="$*"', 'op=$1; shift; rule="$*"\n[ "$op" = -S ] && exit 0');
+        writeFileSync(join(bin, tool), body); chmodSync(join(bin, tool), 0o755);
+      }
+      if (options.before !== undefined) writeFileSync(join(directory, "ip6tables.rules"), `${options.before.join("\n")}\n`);
+      // /usr/bin and /bin hold the real tools the step needs (cat); a real ip6tables there would only be found if the fake is missing, so the missing case runs with a PATH that cannot reach it.
+      const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory };
+      const code = `${ipv6Function()}\nipv6_active() { ${options.ipv6Active ? "true" : "false"}; }\n${Array.from({ length: options.times ?? 1 }, () => "wall_ipv6_into_host").join("\n")}\n`;
+      const ran = spawnSync("/bin/bash", ["-c", options.ip6tables === "missing" ? `command() { [ "$1" = -v ] && [ "$2" = ip6tables ] && return 1; builtin command "$@"; }\n${code}` : code], { env, encoding: "utf8" });
+      let rules: string[] = [];
+      try { rules = readFileSync(join(directory, "ip6tables.rules"), "utf8").split("\n").filter(Boolean); } catch { /* no rule file: nothing was inserted */ }
+      return { status: ran.status, rules };
+    };
+    it("inserts the drop at the top of INPUT, once, however many times the step runs, and keeps a rule that is already there", () => {
+      expect(wallIpv6({ ip6tables: "works", ipv6Active: true })).toEqual({ status: 0, rules: [RVI, RVB] });
+      expect(wallIpv6({ ip6tables: "works", ipv6Active: true, times: 3 })).toEqual({ status: 0, rules: [RVI, RVB] });
+      // a rule already there is kept and the other is added: each bridge is walled once
+      expect(wallIpv6({ ip6tables: "works", ipv6Active: true, before: [RVI] })).toEqual({ status: 0, rules: [RVB, RVI] });
+      expect(wallIpv6({ ip6tables: "works", ipv6Active: true, before: [RVB] })).toEqual({ status: 0, rules: [RVI, RVB] });
+      expect(wallIpv6({ ip6tables: "works", ipv6Active: true, before: [RVB, RVI] })).toEqual({ status: 0, rules: [RVB, RVI] });
+      expect(wallIpv6({ ip6tables: "works", ipv6Active: true, before: ["INPUT -i lo -j ACCEPT"] }).rules).toEqual([RVI, RVB, "INPUT -i lo -j ACCEPT"]);
+    });
+    it("stops the boot when ip6tables is missing or cannot be used while the host has IPv6, and lets it go on only when the host has none", () => {
+      expect(wallIpv6({ ip6tables: "missing", ipv6Active: true }).status).not.toBe(0);
+      expect(wallIpv6({ ip6tables: "unusable", ipv6Active: true }).status).not.toBe(0);
+      expect(wallIpv6({ ip6tables: "missing", ipv6Active: false }).status).toBe(0);
+      expect(wallIpv6({ ip6tables: "unusable", ipv6Active: false }).status).toBe(0);
+    });
+    it("fails the boot when an insert fails (fail closed), whichever bridge it was for", () => {
+      const failing = (bridge: string) => {
+        const directory = mkdtempSync(join(tmpdir(), "rovara-ipv6-fail-"));
+        const bin = join(directory, "bin");
+        spawnSync("mkdir", ["-p", bin]);
+        writeFileSync(join(bin, "ip6tables"), `#!/bin/bash\nif [ "$1" = -S ]; then exit 0; fi\nif [ "$1" = -C ]; then exit 1; fi\ncase "$*" in *"${bridge}"*) exit 1 ;; esac\nexit 0\n`);
+        chmodSync(join(bin, "ip6tables"), 0o755);
+        return spawnSync("/bin/bash", ["-c", `${ipv6Function()}\nwall_ipv6_into_host`], { env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: "utf8" }).status;
+      };
+      expect(failing("rvb+")).not.toBe(0);
+      expect(failing("rvi+")).not.toBe(0);
+    });
+    it("counts IPv6 as off only when conf/all AND conf/default disable it, or the kernel has none", () => {
+      const state = (input: { inet6: boolean; all?: string; default?: string }) => {
+        const proc = mkdtempSync(join(tmpdir(), "rovara-proc-"));
+        spawnSync("mkdir", ["-p", join(proc, "net"), join(proc, "sys/net/ipv6/conf/all"), join(proc, "sys/net/ipv6/conf/default")]);
+        if (input.inet6) writeFileSync(join(proc, "net/if_inet6"), "");
+        if (input.all !== undefined) writeFileSync(join(proc, "sys/net/ipv6/conf/all/disable_ipv6"), `${input.all}\n`);
+        if (input.default !== undefined) writeFileSync(join(proc, "sys/net/ipv6/conf/default/disable_ipv6"), `${input.default}\n`);
+        const code = (/^ipv6_active\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? "").replaceAll("/proc/", `${proc}/`);
+        return spawnSync("/bin/bash", ["-c", `${code}\nipv6_active`], { encoding: "utf8" }).status === 0;
+      };
+      expect(state({ inet6: true, all: "0", default: "0" })).toBe(true);
+      expect(state({ inet6: true, all: "1", default: "0" })).toBe(true);
+      expect(state({ inet6: true, all: "0", default: "1" })).toBe(true);
+      expect(state({ inet6: true, all: "1", default: "1" })).toBe(false);
+      expect(state({ inet6: false, all: "0", default: "0" })).toBe(false);
+      // an unreadable setting is not "disabled"
+      expect(state({ inet6: true })).toBe(true);
+      expect(state({ inet6: true, all: "1" })).toBe(true);
+    });
+    it("is restored by a unit of its own after a reboot or a Docker restart (boot.sh is not touched), and the worker unit needs it in a named environment", () => {
+      const directory = mkdtempSync(join(tmpdir(), "rovara-walls-unit-"));
+      const bin = join(directory, "bin");
+      spawnSync("mkdir", ["-p", bin, join(directory, "libexec"), join(directory, "systemd")]);
+      for (const tool of ["iptables", "ip6tables"]) { writeFileSync(join(bin, tool), FAKE.replace('op=$1; shift; rule="$*"', 'op=$1; shift; rule="$*"\n[ "$op" = -S ] && exit 0')); chmodSync(join(bin, tool), 0o755); }
+      const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory };
+      const get = (name: string) => /^\w+\(\) \{\n[\s\S]*?^\}$/mu.exec("")?.[0] ?? name;
+      void get;
+      const unit = (/^install_run_walls_unit\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? "").replaceAll("/usr/local/libexec", join(directory, "libexec")).replaceAll("/etc/systemd/system", join(directory, "systemd"));
+      const helpers = ["ipv6_active", "wall_between_run_networks", "wall_ipv6_into_host"].map((name) => new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "mu").exec(scripts["boot-stage2.sh"])?.[0] ?? "").join("\n");
+      const setup = `FIREWALL_UNIT=rovara-container-firewall.service\nWORKER_UNIT=agentx-worker.service\nRUN_WALLS_UNIT=rovara-run-walls.service\ninstall() { mkdir -p "\${@: -1}"; }\nsystemctl() { echo "systemctl $*" >> "${directory}/systemctl.log"; }\n${helpers}\nipv6_active() { true; }\n${unit}\ninstall_run_walls_unit`;
+      const installed = spawnSync("/bin/bash", ["-c", setup], { env, encoding: "utf8" });
+      expect(installed.status, installed.stderr).toBe(0);
+      const unitText = readFileSync(join(directory, "systemd/rovara-run-walls.service"), "utf8");
+      expect(unitText).toContain("Requires=docker.service rovara-container-firewall.service");
+      expect(unitText).toContain("After=docker.service rovara-container-firewall.service");
+      expect(unitText).toContain("Before=agentx-worker.service");
+      expect(unitText).toContain("WantedBy=multi-user.target");
+      expect(readFileSync(join(directory, "systemctl.log"), "utf8")).toContain("systemctl enable rovara-run-walls.service");
+      // The script it wrote re-applies all three walls, any number of times, after the rules were lost.
+      const script = join(directory, "libexec/rovara-run-walls");
+      const rules = () => {
+        const read = (name: string) => { try { return readFileSync(join(directory, name), "utf8").split("\n").filter(Boolean); } catch { return []; } };
+        return { v4: read("iptables.rules"), v6: read("ip6tables.rules") };
+      };
+      const run = () => spawnSync("/bin/bash", [script], { env, encoding: "utf8" });
+      expect(run().status).toBe(0);
+      const first = rules();
+      expect(first.v4).toContain(ISOLATION);
+      expect(first.v6).toEqual(expect.arrayContaining([RVI, RVB]));
+      expect(run().status).toBe(0);
+      expect(rules()).toEqual(first);
+      for (const name of ["iptables.rules", "ip6tables.rules"]) writeFileSync(join(directory, name), "");
+      expect(run().status).toBe(0);
+      expect(rules()).toEqual(first);
+      // and the worker unit starts only with it, in a named environment only
+      const workerUnit = fn("write_worker_unit");
+      expect(workerUnit).toContain("if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then walls=$'Requires='\"$RUN_WALLS_UNIT\"$'\\nAfter='\"$RUN_WALLS_UNIT\"; fi");
+      expect(workerUnit).toContain("Requires=docker.service $FIREWALL_UNIT\nAfter=docker.service $FIREWALL_UNIT network-online.target\n$walls");
+      expect(scripts["boot.sh"]).not.toContain("rovara-run-walls");
+    });
+    it("stage 2 is where it lives: boot.sh (at its size limit) holds only its best-effort rule, the INPUT drop is not allowed through (-j DROP only), and it runs after the address pools", () => {
+      const main = fn("stage2_main");
+      expect(main.indexOf("set_docker_address_pools")).toBeLessThan(main.indexOf("wall_ipv6_into_host"));
+      expect(fn("wall_ipv6_into_host")).not.toMatch(/-j (?:RETURN|ACCEPT)/u);
+      expect(scripts["boot.sh"]).not.toContain("wall_ipv6_into_host");
+    });
   });
 
   it("the isolation DROP keeps traffic inside one bridge flowing: it matches only routed (not bridged) rvi-to-rvi packets, and a run network and an end-to-end network are each ONE bridge", () => {

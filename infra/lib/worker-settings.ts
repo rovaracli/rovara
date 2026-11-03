@@ -3,7 +3,7 @@ import { providerKeyParameters } from "./model-keys.js";
 import { openRouterRoutingParameter } from "./openrouter.js";
 import { CfnParameter, Stack, type StackProps, aws_ssm as ssm } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { BOOT_STAGE2_SHA256_PARAMETER, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, CATALOG_REGISTRY_ROOT, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
 export interface WorkerSettingsStackProps extends StackProps {
@@ -43,6 +43,8 @@ export class WorkerSettingsStack extends Stack {
       this.grantImagePull("ExecutorImagePull", "PullExecutorImage", "CachedExecutorImage", naming.env, naming.pullThroughPrefix, executorImageUri,
         new CfnCondition(this, "HasExecutorImage", { expression: Fn.conditionNot(Fn.conditionEquals(executorImageUri.valueAsString, "none")) }));
     }
+    // Test services (TS-IMG-1): the worker pulls the pinned catalog images from this environment's catalog repositories.
+    if (naming.env !== undefined) this.grantCatalogPull(naming.env);
     const modelProvider = new CfnParameter(this, "ModelProvider", {
       type: "String",
       default: "amazon-bedrock",
@@ -171,6 +173,36 @@ export class WorkerSettingsStack extends Stack {
       },
     });
     if (condition !== undefined) policy.cfnOptions.condition = condition;
+  }
+
+  /**
+   * Test services (TS-IMG-1, design test-services.md 2.5): the worker role pulls the pinned catalog images, by digest, from
+   * `rovara-catalog/<env>/svc/*` in this account and region (the repositories the control plane creates for the catalog). Two read
+   * actions named exactly, on this environment's `svc/` repositories only: no push, no repository creation, no other environment, no
+   * wildcard action. The token (`ecr:GetAuthorizationToken`) is the worker role's existing grant. The repositories are KMS-encrypted,
+   * but a pull needs no key permission (ECR uses its own grant). Unconditional like the repositories themselves (service-catalog-images.ts):
+   * an empty repository is inert, and nothing starts a catalog image unless the `tx` switch is on and the catalog pins its digest.
+   * A separate policy from the worker image's, whose test insists on a single exact repository per statement.
+   */
+  private grantCatalogPull(env: string): void {
+    const roleArn = (this.node.tryFindChild("Ec2WorkerInstanceRoleArn") as CfnParameter | undefined) ?? new CfnParameter(this, "Ec2WorkerInstanceRoleArn", {
+      type: "String",
+      allowedPattern: "^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$",
+      description: "The EC2 workers' instance role, which is allowed to pull the worker image",
+    });
+    new iam.CfnPolicy(this, "CatalogImagePull", {
+      policyName: `CatalogImagePull-${env}`,
+      roles: [Fn.select(3, Fn.split("/", roleArn.valueAsString))],
+      policyDocument: {
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Sid: "PullCatalogImages", Effect: "Allow", Action: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+            Resource: `arn:${Aws.PARTITION}:ecr:${Aws.REGION}:${Aws.ACCOUNT_ID}:repository/${CATALOG_REGISTRY_ROOT}/${env}/svc/*`,
+          },
+        ],
+      },
+    });
   }
 }
 

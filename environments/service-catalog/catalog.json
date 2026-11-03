@@ -472,8 +472,7 @@
       "image": {
         "repository": "svc/local-aws",
         "platforms": [
-          "linux/arm64",
-          "linux/amd64"
+          "linux/arm64"
         ]
       },
       "run": {
