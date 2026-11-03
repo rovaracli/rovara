@@ -1,5 +1,6 @@
 // Slice 1, s1-sealed T1: the usage record (service-usage-record.ts). Deferred check TS-SEAL-1: a name the program asked for can hold a run secret, so the record never carries a name: a registrable domain and a count
 // at most, and not even that when the redactor changes it. Nothing starts Docker.
+import { TestServicesUsageRecordSchema } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { SEALED_DNS_STATE_FILE, type SealedDnsRecord } from "../../packages/worker/src/check-sandbox.js";
 import { createServiceRedactor } from "../../packages/worker/src/service-env.js";
@@ -14,6 +15,8 @@ const dns = (...unknown: Array<[string, number]>): SealedDnsRecord => ({ unknown
 
 /** The test the finished record must pass: no name and no secret anywhere in its JSON, in any case. */
 function expectNameFree(record: ServiceUsageRecord, forbidden: readonly string[]): void {
+  // The broker's contract accepts what this module builds, byte for byte.
+  expect(TestServicesUsageRecordSchema.parse(record)).toEqual(record);
   const text = JSON.stringify(record).toLowerCase();
   for (const value of forbidden) expect(text, value).not.toContain(value.toLowerCase());
 }
@@ -105,6 +108,7 @@ describe("buildServiceUsageRecord", () => {
     const record = await buildServiceUsageRecord({ planned: ["postgres"], session, startMs: new Map([["postgres", 4_200]]), resetCounts: new Map([["postgres", 3]]), redactor });
     expect(record).toEqual({ schemaVersion: 1, dependencies: [{ id: "postgres", started: true, healthy: true, startMs: 4_200, resetCount: 3 }], unknownCalls: { domains: [], otherCount: 0 } });
     expect(session.asked).toEqual([["postgres", 5_000]]);
+    expectNameFree(record, []);
   });
 
   it("a planned dependency with no helper is not started and is never asked", async () => {
@@ -126,6 +130,8 @@ describe("buildServiceUsageRecord", () => {
     // A told failure that does not fit a healthy dependency is not carried.
     const healthy = await buildServiceUsageRecord({ planned: ["a"], session: fakeSession(["a"]), failures: new Map([["a", "pull_failed"]]), redactor });
     expect(healthy.dependencies[0]).not.toHaveProperty("failure");
+    expectNameFree(record, []);
+    expectNameFree(healthy, []);
   });
 
   it("holds the contract's limits: 16 dependencies, start time, reset count and counts", async () => {
@@ -133,6 +139,7 @@ describe("buildServiceUsageRecord", () => {
     const record = await buildServiceUsageRecord({ planned: ids, session: fakeSession(ids), startMs: 10 ** 12, resetCounts: new Map([["dep-0", 10 ** 9]]), redactor });
     expect(record.dependencies).toHaveLength(16);
     expect(record.dependencies[0]).toMatchObject({ startMs: 86_400_000, resetCount: 100_000 });
+    expectNameFree(record, []);
     const { domains, otherCount } = reduceUnknownNames(dns(["a.example.com", 10 ** 12]), redactor);
     expect(domains).toEqual([{ domain: "example.com", count: 1_000_000_000 }]);
     expect(otherCount).toBe(0);
@@ -141,6 +148,7 @@ describe("buildServiceUsageRecord", () => {
   it("with no session (the start failed) nothing is started", async () => {
     const record = await buildServiceUsageRecord({ planned: ["postgres"], redactor });
     expect(record.dependencies).toEqual([{ id: "postgres", started: false, healthy: false, startMs: 0, resetCount: 0, failure: "start_failed" }]);
+    expectNameFree(record, []);
   });
 
   it("a dependency that does not answer, or whose question throws (the session was stopped), is unhealthy, not an error", async () => {
