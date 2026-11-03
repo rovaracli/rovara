@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { assertReleaseFlavorImage, skopeoLabelReader, type ImageLabelReader } from "./release/image-flavor.js";
 import { AGENTX_PROTOCOL_VERSION } from "../packages/contracts/src/protocol.js";
 import { CONTROL_PLANE_FOUNDATION_PARAMETERS } from "../packages/contracts/src/session.js";
 import {
@@ -46,6 +47,8 @@ export const WORKER_IMAGE_INPUTS = [
   "packages/audit-verifier",
   "upstream/e2e-0.20.0.tgz",
   "packages/worker",
+  // The signed service catalog the image carries, and the script that sets the image's catalog flavor (test services slice 1).
+  "environments/service-catalog",
   "packages/cli/package.json",
   "packages/orchestrator/package.json",
   "packages/broker/package.json",
@@ -90,6 +93,8 @@ export interface ProductionReleaseOptions extends ReleaseOptions {
   reuseUnchangedWorker: boolean;
   requireExistingFoundation: boolean;
   createSlackOrchestrator: boolean;
+  /** Reads an image's labels (the worker image must say catalog-flavor=release). Defaults to skopeo; a test gives a fake. The command line never sets it. */
+  readImageLabels?: ImageLabelReader;
 }
 
 export interface ProductionReleaseManifest extends ReleaseManifest {
@@ -191,6 +196,15 @@ export function reusableImage(runner: Runner, options: ReleaseOptions, image: De
   return deployedImage;
 }
 
+/** Refuses a worker image that is not labelled catalog-flavor=release. Logs in to the registry first (skopeo uses the docker login) unless the caller brought a reader. */
+export async function acceptReleaseWorkerImage(workerImage: string, options: ProductionReleaseOptions, runner?: Runner): Promise<void> {
+  if (options.readImageLabels === undefined && runner !== undefined) {
+    const password = runner.aws(["ecr", "get-login-password", "--region", options.region]).stdout;
+    runner.run("docker", ["login", "--username", "AWS", "--password-stdin", workerImage.split("/")[0]!], password);
+  }
+  await assertReleaseFlavorImage("worker", workerImage, options.readImageLabels ?? skopeoLabelReader);
+}
+
 export async function releaseProduction(
   options: ProductionReleaseOptions,
 ): Promise<ProductionReleaseManifest | undefined> {
@@ -240,6 +254,8 @@ export async function releaseProduction(
     ?? await buildAndPushWorker(runner, options, repositoryUri, revision);
   assertDigestImage(workerImage, repositoryUri);
   verifyRepositoryImage(runner, options, workerImage);
+  // Whichever way the worker image was chosen (given, reused from the deployed stack, or just built), a production release takes only a release-flavor image. --allow-dirty and --reuse-unchanged-worker do not change this.
+  await acceptReleaseWorkerImage(workerImage, options, runner);
 
   runner.run("npm", ["run", "build"]);
   if (!stackExists(runner, options.region, CONTROL_PLANE_STACK)) {

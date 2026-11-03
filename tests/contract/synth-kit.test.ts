@@ -15,7 +15,7 @@ import { buildSynthKit, firstTreeDifference, mergeFunctionCode, selfCheck, verif
 import { assertNoLookups, checkedContext } from "../../scripts/release/synth-kit/kit-checks.js";
 import { verifyBundle } from "../../packages/cli/src/upgrade/bundle/verify.js";
 import { buildAtApproval } from "../../packages/cli/src/upgrade/bundle/build-at-approval.js";
-import { fakeExporter, IMAGES, newTestKey, type BuiltBundle } from "../support/bundle-fixture.js";
+import { fakeExporter, IMAGES, RELEASE_LABELS, newTestKey, type BuiltBundle } from "../support/bundle-fixture.js";
 import { EnterpriseWorld, SETTINGS_ENT } from "../support/enterprise-approval-world.js";
 import { testRunner } from "../support/kit-runner.js";
 import { writeFakeKit } from "../support/synth-kit-fixture.js";
@@ -56,7 +56,7 @@ beforeAll(async () => {
   sandboxed = (await buildSynthKit({ releaseDir, out: kitDir, source: ON_RELEASE_COMMIT })).sandboxed;
   const key = newTestKey();
   const dir = join(root, "bundle");
-  const { bundleSha256 } = await buildBundle({ releaseDir, out: dir, images: IMAGES.filter((image) => image.name === "litellm"), exportImage: fakeExporter, signer: key.signer, synthKitDir: kitDir, kitCheck: (kit) => verifyKitForSigning({ ...kit, release, source: ON_RELEASE_COMMIT, runner: testRunner }) });
+  const { bundleSha256 } = await buildBundle({ releaseDir, out: dir, images: IMAGES.filter((image) => image.name === "litellm"), readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, signer: key.signer, synthKitDir: kitDir, kitCheck: (kit) => verifyKitForSigning({ ...kit, release, source: ON_RELEASE_COMMIT, runner: testRunner }) });
   built = { root, dir, bundleSha256, key, cleanup: async () => undefined };
 }, 1_800_000);
 afterAll(async () => {
@@ -407,7 +407,7 @@ describe("the kit is tied to its release", () => {
     manifest.version = "1.4.1";
     await writeFile(join(other, "release.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     const out = join(root, "bundle-other");
-    await expect(buildBundle({ releaseDir: other, out, images: IMAGES.filter((image) => image.name === "litellm"), exportImage: fakeExporter, signer: newTestKey().signer, synthKitDir: kitDir })).rejects.toThrow(/different release than the one being bundled/);
+    await expect(buildBundle({ releaseDir: other, out, images: IMAGES.filter((image) => image.name === "litellm"), readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, signer: newTestKey().signer, synthKitDir: kitDir })).rejects.toThrow(/different release than the one being bundled/);
     expect(existsSync(out)).toBe(false);
   }, 300_000);
 

@@ -10,10 +10,9 @@
 import { createHash, verify } from "node:crypto";
 import { z } from "zod";
 import { parseBundlePublicKey } from "./bundle.js";
-import { catalogTrustedKeyPems, type CatalogTrustContext } from "./catalog-trust.js";
-import { CATALOG_PLATFORMS, ServiceCatalogSchema, type ServiceCatalog } from "./service-catalog.js";
-import { catalogPins, type CatalogEdition, type MirrorCheck, type VerifiedCatalog } from "./service-catalog-images.js";
-import { registerMirrorCheck, registerVerifiedCatalog } from "./service-catalog-brand.js";
+import { CATALOG_PLATFORMS, type ServiceCatalog } from "./service-catalog.js";
+import { catalogPins, type CatalogEdition, type MirrorCheck } from "./service-catalog-images.js";
+import { registerMirrorCheck } from "./service-catalog-brand.js";
 import { catalogIdName, CatalogIdSchema } from "./test-env-dependency.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -70,32 +69,6 @@ export function verifyCatalogSignature(input: { catalogBytes: Uint8Array; signat
   if (input.signature.catalogSha256 !== catalogSha256) return { ok: false, reason: "the signature file names a different catalog.json" };
   const checked = verifyOver(catalogSigningMessage(input.catalogBytes), input.signature.keyId, input.signature.signature, input.trustedKeys);
   return checked.ok ? { ok: true, keyId: checked.keyId, catalogSha256 } : checked;
-}
-
-/**
- * The catalog a caller may trust: size caps, the signature over the exact bytes, then the strict schema. A signed but half-pinned file does not get through (the schema refuses it), and neither does an unsigned
- * or wrongly signed one. Returns a reason in fixed words instead of throwing.
- */
-export function loadSignedCatalog(input: { catalogBytes: Uint8Array; signatureBytes: Uint8Array; trust?: CatalogTrustContext; trustedKeys?: readonly string[] }): { ok: true; catalog: VerifiedCatalog; keyId: string } | { ok: false; reason: string } {
-  // The keys come from `catalogTrustedKeyPems` (catalog-trust.ts), the one source. `trustedKeys` is an override for tests and for the build tool's check of its own signature; production callers pass `trust` (the running account).
-  const trustedKeys = input.trustedKeys ?? catalogTrustedKeyPems(input.trust ?? { runningAccountId: undefined });
-  if (trustedKeys.length === 0) return { ok: false, reason: "no trusted catalog key" };
-  if (input.catalogBytes.byteLength > CATALOG_MAX_BYTES || input.signatureBytes.byteLength > CATALOG_SIGNATURE_MAX_BYTES) return { ok: false, reason: "the catalog or its signature is too large" };
-  let signature: CatalogSignature;
-  try {
-    signature = CatalogSignatureSchema.parse(JSON.parse(Buffer.from(input.signatureBytes).toString("utf8")));
-  } catch {
-    return { ok: false, reason: "the catalog signature file is not valid" };
-  }
-  const checked = verifyCatalogSignature({ catalogBytes: input.catalogBytes, signature, trustedKeys });
-  if (!checked.ok) return { ok: false, reason: checked.reason };
-  try {
-    const catalog = ServiceCatalogSchema.parse(JSON.parse(Buffer.from(input.catalogBytes).toString("utf8")));
-    // The one place a catalog is marked verified (at run time, in a private registry, and frozen): the signature held over these exact bytes and the schema parsed them.
-    return { ok: true, catalog: registerVerifiedCatalog(catalog), keyId: checked.keyId };
-  } catch {
-    return { ok: false, reason: "the catalog is signed but does not pass the catalog schema" };
-  }
 }
 
 // ---- one image's signed statement

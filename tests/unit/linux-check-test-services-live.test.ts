@@ -11,6 +11,7 @@ import {
   type RunLayer,
 } from "../../scripts/linux-check-test-services-live.js";
 import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf, type VerifiedCatalog } from "@agentx/contracts";
+import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
 import { pinnedCatalog, sha, testSigner } from "../support/catalog-pinning.js";
 
 const REGISTRY = "944937319445.dkr.ecr.us-west-2.amazonaws.com";
@@ -103,10 +104,12 @@ async function signedCatalog(change: (entries: Array<Record<string, unknown>>) =
   const signatureBytes = Buffer.from(JSON.stringify({ schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId: parseBundlePublicKey(signer.publicKeyPem).keyId, catalogSha256: sha256HexOf(catalogBytes), signature }), "utf8");
   return { catalogBytes, signatureBytes, keys: [signer.publicKeyPem] };
 }
-const verified = async (): Promise<VerifiedCatalog> => {
-  const files = await signedCatalog();
-  return loadVerifiedCatalog({ catalogBytes: files.catalogBytes, signatureBytes: files.signatureBytes, runningAccountId: undefined, trustedKeys: files.keys });
+const verifiedFrom = (files: Awaited<ReturnType<typeof signedCatalog>>): VerifiedCatalog => {
+  const loaded = loadSignedCatalogWithKeys({ catalogBytes: files.catalogBytes, signatureBytes: files.signatureBytes, trustedKeys: files.keys });
+  if (!loaded.ok) throw new Error(loaded.reason);
+  return loaded.catalog;
 };
+const verified = async (): Promise<VerifiedCatalog> => verifiedFrom(await signedCatalog());
 const served = manifestFilesPort(async (digest) => (digest === MANIFEST_DIGEST ? MANIFEST : undefined));
 
 describe("the catalog the checks need", () => {
@@ -114,10 +117,9 @@ describe("the catalog the checks need", () => {
     const files = await signedCatalog();
     expect(() => loadVerifiedCatalog({ catalogBytes: files.catalogBytes, signatureBytes: files.signatureBytes, runningAccountId: "944937319445" })).toThrow(BlockedError);
     expect(() => loadVerifiedCatalog({ catalogBytes: files.catalogBytes, signatureBytes: files.signatureBytes, runningAccountId: "944937319445" })).toThrow("BLOCKED: no trusted catalog key");
-    expect(() => loadVerifiedCatalog({ catalogBytes: files.catalogBytes, signatureBytes: Buffer.alloc(0), runningAccountId: undefined, trustedKeys: files.keys })).toThrow(/no signature file/u);
-    expect(() => loadVerifiedCatalog({ catalogBytes: files.catalogBytes, signatureBytes: files.signatureBytes, runningAccountId: undefined, trustedKeys: [testSigner().publicKeyPem] })).toThrow(/not trusted/u);
-    const flipped = Buffer.from(files.catalogBytes); flipped[flipped.length - 3] = flipped[flipped.length - 3] === 0x20 ? 0x21 : 0x20;
-    expect(() => loadVerifiedCatalog({ catalogBytes: flipped, signatureBytes: files.signatureBytes, runningAccountId: undefined, trustedKeys: files.keys })).toThrow(/not trusted/u);
+    expect(() => loadVerifiedCatalog({ catalogBytes: files.catalogBytes, signatureBytes: Buffer.alloc(0), runningAccountId: undefined })).toThrow(/no signature file/u);
+    // the driver has no way to be handed a key: a key passed anyway is not used
+    expect(() => (loadVerifiedCatalog as (input: unknown) => unknown)({ catalogBytes: files.catalogBytes, signatureBytes: files.signatureBytes, runningAccountId: "944937319445", trustedKeys: files.keys })).toThrow(BlockedError);
     expect(await verified()).toBeDefined();
   });
   it("reports every live item as a FAIL with the BLOCKED reason, and none as a pass", () => {
@@ -127,8 +129,7 @@ describe("the catalog the checks need", () => {
   });
   it("refuses a catalog that pins everything but Postgres 16", async () => {
     const files = await signedCatalog((entries) => { const entry = entries.find((candidate) => candidate["id"] === "postgres@16")!; delete (entry["image"] as { digest?: string }).digest; delete entry["sbomRef"]; delete entry["scan"]; });
-    const catalog = loadVerifiedCatalog({ catalogBytes: files.catalogBytes, signatureBytes: files.signatureBytes, runningAccountId: undefined, trustedKeys: files.keys });
-    expect(() => postgresEntry(catalog)).toThrow(/not pinned/u);
+    expect(() => postgresEntry(verifiedFrom(files))).toThrow(/not pinned/u);
   });
   it("lists the one image to pull, by digest, from the environment's catalog repository, and never by tag", async () => {
     const list = pullList({ catalog: await verified(), registry: REGISTRY, env: "staging" });

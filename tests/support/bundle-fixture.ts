@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { ReleaseManifestSchema, STACK_PARTS } from "@agentx/contracts";
 import { LITELLM_SOURCE_IMAGE } from "../../infra/lib/bundle-images.js";
 import { buildBundle, type BundleSigner, type ImageExporter } from "../../scripts/release/bundle.js";
+import type { ImageLabelReader } from "../../scripts/release/image-flavor.js";
 import { FAKE_ASSET, FAKE_PACKAGE_BYTES, SECOND_ASSET, SECOND_PACKAGE_BYTES, writeFakeKit, type FakeKitOptions } from "./synth-kit-fixture.js";
 
 const sha = (data: Buffer | string): string => createHash("sha256").update(data).digest("hex");
@@ -39,6 +40,9 @@ export function ociArchive(digest: string, blob = "layer"): Buffer {
   };
   return Buffer.concat([entry("index.json", Buffer.from(JSON.stringify({ schemaVersion: 2, manifests: [{ mediaType: "application/vnd.oci.image.index.v1+json", digest, size: 1 }] }))), entry("blobs/sha256/layer", Buffer.from(blob)), Buffer.alloc(1024)]);
 }
+/** Every image says it was built as a release (scripts/release/image-flavor.ts); bundle tests that are not about the flavor use this. */
+export const RELEASE_LABELS: ImageLabelReader = async () => ({ "ai.rovara.catalog-flavor": "release" });
+
 export const fakeExporter: ImageExporter = async (sourceRef, destFile) => {
   await mkdir(dirname(destFile), { recursive: true });
   await writeFile(destFile, ociArchive(/@(sha256:[a-f0-9]{64})$/.exec(sourceRef)![1]!));
@@ -81,6 +85,6 @@ export async function builtBundle(options: { version?: string; key?: TestKey; te
   const dir = join(root, "bundle");
   const kitDir = join(root, "kit");
   if (options.kit !== undefined) await writeFakeKit(kitDir, { releaseSha256: sha(await readFile(join(release, "release.json"))), ...options.kit });
-  const { bundleSha256 } = await buildBundle({ releaseDir: release, out: dir, images: IMAGES, exportImage: fakeExporter, signer: key.signer, notes: "Notes.\n", ...(options.kit === undefined ? {} : { synthKitDir: kitDir, kitCheck: NO_KIT_CHECK }) });
+  const { bundleSha256 } = await buildBundle({ releaseDir: release, out: dir, images: IMAGES, readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, signer: key.signer, notes: "Notes.\n", ...(options.kit === undefined ? {} : { synthKitDir: kitDir, kitCheck: NO_KIT_CHECK }) });
   return { root, dir, bundleSha256, key, cleanup: () => rm(root, { recursive: true, force: true }) };
 }

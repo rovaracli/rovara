@@ -8,7 +8,6 @@ import {
   combinedSbomRef,
   checkMirrorServesDigest,
   imageStatementMessage,
-  loadSignedCatalog,
   parseBundlePublicKey,
   sha256HexOf,
   verifyCatalogSignature,
@@ -19,6 +18,7 @@ import {
   type RegistryManifestPort,
   type SignedImageStatement,
 } from "@agentx/contracts";
+import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
 import { pinnedCatalog, sha, testSigner, unpinnedCatalog } from "../support/catalog-pinning.js";
 
 const bytesOf = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -35,7 +35,7 @@ async function signedFile(catalog: unknown, signer = testSigner()) {
 describe("the catalog signature", () => {
   it("verifies the exact bytes with the pinned key and loads the catalog", async () => {
     const { signer, catalogBytes, signatureBytes } = await signedFile(pinnedCatalog());
-    const loaded = loadSignedCatalog({ catalogBytes, signatureBytes, trustedKeys: [signer.publicKeyPem] });
+    const loaded = loadSignedCatalogWithKeys({ catalogBytes, signatureBytes, trustedKeys: [signer.publicKeyPem] });
     expect(loaded.ok && loaded.catalog.pinned).toBe(true);
   });
   it("refuses a changed byte, another key, an unknown key id, a different file's signature, and a signature over the bytes without the catalog prefix", async () => {
@@ -43,16 +43,16 @@ describe("the catalog signature", () => {
     const trusted = [signer.publicKeyPem];
     const flipped = Buffer.from(catalogBytes);
     flipped[flipped.length - 3] = flipped[flipped.length - 3] === 0x20 ? 0x21 : 0x20;
-    expect(loadSignedCatalog({ catalogBytes: flipped, signatureBytes, trustedKeys: trusted }).ok).toBe(false);
-    expect(loadSignedCatalog({ catalogBytes, signatureBytes, trustedKeys: [testSigner().publicKeyPem] }).ok).toBe(false);
-    expect(loadSignedCatalog({ catalogBytes, signatureBytes, trustedKeys: [] }).ok).toBe(false);
-    expect(loadSignedCatalog({ catalogBytes, signatureBytes, trustedKeys: ["not a key"] }).ok).toBe(false);
+    expect(loadSignedCatalogWithKeys({ catalogBytes: flipped, signatureBytes, trustedKeys: trusted }).ok).toBe(false);
+    expect(loadSignedCatalogWithKeys({ catalogBytes, signatureBytes, trustedKeys: [testSigner().publicKeyPem] }).ok).toBe(false);
+    expect(loadSignedCatalogWithKeys({ catalogBytes, signatureBytes, trustedKeys: [] }).ok).toBe(false);
+    expect(loadSignedCatalogWithKeys({ catalogBytes, signatureBytes, trustedKeys: ["not a key"] }).ok).toBe(false);
     const other = await signedFile(pinnedCatalog((entries) => { entries[0]!["image"] = { ...(entries[0]!["image"] as object), digest: sha("other") }; }), signer);
     expect(verifyCatalogSignature({ catalogBytes, signature: other.signature, trustedKeys: trusted }).ok).toBe(false);
     const bare: CatalogSignature = { ...signature, signature: (await signer.sign(catalogBytes)).toString("base64") };
     expect(verifyCatalogSignature({ catalogBytes, signature: bare, trustedKeys: trusted }).ok).toBe(false);
-    expect(loadSignedCatalog({ catalogBytes, signatureBytes: Buffer.from("{}"), trustedKeys: trusted }).ok).toBe(false);
-    expect(loadSignedCatalog({ catalogBytes, signatureBytes: Buffer.alloc(70_000), trustedKeys: trusted }).ok).toBe(false);
+    expect(loadSignedCatalogWithKeys({ catalogBytes, signatureBytes: Buffer.from("{}"), trustedKeys: trusted }).ok).toBe(false);
+    expect(loadSignedCatalogWithKeys({ catalogBytes, signatureBytes: Buffer.alloc(70_000), trustedKeys: trusted }).ok).toBe(false);
   });
   it("is not a bundle signature: a bundle signer's signature over the file's bytes alone is refused", async () => {
     const signer = testSigner();
@@ -60,17 +60,17 @@ describe("the catalog signature", () => {
     const asBundle: CatalogSignature = {
       schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId: parseBundlePublicKey(signer.publicKeyPem).keyId, catalogSha256: sha256HexOf(catalogBytes), signature: (await signer.sign(catalogBytes)).toString("base64"),
     };
-    expect(loadSignedCatalog({ catalogBytes, signatureBytes: bytesOf(asBundle), trustedKeys: [signer.publicKeyPem] }).ok).toBe(false);
+    expect(loadSignedCatalogWithKeys({ catalogBytes, signatureBytes: bytesOf(asBundle), trustedKeys: [signer.publicKeyPem] }).ok).toBe(false);
   });
   it("does not accept a signed file that is half pinned (the schema refuses it even with a valid signature)", async () => {
     const raw = JSON.parse(JSON.stringify(pinnedCatalog())) as { entries: Array<{ id: string; image: { digest?: string } }> };
     delete raw.entries.find((entry) => entry.id === "postgres@16")!.image.digest;
     const { signer, catalogBytes, signatureBytes } = await signedFile(raw);
-    expect(loadSignedCatalog({ catalogBytes, signatureBytes, trustedKeys: [signer.publicKeyPem] })).toEqual({ ok: false, reason: "the catalog is signed but does not pass the catalog schema" });
+    expect(loadSignedCatalogWithKeys({ catalogBytes, signatureBytes, trustedKeys: [signer.publicKeyPem] })).toEqual({ ok: false, reason: "the catalog is signed but does not pass the catalog schema" });
   });
   it("accepts a signed unpinned file only as unpinned (nothing in it can be started)", async () => {
     const { signer, catalogBytes, signatureBytes } = await signedFile(unpinnedCatalog());
-    const loaded = loadSignedCatalog({ catalogBytes, signatureBytes, trustedKeys: [signer.publicKeyPem] });
+    const loaded = loadSignedCatalogWithKeys({ catalogBytes, signatureBytes, trustedKeys: [signer.publicKeyPem] });
     expect(loaded.ok && loaded.catalog.pinned).toBe(false);
   });
 });
