@@ -4,6 +4,7 @@ import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, agentXError, defaultSpecTarget, type SpecKind, type SpecTarget } from "@agentx/contracts";
 import { specIsDue } from "./due.js";
 import { buildSpecWriteRequest, type SpecWriteRequest } from "./write-request.js";
+import type { SpecDesignState } from "./approved-design.js";
 import { specLinkLine } from "./link.js";
 import { refreshSpecState, type SpecPullRequestFacts } from "./refresh.js";
 import {
@@ -118,6 +119,8 @@ export function createSpecHooks(world: SpecWorld) {
       /** "review": the code review needs the spec published but not approved. */
       purpose?: "review";
       derive?: () => Promise<PlanApproval | undefined>;
+      /** Design review (DR12): whether the spec waits for an approved design. Read only before a write starts; "wait" holds, nothing is written. Absent: no design review in this step. */
+      design?: () => Promise<SpecDesignState>;
     }): Promise<{ proceed: true; linkLine?: string } | { proceed: false; hold: Hold }> {
       const taskId = input.task.taskId;
       // What people did to the spec pull request since (an edit, an approval) is read from GitHub before the decision, so a missed delivery never leaves the code pull request waiting on something already done.
@@ -144,6 +147,12 @@ export function createSpecHooks(world: SpecWorld) {
       let current = state!;
       if (decision.action === "start_write") {
         if (current.planDigest !== input.approvedPlanDigest) return { proceed: false, hold: hold("failed", "The approved plan changed since the spec was planned.", ["continue_without_spec"]) };
+        if (input.design !== undefined) {
+          // Q9: the approved design is written with the spec, so a spec is not written before the design is approved.
+          let designState: SpecDesignState;
+          try { designState = await input.design(); } catch { return { proceed: false, hold: unavailable() }; }
+          if (designState.kind === "wait") return { proceed: false, hold: hold("waiting_approval", "The spec waits for the design to be approved.", ["continue_without_spec"]) };
+        }
         const markdown = input.planMarkdown();
         let request: SpecWriteRequest | undefined;
         try {
