@@ -180,10 +180,10 @@ describe("P1: a setup run's preparation is held to the heads the broker pinned",
     const manifest = await prepareWorkspace({ rootPath: await f.workspace(), project: f.project, readOnly: true, cloneRetry: f.retry, credentialProvider: async () => ({}), materializer: flaky(f.source, []) });
     expect(manifest.complete).toBe(true);
   });
-  it("reports a 64-hex commit as the base too", async () => {
+  it("reports no base for a 64-hex commit (the broker's baseCommitSha is a 40-hex SHA-1: a longer one keeps no preparedBase, which fails closed)", async () => {
     const { preparedBaseResult } = await import("../../packages/worker/src/prepare.js");
     const long = "d".repeat(64);
-    expect(preparedBaseResult({ repositories: [{ name: "demo", resolvedCommit: long }] } as never)).toEqual({ preparedBase: [{ repositoryId: "demo", baseCommitSha: long }] });
+    expect(preparedBaseResult({ repositories: [{ name: "demo", resolvedCommit: long }] } as never)).toEqual({});
     expect(preparedBaseResult({ repositories: [{ name: "demo", resolvedCommit: "short" }] } as never)).toEqual({});
   });
 });
