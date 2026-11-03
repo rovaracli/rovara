@@ -355,18 +355,25 @@ describe("the named TEST proof-only installation gate", () => {
     // template, from the values the digest test itself reports (nothing hand-computed). The legacy digests did not move.
     // 2026-11-03, merge of the test-services chain (ts-fakes to ts-repack, with ts-images' service catalog image repositories and their key) onto saved-env-wire and ts-run-network: the four named and foreign digests were
     // retaken from the values the digest test itself reports for the merged template (nothing hand-computed); the named-templates snapshot merged cleanly and matches. The legacy digests did not move.
+    // 2026-11-02, TS26 (test accounts, lane ts-accounts): the named and foreign digests were retaken after ONE intended IAM addition to the named control plane (legacy did not move): the TestAccountSecretsRole (fixed name
+    // agentx-<env>-connector-secrets-test-accounts, trust and permissions in infra/lib/test-account-secrets-policy.ts), the broker's AssumeTestAccountSecretsRole statement, and the access stack's boundary and deploy-role
+    // lookups naming it (the boundary through the one `connector-secrets*` ARN, so it did not grow).
+    // 2026-11-03, ts-accounts review fixes (Opus review of bc5719055): the named and foreign digests were retaken after ONE intended IAM change to the named control plane (legacy did not move): the TestAccountSecretsRole's
+    // permissions gained `secretsmanager:UpdateSecretVersionStage` (the store purpose only, same org and use tags; denied to resolve) for rotation's pending-then-promote. No role was added, so the boundary did not change.
+    // 2026-11-03, merge of lane ts-accounts onto the test-services chain (ts-images-on-next-v2, b638814f5): the four named and foreign digests were retaken from the values the digest test itself reports for the merged template
+    // (nothing hand-computed); the only template additions are ts-accounts' TestAccountSecretsRole, the broker's AssumeTestAccountSecretsRole statement and the lookup ARN. The legacy digests did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "96bc2587d0666cf58ee6faf48ef03a1532f4b88793de80c13b853872bd625331",
-        withoutRoute: "51e7db6606bc27f201af03792ec0cfc0bb5f333f57237b4855fb679b435dd89e",
+        withRoute: "07d4aa8737e1689a3abc2025e60b4db97d6084911e88788475347f56274f4e89",
+        withoutRoute: "9d827b95170ef706365a1370185e13f9b5203bdf512bbd9ec069cd1b242d62ec",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "46f3a3d8d7aff0bde2d2047632a4ffdbea3cd7fcee9ba275470bff01a65c8e43",
-        withoutRoute: "ffb453a599a199cd2c663c2e2dff3f8946a7337b83e360863fe29d759fd92c74",
+        withRoute: "cdb75793e2f1594d01f32005711cfe2055e954075875540c11572c56a0592949",
+        withoutRoute: "8480dc34a3f5da197ff97730c2972623bb4f7d4d8fcc261632075e563085167f",
       },
       {
         label: "legacy",

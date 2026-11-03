@@ -6,6 +6,7 @@ import {
   BROKER_NAMES,
   BROKER_NAMES_VARIABLE,
   connectorSecretsRoleName,
+  testAccountSecretsRoleName,
   environmentAlarmPrefix,
   environmentConnectorSecretPrefix,
   environmentE2eFeatureRuntimeCatalogId,
@@ -241,6 +242,7 @@ describe("hydrateBrokerEnvironment: what an environment's name decides", () => {
     expect(env.CONNECTOR_SECRET_PREFIX).toBeUndefined();
     expect(env.AGENTX_METRICS_NAMESPACE).toBeUndefined();
     expect(env.CONNECTOR_SECRETS_ROLE_ARN).toBeUndefined();
+    expect(env.TEST_ACCOUNT_SECRETS_ROLE_ARN).toBeUndefined();
   });
 });
 
@@ -256,6 +258,8 @@ describe("what the broker derives is what the infrastructure names", () => {
       expect(env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID).toBe(`${naming.resourcePrefix}-project-setup-runtime-v1`);
       expect(env.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID).toBe(`${naming.resourcePrefix}-e2e-mock-runtime-v1`);
       expect(env.CONNECTOR_SECRETS_ROLE_ARN).toBe(`arn:aws:iam::123456789012:role/agentx/${name}/${connectorSecretsRoleName(name)}`);
+      // Test services TS26: the test account secrets role is derived the same way.
+      expect(env.TEST_ACCOUNT_SECRETS_ROLE_ARN).toBe(`arn:aws:iam::123456789012:role/agentx/${name}/${testAccountSecretsRoleName(name)}`);
     });
   }
 });

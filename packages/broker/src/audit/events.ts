@@ -981,3 +981,16 @@ export function auditSavedEnvChanged(input: AuditBuilderBase & { projectName: st
 export function auditSavedEnvSettingChanged(input: AuditBuilderBase & { projectName: string; enabled: boolean }): AuditEventInput {
   return build("saved_env.setting_changed", input, { kind: "project", name: input.projectName }, { enabled: input.enabled });
 }
+
+// Customer test accounts (test services TS26) -----------------------------------------------------------------
+
+export type TestAccountAuditAction = "test_account.added" | "test_account.approved" | "test_account.narrowed" | "test_account.widened" | "test_account.reenable_requested" | "test_account.rotated"
+  | "test_account.suspended" | "test_account.expired" | "test_account.deleted" | "test_account.deleting" | "test_account.rotation_failed" | "test_account.used";
+
+/**
+ * `occurrence`: `auditOccurrence(accountId, version, action)` (every change adds one version), or for the daily roll-up `auditOccurrence(accountId, projectId, day)`. The target is the account. Facts are ids, digests,
+ * counts and fixed words only: the account's label, hosts, role and projects go in `details` (subject `org`), and a secret's value is never known here.
+ */
+export function auditTestAccountChange(input: AuditBuilderBase & { action: TestAccountAuditAction; accountId: string; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "test_account", id: input.accountId }, input.facts);
+}

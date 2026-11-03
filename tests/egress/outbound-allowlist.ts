@@ -257,6 +257,10 @@ export const DNS_LOOKUP_RULES: readonly DnsLookupRule[] = [
     why: "The gateway's endpoint check: the same public-address test for the address a connector call goes to.",
     files: ["packages/gateway/src/endpoint.ts"],
   },
+  {
+    why: "Test accounts (switch `ta`, off by default): the test-account proxy of a sealed check round resolves the one name a CONNECT asks for, only if it is on that run's list of the customer's own test account hosts (at most 8), and refuses it when any answer is a private, loopback, link-local or metadata address. The proxy then connects to the address it checked, on port 443 only. Nothing else is asked, and nothing is sent to Rovara.",
+    files: ["packages/worker/src/test-account-proxy.ts"],
+  },
 ];
 
 /** The text of docs/enterprise/outbound.md, from the rules. The test compares the file to this, so the document cannot drift from the list. */
