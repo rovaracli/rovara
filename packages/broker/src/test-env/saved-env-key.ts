@@ -1,5 +1,7 @@
 // Saved project images (SV wiring): the environment key, worked out by the BROKER from the code host's tree listing of the commits a job is for. The key hashes the key files (lockfiles, build files, toolchain files,
 // dev container files and the environment's detector globs), the approved revision, the SET of secret names and the base image digest (contracts `saved-env-key-files.ts`, the one implementation the worker uses too).
+// TWO LIMITS, BOTH BY DESIGN TODAY: the base image digest is WORKER-WIDE (the one worker image every worker of the environment runs: a rollout changes every project's key once, it is not a property of a project), and the
+// secret names are those of the approved environment's `http_hook` accounts only (no other field of the environment names a secret).
 // A key file is named by its git blob id, so no file is read and no clone is needed; the dev container files are read as text (the files they point at are key files too). The worker works the key out again from
 // the clone it built from and refuses to build when it differs (`key_mismatch`).
 //   - the listing is cached by repository and commit (a commit's tree never changes), a few at a time;

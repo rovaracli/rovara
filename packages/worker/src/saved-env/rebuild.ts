@@ -4,6 +4,8 @@
 //     sandbox that has started a process (`not_fresh`). Its project commands go through `executionFor(SANDBOX_TARGET, { sandbox })`, the only way any project command starts here;
 //   - `notFrom` is the worker's own live lease and sandbox registry: every other operation active on this machine and every other running task sandbox. Nothing is taken from the job payload. A machine that is doing
 //     anything else does not build (the workspace root is shared, so another operation here would share the workspace);
+//   - the base image digest in the job is the digest of the image this worker runs project commands in (its own AGENTX_SANDBOX_IMAGE); a worker on another image, or one whose image is not pinned by digest, refuses
+//     before it builds anything (`key_mismatch`, `base_image`). The digest is worker-wide: one image for the whole environment, not a project's;
 //   - `forbiddenValues` are this machine's secrets: the credential-shaped environment variables, the preparation's grant, callback capability and lease token, and the clone credentials the preparation itself fetched (remembered as
 //     it fetched them: nothing is fetched again before the project's code runs);
 //   - the push login and the result go to the broker's two lease routes with the operation's callback capability and the job's lease token (a token that only the dispatcher handed over, at delivery).
@@ -11,7 +13,7 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import {
-  SAVED_ENV_PUSH_LOGIN_PATH, SAVED_ENV_RESULT_PATH, SavedEnvRegistryAuthSchema, agentXError,
+  SAVED_ENV_PUSH_LOGIN_PATH, SAVED_ENV_RESULT_PATH, SavedEnvRegistryAuthSchema, agentXError, imageDigestOfReference,
   type SavedEnvBuildResult, type SavedEnvRegistryAuth, type WorkerInvocation,
 } from "@agentx/contracts";
 import { SANDBOX_TARGET, executionFor, proveCommandPort } from "../execution-target.js";
@@ -139,8 +141,14 @@ export async function runSavedEnvRebuild(deps: SavedEnvRebuildDependencies): Pro
     // The worker's own clone is at the commits the job was queued for (the preparation was pinned to them): anything else is not built.
     const prepared = new Map(deps.manifest.repositories.map((repository) => [repository.name, repository.resolvedCommit]));
     const sameCommits = prepared.size === commits.size && [...commits].every(([name, commit]) => prepared.get(name) === commit);
+    // The key holds the base image's digest; the image THIS worker runs the project's commands in (AGENTX_SANDBOX_IMAGE, the worker image) must be that one. A worker left on another image (after a rollback, say) builds nothing.
+    const ownImage = imageDigestOfReference(environment["AGENTX_SANDBOX_IMAGE"]);
     if (!sameCommits) {
       result = failure("not_default_branch", "commits");
+    } else if (ownImage === undefined) {
+      result = failure("unsafe_tree", "base_image");
+    } else if (ownImage !== job.baseImageDigest) {
+      result = failure("unsafe_tree", "key_mismatch");
     } else {
       const repositories = buildRepositoriesOf(deps.invocation.payload.project.repositories, commits);
       const others = [...await deps.otherOperations(), ...await liveTaskSandboxes(deps.docker, deps.rootPath, "")];

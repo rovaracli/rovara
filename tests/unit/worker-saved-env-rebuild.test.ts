@@ -9,6 +9,8 @@ import type { DockerCli } from "../../packages/worker/src/swebench/containers.js
 afterEach(() => { vi.restoreAllMocks(); });
 const COMMIT = "d".repeat(40);
 const KEY = "c".repeat(64);
+/** The image this worker runs project commands in: pinned by the digest the job names. */
+const SANDBOX_IMAGE = `111122223333.dkr.ecr.us-west-2.amazonaws.com/agentx-worker@sha256:${"b".repeat(64)}`;
 const LEASE = ["lease", "x".repeat(30)].join("-");
 const GRANT = ["grant", "g".repeat(30)].join("-");
 const CAPABILITY = ["cap", "c".repeat(40)].join("-");
@@ -46,7 +48,7 @@ function bench(over: Partial<SavedEnvRebuildDependencies> & { build?: SavedEnvRe
   const sandbox = { start: vi.fn(async () => undefined), dispose: vi.fn(async () => undefined), runCommand: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false })), bashOperations: vi.fn() };
   const deps: SavedEnvRebuildDependencies = {
     rootPath: "/mnt/workspace", controlPlaneUrl: "https://cp.example.test/", invocation: invocation(), manifest: { repositories: [{ name: "svc", path: "svc", defaultBranch: "main", resolvedCommit: COMMIT, resolvedAt: "x", completedAt: "x" }] },
-    docker: docker(), otherOperations: async () => [], environment: { PATH: "/usr/bin" }, fetchImplementation, sandbox: () => sandbox as never, postAttempts: 3,
+    docker: docker(), otherOperations: async () => [], environment: { PATH: "/usr/bin", AGENTX_SANDBOX_IMAGE: SANDBOX_IMAGE }, fetchImplementation, sandbox: () => sandbox as never, postAttempts: 3,
     build: async (input, ports) => { calls.input = input; calls.ports = ports; await during?.(ports); return ok; },
     ...rest,
   };
@@ -55,7 +57,7 @@ function bench(over: Partial<SavedEnvRebuildDependencies> & { build?: SavedEnvRe
 
 describe("the job", () => {
   it("gives the build the job's commits and environment, and the worker's own view of what else runs here and what is secret", async () => {
-    const { deps, calls } = bench({ otherOperations: async () => [{ id: "another-operation", rootPath: "/mnt/workspace" }], cloneCredentialValues: () => ["clone-token-value-0123"], environment: { PATH: "/usr/bin", MODEL_API_KEY: "model-key-value-4567" } });
+    const { deps, calls } = bench({ otherOperations: async () => [{ id: "another-operation", rootPath: "/mnt/workspace" }], cloneCredentialValues: () => ["clone-token-value-0123"], environment: { PATH: "/usr/bin", AGENTX_SANDBOX_IMAGE: SANDBOX_IMAGE, MODEL_API_KEY: "model-key-value-4567" } });
     await runSavedEnvRebuild(deps);
     const input = calls.input!;
     expect(input).toMatchObject({
@@ -87,6 +89,31 @@ describe("the job", () => {
     await expect(runSavedEnvRebuild(deps)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(posted).toEqual([]);
     await expect(runSavedEnvRebuild({ ...deps, invocation: invocation(null) })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});
+
+describe("the base image", () => {
+  it("builds only on the image the key was worked out for: the worker's own sandbox image digest is the job's", async () => {
+    const { deps, calls } = bench();
+    await runSavedEnvRebuild(deps);
+    expect(calls.input).toBeDefined();
+  });
+
+  it("refuses with key_mismatch and builds nothing when the worker runs another image (a rollback), and says so to the broker", async () => {
+    const build = vi.fn(async (): Promise<SavedEnvBuildResult> => ({ ok: false, reason: "not_proved" }));
+    const { deps, posted } = bench({ build, environment: { PATH: "/usr/bin", AGENTX_SANDBOX_IMAGE: `registry/agentx-worker@sha256:${"d".repeat(64)}` } });
+    expect(await runSavedEnvRebuild(deps)).toEqual({ ok: false, reason: "unsafe_tree", step: "key_mismatch" });
+    expect(build).not.toHaveBeenCalled();
+    expect(posted.at(-1)!.body.result).toEqual({ ok: false, reason: "unsafe_tree", step: "key_mismatch" });
+  });
+
+  it("refuses when the worker's image is a tag or is not set: it cannot say it is the image the key holds", async () => {
+    for (const image of ["registry/agentx-worker:latest", undefined]) {
+      const build = vi.fn(async (): Promise<SavedEnvBuildResult> => ({ ok: false, reason: "not_proved" }));
+      const { deps } = bench({ build, environment: image === undefined ? { PATH: "/usr/bin" } : { PATH: "/usr/bin", AGENTX_SANDBOX_IMAGE: image } });
+      expect(await runSavedEnvRebuild(deps), String(image)).toEqual({ ok: false, reason: "unsafe_tree", step: "base_image" });
+      expect(build).not.toHaveBeenCalled();
+    }
   });
 });
 

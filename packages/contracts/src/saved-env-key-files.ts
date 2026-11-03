@@ -13,6 +13,9 @@ import path from "node:path";
 import { SAVED_ENV_MAX_KEY_FILES, computeEnvironmentKey, type EnvKeyFile, type EnvironmentKeyInput } from "./saved-env.js";
 import { sha256Hex } from "./web-hash.js";
 
+/** The digest of an image reference pinned by digest (`...@sha256:<64 hex>`), or undefined for a tag or anything else. Both the broker (worker image setting) and the worker (its own sandbox image) read it with this. */
+export const imageDigestOfReference = (reference: string | undefined): string | undefined => (reference === undefined ? undefined : /@(sha256:[a-f0-9]{64})$/u.exec(reference)?.[1]);
+
 /** The key hash of a file from its git blob id (40 or 64 hex). */
 export const blobKeyHash = (blobId: string): string => sha256Hex(`rovara.saved-env.blob\n${blobId}`);
 

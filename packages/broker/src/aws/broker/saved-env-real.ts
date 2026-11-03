@@ -10,7 +10,8 @@
 //   keep / lightAfterIdleDays  the defaults (the company settings are not stored yet);
 //   onQueued         starts the job the registry queued (saved-env-triggers.ts).
 import { awsPartitionOf } from "../broker-environment.js";
-import { testEnvDigest, testEnvIsProved, type TestEnvironmentBody, workerProjectDefinition, SAVED_ENV_KEEP_DEFAULT, SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT, type OrgId } from "@agentx/contracts";
+import { readWorkerSettings } from "../worker-settings-read.js";
+import { imageDigestOfReference, testEnvDigest, testEnvIsProved, type TestEnvironmentBody, workerProjectDefinition, SAVED_ENV_KEEP_DEFAULT, SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT, type OrgId } from "@agentx/contracts";
 import { readApprovedTestEnvironment, readTestEnvProveReport, type TestEnvDeps } from "../../org/test-environment.js";
 import type { SavedEnvDeps } from "../../test-env/saved-env.js";
 import { dynamoSavedEnvStore } from "../../test-env/saved-env-store.js";
@@ -62,7 +63,40 @@ export async function savedEnvDefaultHeads(dependencies: AwsBrokerDependencies, 
   }
 }
 
-/** The NAMES of the secrets an approved environment reads (never a value), in no particular order: the key holds them as a set. */
+/**
+ * The digest of the image the project's commands run in, from the worker image setting: the sandbox image IS the worker image (boot-stage2.sh and boot-legacy.sh set AGENTX_SANDBOX_IMAGE to AGENTX_WORKER_IMAGE).
+ * Only a reference pinned by digest (`...@sha256:<64 hex>`) has one: a tag, or anything else, gives none, and so no key (fail closed).
+ * WORKER-WIDE BY DESIGN: it is the one image every worker of the environment runs, not a property of a project, so a rollout of a new worker image changes every project's key and every saved image is rebuilt once.
+ */
+export function baseImageDigestOfWorkerImage(image: string | undefined): string | undefined {
+  return imageDigestOfReference(image);
+}
+
+/** How long a read of the worker image setting is reused: a check asks for it every time, and the setting changes at a release. */
+export const SAVED_ENV_BASE_IMAGE_CACHE_MS = 60_000;
+
+/**
+ * `savedEnvBaseImageDigest`: reads the worker settings with the one reader the session steps launch workers with (`readWorkerSettings`), under the environment's settings prefix (the broker's read grant covers it), and
+ * names the image's digest. A failed read, a missing setting or an image that is a tag is undefined. Only a good answer is kept (a minute).
+ */
+export function savedEnvBaseImageDigestReader(read: Parameters<typeof readWorkerSettings>[0], prefix: string, now: () => number = Date.now): () => Promise<string | undefined> {
+  let kept: { digest: string; until: number } | undefined;
+  return async () => {
+    if (kept !== undefined && kept.until > now()) return kept.digest;
+    try {
+      const digest = baseImageDigestOfWorkerImage((await readWorkerSettings(read, { prefix, modelProxyRequired: false })).workerImage);
+      if (digest !== undefined) kept = { digest, until: now() + SAVED_ENV_BASE_IMAGE_CACHE_MS };
+      return digest;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+/**
+ * The NAMES of the secrets an approved environment reads (never a value), in no particular order: the key holds them as a set. TODAY ONLY the `http_hook` accounts' `tokenSecretName` is one: no other field of the
+ * environment names a secret, and the project's own secrets are not in the environment. A field added later that names a secret must be added here, or its change would not move the key.
+ */
 export function savedEnvSecretNames(environment: TestEnvironmentBody): string[] {
   return [...new Set(environment.accounts.flatMap((account) => (account.provisioner === "http_hook" ? [account.tokenSecretName] : [])))];
 }
