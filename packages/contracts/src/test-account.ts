@@ -282,7 +282,7 @@ const SecretRefSchema = z.string().max(400).refine((ref) => parseTestAccountSecr
 
 const DeveloperId = z.string().regex(/^[a-f0-9]{64}$/u);
 /**
- * One person's approval of one exact record: `approvedDigest` is `testAccountApprovalDigest` of what they were shown (family, hosts, AWS block, variables, projects, limits, secret reference). An approval
+ * One person's approval of one exact record: `approvedDigest` is `testAccountApprovalDigest` of what they were shown (the account's id and org, kind, family, hosts, AWS block, variables, projects, limits, secret reference). An approval
  * whose digest is not the record's current one approved something else and counts for nothing, so widening a record needs fresh approvals.
  */
 export const TestAccountApprovalSchema = z
@@ -292,6 +292,9 @@ export type TestAccountApproval = z.infer<typeof TestAccountApprovalSchema>;
 
 /** The fields an approval covers. */
 export interface TestAccountApprovable {
+  /** The account's own id and its org: an approval of these fields under another id or org approves another account, even for a role-only AWS account that has no secret reference to tell them apart. */
+  id: string;
+  orgId: string;
   kind: string;
   family: string;
   hosts: readonly string[];
@@ -308,6 +311,8 @@ const sorted = (values: readonly string[]): string[] => [...values].sort();
 export function testAccountApprovalDigest(record: TestAccountApprovable): string {
   return sha256Hex(
     canonicalJson({
+      id: record.id,
+      orgId: record.orgId,
       kind: record.kind,
       family: record.family,
       hosts: sorted(record.hosts),
@@ -320,10 +325,13 @@ export function testAccountApprovalDigest(record: TestAccountApprovable): string
   );
 }
 
-/** The approvals that approved exactly this record. */
-export function testAccountQualifyingApprovals(record: TestAccountApprovable & { approvals: readonly TestAccountApproval[] }): TestAccountApproval[] {
+/**
+ * The approvals that approved exactly this record. With `now`, an approval dated after it does not count (a future date is no approval yet, and a date that is not a date never counts), so nothing
+ * that is computed from approvals (the people, the expiry window) can lean on one that has not happened.
+ */
+export function testAccountQualifyingApprovals(record: TestAccountApprovable & { approvals: readonly TestAccountApproval[] }, now?: number): TestAccountApproval[] {
   const digest = testAccountApprovalDigest(record);
-  return record.approvals.filter((approval) => approval.approvedDigest === digest);
+  return record.approvals.filter((approval) => approval.approvedDigest === digest && (now === undefined || Date.parse(approval.at) <= now));
 }
 
 /** Whether the approvals are enough for an account to be active: two different people, each with a fresh sign-in, or the sole-owner exception (company switch and eligibility are the approver's, checked where it is recorded). Only qualifying approvals are passed in. */
@@ -439,7 +447,8 @@ export function isTestAccountUsableAt(record: TestAccount, now: Date | number | 
   if (!Number.isFinite(at) || record.status !== "active" || record.expiresAt === undefined) return false;
   const expires = Date.parse(record.expiresAt);
   if (!Number.isFinite(expires) || at >= expires) return false;
-  const qualifying = testAccountQualifyingApprovals(record);
+  // Only approvals that have happened by `now`: the people and the expiry window both come from those.
+  const qualifying = testAccountQualifyingApprovals(record, at);
   if (!testAccountApprovalsSatisfied(qualifying)) return false;
   return expires - latestAt(qualifying) <= expiryDaysFor(options) * DAY_MS;
 }

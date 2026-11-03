@@ -553,6 +553,8 @@ describe("approvals cover what was approved", () => {
       ["limits rounds", { limits: { maxRequestsPerRun: 2_000, maxRequestsPerDay: 20_000, maxConcurrentRounds: 3 } }],
       ["secretRef", { secretRef: ref({ key: "other" }) }],
       ["kind", { kind: "basic" }],
+      ["id", { id: "payments-test-two", secretRef: ref({ id: "payments-test-two" }) }],
+      ["orgId", { orgId: OTHER_ORG, secretRef: ref({ org: OTHER_ORG }) }],
     ];
     for (const [what, over] of changed) expect(acc.testAccountApprovalDigest({ ...base, ...over }), what).not.toBe(digest);
     // The family alone, with the hosts held the same.
@@ -577,6 +579,26 @@ describe("approvals cover what was approved", () => {
     const aws = parsed(awsAccount({ aws: awsBlock({ actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: ["arn:aws:dynamodb:us-west-2:222233334444:table/a1", "arn:aws:dynamodb:us-west-2:222233334444:table/b1"] }) }));
     const reordered = { ...aws, aws: { ...aws.aws!, actions: [...aws.aws!.actions].reverse(), resources: [...aws.aws!.resources].reverse() } };
     expect(acc.testAccountApprovalDigest(reordered as never)).toBe(acc.testAccountApprovalDigest(aws));
+  });
+  it("ties approvals to this account in this org, even for a role-only AWS account with no secret reference", () => {
+    const approved = parsed(awsAccount());
+    expect(ok(approved)).toBe(true);
+    const otherId = { ...approved, id: "orders-dev-two" };
+    const otherOrg = { ...approved, orgId: OTHER_ORG };
+    // Everything the approvers saw is the same; only whose account it is differs.
+    expect(acc.testAccountApprovalDigest(otherId)).not.toBe(acc.testAccountApprovalDigest(approved));
+    expect(acc.testAccountApprovalDigest(otherOrg)).not.toBe(acc.testAccountApprovalDigest(approved));
+    expect(ok(otherId)).toBe(false);
+    expect(ok(otherOrg)).toBe(false);
+    expect(acc.testAccountQualifyingApprovals(otherId)).toEqual([]);
+    expect(acc.testAccountQualifyingApprovals(otherOrg)).toEqual([]);
+    expect(acc.testAccountQualifyingApprovals(approved)).toHaveLength(2);
+    // The same fields under another id or org count once approved there.
+    expect(ok(stamp({ ...otherId, approvals: withoutDigest(otherId.approvals) }))).toBe(true);
+    expect(ok(stamp({ ...otherOrg, approvals: withoutDigest(otherOrg.approvals) }))).toBe(true);
+    // The same holds for an account with a secret reference.
+    const withSecret = parsed(account());
+    expect(ok({ ...withSecret, id: "payments-test-two", secretRef: ref({ id: "payments-test-two" }) })).toBe(false);
   });
   it("needs every approval to carry the digest, in its shape", () => {
     const without = account();
@@ -666,6 +688,32 @@ describe("isTestAccountUsableAt", () => {
     const withMillis = { ...record(), expiresAt: "2027-01-30T10:00:00.500Z" };
     expect(acc.isTestAccountUsableAt(withMillis, new Date("2027-01-30T10:00:00.400Z"))).toBe(true);
     expect(acc.isTestAccountUsableAt(withMillis, new Date("2027-01-30T10:00:00.700Z"))).toBe(false);
+  });
+  it("does not count an approval dated after now, nor an expiry computed from one", () => {
+    const base = account({ status: "pending", expiresAt: undefined, approvals: [approval("a"), approval("b")] });
+    const make = (approvals: Array<Record<string, unknown>>, expiresAt: string) => parsed(stamp({ ...base, status: "active", expiresAt, approvals }));
+    // Two approvals today and a third in February. The third makes an expiry in May look like 90 days from its approval.
+    const future = approval("c", { at: "2027-02-01T10:00:00.000Z" });
+    const lateExpiry = "2027-05-01T10:00:00.000Z";
+    const withFuture = make([approval("a"), approval("b"), future], lateExpiry);
+    expect(acc.isTestAccountUsableAt(withFuture, "2026-11-03T00:00:00.000Z")).toBe(false);
+    expect(acc.isTestAccountUsableAt(withFuture, "2027-02-01T09:59:59.999Z")).toBe(false);
+    expect(acc.isTestAccountUsableAt(withFuture, "2027-02-01T10:00:00.000Z")).toBe(true);
+    expect(acc.isTestAccountUsableAt(withFuture, "2027-04-30T10:00:00.000Z")).toBe(true);
+    // The people come from approvals that have happened too: one that has not happened is not a second person.
+    const secondInFuture = make([approval("a"), approval("b", { at: "2027-01-01T10:00:00.000Z" })], "2027-03-30T10:00:00.000Z");
+    expect(acc.isTestAccountUsableAt(secondInFuture, "2026-11-03T00:00:00.000Z")).toBe(false);
+    expect(acc.isTestAccountUsableAt(secondInFuture, "2027-01-01T10:00:00.000Z")).toBe(true);
+  });
+  it("counts an approval from now on, not before, and never one whose date is not a date", () => {
+    const record = parsed(account());
+    const first = Date.parse("2026-11-02T10:00:00.000Z");
+    expect(acc.testAccountQualifyingApprovals(record, first - 1)).toEqual([]);
+    expect(acc.testAccountQualifyingApprovals(record, first)).toHaveLength(2);
+    expect(acc.testAccountQualifyingApprovals(record)).toHaveLength(2);
+    const broken = { ...record, approvals: record.approvals.map((each) => ({ ...each, at: "never" })) };
+    expect(acc.testAccountQualifyingApprovals(broken, first)).toEqual([]);
+    expect(acc.testAccountQualifyingApprovals(broken)).toHaveLength(2);
   });
   it("is not usable unless active", () => {
     for (const status of ["pending", "suspended", "expired"]) expect(at("2026-11-03T00:00:00.000Z", { status }), status).toBe(false);
