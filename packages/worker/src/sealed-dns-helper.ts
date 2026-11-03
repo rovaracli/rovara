@@ -1,5 +1,5 @@
 // The sealed DNS helper's program (test services, TS16; check-sandbox.ts): one run's name server in a container of its own at .2 of the run's services network. It answers the run's static table, sends every other
-// name to the sinkhole, serves only the sandboxes' addresses (.3 and .4), has no upstream, and keeps the unknown names it was asked in a file the worker reads with one fixed `docker exec`. Its only inputs are its
+// name to the sinkhole, serves only the check sandbox's address (.4; the working sandbox at .3 is detached for the round), has no upstream, and keeps the unknown names it was asked in a file the worker reads with one fixed `docker exec`. Its only inputs are its
 // arguments and DNS traffic. Not run by this build (no Docker): see the checks in check-sandbox.ts. (The setup run's helper, setup-dns-watch-helper.ts, is separate and unchanged.)
 import { renameSync, writeFileSync } from "node:fs";
 import { SealedDnsHelper } from "./setup-dns-watch.js";

@@ -408,14 +408,20 @@ function answerTo(query: DnsPacket, reply: Buffer, maxBytes: number = MAX_MESSAG
 //   - EVERY OTHER name is answered with the SINKHOLE's address (an A record), so a call to an undeclared host goes to the sinkhole (the fake server image in record-only mode) and nowhere else. The name is counted here
 //     (`unknownNames()`), and the sinkhole records the call itself (name, port, count). An AAAA or HTTPS question gets an empty NOERROR answer, so a client falls back to the A record;
 //   - it has NO UPSTREAM: no option names one, it opens no socket but its own two listeners (UDP and TCP), and it cannot forward a question, so an unknown name can never resolve to an address outside the run;
-//   - it serves ONLY the addresses it was made with (the run's .3 and .4): a packet or a TCP connection from anywhere else gets no answer and is not counted. The list is fixed at construction (there is no setter);
+//   - it serves ONLY the addresses it was made with (the run's .4 alone: the working sandbox at .3 is off the services network for the check round, check-sandbox.ts): a packet or a TCP connection from anywhere else gets
+//     no answer and is not counted. The list is fixed at construction (there is no setter). The source address is the packet's own, and a program on the same bridge can forge it without any capability: a socket with
+//     `IP_FREEBIND` may bind, and send from, an address that is not its own (review L1). So a neighbour (a fake service helper at .16 and up) can make the helper COUNT an unknown name as if .4 had asked it. That is blind
+//     record pollution only: the answer goes to the real owner of the forged address, never back to the sender, and no name is ever resolved to anything outside the run. TS-L3 (h) checks it on Linux;
 //   - every address it hands out must be a private IPv4 address (the run's own range), so even a wrong plan cannot point a name at a public address;
-//   - it holds a bounded record: at most `SEALED_UNKNOWN_NAMES_MAX` distinct unknown names, each with a query count.
+//   - it holds a bounded record: at most `SEALED_UNKNOWN_NAMES_MAX` distinct unknown names, each cut to `SEALED_RECORD_NAME_MAX` characters, each with a query count. (An unknown name can carry a secret, lower-cased, as a
+//     label of the name a program tried to reach: whoever shows the record to a person must redact it case-insensitively, or show the registrable domain and a count only. DEFERRED-CHECKS, TS17/TS23.)
 export const SEALED_DNS_TTL_SECONDS = 5;
 /** The most names a sealed table may hold (32 helpers with a few aliases each, the sinkhole, the proxy). */
 export const SEALED_DNS_TABLE_MAX = 256;
 /** The most distinct unknown names a sealed helper keeps; more are counted in `droppedNames()`. */
 export const SEALED_UNKNOWN_NAMES_MAX = 200;
+/** The most characters of an unknown name kept in the record. A longer name is cut to this (the lookup itself is answered in full). */
+export const SEALED_RECORD_NAME_MAX = 64;
 const SEALED_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 /** The labels of an unknown name that may be kept in the record: letters, digits, hyphen, underscore. Anything else is counted but its text is never kept. */
 const SEALED_RECORD_LABEL = /^[a-z0-9_-]{1,63}$/u;
@@ -607,10 +613,11 @@ export class SealedDnsHelper {
       this.unrecordedCount += 1;
       return;
     }
-    const seen = this.unknown.get(query.name);
-    if (seen !== undefined) this.unknown.set(query.name, seen + 1);
+    const kept = query.name.slice(0, SEALED_RECORD_NAME_MAX);
+    const seen = this.unknown.get(kept);
+    if (seen !== undefined) this.unknown.set(kept, seen + 1);
     else if (this.unknown.size >= this.maxUnknown) this.droppedNamesCount += 1;
-    else this.unknown.set(query.name, 1);
+    else this.unknown.set(kept, 1);
   }
 
   private onUdp(message: Buffer, address: string, port: number): void {

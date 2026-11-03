@@ -13,27 +13,43 @@
 //   - a reader for the helper's record of unknown names (`readSealedDnsRecord`).
 //
 // WHY THE SANDBOX CANNOT REACH ANYTHING BUT THE RUN: the services network is `--internal` and its bridge is named `rvi*`, which the boot firewall walls (boot.sh `wall_off_containers`); the sandbox is on that network and no other, and
-// its only name server is the sealed helper, which has no upstream and answers every unknown name with the sinkhole. `checkSandboxRunArgs` re-checks its own result (`checkSandboxArgProblems`) and throws if a future change to
-// the task sandbox's arguments would add a second network, a published port, a DNS option, an added capability, or a docker socket.
+// its only name server is the sealed helper, which has no upstream and answers every unknown name with the sinkhole. `checkSandboxArgProblems` re-checks the sandbox's own arguments against an ALLOW-LIST of flags (every flag
+// the task sandbox emits plus the run's additions; anything else, in any spelling, is a problem) and `checkSandboxRunArgs` throws if a future change to the task sandbox's arguments would add a second network, a published
+// port, a DNS option, an added capability, an extra mount or a docker socket.
+//
+// THE WORKING SANDBOX (.3) IS A RELAY OUT, SO IT IS DETACHED (review H1, owner decision): the working sandbox is dual-homed (the internet-facing `agentx-task` network plus this services network), so a background process left in
+// it (a `socat`, a `nc` listener) would hand the check sandbox at .4 a way out. For the whole check round the working sandbox is therefore NOT on the services network: `detachWorkingSandbox` runs `docker network disconnect` and
+// verifies with an inspect that the services network is gone from the container's networks; `startCheckSandbox` refuses to start the check sandbox without that proof (and looks again itself); `reattachWorkingSandbox` connects it
+// back at .3 after the round. The plan says so (`mustDetachWorking: true`). Only the worker's `docker` calls do this, so the TS17 ServiceRunner MUST start the check sandbox through `startCheckSandbox`, never with `plan.sandboxRunArgs` directly.
 //
 // NOT HERE (other tasks): the run's connection variables (`--env-file` on a worker tmpfs, per `docker exec`, TS15/TS17); the test-account proxy and its name (TS27); starting the helpers and the sinkhole (TS14/TS17); the
-// sinkhole's own record of calls (name, port, count: the fake server image in record-only mode, TS23).
+// sinkhole's own record of calls (name, port, count: the fake server image in record-only mode, TS23); the boot firewall's IPv6 INPUT rule (boot.sh, review L4: see DEFERRED-CHECKS).
 //
-// MUST RUN BEFORE `tx` IS ON (linux-runtime or a staging worker; these are the live part of TS-L3, which scripts/linux-check-test-services.sh still reports PENDING):
+// MUST RUN BEFORE `tx` IS ON (linux-runtime or a staging worker; these are the live part of TS-L3, which scripts/linux-check-test-services.sh still reports PENDING, one item each):
 //   1. `--ip` .4 is accepted on the internal /24 although the network's `--ip-range` is the upper half (the sandbox and the helpers take fixed low addresses);
 //   2. a bind mount over /etc/resolv.conf and over /etc/hosts of a container that has no `--dns` and sits only on the internal network is honoured (read-only, as the sandbox's user cannot change it);
 //   3. from inside the sealed sandbox: a name in the table resolves to its helper and a connection to it works; an unknown name resolves to the sinkhole and a connection to it reaches the sinkhole (and is counted);
 //      a public address, 8.8.8.8 port 53, the gateway .1 on every port, another run's helper, the metadata address and the host's resolver all fail; there is no default route out of the run;
-//   4. the DNS helper binds .2:53 as uid 1000 (`net.ipv4.ip_unprivileged_port_start=53`, no capability) and answers .3 and .4 only: a query from the helper's neighbours (.16 and up) gets no answer;
+//   4. the DNS helper binds .2:53 as uid 1000 (`net.ipv4.ip_unprivileged_port_start=53`, no capability) and answers .4 only: a query from the helper's neighbours (.3 and .16 and up) gets no answer;
 //   5. the helper makes no outbound connection of its own (tcpdump on its interface while the sandbox asks unknown names).
+// The reviewer's TS-L3 list (each is a PENDING item in scripts/linux-check-test-services.sh):
+//   a. Docker's embedded resolver (127.0.0.11) and its DNAT rules: the sandbox has none of them, and a query to 127.0.0.11 gets no answer;
+//   b. the .3 relay: with a listener in .3, a connection from .4 to .3 fails (the working sandbox is detached for the round; `docker network inspect` shows only .2, the helpers and .4);
+//   c. IPv6: no router advertisement configures an address or a route, the sandbox has no global IPv6 address, and the ip6tables rule on the host's INPUT chain drops the run bridge (L4, boot.sh);
+//   d. no default route, 8.8.8.8, the metadata address and the gateway: `ip route` shows only the run's /24; connections to 8.8.8.8, 169.254.169.254 and .1 fail;
+//   e. another run: its helpers and sandboxes cannot be reached from this one;
+//   f. multicast and broadcast: nothing leaves the bridge to anything but the run;
+//   g. run files not writable through the workspace: the directory of resolv.conf and hosts is outside the workspace (or under a masked path), so the sandbox cannot change them through its read-write workspace mount;
+//   h. spoofing: a packet from .4 with the source address .3 or .2 gets no answer from the helper, and a bound-address trick (IP_FREEBIND) cannot make the helper count a name for a caller it does not serve
+//      (a spoofed source on the same bridge can only add a name to the record blindly: it never receives the answer).
 import { isIP } from "node:net";
 import { chmod, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { agentXError } from "@agentx/contracts";
 import { RUN_NETWORK_CREATED_LABEL, RUN_NETWORK_EXPIRES_LABEL, RUN_NETWORK_LABEL, RUN_NETWORK_WORKSPACE_LABEL, runNetworkAddresses, runNetworkHelperIp, type ServicesNetwork } from "./run-network.js";
 import { SEALED_DNS_TABLE_MAX } from "./setup-dns-watch.js";
 import type { DockerCli } from "./swebench/containers.js";
-import { SANDBOX_FILE_OPS_NODE, TASK_SANDBOX_NETWORK, taskSandboxRunArgs } from "./task-sandbox.js";
+import { MASK_OPTIONS, SANDBOX_FILE_OPS_NODE, SANDBOX_INIT, TASK_SANDBOX_LABEL, TASK_SANDBOX_NETWORK, TASK_SANDBOX_PIDS_LIMIT, TASK_SANDBOX_USER, TASK_SANDBOX_WORKSPACE_LABEL, taskSandboxRunArgs } from "./task-sandbox.js";
 
 /** Where the image keeps the sealed helper's program (environments/base/Dockerfile copies the worker's dist). */
 export const SEALED_DNS_HELPER_ENTRY = "/opt/agentx/packages/worker/dist/sealed-dns-helper.js";
@@ -52,8 +68,10 @@ const DNS_HELPER_PIDS = "64";
 const DNS_HELPER_MEMORY = "128m";
 const DNS_HELPER_CPUS = "0.5";
 const DOCKER_CALL_TIMEOUT_MS = 60_000;
+const SEALED_HELPER_NAME = /^rovara-svc-[0-9a-f]{12}-dns$/u;
 const ALIAS = /^[a-z][a-z0-9-]{0,30}[a-z0-9]$/u;
 const SERVICES_NETWORK_NAME = /^rovara-svc-[0-9a-f]{12}$/u;
+const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u;
 const SAFE_HOST_PATH = /^\/[A-Za-z0-9_./-]{1,500}$/u;
 /** The service helpers of a slot: 32 addresses, .16 to .47 (run-network.ts). */
 const HELPER_COUNT = 32;
@@ -86,6 +104,8 @@ export interface CheckSandboxInput {
   helpers: readonly RunHostEntry[];
   /** The sinkhole's address: one of the helper addresses (.16 to .47). */
   sinkholeIp: string;
+  /** The working sandbox's container name (.3), which the round detaches from the services network (`detachWorkingSandbox`). Default: `<network name>-work`. */
+  workingSandboxName?: string;
 }
 
 export interface CheckSandboxPlan {
@@ -107,6 +127,11 @@ export interface CheckSandboxPlan {
   sandboxRunArgs: string[];
   /** `docker run` arguments of the DNS helper in sealed mode. */
   dnsHelperRunArgs: string[];
+  /** The working sandbox's container name and its address on the services network (.3), for `detachWorkingSandbox` and `reattachWorkingSandbox`. */
+  workingSandboxName: string;
+  workingSandboxIp: string;
+  /** True always: the working sandbox is a relay out (it is also on the internet-facing network), so it must be off the services network before the check sandbox starts (`startCheckSandbox` enforces it). */
+  mustDetachWorking: true;
 }
 
 function assertAlias(alias: string): void {
@@ -132,6 +157,7 @@ export function checkSandboxNames(net: Pick<CheckSandboxNetwork, "slot">, helper
     assertAlias(helper.alias);
     if (seen.has(helper.alias)) throw agentXError("CONFIG_INVALID", "a name is given to two test services");
     if (!isHelperAddress(net.slot, helper.address)) throw agentXError("CONFIG_INVALID", "a test service is not at one of the run's helper addresses");
+    if (helper.address === sinkholeIp) throw agentXError("CONFIG_INVALID", "a test service cannot be at the sinkhole's address");
     seen.add(helper.alias);
     names.push({ alias: helper.alias, address: helper.address });
   }
@@ -152,55 +178,137 @@ export function checkSandboxHostsFile(checkSandboxIp: string, names: readonly Ru
   return `${lines.join("\n")}\n`;
 }
 
-/** The flags the sealed sandbox must never carry, and the reason. */
+/** Why a flag that people commonly try is refused (the allow-list below refuses every other flag too, with a general reason). */
 const FORBIDDEN_FLAGS: ReadonlyMap<string, string> = new Map([
   ["--publish", "publishes a port"], ["-p", "publishes a port"], ["--publish-all", "publishes ports"], ["-P", "publishes ports"], ["--expose", "exposes a port"],
   ["--net", "names a network"], ["--link", "links a container"], ["--dns", "names a DNS server"], ["--dns-search", "names a search domain"], ["--dns-option", "sets a resolver option"],
   ["--add-host", "adds a host entry (the hosts file is the run's own)"], ["--privileged", "is privileged"], ["--cap-add", "adds a capability"], ["--device", "adds a device"],
   ["--pid", "shares a process namespace"], ["--ipc", "shares an IPC namespace"], ["--uts", "shares a UTS namespace"], ["--userns", "changes the user namespace"], ["--network-alias", "gives the sandbox an alias"],
   ["--mac-address", "sets a MAC address"], ["--ip6", "sets an IPv6 address"], ["--sysctl", "sets a kernel parameter"], ["--cgroupns", "changes the cgroup namespace"],
+  ["-v", "adds a mount"], ["--mount", "adds a mount"], ["--volumes-from", "takes another container's mounts"], ["--runtime", "changes the container runtime"], ["--group-add", "adds a group"],
+  ["--cgroup-parent", "changes the cgroup"], ["--gpus", "adds a GPU"], ["--env", "sets an environment variable"], ["-e", "sets an environment variable"], ["--env-file", "sets environment variables"],
 ]);
-/** The flags of a task sandbox that take no value. */
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["--detach", "--init", "--read-only", "--rm", "--privileged", "--publish-all", "-P", "-d", "-i", "-t", "-it"]);
+/** The flags the sealed sandbox may carry: exactly what `taskSandboxRunArgs` emits plus the run's additions (--hostname, the run labels, the two read-only mounts). Everything else is refused. */
+const ALLOWED_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--name", "--label", "--network", "--ip", "--user", "--cpus", "--memory", "--memory-swap", "--pids-limit", "--cap-drop", "--security-opt", "--volume", "--tmpfs", "--workdir", "--entrypoint", "--hostname",
+]);
+const ALLOWED_BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["--detach"]);
+const ALLOWED_LABEL_KEYS: ReadonlySet<string> = new Set([TASK_SANDBOX_LABEL, TASK_SANDBOX_WORKSPACE_LABEL, RUN_NETWORK_LABEL, RUN_NETWORK_CREATED_LABEL, RUN_NETWORK_EXPIRES_LABEL, RUN_NETWORK_WORKSPACE_LABEL]);
 const FORBIDDEN_MOUNT_SUBSTRINGS: readonly string[] = ["docker.sock", "/var/run", "/run/docker"];
+const LIMIT_VALUE = /^[0-9]+(?:\.[0-9]+)?[bkmg]?$/iu;
+
+/** What the sealed sandbox's arguments are checked against: the run's files and workspace, the image, and the masked folders (each gets the task sandbox's empty tmpfs). */
+export interface CheckSandboxArgPaths {
+  resolvConfPath: string;
+  hostsPath: string;
+  rootPath: string;
+  image: string;
+  maskedPaths: readonly string[];
+}
 
 /**
- * What is wrong with `args` as the arguments of the sealed check sandbox: an empty list when they are sound. Checked over the whole argument list before the image: exactly one network, the run's, at the
- * fixed address .4; none of the forbidden flags; the hardening of task sandboxes present; only the three expected mounts (workspace, resolv.conf, hosts), the last two read-only; no docker socket.
+ * What is wrong with `args` as the arguments of the sealed check sandbox: an empty list when they are sound. An ALLOW-LIST over the arguments up to the image: every flag must be one the task sandbox emits plus the
+ * run's additions, in any spelling (`--flag=value` is read as `--flag value`; an attached short form such as `-p8080:80` is read as `-p`, which is not allowed). Single-valued flags occur once with exactly the expected
+ * value (the run's network, .4, 1000:1000, ALL, no-new-privileges, the three mounts, the workspace as the working directory, the init entrypoint), the masked folders are exactly the expected tmpfs mounts, and after the
+ * image comes exactly `-- sleep infinity`.
  */
-export function checkSandboxArgProblems(args: readonly string[], net: CheckSandboxNetwork, paths: { resolvConfPath: string; hostsPath: string; rootPath: string }): string[] {
+export function checkSandboxArgProblems(args: readonly string[], net: CheckSandboxNetwork, paths: CheckSandboxArgPaths): string[] {
   const problems: string[] = [];
-  const entry = args.lastIndexOf("--entrypoint");
-  const flags = entry < 0 ? args : args.slice(0, entry);
-  const valuesOf = (flag: string): string[] => flags.flatMap((arg, index) => (index > 0 && flags[index - 1] === flag ? [arg] : []));
-  const networks = valuesOf("--network");
+  const values = new Map<string, string[]>();
+  let booleans = 0;
+  let imageAt = -1;
+  if (args[0] !== "run") problems.push("is not a docker run command");
+  let at = 1;
+  while (at < args.length) {
+    const token = args[at]!;
+    at += 1;
+    if (!token.startsWith("-")) { imageAt = at - 1; break; }
+    let name: string;
+    let inline: string | undefined;
+    if (token.startsWith("--")) {
+      const equals = token.indexOf("=");
+      name = equals < 0 ? token : token.slice(0, equals);
+      inline = equals < 0 ? undefined : token.slice(equals + 1);
+    } else {
+      name = token.slice(0, 2);
+      inline = token.length > 2 ? token.slice(2) : undefined;
+    }
+    if (ALLOWED_BOOLEAN_FLAGS.has(name)) {
+      if (inline !== undefined) problems.push(`carries ${name} with a value`);
+      booleans += 1;
+    } else if (ALLOWED_VALUE_FLAGS.has(name)) {
+      let value = inline;
+      if (value === undefined) { value = args[at]; at += 1; }
+      if (value === undefined) problems.push(`${name} has no value`);
+      else values.set(name, [...(values.get(name) ?? []), value]);
+    } else {
+      const reason = FORBIDDEN_FLAGS.get(name);
+      problems.push(reason === undefined ? `carries ${name}, which is not a flag of the sealed check sandbox` : `carries ${name}, which ${reason}`);
+      // Skip the flag's value, if it has one, so it is not taken for the image.
+      if (inline === undefined && args[at] !== undefined && !args[at]!.startsWith("-")) at += 1;
+    }
+  }
+  const before = imageAt < 0 ? args : args.slice(0, imageAt);
+  if (booleans !== 1) problems.push("does not run detached exactly once");
+  if (imageAt < 0) problems.push("has no image");
+  else {
+    if (args[imageAt] !== paths.image) problems.push("runs another image");
+    const tail = args.slice(imageAt + 1);
+    if (tail.length !== 3 || tail[0] !== "--" || tail[1] !== "sleep" || tail[2] !== "infinity") problems.push("has something after the image other than `-- sleep infinity`");
+  }
+  const of = (flag: string): string[] => values.get(flag) ?? [];
+  const exactly = (flag: string, expected: string, message: string): void => {
+    const found = of(flag);
+    if (found.length === 0) problems.push(`lacks ${flag}`);
+    if (found.length !== 1 || found[0] !== expected) problems.push(message);
+  };
+  const networks = of("--network");
   if (networks.length !== 1 || networks[0] !== net.name) problems.push("not attached to the run's services network alone");
   if (networks.some((network) => network === TASK_SANDBOX_NETWORK || network === "bridge" || network === "host" || network === "none" || network.startsWith("container:"))) problems.push("attached to a network with a route out");
-  const ips = valuesOf("--ip");
+  const ips = of("--ip");
   if (ips.length !== 1 || ips[0] !== net.checkSandboxIp) problems.push("not at the fixed check sandbox address");
-  // Only an argument in a flag position is looked at: the value after a flag that takes one (a label, a path, an image) is not, unless it starts with a dash, which is always read as a flag (fail closed).
-  for (let at = 0; at < flags.length; at += 1) {
-    const arg = flags[at]!;
-    if (!arg.startsWith("-")) continue;
-    const name = arg.startsWith("--") ? arg.split("=")[0]! : arg;
-    const reason = FORBIDDEN_FLAGS.get(name);
-    if (reason !== undefined) problems.push(`carries ${name}, which ${reason}`);
-    const next = flags[at + 1];
-    if (!arg.includes("=") && !BOOLEAN_FLAGS.has(name) && next !== undefined && !next.startsWith("-")) at += 1;
+  exactly("--user", TASK_SANDBOX_USER, `does not run as exactly one --user ${TASK_SANDBOX_USER}`);
+  exactly("--cap-drop", "ALL", "does not drop every capability");
+  exactly("--security-opt", "no-new-privileges", "does not hold exactly no-new-privileges as its security option");
+  exactly("--pids-limit", TASK_SANDBOX_PIDS_LIMIT, "does not hold exactly the task sandbox's pids limit");
+  exactly("--name", `${net.name}-check`, "does not have the run's check sandbox name");
+  exactly("--hostname", CHECK_SANDBOX_HOSTNAME, "does not have the check sandbox's host name");
+  exactly("--workdir", paths.rootPath, "does not work in the workspace");
+  exactly("--entrypoint", SANDBOX_INIT, "does not use the task sandbox's init as its entrypoint");
+  for (const flag of ["--cpus", "--memory", "--memory-swap"]) {
+    const found = of(flag);
+    if (found.length > 1 || found.some((value) => !LIMIT_VALUE.test(value))) problems.push(`has a ${flag} that is not one plain limit`);
   }
-  for (const required of ["--cap-drop", "--user", "--pids-limit"]) if (!flags.includes(required)) problems.push(`lacks ${required}`);
-  const capDrop = valuesOf("--cap-drop");
-  if (capDrop.length !== 1 || capDrop[0] !== "ALL") problems.push("does not drop every capability");
-  if (!valuesOf("--security-opt").includes("no-new-privileges") || valuesOf("--security-opt").length !== 1) problems.push("does not hold exactly no-new-privileges as its security option");
-  const volumes = valuesOf("--volume");
+  if (of("--memory").length !== of("--memory-swap").length || (of("--memory")[0] !== undefined && of("--memory")[0] !== of("--memory-swap")[0])) problems.push("does not hold memory and swap at one limit");
+  const volumes = of("--volume");
   const expected = [`${paths.rootPath}:${paths.rootPath}`, `${paths.resolvConfPath}:/etc/resolv.conf:ro`, `${paths.hostsPath}:/etc/hosts:ro`];
-  if (volumes.length !== 3 || !expected.every((volume) => volumes.includes(volume))) problems.push("does not hold exactly the workspace, resolv.conf and hosts mounts");
-  if (flags.some((arg) => FORBIDDEN_MOUNT_SUBSTRINGS.some((part) => arg.includes(part)))) problems.push("mounts a docker socket path");
+  if (volumes.length !== 3 || !expected.every((volume) => volumes.filter((found) => found === volume).length === 1)) problems.push("does not hold exactly the workspace, resolv.conf and hosts mounts");
+  const wantedMasks = paths.maskedPaths.map((path) => `${path}:${MASK_OPTIONS}`).sort();
+  const masks = [...of("--tmpfs")].sort();
+  if (masks.length !== wantedMasks.length || masks.some((mask, index) => mask !== wantedMasks[index])) problems.push("does not hold exactly the task sandbox's masked folders as its tmpfs mounts");
+  const labelKeys = of("--label").map((label) => label.split("=")[0]!);
+  if (labelKeys.some((key) => !ALLOWED_LABEL_KEYS.has(key)) || new Set(labelKeys).size !== labelKeys.length) problems.push("carries a label that is not one of the task sandbox's or the run's, or one twice");
+  if (before.some((arg) => FORBIDDEN_MOUNT_SUBSTRINGS.some((part) => arg.includes(part)))) problems.push("mounts a docker socket path");
   return problems;
 }
 
 function assertHostPath(path: string): void {
   if (!SAFE_HOST_PATH.test(path) || path.split("/").some((part) => part === ".." || part === ".")) throw agentXError("CONFIG_INVALID", "not a plain absolute path for a run file");
+}
+
+/**
+ * The sandbox's workspace mount is read-write, so a run file under it could be changed by the sandbox's own user (resolv.conf, hosts). A run file must therefore be outside the workspace root, or under one of the masked
+ * folders (the sandbox sees an empty read-only tmpfs there).
+ */
+function assertFilesOutsideWorkspace(paths: readonly string[], rootPath: string, maskedPaths: readonly string[]): void {
+  const root = posix.resolve(rootPath);
+  const inside = (path: string, folder: string): boolean => path === folder || path.startsWith(folder === "/" ? "/" : `${folder}/`);
+  for (const path of paths) {
+    const resolved = posix.resolve(path);
+    if (inside(resolved, root) && !maskedPaths.some((masked) => inside(resolved, posix.resolve(masked)))) {
+      throw agentXError("CONFIG_INVALID", "a run file is inside the workspace, where the sandbox could change it");
+    }
+  }
 }
 
 /** The four run-network labels must all be there (TS-RN-3 rule 1): a container without them is invisible to the sweep. */
@@ -227,6 +335,7 @@ export function checkSandboxRunArgs(input: CheckSandboxInput, files: { resolvCon
   assertHostPath(files.resolvConfPath);
   assertHostPath(files.hostsPath);
   if (files.resolvConfPath === files.hostsPath) throw agentXError("CONFIG_INVALID", "the run's two files have two paths");
+  assertFilesOutsideWorkspace([files.resolvConfPath, files.hostsPath], input.rootPath, input.maskedPaths);
   const base = taskSandboxRunArgs({
     name: `${input.net.name}-check`, taskId: input.taskId, image: input.image, rootPath: input.rootPath, maskedPaths: input.maskedPaths,
     ...(input.hostCpus === undefined ? {} : { hostCpus: input.hostCpus }), ...(input.hostMemoryBytes === undefined ? {} : { hostMemoryBytes: input.hostMemoryBytes }),
@@ -239,12 +348,12 @@ export function checkSandboxRunArgs(input: CheckSandboxInput, files: { resolvCon
     ...base.slice(0, -6), "--hostname", CHECK_SANDBOX_HOSTNAME, ...input.net.labelArgs(),
     "--volume", `${files.resolvConfPath}:/etc/resolv.conf:ro`, "--volume", `${files.hostsPath}:/etc/hosts:ro`, ...tail,
   ];
-  const problems = checkSandboxArgProblems(args, input.net, { ...files, rootPath: input.rootPath });
+  const problems = checkSandboxArgProblems(args, input.net, { ...files, rootPath: input.rootPath, image: input.image, maskedPaths: input.maskedPaths });
   if (problems.length > 0) throw agentXError("CONFIG_INVALID", `the sealed check sandbox's arguments are unsound: ${problems.join("; ")}`);
   return args;
 }
 
-/** The `docker run` arguments of the DNS helper in sealed mode: the setup helper's hardening, the services network at .2, all four labels, serving .3 and .4 only. */
+/** The `docker run` arguments of the DNS helper in sealed mode: the setup helper's hardening, the services network at .2, all four labels, serving .4 only (the working sandbox at .3 is off this network for the round and is not served). */
 export function sealedDnsHelperRunArgs(input: { net: CheckSandboxNetwork; image: string; helpers: readonly RunHostEntry[]; sinkholeIp: string }): string[] {
   assertNetwork(input.net);
   const { net } = input;
@@ -257,7 +366,7 @@ export function sealedDnsHelperRunArgs(input: { net: CheckSandboxNetwork; image:
     "--pids-limit", DNS_HELPER_PIDS, "--memory", DNS_HELPER_MEMORY, "--memory-swap", DNS_HELPER_MEMORY, "--cpus", DNS_HELPER_CPUS,
     "--tmpfs", "/state:rw,noexec,nosuid,size=1m,uid=1000,gid=1000",
     "--entrypoint", SANDBOX_FILE_OPS_NODE,
-    input.image, SEALED_DNS_HELPER_ENTRY, "--listen", net.dnsHelperIp, "--source", net.workingSandboxIp, "--source", net.checkSandboxIp, "--sinkhole", input.sinkholeIp,
+    input.image, SEALED_DNS_HELPER_ENTRY, "--listen", net.dnsHelperIp, "--source", net.checkSandboxIp, "--sinkhole", input.sinkholeIp,
     ...names.flatMap((entry) => ["--host", `${entry.alias}=${entry.address}`]), "--state", SEALED_DNS_STATE_FILE,
   ];
 }
@@ -270,6 +379,9 @@ export function checkSandboxPlan(input: CheckSandboxInput): CheckSandboxPlan {
   assertNetwork(input.net);
   assertHostPath(input.filesDir);
   const names = checkSandboxNames(input.net, input.helpers, input.sinkholeIp);
+  assertFilesOutsideWorkspace([input.filesDir], input.rootPath, input.maskedPaths);
+  const workingSandboxName = input.workingSandboxName ?? `${input.net.name}-work`;
+  if (!CONTAINER_NAME.test(workingSandboxName) || workingSandboxName === `${input.net.name}-check` || workingSandboxName === `${input.net.name}-dns`) throw agentXError("CONFIG_INVALID", "not a name for the working sandbox");
   const resolvConfPath = join(input.filesDir, "resolv.conf");
   const hostsPath = join(input.filesDir, "hosts");
   return {
@@ -279,6 +391,7 @@ export function checkSandboxPlan(input: CheckSandboxInput): CheckSandboxPlan {
     resolvConfPath, hostsPath,
     sandboxRunArgs: checkSandboxRunArgs(input, { resolvConfPath, hostsPath }),
     dnsHelperRunArgs: sealedDnsHelperRunArgs({ net: input.net, image: input.image, helpers: input.helpers, sinkholeIp: input.sinkholeIp }),
+    workingSandboxName, workingSandboxIp: input.net.workingSandboxIp, mustDetachWorking: true,
   };
 }
 
@@ -299,7 +412,7 @@ export interface SealedDnsRecord {
   unrecorded: number;
 }
 
-const RECORD_NAME = /^[a-z0-9_.-]{1,253}$/u;
+const RECORD_NAME = /^[a-z0-9_.-]{1,64}$/u;
 
 /** The helper's record from its file's text. Anything that is not exactly the expected shape gives an empty record: never a throw, never a name that is not a plain name. */
 export function parseSealedDnsRecord(text: string): SealedDnsRecord {
@@ -320,7 +433,69 @@ export function parseSealedDnsRecord(text: string): SealedDnsRecord {
 
 /** Reads the sealed helper's record with one fixed `docker exec <helper> cat /state/unknown.json`. A failed read gives an empty record. */
 export async function readSealedDnsRecord(docker: DockerCli, dnsHelperName: string): Promise<SealedDnsRecord> {
-  if (!SERVICES_NETWORK_NAME.test(dnsHelperName.replace(/-dns$/u, ""))) throw agentXError("CONFIG_INVALID", "not a sealed DNS helper's name");
+  if (!SEALED_HELPER_NAME.test(dnsHelperName)) throw agentXError("CONFIG_INVALID", "not a sealed DNS helper's name");
   const read = await docker.run(["exec", dnsHelperName, "cat", SEALED_DNS_STATE_FILE], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
   return read.exitCode === 0 ? parseSealedDnsRecord(read.stdout) : { unknown: [], dropped: 0, unrecorded: 0 };
+}
+
+// ---- The working sandbox is off the services network for the whole check round (review H1) ----
+
+/** What `detachWorkingSandbox` proved: the working sandbox was not on the services network when it looked. Only that function makes one. */
+export interface WorkingSandboxDetached {
+  readonly network: string;
+  readonly container: string;
+}
+const DETACH_PROOFS = new WeakSet<object>();
+
+type PlanForWorking = Pick<CheckSandboxPlan, "network" | "workingSandboxName" | "workingSandboxIp" | "sandboxName">;
+
+function assertWorkingPlan(plan: PlanForWorking): void {
+  if (!SERVICES_NETWORK_NAME.test(plan.network.name) || !CONTAINER_NAME.test(plan.workingSandboxName) || plan.workingSandboxName === plan.sandboxName) {
+    throw agentXError("CONFIG_INVALID", "not a plan of a sealed check sandbox");
+  }
+}
+
+/** The names of the networks the container is on now, from one `docker inspect`. A failed or unreadable inspect throws: a relay that cannot be looked at is treated as a relay. */
+async function networksOf(docker: DockerCli, container: string): Promise<string[]> {
+  const inspected = await docker.run(["inspect", "--format", "{{json .NetworkSettings.Networks}}", container], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+  if (inspected === undefined || inspected.exitCode !== 0) throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox's networks could not be read");
+  let parsed: unknown;
+  try { parsed = JSON.parse(inspected.stdout.trim()); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox's networks could not be read"); }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox's networks could not be read");
+  return Object.keys(parsed);
+}
+
+/**
+ * Takes the working sandbox (.3, also on the internet-facing network) off the run's services network and checks with an inspect that it is gone. The disconnect's own exit code does not decide: a container that was
+ * already off the network passes, and a disconnect that failed while the container is still on the network throws. TS17 calls this before it starts the check sandbox, and `reattachWorkingSandbox` after the round.
+ */
+export async function detachWorkingSandbox(docker: DockerCli, plan: PlanForWorking): Promise<WorkingSandboxDetached> {
+  assertWorkingPlan(plan);
+  await docker.run(["network", "disconnect", plan.network.name, plan.workingSandboxName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+  if ((await networksOf(docker, plan.workingSandboxName)).includes(plan.network.name)) throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox is still on the run's services network");
+  const proof: WorkingSandboxDetached = { network: plan.network.name, container: plan.workingSandboxName };
+  DETACH_PROOFS.add(proof);
+  return proof;
+}
+
+/** Connects the working sandbox back to the services network at .3 after the round. Throws when docker refuses. */
+export async function reattachWorkingSandbox(docker: DockerCli, plan: PlanForWorking): Promise<void> {
+  assertWorkingPlan(plan);
+  const connected = await docker.run(["network", "connect", "--ip", plan.workingSandboxIp, plan.network.name, plan.workingSandboxName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+  if (connected === undefined || connected.exitCode !== 0) throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox could not be attached to the run's services network again");
+}
+
+/**
+ * Starts the sealed check sandbox, and only when the working sandbox is known to be off the services network: the caller must hold the proof `detachWorkingSandbox` returned for THIS plan, and the container's networks
+ * are read once more here. Returns the container id. The plan's `sandboxRunArgs` must not be run by any other path.
+ */
+export async function startCheckSandbox(docker: DockerCli, plan: CheckSandboxPlan, detached: WorkingSandboxDetached): Promise<string> {
+  assertWorkingPlan(plan);
+  if (!DETACH_PROOFS.has(detached) || detached.network !== plan.network.name || detached.container !== plan.workingSandboxName) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "the check sandbox does not start before the working sandbox is detached from the services network");
+  }
+  if ((await networksOf(docker, plan.workingSandboxName)).includes(plan.network.name)) throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox is on the run's services network again");
+  const started = await docker.run(plan.sandboxRunArgs, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+  if (started === undefined || started.exitCode !== 0) throw agentXError("RUNTIME_UNAVAILABLE", "the check sandbox could not be started");
+  return started.stdout.trim();
 }

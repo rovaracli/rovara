@@ -4,8 +4,10 @@ import { createSocket } from "node:dgram";
 import { connect } from "node:net";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { SEALED_DNS_TABLE_MAX, SEALED_DNS_TTL_SECONDS, SealedDnsHelper, isSealedDnsName, parseDnsPacket, type SealedDnsOptions } from "../../packages/worker/src/setup-dns-watch.js";
+import { SEALED_DNS_TABLE_MAX, SEALED_DNS_TTL_SECONDS, SEALED_RECORD_NAME_MAX, SealedDnsHelper, isSealedDnsName, parseDnsPacket, type SealedDnsOptions } from "../../packages/worker/src/setup-dns-watch.js";
 import { tableFromArguments } from "../../packages/worker/src/sealed-dns-helper.js";
+import { sealedDnsHelperRunArgs } from "../../packages/worker/src/check-sandbox.js";
+import { runNetworkAddresses, runNetworkLabelArgs, runNetworkName } from "../../packages/worker/src/run-network.js";
 
 const TYPE = { A: 1, AAAA: 28, TXT: 16, HTTPS: 65, ANY: 255 } as const;
 const SINKHOLE = "172.30.5.16";
@@ -298,5 +300,44 @@ describe("the helper program's arguments", () => {
   it("turns --host pairs into a table and refuses a malformed or repeated one", () => {
     expect(tableFromArguments(["postgres=172.30.5.17", "aws=172.30.5.18"])).toEqual({ postgres: "172.30.5.17", aws: "172.30.5.18" });
     for (const bad of [["postgres"], ["postgres="], ["=1.2.3.4"], ["a=b=c"], ["a=1.2.3.4", "a=1.2.3.5"]]) expect(() => tableFromArguments(bad), JSON.stringify(bad)).toThrow();
+  });
+});
+
+describe("the working sandbox at .3 is not served (review M2)", () => {
+  const RUN = "11111111-1111-4111-8111-111111111111";
+  const addresses = runNetworkAddresses(5);
+  const net = {
+    name: runNetworkName(RUN), slot: 5, subnet: addresses.subnet, dnsHelperIp: addresses.dnsHelperIp, workingSandboxIp: addresses.workingSandboxIp, checkSandboxIp: addresses.checkSandboxIp,
+    labelArgs: () => runNetworkLabelArgs({ runId: RUN, workspace: "0123456789abcdef", createdAt: 1, expiresAt: 2 }),
+  };
+  const args = sealedDnsHelperRunArgs({ net, image: "img", helpers: [{ alias: "postgres", address: "172.30.5.17" }], sinkholeIp: SINKHOLE });
+  const sources = args.flatMap((arg, index) => (args[index - 1] === "--source" ? [arg] : []));
+
+  it("names the check sandbox's address alone as a served source", () => {
+    expect(sources).toEqual([addresses.checkSandboxIp]);
+    expect(sources).not.toContain(addresses.workingSandboxIp);
+  });
+
+  it("a caller that is not on that list (here: the loopback standing for .3) gets no answer and is not recorded, over UDP and TCP", async () => {
+    const { port, helper } = await sealed({ allowedSources: sources });
+    expect(await ask(port, query("postgres"))).toBeUndefined();
+    expect(await ask(port, query("api.unknown-vendor.com"))).toBeUndefined();
+    expect((await askTcp(port, [query("api.unknown-vendor.com")])).replies).toEqual([]);
+    expect(helper.unknownNames()).toEqual([]);
+    expect(helper.droppedNames()).toBe(0);
+    expect(helper.unrecordedQueries()).toBe(0);
+  });
+});
+
+describe("a recorded name is cut to 64 characters (review M4)", () => {
+  it("keeps the first 64 characters of a longer name, counting both names under the one record", async () => {
+    const head = `${"a".repeat(60)}.bbb`;
+    expect(head).toHaveLength(SEALED_RECORD_NAME_MAX);
+    const { port, helper } = await sealed();
+    await ask(port, query(`${head}.${"c".repeat(40)}.test`));
+    await ask(port, query(`${head}.${"d".repeat(30)}.test`));
+    await ask(port, query("short.test"));
+    expect(helper.unknownNames()).toEqual([{ name: head, queries: 2 }, { name: "short.test", queries: 1 }]);
+    expect(SEALED_RECORD_NAME_MAX).toBe(64);
   });
 });

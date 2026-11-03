@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CHECK_SANDBOX_HOSTNAME, RESERVED_RUN_ALIASES, SEALED_DNS_HELPER_ENTRY, SEALED_DNS_STATE_FILE, SINKHOLE_ALIAS,
-  checkSandboxArgProblems, checkSandboxHostsFile, checkSandboxNames, checkSandboxPlan, checkSandboxResolvConf, checkSandboxRunArgs, parseSealedDnsRecord, readSealedDnsRecord, sealedDnsHelperRunArgs, writeCheckSandboxFiles,
+  checkSandboxArgProblems, checkSandboxHostsFile, detachWorkingSandbox, reattachWorkingSandbox, startCheckSandbox, checkSandboxNames, checkSandboxPlan, checkSandboxResolvConf, checkSandboxRunArgs, parseSealedDnsRecord, readSealedDnsRecord, sealedDnsHelperRunArgs, writeCheckSandboxFiles,
   type CheckSandboxInput, type CheckSandboxNetwork,
 } from "../../packages/worker/src/check-sandbox.js";
 import { RUN_NETWORK_CREATED_LABEL, RUN_NETWORK_EXPIRES_LABEL, RUN_NETWORK_LABEL, RUN_NETWORK_WORKSPACE_LABEL, runNetworkAddresses, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName } from "../../packages/worker/src/run-network.js";
@@ -73,7 +73,7 @@ describe("the sealed check sandbox's run arguments", () => {
   });
 
   it("passes its own soundness check, and the check finds each unsound change", () => {
-    const paths = { ...FILES, rootPath: ROOT };
+    const paths = { ...FILES, rootPath: ROOT, image: "worker:img", maskedPaths: ["/workspace/.agentx-state"] };
     expect(checkSandboxArgProblems(args, network(), paths)).toEqual([]);
     const withBefore = (...extra: string[]) => [...args.slice(0, -6), ...extra, ...args.slice(-6)];
     const bad: Array<[string, string[]]> = [
@@ -123,7 +123,7 @@ describe("the sealed check sandbox's run arguments", () => {
 
   it("a label whose text looks like a flag is a value, not a flag", () => {
     const odd = checkSandboxRunArgs(input({ taskId: "not-a-flag" }), FILES);
-    expect(checkSandboxArgProblems(odd, network(), { ...FILES, rootPath: ROOT })).toEqual([]);
+    expect(checkSandboxArgProblems(odd, network(), { ...FILES, rootPath: ROOT, image: "worker:img", maskedPaths: ["/workspace/.agentx-state"] })).toEqual([]);
   });
 
   it("refuses a network that is not the run's address plan or has lost a label", () => {
@@ -180,7 +180,7 @@ describe("the run's names, resolv.conf and hosts file", () => {
   it("refuses an address that is not one of THIS run's helper addresses (.16 to .47)", () => {
     const names = (address: string, sinkhole = helper(0)) => () => checkSandboxNames(network(), [{ alias: "db", address }], sinkhole);
     expect(names("172.30.5.47")).not.toThrow();
-    expect(names("172.30.5.16")).not.toThrow();
+    expect(names("172.30.5.16", helper(1))).not.toThrow();
     for (const bad of ["172.30.5.1", "172.30.5.2", "172.30.5.3", "172.30.5.4", "172.30.5.8", "172.30.5.15", "172.30.5.48", "172.30.6.17", "172.29.5.17", "8.8.8.8", "169.254.169.254", "127.0.0.1", "172.30.5.17\n1.2.3.4 x", "", "::1"]) {
       expect(names(bad), JSON.stringify(bad)).toThrow(config("CONFIG_INVALID"));
       expect(names(helper(1), bad), `sinkhole ${JSON.stringify(bad)}`).toThrow(config("CONFIG_INVALID"));
@@ -218,9 +218,9 @@ describe("the DNS helper's run arguments (sealed mode)", () => {
     expect(valuesOf(args, "--tmpfs")).toEqual(["/state:rw,noexec,nosuid,size=1m,uid=1000,gid=1000"]);
   });
 
-  it("runs the sealed program, serving .3 and .4 only, with the sinkhole, the table and no upstream", () => {
+  it("runs the sealed program, serving .4 only, with the sinkhole, the table and no upstream", () => {
     const program = args.slice(args.indexOf("worker:img"));
-    expect(program).toEqual(["worker:img", SEALED_DNS_HELPER_ENTRY, "--listen", "172.30.5.2", "--source", "172.30.5.3", "--source", "172.30.5.4", "--sinkhole", "172.30.5.16",
+    expect(program).toEqual(["worker:img", SEALED_DNS_HELPER_ENTRY, "--listen", "172.30.5.2", "--source", "172.30.5.4", "--sinkhole", "172.30.5.16",
       "--host", "postgres=172.30.5.17", "--host", "aws=172.30.5.18", "--host", "sinkhole=172.30.5.16", "--state", SEALED_DNS_STATE_FILE]);
     expect(program).not.toContain("--upstream");
     expect(valuesOf(args, "--entrypoint")).toEqual(["/usr/local/bin/node"]);
@@ -333,5 +333,249 @@ describe("the helper's record of unknown names", () => {
     expect(await readSealedDnsRecord({ run: () => Promise.reject(new Error("boom")) }, helperName)).toEqual({ unknown: [], dropped: 0, unrecorded: 0 });
     await expect(readSealedDnsRecord(docker({ exitCode: 0, stdout: "{}" }), "some-other-container")).rejects.toThrow(config("CONFIG_INVALID"));
     await expect(readSealedDnsRecord(docker({ exitCode: 0, stdout: "{}" }), "--all")).rejects.toThrow(config("CONFIG_INVALID"));
+  });
+});
+
+describe("the allow-list refuses every spelling of every bypass (review M1)", () => {
+  const args = checkSandboxRunArgs(input(), FILES);
+  const paths = { ...FILES, rootPath: ROOT, image: "worker:img", maskedPaths: ["/workspace/.agentx-state"] };
+  const entry = args.indexOf("--entrypoint");
+  const before = (...extra: string[]) => [...args.slice(0, entry), ...extra, ...args.slice(entry)];
+  const afterEntrypoint = (...extra: string[]) => [...args.slice(0, entry + 2), ...extra, ...args.slice(entry + 2)];
+  const afterImage = (...extra: string[]) => [...args, ...extra];
+
+  it("the real arguments pass", () => {
+    expect(checkSandboxArgProblems(args, network(), paths)).toEqual([]);
+  });
+
+  const BYPASSES: Array<[string, string[]]> = [
+    ["--network=bridge", ["--network=bridge"]],
+    ["--network=host", ["--network=host"]],
+    ["--ip=172.30.5.3", ["--ip=172.30.5.3"]],
+    ["--security-opt=seccomp=unconfined", ["--security-opt=seccomp=unconfined"]],
+    ["--security-opt seccomp=unconfined", ["--security-opt", "seccomp=unconfined"]],
+    ["--cap-drop=NET_RAW", ["--cap-drop=NET_RAW"]],
+    ["--user=0:0", ["--user=0:0"]],
+    ["a second --user", ["--user", "0:0"]],
+    ["a second --user with the same value", ["--user", "1000:1000"]],
+    ["-p8080:80", ["-p8080:80"]],
+    ["-p 8080:80", ["-p", "8080:80"]],
+    ["-v /:/host", ["-v", "/:/host"]],
+    ["-v/:/host", ["-v/:/host"]],
+    ["--volume=/:/host", ["--volume=/:/host"]],
+    ["--mount type=bind", ["--mount", "type=bind,src=/,dst=/host"]],
+    ["--mount=type=bind", ["--mount=type=bind,src=/,dst=/host"]],
+    ["--volumes-from", ["--volumes-from", "other"]],
+    ["--tmpfs /etc", ["--tmpfs", "/etc"]],
+    ["--tmpfs=/etc", ["--tmpfs=/etc:rw"]],
+    ["--runtime", ["--runtime", "runc"]],
+    ["--group-add 0", ["--group-add", "0"]],
+    ["--cgroup-parent", ["--cgroup-parent", "/x"]],
+    ["--gpus", ["--gpus", "all"]],
+    ["--env DOCKER_HOST=", ["--env", "DOCKER_HOST="]],
+    ["-e DOCKER_HOST=", ["-e", "DOCKER_HOST=tcp://x:2375"]],
+    ["--env=DOCKER_HOST=", ["--env=DOCKER_HOST="]],
+    ["--env-file", ["--env-file", "/etc/passwd"]],
+    ["--dns=8.8.8.8", ["--dns=8.8.8.8"]],
+    ["--add-host=evil:1.2.3.4", ["--add-host=evil:1.2.3.4"]],
+    ["--cap-add=NET_ADMIN", ["--cap-add=NET_ADMIN"]],
+    ["--privileged=true", ["--privileged=true"]],
+    ["--pid=host", ["--pid=host"]],
+    ["--sysctl", ["--sysctl", "net.ipv4.ip_forward=1"]],
+    ["a flag nobody has heard of", ["--frobnicate", "yes"]],
+    ["a bare dash", ["-"]],
+    ["a label key that is not ours", ["--label", "com.example.x=1"]],
+    ["a second hostname", ["--hostname", "other"]],
+    ["a second workdir", ["--workdir", "/"]],
+    ["a second entrypoint", ["--entrypoint", "/bin/sh"]],
+    ["a second memory", ["--memory", "1g"]],
+  ];
+  it.each(BYPASSES)("refuses %s before the entrypoint", (_name, extra) => {
+    expect(checkSandboxArgProblems(before(...extra), network(), paths)).not.toEqual([]);
+  });
+  it.each(BYPASSES)("refuses %s after --entrypoint (the scan runs up to the image, not up to --entrypoint)", (_name, extra) => {
+    expect(checkSandboxArgProblems(afterEntrypoint(...extra), network(), paths)).not.toEqual([]);
+  });
+  it.each([["--network", "bridge"], ["--privileged"], ["-p8080:80"], ["--cap-add=ALL"], ["--user=0"]] as Array<string[]>)("refuses %j after the image", (...extra) => {
+    expect(checkSandboxArgProblems(afterImage(...extra), network(), paths)).not.toEqual([]);
+  });
+
+  it("says which rule each one broke", () => {
+    const said = (changed: string[]) => checkSandboxArgProblems(changed, network(), paths).join(" | ");
+    expect(said(before("--network=bridge"))).toMatch(/services network alone/u);
+    expect(said(before("--ip=172.30.5.3"))).toMatch(/fixed check sandbox address/u);
+    expect(said(before("--security-opt=seccomp=unconfined"))).toMatch(/no-new-privileges/u);
+    expect(said(before("--cap-drop=NET_RAW"))).toMatch(/every capability/u);
+    expect(said(before("--user=0:0"))).toMatch(/exactly one --user 1000:1000/u);
+    expect(said(before("-p8080:80"))).toMatch(/-p, which publishes a port/u);
+    expect(said(before("-v", "/:/host"))).toMatch(/-v, which adds a mount/u);
+    expect(said(before("--runtime", "runc"))).toMatch(/--runtime/u);
+    expect(said(before("--gpus", "all"))).toMatch(/--gpus/u);
+    expect(said(before("--tmpfs", "/etc"))).toMatch(/masked folders/u);
+    expect(said(afterImage("--privileged"))).toMatch(/after the image/u);
+  });
+
+  it("a different image, a missing masked folder or a changed working directory is a problem too", () => {
+    expect(checkSandboxArgProblems(args, network(), { ...paths, image: "other:img" })).toEqual(expect.arrayContaining([expect.stringMatching(/another image/u)]));
+    expect(checkSandboxArgProblems(args, network(), { ...paths, maskedPaths: [] })).toEqual(expect.arrayContaining([expect.stringMatching(/masked folders/u)]));
+    expect(checkSandboxArgProblems(args, network(), { ...paths, rootPath: "/elsewhere" })).not.toEqual([]);
+    expect(checkSandboxArgProblems(args.slice(1), network(), paths)).not.toEqual([]);
+  });
+});
+
+describe("the working sandbox is detached for the round (review H1)", () => {
+  const plan = checkSandboxPlan(input());
+  const NET = runNetworkName(RUN);
+  const WORK = `${NET}-work`;
+
+  /** A docker that remembers which networks the working sandbox is on. */
+  function fakeDocker(state: { networks: string[]; disconnectExit?: number; inspectExit?: number; inspectOut?: string; runExit?: number; connectExit?: number }) {
+    const calls: string[][] = [];
+    const docker: DockerCli = {
+      run: (args) => {
+        calls.push([...args]);
+        if (args[0] === "network" && args[1] === "disconnect") {
+          if ((state.disconnectExit ?? 0) === 0) state.networks = state.networks.filter((name) => name !== args[2]);
+          return Promise.resolve({ exitCode: state.disconnectExit ?? 0, stdout: "", stderr: "" });
+        }
+        if (args[0] === "network" && args[1] === "connect") return Promise.resolve({ exitCode: state.connectExit ?? 0, stdout: "", stderr: "" });
+        if (args[0] === "inspect") return Promise.resolve({ exitCode: state.inspectExit ?? 0, stdout: state.inspectOut ?? JSON.stringify(Object.fromEntries(state.networks.map((name) => [name, { IPAddress: "x" }]))), stderr: "" });
+        if (args[0] === "run") return Promise.resolve({ exitCode: state.runExit ?? 0, stdout: "container-id\n", stderr: "" });
+        return Promise.resolve({ exitCode: 1, stdout: "", stderr: "unexpected" });
+      },
+    };
+    return { docker, calls, state };
+  }
+  const started = (calls: string[][]) => calls.filter((call) => call[0] === "run");
+
+  it("the plan says the working sandbox must be detached, and names it and its address", () => {
+    expect(plan.mustDetachWorking).toBe(true);
+    expect(plan.workingSandboxName).toBe(WORK);
+    expect(plan.workingSandboxIp).toBe("172.30.5.3");
+    expect(checkSandboxPlan(input({ workingSandboxName: "my-working" })).workingSandboxName).toBe("my-working");
+    for (const bad of ["--privileged", "", "a b", `${NET}-check`, `${NET}-dns`, "x".repeat(200)]) expect(() => checkSandboxPlan(input({ workingSandboxName: bad })), bad).toThrow(config("CONFIG_INVALID"));
+  });
+
+  it("disconnects the working sandbox from the run's network and checks with an inspect that it is gone", async () => {
+    const { docker, calls } = fakeDocker({ networks: [NET, "agentx-task"] });
+    const proof = await detachWorkingSandbox(docker, plan);
+    expect(calls).toEqual([["network", "disconnect", NET, WORK], ["inspect", "--format", "{{json .NetworkSettings.Networks}}", WORK]]);
+    expect(proof).toEqual({ network: NET, container: WORK });
+  });
+
+  it("does not trust the disconnect's exit code: still attached after a 'successful' disconnect is an error", async () => {
+    const stuck: DockerCli = { run: (args) => Promise.resolve(args[0] === "inspect" ? { exitCode: 0, stdout: JSON.stringify({ [NET]: {}, "agentx-task": {} }), stderr: "" } : { exitCode: 0, stdout: "", stderr: "" }) };
+    await expect(detachWorkingSandbox(stuck, plan)).rejects.toThrow(/still on the run's services network/u);
+  });
+
+  it("a container that was already off the network passes, even though docker refused the disconnect", async () => {
+    const { docker } = fakeDocker({ networks: ["agentx-task"], disconnectExit: 1 });
+    await expect(detachWorkingSandbox(docker, plan)).resolves.toEqual({ network: NET, container: WORK });
+  });
+
+  it("a disconnect that failed while the container is still attached is an error", async () => {
+    const { docker } = fakeDocker({ networks: [NET, "agentx-task"], disconnectExit: 1 });
+    await expect(detachWorkingSandbox(docker, plan)).rejects.toThrow(/still on the run's services network/u);
+  });
+
+  it("a network list that cannot be read is an error, not a pass", async () => {
+    for (const state of [{ inspectExit: 1 }, { inspectOut: "not json" }, { inspectOut: "[]" }, { inspectOut: "null" }, { inspectOut: "" }]) {
+      const { docker } = fakeDocker({ networks: ["agentx-task"], ...state });
+      await expect(detachWorkingSandbox(docker, plan), JSON.stringify(state)).rejects.toThrow(/could not be read/u);
+    }
+    await expect(detachWorkingSandbox({ run: () => Promise.reject(new Error("boom")) }, plan)).rejects.toThrow(/could not be read/u);
+  });
+
+  it("starts the check sandbox with the plan's arguments once the detach is proven, and looks at the networks again first", async () => {
+    const { docker, calls } = fakeDocker({ networks: [NET, "agentx-task"] });
+    const proof = await detachWorkingSandbox(docker, plan);
+    calls.length = 0;
+    expect(await startCheckSandbox(docker, plan, proof)).toBe("container-id");
+    expect(calls).toEqual([["inspect", "--format", "{{json .NetworkSettings.Networks}}", WORK], plan.sandboxRunArgs]);
+  });
+
+  it("refuses to start the check sandbox without the proof: nothing was detached, a made-up proof, or another plan's proof", async () => {
+    const { docker, calls } = fakeDocker({ networks: [NET, "agentx-task"] });
+    await expect(startCheckSandbox(docker, plan, { network: NET, container: WORK })).rejects.toThrow(/does not start before/u);
+    await expect(startCheckSandbox(docker, plan, undefined as never)).rejects.toThrow();
+    const otherPlan = checkSandboxPlan(input({ workingSandboxName: "another-working" }));
+    const other = fakeDocker({ networks: ["agentx-task"] });
+    const otherProof = await detachWorkingSandbox(other.docker, otherPlan);
+    await expect(startCheckSandbox(docker, plan, otherProof)).rejects.toThrow(/does not start before/u);
+    expect(started(calls)).toEqual([]);
+    expect(started(other.calls)).toEqual([]);
+  });
+
+  it("refuses when the working sandbox got back on the network between the detach and the start", async () => {
+    const { docker, calls, state } = fakeDocker({ networks: [NET, "agentx-task"] });
+    const proof = await detachWorkingSandbox(docker, plan);
+    state.networks = [NET, "agentx-task"];
+    await expect(startCheckSandbox(docker, plan, proof)).rejects.toThrow(/on the run's services network again/u);
+    expect(started(calls)).toEqual([]);
+  });
+
+  it("a docker that refuses to start the container is an error", async () => {
+    const { docker } = fakeDocker({ networks: ["agentx-task"], runExit: 125 });
+    const proof = await detachWorkingSandbox(docker, plan);
+    await expect(startCheckSandbox(docker, plan, proof)).rejects.toThrow(/could not be started/u);
+  });
+
+  it("connects the working sandbox back at .3 after the round, and says so when docker refuses", async () => {
+    const { docker, calls } = fakeDocker({ networks: ["agentx-task"] });
+    await reattachWorkingSandbox(docker, plan);
+    expect(calls).toEqual([["network", "connect", "--ip", "172.30.5.3", NET, WORK]]);
+    await expect(reattachWorkingSandbox(fakeDocker({ networks: [], connectExit: 1 }).docker, plan)).rejects.toThrow(/attached to the run's services network again/u);
+    await expect(reattachWorkingSandbox({ run: () => Promise.reject(new Error("boom")) }, plan)).rejects.toThrow(/attached to the run's services network again/u);
+  });
+
+  it("refuses a plan whose network or container is not a plain name", async () => {
+    const { docker, calls } = fakeDocker({ networks: [] });
+    await expect(detachWorkingSandbox(docker, { ...plan, network: { name: "bridge", ip: "172.30.5.4" } })).rejects.toThrow(config("CONFIG_INVALID"));
+    await expect(detachWorkingSandbox(docker, { ...plan, workingSandboxName: "--all" })).rejects.toThrow(config("CONFIG_INVALID"));
+    await expect(reattachWorkingSandbox(docker, { ...plan, workingSandboxName: plan.sandboxName })).rejects.toThrow(config("CONFIG_INVALID"));
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("the run's files are not inside the workspace (review M3)", () => {
+  const wide = (overrides: Partial<CheckSandboxInput> = {}) => input({ rootPath: "/workspace", maskedPaths: ["/workspace/.agentx-state"], ...overrides });
+
+  it("refuses a files directory inside the workspace root, the root itself, and a sibling that only looks like a masked path", () => {
+    for (const filesDir of ["/workspace/run", "/workspace", "/workspace/.agentx-state2/run", "/workspace/a/b/c", "//workspace/run"]) {
+      expect(() => checkSandboxPlan(wide({ filesDir })), filesDir).toThrow(/inside the workspace/u);
+    }
+  });
+
+  it("accepts a directory outside the workspace, and one under a masked folder", () => {
+    for (const filesDir of ["/run/rovara/check-1", "/workspacex/run", "/work", "/workspace/.agentx-state/run", "/workspace/.agentx-state"]) {
+      expect(() => checkSandboxPlan(wide({ filesDir })), filesDir).not.toThrow();
+    }
+  });
+
+  it("checks the two file paths of the builder itself, not just the plan's directory", () => {
+    expect(() => checkSandboxRunArgs(wide(), { resolvConfPath: "/workspace/resolv.conf", hostsPath: "/run/x/hosts" })).toThrow(/inside the workspace/u);
+    expect(() => checkSandboxRunArgs(wide(), { resolvConfPath: "/run/x/resolv.conf", hostsPath: "/workspace/hosts" })).toThrow(/inside the workspace/u);
+    expect(() => checkSandboxRunArgs(wide(), { resolvConfPath: "/workspace/.agentx-state/resolv.conf", hostsPath: "/workspace/.agentx-state/hosts" })).not.toThrow();
+  });
+});
+
+describe("smaller review items", () => {
+  it("L2: a dependency cannot sit at the sinkhole's address", () => {
+    expect(() => checkSandboxNames(network(), [{ alias: "db", address: helper(0) }], helper(0))).toThrow(/sinkhole's address/u);
+    expect(() => checkSandboxNames(network(), [{ alias: "db", address: helper(1) }], helper(0))).not.toThrow();
+  });
+
+  it("L3: the helper's record is read only from a name of the form rovara-svc-<12 hex>-dns", async () => {
+    const docker: DockerCli = { run: () => Promise.resolve({ exitCode: 0, stdout: "{}", stderr: "" }) };
+    await expect(readSealedDnsRecord(docker, "rovara-svc-0123456789ab-dns")).resolves.toEqual({ unknown: [], dropped: 0, unrecorded: 0 });
+    for (const bad of ["xrovara-svc-0123456789ab-dns", "rovara-svc-0123456789ab-dns\n", "rovara-svc-0123456789ab-x-dns", "rovara-svc-0123456789ab", "rovara-svc-0123456789AB-dns", "rovara-svc-0123456789a-dns", "rovara-svc-0123456789abc-dns", "rovara-svc--dns", "rovara-svc-0123456789ab-dns-dns"]) {
+      await expect(readSealedDnsRecord(docker, bad), JSON.stringify(bad)).rejects.toThrow(config("CONFIG_INVALID"));
+    }
+  });
+
+  it("M4: a recorded name is at most 64 characters", () => {
+    const sixtyFour = `${"a".repeat(63)}b`;
+    const parsed = parseSealedDnsRecord(JSON.stringify({ unknown: [{ name: sixtyFour, queries: 1 }, { name: `${sixtyFour}c`, queries: 1 }], dropped: 0, unrecorded: 0 }));
+    expect(parsed.unknown).toEqual([{ name: sixtyFour, queries: 1 }]);
   });
 });

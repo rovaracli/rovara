@@ -46,6 +46,22 @@ describe("the sealed check sandbox refuses a task sandbox that drifted", () => {
     ["a privileged container", ["--privileged"]],
     ["a docker socket", ["--volume", "/var/run/docker.sock:/var/run/docker.sock"]],
     ["a host entry", ["--add-host", "evil:1.2.3.4"]],
+    ["a network in the equals form", ["--network=bridge"]],
+    ["an address in the equals form", ["--ip=172.30.5.3"]],
+    ["seccomp unconfined in the equals form", ["--security-opt=seccomp=unconfined"]],
+    ["a different capability drop", ["--cap-drop=NET_RAW"]],
+    ["root as the user", ["--user=0:0"]],
+    ["a second user", ["--user", "0:0"]],
+    ["an attached short publish", ["-p8080:80"]],
+    ["a host bind mount", ["-v", "/:/host"]],
+    ["a mount flag", ["--mount", "type=bind,src=/,dst=/host"]],
+    ["volumes from another container", ["--volumes-from", "other"]],
+    ["a tmpfs over /etc", ["--tmpfs", "/etc"]],
+    ["another runtime", ["--runtime", "runc"]],
+    ["an added group", ["--group-add", "0"]],
+    ["another cgroup parent", ["--cgroup-parent", "/x"]],
+    ["a GPU", ["--gpus", "all"]],
+    ["a DOCKER_HOST variable", ["--env", "DOCKER_HOST=tcp://x:2375"]],
   ])("refuses %s", (_name, extra) => {
     reset();
     drift.extra = extra;
@@ -71,6 +87,20 @@ describe("the sealed check sandbox refuses a task sandbox that drifted", () => {
     reset();
     drift.tail = ["--entrypoint", "tini", "img", "sleep", "infinity", "extra"];
     expect(() => checkSandboxRunArgs(input, files)).toThrow(/changed shape/u);
+    reset();
+  });
+
+  it("refuses a flag placed after --entrypoint, before the image", () => {
+    reset();
+    drift.tail = ["--entrypoint", "tini", "--network=bridge", "img", "--", "sleep", "infinity"];
+    expect(() => checkSandboxRunArgs(input, files)).toThrow(/changed shape|unsound/u);
+    reset();
+  });
+
+  it("refuses an extra argument after the image", () => {
+    reset();
+    drift.tail = ["--entrypoint", "tini", "img", "--", "sleep", "infinity", "--privileged"];
+    expect(() => checkSandboxRunArgs(input, files)).toThrow(/changed shape|unsound/u);
     reset();
   });
 });

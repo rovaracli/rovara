@@ -165,6 +165,16 @@ pending L2.live dual-homed-sandbox "start a sandbox on both networks: run aliase
 
 # ---- TS-L3: the sealed check sandbox with a run-owned resolv.conf reaches only the DNS helper, the run's names and the proxy.
 pending L3.live sealed-sandbox-reaches-only-the-run "start a sandbox on the services network alone with a read-only resolv.conf naming the DNS helper: a run name resolves, an unknown name goes to the sinkhole, an IP literal on the internet fails"
+# The reviewer's TS-L3 list (TS16 review, 2026-11-03; also in the header of packages/worker/src/check-sandbox.ts). Each is a live probe from inside the sealed check sandbox (.4) of a throwaway run network, after
+# detachWorkingSandbox() has taken the working sandbox (.3) off it.
+pending L3.embedded-resolver docker-embedded-resolver-and-dnat "the sandbox's resolv.conf names the DNS helper alone: a query to 127.0.0.11 gets no answer, and 'iptables -t nat' on the host holds no DNAT rule for the run bridge's embedded resolver ports"
+pending L3.working-relay working-sandbox-relay-is-gone "with a listener (nc -l) started in the working sandbox BEFORE the detach and another bound to .3 afterwards: a connection from .4 to .3 on that port fails, 'docker network inspect' lists only .2, the helpers and .4, and startCheckSandbox refuses while the working sandbox is still attached"
+pending L3.ipv6 no-ipv6-in-or-out "inside the sandbox: no router advertisement gives an address or a route (sysctl accept_ra=0 or no RA seen with tcpdump), no global IPv6 address, an IPv6 connection to a public address fails; on the host: boot.sh's ip6tables INPUT rule drops the run bridge (review L4 is outside this lane; see DEFERRED-CHECKS)"
+pending L3.no-route no-default-route-8888-metadata-gateway "inside the sandbox: 'ip route' shows only the run's /24; connections to 8.8.8.8 (53 and 443), 169.254.169.254 and the gateway .1 (every port) fail"
+pending L3.other-run another-run-unreachable "with a second run network up: the other run's helpers, sandboxes and DNS helper cannot be reached from .4, by address or by name"
+pending L3.multicast multicast-and-broadcast-stay-on-the-bridge "inside the sandbox: a send to 224.0.0.251, 239.255.255.250 and the /24 broadcast reaches nothing outside the run (tcpdump on the host's uplink sees none of it)"
+pending L3.run-files run-files-not-writable-through-workspace "resolv.conf and hosts are outside the workspace root or under a masked path: from inside the sandbox, writing through the workspace to the host path fails, and 'cat /etc/resolv.conf' still names .2 alone after the attempt"
+pending L3.spoofing helper-ignores-spoofed-and-neighbour-sources "a query from .3 (detached working sandbox re-attached for the probe) and from a helper at .16 gets no answer and is not recorded; a forged source .4 sent with IP_FREEBIND from a neighbour can only add a name to the record (blind), and no reply reaches the sender"
 
 # ---- TS-L4: Postgres and MySQL start as non-root with no capabilities on tmpfs.
 pending L4.live helpers-start-non-root "start the catalog's Postgres and MySQL images with the hardening profile (non-root user, --cap-drop ALL, read-only, tmpfs data): both reach health"
