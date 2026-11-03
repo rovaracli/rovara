@@ -1,6 +1,7 @@
 // Test services TS1 (contract): the dependency and its backing, the rules of design 2.2, the less-safe fields, the list caps and the reader of today's v1 services.
 import { describe, expect, it } from "vitest";
 import * as dep from "../../packages/contracts/src/test-env-dependency.js";
+import * as shared from "../../packages/contracts/src/test-services-shared.js";
 import { TestEnvServiceSchema, type TestEnvService } from "../../packages/contracts/src/test-environment.js";
 
 const sha = (letter: string) => letter.repeat(64);
@@ -54,6 +55,13 @@ describe("families and identifiers", () => {
   });
   it.each(["", "Postgres", "aws:", "aws:S3", "http:localhost", "http:10.0.0.1", "http:*.example.com", "http:example.com/path", "http:Example.com", "http:a.b:80", "x y"])("refuses the family %j", (family) => {
     expect(dep.FamilyIdSchema.safeParse(family).success).toBe(false);
+  });
+  it("refuses an http family whose host can be read as an address, in any spelling", () => {
+    for (const host of ["127.1", "127.0.1", "10.1", "0x7f.0.0.1", "0177.0.0.1", "169.254.43518", "127.0.0.1", "10.0.0.1", "1.1", "0x7f.1", "a.1", "a.b.0x1", "localhost", "0.0.0.0", "2130706433"]) {
+      expect(dep.FamilyIdSchema.safeParse(`http:${host}`).success, host).toBe(false);
+      expect(ok(base({ id: "api", name: "API", kind: "http_api", family: `http:${host}`, backing: { kind: "fake", fixtureSetRef: sha("a"), unmatched: "fail" }, connect: { env: [], hostAliases: [] } })), host).toBe(false);
+    }
+    for (const host of ["api.example-pay.com", "a.io", "1password.example.com"]) expect(dep.FamilyIdSchema.safeParse(`http:${host}`).success, host).toBe(true);
   });
   it("refuses a catalog id that is not name@version", () => {
     expect(dep.CatalogIdSchema.safeParse("postgres@16").success).toBe(true);
@@ -169,12 +177,67 @@ describe("connection variables", () => {
     expect(dep.connectTemplateProblem("postgres://app:hunter2@{host}")).toBe("password_literal");
     expect(dep.connectTemplateProblem("{password}")).toBeUndefined();
   });
+  it("refuses every shell and quoting character, anywhere", () => {
+    for (const character of ["`", "$", ";", "|", "&", "<", ">", '"', "'", "\\"]) {
+      for (const template of [`{host}${character}`, `http://{host}/a${character}b`, `${character}{host}`, `http://{host}/?q=${character}{db}`]) {
+        expect(dep.connectTemplateProblem(template), JSON.stringify(template)).toBe("shell_character");
+        expect(ok(env("X", template)), JSON.stringify(template)).toBe(false);
+      }
+    }
+    expect(dep.connectTemplateProblem("http://{host}/$(id)")).toBe("shell_character");
+    expect(dep.connectTemplateProblem("{host};{port}")).toBe("shell_character");
+  });
+  it("refuses text that looks like a key, anywhere in a template", () => {
+    const build = (...parts: string[]) => parts.join("");
+    const token = "Qk7mP2xR9vLw4NtY8bZc3HdF6gJs1VaUeXoI5";
+    for (const text of [build("sk", "_live_", token.slice(0, 20)), build("sk", "_test_", token.slice(0, 20)), build("AKIA", "ABCDEFGHIJKLMNOP"), build("gh", "p_", token), build("-----", "BEGIN"), token, build("ey", "J", token.slice(0, 16), ".", token.slice(0, 16), ".", token.slice(0, 16))]) {
+      for (const template of [`https://{host}/v1/${text}`, `https://{host}/?id=${text}`, `{host}/${text}`]) {
+        expect(dep.connectTemplateProblem(template), template.slice(0, 24)).toBe("secret_shaped");
+        expect(ok(env("X", template)), template.slice(0, 24)).toBe(false);
+      }
+    }
+  });
+  it("refuses a password, token, key or secret query parameter that is not a placeholder", () => {
+    for (const template of ["https://{host}/v1?password=abc", "https://{host}/v1?token=abc", "https://{host}/v1?api_key=abc", "https://{host}/v1?apikey=abc", "https://{host}/v1?secret=abc", "https://{host}/v1?Access_Token=abc", "https://{host}/v1?key=", "https://{host}/v1?secretvalue", "https://{host}/v1?password={password}x", "https://{host}/v1?token=x{password}", "https://{host}/v1?key={}", "{endpoint}?token=abc"]) {
+      expect(dep.connectTemplateProblem(template), template).toBe(template.endsWith("{}") ? "placeholder" : "query_secret");
+      expect(ok(env("X", template)), template).toBe(false);
+    }
+    for (const template of ["https://{host}/v1?password={password}", "https://{host}/v1?token={password}", "https://{host}/v1?sslmode=disable", "https://{host}/v1?region={region}", "{endpoint}?api_key={password}"]) {
+      expect(dep.connectTemplateProblem(template), template).toBeUndefined();
+      expect(ok(env("X", template)), template).toBe(true);
+    }
+  });
+  it("lets the user information be only {user} and {password}", () => {
+    for (const template of ["http://{user}:{password}:{password}@{host}", "http://:{password}:x@{host}", "http://evil.com@{host}", "http://{host}@evil.com", "http://a:b:c@{host}", "http://{user}:{user}@{host}", "http://admin:{password}@{host}", "http://{db}@{host}", "http://@@{host}", "http://{user}@x@{host}"]) {
+      expect(["userinfo", "password_literal"], template).toContain(dep.connectTemplateProblem(template));
+      expect(ok(env("X", template)), template).toBe(false);
+    }
+    for (const template of ["http://{user}@{host}", "http://{user}:{password}@{host}", "redis://:{password}@{host}", "http://@{host}"]) expect(ok(env("X", template)), template).toBe(true);
+  });
+  it("lets the host be only {host} or {endpoint}, with an optional {port}", () => {
+    for (const template of ["http://evil.com/", "http://{host}.evil.com", "http://{db}:{port}", "http://{host}:8080", "http://{host}:{port}x", "http://", "http:///x", "http://{host}{host}", "http://localhost", "http://127.0.0.1", "HTTP://{host}", "{host}@x", "evil.com", "{host}.evil.com", "{db}.{host}x", "http://{region}.example.com", "x://{port}"]) {
+      expect(["host", "userinfo"], template).toContain(dep.connectTemplateProblem(template));
+      expect(ok(env("X", template)), template).toBe(false);
+    }
+    for (const template of ["http://{host}", "http://{endpoint}", "https://{endpoint}:{port}/v1", "postgres://{user}:{password}@{endpoint}:{port}/{db}", "{host}:{port}", "{host},{host}", "{endpoint}/v1", "{region}"]) expect(ok(env("X", template)), template).toBe(true);
+  });
   it("refuses a variable name that Rovara or the system owns", () => {
     for (const name of ["AWS_ENDPOINT_URL", "AWS_ACCESS_KEY_ID", "PATH", "HOME", "NODE_OPTIONS", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "GIT_SSH_COMMAND", "ROVARA_TOKEN", "AGENTX_X", "PYTHONPATH", "DOCKER_HOST", "JAVA_TOOL_OPTIONS"]) {
       expect(ok(env(name, "{host}")), name).toBe(false);
-      expect(dep.reservedDependencyEnvName(name.toLowerCase())).toBe(true);
+      expect(shared.reservedDependencyEnvName(name.toLowerCase())).toBe(true);
     }
     for (const name of ["DATABASE_URL", "REDIS_URL", "PAYMENTS_API_URL", "DB_PASSWORD"]) expect(ok(env(name, "{host}")), name).toBe(true);
+  });
+  it("refuses the names of the interpreters, package managers, TLS, shell, cloud and model-provider variables, each by name and by prefix", () => {
+    const prefixes = ["PYTHON", "NPM_CONFIG_", "PIP_", "UV_", "YARN_", "GO", "CARGO_", "XDG_", "SSL", "OPENSSL_", "GLIBC_", "GCONV_", "BASH", "KUBE", "GOOGLE_", "AZURE_", "ANTHROPIC_", "OPENAI_", "AGENTX_", "ROVARA_", "AWS_", "GIT_", "LD_", "DYLD_", "PI_", "DOCKER_"];
+    for (const prefix of prefixes) for (const name of [`${prefix}X`, `${prefix}SETTING_1`]) expect(ok(env(name, "{host}")), name).toBe(false);
+    const names = ["NODE_TLS_REJECT_UNAUTHORIZED", "SSLKEYLOGFILE", "HOSTALIASES", "TMPDIR", "PROMPT_COMMAND", "PS4", "SHELLOPTS", "FTP_PROXY", "MAVEN_OPTS", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "RUBYOPT", "PERL5OPT", "PERL5LIB", "BASH_ENV", "PYTHONPATH", "NODE_OPTIONS", "CLASSPATH"];
+    for (const name of names) {
+      expect(shared.reservedDependencyEnvName(name), name).toBe(true);
+      if (/^[A-Z][A-Z0-9_]{0,63}$/u.test(name)) expect(ok(env(name, "{host}")), name).toBe(false);
+    }
+    // `_JAVA_OPTIONS` is not an acceptable variable name here at all, but it is still reserved for every other place that asks.
+    expect(ok(env("_JAVA_OPTIONS", "{host}"))).toBe(false);
   });
   it("refuses a lower-case, empty or oversized variable name", () => {
     for (const name of ["database_url", "", "1X", "A".repeat(65), "A-B"]) expect(ok(env(name, "{host}")), name).toBe(false);

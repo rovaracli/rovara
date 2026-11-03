@@ -87,13 +87,38 @@ describe("FixtureSet v2 schema", () => {
     expect(ok(withHeaders([{ name: "etag", value: "a\r\nSet-Cookie: x" }]))).toBe(false);
     expect(ok(withHeaders(mocks.FIXTURE_RESPONSE_HEADER_NAMES.slice(0, 9).map((name) => ({ name, value: "v" }))))).toBe(false);
   });
-  it("lists at most twenty ignored pointers, once each, each a real JSON pointer", () => {
-    const ignoring = (ignorePaths: string[]) => set({ match: { ignorePaths, query: ["customer"] } });
-    expect(ok(ignoring(["/a", "/a/b", "/items/0/id", "/a~1b", "/a~0b", "/"]))).toBe(true);
+  it("lists at most twenty ignored pointers, once each, each a real JSON pointer with no empty part", () => {
+    const ignoring = (ignorePaths: string[]) => set({ match: { ignorePaths, query: ["customer"] }, entries: [] });
+    expect(ok(ignoring(["/a", "/a/b", "/items/0/id", "/a~1b", "/a~0b"]))).toBe(true);
     expect(ok(ignoring(Array.from({ length: 21 }, (_, n) => `/p${String(n)}`)))).toBe(false);
     expect(ok(ignoring(Array.from({ length: 20 }, (_, n) => `/p${String(n)}`)))).toBe(true);
     expect(ok(ignoring(["/a", "/a"]))).toBe(false);
-    for (const pointer of ["", "a", "a/b", "/a~2", "/a~", `/${"a".repeat(200)}`]) expect(ok(ignoring([pointer])), pointer).toBe(false);
+    for (const pointer of ["", "a", "a/b", "/a~2", "/a~", `/${"a".repeat(200)}`, "/", "//", "/a/", "/a//b", "//a"]) expect(ok(ignoring([pointer])), pointer).toBe(false);
+  });
+  it("refuses ignored paths that take out every member of a recorded body", () => {
+    const withBody = (ignorePaths: string[], body: string, contentType = "application/json") => {
+      const match = { ignorePaths, query: ["customer"] };
+      return set({ match, entries: [entryFor({ body, contentType }, match)] });
+    };
+    // Every member gone: every such request would be one request.
+    expect(ok(withBody(["/requestedAt"], '{"requestedAt":"x"}'))).toBe(false);
+    expect(ok(withBody(["/a", "/b"], '{"a":1,"b":2}'))).toBe(false);
+    expect(ok(withBody(["/a/b"], '{"a":{"b":1}}'))).toBe(true);
+    expect(ok(withBody(["/0", "/1"], "[1,2]"))).toBe(false);
+    expect(ok(withBody(["/0"], "[1,2]"))).toBe(true);
+    expect(ok(withBody(["/0", "/1"], "[null,2]"))).toBe(false);
+    expect(ok(withBody(["/a", "/b"], '{"a":1,"b":2,"c":3}'))).toBe(true);
+    expect(ok(withBody(["/a"], '{"a":1,"b":2}'))).toBe(true);
+    // An empty or non-object body had nothing to take out; a body that is not JSON is hashed as written.
+    expect(ok(withBody(["/a"], "{}"))).toBe(true);
+    expect(ok(withBody(["/a"], "[]"))).toBe(true);
+    expect(ok(withBody(["/a"], "not json"))).toBe(true);
+    expect(ok(withBody(["/a"], '{"a":1}', "text/plain"))).toBe(true);
+    expect(ok(withBody(["/a"], '{"a":1}', "application/vnd.api+json"))).toBe(false);
+    // One bad entry among good ones is enough.
+    const match = { ignorePaths: ["/requestedAt"], query: ["customer"] };
+    expect(ok(set({ match, entries: [entryFor({ path: "/ok" }, match), entryFor({ path: "/bad", body: '{"requestedAt":"x"}' }, match)] }))).toBe(false);
+    expect(ok(set({ match, entries: [entryFor({ path: "/ok" }, match), entryFor({ path: "/ok2", body: '{"requestedAt":"x","k":1}' }, match)] }))).toBe(true);
   });
   it("matches on at most eight named query parameters, once each, and keeps no other parameter", () => {
     expect(ok(set({ match: { ignorePaths: [], query: Array.from({ length: 9 }, (_, n) => `q${String(n)}`) }, entries: [] }))).toBe(false);
@@ -119,13 +144,38 @@ describe("FixtureSet v2 schema", () => {
     expect(ok(set({ dependency: { ...model, family: "http:api.example-pay.com" }, match: { ignorePaths: [] }, entries: [] }))).toBe(false);
     expect(ok(set({ dependency: { ...model, target: "bad name!" }, match: { ignorePaths: [] }, entries: [] }))).toBe(false);
   });
+  it("ties the target to the host its family names", () => {
+    const withTarget = (family: string, target: string, protocol = "http_json") => set({ dependency: { ...dependency, family, target, protocol }, entries: [] });
+    expect(ok(withTarget("http:api.example-pay.com", "api.example-pay.com"))).toBe(true);
+    expect(ok(withTarget("http:api.example-pay.com", "api.other-pay.com"))).toBe(false);
+    expect(ok(withTarget("http:api.example-pay.com", "api.example-pay.com:8443"))).toBe(false);
+    expect(ok(withTarget("http:api.example-pay.com", "API.EXAMPLE-PAY.COM"))).toBe(false);
+    expect(ok(withTarget("http:api.example-pay.com", "169.254.169.254"))).toBe(false);
+    expect(ok(withTarget("aws:dynamodb", "dynamodb.us-west-2.amazonaws.com", "aws_json"))).toBe(true);
+    expect(ok(withTarget("aws:dynamodb", "sqs.us-west-2.amazonaws.com", "aws_json"))).toBe(false);
+    expect(ok(withTarget("aws:dynamodb", "api.example-pay.com", "aws_json"))).toBe(false);
+    expect(ok(withTarget("aws:dynamodb", "dynamodb.us-west-2.amazonaws.com.evil.example", "aws_json"))).toBe(false);
+  });
+  it("refuses a stored entry whose hash is not the hash of its own request, whatever else is right", () => {
+    const good = entryFor({ path: "/a" });
+    expect(ok(set({ entries: [good] }))).toBe(true);
+    expect(ok(set({ entries: [{ ...good, requestHash: "a".repeat(64) }] }))).toBe(false);
+    expect(ok(set({ entries: [{ ...good, request: { ...good.request, path: "/b" } }] }))).toBe(false);
+    expect(ok(set({ entries: [{ ...good, request: { ...good.request, body: '{"amount":6}' } }] }))).toBe(false);
+    expect(ok(set({ entries: [{ ...good, request: { ...good.request, method: "PUT" } }] }))).toBe(false);
+    expect(ok(set({ entries: [good, { ...entryFor({ path: "/c" }), requestHash: good.requestHash }] }))).toBe(false);
+    // The hash covers the set's own match rules: an entry hashed under other rules does not belong.
+    expect(ok(set({ match: { ignorePaths: [], query: ["customer"] }, entries: [good] }))).toBe(false);
+    expect(ok(set({ dependency: { ...dependency, id: "payments-two" }, entries: [good] }))).toBe(true);
+    expect(ok(set({ dependency: { ...dependency, family: "http:api.other-pay.com", target: "api.other-pay.com" }, entries: [good] }))).toBe(false);
+  });
   it("holds at most 2,000 entries", () => {
-    const many = (count: number) => Array.from({ length: count }, (_, n) => ({ ...entryFor({ path: `/p${String(n)}` }), requestHash: n.toString(16).padStart(64, "0") }));
+    const many = (count: number) => Array.from({ length: count }, (_, n) => entryFor({ path: `/p${String(n)}` }));
     expect(ok(set({ entries: many(2_000) }))).toBe(true);
     expect(ok(set({ entries: many(2_001) }))).toBe(false);
   });
   it("refuses a set over 4 MiB however its entries are spread", () => {
-    const big = (count: number) => Array.from({ length: count }, (_, n) => ({ ...entryFor({ path: `/p${String(n)}`, body: "x".repeat(60_000) }), requestHash: n.toString(16).padStart(64, "0"), response: response({ body: "y".repeat(60_000) }) }));
+    const big = (count: number) => Array.from({ length: count }, (_, n) => ({ ...entryFor({ path: `/p${String(n)}`, body: "x".repeat(60_000) }), response: response({ body: "y".repeat(60_000) }) }));
     expect(ok(set({ entries: big(30) }))).toBe(true);
     expect(ok(set({ entries: big(40) }))).toBe(false);
   });
@@ -319,8 +369,22 @@ describe("v1 to v2 converter", () => {
   it("maps an AWS API set to its service, and refuses a host that is not an AWS endpoint", () => {
     const aws = (host: string) => v1({ service: { name: "Orders table", kind: "aws_api", target: host } });
     const place = { resolveRequest: () => ({ method: "POST" as const, path: "/" }) };
-    expect(convert(aws("dynamodb.us-west-2.amazonaws.com"), place).dependency).toMatchObject({ family: "aws:dynamodb", protocol: "http_any" });
+    expect(convert(aws("dynamodb.us-west-2.amazonaws.com"), place).dependency).toMatchObject({ family: "aws:dynamodb", protocol: "aws_json" });
     expect(mocks.fixtureSetFromV1(aws("example.com"), place)).toEqual({ ok: false, reason: "unreadable_host" });
+  });
+  it("gives an AWS set the wire protocol of its service, and refuses a service whose protocol cannot be known", () => {
+    const aws = (host: string) => v1({ service: { name: "Some service", kind: "aws_api", target: host } });
+    const place = { resolveRequest: () => ({ method: "POST" as const, path: "/" }) };
+    const protocolOf = (service: string) => {
+      const result = mocks.fixtureSetFromV1(aws(`${service}.us-west-2.amazonaws.com`), place);
+      return result.ok ? result.set.dependency.protocol : result.reason;
+    };
+    for (const service of ["dynamodb", "kinesis", "events", "secretsmanager", "ssm", "kms", "states"]) expect(protocolOf(service), service).toBe("aws_json");
+    for (const service of ["sns", "sts"]) expect(protocolOf(service), service).toBe("aws_query");
+    for (const service of ["s3", "sqs", "lambda", "ec2", "iam", "rds", "apigateway"]) expect(protocolOf(service), service).toBe("protocol_unknown");
+    // A form-encoded set has no body pointers: a converted query set carries none.
+    const query = mocks.fixtureSetFromV1(aws("sns.us-west-2.amazonaws.com"), place);
+    expect(query.ok && query.set.match.ignorePaths).toEqual([]);
   });
   it("refuses what does not parse as a v2 set, instead of repairing it", () => {
     expect(mocks.fixtureSetFromV1(v1({ service: { name: "Payments", kind: "http", target: "10.0.0.1" } }), { resolveRequest: () => ({ method: "POST", path: "/x" }) })).toEqual({ ok: false, reason: "invalid" });

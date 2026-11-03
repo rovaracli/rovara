@@ -196,8 +196,8 @@ export const FIXTURE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as cons
 /** The only response headers a fixture keeps. No redirect, cookie or credential header is on it, so a recorded answer cannot send the app somewhere else or plant state. */
 export const FIXTURE_RESPONSE_HEADER_NAMES = ["cache-control", "content-language", "etag", "expires", "last-modified", "retry-after", "x-amz-request-id", "x-amzn-errortype", "x-amzn-requestid", "x-request-id"] as const;
 
-/** An RFC 6901 JSON pointer into a request body. The empty pointer (the whole body) is not one: ignoring everything would make every request the same. */
-export const JsonPointerSchema = z.string().min(1).max(200).regex(/^(?:\/(?:[^~/]|~[01])*)+$/u, "a JSON pointer");
+/** An RFC 6901 JSON pointer into a request body. The empty pointer (the whole body) is not one, and neither is any pointer with an empty part (`/`, `//`, `/a/`): ignoring everything, or a member with no name, would make requests the same that are not. */
+export const JsonPointerSchema = z.string().min(1).max(200).regex(/^(?:\/(?:[^~/]|~[01])+)+$/u, "a JSON pointer with no empty part");
 const QueryNameSchema = z.string().regex(/^[A-Za-z0-9_.~-]{1,64}$/u).refine((name) => name !== "__proto__", "a plain name");
 const FixturePathSchema = z
   .string()
@@ -263,6 +263,21 @@ export const FixtureSetSchema = z
       if (set.dependency.protocol === "model_invoke" && (entry.request.method !== "POST" || entry.request.path !== `/endpoints/${set.dependency.target}/invocations`)) problem(["entries", index, "request"], "a model endpoint is invoked with POST /endpoints/<name>/invocations");
     });
     if (set.dependency.protocol === "model_invoke" && (set.dependency.family !== "aws:sagemaker-runtime" || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})$/u.test(set.dependency.target))) problem(["dependency"], "a model endpoint set is for SageMaker Runtime, named by its endpoint");
+    // The dependency's target is the host its family names: a set for one host cannot be served for another.
+    if (set.dependency.protocol !== "model_invoke") {
+      if (set.dependency.family.startsWith("http:") && set.dependency.target !== set.dependency.family.slice(5)) problem(["dependency", "target"], "the target is the host of the family");
+      if (set.dependency.family.startsWith("aws:") && `aws:${awsServiceOfHost(set.dependency.target) ?? ""}` !== set.dependency.family) problem(["dependency", "target"], "the target is an endpoint of the family's service");
+    }
+    // ignorePaths must not make recorded requests the same when they are not: none may take out every member of a recorded JSON body.
+    if (set.match.ignorePaths.length > 0) {
+      set.entries.forEach((entry, index) => {
+        if (jsonBodyEmptiedBy(entry.request.contentType, entry.request.body, set.match.ignorePaths)) problem(["entries", index, "request", "body"], "the ignored paths take out every member of a recorded body");
+      });
+    }
+    // A stored entry is trusted only under its own hash: a request that hashes to something else would be served for the wrong request, or never.
+    set.entries.forEach((entry, index) => {
+      if (entry.requestHash !== fixtureRequestHash(set, entry.request)) problem(["entries", index, "requestHash"], "an entry's hash is the hash of its own request");
+    });
     if (new TextEncoder().encode(JSON.stringify(set)).length > FIXTURE_SET_MAX_BYTES) problem([], "a fixture set is at most 4 MiB");
   });
 export type FixtureSet = z.infer<typeof FixtureSetSchema>;
@@ -292,6 +307,22 @@ function withoutPointers(value: unknown, pointers: readonly string[]): unknown {
     }
   }
   return value;
+}
+
+/** Whether removing the pointed-at members leaves a recorded JSON body with nothing in it (every member of an object gone, or every element of an array null) although it had something. */
+function jsonBodyEmptiedBy(contentType: string, body: string, pointers: readonly string[]): boolean {
+  const type = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!(type === "application/json" || type.endsWith("+json"))) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return false;
+  }
+  const had = Array.isArray(parsed) ? parsed.some((member) => member !== null) : parsed !== null && typeof parsed === "object" && Object.keys(parsed).length > 0;
+  if (!had) return false;
+  const left = withoutPointers(parsed, pointers);
+  return Array.isArray(left) ? left.every((member) => member === null) : left !== null && typeof left === "object" && Object.keys(left).length === 0;
 }
 
 export interface FixtureRequestParts {
@@ -335,10 +366,14 @@ export function fixtureEntry(set: Pick<FixtureSet, "dependency" | "match">, requ
 
 // ---- converters to v2
 
-export type FixtureConversion = { ok: true; set: FixtureSet } | { ok: false; reason: "invalid" | "request_line_unknown" | "unreadable_host" };
+/** Services whose requests are JSON documents addressed by a target header, and services whose requests are form-encoded queries. SQS and S3 are in neither: SQS speaks both, S3 is REST. */
+const AWS_JSON_SERVICES: ReadonlySet<string> = new Set(["dynamodb", "kinesis", "events", "secretsmanager", "ssm", "kms", "states"]);
+const AWS_QUERY_SERVICES: ReadonlySet<string> = new Set(["sns", "sts"]);
+
+export type FixtureConversion = { ok: true; set: FixtureSet } | { ok: false; reason: "invalid" | "request_line_unknown" | "unreadable_host" | "protocol_unknown" };
 
 /**
- * A v1 set as a v2 one. A SageMaker Runtime set is `POST /endpoints/<target>/invocations`, so every entry is rebuilt exactly and rehashed. Any other v1 entry kept only a hash, never its method or path, so
+ * A v1 set as a v2 one (an AWS service whose wire protocol is not known is `protocol_unknown`, not guessed). A SageMaker Runtime set is `POST /endpoints/<target>/invocations`, so every entry is rebuilt exactly and rehashed. Any other v1 entry kept only a hash, never its method or path, so
  * the caller must say what each request was (`resolveRequest`); an entry it cannot place stops the conversion (`request_line_unknown`). Nothing is guessed. The result is a recorded set with the v1 date and revision.
  */
 export function fixtureSetFromV1(
@@ -360,7 +395,10 @@ export function fixtureSetFromV1(
     const service = awsServiceOfHost(old.service.target);
     if (service === undefined) return { ok: false, reason: "unreadable_host" };
     family = `aws:${service}`;
-    protocol = "http_any";
+    // The wire protocol is a fact about the service: JSON (a target header) or query (form-encoded). A service in neither list (S3 is REST with XML, SQS has both) is refused, never guessed.
+    const known = AWS_JSON_SERVICES.has(service) ? "aws_json" : AWS_QUERY_SERVICES.has(service) ? "aws_query" : undefined;
+    if (known === undefined) return { ok: false, reason: "protocol_unknown" };
+    protocol = known;
   }
   const skeleton = { dependency: { id: testEnvDependencyIdFromName(old.service.name), family, protocol, target: old.service.target }, match: { ignorePaths: [] as string[] } };
   const entries: FixtureEntry[] = [];

@@ -16,6 +16,7 @@ import { z } from "zod";
 import type { DecisionRisk } from "./decision-cards.js";
 import { RelativeWorkspacePathSchema, ProjectCommandSchema } from "./project.js";
 import { TestEnvValueSourceSchema, type TestEnvService } from "./test-environment.js";
+import { TestServiceHostSchema, looksLikeSecretValue, reservedDependencyEnvName } from "./test-services-shared.js";
 import { sha256Hex } from "./web-hash.js";
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
@@ -43,16 +44,14 @@ export const TEST_ENV_DEPENDENCY_LIMITS = { dependencies: 24, started: 12, start
 /** A dependency's own id: `postgres`, `aws-s3`, `payments-api`. */
 export const TestEnvDependencyIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,39}$/u, "a lower-case id of at most 40 characters");
 
-const IPV4_LITERAL = /^\d{1,3}(?:\.\d{1,3}){3}$/u;
-const HTTP_FAMILY_HOST = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/u;
 /** A family: `postgres`, `redis`, `kafka`, `aws:s3`, `aws:sagemaker-runtime`, `http:<host>`. An `http:` family names a host, never an address, a wildcard or a single-label name. */
 export const FamilyIdSchema = z
   .string()
   .max(260)
   .superRefine((family, context) => {
     if (family.startsWith("http:")) {
-      const host = family.slice(5);
-      if (host.length > 253 || !HTTP_FAMILY_HOST.test(host) || IPV4_LITERAL.test(host)) context.addIssue({ code: "custom", message: "an http family names a host (at least two labels), not an address" });
+      // The one host rule (shared with test accounts): a name of at least two labels that can never be read as an address, short and hex spellings included.
+      if (!TestServiceHostSchema.safeParse(family.slice(5)).success) context.addIssue({ code: "custom", message: "an http family names a host (at least two labels), not an address" });
       return;
     }
     if (!/^(?:aws:)?[a-z][a-z0-9-]{0,39}$/u.test(family)) context.addIssue({ code: "custom", message: "a family is a name, aws:<service> or http:<host>" });
@@ -77,43 +76,74 @@ export const TEST_ENV_RESERVED_ALIASES = ["localhost", "dns", "dns-helper", "pro
 
 export const EnvNameSchema = z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/u, "an upper-case variable name");
 
-/**
- * Names a dependency may not set: the ones the worker, the system or Rovara's own channel set (AWS access and endpoints, the proxy and certificate variables of a test account, Git, the loader and the
- * interpreter option variables). The channel builds those itself from fixed templates (4.0.5), so a template from here can never reach them.
- */
-const RESERVED_ENV_NAMES = new Set([
-  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD", "IFS", "ENV", "BASH_ENV", "CLASSPATH", "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
-  "RUBYOPT", "RUBYLIB", "PERL5OPT", "PERL5LIB", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
-  "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "DOCKER_HOST",
-]);
-const RESERVED_ENV_PREFIXES = ["AGENTX_", "ROVARA_", "AWS_", "GIT_", "LD_", "DYLD_", "PI_", "DOCKER_"] as const;
-
-/** Whether Rovara or the system owns a variable name (compared in upper case). */
-export function reservedDependencyEnvName(name: string): boolean {
-  const upper = name.toUpperCase();
-  return RESERVED_ENV_NAMES.has(upper) || RESERVED_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix));
-}
-
 /** The only placeholders a connection template may hold: each is filled from the run's own values. */
 export const CONNECT_TEMPLATE_PLACEHOLDERS = ["user", "password", "host", "port", "db", "region", "endpoint"] as const;
 
-/** Why a connection template is not acceptable, or undefined when it is. A fixed code, never the template's text. */
-export function connectTemplateProblem(template: string): "shape" | "placeholder" | "password_literal" | undefined {
+export type ConnectTemplateProblem = "shape" | "shell_character" | "placeholder" | "secret_shaped" | "password_literal" | "userinfo" | "host" | "query_secret";
+
+/** The shell and quoting characters no template may hold: a template becomes an environment value that a shell may read. */
+const SHELL_CHARACTERS = /[`$;|&<>"'\\]/u;
+const SECRET_QUERY_NAME = /password|token|key|secret/iu;
+const WHOLE_PLACEHOLDER = /^\{[a-z]+\}$/u;
+
+/**
+ * Why a connection template is not acceptable, or undefined when it is. A fixed code, never the template's text. A template is one of the run's own placeholders, a `scheme://` address, or a short list of
+ * placeholders joined by `:` or `,`. In an address the user information is only `{user}` and `{password}`, the host is only `{host}` or `{endpoint}` (with an optional `{port}`), and a query parameter
+ * whose name says it holds a password, token, key or secret holds exactly a placeholder. Nothing in it looks like a key, and no shell or quoting character is allowed.
+ */
+export function connectTemplateProblem(template: string): ConnectTemplateProblem | undefined {
   if (template.length < 1 || template.length > 256 || !/^[\x21-\x7e]+$/u.test(template)) return "shape";
+  if (SHELL_CHARACTERS.test(template)) return "shell_character";
   const allowed = new Set<string>(CONNECT_TEMPLATE_PLACEHOLDERS);
   for (const match of template.matchAll(/\{([^{}]*)\}/gu)) if (!allowed.has(match[1] ?? "")) return "placeholder";
   if (template.replace(/\{[^{}]*\}/gu, "").match(/[{}]/u) !== null) return "placeholder";
-  // `scheme://user:password@host`: whatever follows the colon in the user part must be exactly the run's `{password}`, so a literal password can never be written into a template.
-  for (const match of template.matchAll(/:\/\/([^/@]*)@/gu)) {
-    const userinfo = match[1] ?? "";
-    const colon = userinfo.indexOf(":");
-    if (colon >= 0 && userinfo.slice(colon + 1) !== "{password}") return "password_literal";
+  if (looksLikeSecretValue(template)) return "secret_shaped";
+  let tail: string;
+  const address = /^([a-z][a-z0-9+.-]{0,15}):\/\/(.*)$/u.exec(template);
+  if (address !== null) {
+    const rest = address[2] ?? "";
+    const end = rest.search(/[/?]/u);
+    const authority = end < 0 ? rest : rest.slice(0, end);
+    tail = end < 0 ? "" : rest.slice(end);
+    const at = authority.lastIndexOf("@");
+    const userinfo = at < 0 ? undefined : authority.slice(0, at);
+    const hostPort = at < 0 ? authority : authority.slice(at + 1);
+    if (userinfo !== undefined) {
+      const parts = userinfo.split(":");
+      // Whatever follows the colon must be exactly the run's `{password}`, so a literal password can never be written into a template.
+      if (parts.length === 2 && parts[1] !== "{password}") return "password_literal";
+      if (parts.length > 2 || (parts[0] !== "" && parts[0] !== "{user}")) return "userinfo";
+    }
+    if (!/^\{(?:host|endpoint)\}(?::\{port\})?$/u.test(hostPort)) return "host";
+  } else {
+    const end = template.search(/[/?]/u);
+    const first = end < 0 ? template : template.slice(0, end);
+    tail = end < 0 ? "" : template.slice(end);
+    if (!/^(?:\{[a-z]+\}|[:,])+$/u.test(first)) return "host";
+  }
+  const queryAt = tail.indexOf("?");
+  if (queryAt >= 0) {
+    const query = tail.slice(queryAt + 1);
+    const equals = query.indexOf("=");
+    const name = equals < 0 ? query : query.slice(0, equals);
+    const value = equals < 0 ? "" : query.slice(equals + 1);
+    if (SECRET_QUERY_NAME.test(name) && !WHOLE_PLACEHOLDER.test(value)) return "query_secret";
   }
   return undefined;
 }
+const TEMPLATE_MESSAGES: Record<ConnectTemplateProblem, string> = {
+  shape: "a template is plain printable text, at most 256 characters",
+  shell_character: "a template holds no shell or quoting character",
+  placeholder: "only the known placeholders may be used",
+  secret_shaped: "a template never holds a key",
+  password_literal: "a password is only ever the {password} placeholder",
+  userinfo: "the user part is only {user} and the password part only {password}",
+  host: "the host is only {host} or {endpoint}",
+  query_secret: "a password, token, key or secret parameter holds only a placeholder",
+};
 export const ConnectTemplateSchema = z.string().superRefine((template, context) => {
   const problem = connectTemplateProblem(template);
-  if (problem !== undefined) context.addIssue({ code: "custom", message: problem === "password_literal" ? "a password is only ever the {password} placeholder" : problem === "placeholder" ? "only the known placeholders may be used" : "a template is plain printable text, at most 256 characters" });
+  if (problem !== undefined) context.addIssue({ code: "custom", message: TEMPLATE_MESSAGES[problem] });
 });
 
 /** A synthetic-data seed: a command the sandbox runs, or a file inside the repository. Same two shapes as the environment's own `data.seeds`. */
@@ -133,7 +163,15 @@ export const CatalogConfigSchema = z
   .strict();
 export type CatalogConfig = z.infer<typeof CatalogConfigSchema>;
 
-/** A company-approved image run in place of the catalog's (Enterprise, 4.1.5): its digest, Rovara's digest it replaces, and the approval that allowed it. Without the reference there is no substitute. */
+/**
+ * A company-approved image run in place of the catalog's (Enterprise, 4.1.5): its digest, Rovara's digest it replaces, and the approval that allowed it. Without the reference there is no substitute.
+ *
+ * This schema checks SHAPE only: that the digests differ and that a reference is there. It cannot know the catalog or the approvals, so TS19 and TS40 MUST check, where the entry is used:
+ *   1. `catalogDigest` equals the digest of the catalog entry named by the backing's `catalogId` (a substitute that "replaces" some other digest replaces nothing);
+ *   2. `approvalRef` resolves to an admin approval record whose catalog id is this backing's `catalogId` and whose two digests are exactly `catalogDigest` and `digest`
+ *      (an approval for one image or one digest pair never covers another).
+ * Until both checks exist and pass, a substitute image must not be started. Listed in DEFERRED-CHECKS.
+ */
 export const SubstituteImageSchema = z
   .object({
     digest: Sha256Schema,

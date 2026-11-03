@@ -13,7 +13,8 @@
 //   - Rovara local AWS (the emulator entry) lists its services in four tiers, each service in one tier, IAM is not enforced and storage is memory only.
 // Nothing here imports a Node module.
 import { z } from "zod";
-import { AwsServiceIdSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES, catalogIdName, reservedDependencyEnvName } from "./test-env-dependency.js";
+import { AwsServiceIdSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES, catalogIdName } from "./test-env-dependency.js";
+import { reservedDependencyEnvName } from "./test-services-shared.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
