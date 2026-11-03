@@ -2,7 +2,7 @@
 // packet that comes in from an `rvi*` bridge to the host, so a TCP answer would never come back. The probe is the worker's own image with no capability, no writable root and no route out, labelled like the run's helpers so
 // the sweep finds it. Its only inputs are its own arguments, which the launcher builds from numbers (an address of the run's slot, a port and a path of the catalog entry). Not run by this build (no Docker).
 //
-// `--host <ipv4> --port <port>` is a TCP connect. With `--path <path>` it is a plain HTTP GET that must answer 2xx. Exit 0 when the helper answered, 1 when not.
+// `--host <ipv4> --port <port>` is a TCP connect. With `--path <path>` it is a plain HTTP GET that must answer 2xx. Exit 0 when the helper answered, 1 when not. The whole question has one hard wall-clock limit (default 2 s): a helper that trickles bytes cannot keep the probe alive.
 import { request } from "node:http";
 import { connect, isIP } from "node:net";
 
@@ -17,19 +17,28 @@ export function probeService(options: ProbeOptions): Promise<boolean> {
   if (options.path !== undefined && !/^\/[A-Za-z0-9._~/-]{0,127}$/u.test(options.path)) return Promise.resolve(false);
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (value: boolean): void => { if (!settled) { settled = true; resolve(value); } };
+    let destroy: () => void = () => undefined;
+    // A hard wall-clock limit for the whole question. The socket's own timeouts restart whenever a byte arrives, so a helper that trickles headers (or a byte at a time) would keep the probe, and the container it runs in, alive for ever.
+    const hard = setTimeout(() => { destroy(); finish(false); }, timeoutMs);
+    function finish(value: boolean): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hard);
+      destroy();
+      resolve(value);
+    }
     if (options.path === undefined) {
       const socket = connect({ host: options.host, port: options.port });
-      socket.setTimeout(timeoutMs, () => { socket.destroy(); finish(false); });
-      socket.on("connect", () => { socket.destroy(); finish(true); });
-      socket.on("error", () => { socket.destroy(); finish(false); });
+      destroy = () => socket.destroy();
+      socket.on("connect", () => finish(true));
+      socket.on("error", () => finish(false));
       return;
     }
-    const call = request({ host: options.host, port: options.port, path: options.path, method: "GET", timeout: timeoutMs, headers: { connection: "close" } }, (response) => {
+    const call = request({ host: options.host, port: options.port, path: options.path, method: "GET", headers: { connection: "close" } }, (response) => {
       response.resume();
       finish(response.statusCode !== undefined && response.statusCode >= 200 && response.statusCode < 300);
     });
-    call.on("timeout", () => { call.destroy(); finish(false); });
+    destroy = () => call.destroy();
     call.on("error", () => finish(false));
     call.end();
   });

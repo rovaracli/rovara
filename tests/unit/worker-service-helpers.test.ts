@@ -19,7 +19,7 @@ const NOW = 1_800_000_000_000;
 const SLOT = 153;
 const DIGEST = "a".repeat(64);
 const REGISTRY = "registry.example.test/rovara";
-const PROBE_IMAGE = "rovara/worker:test";
+const PROBE_IMAGE = `rovara/worker@sha256:${"b".repeat(64)}`;
 const SECRET = ["pw", "Zk3Lm9Qx7TbW"].join("");
 
 const catalogFile = JSON.parse(readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url), "utf8")) as unknown;
@@ -49,15 +49,23 @@ interface FakeOptions {
   exits?: (name: string) => boolean;
   /** The output of an exec. */
   execOutput?: string;
+  /** The `.Config.Volumes` of every image: paths the image declares as volumes. Default none. */
+  volumes?: string[] | "broken" | "unreadable" | "emptyarray" | "array";
+  /** The volumes of one image (by its reference), for a run of several images. */
+  volumesFor?: (image: string) => string[];
+  /** A probe container that never answers: the docker call times out. */
+  probeTimesOut?: boolean;
 }
 function fakeDocker(options: FakeOptions = {}) {
   const calls: string[][] = [];
   const containers = new Map<string, FakeContainer>();
   const attempts = new Map<string, number>();
   const order: string[] = [];
+  const timeouts: Array<{ args: string[]; timeoutMs: number | undefined }> = [];
   const docker: DockerCli = {
-    run(args) {
+    run(args, runOptions) {
       calls.push([...args]);
+      timeouts.push({ args: [...args], timeoutMs: runOptions?.timeoutMs });
       const ok = { exitCode: 0, stdout: "", stderr: "" };
       const fail = { exitCode: 1, stdout: "", stderr: "boom" };
       if (args[0] === "run" && args.includes("--detach")) {
@@ -67,7 +75,16 @@ function fakeDocker(options: FakeOptions = {}) {
         order.push(name);
         return Promise.resolve(ok);
       }
+      if (args[0] === "image" && args[1] === "inspect") {
+        if (options.volumes === "unreadable") return Promise.resolve(fail);
+        if (options.volumes === "broken") return Promise.resolve({ exitCode: 0, stdout: "not json", stderr: "" });
+        if (options.volumes === "emptyarray") return Promise.resolve({ exitCode: 0, stdout: "[]\n", stderr: "" });
+        if (options.volumes === "array") return Promise.resolve({ exitCode: 0, stdout: '["/srv/extra"]\n', stderr: "" });
+        if (options.volumesFor !== undefined) return Promise.resolve({ exitCode: 0, stdout: `${JSON.stringify(Object.fromEntries(options.volumesFor(args.at(-1)!).map((path) => [path, {}])))}\n`, stderr: "" });
+        return Promise.resolve({ exitCode: 0, stdout: options.volumes === undefined ? "null\n" : `${JSON.stringify(Object.fromEntries(options.volumes.map((path) => [path, {}])))}\n`, stderr: "" });
+      }
       if (args[0] === "run" && args.includes("--rm")) {
+        if (options.probeTimesOut === true) return Promise.resolve({ exitCode: null, stdout: "", stderr: "", timedOut: true });
         // A probe container: asks the same question about the helper whose address it was given.
         const host = args[args.indexOf("--host") + 1]!;
         const target = [...containers.values()].find((container) => container.args.includes(host));
@@ -95,7 +112,7 @@ function fakeDocker(options: FakeOptions = {}) {
     },
   };
   const started = () => calls.filter((call) => call[0] === "run" && call.includes("--detach"));
-  return { docker, calls, containers, started, order };
+  return { docker, calls, containers, started, order, timeouts };
 }
 
 function fakeFiles() {
@@ -208,7 +225,7 @@ describe("the arguments of a helper (snapshot)", () => {
     const write = t.files.helper.write.bind(t.files.helper);
     t.files.helper.write = (name, content, mode) => { seen.push(content); return write(name, content, mode); };
     await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET }, region: "us-west-2" })]);
-    expect(seen).toEqual([`QUARKUS_HTTP_HOST=172.30.153.16\nROVARA_AWS_AUTH_PRESIGN_SECRET=${SECRET}\nROVARA_AWS_DEFAULT_REGION=us-west-2\n`]);
+    expect(seen).toEqual([`QUARKUS_HTTP_HOST=172.30.153.16\nROVARA_AWS_AUTH_PRESIGN_SECRET=${SECRET}\nROVARA_AWS_DEFAULT_REGION=us-west-2\nROVARA_AWS_HOSTNAME=aws\n`]);
     expect(flag(t.started()[0]!, "--memory")).toEqual(["640m"]);
     expect(flag(t.started()[0]!, "--network-alias")).toEqual(["aws"]);
     expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain(SECRET);
@@ -280,6 +297,15 @@ describe("what the repository can and cannot reach", () => {
       const t = setup({}, { registry });
       await expect(t.run([request("postgres", "postgres@16")]), registry).rejects.toBeInstanceOf(HelperStartError);
       expect(t.calls, registry).toHaveLength(0);
+    }
+    for (const probeImage of ["rovara/worker:test", "rovara/worker:latest", "rovara/worker", "rovara/worker@sha256:abc", `rovara/worker@sha256:${"b".repeat(8)}`, `rovara/worker@sha256:${"b".repeat(63)}`, `sha256:${"b".repeat(40)}`, `rovara/worker@sha256:${"b".repeat(64)} --privileged`, "sha256:abc", `-v@sha256:${"b".repeat(64)}`]) {
+      const bad = setup({}, { probeImage });
+      await expect(bad.run([request("a", "valkey@8")]), probeImage).rejects.toBeInstanceOf(HelperStartError);
+      expect(bad.calls, probeImage).toHaveLength(0);
+    }
+    for (const probeImage of [`rovara/worker@sha256:${"b".repeat(64)}`, `sha256:${"c".repeat(64)}`]) {
+      const good = setup({}, { probeImage });
+      await expect(good.run([request("a", "valkey@8")]), probeImage).resolves.toBeDefined();
     }
     const t = setup({}, { probeImage: "rovara/worker --privileged" });
     await expect(t.run([request("a", "valkey@8"), request("b", "local-aws@r1", { credentials: { user: "rovara", password: SECRET }, region: "us-east-1" })])).rejects.toBeInstanceOf(HelperStartError);
@@ -382,6 +408,100 @@ describe("small rules", () => {
   });
 });
 
+describe("review fixes (TS14 review M1-M3, L1-L3)", () => {
+  it("M1: a probe that never answers is removed by name when its call times out, and the start fails with the health words", async () => {
+    const t = setup({ probeTimesOut: true });
+    const error = await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET }, region: "us-east-1" })]).then(() => undefined, (failure: unknown) => failure);
+    expect((error as HelperStartError).reason).toBe("health_timeout");
+    const probes = t.calls.filter((call) => call[0] === "run" && call.includes("--rm"));
+    expect(probes.length).toBeGreaterThan(1);
+    const names = probes.map((call) => flag(call, "--name")[0]!);
+    expect(new Set(names).size).toBe(names.length);
+    for (const name of names) expect(t.calls.some((call) => call[0] === "rm" && call.includes("--force") && call.includes("--volumes") && call.includes(name)), name).toBe(true);
+  });
+  it("M2: every removal of a helper takes its anonymous volumes with it", async () => {
+    const t = setup({ healthy: () => false });
+    await t.run([request("postgres", "postgres@16")]).catch(() => undefined);
+    const removals = t.calls.filter((call) => call[0] === "rm");
+    expect(removals.length).toBeGreaterThan(0);
+    for (const call of removals) expect(call, call.join(" ")).toContain("--volumes");
+  });
+  it("M2: an image that declares a volume no tmpfs covers is refused before anything starts; covered ones, and null, pass", async () => {
+    const bad = setup({ volumes: ["/var/lib/postgresql/data", "/srv/extra"] });
+    const error = await bad.run([request("postgres", "postgres@16")]).then(() => undefined, (failure: unknown) => failure);
+    expect((error as HelperStartError).reason).toBe("refused");
+    expect(bad.started()).toHaveLength(0);
+    for (const volumes of ["broken", "unreadable", "emptyarray", "array"] as const) {
+      const t = setup({ volumes });
+      await expect(t.run([request("postgres", "postgres@16")]), volumes).rejects.toBeInstanceOf(HelperStartError);
+      expect(t.started(), volumes).toHaveLength(0);
+    }
+    const nested = setup({ volumes: ["/var/lib/postgresql/data", "/var/lib/postgresql/data/sub", "/tmp"] });
+    await expect(nested.run([request("postgres", "postgres@16")])).resolves.toBeDefined();
+    // A path that only shares a prefix is not covered.
+    const sibling = setup({ volumes: ["/var/lib/postgresql/data2"] });
+    await expect(sibling.run([request("postgres", "postgres@16")])).rejects.toBeInstanceOf(HelperStartError);
+    // Every distinct image is checked, not just the first: the second image's uncovered volume refuses the run, and nothing started.
+    const second = setup({ volumesFor: (image) => (image.includes("/redis") ? ["/data", "/srv/extra"] : []) });
+    const cache = request("cache", "redis@7");
+    await expect(second.run([request("postgres", "postgres@16"), cache])).rejects.toBeInstanceOf(HelperStartError);
+    expect(second.started()).toHaveLength(0);
+    expect(second.calls.filter((call) => call[0] === "image" && call[1] === "inspect")).toHaveLength(2);
+    const inspected = nested.calls.find((call) => call[0] === "image" && call[1] === "inspect")!;
+    expect(inspected).toEqual(["image", "inspect", "--format", "{{json .Config.Volumes}}", `${REGISTRY}/svc/postgres@sha256:${DIGEST}`]);
+  });
+  it("M3: the emulator is told its own hostname: the first alias, aws by default", async () => {
+    const seen: string[] = [];
+    for (const aliases of [undefined, ["my-aws", "other-aws"], [] as string[]]) {
+      const t = setup();
+      const write = t.files.helper.write.bind(t.files.helper);
+      t.files.helper.write = (name, content, mode) => { seen.push(content); return write(name, content, mode); };
+      await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET }, region: "us-east-1", ...(aliases === undefined ? {} : { aliases }) })]);
+    }
+    expect(seen[0]).toContain("ROVARA_AWS_HOSTNAME=aws\n");
+    expect(seen[1]).toContain("ROVARA_AWS_HOSTNAME=my-aws\n");
+    // No alias at all: the fallback is still a name the other containers can use, never `localhost`.
+    expect(seen[2]).toContain("ROVARA_AWS_HOSTNAME=aws\n");
+  });
+  it("L1: no docker call of the wait is given more time than the deadline has left, and the wait ends at the deadline", async () => {
+    const entry = pinned("valkey@8", (copy) => { copy.health = { kind: "command", check: "redis_ping", startTimeoutS: 2 }; });
+    const t = setup({ healthy: () => false });
+    await t.run([{ id: "cache", name: "cache", entry, credentials: CREDENTIALS }]).catch(() => undefined);
+    const waits = t.timeouts.filter((item) => item.args[0] === "exec" || item.args[0] === "inspect");
+    expect(waits.length).toBeGreaterThan(2);
+    for (const wait of waits) { expect(wait.timeoutMs).toBeGreaterThan(0); expect(wait.timeoutMs).toBeLessThanOrEqual(2_000); }
+    expect(Math.min(...waits.map((wait) => wait.timeoutMs!))).toBeLessThanOrEqual(500);
+    expect(t.clock.now() - NOW).toBeLessThanOrEqual(2_000);
+  });
+  it("L1: a probe container's call, and every sleep, are held to what is left of the deadline too (calls take time)", async () => {
+    const entry = pinned("local-aws@r1", (copy) => { copy.health = { kind: "tcp", port: 4566, startTimeoutS: 2 }; });
+    const clock = fakeClock();
+    const sleeps: number[] = [];
+    const t = setup({ healthy: () => false }, { now: () => clock.now(), sleep: (ms) => { sleeps.push(ms); return clock.sleep(ms); } });
+    const original = t.docker.run.bind(t.docker);
+    // Every health call takes 300 ms of the fake clock, so the time left is rarely a multiple of the poll.
+    t.docker.run = (args, runOptions) => { if (args[0] === "inspect" || (args[0] === "run" && args.includes("--rm"))) clock.advance(300); return original(args, runOptions); };
+    await t.run([{ id: "aws", name: "aws", entry, credentials: { user: "rovara", password: SECRET }, region: "us-east-1" }]).catch(() => undefined);
+    const probes = t.timeouts.filter((item) => item.args[0] === "run" && item.args.includes("--rm"));
+    expect(probes.length).toBeGreaterThan(1);
+    for (const probe of probes) { expect(probe.timeoutMs).toBeGreaterThan(0); expect(probe.timeoutMs).toBeLessThanOrEqual(2_000); }
+    expect(Math.min(...probes.map((probe) => probe.timeoutMs!))).toBeLessThan(2_000);
+    expect(Math.max(...sleeps)).toBeLessThanOrEqual(500);
+    // The wait ends within one call of the deadline: no sleep carried it past.
+    expect(clock.now() - NOW).toBeLessThanOrEqual(2_000 + 300);
+  });
+  it("L1: the deadline is checked before an attempt, so a clock already past it makes no health call", async () => {
+    const clock = fakeClock();
+    const jumpAfterStart = setup({}, { now: () => clock.now(), sleep: clock.sleep });
+    // The first `docker run` takes the clock past the helper's whole limit.
+    const original = jumpAfterStart.docker.run.bind(jumpAfterStart.docker);
+    jumpAfterStart.docker.run = (args, runOptions) => { if (args[0] === "run" && args.includes("--detach")) clock.advance(60_000); return original(args, runOptions); };
+    const error = await startHelpers(jumpAfterStart.docker, makeNet(), { ...jumpAfterStart.input([request("postgres", "postgres@16")]), now: () => clock.now(), sleep: clock.sleep }).then(() => undefined, (failure: unknown) => failure);
+    expect((error as HelperStartError).reason).toBe("health_timeout");
+    expect(jumpAfterStart.calls.filter((call) => call[0] === "exec")).toHaveLength(0);
+  });
+});
+
 describe("the labels (TS-RN-3 rule 1)", () => {
   it("every container the launcher starts, helpers and probes, carries all four labels with this run's values", async () => {
     const t = setup();
@@ -446,6 +566,8 @@ describe("start order and health (4.0.6)", () => {
     expect(probe.at(-1)).not.toContain("--privileged");
     expect(probe.slice(probe.indexOf(PROBE_IMAGE))).toEqual([PROBE_IMAGE, "/opt/agentx/packages/worker/dist/service-probe.js", "--host", "172.30.153.16", "--port", "4566", "--path", "/__rovara/health"]);
     expect(probe).toContain("--entrypoint");
+    expect(flag(probe, "--name")[0]).toMatch(/^rovara-svc-[0-9a-f]{12}-p[0-9a-f]{10}$/u);
+    expect(flag(probe, "--stop-timeout")).toEqual(["1"]);
   });
   it("a tcp health check is a probe without a path", async () => {
     const t = setup();
@@ -566,7 +688,8 @@ describe("stopping", () => {
     await started.stop();
     expect(t.containers.size).toBe(0);
     const removals = t.calls.filter((call) => call[0] === "rm" && call.includes("--force"));
-    expect(removals.flatMap((call) => call.slice(2)).sort()).toEqual([helperContainerName(makeNet(), "cache"), helperContainerName(makeNet(), "postgres")].sort());
+    expect(removals.every((call) => call.includes("--volumes"))).toBe(true);
+    expect(removals.flatMap((call) => call.slice(3)).sort()).toEqual([helperContainerName(makeNet(), "cache"), helperContainerName(makeNet(), "postgres")].sort());
   });
   it("container names are hashes of the run's network and the id, not the id", () => {
     const name = helperContainerName(makeNet(), "postgres");
@@ -600,6 +723,7 @@ describe("a cache that wants a password still counts as alive", () => {
   it("NOAUTH from the health command is a live server; any other failure is not", async () => {
     const make = (stdout: string, exitCode: number): DockerCli => ({
       run(args) {
+        if (args[0] === "image") return Promise.resolve({ exitCode: 0, stdout: "null\n", stderr: "" });
         if (args[0] === "inspect") return Promise.resolve({ exitCode: 0, stdout: "running\n", stderr: "" });
         if (args[0] === "exec") return Promise.resolve({ exitCode, stdout, stderr: "" });
         return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
@@ -628,6 +752,28 @@ describe("the health probe (service-probe.ts)", () => {
     const port = (server.address() as AddressInfo).port;
     expect(await probeService({ host: "127.0.0.1", port, path: "/ok", timeoutMs: 500 })).toBe(true);
     expect(await probeService({ host: "127.0.0.1", port, path: "/down", timeoutMs: 500 })).toBe(false);
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+  it("M1: a server that trickles its headers every 300 ms cannot keep the probe alive past its own limit", async () => {
+    const server = createServer((socket) => {
+      socket.write("HTTP/1.1 200 OK\r\n");
+      const timer = setInterval(() => socket.write("X-Slow: 1\r\n"), 300);
+      socket.on("close", () => clearInterval(timer));
+      socket.on("error", () => clearInterval(timer));
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const port = (server.address() as AddressInfo).port;
+    const started = Date.now();
+    expect(await probeService({ host: "127.0.0.1", port, path: "/health", timeoutMs: 1_000 })).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1_800);
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+  it("M1: a server that accepts and then trickles bytes without a response is also cut at the limit (TCP)", async () => {
+    const server = createServer((socket) => { socket.on("error", () => undefined); });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const port = (server.address() as AddressInfo).port;
+    // A plain connect succeeds at once: that is the answer for a TCP probe.
+    expect(await probeService({ host: "127.0.0.1", port, timeoutMs: 500 })).toBe(true);
     await new Promise<void>((done) => server.close(() => done()));
   });
   it("refuses a name, a bad port and a hostile path without connecting", async () => {

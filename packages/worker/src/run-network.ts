@@ -184,7 +184,7 @@ export async function sweepServicesNetworks(docker: DockerCli, input: SweepInput
     .map((row) => row.id);
   const containers = await due(["ps", "--all"]);
   let removedContainers = 0;
-  if (containers.length > 0 && (await call(["rm", "--force", ...containers])).exitCode === 0) removedContainers = containers.length;
+  if (containers.length > 0 && (await call(["rm", "--force", "--volumes", ...containers])).exitCode === 0) removedContainers = containers.length;
   let removedNetworks = 0;
   for (const id of await due(["network", "ls"])) if ((await call(["network", "rm", id])).exitCode === 0) removedNetworks += 1;
   return { containers: removedContainers, networks: removedNetworks };
@@ -195,7 +195,7 @@ async function removeRun(call: Call, name: string, workspace: string): Promise<b
   const listed = await call(["ps", "--all", "--filter", `label=${RUN_NETWORK_LABEL}=${name}`, "--filter", `label=${RUN_NETWORK_WORKSPACE_LABEL}=${workspace}`, "--format", LIST_FORMAT]);
   if (listed.exitCode !== 0) return false;
   const ids = familyRows(listed.stdout, workspace, name).map((row) => row.id);
-  if (ids.length > 0 && (await call(["rm", "--force", ...ids])).exitCode !== 0) return false;
+  if (ids.length > 0 && (await call(["rm", "--force", "--volumes", ...ids])).exitCode !== 0) return false;
   const removed = await call(["network", "rm", name]);
   return removed.exitCode === 0 || /no such network/iu.test(`${removed.stderr}${removed.stdout}`);
 }

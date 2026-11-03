@@ -40,13 +40,15 @@ export const MAX_HELPERS_PER_RUN = 12;
 export const RUN_HEALTH_LIMIT_S = 120;
 const HEALTH_POLL_MS = 500;
 const PROBE_CALL_TIMEOUT_MS = 15_000;
+const EXEC_CALL_TIMEOUT_MS = 10_000;
 export const PROBE_ENTRY = "/opt/agentx/packages/worker/dist/service-probe.js";
 const NODE = "/usr/local/bin/node";
 const MAX_FILES_PER_HELPER = 8;
 const MAX_FILE_BYTES = 1_048_576;
 
 const REGISTRY = /^[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*){0,3}$/u;
-const IMAGE_REFERENCE = /^[a-z0-9][a-z0-9._/:@-]{0,199}$/u;
+/** The probe image: by digest (`name@sha256:<64 hex>`), or the worker's own image id (`sha256:<64 hex>`). A tag can move; an id or a digest cannot. */
+const IMAGE_REFERENCE = /^(?:[a-z0-9][a-z0-9._/:-]{0,199}@sha256:[a-f0-9]{64}|sha256:[a-f0-9]{64})$/u;
 const REGION = /^[a-z]{2}(?:-[a-z]+)+-[0-9]{1,2}$/u;
 const USER = /^[a-z][a-z0-9_]{0,30}$/u;
 const DATABASE = /^[a-z][a-z0-9_]{0,62}$/u;
@@ -140,6 +142,11 @@ export function helperContainerName(net: Pick<ServicesNetwork, "name">, id: stri
   return `${net.name}-h${createHash("sha256").update(`helper-name\0${net.name}\0${id}`).digest("hex").slice(0, 10)}`;
 }
 
+/** A probe container's Docker name: a hash of the run's network name, the dependency id and the probe's number. */
+function probeContainerName(net: Pick<ServicesNetwork, "name">, id: string, number: number): string {
+  return `${net.name}-p${createHash("sha256").update(`probe-name\0${net.name}\0${id}\0${String(number)}`).digest("hex").slice(0, 10)}`;
+}
+
 /** At the worker's start: removes every container and network of this workspace's earlier runs (a restarted worker's own are all dead). TS-RN-3 rule 3. */
 export function sweepServicesNetworksAtWorkerStart(docker: DockerCli, workspace: string): Promise<{ containers: number; networks: number }> {
   return sweepServicesNetworks(docker, { workspace, workerStart: true });
@@ -154,7 +161,7 @@ interface Prepared {
   config?: { content: string; to: string };
 }
 interface FamilyRule {
-  prepare(input: { credentials: HelperCredentials; address: string; region: string }): Prepared;
+  prepare(input: { credentials: HelperCredentials; address: string; region: string; aliases: readonly string[] }): Prepared;
 }
 
 function need(value: string | undefined, pattern: RegExp): string {
@@ -171,7 +178,8 @@ const FAMILY_RULES: Record<string, FamilyRule> = {
   // The official cache images read no password variable: a config file does it.
   redis: { prepare: ({ credentials }) => ({ env: [], config: { content: `requirepass ${need(credentials.password, PASSWORD)}\n`, to: "/etc/rovara/redis.conf" } }) },
   // Rovara local AWS: listens only on its own run address (never a wildcard), with a per-run presign secret.
-  "local-aws": { prepare: ({ credentials, address, region }) => ({ env: [`QUARKUS_HTTP_HOST=${address}`, `ROVARA_AWS_AUTH_PRESIGN_SECRET=${need(credentials.password, PASSWORD)}`, `ROVARA_AWS_DEFAULT_REGION=${region}`] }) },
+  // It also needs its own hostname, or it hands out `localhost` URLs (presigned URLs, queue URLs) that the other containers cannot use: the first alias the code reaches it by.
+  "local-aws": { prepare: ({ credentials, address, region, aliases }) => ({ env: [`QUARKUS_HTTP_HOST=${address}`, `ROVARA_AWS_AUTH_PRESIGN_SECRET=${need(credentials.password, PASSWORD)}`, `ROVARA_AWS_DEFAULT_REGION=${region}`, `ROVARA_AWS_HOSTNAME=${aliases[0] ?? "aws"}`] }) },
   "fake-server": { prepare: () => ({ env: [] }) },
 };
 
@@ -234,7 +242,7 @@ function planHelpers(net: ServicesNetwork, input: StartHelpersInput): Plan[] {
       const region = request.region ?? "us-east-1";
       if (!REGION.test(region)) throw new RangeError("region");
       const address = net.helperIp(index);
-      const prepared = rule.prepare({ credentials: request.credentials ?? {}, address, region });
+      const prepared = rule.prepare({ credentials: request.credentials ?? {}, address, region, aliases });
       for (const [fileIndex, file] of (request.files ?? []).entries()) {
         if (fileIndex >= MAX_FILES_PER_HELPER || !FILE_NAME.test(file.name) || RESERVED_FILE_NAMES.includes(file.name) || Buffer.byteLength(file.content) > MAX_FILE_BYTES) throw new RangeError("file");
         const segments = file.to.split("/");
@@ -301,11 +309,11 @@ function runArgs(net: ServicesNetwork, plan: Plan, container: string, paths: { e
 }
 
 /** The probe container's `docker run` arguments: the worker's own image, hardened like a helper, on the services network, labelled so the sweep finds it. */
-function probeArgs(net: ServicesNetwork, probeImage: string, address: string, entry: CatalogEntry): string[] {
+function probeArgs(net: ServicesNetwork, probeImage: string, address: string, entry: CatalogEntry, name: string): string[] {
   const health = entry.health;
   if (health.kind === "command") throw new RangeError("not a probe check");
   return [
-    "run", "--rm", "--pull=never", ...net.labelArgs(), "--network", net.name,
+    "run", "--rm", "--name", name, "--stop-timeout", "1", "--pull=never", ...net.labelArgs(), "--network", net.name,
     "--user", "1000:1000", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
     "--memory", "64m", "--memory-swap", "64m", "--cpus", "0.25", "--pids-limit", "32", "--log-driver", "none",
     "--entrypoint", NODE, probeImage, PROBE_ENTRY, "--host", address, "--port", String(health.port), ...(health.kind === "http" ? ["--path", health.path] : []),
@@ -331,7 +339,9 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
 
   const removeFile = async (name: string): Promise<void> => { await input.files.remove(name).catch(() => undefined); };
   const removeContainers = async (): Promise<void> => {
-    if (attempted.length > 0) await call(["rm", "--force", ...attempted]);
+    const names = [...attempted, ...probesInFlight];
+    probesInFlight.clear();
+    if (names.length > 0) await call(["rm", "--force", "--volumes", ...names]);
   };
   const cleanUp = async (): Promise<void> => {
     await removeContainers();
@@ -344,6 +354,7 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
 
   const startOne = async (plan: Plan): Promise<number> => {
     const container = helperContainerName(net, plan.request.id);
+    const startedAt = now();
     const files = [] as Array<{ path: string; to: string }>;
     let envPath: string | undefined;
     let configPath: string | undefined;
@@ -372,19 +383,32 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
       return await fail("start_failed", plan, `${plan.name} could not be started`);
     } finally {
       // Docker has read the env file by now (or the start failed): it does not stay.
-      if (envPath !== undefined) { await removeFile(`${container}.env`); written.splice(written.indexOf(`${container}.env`), 1); }
+      if (envPath !== undefined) {
+        await removeFile(`${container}.env`);
+        const at = written.indexOf(`${container}.env`);
+        if (at >= 0) written.splice(at, 1);
+      }
     }
-    return now();
+    return startedAt;
   };
 
-  const healthy = async (plan: Plan, container: string): Promise<boolean> => {
+  let probeNumber = 0;
+  const probesInFlight = new Set<string>();
+  /** One health question, with at most `limitMs` to answer. A probe container is named, so one that never answers (or whose call times out) is removed by name and cannot outlive the wait. */
+  const healthy = async (plan: Plan, container: string, limitMs: number): Promise<boolean> => {
     const health = plan.entry.health;
     if (health.kind === "command") {
-      const result = await call(["exec", container, ...healthCommand(plan.entry, health.check, plan.entry.run.ports[0] ?? 0)]);
+      const result = await call(["exec", container, ...healthCommand(plan.entry, health.check, plan.entry.run.ports[0] ?? 0)], Math.min(EXEC_CALL_TIMEOUT_MS, limitMs));
       // A cache that wants a password still answers: that is a live server.
       return result.exitCode === 0 || (health.check === "redis_ping" && /NOAUTH/u.test(result.stdout));
     }
-    return (await call(probeArgs(net, input.probeImage, plan.address, plan.entry), PROBE_CALL_TIMEOUT_MS)).exitCode === 0;
+    probeNumber += 1;
+    const name = probeContainerName(net, plan.request.id, probeNumber);
+    probesInFlight.add(name);
+    const result = await call(probeArgs(net, input.probeImage, plan.address, plan.entry, name), Math.min(PROBE_CALL_TIMEOUT_MS, limitMs));
+    if (result.timedOut === true || result.exitCode === null || result.exitCode === -1) await call(["rm", "--force", "--volumes", name]);
+    probesInFlight.delete(name);
+    return result.exitCode === 0;
   };
 
   const aborted = (): boolean => input.signal?.aborted === true;
@@ -395,19 +419,47 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
     const deadline = Math.min(entryDeadline, runDeadline);
     for (;;) {
       if (aborted()) return fail("stopped", plan, `${plan.name} was stopped while starting`);
-      const state = await call(["inspect", "--format", "{{.State.Status}}", container]);
-      if (state.exitCode !== 0 || state.stdout.trim() !== "running") return fail("exited", plan, `${plan.name} stopped while starting`);
-      if (await healthy(plan, container)) return;
-      if (aborted()) return fail("stopped", plan, `${plan.name} was stopped while starting`);
-      if (now() >= deadline) {
+      // A hard ceiling: checked before every attempt, and no call is given more time than is left.
+      const remainingMs = deadline - now();
+      if (remainingMs <= 0) {
         const seconds = entryDeadline <= runDeadline ? plan.entry.health.startTimeoutS : Math.max(1, Math.ceil((runDeadline - startedAt) / 1_000));
         return fail("health_timeout", plan, `${plan.name} did not start (health check timed out after ${String(seconds)} s)`);
       }
-      await sleep(HEALTH_POLL_MS);
+      const state = await call(["inspect", "--format", "{{.State.Status}}", container], Math.min(EXEC_CALL_TIMEOUT_MS, remainingMs));
+      if (state.exitCode !== 0 || state.stdout.trim() !== "running") return fail("exited", plan, `${plan.name} stopped while starting`);
+      if (await healthy(plan, container, Math.max(1, deadline - now()))) return;
+      if (aborted()) return fail("stopped", plan, `${plan.name} was stopped while starting`);
+      await sleep(Math.max(1, Math.min(HEALTH_POLL_MS, deadline - now())));
     }
   };
 
+  /**
+   * An image that declares a volume (`VOLUME` in its Dockerfile) gets an anonymous disk volume at that path unless something is mounted there, and that volume would hold data past the run. So before anything starts, every
+   * volume a pinned image declares must be covered by one of the entry's tmpfs mounts (the path itself, or a folder under one); otherwise the image is refused. An image that cannot be inspected is refused too.
+   */
+  const assertVolumesCovered = async (plan: Plan): Promise<void> => {
+    const inspected = await call(["image", "inspect", "--format", "{{json .Config.Volumes}}", plan.image]);
+    let declared: string[];
+    try {
+      const parsed: unknown = inspected.exitCode === 0 ? JSON.parse(inspected.stdout.trim()) : undefined;
+      if (parsed === undefined) throw new RangeError("unreadable");
+      if (parsed === null) declared = [];
+      else if (typeof parsed === "object" && !Array.isArray(parsed)) declared = Object.keys(parsed);
+      else throw new RangeError("unreadable");
+    } catch {
+      throw refused(plan.request);
+    }
+    const covered = (path: string): boolean => plan.entry.run.tmpfs.some((mount) => path === mount.path || path.startsWith(`${mount.path}/`));
+    if (declared.some((path) => !covered(path))) throw refused(plan.request);
+  };
+
   try {
+    const checkedImages = new Set<string>();
+    for (const plan of plans) {
+      if (checkedImages.has(plan.image)) continue;
+      checkedImages.add(plan.image);
+      await assertVolumesCovered(plan);
+    }
     for (const level of levels) {
       const startTimes = new Map<Plan, number>();
       for (const plan of level) startTimes.set(plan, await startOne(plan));
