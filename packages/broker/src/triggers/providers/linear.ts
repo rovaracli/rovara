@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { HookRecord, TriggerEvent } from "@agentx/contracts";
 import { hmacHexEquals, type HookHeaders, type HookProvider, type Normalized } from "./types.js";
 import { headerOf, httpsLinkOn, isoOfMillis, titleOf, valuesOf } from "./shared.js";
-import { parseLinearIssue } from "../../rovara-code/linear-close.js";
+import { linearWorkspaceOfLink, parseLinearIssue } from "../../rovara-code/linear-close.js";
 
 const Envelope = z.object({ type: z.string().max(64), action: z.string().max(64), organizationId: z.string().min(1).max(100) }).passthrough();
 const TeamOf = z.object({ data: z.object({ teamId: z.string().min(1).max(100).optional(), team: z.object({ id: z.string().min(1).max(100).optional() }).passthrough().optional() }).passthrough() }).passthrough();
@@ -70,6 +70,8 @@ export interface LinearComment {
   issueKey: string;
   /** Who wrote it: Linear's user id. A person who is not a Rovara member is an outsider, whatever they say they are. */
   authorId: string;
+  /** The workspace url key in the comment's own link (`acme`), when the link has one. A key such as `ENG-142` exists in every workspace, so this is what tells them apart (M8). */
+  workspace?: string;
   /** The team the comment's issue is in, when the delivery says. */
   teamId?: string;
 }
@@ -105,5 +107,6 @@ export function linearCommentOf(body: unknown, hook: HookRecord): LinearComment 
   if (authorId === undefined || issue === undefined) return undefined;
   const teamId = data.teamId ?? data.issue?.teamId ?? data.issue?.team?.id;
   if (teamId !== undefined && !same(teamId, tenant.teamId)) return undefined;
-  return { commentId: data.id, text: data.body, issueKey: issue.issueId, authorId, ...(teamId === undefined ? {} : { teamId }) };
+  const workspace = link === undefined ? undefined : linearWorkspaceOfLink(link);
+  return { commentId: data.id, text: data.body, issueKey: issue.issueId, authorId, ...(teamId === undefined ? {} : { teamId }), ...(workspace === undefined ? {} : { workspace }) };
 }

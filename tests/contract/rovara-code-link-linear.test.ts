@@ -70,11 +70,23 @@ describe("linking a session to a Linear issue", () => {
     expect(audited[0]?.details).toEqual([{ subject: "org", fields: { issueKey: "ENG-142" } }]);
   });
 
-  it("takes the issue's Linear link and stores only the key and Linear's short link: the typed workspace is not the company's to trust", async () => {
+  it("takes the issue's Linear link and stores the key, Linear's short link and the link's workspace (M8): the workspace only narrows which comments are believed and where an answer is written, it grants nothing", async () => {
     const h = world();
     const { sessionId } = h.seedSession();
-    await h.link(PRIYA, sessionId, `${LINK}?x=1#y`);
+    const reply = await h.link(PRIYA, sessionId, `${LINK}?x=1#y`);
+    expect(h.binding(sessionId)?.binding).toEqual({ kind: "linear_issue", issueId: "ENG-142", url: KEY_URL, workspace: "acme" });
+    // The page shows the link into that workspace, built from the key and the workspace only (never the typed slug text).
+    expect(reply.session.bindings).toEqual([{ kind: "linear_issue", url: "https://linear.app/acme/issue/ENG-142" }]);
+  });
+
+  it("a bare key names no workspace, and the binding stays as before (the workspace is then read from the company's Linear connection)", async () => {
+    const h = world();
+    const { sessionId } = h.seedSession();
+    await h.link(PRIYA, sessionId, "ENG-142");
     expect(h.binding(sessionId)?.binding).toEqual({ kind: "linear_issue", issueId: "ENG-142", url: KEY_URL });
+    const short = h.seedSession();
+    await h.link(PRIYA, short.sessionId, "https://linear.app/issue/ENG-143");
+    expect(h.binding(short.sessionId)?.binding).toEqual({ kind: "linear_issue", issueId: "ENG-143", url: "https://linear.app/issue/ENG-143" });
   });
 
   it("is the key the pull request's description says Fixes for", async () => {

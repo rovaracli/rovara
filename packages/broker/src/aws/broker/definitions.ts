@@ -223,7 +223,7 @@ export interface AwsBrokerDependencies {
   slackAskLevel?: AskContextDependencies["sessionLevel"];
   /** Live interaction A3: the readers a Slack task question's context is built from, when they are not the broker's own (tests). */
   slackAskReaders?: AskContextReaders;
-  /** Live interaction L1: how Rovara writes a comment on a Linear issue (an Ask's answer, a refusal). No Linear write client exists on this branch, so none is wired: the Linear intake is off until one is. */
+  /** Live interaction L1: how Rovara writes a comment on a Linear issue (an Ask's answer, a refusal). Wired from the org's Linear connection (`linearWriteOf`) where org connections exist; none, and the Linear intake is off. */
   linearReply?: LinearReplyPort;
   /** What reading the Audit Ledger and starting its exports needs (Task 11); absent on a legacy install. The broker builds no export: its own function does. */
   auditLedger?: AuditExportClientDeps;

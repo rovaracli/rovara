@@ -340,6 +340,7 @@ import { learningEraseHook, learningWalkDeps } from "../learning/cleanup.js";
 import { DeveloperSignInStore } from "../developer/store.js";
 import { createTeamRecordRuntime } from "../team-record/runtime.js";
 import { connectedTrackersOf } from "../team-record/tracker-connections.js";
+import { linearWriteOf } from "../rovara-code/linear-write.js";
 import { companyDomainsPort } from "../org/company-domains/port.js";
 import { deadLetterUrlOf, opsQueueUrlOf, sqsDeadLetters, sqsOpsQueue } from "../team-record/ops-queue.js";
 import { askAliasHashKey } from "../agent-sessions/ask-erased-aliases.js";
@@ -630,6 +631,8 @@ export const handler = createAwsBrokerHandler({
   // Task 12b's acceptance item: on Rovara Cloud every request to a company's MCP endpoint is checked again and connects only to what was checked.
   ...(cloudOrgResolver === undefined ? {} : { mcpEndpointGuard: mcpEndpointGuard() }),
   ...(orgConnections === undefined ? {} : { orgConnections }),
+  // Lane ask-linear: an Ask's answer on a Linear issue is posted through the org's Linear connection (read_write only).
+  ...(orgConnections === undefined ? {} : { linearReply: linearWriteOf({ deps: orgConnections }) }),
   // Plan 4 Task 16: on the hosted cloud, where the control plane grants the cross-account assume, the CloudWatch connector assumes a customer's role through STS.
   ...(cloudOrgResolver === undefined || orgConnections === undefined ? {} : { cloudwatchConnector: awsCloudWatchAccess({ ownAccountId, sts: { send: (command) => cloudwatchSts.send(command as never) } }) }),
   ...(process.env.BROKER_ROLE_ARN === undefined || process.env.BROKER_ROLE_ARN === "" ? {} : { brokerRoleArn: process.env.BROKER_ROLE_ARN }),

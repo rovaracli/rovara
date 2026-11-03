@@ -30,6 +30,11 @@ export const SessionBindingSchema = z.discriminatedUnion("kind", [
       kind: z.literal("linear_issue"),
       issueId: z.string().regex(new RegExp(`^[A-Za-z0-9_-]{1,${String(LINEAR_ISSUE_ID_MAX)}}$`)),
       url: z.string().url().max(LINEAR_URL_MAX).refine((value) => value.startsWith("https://"), "must be an https link"),
+      /**
+       * The Linear workspace's url key (the `acme` in linear.app/acme/issue/ENG-142). An issue key alone is not unique across workspaces, so a binding that knows its workspace names it. Optional: a binding made
+       * before this field has none (dual read, no migration), and the workspace is then read from the org's Linear connection when it has one.
+       */
+      workspace: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/u).optional(),
     })
     .strict(),
   // Meta repo lane F (R9): a ticket of any tracker (Jira, GitHub Issues, a team's own). Generic: `system` names the tracker, `id` the ticket in it. No `#` in an id (it separates the parts of a stored key).

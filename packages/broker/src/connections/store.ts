@@ -139,6 +139,8 @@ const CHECK_MESSAGE_MAX = 300;
 const DEFAULT_ENDPOINT_GUARD = mcpEndpointGuard();
 const MAX_CHECK_RESPONSE_BYTES = 1_000_000;
 export const LINEAR_GRAPHQL = "https://api.linear.app/graphql";
+/** A Linear workspace's url key (`acme` in linear.app/acme/issue/ENG-1): lowercase letters, digits and hyphens. */
+export const LINEAR_WORKSPACE_KEY = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 
 const coded = (code: Parameters<typeof agentXError>[0], message: string) => agentXError(code, message);
 const parseOrg = (orgId: string): OrgId => {
@@ -196,7 +198,7 @@ const isObservability = (connection: OrgConnection): connection is Observability
 
 function strip(item: Item): Item {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the keys
-  const { pk: _pk, sk: _sk, entityType: _type, actorId: _actor, revision: _revision, secretVersion: _version, ...rest } = item;
+  const { pk: _pk, sk: _sk, entityType: _type, actorId: _actor, workspaceKey: _workspace, revision: _revision, secretVersion: _version, ...rest } = item;
   return rest;
 }
 
@@ -254,6 +256,18 @@ export async function connectionServiceActorIds(deps: Pick<OrgConnectionDeps, "d
     if (item.type === type && item.identity === "service" && typeof item.actorId === "string" && item.actorId !== "") ids.add(item.actorId);
   }
   return ids;
+}
+
+/**
+ * The Linear workspace url keys this org's Linear connections have checked as (`acme`), to tell which workspace an issue key belongs to. A connection that was never checked, or whose check did not say, adds none.
+ */
+export async function connectionWorkspaceKeys(deps: Pick<OrgConnectionDeps, "documentClient" | "tableName">, orgId: string): Promise<Set<string>> {
+  const org = parseOrg(orgId);
+  const keys = new Set<string>();
+  for (const item of await listItems(deps, org)) {
+    if (item.type === "linear" && typeof item.workspaceKey === "string" && LINEAR_WORKSPACE_KEY.test(item.workspaceKey)) keys.add(item.workspaceKey);
+  }
+  return keys;
 }
 
 export class OrgConnectionStore {
@@ -449,7 +463,7 @@ export class OrgConnectionStore {
     if (target !== undefined && this.input.checkEndpoint === undefined) {
       throw coded("CONFIG_INVALID", `this deployment cannot check ${target.noun}, so it cannot check ${target.what}`);
     }
-    let result: CheckResult & { actorId?: string };
+    let result: CheckResult & { actorId?: string; workspaceKey?: string };
     let held: ConnectionSecret | undefined;
     if (!connectionTakesSecret(connection.type)) {
       // CloudWatch has no secret: its connector assumes the customer's role.
@@ -468,13 +482,18 @@ export class OrgConnectionStore {
     return answer;
   }
 
-  private async record(orgId: OrgId, connectionId: string, read: number | undefined, result: CheckResult & { actorId?: string }, answer: CheckResult, request?: RequestMark): Promise<void> {
+  private async record(orgId: OrgId, connectionId: string, read: number | undefined, result: CheckResult & { actorId?: string; workspaceKey?: string }, answer: CheckResult, request?: RequestMark): Promise<void> {
     const sets = ["lastCheck = :check"];
     const when = atRevision(read);
     const values: Record<string, unknown> = { ":check": { ok: result.ok, at: this.iso() }, ...when.values };
     if (result.ok && result.actorId !== undefined) {
       sets.push("actorId = :actor");
       values[":actor"] = result.actorId;
+      // A Linear check also learns the workspace's url key (the `<key>` in linear.app/<key>/issue/ENG-1): an issue key alone does not say which workspace it is in. Kept like the account id, never shown.
+      if (result.workspaceKey !== undefined) {
+        sets.push("workspaceKey = :workspace");
+        values[":workspace"] = result.workspaceKey;
+      }
     }
     const raced = new Error("the connection changed while it was being checked");
     try {
@@ -494,7 +513,7 @@ export class OrgConnectionStore {
   }
 
   /** Rovara's own checks for Linear, Jira and MCP; the six Plan 4 types go to the check their connector task supplied. */
-  private async ask(orgId: OrgId, connection: OrgConnection, secret: ConnectionSecret | undefined): Promise<CheckResult & { actorId?: string }> {
+  private async ask(orgId: OrgId, connection: OrgConnection, secret: ConnectionSecret | undefined): Promise<CheckResult & { actorId?: string; workspaceKey?: string }> {
     if (isObservability(connection)) return this.askObservability(orgId, connection, secret);
     if (secret === undefined) return { ok: false, message: "the saved secret could not be read; save it again" };
     const fetchImplementation = this.input.fetch ?? fetch;
@@ -506,7 +525,7 @@ export class OrgConnectionStore {
         ? await fetchImplementation(LINEAR_GRAPHQL, {
           method: "POST",
           headers: { authorization: token, "content-type": "application/json" },
-          body: JSON.stringify({ query: "query { viewer { id } }" }),
+          body: JSON.stringify({ query: "query { viewer { id organization { urlKey } } }" }),
           redirect: "error",
           signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
         })
@@ -524,7 +543,9 @@ export class OrgConnectionStore {
         ? ((body as { data?: { viewer?: { id?: unknown } } })?.data?.viewer?.id)
         : (body as { accountId?: unknown })?.accountId;
       if (typeof actorId !== "string" || actorId === "") return { ok: false, message: `${vendor} did not say whose secret this is` };
-      return { ok: true, actorId };
+      const urlKey = connection.type === "linear" ? (body as { data?: { viewer?: { organization?: { urlKey?: unknown } } } })?.data?.viewer?.organization?.urlKey : undefined;
+      const workspaceKey = typeof urlKey === "string" && LINEAR_WORKSPACE_KEY.test(urlKey.toLowerCase()) ? urlKey.toLowerCase() : undefined;
+      return { ok: true, actorId, ...(workspaceKey === undefined ? {} : { workspaceKey }) };
     } catch {
       // The message of a network error can quote the request; only the vendor is named.
       return { ok: false, message: `could not reach ${vendor} to check the saved secret` };
@@ -629,7 +650,7 @@ async function readCapped(response: Response, limit: number): Promise<string | u
 /** The connection's settings out of a stored item. */
 function pick(item: Item): unknown {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the bookkeeping fields
-  const { pk: _pk, sk: _sk, entityType: _type, orgId: _org, hasSecret: _has, externalId: _external, actorId: _actor, lastCheck: _check, revision: _revision, secretVersion: _version, createdBy: _by, createdAt: _at, updatedBy: _ub, updatedAt: _ua, ...settings } = item;
+  const { pk: _pk, sk: _sk, entityType: _type, orgId: _org, hasSecret: _has, externalId: _external, actorId: _actor, workspaceKey: _workspace, lastCheck: _check, revision: _revision, secretVersion: _version, createdBy: _by, createdAt: _at, updatedBy: _ub, updatedAt: _ua, ...settings } = item;
   return settings;
 }
 

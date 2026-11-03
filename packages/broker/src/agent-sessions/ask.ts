@@ -17,6 +17,7 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 import { readProjectMeta } from "../developer/project-roles.js";
 import type { SlackRequestQueue } from "../developer/page-comments.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks/types.js";
+import { linearCommentIdFor } from "../rovara-code/linear-comment-id.js";
 import { requireSessionLevel, sessionLevelOf, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 import { askContext, type AskContextReaders, type AskViewer } from "./ask-context.js";
 import { auditAsk, type AskAuditDependencies } from "./ask-audit.js";
@@ -74,8 +75,13 @@ export interface AskDependencies {
 
 export type AskCaller = SessionCaller;
 
-/** Posts a comment on a Linear issue as Rovara (see `LinearReplyPort`; this is the part an Ask needs). */
-export interface LinearAnswerPort { reply(input: { orgId: OrgId; issueKey: string; text: string }): Promise<void> }
+/** Posts a comment on a Linear issue as Rovara (see `LinearReplyPort`; this is the part an Ask needs). `commentKey` makes a retry the same comment; `workspace` is the one the issue's binding names. */
+export interface LinearAnswerPort { reply(input: { orgId: OrgId; issueKey: string; text: string; commentKey?: string | undefined; workspace?: string | undefined }): Promise<{ commentId: string } | void> }
+
+/** How many times one answer is posted to Linear before it is given up on (the post is idempotent by its key, so a repeat after a lost answer is safe). */
+export const LINEAR_POST_ATTEMPTS = 3;
+/** The key an Ask's answer is posted under, and so (with the org) the id of its comment. */
+export const askAnswerCommentKey = (askId: string): string => `ask:${askId}`;
 
 /** Text for a Linear issue with every `@` that starts a word broken, so that it can never notify someone by mention and Rovara's own words can never read as a mention of Rovara. */
 export const withoutMentions = (text: string): string => text.replace(/@(?=[\p{L}\p{N}_])/gu, "@\u200b");
@@ -154,6 +160,8 @@ export interface AskAdmission {
   askedBy?: string | undefined;
   /** Linear only: the issue the Ask was made on (the answer's context is built for that issue's viewers). */
   issueId?: string | undefined;
+  /** Linear only: the workspace the issue's binding names (or the org's connection knows), when it is known; the answer is written to that workspace only. */
+  workspace?: string | undefined;
   question: string;
   /** What makes the Ask the same Ask again: the web request's id, or the Linear comment's id. */
   requestId: string;
@@ -192,7 +200,7 @@ export async function admitAsk(deps: AskDependencies, adm: AskAdmission): Promis
         { Put: { TableName: deps.tableName, Item: { ...lockKey, entityType: "ASK_LOCK", orgId, sessionId: adm.sessionId, askId, expiresAt: nowMs + LOCK_SECONDS * 1000, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + LOCK_SECONDS * 2 },
           ConditionExpression: "attribute_not_exists(pk) OR expiresAt <= :now", ExpressionAttributeValues: { ":now": nowMs } } },
         { Put: { TableName: deps.tableName, Item: { ...requestKey, entityType: "ASK_REQUEST", orgId, sessionId: adm.sessionId, askId, taskId: task.taskId, audience: adm.audience, askerKey: adm.askerKey,
-          ...(adm.askedBy === undefined ? {} : { askedBy: adm.askedBy }), ...(adm.issueId === undefined ? {} : { issueId: adm.issueId }), state: "queued", createdAt: new Date(nowMs).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: expires },
+          ...(adm.askedBy === undefined ? {} : { askedBy: adm.askedBy }), ...(adm.issueId === undefined ? {} : { issueId: adm.issueId }), ...(adm.workspace === undefined ? {} : { workspace: adm.workspace }), state: "queued", createdAt: new Date(nowMs).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: expires },
           ConditionExpression: "attribute_not_exists(pk)" } },
       ] as never }));
       break;
@@ -284,19 +292,25 @@ async function settleRequest(deps: AskDependencies, orgId: OrgId, sessionId: str
 /** Names a Slack user with no member link for the rates: a hash of their Slack workspace and user id (nothing readable is stored). */
 export const slackAskerKey = (teamId: string, userId: string): string => `slack_${createHash("sha256").update(`slack-asker\0${teamId}\0${userId}`, "utf8").digest("hex").slice(0, 32)}`;
 
-/** The rates of a Slack Ask: the same 20 an hour per person and 100 a day per task as the web's. Spent BEFORE the answer turn; no room refuses it in fixed words. */
-export async function takeSlackAskRates(deps: AskDependencies, task: DeveloperTaskRecord, askerKey: string): Promise<void> {
+/**
+ * The rates of a Slack Ask: the same 20 an hour per person and 100 a day per task as the web's. Spent BEFORE the answer turn; no room refuses it in fixed words. `spendKey` (the saved reply's `noteTs`) makes the
+ * spend once per question: the marker commits with the counters, so a redelivered queue message (up to 5 receives) finds it and spends nothing more (LA-5, M3).
+ */
+export async function takeSlackAskRates(deps: AskDependencies, task: DeveloperTaskRecord, askerKey: string, spendKey?: string): Promise<void> {
   if (task.orgId === undefined || task.sessionId === undefined) throw unavailable();
   const scope = { orgId: task.orgId, sessionId: task.sessionId };
+  const marker = spendKey === undefined ? undefined : sessionRateKey(task.orgId, task.sessionId, `n_${createHash("sha256").update(`ask-spent\0${task.taskId}\0${spendKey}`, "utf8").digest("hex").slice(0, 32)}`, "ask_spent");
   for (let attempt = 1; ; attempt += 1) {
+    if (marker !== undefined && await getItem(deps, marker) !== undefined) return;
     const person = await rateStep(deps, sessionRateKey(task.orgId, task.sessionId, askerKey, "ask"), scope, ASK_RATE.perPersonPerHour, HOUR_MS);
     const everyone = await rateStep(deps, sessionRateKey(task.orgId, task.sessionId, "task", "ask_day"), scope, ASK_RATE.perTaskPerDay, DAY_MS);
     if (!person.room || !everyone.room) throw agentXError("TOO_MANY_REQUESTS", ASK_RATE_TEXT);
+    const spent = marker === undefined ? [] : [{ Put: { TableName: deps.tableName, Item: { ...marker, entityType: "SESSION_RATE_SPENT", orgId: task.orgId, sessionId: task.sessionId, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(deps.now() / 1000) + 2 * 86_400 }, ConditionExpression: "attribute_not_exists(pk)" } }];
     try {
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [person.item, everyone.item] as never }));
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [person.item, everyone.item, ...spent] as never }));
       return;
     } catch (error) {
-      // Another Ask took a place at the same moment: read the counters again (a bounded number of times). A genuinely full counter is refused above, on the next read.
+      // Another Ask took a place at the same moment, or this very question was just spent by another delivery: read again (a bounded number of times). A genuinely full counter is refused above, on the next read.
       if (!isCancelled(error)) throw error;
       if (attempt >= RATE_RACE_ATTEMPTS) throw unavailable();
     }
@@ -335,7 +349,7 @@ export function sessionLevelPort(access: SessionAccessDependencies): (person: { 
   };
 }
 
-interface PendingAsk { request: Item; task: DeveloperTaskRecord; viewer: AskViewer; askerKey: string; askedBy: string | undefined; audience: "web" | "linear"; issueId: string | undefined }
+interface PendingAsk { request: Item; task: DeveloperTaskRecord; viewer: AskViewer; askerKey: string; askedBy: string | undefined; audience: "web" | "linear"; issueId: string | undefined; workspace: string | undefined }
 
 /** The waiting Ask the service names, with its task and the viewer it is for, or undefined: not made by the broker, not waiting, another org's, or its task is gone. */
 async function pendingAsk(deps: AskDependencies, ref: { orgId: OrgId; sessionId: string; askId: string }): Promise<PendingAsk | undefined> {
@@ -350,7 +364,8 @@ async function pendingAsk(deps: AskDependencies, ref: { orgId: OrgId; sessionId:
   if (audience === "web" && askedBy === undefined) return undefined;
   if (audience === "linear" && typeof issueId !== "string") return undefined;
   const viewer: AskViewer = audience === "web" ? { audience: "web", orgId: ref.orgId, developerId: askedBy! } : { audience: "linear", orgId: ref.orgId, issueId: issueId as string };
-  return { request, task, viewer, askerKey: request["askerKey"], askedBy, audience, issueId: typeof issueId === "string" ? issueId : undefined };
+  const workspace = request["workspace"];
+  return { request, task, viewer, askerKey: request["askerKey"], askedBy, audience, issueId: typeof issueId === "string" ? issueId : undefined, workspace: typeof workspace === "string" ? workspace : undefined };
 }
 
 /**
@@ -371,6 +386,18 @@ export async function prepareAskTurn(deps: AskDependencies, value: unknown): Pro
   return { workspaceId: pending.task.workspaceId, orchestratorInstructions: instructions, taskContext: `${ASK_TURN_RULES}\n${context.text}` };
 }
 
+/** The comment Rovara is posting for an Ask, on the Ask's own record (outside the record schema: ids only). Best effort on a failure of the write itself: the answer is still given, and the fault is logged. */
+async function recordLinearPost(deps: AskDependencies, orgId: OrgId, sessionId: string, askId: string, post: { issueKey: string; commentId: string; workspace?: string | undefined }): Promise<void> {
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: sessionAskKey(orgId, sessionId, askId), UpdateExpression: "SET linearComment = :post", ConditionExpression: "attribute_exists(pk)",
+      ExpressionAttributeValues: { ":post": { issueKey: post.issueKey, commentId: post.commentId, ...(post.workspace === undefined ? {} : { workspace: post.workspace }) } },
+    }));
+  } catch (error) {
+    deps.log?.({ event: "ask.linear_post_not_recorded", error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
 /**
  * The service's answer (or that there is none). Only a waiting Ask takes one, once: the request item moves from queued to answered/failed in one conditional step, and only the call that made the
  * move stores the answer and audits it, so a redelivery writes nothing twice. A stored answer is scrubbed of secrets and of the names of the session's people (`writeAsk`).
@@ -388,12 +415,20 @@ export async function completeAsk(deps: AskDependencies, value: unknown): Promis
     throw notFound();
   }
   if (answer.outcome === "ANSWERED" && (answer.text === undefined || answer.text.trim() === "" || answer.question === undefined || answer.question.trim() === "")) throw agentXError("CONFIG_INVALID", "an answer needs the question and its text");
-  const tellLinear = async (text: string): Promise<void> => {
+  // Posts to the Linear issue under `key` (the same key is the same comment), a few times: the post is idempotent, so a repeat after a lost answer is safe. Never throws: the Ask is answered either way.
+  const tellLinear = async (text: string, key: string): Promise<void> => {
     if (pending.audience !== "linear" || pending.issueId === undefined || deps.linearReply === undefined) return;
-    try { await deps.linearReply.reply({ orgId: answer.orgId, issueKey: pending.issueId, text }); } catch (error) { deps.log?.({ event: "ask.linear_reply_failed", error: error instanceof Error ? error.name : "unknown" }); }
+    for (let attempt = 1; attempt <= LINEAR_POST_ATTEMPTS; attempt += 1) {
+      try {
+        await deps.linearReply.reply({ orgId: answer.orgId, issueKey: pending.issueId, text, commentKey: key, ...(pending.workspace === undefined ? {} : { workspace: pending.workspace }) });
+        return;
+      } catch (error) {
+        deps.log?.({ event: "ask.linear_reply_failed", attempt, error: error instanceof Error ? error.name : "unknown" });
+      }
+    }
   };
   if (answer.outcome === "FAILED") {
-    if (await settleRequest(deps, answer.orgId, answer.sessionId, answer.askId, pending.askerKey, "failed")) await tellLinear(ASK_UNAVAILABLE_MESSAGE);
+    if (await settleRequest(deps, answer.orgId, answer.sessionId, answer.askId, pending.askerKey, "failed")) await tellLinear(ASK_UNAVAILABLE_MESSAGE, `ask-failed:${answer.askId}`);
     return { outcome: "FAILED" };
   }
   const nowMs = deps.now();
@@ -403,12 +438,16 @@ export async function completeAsk(deps: AskDependencies, value: unknown): Promis
     question: answer.question ?? "", answer: answer.text ?? "", contextBytes, model: answer.model ?? deps.defaultModel, nowMs, people: await deps.people(pending.task, pending.askedBy).catch(() => []),
   });
   if (stored === "erased") {
-    if (await settleRequest(deps, answer.orgId, answer.sessionId, answer.askId, pending.askerKey, "failed")) await tellLinear(ASK_UNAVAILABLE_MESSAGE);
+    if (await settleRequest(deps, answer.orgId, answer.sessionId, answer.askId, pending.askerKey, "failed")) await tellLinear(ASK_UNAVAILABLE_MESSAGE, `ask-failed:${answer.askId}`);
     return { outcome: "FAILED" };
+  }
+  // What Rovara is about to post on the issue is recorded on the Ask FIRST (the comment's id and issue, never its words), so an erase can find and rewrite it later even if the post is cut short.
+  if (pending.audience === "linear" && pending.issueId !== undefined && deps.linearReply !== undefined) {
+    await recordLinearPost(deps, answer.orgId, answer.sessionId, answer.askId, { issueKey: pending.issueId, commentId: linearCommentIdFor(answer.orgId, askAnswerCommentKey(answer.askId)), ...(pending.workspace === undefined ? {} : { workspace: pending.workspace }) });
   }
   const settled = await settleRequest(deps, answer.orgId, answer.sessionId, answer.askId, pending.askerKey, "answered");
   if (settled) {
-    await tellLinear(linearAnswerText(answer.text ?? ""));
+    await tellLinear(linearAnswerText(answer.text ?? ""), askAnswerCommentKey(answer.askId));
     await auditAsk(deps.audit, { edition: deps.edition, orgId: answer.orgId, sessionId: answer.sessionId, askId: answer.askId, audience: pending.audience, contextBytes, model: answer.model ?? deps.defaultModel, askedBy: pending.askedBy, projectName: pending.task.project, nowMs });
   }
   return { outcome: "ANSWERED" };

@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AskRecordSchema, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askByPersonPk, askExpiryPk, askMentionKey, askMentionPk, sessionAskKey,
+  AskRecordSchema, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askByPersonPk, askExpiryPk, askLinearScrubKey, askMentionKey, askMentionPk, sessionAskKey,
   type AskRecord, type OrgId, type SessionId,
 } from "@agentx/contracts";
 
@@ -22,13 +22,25 @@ export const FORMER_MEMBER_MENTION = "@former-member";
 /** The person tag inside a person label (`person p_a1b2c3` is `p_a1b2c3`), the same one the Ask context shows. Same formula as `personLabel` in thread-notes.ts (a test pins them equal). */
 export const askPersonTag = (developerId: string): string => `p_${createHash("sha256").update(`person\0${developerId}`, "utf8").digest("hex").slice(0, 6)}`;
 
-const HOUSEKEEPING = new Set(["pk", "sk", "entityType", "orgId", "sessionId", "mentionTags", INDEX_EXPIRY_ATTRIBUTE]);
+const HOUSEKEEPING = new Set(["pk", "sk", "entityType", "orgId", "sessionId", "mentionTags", "linearComment", INDEX_EXPIRY_ATTRIBUTE]);
 
 export const askRecordFromItem = (item: AskItem | undefined): AskRecord | undefined => {
   if (item === undefined) return undefined;
   const parsed = AskRecordSchema.safeParse(Object.fromEntries(Object.entries(item).filter(([key]) => !HOUSEKEEPING.has(key))));
   return parsed.success ? parsed.data : undefined;
 };
+
+/** The Linear comment Rovara posted for an Ask (`recordLinearPost` in ask.ts): ids only. Undefined when the Ask was not posted to Linear or the field is not that shape. */
+export function linearCommentOfItem(item: AskItem | undefined): { issueKey: string; commentId: string; workspace?: string } | undefined {
+  const posted = item?.["linearComment"];
+  if (posted === null || typeof posted !== "object") return undefined;
+  const { issueKey, commentId, workspace } = posted as Record<string, unknown>;
+  if (typeof issueKey !== "string" || typeof commentId !== "string" || issueKey === "" || commentId === "") return undefined;
+  return { issueKey, commentId, ...(typeof workspace === "string" && workspace !== "" ? { workspace } : {}) };
+}
+
+/** How long a waiting rewrite of a Linear comment is kept before it is dropped (the Ask itself lives 30 days). */
+const LINEAR_FIX_TTL_SECONDS = 30 * 86_400;
 
 export const tagsOfItem = (item: AskItem | undefined): string[] =>
   (Array.isArray(item?.["mentionTags"]) ? (item["mentionTags"] as unknown[]) : []).filter((value): value is string => typeof value === "string");
@@ -102,6 +114,11 @@ export async function eraseAskPerson(table: AskStoreTable, orgId: OrgId, develop
         if (record.answer !== undefined) { names.push("answer = :a"); values[":a"] = record.answer.replace(pattern, FORMER_MEMBER_MENTION); }
         await table.documentClient.send(new UpdateCommand({ TableName: table.tableName, Key: key, UpdateExpression: `SET ${names.join(", ")}`, ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: values }))
           .catch((error: unknown) => { if (!isConditional(error)) throw error; });
+        // An answer that was posted on a Linear issue still holds the person's name there: the comment waits to be rewritten from the scrubbed record (`ask-linear-scrub.ts`). Ids only.
+        const posted = linearCommentOfItem(found);
+        if (posted !== undefined) {
+          await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...askLinearScrubKey(orgId, sessionId, askId), entityType: "ASK_LINEAR_FIX", orgId, sessionId, askId, ...posted, attempts: 0, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.now() / 1000) + LINEAR_FIX_TTL_SECONDS } }));
+        }
         result.scrubbed += 1;
       }
     }

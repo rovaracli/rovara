@@ -30,10 +30,29 @@ function keyOfUrl(url: URL): string | undefined {
   return inWorkspace ?? (parts[0] === "issue" ? normalizeIssueKey(parts[1]) : undefined);
 }
 
+/** The workspace url key in a Linear issue link (`https://linear.app/acme/issue/ENG-142/...` is `acme`); undefined for the short form `/issue/KEY`, a link that is not Linear's, or a name that is not a url key. */
+export function linearWorkspaceOfLink(link: string): string | undefined {
+  const url = linearUrl(link);
+  if (url === undefined) return undefined;
+  const parts = url.pathname.split("/").filter((part) => part !== "");
+  const name = parts[1] === "issue" && normalizeIssueKey(parts[2]) !== undefined ? parts[0]?.toLowerCase() : undefined;
+  return name !== undefined && /^[a-z0-9][a-z0-9-]{0,62}$/u.test(name) ? name : undefined;
+}
+
+/** The workspace url key a Linear binding names, or undefined for a binding that has none (an older one) or that is not a Linear issue's. */
+export const linearWorkspaceOfBinding = (binding: SessionBinding): string | undefined => (binding.kind === "linear_issue" ? binding.workspace : undefined);
+
+/** The link to show for a Linear binding: with its workspace when it names one, else the link it was stored with. A link that names the wrong workspace is never built from a guess. */
+export function linearLinkOfBinding(binding: SessionBinding): string {
+  if (binding.kind !== "linear_issue") return "";
+  const key = linearIssueKeyOf(binding);
+  return binding.workspace !== undefined && key !== undefined ? `https://linear.app/${binding.workspace}/issue/${key}` : binding.url;
+}
+
 /**
  * What a person typed to name a Linear issue (Plan 6 Task 20's link command): the issue key (`ENG-142`, any case) or the issue's Linear link. The result is the binding's issue id (the key in
- * capitals) and Linear's short link `https://linear.app/issue/<KEY>`. A typed workspace is dropped, not stored: the company's own Linear workspace is not known here, so a link into another one
- * cannot be told from the right one. Anything else is undefined.
+ * capitals) and Linear's short link `https://linear.app/issue/<KEY>`. A typed workspace is not part of this result: `linearWorkspaceOfLink` reads it, and the binding keeps it only to NARROW what is believed
+ * (comments from, and answers written to, that workspace); it never widens anything. Anything else is undefined.
  */
 export function parseLinearIssue(text: string): { issueId: string; url: string } | undefined {
   const typed = text.trim();
