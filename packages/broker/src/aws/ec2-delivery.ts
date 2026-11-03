@@ -24,6 +24,7 @@ import {
   TEST_ENV_DETECT_FEATURE,
   SECOND_REVIEWER_FEATURE,
   TEST_ENV_PLAN_FEATURE,
+  TEST_SERVICES_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
   PREPARE_SAVED_ENV_FEATURE,
   PREPARE_SAVED_ENV_BUILD_FEATURE,
@@ -455,6 +456,10 @@ async function forWorkerFeatures(
   }
   // Test environment: a verification run that carries the environment's plan is never sent to a worker that does not list it (it would run the whole suite under another budget and say nothing of it), and the field is never dropped.
   if (invocation.kind === "task" && invocation.payload.testEnvironment !== undefined && !features.includes(TEST_ENV_PLAN_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Test services (slice 1): a run whose plan starts dependencies is never sent to a worker that does not list the feature (it would run the checks with no database and say nothing), and the field is never dropped.
+  if (invocation.kind === "task" && (invocation.payload.testEnvironment?.dependencies?.length ?? 0) > 0 && !features.includes(TEST_SERVICES_PLAN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.

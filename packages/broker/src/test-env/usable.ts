@@ -11,9 +11,11 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, mediaTierAllowed, projectPk, testEnvDigest, testEnvProdDenyViolations, type OrgId, type TestEnvironment } from "@agentx/contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import { readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
+import { dependenciesStartableNow } from "./dependency-plan.js";
 import { testEnvironmentEnabled } from "./switch.js";
+import { testServicesEnabled } from "./test-services-switch.js";
 
-export const UNUSED_REASONS = ["none", "unreadable", "names_production", "recording_not_allowed", "services_not_connected", "accounts_not_connected", "tier_not_connected"] as const;
+export const UNUSED_REASONS = ["none", "unreadable", "names_production", "recording_not_allowed", "services_not_connected", "accounts_not_connected", "tier_not_connected", "dependencies_not_connected", "dependencies_not_available_yet"] as const;
 export type UnusedReason = (typeof UNUSED_REASONS)[number];
 
 /** What a person reads when the approved environment was not used (fixed words). */
@@ -25,19 +27,28 @@ export const UNUSED_WORDS: Record<UnusedReason, string> = {
   services_not_connected: "The approved test environment calls services, which tasks do not use yet",
   accounts_not_connected: "The approved test environment uses test accounts, which tasks do not use yet",
   tier_not_connected: "The approved test environment is not a sandbox, which tasks do not use yet",
+  dependencies_not_connected: "The approved test environment lists dependencies, which tasks do not start yet",
+  dependencies_not_available_yet: "The approved test environment asks for a kind of backing that tasks do not start yet",
 };
 
 /** `judged` is the environment the refusal is about, so a pin names the revision that was judged and not one approved a moment later. */
 export type UsableEnvironment = { ok: true; environment: TestEnvironment } | { ok: false; reason: UnusedReason; judged?: TestEnvironment };
 
-/** Whether an approved environment may be carried out by a task now, and if not, why not. Pure. */
-export function environmentUnusedReason(environment: TestEnvironment): UnusedReason | undefined {
+/**
+ * Whether an approved environment may be carried out by a task now, and if not, why not. Pure apart from the install switches in `env`. Dependencies (test services) are carried out only with the switch `tx` on, and
+ * only real software from the catalog (`dependenciesStartableNow`); v1 `services` stay refused as before. Whether the catalog can PIN each one is asked at dispatch (`taskDependencyPlansOf`), which has the catalog.
+ */
+export function environmentUnusedReason(environment: TestEnvironment, env: NodeJS.ProcessEnv = process.env): UnusedReason | undefined {
   const body = environment.environment;
   if (testEnvProdDenyViolations(body).length > 0) return "names_production";
   if ((body.capture.video || body.capture.traces) && !mediaTierAllowed(body.tier)) return "recording_not_allowed";
   if (body.tier !== "sandbox" || body.preview !== undefined || body.shared !== undefined) return "tier_not_connected";
   if (body.services.length > 0) return "services_not_connected";
   if (body.accounts.length > 0) return "accounts_not_connected";
+  if (body.dependencies !== undefined && body.dependencies.length > 0) {
+    if (!testServicesEnabled(env)) return "dependencies_not_connected";
+    if (!dependenciesStartableNow(body.dependencies)) return "dependencies_not_available_yet";
+  }
   return undefined;
 }
 
@@ -54,7 +65,7 @@ export async function usableTestEnvironment(deps: TestEnvDeps, orgId: OrgId, pro
     return { ok: false, reason: "unreadable" };
   }
   if (approved === undefined) return { ok: false, reason: "none" };
-  const reason = environmentUnusedReason(approved);
+  const reason = environmentUnusedReason(approved, env);
   return reason === undefined ? { ok: true, environment: approved } : { ok: false, reason, judged: approved };
 }
 

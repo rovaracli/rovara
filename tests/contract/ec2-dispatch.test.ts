@@ -511,6 +511,25 @@ describe("ec2-ebs delivery", () => {
       expect((postedPayload(capable.post).testEnvironment as { checks: Array<Record<string, unknown>> }).checks[0]).toMatchObject({ coveragePath: "reports/coverage.xml" });
     });
 
+    it("refuses a run whose plan starts test services to a worker that does not list task.testServices.v1, and sends it to one that does (slice 1 T2)", async () => {
+      const dependency = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), config: {}, aliases: ["postgres"], connect: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], seeds: [], reset: "fresh_per_round" };
+      const plan = { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [dependency] };
+      const record = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }], testEnvironment: plan });
+      const base = ["task.workflowMode", "task.workflowChecks", "task.readiness", "task.testEnvironment.v1"];
+      // A worker that knows the plan but not test services would run the checks with no database and say nothing: it is refused, and nothing is dropped.
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.testServices.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect((postedPayload(capable.post).testEnvironment as { dependencies: Array<{ id: string }> }).dependencies.map((entry) => entry.id)).toEqual(["postgres"]);
+      // A plan with no dependencies is delivered to a worker without the feature, as before.
+      const { dependencies: _none, ...plain } = plan;
+      void _none;
+      const without = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }], testEnvironment: plain });
+      expect(await delivery({ workerFeatures: async () => base }).deliver(without, without.invocation)).toBe("DELIVERED");
+    });
+
     it("sends a setup draft that asks to detect the test environment to a worker that does not list task.testEnvDetect.v1 WITHOUT the field, and logs that detection did not run (wire-testenv fix round 1)", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const record = taskRecord({ workflowMode: "SETUP_DRAFT", testEnvDetect: true });

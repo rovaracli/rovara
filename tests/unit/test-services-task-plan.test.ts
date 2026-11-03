@@ -1,0 +1,190 @@
+// Test services, slice 1 T2: which dependencies a task's plan starts (pinned from the signed catalog), when an approved environment with dependencies may be used by a task, and what happens when it cannot be planned.
+import { describe, expect, it } from "vitest";
+import { TestEnvironmentBodySchema, TestEnvTaskPlanSchema, projectMetaKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@agentx/contracts";
+import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
+import { DEPENDENCY_PLAN_REFUSAL_WORDS, TEST_SERVICES_MIN_CATALOG_REVISION, dependenciesStartableNow, serviceCatalogSourceOf, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
+import { testEnvPlanFor } from "../../packages/broker/src/test-env/task-plan.js";
+import { UNUSED_WORDS, environmentUnusedReason, testEnvironmentForStart } from "../../packages/broker/src/test-env/usable.js";
+import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
+import { pinnedCatalog, testSigner, unpinnedCatalog, verifiedCatalog, digestOfId } from "../support/catalog-pinning.js";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf } from "@agentx/contracts";
+
+const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
+const PROJECT = "service";
+const ON = { TEST_ENVIRONMENT_ENABLED: "1", TEST_SERVICES_ENABLED: "1" };
+const cmd = (executable: string, args: string[] = []): ProjectCommand => ({ cwd: "service", executable, args, timeoutSeconds: 600 });
+const postgres = (over: Record<string, unknown> = {}) => ({
+  id: "postgres", name: "Postgres", kind: "database", family: "postgres", found: [{ path: "docker-compose.yml", line: 4 }], usedBy: ["integration"],
+  backing: { kind: "local", catalogId: "postgres@16", config: { database: "app", user: "app" } },
+  connect: { env: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], hostAliases: ["postgres"] },
+  seeds: [], reset: "fresh_per_round", ...over,
+});
+const body = (over: Record<string, unknown> = {}): TestEnvironmentBody => TestEnvironmentBodySchema.parse({
+  tier: "sandbox",
+  repos: [{ repositoryId: "service", setupCommands: [], checks: [{ id: "unit", label: "Unit tests", command: cmd("pytest", ["-q"]), kind: "test" }] }],
+  roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] },
+  nightly: { enabled: false, cronUtc: "0 6 * * *", branch: "main" }, services: [], data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [],
+  prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, capture: { screenshots: "failed", video: false, traces: false },
+  dependencies: [postgres()], ...over,
+});
+const asEnvironment = (environment: TestEnvironmentBody, revision = 1): TestEnvironment => ({ revision, approvedAt: "2026-11-03T10:00:00.000Z", environment });
+const catalog = (): VerifiedCatalog => verifiedCatalog(pinnedCatalog());
+
+describe("which dependencies a plan starts", () => {
+  it("pins a Postgres from the catalog: its repository, digest and the project's own names", async () => {
+    const result = taskDependencyPlansOf({ body: body(), catalog: catalog(), edition: "public" });
+    expect(result).toEqual({ ok: true, dependencies: [{
+      id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: digestOfId("postgres@16"),
+      config: { database: "app", user: "app" }, aliases: ["postgres"], connect: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], seeds: [], reset: "fresh_per_round",
+    }] });
+    // What it sends is a plan the wire accepts.
+    if (!result.ok) throw new Error("not planned");
+    expect(TestEnvTaskPlanSchema.safeParse({ revision: 1, digest: "a".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: result.dependencies }).success).toBe(true);
+  });
+
+  it("takes the catalog entry's default names when the dependency lists none", () => {
+    const result = taskDependencyPlansOf({ body: body({ dependencies: [postgres({ connect: { env: [], hostAliases: [] } })] }), catalog: catalog(), edition: "public" });
+    expect(result.ok && result.dependencies[0]!.aliases.length).toBeGreaterThan(0);
+  });
+
+  it("refuses, in fixed words, whatever it cannot pin", () => {
+    const refusal = (over: Parameters<typeof taskDependencyPlansOf>[0]) => { const result = taskDependencyPlansOf(over); return result.ok ? "ok" : result.reason; };
+    expect(refusal({ body: body(), catalog: undefined, edition: "public" })).toBe("no_catalog");
+    expect(refusal({ body: body(), catalog: verifiedCatalog(unpinnedCatalog()), edition: "public" })).toBe("not_pinned");
+    expect(refusal({ body: body(), catalog: verifiedCatalog(pinnedCatalog((entries) => { for (const entry of entries) if (entry["id"] === "postgres@16") entry["status"] = "retired"; })), edition: "public" })).toBe("retired");
+    expect(refusal({ body: body({ dependencies: [postgres({ backing: { kind: "local", catalogId: "postgres@99", config: {} } })] }), catalog: catalog(), edition: "public" })).toBe("not_in_catalog");
+    expect(refusal({ body: body({ dependencies: [postgres({ family: "mysql", kind: "database", connect: { env: [], hostAliases: [] } })] }), catalog: catalog(), edition: "public" })).toBe("not_in_catalog");
+    // An older catalog than the release's minimum is refused: a rolled-back catalog could pin a digest later found critical (TS-IMG-2).
+    expect(refusal({ body: body(), catalog: verifiedCatalog(pinnedCatalog()), edition: "public", minCatalogRevision: 3 })).toBe("catalog_too_old");
+  });
+
+  it("starts real software from the catalog only (every other backing is not available yet)", () => {
+    const refusal = (dependency: Record<string, unknown>) => { const result = taskDependencyPlansOf({ body: body({ dependencies: [dependency] }), catalog: catalog(), edition: "public" }); return result.ok ? "ok" : result.reason; };
+    expect(refusal(postgres({ backing: { kind: "fake", fixtureSetRef: "a".repeat(64), unmatched: "fail" }, connect: { env: [], hostAliases: [] } }))).toBe("not_available_yet");
+    expect(refusal(postgres({ backing: { kind: "project_image", imageId: "mine" } }))).toBe("not_available_yet");
+    expect(refusal(postgres({ backing: { kind: "none", reason: "declined" }, connect: { env: [], hostAliases: [] } }))).toBe("not_available_yet");
+    expect(refusal(postgres({ backing: { kind: "local", catalogId: "postgres@16", config: {}, substituteImage: { digest: "c".repeat(64), catalogDigest: digestOfId("postgres@16"), approvalRef: "approval-123456" } } }))).toBe("not_available_yet");
+    expect(refusal(postgres({ workingBacking: { kind: "fake", fixtureSetRef: "a".repeat(64), unmatched: "fail" } }))).toBe("not_available_yet");
+    expect(refusal(postgres({ fallback: { kind: "fake", fixtureSetRef: "a".repeat(64), unmatched: "fail" } }))).toBe("not_available_yet");
+    expect(refusal(postgres({ workingBacking: { kind: "local", catalogId: "postgres@16", config: { database: "app", user: "app" } } }))).toBe("ok");
+    for (const words of Object.values(DEPENDENCY_PLAN_REFUSAL_WORDS)) expect(words).not.toMatch(/postgres|digest|sha256/iu);
+  });
+
+  it("refuses an edition the entry is not offered in", () => {
+    const only = verifiedCatalog(pinnedCatalog((entries) => { for (const entry of entries) if (entry["id"] === "postgres@16") entry["editions"] = ["enterprise"]; }));
+    expect(taskDependencyPlansOf({ body: body(), catalog: only, edition: "public" })).toMatchObject({ ok: false, reason: "not_in_edition" });
+    expect(taskDependencyPlansOf({ body: body(), catalog: only, edition: "enterprise" }).ok).toBe(true);
+  });
+
+  it("has a minimum catalog revision of the release", () => {
+    expect(TEST_SERVICES_MIN_CATALOG_REVISION).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("the signed catalog source", () => {
+  async function signed(change: (raw: ReturnType<typeof pinnedCatalog>) => unknown = (raw) => raw) {
+    const signer = testSigner();
+    const catalogBytes = Buffer.from(`${JSON.stringify(change(pinnedCatalog()), null, 2)}\n`, "utf8");
+    const signature = { schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId: parseBundlePublicKey(signer.publicKeyPem).keyId, catalogSha256: sha256HexOf(catalogBytes), signature: (await signer.sign(catalogSigningMessage(catalogBytes))).toString("base64") };
+    return { signer, catalogBytes, signatureBytes: Buffer.from(JSON.stringify(signature)) };
+  }
+
+  it("loads the catalog once, verified, and refuses a bad signature, an untrusted key and a catalog older than the minimum", async () => {
+    const good = await signed();
+    let reads = 0;
+    const source = serviceCatalogSourceOf({ read: async () => { reads += 1; return good; }, trustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
+    expect((await source())?.pinned).toBe(true);
+    await source();
+    expect(reads).toBe(1);
+    const other = serviceCatalogSourceOf({ read: async () => good, trustedKeys: [testSigner().publicKeyPem], minRevision: 1 });
+    expect(await other()).toBeUndefined();
+    const old = serviceCatalogSourceOf({ read: async () => good, trustedKeys: [good.signer.publicKeyPem], minRevision: 3 });
+    expect(await old()).toBeUndefined();
+    const broken = serviceCatalogSourceOf({ read: async () => { throw new Error("no file"); }, trustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
+    expect(await broken()).toBeUndefined();
+    const tampered = serviceCatalogSourceOf({ read: async () => ({ ...good, catalogBytes: Buffer.concat([good.catalogBytes, Buffer.from(" ")]) }), trustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
+    expect(await tampered()).toBeUndefined();
+  });
+});
+
+describe("when a task may use an environment with dependencies", () => {
+  it("is used with tx on and a real Postgres from the catalog", () => {
+    expect(environmentUnusedReason(asEnvironment(body()), ON)).toBeUndefined();
+  });
+
+  it("is not used with tx off, whatever else is on (today's behaviour for anything it did not know)", () => {
+    expect(environmentUnusedReason(asEnvironment(body()), { TEST_ENVIRONMENT_ENABLED: "1" })).toBe("dependencies_not_connected");
+    expect(environmentUnusedReason(asEnvironment(body()), { TEST_SERVICES_ENABLED: "true" })).toBe("dependencies_not_connected");
+    expect(environmentUnusedReason(asEnvironment(body({ dependencies: undefined })), {})).toBeUndefined();
+  });
+
+  it("is not used when a dependency is backed by anything but real catalog software", () => {
+    const fake = postgres({ backing: { kind: "fake", fixtureSetRef: "a".repeat(64), unmatched: "fail" }, connect: { env: [], hostAliases: [] } });
+    expect(environmentUnusedReason(asEnvironment(body({ dependencies: [fake] })), ON)).toBe("dependencies_not_available_yet");
+    expect(environmentUnusedReason(asEnvironment(body({ dependencies: [postgres(), fake, ].map((entry, index) => index === 1 ? { ...fake, id: "other", connect: { env: [], hostAliases: [] } } : entry) })), ON)).toBe("dependencies_not_available_yet");
+    expect(dependenciesStartableNow([postgres()] as never)).toBe(true);
+    expect(dependenciesStartableNow([fake] as never)).toBe(false);
+  });
+
+  it("keeps v1 services refused, and the tier and account rules as they were", () => {
+    const withService = body({ services: [{ name: "scorer", kind: "sagemaker_runtime", match: { endpointName: "scorer" }, mode: "mock", mock: { fixtureSetRef: "a".repeat(64), schemaRef: "b".repeat(64), unmatched: "fail" } }] });
+    expect(environmentUnusedReason(asEnvironment(withService), ON)).toBe("services_not_connected");
+    expect(UNUSED_WORDS.dependencies_not_connected).toMatch(/dependenc/iu);
+    expect(UNUSED_WORDS.dependencies_not_available_yet).toMatch(/not .*yet/iu);
+  });
+});
+
+describe("the plan of a run with dependencies", () => {
+  function harness() {
+    const db = new FakeDynamoDb();
+    const audit = capturingAuditDeps({ db });
+    db.set({ ...projectMetaKey(ORG, PROJECT), status: "active" });
+    const clock = { now: Date.UTC(2026, 10, 3, 10, 0, 0) };
+    const deps: TestEnvDeps & { serviceCatalog?: () => Promise<VerifiedCatalog | undefined> } = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit };
+    return { db, deps, clock };
+  }
+  /** The store holds the revision and the task's pin, as an approval and a task start would have left them (the approval route for dependencies is T3). */
+  async function pinned(environment = body(), env: NodeJS.ProcessEnv = ON) {
+    const h = harness();
+    const proposal = await proposeTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: environment });
+    await recordTestEnvProveReport(h.deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(h.clock.now).toISOString() } });
+    await approveTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-12345678", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: h.clock.now - 1_000 });
+    const start = await testEnvironmentForStart(h.deps, { orgId: ORG, project: PROJECT, taskId: "t1" }, env);
+    h.db.set((start.pin as { Put: { Item: Record<string, unknown> } }).Put.Item);
+    return h;
+  }
+  const readiness = [cmd("pytest", ["-q"])];
+  const planOf = (h: Awaited<ReturnType<typeof pinned>>, env: NodeJS.ProcessEnv = ON) => testEnvPlanFor(h.deps, { orgId: ORG, project: PROJECT, taskId: "t1", readiness }, env);
+
+  it("carries the pinned dependencies, and the environment's digest", async () => {
+    const h = await pinned();
+    h.deps.serviceCatalog = async () => catalog();
+    const plan = (await planOf(h))!;
+    expect(plan.digest).toBe(testEnvDigest(body()));
+    expect(plan.dependencies?.map((entry) => [entry.id, entry.catalogId, entry.digest])).toEqual([["postgres", "postgres@16", digestOfId("postgres@16")]]);
+    expect(TestEnvTaskPlanSchema.safeParse(plan).success).toBe(true);
+  });
+
+  it("is today's plan, with no `dependencies` key, for an environment without any", async () => {
+    const h = await pinned(body({ dependencies: undefined }));
+    expect("dependencies" in (await planOf(h))!).toBe(false);
+  });
+
+  it("refuses the run, in fixed words, when the catalog cannot pin a dependency (never a plan without it)", async () => {
+    const h = await pinned();
+    await expect(planOf(h)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.no_catalog);
+    h.deps.serviceCatalog = async () => verifiedCatalog(unpinnedCatalog());
+    await expect(planOf(h)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.not_pinned);
+    h.deps.serviceCatalog = async () => { throw new Error("boom: secret-looking text"); };
+    await expect(planOf(h)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.no_catalog);
+  });
+
+  it("gives no plan at all with tx off, and never reads the catalog", async () => {
+    const h = await pinned();
+    let reads = 0;
+    h.deps.serviceCatalog = async () => { reads += 1; return catalog(); };
+    expect(await planOf(h, { TEST_ENVIRONMENT_ENABLED: "1" })).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+});
