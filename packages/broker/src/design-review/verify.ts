@@ -1,6 +1,6 @@
 // Design review stage, DR4 (design-review-stage.md 3.4, steps 2 to 4): the broker checks a worker's report against the packet it built, and voids a reviewer whose input it cannot prove.
 //
-// The report is what the worker says: `{ sessionId, packetDigest, firstRequestMessages, filesRead, tools }` (plus, optionally, the id of the model key it used). It is read strictly. A failed check
+// The report is what the worker says: `{ sessionId, packetDigest, firstRequestMessages, filesRead, tools }` (plus the id of the model key it used, which is required). It is read strictly. A failed check
 // voids that reviewer only, with one fixed code from the contract (REVIEWER_VERIFY_FAILURES); the first failing check in the order below names the code. Nothing is guessed: a report that does
 // not parse, a number that is not a number or a record that is missing is a failure, never a pass.
 //
@@ -33,8 +33,11 @@ export const WorkerReportSchema = z.object({
   /** The worker's own word. Control, bidi and other invisible characters are removed (an entry that is empty afterwards is dropped); never used as proof of what was read. */
   filesRead: z.array(z.string().min(1).max(500)).max(200).transform((files) => files.map((file) => file.replace(HIDDEN_CHARACTERS, "")).filter((file) => file !== "")),
   tools: z.array(z.string().min(1).max(64)).max(32),
-  /** The id (SHA-256) of the model key the session used, when the worker names it. The broker does not rely on this: the proxy check reads the key the broker minted. */
-  modelKeyId: z.string().min(1).max(200).optional(),
+  /**
+   * The id (SHA-256) of the model key the session used. REQUIRED (N4): a report that names no key could have run on the install's own credential or on the operation's key, and a report cannot be
+   * trusted to be about this reviewer's key unless it says so. The proxy check still reads the key the broker minted, not this one.
+   */
+  modelKeyId: z.string().min(1).max(200),
   /** SHA-256 of what the session SAYS its first request held (system text as pi holds it, harness additions included, and the user message). The worker's own word, kept as a record: never used as proof. */
   sentDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   /** How many characters of system text the harness added after the role prompt. A record, not a check. */
@@ -72,8 +75,11 @@ export interface VerifyReviewerInput {
   report: unknown;
   /** Session ids already used in this task: every earlier round, and every other reviewer of this round that was run (voided ones too). */
   usedSessionIds: ReadonlySet<string>;
-  /** The key the broker minted for this reviewer, and every key it minted for another reviewer of the task. */
-  modelKey: { keyId: string; otherReviewerKeyIds: ReadonlySet<string> };
+  /**
+   * The key the broker minted for this reviewer's slot, every key it minted for another reviewer (or the merge step) of the task, and the key of the OPERATION itself. A reviewer's key must be none of the
+   * others and not the operation's: a reviewer that ran on the operation's key shares it with every other session, and its spend and first call cannot be told apart (N4).
+   */
+  modelKey: { keyId: string; otherReviewerKeyIds: ReadonlySet<string>; operationKeyId: string };
   usage: UsageCheck;
   tolerance?: number;
 }
@@ -94,8 +100,8 @@ export async function verifyReviewerReport(input: VerifyReviewerInput): Promise<
   if (input.usedSessionIds.has(report.sessionId)) return fail("session_reused");
   if (report.tools.some((tool) => !READ_ONLY.has(tool))) return fail("tool_not_read_only");
 
-  const { keyId, otherReviewerKeyIds } = input.modelKey;
-  if (!KEY_ID.test(keyId) || otherReviewerKeyIds.has(keyId) || (report.modelKeyId !== undefined && report.modelKeyId !== keyId)) return fail("model_key_mismatch");
+  const { keyId, otherReviewerKeyIds, operationKeyId } = input.modelKey;
+  if (!KEY_ID.test(keyId) || !KEY_ID.test(operationKeyId) || keyId === operationKeyId || otherReviewerKeyIds.has(keyId) || report.modelKeyId !== keyId) return fail("model_key_mismatch");
 
   if (input.usage.kind === "unavailable") return { verified: true, sessionId: report.sessionId, filesRead: report.filesRead, inputProof: "digest_only" };
 
@@ -124,7 +130,14 @@ export interface RoundReviewer {
  *   - a key is "this reviewer's alone" only if no other reviewer of the round, and no earlier run of the task, holds it.
  * Results come back in the order given. A reviewer whose report did not parse still has its keyId counted as taken.
  */
-export async function verifyRound(input: { reviewers: readonly RoundReviewer[]; priorSessionIds: ReadonlySet<string>; priorKeyIds: ReadonlySet<string>; usage: UsageCheck; tolerance?: number }): Promise<VerifyResult[]> {
+export async function verifyRound(input: {
+  reviewers: readonly RoundReviewer[]; priorSessionIds: ReadonlySet<string>; priorKeyIds: ReadonlySet<string>;
+  /** The key of the operation itself, which no slot key may equal. */
+  operationKeyId: string;
+  /** The merge step's key, which no reviewer may share. */
+  mergeKeyId?: string;
+  usage: UsageCheck; tolerance?: number;
+}): Promise<VerifyResult[]> {
   const sessionOf = (report: unknown): string | undefined => {
     const parsed = WorkerReportSchema.safeParse(report);
     return parsed.success ? parsed.data.sessionId : undefined;
@@ -137,11 +150,12 @@ export async function verifyRound(input: { reviewers: readonly RoundReviewer[]; 
     const own = sessions[index];
     const sharedInRound = own !== undefined && (counts.get(own) ?? 0) > 1;
     const others = new Set(input.priorKeyIds);
+    if (input.mergeKeyId !== undefined) others.add(input.mergeKeyId);
     for (const [other, peer] of input.reviewers.entries()) if (other !== index) others.add(peer.keyId);
     // A session id shared inside the round is handed to the single check as "already used", which gives it the matching code after the earlier checks have run.
     const used = sharedInRound ? new Set([...input.priorSessionIds, own]) : input.priorSessionIds;
     results.push(await verifyReviewerReport({
-      packet: reviewer.packet, report: reviewer.report, usedSessionIds: used, modelKey: { keyId: reviewer.keyId, otherReviewerKeyIds: others }, usage: input.usage,
+      packet: reviewer.packet, report: reviewer.report, usedSessionIds: used, modelKey: { keyId: reviewer.keyId, otherReviewerKeyIds: others, operationKeyId: input.operationKeyId }, usage: input.usage,
       ...(input.tolerance === undefined ? {} : { tolerance: input.tolerance }),
     }));
   }

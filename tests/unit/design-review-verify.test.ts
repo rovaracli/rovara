@@ -10,9 +10,10 @@ import {
 const keyOf = (name: string): string => createHash("sha256").update(name).digest("hex");
 const KEY = keyOf("critic-key");
 const DIGEST = "d".repeat(64);
+const OPERATION_KEY = keyOf("operation-key");
 const packet = { packetDigest: DIGEST, estimatedInputTokens: 10_000 };
 const report = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
-  sessionId: "ses_1", packetDigest: DIGEST, firstRequestMessages: 2, filesRead: ["src/a.ts"], tools: ["read", "grep"], ...overrides,
+  sessionId: "ses_1", packetDigest: DIGEST, firstRequestMessages: 2, filesRead: ["src/a.ts"], tools: ["read", "grep"], modelKeyId: KEY, ...overrides,
 });
 const reader = (record: Awaited<ReturnType<FirstCallUsageReader["firstCall"]>> | "throw" | "none" = { firstCallInputTokens: 10_000, calls: 3 }) => {
   const firstCall = vi.fn<FirstCallUsageReader["firstCall"]>(async () => {
@@ -23,7 +24,7 @@ const reader = (record: Awaited<ReturnType<FirstCallUsageReader["firstCall"]>> |
 };
 const proxy = (r = reader()): UsageCheck => ({ kind: "proxy", reader: r.reader });
 const input = (overrides: Partial<VerifyReviewerInput> = {}): VerifyReviewerInput => ({
-  packet, report: report(), usedSessionIds: new Set(), modelKey: { keyId: KEY, otherReviewerKeyIds: new Set() }, usage: proxy(), ...overrides,
+  packet, report: report(), usedSessionIds: new Set(), modelKey: { keyId: KEY, otherReviewerKeyIds: new Set(), operationKeyId: OPERATION_KEY }, usage: proxy(), ...overrides,
 });
 
 describe("verifyReviewerReport: a clean run", () => {
@@ -62,7 +63,7 @@ describe("verifyReviewerReport: each failure voids the run with its own code", (
   });
 
   it("a model key that is another reviewer's is refused", async () => {
-    await expect(verifyReviewerReport(input({ modelKey: { keyId: KEY, otherReviewerKeyIds: new Set([KEY]) } }))).resolves.toEqual({ verified: false, failure: "model_key_mismatch" });
+    await expect(verifyReviewerReport(input({ modelKey: { keyId: KEY, otherReviewerKeyIds: new Set([KEY]), operationKeyId: OPERATION_KEY } }))).resolves.toEqual({ verified: false, failure: "model_key_mismatch" });
   });
 
   it("a worker that names a different key than the one minted is refused", async () => {
@@ -70,7 +71,7 @@ describe("verifyReviewerReport: each failure voids the run with its own code", (
   });
 
   it("a key id that is not a proxy token id is refused", async () => {
-    await expect(verifyReviewerReport(input({ modelKey: { keyId: "key_1", otherReviewerKeyIds: new Set() } }))).resolves.toEqual({ verified: false, failure: "model_key_mismatch" });
+    await expect(verifyReviewerReport(input({ modelKey: { keyId: "key_1", otherReviewerKeyIds: new Set(), operationKeyId: OPERATION_KEY } }))).resolves.toEqual({ verified: false, failure: "model_key_mismatch" });
   });
 
   it("a first request with history (more than system + one user message) does not match the packet", async () => {
@@ -120,7 +121,7 @@ describe("verifyReviewerReport: each failure voids the run with its own code", (
 
   it("checks run in a fixed order: the digest is judged before the session, tools and key", async () => {
     const result = await verifyReviewerReport(input({
-      report: report({ packetDigest: "e".repeat(64), tools: ["bash"] }), usedSessionIds: new Set(["ses_1"]), modelKey: { keyId: KEY, otherReviewerKeyIds: new Set([KEY]) },
+      report: report({ packetDigest: "e".repeat(64), tools: ["bash"] }), usedSessionIds: new Set(["ses_1"]), modelKey: { keyId: KEY, otherReviewerKeyIds: new Set([KEY]), operationKeyId: OPERATION_KEY },
     }));
     expect(result).toEqual({ verified: false, failure: "packet_digest_mismatch" });
   });
@@ -169,19 +170,19 @@ describe("verifyReviewerReport: no usage reader installed", () => {
     await expect(verifyReviewerReport(input({ usage, report: report({ packetDigest: "e".repeat(64) }) }))).resolves.toMatchObject({ failure: "packet_digest_mismatch" });
     await expect(verifyReviewerReport(input({ usage, usedSessionIds: new Set(["ses_1"]) }))).resolves.toMatchObject({ failure: "session_reused" });
     await expect(verifyReviewerReport(input({ usage, report: report({ tools: ["bash"] }) }))).resolves.toMatchObject({ failure: "tool_not_read_only" });
-    await expect(verifyReviewerReport(input({ usage, modelKey: { keyId: KEY, otherReviewerKeyIds: new Set([KEY]) } }))).resolves.toMatchObject({ failure: "model_key_mismatch" });
+    await expect(verifyReviewerReport(input({ usage, modelKey: { keyId: KEY, otherReviewerKeyIds: new Set([KEY]), operationKeyId: OPERATION_KEY } }))).resolves.toMatchObject({ failure: "model_key_mismatch" });
   });
 });
 
 describe("verifyRound: a whole round", () => {
   const keys = { a: keyOf("a"), b: keyOf("b"), c: keyOf("c") };
-  const reviewer = (name: "a" | "b" | "c", reportOverrides: Record<string, unknown> = {}, keyId = keys[name]) => ({ role: name, packet, report: report({ sessionId: `ses_${name}`, ...reportOverrides }), keyId });
+  const reviewer = (name: "a" | "b" | "c", reportOverrides: Record<string, unknown> = {}, keyId = keys[name]) => ({ role: name, packet, report: report({ sessionId: `ses_${name}`, modelKeyId: keyId, ...reportOverrides }), keyId });
   const round = (reviewers: ReturnType<typeof reviewer>[], extra: { priorSessionIds?: Set<string>; priorKeyIds?: Set<string> } = {}) =>
-    verifyRound({ reviewers, priorSessionIds: extra.priorSessionIds ?? new Set(), priorKeyIds: extra.priorKeyIds ?? new Set(), usage: proxy() });
+    verifyRound({ reviewers, priorSessionIds: extra.priorSessionIds ?? new Set(), priorKeyIds: extra.priorKeyIds ?? new Set(), operationKeyId: OPERATION_KEY, usage: proxy() });
 
   it("verifies each reviewer on its own report and key, in order (per-case attribution)", async () => {
     const r = reader();
-    const results = await verifyRound({ reviewers: [reviewer("a"), reviewer("b", { tools: ["bash"] }), reviewer("c")], priorSessionIds: new Set(), priorKeyIds: new Set(), usage: proxy(r) });
+    const results = await verifyRound({ reviewers: [reviewer("a"), reviewer("b", { tools: ["bash"] }), reviewer("c")], priorSessionIds: new Set(), priorKeyIds: new Set(), operationKeyId: OPERATION_KEY, usage: proxy(r) });
     expect(results.map((result) => (result.verified ? "ok" : result.failure))).toEqual(["ok", "tool_not_read_only", "ok"]);
     expect(results[0]).toMatchObject({ sessionId: "ses_a" });
     expect(results[2]).toMatchObject({ sessionId: "ses_c" });
@@ -203,6 +204,32 @@ describe("verifyRound: a whole round", () => {
     expect(shared.map((result) => (result.verified ? "ok" : result.failure))).toEqual(["model_key_mismatch", "model_key_mismatch", "ok"]);
     const reused = await round([reviewer("a"), reviewer("b")], { priorKeyIds: new Set([keys.b]) });
     expect(reused.map((result) => (result.verified ? "ok" : result.failure))).toEqual(["ok", "model_key_mismatch"]);
+  });
+});
+
+describe("N4: the reviewer's key is its own", () => {
+  it("a report that names no model key is refused (it could have run on the operation's key or the install's credential)", async () => {
+    const { modelKeyId: _omit, ...without } = report();
+    await expect(verifyReviewerReport(input({ report: without, usage: { kind: "unavailable" } }))).resolves.toEqual({ verified: false, failure: "unreadable_output" });
+    await expect(verifyReviewerReport(input({ report: report({ modelKeyId: keyOf("other") }), usage: { kind: "unavailable" } }))).resolves.toEqual({ verified: false, failure: "model_key_mismatch" });
+  });
+
+  it("a slot key equal to the operation's key is refused, even when the report names it", async () => {
+    await expect(verifyReviewerReport(input({
+      report: report({ modelKeyId: OPERATION_KEY }), modelKey: { keyId: OPERATION_KEY, otherReviewerKeyIds: new Set(), operationKeyId: OPERATION_KEY }, usage: { kind: "unavailable" },
+    }))).resolves.toEqual({ verified: false, failure: "model_key_mismatch" });
+    await expect(verifyReviewerReport(input({ modelKey: { keyId: KEY, otherReviewerKeyIds: new Set(), operationKeyId: "not-a-key" }, usage: { kind: "unavailable" } }))).resolves.toEqual({ verified: false, failure: "model_key_mismatch" });
+  });
+
+  it("verifyRound refuses a key shared across slots, the merge step's key, and the operation's key; a clean round passes as the control", async () => {
+    const k = { a: keyOf("a2"), b: keyOf("b2"), c: keyOf("c2"), merge: keyOf("merge2") };
+    const mk = (name: "a" | "b" | "c", keyId: string) => ({ role: name, packet, report: report({ sessionId: `ses_${name}`, modelKeyId: keyId }), keyId });
+    const run = (reviewers: ReturnType<typeof mk>[], mergeKeyId?: string) => verifyRound({ reviewers, priorSessionIds: new Set(), priorKeyIds: new Set(), operationKeyId: OPERATION_KEY, ...(mergeKeyId === undefined ? {} : { mergeKeyId }), usage: { kind: "unavailable" } });
+    const outcome = (results: Awaited<ReturnType<typeof run>>) => results.map((result) => (result.verified ? "ok" : result.failure));
+    expect(outcome(await run([mk("a", k.a), mk("b", k.b), mk("c", k.c)], k.merge))).toEqual(["ok", "ok", "ok"]);
+    expect(outcome(await run([mk("a", k.a), mk("b", k.a), mk("c", k.c)]))).toEqual(["model_key_mismatch", "model_key_mismatch", "ok"]);
+    expect(outcome(await run([mk("a", k.a), mk("b", k.merge), mk("c", k.c)], k.merge))).toEqual(["ok", "model_key_mismatch", "ok"]);
+    expect(outcome(await run([mk("a", k.a), mk("b", OPERATION_KEY), mk("c", k.c)], k.merge))).toEqual(["ok", "model_key_mismatch", "ok"]);
   });
 });
 

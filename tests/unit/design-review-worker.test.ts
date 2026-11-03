@@ -132,7 +132,7 @@ describe("runDesignReview: fresh sessions", () => {
     const result = await runDesignReview(binding, ports);
     const verdict = await verifyReviewerReport({
       packet: { packetDigest: packets.get("critic")!.packetDigest, estimatedInputTokens: 1000 }, report: result.reviewers[0]!.report, usedSessionIds: new Set(),
-      modelKey: { keyId: sha("key-slot-critic"), otherReviewerKeyIds: new Set() }, usage: { kind: "unavailable" },
+      modelKey: { keyId: sha("key-slot-critic"), otherReviewerKeyIds: new Set(), operationKeyId: sha("operation-key") }, usage: { kind: "unavailable" },
     });
     expect(verdict).toMatchObject({ verified: true, inputProof: "digest_only" });
   });
