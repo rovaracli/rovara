@@ -5,7 +5,7 @@ import { PACKET_CHAT_SYSTEMS, packetMcpCall, parseMcpItemRef } from "../../packa
 
 const tool = (upstreamName: string, role: "read" | "search" | "status" = "read") => ({ upstreamName, role, schemaHash: "a".repeat(64) });
 const source = (overrides: Partial<ContextSource> = {}): ContextSource => ({
-  sourceId: "tracker", label: "Tracker", system: "jira", server: { kind: "connection", connectionId: "conn_1" as never }, tools: [tool("get_issue"), tool("search_issues", "search")],
+  sourceId: "tracker", label: "Tracker", system: "jira", server: { kind: "connection", connectionId: "conn_1" }, tools: [tool("get_issue"), tool("search_issues", "search")],
   stages: ["PLAN", "PLAN_CRITIQUE"], quotes: "project_members", retention: "live_only", limits: { callsPerStage: 5, bytesPerResult: 4_096, bytesPerStage: 20_000 }, liveFacts: [], sendCodeSnippets: false, ...overrides,
 });
 

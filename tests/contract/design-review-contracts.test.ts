@@ -96,8 +96,7 @@ describe("design review contracts", () => {
 
   // Fix round B1: a "digest only" verification must be recordable, and must never read as proxy-confirmed.
   it("a verified run must say what proved its input; an unverified run must not", () => {
-    const { inputProof: _dropped, ...withoutProof } = run;
-    expect(ReviewerRunSchema.safeParse(withoutProof).success).toBe(false);
+    expect(ReviewerRunSchema.safeParse({ ...run, inputProof: undefined }).success).toBe(false);
     expect(ReviewerRunSchema.safeParse({ ...run, inputProof: "digest_and_usage" }).success).toBe(false);
     expect(ReviewerRunSchema.parse({ ...run, inputProof: "digest_only" }).inputProof).toBe("digest_only");
     expect(ReviewerRunSchema.safeParse({ ...run, verified: false, verifyFailure: "timeout" }).success).toBe(false);
@@ -106,7 +105,8 @@ describe("design review contracts", () => {
   it("the fixed card sentences: digest_only never says the proxy confirmed anything", () => {
     expect(inputProofSentence("digest_only")).toBe("verified by packet digest; the proxy's first-call size was not checked");
     expect(inputProofSentence("proxy_first_call")).toBe("verified by packet digest and the proxy's first call");
-    expect(inputProofSentence("digest_only")).not.toMatch(/confirm|proxy's first call(?! size)/iu);
+    expect(inputProofSentence("digest_only")).not.toMatch(/confirm/iu);
+    expect(inputProofSentence("digest_only")).not.toContain("and the proxy's first call");
     expect(Object.keys(INPUT_PROOF_SENTENCES).sort()).toEqual([...INPUT_PROOFS].sort());
   });
 

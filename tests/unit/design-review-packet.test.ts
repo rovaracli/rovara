@@ -261,7 +261,7 @@ describe("buildReviewerPacket: bounds and sources that cannot be used", () => {
 });
 
 const TRACKER: ContextSource = {
-  sourceId: "tracker", label: "Tracker", system: "jira", server: { kind: "connection", connectionId: "conn_1" as never },
+  sourceId: "tracker", label: "Tracker", system: "jira", server: { kind: "connection", connectionId: "conn_1" },
   tools: [{ upstreamName: "get_issue", role: "read", schemaHash: "a".repeat(64) }, { upstreamName: "search_issues", role: "search", schemaHash: "b".repeat(64) }],
   stages: ["PLAN", "PLAN_CRITIQUE"], quotes: "project_members", retention: "live_only", limits: { callsPerStage: 5, bytesPerResult: 4_096, bytesPerStage: 20_000 }, liveFacts: [], sendCodeSnippets: false,
 };
