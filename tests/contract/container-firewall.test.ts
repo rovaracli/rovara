@@ -78,7 +78,9 @@ describe("the container firewall rules in boot.sh", () => {
     const block = /^block_imds\(\) \{\n[\s\S]*?^\}$/mu.exec(stage2)?.[0] ?? "";
     expect(block).toContain("block_imds()");
     const first = apply({ ip6tables: false });
-    const launcher = spawnSync("/bin/bash", ["-c", `${block}\nblock_imds`], { env: { PATH: `${first.directory}/bin:/usr/bin:/bin`, FAKE_DIR: first.directory }, encoding: "utf8" });
+    // modprobe is a shim: the real one must never load a module on a developer's or CI machine.
+    writeFileSync(join(first.directory, "bin", "modprobe"), "#!/bin/bash\nexit 0\n"); chmodSync(join(first.directory, "bin", "modprobe"), 0o755);
+    const launcher = spawnSync("/bin/bash", ["-c", `${block}\nblock_imds`], { env: { PATH: `${first.directory}/bin:/usr/bin:/bin`, FAKE_DIR: first.directory, SETUP_ISOLATION_FILE: join(first.directory, "setup-isolation") }, encoding: "utf8" });
     expect(launcher.status, launcher.stderr).toBe(0);
     const rules = readFileSync(join(first.directory, "iptables.rules"), "utf8").split("\n").filter((line) => line.startsWith("DOCKER-USER "));
     const drop = rules.findIndex((rule) => rule.includes("-s 172.29.0.3/255.255.0.255 -p udp --dport 53 ! -o rvbs+ -j DROP"));

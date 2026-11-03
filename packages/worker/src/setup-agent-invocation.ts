@@ -8,6 +8,7 @@ import type { PreparationManifest } from "./prepare.js";
 import { WorkerOperationCancelledError, type WorkerCancellationController } from "./cancel.js";
 import { runSetupAgent, type SetupRunResult } from "./setup-agent-run.js";
 import { createSetupSandbox } from "./setup-agent.js";
+import { assertSetupIsolation } from "./setup-isolation.js";
 import { setupWorkspaceKey, startRunNetwork } from "./setup-network.js";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskShellSelection } from "./task-sandbox.js";
 import { setupModelPrice } from "./setup-agent-price.js";
@@ -48,6 +49,8 @@ export async function runSetupAgentInvocation(
   if (dependencies.setupAgent === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot reach the control plane's setup callback");
   if (dependencies.taskShell?.kind === "local") throw agentXError("RUNTIME_UNAVAILABLE", "a setup run runs only in the setup sandbox, never in the local shell");
   const environment = dependencies.environment ?? process.env;
+  // A worker whose launcher had to withdraw the setup run's firewall rules refuses here, before any network, helper or sandbox exists.
+  assertSetupIsolation(environment);
   const image = environment[TASK_SANDBOX_IMAGE_ENVIRONMENT];
   if (image === undefined || image === "") throw agentXError("RUNTIME_UNAVAILABLE", `AgentX has no task sandbox image (${TASK_SANDBOX_IMAGE_ENVIRONMENT}), so it did not run the setup`);
   // Money: a setup run is metered by the model proxy (the broker's spend ledger) and priced from the catalog; without either it does not start.

@@ -44,20 +44,34 @@ const MOVED_FUNCTIONS = [
 /** `block_imds` with the comment lines just above it. It is the only function allowed to differ between the legacy script and stage 2 (see below). */
 const BLOCK_IMDS_WITH_COMMENT = /(?:^#[^\n]*\n)*^block_imds\(\) \{\n[\s\S]*?^\}\n/mu;
 
+const SETUP_ISOLATION_STATE_WITH_COMMENT = /(?:^#[^\n]*\n)*^setup_isolation_state\(\) \{\n[\s\S]*?^\}\n/mu;
+const SETUP_ISOLATION_ARGUMENT_WITH_COMMENT = /^# Setup runs need[^\n]*\nif named_environment; then args\+=\(--env "AGENTX_SETUP_ISOLATION=[^\n]*\n/mu;
+
 describe("boot-legacy.sh", () => {
   it("is boot.sh as it was at the branch base, byte for byte", () => {
     expect(sha256(legacy)).toBe(BOOT_SH_AT_BRANCH_BASE_SHA256);
   });
 
-  it("stage 2's block_imds is the legacy one plus the setup run's rules, in a fixed order, and nothing else", () => {
+  it("stage 2's block_imds applies the legacy metadata rules unchanged and last, after the setup run's rules in a fixed order (2026-11-03: the setup rules may now be withdrawn, see ec2-boot-config.test.ts)", () => {
     const legacyBlock = BLOCK_IMDS_WITH_COMMENT.exec(legacy)?.[0] ?? "";
     const stageBlock = BLOCK_IMDS_WITH_COMMENT.exec(stage2)?.[0] ?? "";
     expect(legacyBlock).toContain("block_imds() {");
-    // Every legacy rule is still there, in order and last (so the metadata rejection is inserted after the setup rules and is above them).
     const rulesOf = (block: string) => [...block.matchAll(/"((?:DOCKER-USER|OUTPUT) [^"]+)"/gu)].map((match) => match[1]);
-    expect(rulesOf(stageBlock).slice(-2)).toEqual(rulesOf(legacyBlock));
-    expect(rulesOf(stageBlock).slice(0, -2).every((rule) => /^DOCKER-USER -i rvbs\+ /u.test(rule!))).toBe(true);
-    expect(stageBlock.replace(/^#[^\n]*\n/gmu, "").split("\n").filter((line) => !line.includes("for rule in"))).toEqual(legacyBlock.replace(/^#[^\n]*\n/gmu, "").split("\n").filter((line) => !line.includes("for rule in")));
+    const legacyRules = rulesOf(legacyBlock);
+    expect(legacyRules).toHaveLength(2);
+    const arrayOf = (name: string) => rulesOf(new RegExp(`local -a ${name}=\\(.*\\)`, "u").exec(stageBlock)?.[0] ?? "");
+    // The two metadata rejections are exactly the legacy rules, in the legacy order, and each is fatal when it cannot be inserted.
+    expect(arrayOf("imds_rules")).toEqual(legacyRules);
+    expect(stageBlock).toContain('iptables -C $rule 2>/dev/null || iptables -I $rule || return 1');
+    // The five others are the setup run's, in the fixed order, and are inserted before the metadata rules (so those end up on top).
+    const setup = arrayOf("setup_rules");
+    expect(setup).toHaveLength(5);
+    expect(setup.every((rule) => /^DOCKER-USER -i rvbs\+ /u.test(rule!))).toBe(true);
+    expect(stageBlock.indexOf('"${setup_rules[@]}"; do\n      # shellcheck disable=SC2086\n      iptables -C $rule 2>/dev/null || iptables -I')).toBeLessThan(stageBlock.indexOf('"${imds_rules[@]}"; do'));
+    // Deletion only ever by rule text, and only of the setup rules.
+    expect(stageBlock).not.toMatch(/iptables -[FXZ]\b/u);
+    expect(stageBlock.match(/iptables -D /gu)).toHaveLength(1);
+    expect(stageBlock).toContain('for rule in "${setup_rules[@]}"; do\n      # shellcheck disable=SC2086\n      if iptables -C $rule 2>/dev/null; then iptables -D $rule');
   });
 
   it("knows nothing of stage 2: a legacy worker's single-file boot is unchanged (R58)", () => {
@@ -86,8 +100,10 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     }
     // Everything from pull_contained_image to the end of start_e2e_qualification is in stage 2 unchanged.
     const moved = legacy.slice(legacy.indexOf(firstMoved), mainStart + 1).trimEnd();
-    // ONE named exception: `block_imds` (the launcher's firewall step, run only for a named environment, never by a legacy worker) may differ, because a setup run's network rules sit in it. Everything else is verbatim.
-    expect(stage2.replace(BLOCK_IMDS_WITH_COMMENT, "")).toContain(`\n${moved.replace(BLOCK_IMDS_WITH_COMMENT, "")}\n`);
+    // Named exceptions: `block_imds` (the launcher's firewall step, run only for a named environment, never by a legacy worker) may differ, because a setup run's network rules sit in it; and, since 2026-11-03, the reader of the
+    // setup-isolation state file and the one line that hands its content to the worker (both named-environment only). Everything else is verbatim.
+    const withoutSetupIsolation = (text: string) => text.replace(BLOCK_IMDS_WITH_COMMENT, "").replace(SETUP_ISOLATION_STATE_WITH_COMMENT, "").replace(SETUP_ISOLATION_ARGUMENT_WITH_COMMENT, "");
+    expect(withoutSetupIsolation(stage2)).toContain(`\n${withoutSetupIsolation(moved)}\n`);
     for (const name of MOVED_FUNCTIONS) {
       expect(stage1, `${name} left boot.sh`).not.toContain(`\n${name}() {`);
       expect(stage2, `${name} is in stage 2`).toContain(`\n${name}() {`);
