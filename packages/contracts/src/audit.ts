@@ -155,6 +155,8 @@ export const AUDIT_ACTIONS = [
   "session.linked",
   "session.unlinked",
   "connection.saved",
+  // The Jira organization admin key (and organization id) was set or cleared on a Jira connection. The fact is "set" or "cleared"; the key and the id never go in.
+  "connection.jira_org_admin_changed",
   "connection.removed",
   "project_connector.changed",
   "guardrails.changed",
@@ -438,6 +440,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "session.linked": ["surface"],
   "session.unlinked": ["surface"],
   "connection.saved": ["connectorType"],
+  "connection.jira_org_admin_changed": ["change"],
   "connection.removed": ["connectorType"],
   "project_connector.changed": ["connectorType", "revision", "change"],
   "guardrails.changed": ["revision", "widened"],

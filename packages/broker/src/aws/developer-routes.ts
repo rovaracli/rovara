@@ -187,6 +187,7 @@ import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeK
 import { SECOND_REVIEW_ACK_BROWSER_MESSAGE, acknowledgeSecondReview } from "./developer-tasks/second-review-ack.js";
 import { SECOND_REVIEW_BROWSER_MESSAGE, SECOND_REVIEW_PATH, routeSecondReview } from "./developer-routes/second-review.js";
 import { routeTrackerPeople } from "./developer-routes/tracker-people.js";
+import { routeJiraOrgAdmin } from "./developer-routes/jira-org-admin.js";
 import { SETUP_RECIPES_BROWSER_MESSAGE, isSetupRecipesPath, routeSetupRecipes } from "./developer-routes/setup-recipes.js";
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
 import { nightlyHooks } from "../test-env/nightly-wiring.js";
@@ -552,6 +553,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (secondReviewReply !== undefined) return secondReviewReply;
   const trackerPeopleReply = await routeTrackerPeople(deps, caller, request, url);
   if (trackerPeopleReply !== undefined) return trackerPeopleReply;
+  const jiraOrgAdminReply = await routeJiraOrgAdmin(deps, caller, request, url);
+  if (jiraOrgAdminReply !== undefined) return jiraOrgAdminReply;
   const knownFailingMarksReply = await routeKnownFailingMarks(deps, caller, request, url);
   if (knownFailingMarksReply !== undefined) return knownFailingMarksReply;
   const intakeReply = await routeIntake(deps, caller, request, url);

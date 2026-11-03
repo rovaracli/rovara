@@ -6,6 +6,7 @@ import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { z } from "zod";
 import { listMcpTools } from "@agentx/gateway";
 import {
+  type AuditEventInput,
   ConnectionIdSchema,
   ConnectionSecretSchemas,
   ObservabilityConnectionTypeSchema,
@@ -26,7 +27,7 @@ import {
   type OrgId,
   type SecretConnectionType,
 } from "@agentx/contracts";
-import { auditConnectionRemoved, auditConnectionSaved, auditOccurrence } from "../audit/events.js";
+import { auditConnectionJiraOrgAdminChanged, auditConnectionRemoved, auditConnectionSaved, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
@@ -290,6 +291,8 @@ export class OrgConnectionStore {
     requireExisting?: boolean;
     /** Create only: an id that exists is refused, and the write itself is conditional on there being none (a create never overwrites). */
     requireNew?: boolean;
+    /** More audit events that commit in the SAME transaction as the save (the Jira organization admin key change names itself here). */
+    alsoAudit?: AuditEventInput[];
   }): Promise<OrgConnectionRecord> {
     const orgId = parseOrg(input.orgId);
     requireActor(input.by);
@@ -375,7 +378,7 @@ export class OrgConnectionStore {
       orgId, actor: auditActorOf(input.by), occurredAt: at, connectionId: connection.connectionId, connectorType: connection.type,
       occurrence: requestId === undefined ? auditOccurrence(connection.connectionId, at) : auditOccurrence(requestId, connection.connectionId),
     }));
-    const events = event === undefined ? [] : [event];
+    const events = [...(event === undefined ? [] : [event]), ...(input.alsoAudit ?? [])];
     const saved = strip(item) as unknown as OrgConnectionRecord;
     // The record, the directory entry, the audit item and the request item commit together or not at all (R18). The record is written only
     // if it is as it was read: a change that landed meanwhile refuses this one instead of being overwritten.
@@ -398,6 +401,34 @@ export class OrgConnectionStore {
       console.log(JSON.stringify({ component: "broker", event: "connection.after_save_failed", orgId, connectionId: connection.connectionId, error: error instanceof Error ? error.name : "unknown" }));
     });
     return saved;
+  }
+
+  /**
+   * Sets or clears the Jira connection's READ-ONLY Atlassian organization admin key and organization id (the pair goes together; both or neither), leaving the site, the email and the API token as they are.
+   * The pair is write-only like every secret: nothing here returns it. The change commits with its own audit event (`connection.jira_org_admin_changed`, "set" or "cleared", no value), and is refused
+   * where the ledger cannot take that event. `not_ready`: the connection has no readable email and token to keep (save them first).
+   */
+  async changeJiraOrgAdmin(input: { orgId: string; connectionId: string; change: { orgAdminKey: string; atlassianOrgId: string } | "clear"; by: string; requestId?: string }): Promise<"saved" | "not_found" | "not_jira" | "not_ready" | "audit_unavailable"> {
+    const orgId = parseOrg(input.orgId);
+    requireActor(input.by);
+    if (this.input.audit === undefined) return "audit_unavailable";
+    const existing = await readItem(this.input, orgId, input.connectionId);
+    if (existing === undefined) return "not_found";
+    if (existing.type !== "jira") return "not_jira";
+    const stored = existing.hasSecret === true
+      ? await readConnectionSecret(this.input, orgId, { connectionId: input.connectionId, type: "jira", ...(typeof existing[VERSION_FIELD] === "string" ? { secretVersion: existing[VERSION_FIELD] } : {}) }).catch(() => undefined)
+      : undefined;
+    if (stored === undefined || !("email" in stored) || !("apiToken" in stored) || typeof stored.email !== "string" || typeof stored.apiToken !== "string") return "not_ready";
+    const kept = { email: stored.email, apiToken: stored.apiToken };
+    const secret = input.change === "clear" ? { ...kept, clearOrgAdmin: true } : { ...kept, orgAdminKey: input.change.orgAdminKey, atlassianOrgId: input.change.atlassianOrgId };
+    const word = input.change === "clear" ? "cleared" : "set";
+    const event = await tryAuditEvent(this.input, () => auditConnectionJiraOrgAdminChanged({
+      orgId, actor: auditActorOf(input.by), occurredAt: this.iso(), connectionId: input.connectionId, change: word,
+      occurrence: auditOccurrence(input.requestId ?? input.connectionId, input.connectionId, word, String(revisionOf(existing) ?? 0)),
+    }));
+    if (event === undefined) return "audit_unavailable";
+    await this.put({ orgId, connection: { ...(pick(existing) as Record<string, unknown>), connectionId: input.connectionId }, secret, by: input.by, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), requireExisting: true, alsoAudit: [event] });
+    return "saved";
   }
 
   /** Removes the connection and schedules its secret for deletion (7 days to recover it). */
