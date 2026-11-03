@@ -271,8 +271,8 @@ function liveResponders(dirs: string[]): number[] {
   const pids: number[] = [];
   for (const line of listing.split("\n")) {
     const match = /^\s*(\d+)\s(.*)$/su.exec(line);
-    if (match === null || Number(match[1]) === process.pid || !match[2].includes("BootFailed")) continue;
-    if (dirs.some((directory) => match[2].includes(join(directory, "failure")))) pids.push(Number(match[1]));
+    if (match === null || Number(match[1]) === process.pid || !match[2]!.includes("BootFailed")) continue;
+    if (dirs.some((directory) => match[2]!.includes(join(directory, "failure")))) pids.push(Number(match[1]));
   }
   return pids;
 }

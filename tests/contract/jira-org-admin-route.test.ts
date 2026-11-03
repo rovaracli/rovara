@@ -20,7 +20,7 @@ const CONNECTION = { connectionId: CON, type: "jira", label: "Jira", access: "re
 async function bench(options: { maya?: "admin" | "member"; withAudit?: boolean; saveJira?: boolean } = {}) {
   const fake = new FakeOrgSecrets({ env: "staging", now: Date.now });
   const secrets = new OrgSecrets({ env: "staging", roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: Date.now });
-  const holder: { db?: { send(command: unknown): Promise<unknown> }; afterFirstRead?: () => Promise<void> } = {};
+  const holder: { db?: { send(command: unknown): Promise<unknown> }; afterFirstRead?: (() => Promise<void>) | undefined } = {};
   const audit = capturingAuditDeps();
   const deps = { documentClient: { send: (command: unknown) => holder.db!.send(command) }, tableName: "state", env: "staging", secrets, now: Date.now };
   const t = await setupWizardBench({ ...(options.withAudit === false ? {} : { audit }), orgConnections: deps });
