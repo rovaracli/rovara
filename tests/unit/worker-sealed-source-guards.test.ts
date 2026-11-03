@@ -26,7 +26,9 @@ export const PUBLIC_SEALED_ROUND_NAMES: readonly string[] = ["runSealedCheckRoun
 export const SEALED_ROUND_USERS: readonly string[] = [`${W}check-round-runners.ts`, `${W}service-usage-record.ts`, `${W}test-services-run.ts`, `${W}run-task.ts`, `${W}prepare.ts`];
 /** The record's contract type and schema (`TestServicesUsageRecord`, ...): the contract itself, the worker that builds it, and the broker modules that turn it into evidence and Prove steps (s1-broker T4, T5). */
 export const USAGE_RECORD_USERS: readonly string[] = [
-  "packages/contracts/src/test-services-usage.ts", "packages/contracts/src/index.ts", `${W}service-usage-record.ts`, `${W}test-services-run.ts`,
+  "packages/contracts/src/test-services-usage.ts", "packages/contracts/src/index.ts",
+  // the evidence file the worker writes (EvidenceRawSchema) carries the record under `testServices`, so evidence.ts imports its schema (s1-broker T4)
+  "packages/contracts/src/evidence.ts", `${W}service-usage-record.ts`, `${W}test-services-run.ts`,
   "packages/broker/src/rovara-code/evidence-pack.ts", "packages/broker/src/test-env/evidence-line.ts", "packages/broker/src/test-env/prove-from-setup-check.ts",
   "packages/broker/src/org/test-env-candidate.ts", "packages/broker/src/aws/developer-routes/test-environment-candidate.ts",
 ];

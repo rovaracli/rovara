@@ -302,7 +302,9 @@ export async function recordTestEnvProveReport(deps: TestEnvDeps, input: { orgId
     if (error instanceof Error && error.name === "TransactionCanceledException") throw stale("there is no such proposal to prove; propose the environment again");
     throw error;
   }
-  return { proved: testEnvIsProved(report.data, digest) };
+  // The proposal itself is read for its dependencies: a report without the two dependency steps does not prove an environment that has some.
+  const proposed = await readProposal(deps, input.orgId, input.project, digest).catch(() => undefined);
+  return { proved: testEnvIsProved(report.data, digest, proposed) };
 }
 
 /** The stored Prove report for a proposal's digest, read again through the contract (a damaged item reads as none, never as proved). */
@@ -375,7 +377,7 @@ export async function approveTestEnvironment(
   if (body === undefined) throw stale("this proposal is gone or has expired; propose the environment again");
   const proveItem = await read(deps, proveKey(input.orgId, input.project, input.digest));
   const prove = proveItem === undefined ? undefined : TestEnvProveReportSchema.safeParse(proveItem.report);
-  if (!testEnvIsProved(prove?.success === true ? prove.data : undefined, input.digest)) throw invalid("prove this environment (boot, smoke test and a full run) before approving it");
+  if (!testEnvIsProved(prove?.success === true ? prove.data : undefined, input.digest, body)) throw invalid("prove this environment (boot, smoke test and a full run) before approving it");
   refuseProduction(body, current?.environment);
   refuseRecordingOnShared(body);
   await refuseDependenciesNotAvailable(deps, input.orgId, input.project, body, current?.environment);

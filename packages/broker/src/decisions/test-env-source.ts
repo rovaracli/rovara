@@ -70,7 +70,7 @@ export async function approveTestEnvItemsFor(ports: TestEnvCardPorts, caller: Wh
       const approved = await readApprovedTestEnvironment(ports.store, orgId, project);
       if (approved !== undefined && testEnvDigest(approved.environment) === newest.digest) continue;
       const body = await readProposal(ports.store, orgId, project, newest.digest);
-      if (body === undefined || !testEnvIsProved(await readTestEnvProveReport(ports.store, orgId, project, newest.digest), newest.digest)) continue;
+      if (body === undefined || !testEnvIsProved(await readTestEnvProveReport(ports.store, orgId, project, newest.digest), newest.digest, body)) continue;
       const expectedRevision = approved?.revision ?? 0;
       const lessSafe = testEnvLessSafeChanges(approved?.environment, body);
       // TE-2: a proposal a setup RUN made is approved only with the approver's fresh sign-in, which a one-press card cannot ask for: it is a high card that opens the setup page.

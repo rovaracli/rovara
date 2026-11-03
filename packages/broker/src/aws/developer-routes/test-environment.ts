@@ -197,7 +197,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
     proposal = {
       digest: shown.digest, source: shown.source, risk, lessSafe, summary: testEnvSummaryOf(shown.body), environment: shown.body, runs: runsOf(shown.body),
       valueSources: valueSources.flatMap((entry) => { const parsed = valueSourceOf(entry); return parsed === undefined ? [] : [parsed]; }),
-      proved: testEnvIsProved(report, shown.digest), proveSteps: (report?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
+      proved: testEnvIsProved(report, shown.digest, shown.body), proveSteps: (report?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
       needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || candidate.check?.origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
       approval: { status: approval },
       commandsNotInSettings: commandsNotRun(shown.body, latest.definition),
@@ -337,7 +337,7 @@ export async function routeTestEnvironment(
     if ((current?.revision ?? 0) !== parsed.data.expectedRevision) throw agentXError("CHANGE_STALE", "someone changed the test environment; reload and review again");
     const lessSafe = testEnvLessSafeChanges(current?.environment, proposal);
     if (lessSafe.length === 0) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.secondPersonNotNeeded);
-    if (!testEnvIsProved(await readTestEnvProveReport(store, caller.orgId, name, parsed.data.digest), parsed.data.digest)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.provedFirst);
+    if (!testEnvIsProved(await readTestEnvProveReport(store, caller.orgId, name, parsed.data.digest), parsed.data.digest, proposal)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.provedFirst);
     if (deps.agents === undefined) throw agentXError("RUNTIME_UNAVAILABLE", TEST_ENV_EDIT_WORDS.unavailable);
     const asked = await requestTestEnvCard(deps.agents, caller, { project: name, digest: parsed.data.digest, expectedRevision: parsed.data.expectedRevision, lessSafe, diff: testEnvChangeLines(current?.environment, proposal) });
     const confirmUrl = asked.state === "pending" ? (await confirmationReply(deps.agents, caller, { approvalId: asked.record.approvalId, changes: asked.record.changes })).body.confirmUrl : undefined;

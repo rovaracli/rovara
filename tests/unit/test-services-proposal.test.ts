@@ -173,7 +173,7 @@ describe("the approve card", () => {
     const clock = { now: Date.UTC(2026, 10, 3, 10, 0, 0) };
     const store: TestEnvDeps = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit, env: ON };
     const proposal = await proposeTestEnvironment(store, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: environment });
-    await recordTestEnvProveReport(store, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(clock.now).toISOString() } });
+    await recordTestEnvProveReport(store, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }, { step: "dependencies", status: "passed", durationMs: 0 }, { step: "dependency_usage", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(clock.now).toISOString() } });
     const ports = { store, maintainedProjects: async () => [PROJECT], confirmPathOf: async () => undefined };
     return approveTestEnvItemsFor(ports, { orgId: ORG, developerId: "dev_a" }, ON);
   }

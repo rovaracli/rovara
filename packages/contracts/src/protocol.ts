@@ -31,7 +31,7 @@ import { SpecReviewInputSchema, SpecWriteBindingSchema } from "./spec-target.js"
 import { OWNER_REDIRECT_FEATURE, OwnerRedirectInvocationSchema, PEEK_FEATURE } from "./live-interaction.js";
 import { DIAGNOSIS_WORKER_FEATURE, DiagnosisInvocationSchema } from "./live-diagnosis.js";
 import { EVIDENCE_CAPTURE_FEATURE } from "./evidence.js";
-import { TEST_ENV_COVERAGE_PATH_FEATURE, TEST_ENV_DETECT_FEATURE, TEST_ENV_PLAN_FEATURE, TEST_SERVICES_PLAN_FEATURE, TestEnvTaskPlanSchema } from "./test-environment-wire.js";
+import { TASK_DEPENDENCY_PLAN_MAX, TEST_ENV_COVERAGE_PATH_FEATURE, TEST_ENV_DETECT_FEATURE, TEST_ENV_PLAN_FEATURE, TEST_SERVICES_PLAN_FEATURE, TaskDependencyPlanSchema, TestEnvTaskPlanSchema } from "./test-environment-wire.js";
 import { PeekPayloadSchema } from "./live-peek.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
@@ -296,6 +296,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
       pins: PreparePinsSchema.optional(),
       /** Saved project images (switch `sv`): a rebuild of the project's image. The preparation is read only and pinned (`pins` are the job's commits); after it the worker proves the approved environment in a fresh sandbox and builds and pushes the image (saved-env/rebuild.ts). The lease token is added by the dispatcher at delivery. Sent only to a worker that lists `prepare.savedEnvBuild.v1`; never dropped. */
       savedEnvBuild: PrepareSavedEnvBuildSchema.optional(),
+      /**
+       * Test services (slice 1, Prove): a test environment's CANDIDATE check starts these dependencies (pinned by digest; no secret), runs the proposal's readiness commands against them with the sealed check runners and
+       * reports a usage record under `testServicesUsage` in its result. Sent only with the switch `tx` on and only to a worker whose /ping lists `task.testServices.v1`; never dropped (delivery refuses an older worker).
+       */
+      testServices: z.object({ dependencies: z.array(TaskDependencyPlanSchema).min(1).max(TASK_DEPENDENCY_PLAN_MAX) }).strict().optional(),
     }).strict(),
   }).strict(),
   InvocationBaseSchema.extend({
