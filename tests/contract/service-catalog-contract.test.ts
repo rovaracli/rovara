@@ -73,7 +73,7 @@ describe("the v1 data file", () => {
     expect(size("mysql@8")).toMatchObject({ memMiB: 768, cpus: 1 });
     expect(size("valkey@8")).toMatchObject({ memMiB: 128, cpus: 0.5 });
     expect(size("rabbitmq@3")).toMatchObject({ memMiB: 256, cpus: 0.5 });
-    expect(size("local-aws@r1")).toMatchObject({ memMiB: 640, cpus: 1 });
+    expect(size("local-aws@r1")).toMatchObject({ memMiB: 384, cpus: 1 });
     expect(size("fake-server@r1")).toMatchObject({ memMiB: 128, cpus: 0.5 });
     expect(size("test-account-proxy@r1")).toMatchObject({ memMiB: 64, cpus: 0.25 });
     expect(size("dns-helper@r1")).toMatchObject({ memMiB: 128, cpus: 0.5 });

@@ -16,13 +16,23 @@
 // SOURCES must be Rovara-built multi-platform INDEXES (OCI image index or Docker manifest list) holding EXACTLY the platforms the catalog entry lists (`linux/arm64`, `linux/amd64`), by digest. A single-platform image is
 // accepted only for an entry that lists that one platform (its platform is read from the config blob its manifest names, checked against that digest). An index with a platform the entry does not list, or without one it does, refuses the build. (Attestation manifests, `unknown/unknown`, are not platforms.)
 //
+// A ROVARA-BUILT source (slice 2, the emulator `local-aws` only): instead of a registry digest reference, a source can be `{ "kind": "rovara-built", "layout": "<OCI layout dir>", "digestFile": "<index.digest>" }`: the `image-result`
+// artifact of the emulator fork's manual GitHub workflow (an UNSIGNED OCI layout and the digest of its index). Nothing is signed or trusted on GitHub; by owner decision this script is where the image is verified, scanned and signed:
+//   a. the layout is read from disk first (`readBuiltSource`): the digest file is a sha256 digest, the layout holds exactly ONE image, that index, whose bytes hash to the digest file's digest, and each platform manifest it names is
+//      present and hashes to its digest. The platforms must be exactly the entry's (linux/arm64) BEFORE anything is pushed;
+//   b. the layout is pushed by that digest into `rovara-catalog/<env>/svc/<name>` (skopeo copy --all --preserve-digests), the digest the registry then serves must equal the artifact's, and the platforms it serves must be the layout's;
+//   c. from there the path is the normal one: an SBOM and a scan per platform, a signature with Rovara's release KMS key. The artifact's own SBOMs and image scans are not trusted and not used;
+//   d. EXCEPT the scan of the Java libraries compiled into the native binary (`scan-java-arm64.json`, grype on the CycloneDX dependency list), because the image scan cannot see inside the binary. It is read before anything is pushed:
+//      missing, unparseable or without a matches list refuses; any critical finding refuses; its high count is added to the entry's; its SHA-256 and counts are in the signed image statement and the file is kept as evidence/<id>/java-scan.json.
+// A Rovara-built source for an entry that is not `emulated` is refused.
+//
 // Everything outside the decision rules is a PORT (mirror, SBOM, scan, signer, files), so the whole pipeline runs against fakes. The real ports at the bottom use skopeo, syft and ECR/KMS through clients the caller passes in;
 // they are only built by `main()`, which runs only when this file is the entry point. Nothing here is imported by the broker or the worker, and no secret is read: the registry credential is ECR's short token, kept in a 0600 file.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -70,7 +80,14 @@ export const SourceRefSchema = z
   .string()
   .max(400)
   .regex(/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[a-f0-9]{64}$/u, "a source image is host/path@sha256:<digest>, never a tag");
-export const SourcesFileSchema = z.object({ schemaVersion: z.literal(1), sources: z.record(CatalogIdSchema, SourceRefSchema) }).strict();
+/**
+ * A Rovara-built source: the OCI layout directory, the file holding the index digest, the CycloneDX list of the Java libraries inside the binary (`sbom-<arch>/java-dependencies.cdx.json`) and the grype result on it (`scan-java-<arch>.json`), all from the fork's workflow artifact (`image-result`: `oci/`, `index.digest`). Relative paths are read from the sources file's
+ * directory. A path may not hold `:` (skopeo's `oci:<dir>:<reference>` syntax), a newline or a NUL.
+ */
+const BuiltPathSchema = z.string().min(1).max(1024).regex(/^[^:\n\r\0]+$/u, "a path without ':' or line breaks");
+export const BuiltSourceSchema = z.object({ kind: z.literal("rovara-built"), layout: BuiltPathSchema, digestFile: BuiltPathSchema, javaScan: BuiltPathSchema, javaSbom: BuiltPathSchema }).strict();
+export type BuiltSource = z.infer<typeof BuiltSourceSchema>;
+export const SourcesFileSchema = z.object({ schemaVersion: z.literal(1), sources: z.record(CatalogIdSchema, z.union([SourceRefSchema, BuiltSourceSchema])) }).strict();
 export type SourcesFile = z.infer<typeof SourcesFileSchema>;
 const digestOfSource = (ref: string): string => ref.slice(ref.lastIndexOf("@sha256:") + "@sha256:".length);
 
@@ -103,8 +120,19 @@ export interface PlatformTarget {
   /** The child manifest digest of `platform`. */
   readonly digest: string;
 }
+/** What `readBuiltSource` found in a Rovara-built layout: the index digest (hex), the platforms the index names with their own manifest digests, and the layout's absolute path. */
+export interface BuiltLayout {
+  /** The scan of the Java libraries compiled into the native binary (the artifact's grype result), read here because the image scan cannot see them. `bytes` are kept as evidence; `sha256` goes in the signed statement. */
+  readonly javaScan: { readonly bytes: Buffer; readonly sha256: string; readonly sbomBytes: Buffer; readonly sbomSha256: string; readonly criticalOpen: number; readonly highOpen: number };
+  readonly digest: string;
+  readonly children: readonly MirroredChild[];
+  readonly layoutPath: string;
+}
 export interface CatalogBuildPorts {
-  mirror: (input: { id: string; source: string; repositoryName: string; expectedDigest: string }) => Promise<MirrorResult>;
+  /** `built` is set for a Rovara-built source: the layout (already verified by `readBuilt`) is pushed from disk, and `source` is only a label. */
+  mirror: (input: { id: string; source: string; repositoryName: string; expectedDigest: string; built?: { layoutPath: string } }) => Promise<MirrorResult>;
+  /** Reads and verifies a Rovara-built layout on disk (see `readBuiltSource`). Needed only when a selected source is Rovara-built; without it such a source is refused. */
+  readBuilt?: (input: BuiltSource) => Promise<BuiltLayout>;
   sbom: (input: PlatformTarget) => Promise<Uint8Array>;
   scan: (input: PlatformTarget) => Promise<ScanResult>;
   /** Whether the environment's registry serves this digest of the repository now (an ECR describe-images by digest). A throw counts as "no". Asked only about pins an `--entries` build carries over. */
@@ -115,7 +143,7 @@ export interface CatalogBuildPorts {
 
 /** A carried-over pin's recorded scan may be this old at most. */
 export const CARRIED_PIN_MAX_SCAN_AGE_DAYS = 30;
-export const BUILD_REFUSAL_CODES = ["no_source", "unknown_source", "digest_mismatch", "platforms_mismatch", "sbom_invalid", "scan_not_for_image", "scan_incomplete", "scan_critical", "port_failed", "unsigned", "unknown_entry", "retired_entry", "unselected_source", "carried_pin_missing", "carried_pin_stale"] as const;
+export const BUILD_REFUSAL_CODES = ["no_source", "unknown_source", "digest_mismatch", "platforms_mismatch", "sbom_invalid", "scan_not_for_image", "scan_incomplete", "scan_critical", "port_failed", "unsigned", "unknown_entry", "retired_entry", "unselected_source", "carried_pin_missing", "carried_pin_stale", "built_source_not_allowed", "built_source_invalid"] as const;
 export type BuildRefusalCode = (typeof BUILD_REFUSAL_CODES)[number];
 export class CatalogBuildError extends Error {
   constructor(readonly refusals: ReadonlyArray<{ id: string; code: BuildRefusalCode; message: string }>) {
@@ -154,6 +182,11 @@ export function childrenProblem(children: readonly MirroredChild[], wanted: read
   const expected = [...wanted].sort().join(",");
   return held === expected ? undefined : `the image holds ${held === "" ? "no platform" : held} where the catalog lists ${expected}`;
 }
+
+const sameChildren = (left: readonly MirroredChild[], right: readonly MirroredChild[]): boolean => {
+  const key = (children: readonly MirroredChild[]): string => children.map((child) => `${child.platform}=${child.digest}`).sort().join(",");
+  return key(left) === key(right);
+};
 
 const jsonBytes = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
 
@@ -233,13 +266,50 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
       refuse(entry.id, "no_source", "the sources file has no source image for this entry");
       continue;
     }
-    const expectedDigest = digestOfSource(source);
     const repositoryName = catalogRepositoryName(input.env, entry.image.repository);
     try {
+      let expectedDigest: string;
+      let sourceLabel: string;
+      let built: BuiltLayout | undefined;
+      if (typeof source === "string") {
+        expectedDigest = digestOfSource(source);
+        sourceLabel = source;
+      } else {
+        // A Rovara-built layout: only for the emulator, read and verified on disk before anything is pushed, and its platforms must already be the entry's.
+        if (entry.backing !== "emulated") {
+          refuse(entry.id, "built_source_not_allowed", "a Rovara-built source is only for an emulated entry (the emulator)");
+          continue;
+        }
+        if (ports.readBuilt === undefined) {
+          refuse(entry.id, "port_failed", "this build cannot read a Rovara-built source");
+          continue;
+        }
+        try {
+          built = await ports.readBuilt(source);
+        } catch (error) {
+          refuse(entry.id, "built_source_invalid", error instanceof Error ? error.message.slice(0, 200) : "the layout could not be read");
+          continue;
+        }
+        const builtProblem = childrenProblem(built.children, entry.image.platforms);
+        if (builtProblem !== undefined) {
+          refuse(entry.id, "platforms_mismatch", `the layout: ${builtProblem}`);
+          continue;
+        }
+        if (built.javaScan.criticalOpen !== 0) {
+          refuse(entry.id, "scan_critical", `java dependencies: ${String(built.javaScan.criticalOpen)} critical finding${built.javaScan.criticalOpen === 1 ? "" : "s"} open in the artifact's scan`);
+          continue;
+        }
+        expectedDigest = built.digest;
+        sourceLabel = `rovara-built:sha256:${built.digest}`;
+      }
       // 1. mirror, and check what the destination serves.
-      const mirrored = await ports.mirror({ id: entry.id, source, repositoryName, expectedDigest });
+      const mirrored = await ports.mirror({ id: entry.id, source: sourceLabel, repositoryName, expectedDigest, ...(built === undefined ? {} : { built: { layoutPath: built.layoutPath } }) });
       if (mirrored.digest !== expectedDigest) {
         refuse(entry.id, "digest_mismatch", `the registry serves ${mirrored.digest.slice(0, 12)} where the source named ${expectedDigest.slice(0, 12)}`);
+        continue;
+      }
+      if (built !== undefined && !sameChildren(built.children, mirrored.children)) {
+        refuse(entry.id, "platforms_mismatch", "the registry serves other platform manifests than the layout holds");
         continue;
       }
       const childProblem = childrenProblem(mirrored.children, entry.image.platforms);
@@ -290,16 +360,17 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
       if (platformRefused) continue;
       const sbomRef = combinedSbomRef(children);
       const oldestScan = children.map((child) => child.scannedAt).sort((a, b) => Date.parse(a) - Date.parse(b))[0] as string;
-      const highOpen = Math.max(...highCounts);
-      // 3. the image's signed statement: the index digest and every platform's child digest, SBOM hash and scan time.
-      const statement = { id: entry.id, repository: entry.image.repository, digest: expectedDigest, sbomRef, scannedAt: oldestScan, children };
+      // A Rovara-built image's Java libraries are scanned apart (the image scan cannot see inside the binary): those highs add to the image's.
+      const highOpen = Math.max(...highCounts) + (built?.javaScan.highOpen ?? 0);
+      // 3. the image's signed statement: the index digest and every platform's child digest, SBOM hash and scan time, and for a Rovara-built image the hash and counts of the Java dependency scan.
+      const statement = { id: entry.id, repository: entry.image.repository, digest: expectedDigest, sbomRef, scannedAt: oldestScan, children, ...(built === undefined ? {} : { javaScan: { sha256: built.javaScan.sha256, sbomSha256: built.javaScan.sbomSha256, criticalOpen: 0 as const, highOpen: built.javaScan.highOpen } }) };
       const signed: SignedImageStatement = { statement, keyId, signature: (await ports.signer.sign(imageStatementMessage(statement))).toString("base64") };
       const own = verifyImageStatement({ signed, trustedKeys: [ports.signer.publicKeyPem] });
       if (!own.ok) {
         refuse(entry.id, "unsigned", `the signer's signature does not verify against its own public key: ${own.reason}`);
         continue;
       }
-      evidence.push(...platformEvidence, { path: `${folder}/statement.json`, bytes: jsonBytes(signed) });
+      evidence.push(...platformEvidence, ...(built === undefined ? [] : [{ path: `${folder}/java-scan.json`, bytes: built.javaScan.bytes }, { path: `${folder}/java-sbom.json`, bytes: built.javaScan.sbomBytes }]), { path: `${folder}/statement.json`, bytes: jsonBytes(signed) });
       entries.push({ ...entry, image: { ...entry.image, digest: expectedDigest }, sbomRef, scan: { scannedAt: oldestScan, criticalOpen: 0, highOpen } });
     } catch (error) {
       refuse(entry.id, "port_failed", error instanceof Error ? error.message.slice(0, 200) : "a step failed");
@@ -336,7 +407,7 @@ export async function writeCatalogBuild(output: CatalogBuildOutput, where: { cat
   const catalogDir = resolve(where.catalogDir);
   // Evidence paths were made from checked ids; every one is re-checked BEFORE anything is written, so none leaves the evidence folder and a bad one leaves no partial output.
   for (const item of output.evidence) {
-    if (!/^evidence\/[a-z0-9][a-z0-9-]*\/(?:statement\.json|linux-(?:arm64|amd64)\/(?:sbom|scan)\.json)$/u.test(item.path)) throw new Error(`unexpected evidence path ${item.path}`);
+    if (!/^evidence\/[a-z0-9][a-z0-9-]*\/(?:statement\.json|java-scan\.json|java-sbom\.json|linux-(?:arm64|amd64)\/(?:sbom|scan)\.json)$/u.test(item.path)) throw new Error(`unexpected evidence path ${item.path}`);
   }
   for (const item of output.evidence) await writeAtomic(join(catalogDir, item.path), item.bytes);
   await writeAtomic(resolve(where.prepullFile), output.prepullBytes);
@@ -383,9 +454,11 @@ export const tagFor = (digest: string): string => digest.slice(0, 32);
  * Attestation manifests (`unknown/unknown`) are not platforms and are left out.
  */
 export function skopeoMirrorPort(input: { commands: CommandPort; registry: string; authFile: string; copyTimeoutMs?: number }): CatalogBuildPorts["mirror"] {
-  return async ({ source, repositoryName, expectedDigest }) => {
+  return async ({ source, repositoryName, expectedDigest, built }) => {
     const destination = `${input.registry}/${repositoryName}`;
-    await input.commands.run("skopeo", ["copy", "--all", "--preserve-digests", "--dest-authfile", input.authFile, `docker://${source}`, `docker://${destination}:${tagFor(expectedDigest)}`], { timeoutMs: input.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
+    // A Rovara-built layout is copied from disk (`oci:<dir>`: skopeo refuses a layout that holds more than one image, and `readBuiltSource` already checked that it holds exactly the one named by digest); everything after the copy is the same.
+    const from = built === undefined ? `docker://${source}` : `oci:${built.layoutPath}`;
+    await input.commands.run("skopeo", ["copy", "--all", "--preserve-digests", "--dest-authfile", input.authFile, from, `docker://${destination}:${tagFor(expectedDigest)}`], { timeoutMs: input.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
     const byDigest = `docker://${destination}@sha256:${expectedDigest}`;
     const raw = await input.commands.run("skopeo", ["inspect", "--raw", "--authfile", input.authFile, byDigest]);
     const digest = createHash("sha256").update(raw).digest("hex");
@@ -407,6 +480,141 @@ export function skopeoMirrorPort(input: { commands: CommandPort; registry: strin
     if (createHash("sha256").update(config).digest("hex") !== configDigest) throw new Error("the image config does not hash to the digest its manifest names");
     const { os, architecture } = JSON.parse(config.toString("utf8")) as { os?: string; architecture?: string };
     return { digest, children: typeof os === "string" && typeof architecture === "string" ? [{ platform: `${os}/${architecture}`, digest }] : [] };
+  };
+}
+
+const OCI_INDEX_TYPES: readonly string[] = ["application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json"];
+/** The most an index or a platform manifest read from a layout may be (they are a few hundred bytes; a layer is never read here). */
+const BUILT_MANIFEST_MAX_BYTES = 1024 * 1024;
+
+/** The components of a CycloneDX list, nested ones included: their purls and their `name`/`group:name` spellings with the version. */
+function cycloneDxComponents(bytes: Buffer): { purls: Set<string>; names: Set<string>; count: number } {
+  let bom: { bomFormat?: unknown; components?: unknown } | null;
+  try {
+    bom = JSON.parse(bytes.toString("utf8")) as typeof bom;
+  } catch {
+    throw new Error("the Java dependency list is not JSON");
+  }
+  if (bom === null || typeof bom !== "object" || bom.bomFormat !== "CycloneDX" || !Array.isArray(bom.components)) throw new Error("the Java dependency list is not a CycloneDX document with components");
+  const purls = new Set<string>();
+  const names = new Set<string>();
+  let count = 0;
+  const walk = (list: unknown): void => {
+    if (!Array.isArray(list)) return;
+    for (const item of list as Array<{ name?: unknown; group?: unknown; version?: unknown; purl?: unknown; components?: unknown } | null>) {
+      if (item === null || typeof item !== "object") continue;
+      count += 1;
+      if (typeof item.purl === "string") purls.add(item.purl);
+      if (typeof item.name === "string" && typeof item.version === "string") {
+        names.add(`${item.name}@${item.version}`);
+        if (typeof item.group === "string" && item.group !== "") for (const joiner of [":", "/"]) names.add(`${item.group}${joiner}${item.name}@${item.version}`);
+      }
+      walk(item.components);
+    }
+  };
+  walk(bom.components);
+  if (count === 0) throw new Error("the Java dependency list has no components");
+  return { purls, names, count };
+}
+
+/**
+ * The artifact's grype result on the Java dependency list, BOUND to the CycloneDX list that came with it. Missing, too large, not JSON, not grype's (`descriptor.name` must be "grype", so a generic `{"matches":[]}` is refused) or
+ * without a `matches` list throws: no scan is not a clean scan. Every finding must name a package of that CycloneDX list (by purl, or by name and version), so a result for another list or another image is refused. Counts the matches by
+ * severity (case-insensitive); a match with no readable severity is counted as critical, so a result this reader does not understand refuses and never passes.
+ * LIMIT: grype's JSON does not carry a hash of the list it scanned, and a clean result (no findings) names nothing to bind to. For a clean result the only proof that grype ran on THIS list is the workflow's run log; the operator compares
+ * the printed `descriptor` and `source` (see the operator commands) with the run's "Scan the Java libraries" step, as for the digest file. The statement records both files' SHA-256.
+ */
+async function readJavaScan(scanFile: string, sbomFile: string): Promise<BuiltLayout["javaScan"]> {
+  const load = async (file: string, what: string): Promise<Buffer> => {
+    const info = await stat(file).catch(() => undefined);
+    if (info === undefined || !info.isFile()) throw new Error(`${what} is missing`);
+    if (info.size > SBOM_MAX_BYTES) throw new Error(`${what} is too large`);
+    return readFile(file);
+  };
+  const bytes = await load(scanFile, "the Java dependency scan file");
+  const sbomBytes = await load(sbomFile, "the Java dependency list (CycloneDX) file");
+  const list = cycloneDxComponents(sbomBytes);
+  let result: { matches?: unknown; descriptor?: { name?: unknown } | null } | null;
+  try {
+    result = JSON.parse(bytes.toString("utf8")) as typeof result;
+  } catch {
+    throw new Error("the Java dependency scan file is not JSON");
+  }
+  if (result === null || typeof result !== "object" || result.descriptor?.name !== "grype") throw new Error("the Java dependency scan file is not a grype result (descriptor.name)");
+  if (!Array.isArray(result.matches)) throw new Error("the Java dependency scan file has no matches list (not a grype result)");
+  let criticalOpen = 0;
+  let highOpen = 0;
+  for (const match of result.matches as Array<{ vulnerability?: { severity?: unknown }; artifact?: { name?: unknown; version?: unknown; purl?: unknown } } | null>) {
+    const artifact = match?.artifact;
+    const named = typeof artifact?.purl === "string" && list.purls.has(artifact.purl)
+      || typeof artifact?.name === "string" && typeof artifact.version === "string" && list.names.has(`${artifact.name}@${artifact.version}`);
+    if (!named) throw new Error("a finding in the Java dependency scan names a package that is not in the CycloneDX list that came with it");
+    const raw = match?.vulnerability?.severity;
+    const severity = typeof raw === "string" ? raw.toLowerCase() : undefined;
+    if (severity === "high") highOpen += 1;
+    else if (severity === undefined || !["negligible", "low", "medium", "unknown"].includes(severity)) criticalOpen += 1;
+  }
+  return { bytes, sha256: sha256HexOf(bytes), sbomBytes, sbomSha256: sha256HexOf(sbomBytes), criticalOpen, highOpen };
+}
+
+/**
+ * Reads and VERIFIES a Rovara-built layout (the `image-result` artifact of the emulator workflow) before anything is pushed. Throws, in words for the operator, unless:
+ *   - the digest file is one `sha256:<64 hex>` line;
+ *   - `oci-layout` and `index.json` exist, and `index.json` names exactly ONE manifest, whose digest is the digest file's and which is an index;
+ *   - that index's bytes (blobs/sha256/<hex>) hash to the digest, and each platform manifest it lists (attestation `unknown/unknown` entries are not platforms) is present and hashes to its own digest.
+ * Layer blobs are not read: skopeo hashes them as it copies and the registry refuses a blob that does not match its digest. The platforms are returned; the caller compares them with the entry's.
+ * `baseDir` is where a relative `layout` or `digestFile` is read from (the sources file's directory).
+ */
+export function readBuiltSource(input: { baseDir: string }): NonNullable<CatalogBuildPorts["readBuilt"]> {
+  const place = (path: string): string => (isAbsolute(path) ? path : resolve(input.baseDir, path));
+  const readSmall = async (file: string, what: string): Promise<Buffer> => {
+    const info = await stat(file).catch(() => undefined);
+    if (info === undefined || !info.isFile()) throw new Error(`${what} is missing`);
+    if (info.size > BUILT_MANIFEST_MAX_BYTES) throw new Error(`${what} is larger than ${String(BUILT_MANIFEST_MAX_BYTES)} bytes`);
+    return readFile(file);
+  };
+  const parse = (bytes: Buffer, what: string): Record<string, unknown> => {
+    try {
+      const value = JSON.parse(bytes.toString("utf8")) as unknown;
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) return value as Record<string, unknown>;
+    } catch { /* falls through */ }
+    throw new Error(`${what} is not a JSON object`);
+  };
+  return async ({ layout, digestFile, javaScan, javaSbom }) => {
+    const layoutPath = place(layout);
+    // skopeo reads `oci:<path>:<reference>`: the RESOLVED path (a base directory can bring a colon) may not hold one, or a line break.
+    if (/[:\n\r\0]/u.test(layoutPath)) throw new Error("the layout path (resolved) holds ':' or a line break; move the artifact to a plain folder");
+    const javaScanBytes = await readJavaScan(place(javaScan), place(javaSbom));
+    const digestText = (await readSmall(place(digestFile), "the digest file")).toString("utf8").trim();
+    const wanted = /^sha256:([a-f0-9]{64})$/u.exec(digestText)?.[1];
+    if (wanted === undefined) throw new Error("the digest file is not one sha256:<64 hex> digest");
+    const marker = parse(await readSmall(join(layoutPath, "oci-layout"), "oci-layout"), "oci-layout");
+    if (typeof marker["imageLayoutVersion"] !== "string" || !marker["imageLayoutVersion"].startsWith("1.")) throw new Error("oci-layout is not an OCI image layout version 1");
+    const top = parse(await readSmall(join(layoutPath, "index.json"), "index.json"), "index.json")["manifests"];
+    if (!Array.isArray(top) || top.length !== 1) throw new Error("the layout must hold exactly one image (index.json names " + String(Array.isArray(top) ? top.length : 0) + ")");
+    const entry = top[0] as { digest?: unknown; mediaType?: unknown };
+    if (entry.digest !== `sha256:${wanted}`) throw new Error("the layout's image is not the digest in the digest file");
+    if (typeof entry.mediaType !== "string" || !OCI_INDEX_TYPES.includes(entry.mediaType)) throw new Error("the layout's image is not an image index");
+    const blob = async (hex: string, what: string): Promise<Buffer> => {
+      const bytes = await readSmall(join(layoutPath, "blobs", "sha256", hex), what);
+      if (createHash("sha256").update(bytes).digest("hex") !== hex) throw new Error(`${what} does not hash to its digest`);
+      return bytes;
+    };
+    const index = parse(await blob(wanted, "the image index"), "the image index");
+    if (!Array.isArray(index["manifests"])) throw new Error("the image index lists no manifests");
+    const children: MirroredChild[] = [];
+    for (const item of index["manifests"] as Array<{ digest?: unknown; platform?: { os?: unknown; architecture?: unknown }; annotations?: Record<string, unknown> }>) {
+      const os = item.platform?.os;
+      const architecture = item.platform?.architecture;
+      // Only BuildKit's attestation manifests (unknown/unknown, annotated as such) are not platforms; any other entry without a real platform is refused, not skipped.
+      if (os === "unknown" && architecture === "unknown" && item.annotations?.["vnd.docker.reference.type"] === "attestation-manifest") continue;
+      if (typeof os !== "string" || typeof architecture !== "string" || os === "unknown" || architecture === "unknown") throw new Error("the image index holds an entry that is neither a platform nor a known attestation manifest");
+      const hex = /^sha256:([a-f0-9]{64})$/u.exec(typeof item.digest === "string" ? item.digest : "")?.[1];
+      if (hex === undefined) throw new Error(`the platform ${os}/${architecture} has no sha256 manifest digest`);
+      await blob(hex, `the ${os}/${architecture} manifest`);
+      children.push({ platform: `${os}/${architecture}`, digest: hex });
+    }
+    return { digest: wanted, children, layoutPath, javaScan: javaScanBytes };
   };
 }
 
@@ -478,7 +686,9 @@ function usage(): string {
   return `Usage: tsx scripts/catalog-build.ts --sources <file> --env <environment> --registry <host> --kms-key <key id or ARN> [--entries <id,id,...>] [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--prepull-file ${DEFAULT_PREPULL_FILE}] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
 Run by an operator with the pipeline's own AWS credentials. It mirrors each catalog image by digest into <host>/rovara-catalog/<environment>/..., records an SBOM and a scan for EACH PLATFORM, signs, and writes the
 pinned catalog.json, catalog.sig.json, evidence/ and the worker pre-pull list. Nothing is written if any image is refused (a platform with a critical finding refuses the image). Needs skopeo and syft on PATH.
-The sources file maps each catalog id to a digest reference (host/path@sha256:...). Every source must be a Rovara-built multi-platform INDEX holding exactly the platforms the catalog lists for that id (a
+The sources file maps each catalog id to a digest reference (host/path@sha256:...), or, for the emulator only, to a Rovara-built layout:
+{ "kind": "rovara-built", "layout": "<dir>/oci", "digestFile": "<dir>/index.digest", "javaScan": "<dir>/scan-java-arm64.json", "javaSbom": "<dir>/sbom-arm64/java-dependencies.cdx.json" } (the workflow artifact image-result, downloaded and unpacked; relative paths are read from the sources file's directory).
+The layout is verified on disk, pushed by its digest, and the digest the registry serves must be the artifact's; the SBOM, the scan and the signature are this script's. Every source must be a Rovara-built multi-platform INDEX holding exactly the platforms the catalog lists for that id (a
 single-platform image only for an id that lists that one platform); an index with another platform set is refused.
 --entries pins only the listed catalog ids (comma-separated, for example postgres@16): the sources file must hold exactly those ids, and every other entry is carried over as it is (never pinned stays unpinned, and nothing starts it).
 Each skopeo inspect is killed after --command-timeout-seconds; each skopeo copy and each syft run after --copy-timeout-seconds.\n`;
@@ -536,6 +746,7 @@ async function main(argv: string[]): Promise<void> {
       ...(entryIds === undefined ? {} : { entries: entryIds }),
       ports: {
         mirror: skopeoMirrorPort({ commands, registry, authFile, copyTimeoutMs }),
+        readBuilt: readBuiltSource({ baseDir: dirname(resolve(sourcesFile)) }),
         sbom: syftSbomPort({ commands, registry, authDir, timeoutMs: copyTimeoutMs }),
         scan: ecrScanPort({ client: ecr, commands: { DescribeImageScanFindingsCommand, StartImageScanCommand } }),
         registryServes: ecrServesPort({ client: ecr, commands: { DescribeImagesCommand } }),

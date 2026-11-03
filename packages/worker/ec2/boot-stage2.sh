@@ -95,7 +95,11 @@ write_test_services_environment() {
 # What the last pull_catalog_images did, for the boot facts the worker reports (CloudWatch): none | ok | failed, how many digests, and whether the registry login was removed.
 PREPULL_RESULT=none; PREPULL_COUNT=0; PREPULL_LOGGED_OUT=false
 pull_catalog_images() {
-  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 failed="" pairs=() reference
+  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 failed="" pairs=() reference results file index=0
+  local timeout_s=180 parallel=4
+  # Overrides count only as plain positive whole numbers; anything else (0, empty, text) is the default.
+  [[ "${CATALOG_PULL_TIMEOUT_S:-}" =~ ^[1-9][0-9]*$ ]] && timeout_s=$CATALOG_PULL_TIMEOUT_S
+  [[ "${CATALOG_PULL_PARALLEL:-}" =~ ^[1-9][0-9]*$ ]] && parallel=$CATALOG_PULL_PARALLEL
   [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 0
   [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 0
   environment=${BASH_REMATCH[1]}
@@ -111,11 +115,26 @@ pull_catalog_images() {
   { timeout --foreground --kill-after=10s 120s aws ecr get-login-password --region "$region" \
       | timeout --foreground --kill-after=10s 120s docker login --username AWS --password-stdin "$registry" >/dev/null 2>&1; } \
     || { docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true; PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: the registry login failed"; return 1; }
+  # Each pull is bounded on its own (180 s, then killed; CATALOG_PULL_TIMEOUT_S overrides) and up to 4 run at once (CATALOG_PULL_PARALLEL), so one hung pull holds boot for one timeout and not for ten minutes. The first failure stops new pulls
+  # from starting; the ones already running finish or are killed by their own timeout. Results are one file per pull in a private directory (a background pull cannot set this shell's variables).
+  results=$(mktemp -d) || { docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true; PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: no scratch directory"; return 1; }
   for reference in "${pairs[@]}"; do
     reference="$registry/rovara-catalog/$environment/$reference"
-    docker image inspect "$reference" >/dev/null 2>&1 || timeout --foreground --kill-after=10s 600s docker pull "$reference" >/dev/null 2>&1 || { failed=$reference; break; }
-    count=$((count + 1))
+    [[ -z "$failed" ]] || break
+    while (($(jobs -rp | wc -l) >= parallel)); do sleep 1; done
+    for file in "$results"/*.fail; do [[ ! -e "$file" ]] || { failed=$(cat "$file"); break; }; done
+    [[ -z "$failed" ]] || break
+    index=$((index + 1))
+    (
+      docker image inspect "$reference" >/dev/null 2>&1 && : >"$results/$index.ok" && exit 0
+      timeout --foreground --kill-after=10s "${timeout_s}s" docker pull "$reference" >/dev/null 2>&1 && : >"$results/$index.ok" && exit 0
+      printf '%s' "$reference" >"$results/$index.fail"
+    ) &
   done
+  wait
+  for file in "$results"/*.ok; do [[ ! -e "$file" ]] || count=$((count + 1)); done
+  for file in "$results"/*.fail; do [[ ! -e "$file" ]] || { failed=$(cat "$file"); break; }; done
+  rm -rf "$results"
   # No ECR token stays on disk after the pulls (the worker has no login of its own and needs none).
   docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true
   PREPULL_COUNT=$count

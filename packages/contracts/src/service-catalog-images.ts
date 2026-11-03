@@ -102,13 +102,15 @@ export const PrepullListSchema = z
 export type PrepullList = z.infer<typeof PrepullListSchema>;
 
 /**
- * The images a worker pulls ahead of its first run: the pinned DEFAULT entry of each family and the always-used helpers, sorted by id. An unpinned catalog gives an empty list (nothing is pulled before there is a digest).
+ * The images a worker pulls ahead of its first run, sorted by id: EVERY pinned, non-retired entry that a run can start from a real image (backing `local` or `emulated`: Postgres 15/16/17, MySQL, Valkey, Redis, RabbitMQ, the
+ * emulator), plus the pinned defaults of the other families (the fake server) and the always-used helpers. A `helper` that is not always used (the test-account proxy, only with `ta`) and a non-default `fake` are not here. An unpinned
+ * catalog gives an empty list (nothing is pulled before there is a digest). The broker refuses any dependency whose entry is not in this list (`isPrepulledEntry`), because the worker pulls nothing at run time.
  * It names a repository and a digest and nothing else: the registry host is the install's.
  */
 export function catalogPrepullList(catalog: ServiceCatalog): PrepullList {
   const images = catalog.entries
     .filter((entry) => catalog.pinned && entry.status !== "retired" && entry.image.digest !== undefined
-      && (entry.status === "default" || (PREPULL_ALWAYS_HELPER_NAMES as readonly string[]).includes(catalogIdName(entry.id))))
+      && (entry.backing === "local" || entry.backing === "emulated" || entry.status === "default" || (PREPULL_ALWAYS_HELPER_NAMES as readonly string[]).includes(catalogIdName(entry.id))))
     .map((entry) => ({ id: entry.id, repository: entry.image.repository, digest: entry.image.digest as string, platforms: [...entry.image.platforms] }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return PrepullListSchema.parse({ schemaVersion: 1, catalogRevision: catalog.revision, images });
