@@ -103,7 +103,7 @@ describe("a system owner owns exactly its own project's automatic runs, which no
   ])("refuses %s", async (_label, extra) => {
     const t = await setup();
     const request = { ...t.automatic(), ...extra } as AgentRunRequest;
-    if (extra.automatic === undefined && "automatic" in extra) delete (request as { automatic?: unknown }).automatic;
+    if ("automatic" in extra) delete (request as { automatic?: unknown }).automatic;
     const refused = await refusal(startAgentRun(t.starter(), request));
     expect(refused?.code).toBe("CONFIG_INVALID");
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(0);

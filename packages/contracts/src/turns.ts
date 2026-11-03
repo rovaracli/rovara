@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { redactSecrets, redactText } from "./redaction.js";
 import { SlackTeamIdSchema, SlackUserIdSchema } from "./slack.js";
+import { SystemOwnerIdSchema } from "./system-owner.js";
 import { TaskUsageTelemetrySchema } from "./usage.js";
 
 export const TURN_TEXT_LIMIT = 40_000;
@@ -186,9 +187,10 @@ export const AiToolTurnRecordSchema = z.object({
   turnId: z.string().uuid(),
   action: z.enum(["start", "continue", "pull_request", "cancel", "close", "share"]),
   phase: z.enum(["accepted", "completed", "refused"]),
+  // A project's system owner (automatic runs, owner decision 2026-11-02) is the task's owner for the records the task's own end writes (its close, its release): its id and the `system` provider, never a person's.
   developer: z.object({
-    developerId: Hex64,
-    provider: z.enum(["slack", "oidc", "cloud", "github", "saml"]),
+    developerId: z.union([Hex64, SystemOwnerIdSchema]),
+    provider: z.enum(["slack", "oidc", "cloud", "github", "saml", "system"]),
     displayName: z.string().min(1).max(200),
     slackUserId: SlackUserIdSchema.optional(),
   }).strict(),

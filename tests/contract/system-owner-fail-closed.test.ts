@@ -2,7 +2,7 @@
 // the liveness check of its task) are judged by the system owner's own standing: the company is open and the project is active.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentXError, isSystemOwnerId, orgMetaKey, projectMetaKey, systemOwnerIdOf, systemOwnerName, type OrgId } from "../../packages/contracts/src/index.js";
+import { agentXError, isSystemOwnerId, orgMetaKey, projectMetaKey, systemOwnerIdOf, systemOwnerName } from "../../packages/contracts/src/index.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { guardTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
@@ -14,7 +14,7 @@ import { developerTaskIdentity } from "../../packages/broker/src/developer/task-
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 
-const ORG = TEST_ORG as OrgId;
+const ORG = TEST_ORG;
 const PROJECT = "payments";
 const SYSTEM = systemOwnerIdOf(ORG, PROJECT);
 const PERSON = "a".repeat(64);
@@ -28,7 +28,7 @@ function systemTask(): DeveloperTaskRecord {
     client: "api", project: PROJECT, title: "Nightly", workspaceId: WORKSPACE_ID, ownerKey: "f".repeat(64), conversationId: randomUUID(), startingRevision: 1,
     charge: { member: { pk: "member", sk: "counter" }, organization: { pk: "organization", sk: "counter" } }, shared: false,
     createdAt: "2026-11-02T10:00:00.000Z", updatedAt: "2026-11-02T10:00:00.000Z", purpose: "nightly_run",
-  } as DeveloperTaskRecord;
+  };
 }
 
 function outbox(): Ec2OutboxRecord {
@@ -36,7 +36,7 @@ function outbox(): Ec2OutboxRecord {
   return {
     id: randomUUID(), entityType: "OUTBOX", status: "QUEUED", operationId, workspaceId: WORKSPACE_ID, deploymentMode: "ec2-ebs",
     invocation: { protocolVersion: 1, kind: "task", operationId, workspaceId: WORKSPACE_ID, fence: 4, projectRevision: 1, callbackCapability: "c".repeat(64), payload: { conversationId: randomUUID(), prompt: "x", conversationStarted: true } },
-  } as Ec2OutboxRecord;
+  };
 }
 
 function world(options: { project?: "active" | "archived" | "missing"; orgClosed?: boolean } = {}) {

@@ -45,7 +45,7 @@ import {
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
-  SYSTEM_OWNER_PROVIDER,
+  type SYSTEM_OWNER_PROVIDER,
   type AutomaticRunMark,
   type ErrorRef,
   type OrgId,

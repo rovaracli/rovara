@@ -14,7 +14,7 @@ export function systemOwnerIdOf(orgId: string, project: string): string {
 }
 
 /** Whether an id is a system owner's. Anything that is not a string is not. */
-export const isSystemOwnerId = (id: unknown): id is string => SystemOwnerIdSchema.safeParse(id).success;
+export const isSystemOwnerId = (id: unknown): id is `${typeof SYSTEM_OWNER_ID_PREFIX}${string}` => SystemOwnerIdSchema.safeParse(id).success;
 
 /** How the system owner is named wherever a name is shown. */
 export const systemOwnerName = (project: string): string => `Rovara (project: ${project})`;

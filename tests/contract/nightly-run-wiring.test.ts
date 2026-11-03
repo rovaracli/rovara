@@ -145,6 +145,28 @@ describe("with nh and the test environment on", () => {
     expect((t.db.get({ pk: `DEVTASK#${task.taskId}`, sk: "META" }) as { agentRunEnd?: { state: string } }).agentRunEnd).toMatchObject({ state: "COMPLETE" });
   });
 
+  it("the system owner's one slot is held while the night runs and given back when it ends: the next night is not shut out, and no person's slot was ever used", async () => {
+    const t = await bench();
+    process.env.NIGHTLY_HEALTH_ENABLED = "1";
+    const system = systemOwnerIdOf(TEST_ORG, NAME);
+    const counters = () => t.db.find((item) => item.entityType === "DEVELOPER_LIMIT") as Array<{ pk: string; tasks?: Set<string>; count?: number }>;
+    const { task, own, slot } = await started(t);
+    expect(counters().filter((item) => item.pk === `DEVELOPER_LIMIT#${system}`)).toHaveLength(1);
+    // the night's task is counted on the system owner's counter, and on no person's
+    const night = nightlyTasks(t)[0]!.taskId;
+    expect(counters().filter((item) => item.tasks?.has(night) === true).map((item) => item.pk)).toEqual([`DEVELOPER_LIMIT#${system}`]);
+    await t.callback(task.workspaceId, own.id, "nightly-result", { result: resultFor(slot) });
+    await t.finish(task.workspaceId, own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "CHECKS" } });
+    // The night is over: its slot is free for the next automatic run of the project, which the one-at-a-time limit would otherwise refuse.
+    const { createAutomaticRunStarter } = await import("../../packages/broker/src/aws/broker.js");
+    const start = createAutomaticRunStarter(t.brokerInput as never)!;
+    const next = () => start({ orgId: TEST_ORG, project: NAME, job: "scheduled_check", requestId: randomUUID(), agent: { agentId: "rovara-code" }, input: { text: "Check." }, origin: "automatic" });
+    const second = await next();
+    expect("started" in second, JSON.stringify(second)).toBe(true);
+    // ...and that one holds the slot in its turn
+    await expect(next()).rejects.toMatchObject({ code: "WORKSPACE_LIMIT" });
+  });
+
   it("a project with no approved environment never starts a run", async () => {
     process.env.TEST_ENVIRONMENT_ENABLED = "1";
     process.env.NIGHTLY_HEALTH_ENABLED = "1";
