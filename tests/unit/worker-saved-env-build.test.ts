@@ -16,6 +16,7 @@ import { emptyDetection } from "../../packages/worker/src/env-detect/types.js";
 import type { ProveCommandResult } from "../../packages/worker/src/prove.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { fsckOf, gitStateOf, hashWithAttributesOf, installGitInto, proveAndBuildSavedImage, rebuildIndexOf, savedEnvDockerfile, savedEnvTag, snapshotGitOf, stageTree, trackedTreeOf, type BuildSandbox, type SavedEnvBuildInput, type SavedEnvBuildPorts } from "../../packages/worker/src/saved-env/build.js";
+import { expectedEnvironmentKey } from "../../packages/broker/src/test-env/saved-env-key.js";
 import { scanTreeForSecrets } from "../../packages/worker/src/saved-env/secret-scan.js";
 
 const cleanup: string[] = [];
@@ -739,5 +740,31 @@ describe("links, on the real tree (review A1, A3)", () => {
       const w = await world({ during: async (dir) => { await chmod(join(dir, "node_modules", "dep", "index.js"), mode); } });
       expect(await proveAndBuildSavedImage(w.input, w.ports), mode.toString(8)).toEqual({ ok: false, reason: "unsafe_tree", step: "scan" });
     }
+  });
+
+  it("the key is the one the BROKER works out from the code host's listing of the same commit, and the build refuses a key the broker does not share", async () => {
+    const a = await world();
+    // the code host's listing of the commit: `git ls-tree -r -t` in the shape the host answers (trees included)
+    const listing = execFileSync("git", ["ls-tree", "-r", "-t", "-z", "HEAD"], { cwd: join(a.fresh.root, "svc"), encoding: "utf8" }).split("\u0000").filter((record) => record !== "").map((record) => {
+      const match = /^(\d{6}) (blob|commit|tree) ([a-f0-9]{40})\t([\s\S]+)$/u.exec(record)!;
+      return { mode: match[1]!, type: match[2]!, sha: match[3]!, path: match[4]! };
+    });
+    const brokerKey = await expectedEnvironmentKey(
+      { listTree: async () => ({ truncated: false, entries: listing }), readText: async (_repository, _commit, file) => (existsSync(join(a.fresh.root, "svc", file)) ? readFile(join(a.fresh.root, "svc", file), "utf8") : undefined) },
+      { orgId: "org_aaaaaaaaaaaaaaaaaaaa", repositories: [{ name: "svc", url: "https://github.com/acme/svc.git" }], commits: new Map([["svc", a.commit]]), detectorGlobs: a.input.detectorGlobs, testEnvRevision: a.input.approved.revision, secretNames: a.input.secretNames, baseImageDigest: a.input.baseImageDigest },
+    );
+    expect(brokerKey).toMatch(/^[a-f0-9]{64}$/u);
+    const matching = await world();
+    const built = await proveAndBuildSavedImage({ ...matching.input, expectedKey: brokerKey! }, matching.ports);
+    expect(built.ok && built.manifest.environmentKey).toBe(brokerKey);
+    // a different key: nothing is built, pushed or recorded
+    const other = await world();
+    expect(await proveAndBuildSavedImage({ ...other.input, expectedKey: "0".repeat(64) }, other.ports)).toEqual({ ok: false, reason: "unsafe_tree", step: "key_mismatch" });
+    expect(other.sessions).toBe(0);
+  });
+
+  it("a key file that is a committed link is no key file, so no key (the broker refuses it the same way)", async () => {
+    const linked = await world({ trackedLinks: { "yarn.lock": "package.json" } });
+    expect(await proveAndBuildSavedImage(linked.input, linked.ports)).toMatchObject({ ok: false });
   });
 });

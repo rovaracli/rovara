@@ -9,7 +9,7 @@ export interface MemorySavedEnvStore extends SavedEnvStore {
   failNextCommit(): void;
 }
 
-export function memorySavedEnvStore(): MemorySavedEnvStore {
+export function memorySavedEnvStore(clock?: () => number): MemorySavedEnvStore {
   const rows = new Map<string, SavedEnvState>();
   const log: SavedEnvAuditEntry[] = [];
   let failNext = false;
@@ -19,6 +19,7 @@ export function memorySavedEnvStore(): MemorySavedEnvStore {
     failNextCommit() { failNext = true; },
     audit(entry) { log.push(structuredClone(entry)); return Promise.resolve(); },
     deletedNeedingPurge: (leaseMs) => Promise.resolve([...rows.values()].filter((row) => row.deleted === true && (row.registryPurgedAt === undefined || Date.parse(row.registryPurgedAt) < Date.parse(row.deletedAt ?? row.registryPurgedAt) + leaseMs)).map((row) => ({ orgId: row.orgId, projectId: row.projectId }))),
+    pollDue: (limit) => Promise.resolve([...rows.values()].filter((row) => row.deleted !== true && row.archived !== true && row.enabled && row.nextPollAt !== undefined && Date.parse(row.nextPollAt) <= (clock?.() ?? Date.now())).sort((a, b) => Date.parse(a.nextPollAt!) - Date.parse(b.nextPollAt!)).slice(0, limit).map((row) => ({ orgId: row.orgId, projectId: row.projectId }))),
     get: (orgId, projectId) => Promise.resolve(structuredClone(rows.get(key(orgId, projectId)))),
     commit(next, expectedVersion, entry) {
       if (failNext) { failNext = false; return Promise.resolve(false); }

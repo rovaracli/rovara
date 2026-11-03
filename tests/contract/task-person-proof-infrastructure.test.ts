@@ -339,21 +339,28 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-02, merge of feat/cr-settings (cee08fdcb) into cloud/next: the named and foreign digests were retaken after ONE intended addition, checked by synthesizing the parent remainders at 3488a7a48 and with the merge and
     // diffing them (nothing else differs): `SECOND_REVIEW_ENABLED` (Ref SecondReviewEnabled), a plain variable on the OutboxPublisher function. The legacy digests did not move (named environments only).
     // 2026-11-02, merge of cloud/next fde551404 into feat/saved-env-build: the four named and foreign digests were retaken for cloud/next's SecondReviewEnabled variable and the saved environment images together. Legacy did not move.
+    // 2026-11-02, feat/saved-env-wire: the four named and foreign digests were retaken for TWO intended additions (the legacy digests did not move; named environments only): the broker's AGENTX_NAMES gains `sk` (the saved
+    // environment images key's id: Ref SavedEnvImagesImagesKey...), and the Dispatcher function gains the plain variable SAVED_ENV_ENABLED (Ref SavedEnvEnabled), which it honours when it hands a rebuild job's lease to the worker.
     // 2026-11-03, staging 0.5.0 fix (ECR CustomRoleArn takes no IAM path): the four named and foreign digests were retaken after ONE intended change, the same one the named-templates snapshot shows (nothing else moved): the saved
     // environment images' creation role sits at the root path ("/") instead of /agentx/<env>/, and the deploy role and the boundary name that one role ARN (IamRoles, IamRequireBoundary, IamKeepBoundary, PassRoles) and no longer list it in the
     // fixed-name lookup statement. The legacy digests did not move (named environments only).
+    // 2026-11-03, feat/saved-env-wire (SV-2): the four named and foreign digests were retaken after ONE intended change to the saved environment images key policy (the legacy digests did not move; named environments only):
+    // the creation role's single allow statement (CreateGrant and DescribeKey under a GrantIsForAWSResource condition, which a DescribeKey request never matches) became two, CreationRoleGrantForEcr (CreateGrant, both
+    // conditions) and CreationRoleDescribeForEcr (DescribeKey, ViaService ecr only). DenyOtherGrants did not change. The named-templates snapshot shows the same single change.
+    // 2026-11-03, merge of feat/saved-env-wire onto the integration head (which has the root-path creation role and the system-owner/diagnosis-spend additions): the four named and foreign digests below were retaken once for the merged
+    // template, from the values the digest test itself reports (nothing hand-computed). The legacy digests did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "bdc241d2f45b40f1dc6ab753ef3ca3f2c43dc3e2e62d7a74189491c7481fd0fa",
-        withoutRoute: "dbf5a6b6c4181897c1a1ffe9fcf4fe4fab47c3a29635321ef0d42841ebb35015",
+        withRoute: "8f912a6726c0e542186b4b12578e29c11ad041f993d0995b78466848ee3a8e54",
+        withoutRoute: "b6f593046658f4b482560ad94e8dfda2c2022b4ce3ab296c33efe355d09b5c91",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "970c3fef007263360a97e6c582ff4ae427c949c3812c6a9fc1dad8c18108559b",
-        withoutRoute: "6938f03e9482794a5bd391f867663aa6940deeefa78e2377edc454fb00852063",
+        withRoute: "1b6a23ebba42693d3f811cc5fddb052ee76de414a90e0738a3e86823b310301f",
+        withoutRoute: "5c6821ebed4bfdcbbae8dce75a5b0e91f192a8f39c40753e680f8ab1abb860e0",
       },
       {
         label: "legacy",

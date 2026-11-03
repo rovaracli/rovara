@@ -53,6 +53,10 @@ const RECORD_GRACE_MS = 10 * 60_000;
 export const SAVED_ENV_JOB_LEASE_MS = 3 * 3_600_000;
 /** After a failed build the project waits this long before the next automatic rebuild (a reset ignores it). */
 export const SAVED_ENV_FAILURE_BACKOFF_MS = 30 * 60_000;
+/** How often the periodic poll looks at a project. */
+export const SAVED_ENV_POLL_MS = 30 * 60_000;
+/** A project whose polls keep failing is looked at less and less often, never less often than this. */
+export const SAVED_ENV_POLL_BACKOFF_MAX_MS = 6 * 3_600_000;
 
 export const REBUILD_REASONS = ["no_image", "key_changed", "max_age", "stale", "reset"] as const;
 export type RebuildReason = (typeof REBUILD_REASONS)[number];
@@ -84,8 +88,10 @@ export interface RebuildJob {
   expectedKey: string;
   createdAt: string;
   leaseUntil: string;
-  /** Set when the dispatcher took the lease token (once). */
+  /** Set when the dispatcher took the lease token. */
   dispatchedAt?: string | undefined;
+  /** The operation the token was handed to. The same operation can have it again (a delivery that is retried), no other. */
+  dispatchedOperationId?: string | undefined;
 }
 
 export type SavedEnvHealth = "never_proved" | "healthy" | "needs_repair";
@@ -115,18 +121,24 @@ export interface SavedEnvState {
   lastRebuildReason?: RebuildReason | undefined;
   lastFailureAt?: string | undefined;
   lastFailure?: string | undefined;
+  /** When the periodic poll next looks at this project (`runPoll`). Set whenever the row is written, so every row with a live project is polled at least this often. */
+  nextPollAt?: string | undefined;
+  /** How many polls in a row failed for this project (the next time backs off with it; a poll that works clears it). */
+  pollFailures?: number | undefined;
   health: SavedEnvHealth;
 }
 
 /** What the audit ledger gets: ids, digests and fixed words only. */
 export interface SavedEnvAuditEntry {
-  action: "activity" | "lease_refused" | "scan_started" | "rebuild_queued" | "build_recorded" | "build_refused" | "build_failed" | "marked_stale" | "reset_requested" | "images_deleted" | "project_archived" | "project_deleted" | "project_registered" | "ceiling_walk";
+  action: "activity" | "lease_refused" | "scan_started" | "rebuild_queued" | "build_recorded" | "build_refused" | "build_failed" | "marked_stale" | "reset_requested" | "images_deleted" | "project_archived" | "project_deleted" | "project_registered" | "ceiling_walk" | "setting_changed";
   orgId: string;
   projectId: string;
   at: string;
   reason?: string;
   digest?: string;
   count?: number;
+  /** The project's `savedEnv.enabled` after a `setting_changed`. */
+  enabled?: boolean;
   /** Who asked (a person's id for a Reset). */
   actor?: string;
 }
@@ -139,6 +151,8 @@ export interface SavedEnvStore {
   audit(entry: SavedEnvAuditEntry): Promise<void>;
   /** The deleted projects whose registry deletion is not final: no `registryPurgedAt`, or one earlier than `deletedAt` plus `leaseMs` (for `sweepDeleted`). */
   deletedNeedingPurge(leaseMs: number): Promise<Array<{ orgId: string; projectId: string }>>;
+  /** At most `limit` live, enabled projects whose `nextPollAt` has passed (for `runPoll`), oldest first. */
+  pollDue(limit: number): Promise<Array<{ orgId: string; projectId: string }>>;
 }
 
 export interface RegistryImage { digest: string; tags: string[]; pushedAt: string }
@@ -159,8 +173,8 @@ export interface SavedEnvDeps {
   registry: RegistryPort;
   /** The project's newest approved test environment, or undefined (bind to `readApprovedTestEnvironment`). */
   approved(orgId: string, projectId: string): Promise<ApprovedPin | undefined>;
-  /** The environment key of the project's default branches NOW (SH3 + SH21, worked out where the code is read), or undefined when it cannot be worked out (then no decision is made). */
-  currentKey(orgId: string, projectId: string): Promise<string | undefined>;
+  /** The environment key of the project's default branches at `heads` (SH3 + SH21; the heads are read once, by `checkRebuild`, so the key and the job are for the SAME commits), or undefined when it cannot be worked out (then no decision is made). */
+  currentKey(orgId: string, projectId: string, heads: ReadonlyMap<string, string> | undefined): Promise<string | undefined>;
   /** The head commit of each repository's default branch, by repository name, or undefined when the code host cannot answer. Read when a job is queued, not when it is recorded. */
   defaultHeads(orgId: string, projectId: string): Promise<ReadonlyMap<string, string> | undefined>;
   /** `savedEnv.keep` of the company (1 to 10). */
@@ -169,10 +183,17 @@ export interface SavedEnvDeps {
   lightAfterIdleDays?(orgId: string, projectId: string): Promise<number>;
   now(): number;
   random?(): string;
+  /**
+   * Called after a rebuild job was queued (by any trigger: a push, a task, the nightly, the poll, a Reset, a stale mark), to start it. Best effort: a throw is swallowed (the job's lease runs out and the next
+   * check takes the project over). Absent: the job waits for whoever starts it.
+   */
+  onQueued?(ids: { orgId: string; projectId: string }, job: Pick<RebuildJob, "jobId" | "reason" | "approved" | "commits">): Promise<void>;
 }
 
+/** What the writes of the registry need: the store, the clock and whether the install's switch is on. The dispatcher's lease (which has no sessions or registry) is made from this alone. */
+export type SavedEnvStoreDeps = Pick<SavedEnvDeps, "store" | "now"> & { session: { config: { enabled: boolean } } };
 type Disabled = { ok: false; reason: "disabled" };
-const disabled = (deps: SavedEnvDeps): Disabled | undefined => (deps.session.config.enabled ? undefined : { ok: false, reason: "disabled" });
+const disabled = (deps: SavedEnvStoreDeps): Disabled | undefined => (deps.session.config.enabled ? undefined : { ok: false, reason: "disabled" });
 const iso = (ms: number): string => new Date(ms).toISOString();
 const keepOf = (value: number): number => Math.min(SAVED_ENV_KEEP_MAX, Math.max(SAVED_ENV_KEEP_MIN, Number.isInteger(value) ? value : SAVED_ENV_KEEP_DEFAULT));
 const token = (deps: SavedEnvDeps): string => (deps.random ?? (() => randomBytes(24).toString("hex")))();
@@ -184,10 +205,10 @@ function sameToken(left: string, right: string): boolean {
 }
 
 const blank = (orgId: string, projectId: string): SavedEnvState => ({ orgId, projectId, version: 0, enabled: true, images: [], health: "never_proved" });
-const audit = (deps: SavedEnvDeps, state: Pick<SavedEnvState, "orgId" | "projectId">, action: SavedEnvAuditEntry["action"], extra: Partial<SavedEnvAuditEntry> = {}): SavedEnvAuditEntry => ({ action, orgId: state.orgId, projectId: state.projectId, at: iso(deps.now()), ...extra });
+const audit = (deps: SavedEnvStoreDeps, state: Pick<SavedEnvState, "orgId" | "projectId">, action: SavedEnvAuditEntry["action"], extra: Partial<SavedEnvAuditEntry> = {}): SavedEnvAuditEntry => ({ action, orgId: state.orgId, projectId: state.projectId, at: iso(deps.now()), ...extra });
 
 /** Commits `next` over `prior` (null: first write). Returns the committed state, or undefined when the row changed meanwhile. */
-async function commit(deps: SavedEnvDeps, prior: SavedEnvState | undefined, next: SavedEnvState, entry: SavedEnvAuditEntry): Promise<SavedEnvState | undefined> {
+async function commit(deps: SavedEnvStoreDeps, prior: SavedEnvState | undefined, next: SavedEnvState, entry: SavedEnvAuditEntry): Promise<SavedEnvState | undefined> {
   const written = { ...next, version: (prior?.version ?? 0) + 1 };
   return (await deps.store.commit(written, prior === undefined ? null : prior.version, entry)) ? written : undefined;
 }
@@ -239,7 +260,7 @@ export async function checkRebuild(deps: SavedEnvDeps, ids: { orgId: string; pro
   const prior = await deps.store.get(ids.orgId, ids.projectId);
   const base = prior ?? blank(ids.orgId, ids.projectId);
   const now = deps.now();
-  const touched: SavedEnvState = { ...base, ...(trigger === "push" ? { lastPushAt: iso(now) } : {}), ...(trigger === "task" ? { lastTaskAt: iso(now) } : {}) };
+  const touched: SavedEnvState = { ...base, ...(trigger === "push" ? { lastPushAt: iso(now) } : {}), ...(trigger === "task" ? { lastTaskAt: iso(now) } : {}), nextPollAt: iso(now + SAVED_ENV_POLL_MS), pollFailures: undefined };
   const stay = async (why: Extract<CheckResult, { queued: false; ok: true }>["why"]): Promise<CheckResult> => {
     // Activity is recorded even when nothing is queued (the idle test reads it); a lost race is not an error here.
     if (trigger === "push" || trigger === "task") await commit(deps, prior, touched, audit(deps, base, "activity", { reason: trigger })).catch(() => undefined);
@@ -253,21 +274,76 @@ export async function checkRebuild(deps: SavedEnvDeps, ids: { orgId: string; pro
   const idleDays = (await deps.lightAfterIdleDays?.(ids.orgId, ids.projectId)) ?? SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT;
   if (base.resetRequested !== true && base.images.length === 0 && lightSetup(base, now, idleDays) && trigger !== "push" && trigger !== "task") return stay("idle");
   if (base.resetRequested !== true && base.lastFailureAt !== undefined && now - Date.parse(base.lastFailureAt) < SAVED_ENV_FAILURE_BACKOFF_MS) return stay("backoff");
-  const currentKey = await deps.currentKey(ids.orgId, ids.projectId).catch(() => undefined);
+  // The heads are read first and the key is worked out AT them, so the key and the job are for the same commits whatever moves meanwhile.
+  const heads = await deps.defaultHeads(ids.orgId, ids.projectId).catch(() => undefined);
+  const currentKey = await deps.currentKey(ids.orgId, ids.projectId, heads).catch(() => undefined);
   const reason = rebuildReason({ now, image: base.images[0], approved, currentKey, resetRequested: base.resetRequested === true });
   if (reason === undefined) return stay("no_change");
   // Without the key of the code the build is for, a result could not be held to it: nothing is queued (a reset too), and the next check tries again.
   if (currentKey === undefined) return stay("no_key");
   if (lightSetup(base, now, idleDays) && reason !== "reset" && trigger !== "push") return stay("idle");
   // The commits the build is FOR. Without them there is nothing to hold the result against.
-  const heads = await deps.defaultHeads(ids.orgId, ids.projectId).catch(() => undefined);
   if (heads === undefined || heads.size === 0) return stay("no_heads");
   const job: RebuildJob = {
     jobId: token(deps).slice(0, 24), leaseToken: token(deps), reason, approved, commits: Object.fromEntries(heads), expectedKey: currentKey,
     createdAt: iso(now), leaseUntil: iso(now + SAVED_ENV_JOB_LEASE_MS),
   };
   const written = await commit(deps, prior, { ...touched, job, resetRequested: false, lastRebuildReason: reason }, audit(deps, base, "rebuild_queued", { reason }));
-  return written === undefined ? { ok: false, reason: "stale_write" } : { ok: true, queued: true, job: { jobId: job.jobId, reason, approved, commits: job.commits } };
+  if (written === undefined) return { ok: false, reason: "stale_write" };
+  const queued = { jobId: job.jobId, reason, approved, commits: job.commits };
+  // Whatever trigger queued it, the job is started the same way. A start that throws leaves the job to run out its lease; nothing here fails because of it.
+  await deps.onQueued?.(ids, queued).catch(() => undefined);
+  return { ok: true, queued: true, job: queued };
+}
+
+/**
+ * A queued job that could not be started for a reason that will not mend itself (no approver, no build inputs, a moved approval): it is ended now with a fixed word, so the project does not wait out a whole lease
+ * for a job nobody is building, and the failure backoff applies. Only the job that is the project's current one, and only while nobody was given its lease.
+ */
+export async function abandonQueuedJob(deps: SavedEnvStoreDeps, ids: { orgId: string; projectId: string }, jobId: string, reason: string): Promise<{ ok: boolean }> {
+  if (disabled(deps) !== undefined) return { ok: false };
+  const state = await deps.store.get(ids.orgId, ids.projectId);
+  const job = state?.job;
+  if (state === undefined || job === undefined || job.jobId !== jobId || job.dispatchedAt !== undefined) return { ok: false };
+  const word = reason.replace(/[^a-z_]/gu, "").slice(0, 40);
+  const written = await commit(deps, state, { ...state, job: undefined, health: "needs_repair", lastFailureAt: iso(deps.now()), lastFailure: word }, audit(deps, state, "build_failed", { reason: word }));
+  return { ok: written !== undefined };
+}
+
+/**
+ * The periodic poll: every project whose time has come is checked as `poll` does (which queues a rebuild when one is due, and so starts it through `onQueued`). A project's next time is set by every write of its row;
+ * one that stays quiet has its time moved on here. At most `limit` projects a pass; a project that fails has its time moved on with a growing backoff (it is not looked at again at once, so a project that keeps failing cannot take the whole pass).
+ */
+export async function runPoll(deps: SavedEnvDeps, limit: number): Promise<{ ok: true; checked: number; failed: number } | { ok: false; reason: "disabled" | "unavailable" }> {
+  const off = disabled(deps);
+  if (off !== undefined) return off;
+  let due: Array<{ orgId: string; projectId: string }>;
+  try { due = await deps.store.pollDue(limit); } catch { return { ok: false, reason: "unavailable" }; }
+  let checked = 0;
+  let failed = 0;
+  for (const ids of due) {
+    try {
+      const result = await checkRebuild(deps, ids, "poll");
+      if (!result.ok) { failed += 1; await moveNextPoll(deps, ids, true); continue; }
+      // A quiet project (nothing queued, so nothing written) has its time moved on; a queued one already got a new time with the job.
+      if (!result.queued) await moveNextPoll(deps, ids, false);
+      checked += 1;
+    } catch {
+      failed += 1;
+      await moveNextPoll(deps, ids, true).catch(() => undefined);
+    }
+  }
+  return { ok: true, checked, failed };
+}
+
+async function moveNextPoll(deps: SavedEnvStoreDeps, ids: { orgId: string; projectId: string }, failed: boolean): Promise<void> {
+  for (let attempt = 0; attempt < COMMIT_RETRIES; attempt += 1) {
+    const state = await deps.store.get(ids.orgId, ids.projectId);
+    if (state === undefined) return;
+    const failures = failed ? (state.pollFailures ?? 0) + 1 : undefined;
+    const gap = failures === undefined ? SAVED_ENV_POLL_MS : Math.min(SAVED_ENV_POLL_BACKOFF_MAX_MS, SAVED_ENV_POLL_MS * 2 ** Math.min(failures, 10));
+    if ((await commit(deps, state, { ...state, nextPollAt: iso(deps.now() + gap), pollFailures: failures }, audit(deps, state, "activity", { reason: "poll" })).catch(() => undefined)) !== undefined) return;
+  }
 }
 
 /** A second Reset within this long of the last one writes nothing: a rebuild builds and pushes a whole image. */
@@ -292,6 +368,20 @@ export async function requestReset(deps: SavedEnvDeps, ids: { orgId: string; pro
   const written = await commit(deps, prior, { ...(prior ?? blank(ids.orgId, ids.projectId)), resetRequested: true, lastResetAt: iso(now), ...(requestId === undefined ? {} : { lastResetRequestId: requestId }) }, audit(deps, ids, "reset_requested", { actor: actor.slice(0, 200) }));
   if (written === undefined) return { ok: false, reason: "stale_write" };
   return checkRebuild(deps, ids, "poll");
+}
+
+/**
+ * A maintainer turned the project's saved images on or off (the project's `savedEnv.enabled`; the install's `sv` switch is above it and off by default). The caller has checked the maintainer's right and names who
+ * asked. Turning it off ends any lease (`authorizeLease` refuses an inactive project) and queues nothing; turning it on queues nothing by itself (the next push, task or poll does). A change to the value it
+ * already has writes nothing. Nothing is written when the install's switch is off.
+ */
+export async function setProjectEnabled(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, enabled: boolean, actor: string): Promise<{ ok: true; changed: boolean } | { ok: false; reason: "disabled" | "stale_write" }> {
+  const off = disabled(deps);
+  if (off !== undefined) return off;
+  const prior = await deps.store.get(ids.orgId, ids.projectId);
+  if ((prior?.enabled ?? true) === enabled) return { ok: true, changed: false };
+  const written = await commit(deps, prior, { ...(prior ?? blank(ids.orgId, ids.projectId)), enabled }, audit(deps, ids, "setting_changed", { enabled, actor }));
+  return written === undefined ? { ok: false, reason: "stale_write" } : { ok: true, changed: true };
 }
 
 // ---- the job's lease
@@ -319,18 +409,45 @@ export async function authorizeLease(deps: SavedEnvDeps, ids: { orgId: string; p
 }
 
 /**
- * The dispatcher takes the queued job's lease token, ONCE, to hand it to the worker that will build. Nobody else sees a token: not `checkRebuild`'s result, not a task, not the setup agent. A second call for the
- * same job returns nothing (the token was already given out).
+ * The dispatcher takes the queued job's lease token to hand it to the worker that will build. Nobody else sees a token: not `checkRebuild`'s result, not a task, not the setup agent. The token goes to ONE
+ * operation (`operationId`, kept with `dispatchedAt`): the same operation asking again (a delivery that is retried after the token was taken) is given the same token, any other operation or a caller
+ * that names none gets nothing.
  */
-export async function leaseForDispatch(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }): Promise<{ ok: true; job: Pick<RebuildJob, "jobId" | "leaseToken" | "reason" | "approved" | "commits" | "leaseUntil"> } | { ok: false; reason: "disabled" | "nothing_to_dispatch" | "stale_write" }> {
+export async function leaseForDispatch(deps: SavedEnvStoreDeps, ids: { orgId: string; projectId: string }, operationId?: string): Promise<{ ok: true; job: Pick<RebuildJob, "jobId" | "leaseToken" | "reason" | "approved" | "commits" | "leaseUntil"> } | { ok: false; reason: "disabled" | "nothing_to_dispatch" | "stale_write" }> {
   const off = disabled(deps);
   if (off !== undefined) return off;
   const state = await deps.store.get(ids.orgId, ids.projectId);
   const job = state?.job;
-  if (state === undefined || job === undefined || job.dispatchedAt !== undefined || Date.parse(job.leaseUntil) <= deps.now() || state.deleted === true || state.archived === true || !state.enabled) return { ok: false, reason: "nothing_to_dispatch" };
-  const written = await commit(deps, state, { ...state, job: { ...job, dispatchedAt: iso(deps.now()) } }, audit(deps, state, "rebuild_queued", { reason: "dispatched" }));
+  if (state === undefined || job === undefined || Date.parse(job.leaseUntil) <= deps.now() || state.deleted === true || state.archived === true || !state.enabled) return { ok: false, reason: "nothing_to_dispatch" };
+  const given = { ok: true as const, job: { jobId: job.jobId, leaseToken: job.leaseToken, reason: job.reason, approved: job.approved, commits: job.commits, leaseUntil: job.leaseUntil } };
+  if (job.dispatchedAt !== undefined) return operationId !== undefined && job.dispatchedOperationId === operationId ? given : { ok: false, reason: "nothing_to_dispatch" };
+  const written = await commit(deps, state, { ...state, job: { ...job, dispatchedAt: iso(deps.now()), ...(operationId === undefined ? {} : { dispatchedOperationId: operationId }) } }, audit(deps, state, "rebuild_queued", { reason: "dispatched" }));
   if (written === undefined) return { ok: false, reason: "stale_write" };
-  return { ok: true, job: { jobId: job.jobId, leaseToken: job.leaseToken, reason: job.reason, approved: job.approved, commits: job.commits, leaseUntil: job.leaseUntil } };
+  return given;
+}
+
+/**
+ * The operation made for a job ended without the job being recorded (its preparation failed, its delivery could not be done, the worker was lost, the lease ran out): the job is ended now, with a fixed word and the
+ * failure backoff, so the project does not wait out the lease for a build nobody is running. A job that was RECORDED, or replaced by another, is not the project's current one and nothing changes.
+ * One case is not a failure: the repository moved between the queue and the clone (the worker refuses a head other than the pinned one, and an arbitrary reachable commit is never accepted instead). The default branch
+ * heads are read again; if they are not the job's, the job is ended without a failure and a rebuild for the heads now is queued.
+ */
+export async function endBuildJob(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, jobId: string, cause: "operation_failed" | "worker_lost" | "lease_expired"): Promise<{ ended: boolean; requeued: boolean }> {
+  if (disabled(deps) !== undefined) return { ended: false, requeued: false };
+  for (let attempt = 0; attempt < COMMIT_RETRIES; attempt += 1) {
+    const state = await deps.store.get(ids.orgId, ids.projectId);
+    const job = state?.job;
+    if (state === undefined || job === undefined || job.jobId !== jobId) return { ended: false, requeued: false };
+    const heads = await deps.defaultHeads(ids.orgId, ids.projectId).catch(() => undefined);
+    const moved = heads !== undefined && heads.size > 0 && !(heads.size === Object.keys(job.commits).length && [...heads].every(([name, sha]) => job.commits[name] === sha));
+    const next: SavedEnvState = moved ? { ...state, job: undefined } : { ...state, job: undefined, health: "needs_repair", lastFailureAt: iso(deps.now()), lastFailure: cause };
+    const written = await commit(deps, state, next, audit(deps, state, "build_failed", { reason: moved ? "head_moved" : cause }));
+    if (written === undefined) continue;
+    if (!moved) return { ended: true, requeued: false };
+    const again = await checkRebuild(deps, ids, "poll").catch(() => undefined);
+    return { ended: true, requeued: again?.ok === true && again.queued };
+  }
+  return { ended: false, requeued: false };
 }
 
 /**

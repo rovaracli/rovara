@@ -26,6 +26,7 @@ import {
   TEST_ENV_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
   PREPARE_SAVED_ENV_FEATURE,
+  PREPARE_SAVED_ENV_BUILD_FEATURE,
   PREPARE_PINS_FEATURE,
   credentialKindsOfWorkerFeatures,
   OWNER_REDIRECT_FEATURE,
@@ -99,6 +100,11 @@ export interface Ec2DeliveryDependencies {
    * run cannot have used any). Required like its siblings: a missing recorder is a wiring error (`CONFIG_INVALID`), not a draft that goes out with the record still saying recipes were offered.
    */
   setupRecipesNotNegotiated: (record: Ec2OutboxRecord) => Promise<void>;
+  /**
+   * Saved project images: the lease token of the rebuild job a preparation was made for (`leaseForDispatch`), taken ONCE here, when the invocation is delivered, and put into the payload the worker is sent. The stored
+   * invocation never holds it. Undefined: the lease is gone (expired, already handed out, the project deleted or turned off) and the job is not delivered. A preparation that carries a build and has no such function is a wiring error.
+   */
+  savedEnvBuildLease?: (record: Ec2OutboxRecord, jobId: string) => Promise<string | undefined>;
   /**
    * The schemaVersion of the admission a CHECKS invocation's reference names, read from the stored object and held to the reference's content address; undefined when it
    * cannot be read. With it, the dispatcher does not trust the reference's `kind` alone: a reference whose kind disagrees with its admission is refused before delivery.
@@ -230,6 +236,14 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
       await dependencies.planQualityNotNegotiated(record);
     }
     if (await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
+    // Saved project images: the lease token goes into what the worker is sent, not into what is stored.
+    let outgoing: WorkerInvocation = sent;
+    if (sent.kind === "prepare" && sent.payload.savedEnvBuild !== undefined) {
+      if (dependencies.savedEnvBuildLease === undefined) throw agentXError("CONFIG_INVALID", "a saved image rebuild is being delivered but no savedEnvBuildLease is configured");
+      const leaseToken = await dependencies.savedEnvBuildLease(record, sent.payload.savedEnvBuild.jobId);
+      if (leaseToken === undefined) throw agentXError("CALLBACK_FORBIDDEN", "the saved image rebuild's lease is no longer available");
+      outgoing = { ...sent, payload: { ...sent.payload, savedEnvBuild: { ...sent.payload.savedEnvBuild, leaseToken } } };
+    }
     const payload = workerInvokeTokenPayload({
       workspaceId: record.workspaceId,
       generation: session.generation,
@@ -249,7 +263,7 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
     if (invocation.kind === "project-setup-smoke" && await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
     const response = await dependencies.post(`http://${session.privateIp}:${WORKER_PORT}/invocations`, {
       authorization: `${WORKER_INVOKE_AUTHORIZATION_SCHEME} ${workerInvokeToken(payload, signature)}`,
-      body: JSON.stringify(sent),
+      body: JSON.stringify(outgoing),
     });
     if (response.status >= 300) {
       throw agentXError("RUNTIME_UNAVAILABLE", `EC2 worker returned HTTP ${response.status}: ${response.body.slice(0, 512)}`);
@@ -387,6 +401,7 @@ async function forWorkerFeatures(
   const carriesRegistries = invocation.kind === "prepare" && invocation.payload.registries !== undefined;
   const carriesSavedEnv = invocation.kind === "prepare" && invocation.payload.savedEnv !== undefined;
   const carriesPins = invocation.kind === "prepare" && invocation.payload.pins !== undefined;
+  const carriesSavedEnvBuild = invocation.kind === "prepare" && invocation.payload.savedEnvBuild !== undefined;
   // P8: a grant that names a credential kind beyond the legacy two (an ssh key). A worker that does not list repository.credentialKinds.v1 would be sent a shape it cannot take, so the run is refused here.
   const credentialKindsNeeded = invocation.kind === "prepare" || invocation.kind === "publish" || invocation.kind === "maintain" ? nonLegacyCredentialKindsOfGrant(invocation.payload.repositoryGrant) : [];
   const carriesCredentialKinds = credentialKindsNeeded.length > 0;
@@ -396,7 +411,7 @@ async function forWorkerFeatures(
   const carriesOwnerRedirect = invocation.kind === "task" && invocation.payload.ownerRedirect !== undefined;
   // Learning v2: advice from approved lessons. An older worker is sent the stage without it (never refused), so it runs as it would without memory.
   const carriesLearnedContext = invocation.kind === "task" && (invocation.payload.learnedContext !== undefined || invocation.payload.learnedRefs !== undefined);
-  if (requestedThinkingLevel === undefined && !carriesSavedEnv && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesSavedEnv && !carriesSavedEnvBuild && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -475,6 +490,8 @@ async function forWorkerFeatures(
   }
   // P1: a setup run's pins are never dropped for an older worker, which would prepare whatever head it resolves: the run is refused.
   if (carriesPins && !features.includes(PREPARE_PINS_FEATURE)) throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  // Saved project images: a rebuild is never dropped for an older worker (a preparation alone would build nothing and the job would sit until its lease ran out): the job is refused.
+  if (carriesSavedEnvBuild && !features.includes(PREPARE_SAVED_ENV_BUILD_FEATURE)) throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   // N9 (INTG2): a project's registries are never dropped for an older worker, which would run setup without them and fail on a 401 (or reach a public mirror): the run is refused.
   if (carriesRegistries && !features.includes(PREPARE_REGISTRIES_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", REGISTRY_FEATURE_MISSING);

@@ -1115,7 +1115,7 @@ export class ControlPlaneStack extends Stack {
     // Team record (wire-team-record): the whole record, behind the switch `agentxTeamRecord=enabled` (off by default: this block does not run and nothing changes).
     if (props?.teamRecord !== undefined && naming.env !== undefined) attachTeamRecord(this, { env: naming.env, context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole });
     // Saved environment images (SH22): the registry side (KMS, creation template, push/pull/manage roles). Nothing pushes until the broker's `sv` setting is on.
-    if (naming.env !== undefined) attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) });
+    if (naming.env !== undefined) BrokerNames.of(broker).add("savedEnvKey", attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) }).kmsKeyId);
     // N9 (INTG2): a project's private package registries, behind `rovaraCodeArtifactDomains` (off by default: this does not run and nothing changes).
     if (props?.registryDomains !== undefined) attachProjectRegistries(this, { broker, domains: props.registryDomains });
     // Plan 4 Task 26: schedule triggers. Each trigger's schedule lives in a group of its own and invokes the broker through a role of its own. EventBridge Scheduler sets
@@ -1315,6 +1315,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("nightlyHealth", signInParameters.nightlyHealthEnabled.valueAsString);
       // The dispatcher honours the same switch when it builds a queued stage's lessons at delivery (WL-6): off, no queued, parked or retried stage gets lessons. A plain variable (its environment is small).
       dispatcher.addEnvironment(BROKER_SETTINGS.learnedLessons.variable, signInParameters.learnedLessonsEnabled.valueAsString);
+      // Saved project images: the dispatcher hands a rebuild job's lease to the worker when it delivers (aws/dispatcher.ts `createSavedEnvBuildLease`), and only while the same switch is on. A plain variable (its environment is small).
+      dispatcher.addEnvironment(BROKER_SETTINGS.savedEnv.variable, signInParameters.savedEnvEnabled.valueAsString);
       // The second review's track record is indexed from the table's stream by the outbox publisher, behind the same switch (a plain variable on that function; its environment is small).
       outboxPublisher.addEnvironment(BROKER_SETTINGS.secondReview.variable, signInParameters.secondReviewEnabled.valueAsString);
       // Four test results (setup and test health): its own switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".

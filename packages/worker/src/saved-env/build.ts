@@ -60,7 +60,7 @@ import { proveEnvironment } from "../prove.js";
 import { defaultRealPath, sharesWorkspace, type FreshSandbox } from "../setup-agent-prove.js";
 import { runIsolatedGit } from "../isolated-repository.js";
 import type { DockerCli } from "../swebench/containers.js";
-import { environmentKeyFromRepositories, hashWorkspaceFile, type KeyRepository } from "./key.js";
+import { blobKeyHash, environmentKeyFromRepositories, hashWorkspaceFile, isRegularBlobMode, type KeyRepository } from "./key.js";
 import { DEFAULT_LINK_POLICY, rewriteWorkspaceLinks, type LinkPolicy } from "./links.js";
 import { compareTrackedFiles, countNonStandardFlags, minimalGitConfig, originUrlIsSafe, originUrlOf, parseLsTree, readGitConfig, unsafeGitEntries, type TreeEntry } from "./tree-check.js";
 import { scanTreeForSecrets, type SecretScanResult } from "./secret-scan.js";
@@ -173,6 +173,8 @@ export interface SavedEnvBuildInput {
   detectorGlobs: readonly string[];
   /** The NAMES of the project's secrets; never values. */
   secretNames: readonly string[];
+  /** The key the broker worked out for these commits (from the code host's tree listing). A key the worker works out differently stops the build. */
+  expectedKey?: string;
   /** The base image (the worker image or the dev container image) by digest. It is in the key and the manifest; the image itself holds no base. */
   baseImageDigest: string;
   /** Workspaces the fresh sandbox must not share: every task's workspace and the setup agent's. */
@@ -306,12 +308,14 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
       // 7. Every tracked file equals the committed one (after Git's own clean conversion where the repository asks for one).
       const compared = await compareTrackedFiles(entries, target, { convertedHashes: (paths) => ports.hashWithAttributes(target, paths) });
       if (!compared.ok) return fail("not_default_branch", `tracked:${compared.reason}`);
+      const byPath = new Map(entries.map((entry) => [entry.path, entry]));
       keyRepositories.push({
         repositoryId: repository.repositoryId,
         paths: entries.map((entry) => entry.path),
         // Only a regular file inside the staged copy (the same test the key's hash uses), and a small one: a dev container file.
         readText: async (file) => { try { return (await hashWorkspaceFile(target, file)) === undefined ? undefined : (await readFile(path.join(target, file), "utf8")).slice(0, 1_048_576); } catch { return undefined; } },
-        hashFile: (file) => hashWorkspaceFile(target, file),
+        // A key file is named by its git blob id in the committed tree (the broker, which cannot read a clone, names it the same way from the code host's listing): a link or a submodule is no key file.
+        hashFile: async (file) => { const entry = byPath.get(file); return entry !== undefined && entry.type === "blob" && isRegularBlobMode(entry.mode) ? blobKeyHash(entry.sha) : undefined; },
       });
     }
     // Absolute links into the workspace become relative links (tracked links are committed content and stay as they are).
@@ -320,6 +324,8 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
     // 8. The environment key, from the staged copy.
     const key = await environmentKeyFromRepositories({ repositories: keyRepositories, detectorGlobs: input.detectorGlobs, testEnvRevision: input.approved.revision, secretNames: input.secretNames, baseImageDigest: input.baseImageDigest });
     if (!key.ok) return fail("unsafe_tree", "key");
+    // The broker worked the key out from the code host's listing of the same commits: a key that differs means the two did not see the same repository, and nothing is built.
+    if (input.expectedKey !== undefined && key.key !== input.expectedKey) return fail("unsafe_tree", "key_mismatch");
 
     // 9. Scan the staged seed.
     const scanned = await ports.scan(seedRoot, { forbiddenValues: input.forbiddenValues, budgetMs: input.scanDeadlineMs ?? 20 * 60_000, links: linkPolicy });

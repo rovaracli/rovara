@@ -9,6 +9,7 @@ import type { CounterDeps } from "../../lessons/counters.js";
 import type { LoadedKnowledgeRouteDependencies } from "../../developer/loaded-knowledge.js";
 import type { MetaProjectCreated } from "../../org/create-from-meta.js";
 import type { MetaConfigDependencies } from "../../meta-repo/config-import.js";
+import type { SavedEnvDeps } from "../../test-env/saved-env.js";
 import type { ServiceStatusDependencies } from "../../org/service-status.js";
 import type { AllowedDomainBrowserDependencies } from "../../org/project-allowed-domains-http.js";
 import type { WorkingBranchReviewDependencies } from "../../org/project-working-branch.js";
@@ -119,6 +120,8 @@ export interface DeveloperApiConfiguration {
   slackRequestQueue?: SlackRequestQueue;
 }
 export interface DeveloperRouteDependencies {
+  /** Saved project images: the registry (store, sessions, ECR), only where the install's `sv` switch is on and it was installed. Without it the project's Environment panel routes do not exist. */
+  savedEnv?: SavedEnvDeps;
   /**
    * Meta repo lane B: a file of one of an org's repositories at a commit, as GitHub holds it (undefined when it is not there; throws when GitHub cannot answer). The setup agent's
    * citations are re-read through it. Without it every citation reads `unchecked` and nothing is pre-ticked.

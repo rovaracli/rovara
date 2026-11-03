@@ -203,6 +203,8 @@ describe("the event catalog", () => {
       "setup_recipe.proposed", "setup_recipe.created", "setup_recipe.approved", "setup_recipe.revoked", "setup_recipe.scope_changed",
       // TE-4: going back to the last proved setup
       "project.setup_restored", "automatic_run.started", "project.automatic_runs_cap_changed", "automatic_runs.paused", "automatic_run.ended",
+      // saved project images
+      "saved_env.changed", "saved_env.setting_changed",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -271,6 +273,8 @@ describe("the event catalog", () => {
     "automatic_run.ended": { target: { kind: "project", name: "web" }, keys: ["job", "cause"], sample: { job: "nightly", cause: "too_old" } },
     "automatic_runs.paused": { target: { kind: "project", name: "web" }, keys: ["month", "cap"], sample: { month: "2026-11", cap: 100 } },
     "project.setup_restored": { target: { kind: "project", name: "web" }, keys: ["revision", "fromRevision", "provenRevision"], sample: { revision: 3, fromRevision: 2, provenRevision: 1 } },
+    "saved_env.changed": { target: { kind: "project", name: "web" }, keys: ["change", "cause", "digest", "count"], sample: { change: "images_deleted", cause: "walk", count: 2 } },
+    "saved_env.setting_changed": { target: { kind: "project", name: "web" }, keys: ["enabled"], sample: { enabled: true } },
     "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source", "previousSource"], sample: { setting: "on", previous: "off", source: "company", previousSource: "install_default" } },
     "review_default_notice.dismissed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: [], sample: {} },
     "company_domain.added": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: [], sample: {} },

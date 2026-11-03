@@ -290,6 +290,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { SESv2Client } from "@aws-sdk/client-sesv2";
 import { StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
+import { savedEnvBaseImageDigestReader } from "./broker/saved-env-real.js";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { Route53ResolverClient } from "@aws-sdk/client-route53resolver";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -565,6 +566,8 @@ export const handler = createAwsBrokerHandler({
   callbackSigningKey: requiredEnvironment("CALLBACK_SIGNING_KEY"),
   repositoryGrants,
   githubPullRequests: githubCredentials,
+  // Saved project images: the base image the project's commands run in is the worker image, named by its digest from the worker settings (aws/broker/saved-env-real.ts). Without a settings prefix, or with an image that is a tag, there is none and no key.
+  ...(process.env.AGENTX_E2E_AGENT_SETTINGS_PREFIX ? { savedEnvBaseImageDigest: savedEnvBaseImageDigestReader((names) => getParametersInBatches(names, (batch) => ssm.send(new GetParametersCommand({ Names: batch }))), requiredEnvironment("AGENTX_E2E_AGENT_SETTINGS_PREFIX")) } : {}),
   codeHost: plugins.codeHost, checkRunner: plugins.checkRunner,
   projectSetupSource: { capture: ({ repositoryUrl, ref }, scope) => githubCredentials.captureE2ESourceSnapshot(repositoryUrl, ref, scope) },
   ...(process.env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID

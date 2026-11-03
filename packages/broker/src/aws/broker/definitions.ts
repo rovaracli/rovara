@@ -210,6 +210,12 @@ export interface AwsBrokerDependencies {
   savedEnvLogin?: ((input: { orgId: string; projectName: string; digest: string }) => Promise<SavedEnvRegistryAuth | undefined>) | undefined;
   /** Saved environments (SH24/SH25): the registry's ports (store, sessions, ECR). Wired with the routes; `installSavedEnv` derives the two hooks above from it, only while the switch is on. */
   savedEnvDeps?: SavedEnvDeps;
+  /** Saved project images: what the install knows of the key's inputs for a project (the base image digest, the secret names, the detectors' globs). Undefined: a queued job cannot be started and is ended with `no_build_inputs`. */
+  /**
+   * Saved project images: the digest of the base image the project's commands run in (`sha256:...`), which is part of the environment key and of the saved image's manifest. The install says it: the broker does not
+   * know the worker's sandbox image. Undefined (the default): no key can be worked out, nothing is queued (`no_key`), a job already queued ends with `no_build_inputs`.
+   */
+  savedEnvBaseImageDigest?: () => Promise<string | undefined>;
   /** Injectable clock for funding evidence and its durable audit. */
   now?: () => number;
   documentClient: DynamoDBDocumentClient;
@@ -239,7 +245,7 @@ export interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "readWorkingBranchRepository" | "readWorkingBranch" | "createWorkingBranchPreviewSession" | "listWorkingBranches" | "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "readCodeOwners" | "listChangedPaths" | "isTeamMember" | "mergePullRequest" | "getRepositoryStanding" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getDefaultBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "listTreeAtCommit" | "readWorkingBranchRepository" | "readWorkingBranch" | "createWorkingBranchPreviewSession" | "listWorkingBranches" | "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "readCodeOwners" | "listChangedPaths" | "isTeamMember" | "mergePullRequest" | "getRepositoryStanding" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getDefaultBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */

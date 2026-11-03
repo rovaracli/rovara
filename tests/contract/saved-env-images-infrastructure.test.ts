@@ -147,14 +147,44 @@ describe("the key", () => {
     expect(allowed).not.toContain("kms:Create*");
   });
 
-  it("lets only ECR's creation role create a grant, only through ECR, and denies every other principal", () => {
-    const allow = statements.find((statement) => statement.Sid === "CreationRoleGrantForEcr")!;
-    expect(flatten((allow.Condition as Record<string, Record<string, unknown>>)["StringEquals"]!["kms:ViaService"])).toBe("ecr.<AWS::Region>.amazonaws.com");
-    expect(allow.Condition).toMatchObject({ Bool: { "kms:GrantIsForAWSResource": "true" } });
-    expect(list(allow.Action).sort()).toEqual(["kms:CreateGrant", "kms:DescribeKey"]);
-    const deny = statements.find((statement) => statement.Sid === "DenyOtherGrants")!;
-    expect(deny).toMatchObject({ Effect: "Deny", Action: "kms:CreateGrant" });
+  const CREATE_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/agentx-test-img-create`;
+  const allows = (all: Statement[]) => all.filter((statement) => statement.Effect === "Allow" && (statement.Sid ?? "").startsWith("CreationRole"));
+
+  // SV-2: kms:GrantIsForAWSResource exists on the grant actions only, so DescribeKey in a statement with it never matches.
+  const assertCreationRoleStatements = (all: Statement[], form: "root-with-arn-condition" | "role") => {
+    const grant = all.find((statement) => statement.Sid === "CreationRoleGrantForEcr")!;
+    const describe = all.find((statement) => statement.Sid === "CreationRoleDescribeForEcr")!;
+    // CreateGrant: alone, through ECR, for an AWS resource
+    expect(list(grant.Action)).toEqual(["kms:CreateGrant"]);
+    expect(flatten(grant.Condition!["StringEquals"]!["kms:ViaService"])).toMatch(/^ecr\.(<AWS::Region>|us-west-2)\.amazonaws\.com$/u);
+    expect(grant.Condition).toMatchObject({ Bool: { "kms:GrantIsForAWSResource": "true" } });
+    // DescribeKey: alone, through ECR, and no grant-only condition key anywhere in the statement
+    expect(list(describe.Action)).toEqual(["kms:DescribeKey"]);
+    expect(flatten(describe.Condition!["StringEquals"]!["kms:ViaService"])).toMatch(/^ecr\.(<AWS::Region>|us-west-2)\.amazonaws\.com$/u);
+    expect(JSON.stringify(describe.Condition)).not.toContain("GrantIsForAWSResource");
+    expect(Object.keys(describe.Condition!)).toEqual(["StringEquals", ...(form === "root-with-arn-condition" ? ["ArnEquals"] : [])]);
+    // the same principal form on both
+    for (const statement of [grant, describe]) {
+      if (form === "root-with-arn-condition") {
+        expect(JSON.stringify(statement.Principal)).toContain(":root");
+        expect(statement.Condition?.["ArnEquals"]?.["aws:PrincipalArn"]).toBe(CREATE_ROLE_ARN);
+      } else {
+        expect(JSON.stringify(statement.Principal)).toContain("CreateRole"); // the role's own ARN (a GetAtt of the creation role)
+        expect(statement.Condition?.["ArnEquals"]).toBeUndefined();
+      }
+    }
+    // nothing beyond these two actions is allowed to the creation role, and the only Deny stays CreateGrant-only
+    expect(allows(all).flatMap((statement) => list(statement.Action)).sort()).toEqual(["kms:CreateGrant", "kms:DescribeKey"]);
+    const deny = all.find((statement) => statement.Sid === "DenyOtherGrants")!;
+    expect(deny).toMatchObject({ Effect: "Deny", Principal: "*" });
+    expect(list(deny.Action)).toEqual(["kms:CreateGrant"]);
+    expect(all.filter((statement) => statement.Effect === "Deny" && statement.Sid === "DenyOtherGrants")).toHaveLength(1);
+  };
+
+  it("lets only ECR's creation role create a grant and describe the key, each in its own statement, only through ECR, and denies every other principal a grant", () => {
+    assertCreationRoleStatements(statements, "role");
     expect(statements.some((statement) => statement.Effect === "Allow" && list(statement.Action).includes("kms:CreateGrant") && statement.Sid !== "CreationRoleGrantForEcr")).toBe(false);
+    expect(statements.some((statement) => statement.Effect === "Allow" && list(statement.Action).includes("kms:DescribeKey") && statement.Sid !== "CreationRoleDescribeForEcr")).toBe(false);
   });
 
   it("only the deploy role may schedule the key's deletion", () => {
@@ -179,12 +209,17 @@ describe("the key", () => {
     const output = Object.entries(b.template.findOutputs("*")).find(([id]) => id.includes("KmsKeyPolicyStatements"))!;
     const text = flatten((output[1] as { Value: unknown }).Value);
     const statements = JSON.parse(text.replace(/<AWS::(Partition|AccountId|Region)>/gu, (_m, name: string) => ({ Partition: "aws", AccountId: ACCOUNT, Region: REGION })[name]!)) as Statement[];
-    const allow = statements.find((statement) => statement.Sid === "CreationRoleGrantForEcr")!;
-    expect(JSON.stringify(allow.Principal)).toContain(":root");
-    expect(allow.Condition?.["ArnEquals"]?.["aws:PrincipalArn"]).toBe(`arn:aws:iam::${ACCOUNT}:role/agentx-test-img-create`);
+    assertCreationRoleStatements(statements, "root-with-arn-condition");
     expect((output[1] as { Description: string }).Description).toContain("DEDICATED");
     const policies = Object.values(b.template.findResources("AWS::IAM::Policy")).map((policy) => JSON.stringify(policy.Properties));
     expect(policies.some((policy) => policy.includes("CustomerKeyGrantForEcr") && policy.includes(KMS))).toBe(true);
+    // the identity policy splits the same way: DescribeKey carries no grant-only condition key
+    const identity = Object.values(b.template.findResources("AWS::IAM::Policy")).flatMap((policy) => (policy.Properties as { PolicyDocument: { Statement: Array<{ Sid?: string; Action: string | string[]; Condition?: Record<string, unknown> }> } }).PolicyDocument.Statement)
+      .filter((statement) => statement.Sid?.startsWith("CustomerKey"));
+    expect(identity.map((statement) => [statement.Sid, list(statement.Action)])).toEqual([["CustomerKeyGrantForEcr", ["kms:CreateGrant"]], ["CustomerKeyDescribeForEcr", ["kms:DescribeKey"]]]);
+    expect(JSON.stringify(identity[0]!.Condition)).toContain("GrantIsForAWSResource");
+    expect(JSON.stringify(identity[1]!.Condition)).not.toContain("GrantIsForAWSResource");
+    expect(JSON.stringify(identity[1]!.Condition)).toContain("kms:ViaService");
   });
 });
 

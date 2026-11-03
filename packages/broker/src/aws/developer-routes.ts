@@ -189,6 +189,8 @@ import { SECOND_REVIEW_BROWSER_MESSAGE, SECOND_REVIEW_PATH, routeSecondReview } 
 import { routeTrackerPeople } from "./developer-routes/tracker-people.js";
 import { SETUP_RECIPES_BROWSER_MESSAGE, isSetupRecipesPath, routeSetupRecipes } from "./developer-routes/setup-recipes.js";
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
+import { SAVED_ENV_IMAGE_BROWSER_MESSAGE, isSavedEnvImagePath, routeSavedEnvImage } from "./developer-routes/saved-env-image.js";
+import { savedEnvEnabled } from "../test-env/saved-env-switch.js";
 import { nightlyHooks } from "../test-env/nightly-wiring.js";
 import { StatusReply } from "./status-reply.js";
 import { getModels } from "../agents/models-route.js";
@@ -328,6 +330,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (KNOWN_FAILING_MARKS_PATH.test(url.pathname) && verifyResultsEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_MARKS_BROWSER_MESSAGE);
   // Company setup recipes and locks (switch `sp`): browser-only for reads and writes (off: the path is not found).
   if (isSetupRecipesPath(url.pathname) && setupRecipesEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SETUP_RECIPES_BROWSER_MESSAGE);
+  // The project's saved environment panel (switch `sv`): browser-only for reads and writes, whatever the method (off: the path is not found).
+  if (isSavedEnvImagePath(url.pathname) && savedEnvEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SAVED_ENV_IMAGE_BROWSER_MESSAGE);
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
   if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
@@ -550,6 +554,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
   const setupRecipesReply = await routeSetupRecipes(deps, caller, request, url);
   if (setupRecipesReply !== undefined) return setupRecipesReply;
+  const savedEnvImageReply = await routeSavedEnvImage(deps, caller, request, url);
+  if (savedEnvImageReply !== undefined) return savedEnvImageReply;
   // SR-1: the task owner acknowledges that an `on` second review did not run (the merge gate). Owner only, in a browser session, audited.
   const secondReviewAck = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/second-review-acknowledge$/iu.exec(url.pathname);
   if (secondReviewAck !== null && request.method === "POST") return new StatusReply(200, await acknowledgeSecondReview(developerTaskRouteDependencies(deps, caller), caller, secondReviewAck[1]!, jsonBody(request)));

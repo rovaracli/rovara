@@ -33,6 +33,11 @@ export interface GithubTriggerDependencies extends EventMemoryDeps {
    * at that commit and records what it would change (`queueMetaConfigImport`, meta-repo/config-import.ts). Absent, a push is ignored. A failure is retried by GitHub's redelivery.
    */
   queueMetaConfigImport?: (push: MetaPush) => Promise<unknown>;
+  /**
+   * Saved project images: a push to the default branch of a repository of a project (code or meta alike, any of its repositories). Called once per such project. The registry decides whether a rebuild is due; a
+   * failure is retried by GitHub's redelivery (the call is idempotent). Absent, a push tells the registry nothing (the periodic poll and the other triggers still look at the project).
+   */
+  queueSavedEnvPush?: (push: { orgId: OrgId; project: string }) => Promise<unknown>;
 }
 
 /** A push to the default branch of a project's meta repository. */
@@ -474,24 +479,54 @@ export async function githubMetaPushes(deps: Pick<GithubTriggerDependencies, "do
   return pushes;
 }
 
-/** Hands each meta repo push to `queueMetaConfigImport`. A failure is answered with a retryable fault, so that GitHub's redelivery tries again (queuing the same commit twice is harmless). */
+/**
+ * The projects with a repository this push is to, and only a push to that repository's default branch (the one the project records for it): any other branch, Rovara's own `agentx/*` branches, a deleted branch, a
+ * repository the installation does not hold and a project that does not record this repository are not the project's code moving. Saved project images look at every repository of a project, not only the meta one.
+ */
+export async function githubCodePushes(deps: Pick<GithubTriggerDependencies, "documentClient" | "tableName" | "log">, input: GithubTriggerInput): Promise<Array<{ orgId: OrgId; project: string }>> {
+  const body = PushBody.safeParse(input.payload);
+  if (!body.success || body.data.deleted === true || /^0+$/.test(body.data.after)) return [];
+  const defaultBranch = body.data.repository.default_branch;
+  if (defaultBranch === undefined || defaultBranch.startsWith("agentx/") || body.data.ref !== `refs/heads/${defaultBranch}`) return [];
+  const orgId = await orgOfInstallation(deps, input.installationId);
+  if (orgId === undefined) return [];
+  const pushes: Array<{ orgId: OrgId; project: string }> = [];
+  for (const { project, definition } of await heldProjects(deps, orgId, input.installationId, body.data.repository.id)) {
+    // The project's own record of the branch must agree with the payload's, so a branch rename is not taken for a push to the default branch.
+    if (definition.repositories.some((repository) => repository.installationId === input.installationId && repository.githubRepositoryId === body.data.repository.id && repository.defaultBranch === defaultBranch)) pushes.push({ orgId, project });
+  }
+  return pushes;
+}
+
+/** Hands each meta repo push to `queueMetaConfigImport` and each push to a project's repository to `queueSavedEnvPush`. A failure is answered with a retryable fault, so that GitHub's redelivery tries again (both calls are idempotent). */
 async function deliverMetaPushes(deps: GithubTriggerDependencies, input: GithubTriggerInput): Promise<{ events: number; duplicates: number }> {
   const queue = deps.queueMetaConfigImport;
-  if (queue === undefined) return { events: 0, duplicates: 0 };
-  let pushes: MetaPush[];
+  const savedEnv = deps.queueSavedEnvPush;
+  if (queue === undefined && savedEnv === undefined) return { events: 0, duplicates: 0 };
+  let pushes: MetaPush[] = [];
+  let code: Array<{ orgId: OrgId; project: string }> = [];
   try {
-    pushes = await githubMetaPushes(deps, input);
+    if (queue !== undefined) pushes = await githubMetaPushes(deps, input);
+    if (savedEnv !== undefined) code = await githubCodePushes(deps, input);
   } catch (error) {
     log(deps)("github.meta_push_unavailable", { error: error instanceof Error ? error.name : "unknown" });
     throw new GithubWebhookRetryableError("GitHub trigger events will be retried");
   }
   for (const push of pushes) {
     try {
-      await queue(push);
+      await queue!(push);
     } catch (error) {
       log(deps)("github.meta_push_failed", { orgId: push.orgId, project: push.project, error: error instanceof Error ? error.name : "unknown" });
       throw new GithubWebhookRetryableError("GitHub trigger events will be retried");
     }
   }
-  return { events: pushes.length, duplicates: 0 };
+  for (const push of code) {
+    try {
+      await savedEnv!(push);
+    } catch (error) {
+      log(deps)("github.saved_env_push_failed", { orgId: push.orgId, project: push.project, error: error instanceof Error ? error.name : "unknown" });
+      throw new GithubWebhookRetryableError("GitHub trigger events will be retried");
+    }
+  }
+  return { events: pushes.length + code.length, duplicates: 0 };
 }

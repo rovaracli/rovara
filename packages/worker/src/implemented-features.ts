@@ -72,6 +72,8 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "prepare.registries.v1",
   // Saved environments (SH25): the prepare invocation's `savedEnv` (a project's saved image to start from; saved-env/use.ts). Any problem with the image sets up fresh.
   "prepare.savedEnv.v1",
+  // Saved project images: the prepare invocation's `savedEnvBuild` (a rebuild of the project's image after a read-only pinned preparation; saved-env/rebuild.ts).
+  "prepare.savedEnvBuild.v1",
   // P1: a prepare invocation's `pins` (the heads the broker read) are checked against what the worker resolves (prepare.ts).
   "prepare.pins.v1",
   // Enterprise foundations P8: the repository credential exchange takes an ssh key as well as a token or a password (repository-credentials.ts, git-auth.ts).

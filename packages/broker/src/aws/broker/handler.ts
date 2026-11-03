@@ -78,6 +78,10 @@ import { dropWatchedBatch, listWatchedBatches, recordWatchedBatchThread, startSl
 import { cancelWorkspaceTask, stopWorkspace } from "./acceptance.js";
 import { exchangeRegistryCredential } from "./registry-credentials.js";
 import { exchangeSavedEnvLogin } from "./saved-env-login.js";
+import { handleSavedEnvFallback } from "./saved-env-lease.js";
+import { runSavedEnvPoll, savedEnvBeforeNightly, savedEnvPushQueue } from "./saved-env-triggers.js";
+import { sweepSavedEnvBuilds } from "./saved-env-sweep.js";
+import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
 import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
@@ -153,6 +157,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.githubConnectedNotice === undefined ? {} : { ownerNotice: dependencies.githubConnectedNotice }),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
+          // Saved project images: the project's Environment panel routes (only where the `sv` switch is on and the registry is installed).
+          ...(dependencies.savedEnvDeps === undefined || !savedEnvEnabled() ? {} : { savedEnv: dependencies.savedEnvDeps }),
           // Team record (fix round 1: the first round put this in the review-page branch by mistake): the record routes, and its erase on project archive and company close, only where its switch is on.
           ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
@@ -263,6 +269,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // System owner of automatic runs: a run past its time is ended and its slot given back, so a hung night can never hold the project's one automatic slot for good.
       outcome.automaticRuns = await sweepAutomaticRunsOf(dependencies, { budgetMs: Math.max(0, SESSION_EVENT_BUDGET_MS - (Date.now() - startedAt)) });
       outcome.asks = await runAskMaintenance(dependencies, Date.now());
+      // Saved project images: the periodic poll (a few due projects a pass; off, nothing is read).
+      // With the switch off the answer is today's, byte for byte: neither key is there.
+      const polled = await runSavedEnvPoll(dependencies);
+      if (polled !== "off") { outcome.savedEnv = polled; outcome.savedEnvBuilds = await sweepSavedEnvBuilds(dependencies); }
       return json(outcome, "session-sweep");
     }
     // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
@@ -316,6 +326,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     }
     // Test environment (wire-testenv): the scheduler's nightly fire for a project. Answers "off" and reads nothing where the switch is off; no run can be started yet, so it never charges a budget or claims a slot.
     if (isTestEnvNightlyEvent(event)) {
+      // Saved project images: the project's images are checked before its night is started, and the deleted projects' registries are swept (never holds the night up).
+      await savedEnvBeforeNightly(dependencies, event);
       return json(await fireTestEnvNightly({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, event, nightlyRunsOf(dependencies, tasks, agents)), "test-env-nightly");
     }
     // Team record (wire-team-record): the scheduler's hourly and nightly jobs, and a Slack event the ingress verified and forwarded. Both answer "off" and do nothing where the record's switch is off.
@@ -662,6 +674,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
                 }),
                 // Meta repo lane A: a push to a project's meta repository queues its config file as a pending change.
                 queueMetaConfigImport: metaConfigQueueFor(dependencies),
+                // Saved project images: a push to a project's default branch tells the registry (only while `sv` is on and the registry is installed).
+                ...optional("queueSavedEnvPush", savedEnvPushQueue(dependencies) === undefined ? undefined : (push: { orgId: OrgId; project: string }) => savedEnvPushQueue(dependencies)!(push)),
               }, trigger),
             }),
             // Plan 2, Task 14: an approved request to a GitHub admin arrives as `installation.created` naming the requester.
@@ -737,7 +751,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Lane E: the project's MCP context sources, for an Understand, Plan, Plan-check or Review stage; authorized by the operation's `context-tools` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/context-tools") return json(await handleContextTools(dependencies, request, "list"), request.requestId);
       if (request.method === "POST" && url.pathname === "/v1/internal/context-tools/call") return json(await handleContextTools(dependencies, request, "call"), request.requestId);
-      const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent|nightly-result)$/.exec(
+      // Saved project images: the push login and result are callback actions only where the registry is installed; elsewhere those paths are not found, as any unknown path.
+      const savedEnvOn = dependencies.savedEnvDeps !== undefined && savedEnvEnabled();
+      const callback = new RegExp(`^\\/v1\\/internal\\/workspaces\\/([0-9a-f-]+)\\/operations\\/([0-9a-f-]+)\\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent|nightly-result${savedEnvOn ? "|saved-env-push-login|saved-env-result" : ""})$`).exec(
         url.pathname,
       );
       if (request.method === "POST" && callback?.[1] && callback[2] && callback[3]) {
@@ -752,6 +768,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const savedEnvLoginExchange = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/saved-env-login$/.exec(url.pathname);
       if (request.method === "POST" && savedEnvLoginExchange?.[1] && savedEnvLoginExchange[2]) {
         return json(await exchangeSavedEnvLogin(dependencies, request, savedEnvLoginExchange[1], savedEnvLoginExchange[2]), request.requestId);
+      }
+      // Saved project images: the rebuild job's push login and result (answered to the job's lease), and a preparation's fallback report (test-env/saved-env-lease.ts).
+      const savedEnvFallback = savedEnvOn ? /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/saved-env-fallback$/.exec(url.pathname) : null;
+      if (request.method === "POST" && savedEnvFallback?.[1] && savedEnvFallback[2]) {
+        return json(await handleSavedEnvFallback(dependencies, request, savedEnvFallback[1], savedEnvFallback[2]), request.requestId);
       }
       const credentialExchange = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/repository-credentials$/.exec(
         url.pathname,

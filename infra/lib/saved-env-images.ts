@@ -75,6 +75,8 @@ export class SavedEnvImages extends Construct {
   readonly createRole: iam.Role;
   readonly key: kms.Key | undefined;
   readonly kmsKeyArn: string;
+  /** The key's id (a token for the stack's own key; read from the ARN for a customer's): the broker is passed this, and builds the ARN from the region and the account. */
+  readonly kmsKeyId: string;
   readonly template: ecr.CfnRepositoryCreationTemplate;
   private readonly envName: string;
 
@@ -122,17 +124,23 @@ export class SavedEnvImages extends Construct {
 
     // ---- the key
     if (props.kmsKeyArn !== undefined) {
-      const parsed = /^arn:aws[a-z-]*:kms:([a-z0-9-]+):(\d{12}):key\/[0-9a-f-]{36}$/u.exec(props.kmsKeyArn);
+      const parsed = /^arn:aws[a-z-]*:kms:([a-z0-9-]+):(\d{12}):key\/(?:mrk-[0-9a-f]{32}|[0-9a-f-]{36})$/u.exec(props.kmsKeyArn);
       if (parsed === null) throw new Error("saved environment images: kmsKeyArn must be a KMS key ARN (not an alias)");
       // The key must be in this account and region (checked when they are concrete; the control plane's own stack may leave them to deploy time).
       if ((!Token.isUnresolved(stack.region) && parsed[1] !== stack.region) || (!Token.isUnresolved(stack.account) && parsed[2] !== stack.account)) throw new Error("saved environment images: kmsKeyArn must be a key in this install's own account and region");
       this.key = undefined;
       this.kmsKeyArn = props.kmsKeyArn;
+      this.kmsKeyId = props.kmsKeyArn.slice(props.kmsKeyArn.lastIndexOf("/") + 1);
       // The role may use the customer's key through ECR to create the grant. Its identity policy carries the right; the key policy (the statements printed below) opens the key to the account's IAM policies for
       // this one role, and works before the role exists (a named principal that does not exist yet is refused by KMS; a condition on aws:PrincipalArn is not).
+      // Two statements (SV-2): the grant-only condition key GrantIsForAWSResource never matches a DescribeKey request.
       this.createRole.addToPolicy(new iam.PolicyStatement({
-        sid: "CustomerKeyGrantForEcr", actions: ["kms:CreateGrant", "kms:DescribeKey"], resources: [props.kmsKeyArn],
+        sid: "CustomerKeyGrantForEcr", actions: ["kms:CreateGrant"], resources: [props.kmsKeyArn],
         conditions: { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` }, Bool: { "kms:GrantIsForAWSResource": "true" } },
+      }));
+      this.createRole.addToPolicy(new iam.PolicyStatement({
+        sid: "CustomerKeyDescribeForEcr", actions: ["kms:DescribeKey"], resources: [props.kmsKeyArn],
+        conditions: { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` } },
       }));
       new CfnOutput(this, "KmsKeyPolicyStatements", {
         description: "Add these statements to the DEDICATED saved environment images key policy (the key must be used for nothing else): ECR's creation role may create the grant ECR uses, only through ECR, and no other principal may create a grant.",
@@ -168,6 +176,7 @@ export class SavedEnvImages extends Construct {
       (key.node.defaultChild as kms.CfnKey).addMetadata(KEEP_ON_ROLLBACK_METADATA, true);
       this.key = key;
       this.kmsKeyArn = key.keyArn;
+      this.kmsKeyId = key.keyId;
     }
 
     // ---- the creation template
@@ -207,16 +216,26 @@ export class SavedEnvImages extends Construct {
     return `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:role/${savedEnvCreateRoleName(this.envName)}`;
   }
 
-  /** The key statements for ECR's creation role: it may create the one grant ECR uses, through ECR, and nobody else may create any grant. */
+  /**
+   * The key statements for ECR's creation role: it may create the one grant ECR uses and describe the key, both only through ECR, and nobody else may create any grant.
+   * Two allow statements, not one (SV-2): kms:GrantIsForAWSResource is a condition key of the grant actions only (CreateGrant, ListGrants, RevokeGrant); a DescribeKey request does not carry it,
+   * so a Bool condition on it never matches DescribeKey. Each action gets exactly the conditions that apply to it.
+   */
   private createRoleKeyStatements(createRoleArn: string, beforeTheRoleExists: boolean): Array<Record<string, unknown>> {
-    const viaEcr = { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` }, Bool: { "kms:GrantIsForAWSResource": "true" } };
+    const viaEcr = { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` };
+    // Before the role exists the principal is the account root narrowed by aws:PrincipalArn (KMS refuses a named principal that does not exist yet); after, the role itself.
+    const who = beforeTheRoleExists
+      ? { principal: { AWS: `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:root` }, only: { ArnEquals: { "aws:PrincipalArn": createRoleArn } } }
+      : { principal: { AWS: createRoleArn }, only: {} };
     return [
-      beforeTheRoleExists
-        ? {
-          Sid: "CreationRoleGrantForEcr", Effect: "Allow", Principal: { AWS: `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:root` },
-          Action: ["kms:CreateGrant", "kms:DescribeKey"], Resource: "*", Condition: { ...viaEcr, ArnEquals: { "aws:PrincipalArn": createRoleArn } },
-        }
-        : { Sid: "CreationRoleGrantForEcr", Effect: "Allow", Principal: { AWS: createRoleArn }, Action: ["kms:CreateGrant", "kms:DescribeKey"], Resource: "*", Condition: viaEcr },
+      {
+        Sid: "CreationRoleGrantForEcr", Effect: "Allow", Principal: who.principal, Action: ["kms:CreateGrant"], Resource: "*",
+        Condition: { StringEquals: viaEcr, Bool: { "kms:GrantIsForAWSResource": "true" }, ...who.only },
+      },
+      {
+        Sid: "CreationRoleDescribeForEcr", Effect: "Allow", Principal: who.principal, Action: ["kms:DescribeKey"], Resource: "*",
+        Condition: { StringEquals: viaEcr, ...who.only },
+      },
       {
         Sid: "DenyOtherGrants", Effect: "Deny", Principal: "*", Action: ["kms:CreateGrant"], Resource: "*",
         Condition: { ArnNotEquals: { "aws:PrincipalArn": createRoleArn } },

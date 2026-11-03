@@ -317,6 +317,36 @@ describe("GitHub App repository credentials", () => {
     await expect(provider.getFileAtCommit(url, "big.txt", sha, { system: "private-install" })).rejects.toThrow(/file too large/);
   });
 
+  it("lists a commit's whole tree with a contents-read token, and says when GitHub cut the listing", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const sha = "e".repeat(40);
+    const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const entry = (path: string, type = "blob", mode = "100644") => ({ path, mode, type, sha: "1".repeat(40), size: 3, url: "https://api.github.com/x" });
+    const provider = appProvider({
+      credentialRef: "github-agentx-sdlc", appId: "5002502", getPrivateKey: async () => pem,
+      fetchImplementation: async (url, init) => {
+        const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        requests.push({ url: requestUrl, init });
+        if (requestUrl.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "lookup-token" }), { status: 201 });
+        if (requestUrl.includes(`/git/trees/${sha}?`)) return new Response(JSON.stringify({ sha: "2".repeat(40), tree: [entry("src", "tree", "040000"), entry("src/a.ts"), entry("package.json")], truncated: false }), { status: 200 });
+        if (requestUrl.includes(`/git/trees/${"f".repeat(40)}?`)) return new Response(JSON.stringify({ sha: "2".repeat(40), tree: [entry("a")], truncated: true }), { status: 200 });
+        if (requestUrl.includes(`/git/trees/${"a".repeat(40)}?`)) return new Response(JSON.stringify({ tree: [{ path: "x" }], truncated: false }), { status: 200 });
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const url = "https://github.com/ps06756/personal-website-test.git";
+    const listed = await provider.listTreeAtCommit(url, sha, { system: "private-install" });
+    expect(listed).toEqual({ truncated: false, entries: [{ path: "src", mode: "040000", type: "tree", sha: "1".repeat(40) }, { path: "src/a.ts", mode: "100644", type: "blob", sha: "1".repeat(40) }, { path: "package.json", mode: "100644", type: "blob", sha: "1".repeat(40) }] });
+    expect((JSON.parse(requests[0]?.init?.body as string) as { permissions: unknown }).permissions).toEqual({ contents: "read" });
+    expect(requests[1]?.url).toBe(`https://api.github.com/repos/ps06756/personal-website-test/git/trees/${sha}?recursive=1`);
+    expect(requests[1]?.init?.redirect).toBe("error");
+    expect((await provider.listTreeAtCommit(url, "f".repeat(40), { system: "private-install" })).truncated).toBe(true);
+    await expect(provider.listTreeAtCommit(url, "a".repeat(40), { system: "private-install" })).rejects.toThrow(/invalid tree entry/);
+    await expect(provider.listTreeAtCommit(url, "b".repeat(40), { system: "private-install" })).rejects.toThrow(/HTTP 404/);
+    await expect(provider.listTreeAtCommit(url, "main", { system: "private-install" })).rejects.toThrow(/invalid/);
+  });
+
   it("stops a file read at the caller's own size cap and refuses it as invalid input (not as an outage), from the declared size or the bytes that arrive", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();

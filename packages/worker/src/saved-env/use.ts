@@ -191,10 +191,14 @@ async function extractImage(options: SavedEnvUseOptions, repositories: readonly 
  * The preparation's saved environment options from the prepare invocation's `savedEnv` (SH25): the machine's docker, and a fallback that is written to the worker log as a JSON line with the digest and the step
  * (the broker marks the image stale from the operation's result; no credential is in the line).
  */
-export function savedEnvOptionsOf(payload: PrepareSavedEnv, login: SavedEnvUseOptions["login"], docker: DockerCli = createDockerCli()): SavedEnvUseOptions {
+export function savedEnvOptionsOf(payload: PrepareSavedEnv, login: SavedEnvUseOptions["login"], docker: DockerCli = createDockerCli(), report?: (step: SavedEnvUseStep) => Promise<void>): SavedEnvUseOptions {
   return {
     ref: payload, login, docker,
-    onFallback: (step) => { console.log(JSON.stringify({ component: "worker", event: "saved-env.fallback", digest: payload.digest, step })); },
+    onFallback: (step) => {
+      console.log(JSON.stringify({ component: "worker", event: "saved-env.fallback", digest: payload.digest, step }));
+      // The broker marks the image stale from this report (it knows the digest); a report that cannot be sent changes nothing here.
+      void report?.(step);
+    },
   };
 }
 

@@ -325,6 +325,9 @@ export const AUDIT_ACTIONS = [
   "project.automatic_runs_cap_changed",
   "automatic_runs.paused",
   "automatic_run.ended",
+  // Saved project images (SV wiring): ids, digests, counts and fixed words only.
+  "saved_env.changed",
+  "saved_env.setting_changed",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -620,6 +623,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "automatic_runs.paused": ["month", "cap"],
   // Rovara ended an automatic run itself: `job` as above, `cause` is `project_stopped` (the project was archived or the company closed) or `too_old` (it ran past its time and the sweep ended it).
   "automatic_run.ended": ["job", "cause"],
+  // `change` is a fixed word of the saved environment registry's ledger (queued, recorded, refused, failed, marked stale, reset, images deleted, archived, deleted, registered, walk, scan, lease refused); `cause` a fixed word; `digest` an image digest.
+  "saved_env.changed": ["change", "cause", "digest", "count"],
+  // `enabled` is the project's savedEnv.enabled setting after the change.
+  "saved_env.setting_changed": ["enabled"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
