@@ -672,6 +672,14 @@ export function auditTaskAsked(input: AuditBuilderBase & ({ scope: "each"; sessi
   return build("task.asked", { ...base, related: [askId, ...(base.related ?? [])] }, { kind: "session", id: sessionId }, { audience, scope, count: 1, contextBytes, model });
 }
 
+/**
+ * `occurrence`: the Ask's id. Lane ask-linear: an erased person's name may still be on a Linear comment Rovara posted, because the rewrite was given up on after its bounded tries. `reason` (the fact `cause`) is a fixed word
+ * (`not_rovaras`, `no_connection`, `unavailable`); `related` holds the Ask id. Never the comment's words or its id.
+ */
+export function auditAskLinearCommentKept(input: AuditBuilderBase & { sessionId: string; askId: string; reason: string; attempts: number }): AuditEventInput {
+  return build("ask.linear_comment_kept", { ...input, related: [input.askId, ...(input.related ?? [])] }, { kind: "session", id: input.sessionId }, { cause: input.reason, attempts: input.attempts });
+}
+
 /** `occurrence`: the diagnosis id. The target is the diagnosis; `errorKind`, `errorCode` and `tier` are fixed words. */
 export function auditDiagnosisStarted(input: AuditBuilderBase & { diagnosisId: string; errorKind: string; errorCode: string; tier: "light" | "deep" }): AuditEventInput {
   return build("diagnosis.started", input, { kind: "diagnosis", id: input.diagnosisId }, { errorKind: input.errorKind, errorCode: input.errorCode, tier: input.tier });

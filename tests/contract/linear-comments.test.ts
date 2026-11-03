@@ -23,7 +23,7 @@ const QUESTION = "Why is this blocked?";
 const MENTION_TEST = /(?:\[@rovara\]\([^)]*\)|@rovara)\b/iu;
 type Replies = Array<{ orgId: OrgId; issueKey: string; text: string }>;
 
-async function world(options: { edition?: "enterprise" | "public"; bind?: boolean; project?: string; enabled?: boolean; reply?: boolean; workspace?: string; port?: LinearReplyPort; people?: AskDependencies["people"]; connectionWorkspace?: string; commentSlug?: string } = {}) {
+async function world(options: { edition?: "enterprise" | "public"; bind?: boolean; project?: string; enabled?: boolean; reply?: boolean; workspace?: string; port?: LinearReplyPort; people?: AskDependencies["people"]; connectionWorkspace?: string; connectionWorkspaces?: string[]; commentSlug?: string } = {}) {
   const w = sessionWorld();
   const made = w.seedSession({ kind: "task", owner: PRIYA, project: options.project ?? "web" });
   w.db.set({
@@ -43,7 +43,7 @@ async function world(options: { edition?: "enterprise" | "public"; bind?: boolea
     store: () => ({ documentClient: w.db, tableName: "state", questionHashKey: KEY, isErased: async () => false, erasedPeople: async () => [] }),
     audit: { ...audit.deps, documentClient: w.db, tableName: "state" }, people: options.people ?? (async () => []), orchestratorInstructions: async () => INSTRUCTIONS_MARKER, defaultModel: "chat-runtime", linearReply: reply,
   };
-  const deps = { documentClient: w.db, tableName: "state", now: () => w.clock.now, ask: options.enabled === false ? undefined : ask, reply: options.reply === false ? undefined : reply, taskPageLink: (_org: OrgId, _id: string, taskId: string) => `https://app.example.invalid/t/${taskId}`, ...(options.connectionWorkspace === undefined ? {} : { workspaceOfOrg: async () => options.connectionWorkspace }) };
+  const deps = { documentClient: w.db, tableName: "state", now: () => w.clock.now, ask: options.enabled === false ? undefined : ask, reply: options.reply === false ? undefined : reply, taskPageLink: (_org: OrgId, _id: string, taskId: string) => `https://app.example.invalid/t/${taskId}`, ...(options.connectionWorkspace === undefined && options.connectionWorkspaces === undefined ? {} : { workspacesOfOrg: async () => options.connectionWorkspaces ?? (options.connectionWorkspace === undefined ? [] : [options.connectionWorkspace]) }) };
   const outcomes: string[] = [];
   // The hook ingress offers the intake every verified Linear delivery's body.
   hw.deps.commentIntake = async (input) => { outcomes.push(await handleLinearComment(deps, input)); };
@@ -343,7 +343,8 @@ describe("an answer is posted once, under a key that does not change, and what w
     expect(rec.calls).toHaveLength(1);
     expect(rec.calls[0]).toMatchObject({ orgId: ORG_A, issueKey: ISSUE, commentKey: `ask:${t.askId}` });
     const stored = t.w.db.get({ pk: `ORG#${ORG_A}#SESSION#${t.made.sessionId}`, sk: `ASK#${t.askId}` }) ?? (t.w.db.find((item) => item.entityType === "ASK") as Array<Record<string, unknown>>)[0]!;
-    expect(stored["linearComment"]).toEqual({ issueKey: ISSUE, commentId: linearCommentIdFor(ORG_A, `ask:${t.askId}`) });
+    // (the org has no Linear connection that says its workspace, so the signed comment's own link supplies it)
+    expect(stored["linearComment"]).toEqual({ issueKey: ISSUE, commentId: linearCommentIdFor(ORG_A, `ask:${t.askId}`), workspace: "acme" });
     expect([...rec.comments.keys()]).toEqual([linearCommentIdFor(ORG_A, `ask:${t.askId}`)]);
   });
 
@@ -422,6 +423,42 @@ describe("M8: an issue key is not unique across Linear workspaces, so the worksp
     const unknown = await world({ commentSlug: "othercorp", port: rec.port });
     await unknown.send(unknown.comment("@rovara ask hello"));
     expect(unknown.outcomes).toEqual(["asked"]);
+  });
+
+  it("S1: an older binding in an org with several Linear workspaces takes the workspace from the signed comment's own link, and posts there; with none in the link (or one the org does not have), nothing is asked or posted", async () => {
+    const rec = recordingPort();
+    const viaLink = await world({ connectionWorkspaces: ["acme", "othercorp"], commentSlug: "othercorp", port: rec.port });
+    await viaLink.send(viaLink.comment(`@rovara ask ${QUESTION}`));
+    expect(viaLink.outcomes).toEqual(["asked"]);
+    const askId = (JSON.parse(viaLink.sent[0]!.body) as { ask: { askId: string } }).ask.askId;
+    expect(viaLink.w.db.get(askRequestKey(ORG_A, viaLink.made.sessionId, askId))).toMatchObject({ workspace: "othercorp" });
+    await completeAsk(viaLink.ask, { orgId: ORG_A, sessionId: viaLink.made.sessionId, askId, outcome: "ANSWERED", text: "ok", question: QUESTION });
+    expect(rec.calls.at(-1)).toMatchObject({ workspace: "othercorp" });
+    const before = rec.calls.length;
+    // A link that names no workspace (the short form): nothing is asked, nothing is posted, not even a refusal.
+    const noSlug = await world({ connectionWorkspaces: ["acme", "othercorp"], port: rec.port });
+    await noSlug.send({ ...noSlug.comment(`@rovara ask ${QUESTION}`), url: `https://linear.app/issue/${ISSUE}/bump-the-sdk` });
+    expect(noSlug.outcomes).toEqual(["ignored"]);
+    expect(noSlug.sent).toHaveLength(0);
+    // A workspace the org has no connection for.
+    const stranger = await world({ connectionWorkspaces: ["acme", "othercorp"], commentSlug: "third", port: rec.port });
+    await stranger.send(stranger.comment("@rovara stop the task"));
+    expect(stranger.outcomes).toEqual(["ignored"]);
+    expect(rec.calls).toHaveLength(before);
+    // A binding that names its workspace needs no guess at all, whatever the org has.
+    const named = await world({ workspace: "acme", connectionWorkspaces: ["acme", "othercorp"], commentSlug: "acme", port: rec.port });
+    await named.send(named.comment(`@rovara ask ${QUESTION}`));
+    expect(named.outcomes).toEqual(["asked"]);
+  });
+
+  it("S4: when Linear says to slow down, an answer is tried once, not three times back to back", async () => {
+    const calls: number[] = [];
+    const port: LinearReplyPort = { reply: async () => { calls.push(1); throw Object.assign(new Error("slow"), { code: "TOO_MANY_REQUESTS" }); }, ownActorId: async () => ROVARA_ACTOR };
+    const t = await world({ port });
+    await t.send(t.comment(`@rovara ask ${QUESTION}`));
+    const askId = (JSON.parse(t.sent[0]!.body) as { ask: { askId: string } }).ask.askId;
+    await completeAsk(t.ask, { orgId: ORG_A, sessionId: t.made.sessionId, askId, outcome: "ANSWERED", text: "ok", question: QUESTION });
+    expect(calls).toHaveLength(1);
   });
 
   it("the task page link in a reply names the task (not a guess from the session), and is left out when there is none", async () => {

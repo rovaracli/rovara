@@ -424,6 +424,8 @@ export async function completeAsk(deps: AskDependencies, value: unknown): Promis
         return;
       } catch (error) {
         deps.log?.({ event: "ask.linear_reply_failed", attempt, error: error instanceof Error ? error.name : "unknown" });
+        // Linear said "slow down" (the writer has already waited as it asked, a bounded time): trying again at once would only be refused again.
+        if ((error as { code?: string }).code === "TOO_MANY_REQUESTS") return;
       }
     }
   };

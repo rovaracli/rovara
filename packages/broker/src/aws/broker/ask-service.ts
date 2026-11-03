@@ -246,7 +246,7 @@ export async function runAskMaintenance(dependencies: AwsBrokerDependencies, now
         const linear = dependencies.linearReply;
         if (linear?.update !== undefined && linear.remove !== undefined) {
           const port = { update: linear.update.bind(linear), remove: linear.remove.bind(linear) };
-          await settleLinearScrubs({ ...table, port, log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })) }, orgId);
+          await settleLinearScrubs({ ...table, port, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }), log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })) }, orgId);
         }
         await sweepErasedAliases(table, orgId, nowMs);
         await flushDailyAskCounts({ ...table, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, edition, orgId, nowMs);
@@ -285,12 +285,9 @@ export function linearCommentIntakeOf(dependencies: AwsBrokerDependencies, taskP
   // The link a refusal sends a person to is the task's own page, on this install's issuer (none where there is no issuer).
   const issuer = dependencies.developer?.issuer;
   const link = taskPageLink ?? (issuer === undefined ? undefined : (_orgId: OrgId, _sessionId: string, taskId: string): string | undefined => { try { return taskPageUrl(issuer, taskId); } catch { return undefined; } });
-  // An older binding (made before bindings named their Linear workspace) asks the org's Linear connection which workspace it is: the one it has checked as, when there is exactly one.
+  // An older binding (made before bindings named their Linear workspace) asks the org's Linear connections which workspaces they have checked as.
   const connections = dependencies.orgConnections;
-  const workspaceOfOrg = connections === undefined ? undefined : async (orgId: OrgId): Promise<string | undefined> => {
-    const keys = await connectionWorkspaceKeys(connections, orgId);
-    return keys.size === 1 ? [...keys][0] : undefined;
-  };
-  const deps: LinearCommentDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ask, reply: dependencies.linearReply, taskPageLink: link, workspaceOfOrg, log: ask.log };
+  const workspacesOfOrg = connections === undefined ? undefined : async (orgId: OrgId): Promise<string[]> => [...await connectionWorkspaceKeys(connections, orgId)].sort();
+  const deps: LinearCommentDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ask, reply: dependencies.linearReply, taskPageLink: link, workspacesOfOrg, log: ask.log };
   return (input) => handleLinearComment(deps, input);
 }

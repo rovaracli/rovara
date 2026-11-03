@@ -61,10 +61,10 @@ export interface LinearCommentDependencies {
   /** The link to a task's page, for the reply that sends a person there. */
   taskPageLink?: ((orgId: OrgId, sessionId: string, taskId: string) => string | undefined) | undefined;
   /**
-   * The Linear workspace url key the org's Linear connection has checked as (`acme`), when it knows exactly one. Read only for a binding made before bindings named their workspace (dual read, no migration);
-   * undefined when the org has none or more than one, and then such a binding is believed as it always was.
+   * The Linear workspace url keys the org's Linear connections have checked as (`acme`). Read only for a binding made before bindings named their workspace (dual read, no migration): one key is that
+   * binding's workspace; several keys mean the signed comment's own link decides (and no link, no post); none means the comment's link is used when it has one.
    */
-  workspaceOfOrg?: ((orgId: OrgId) => Promise<string | undefined>) | undefined;
+  workspacesOfOrg?: ((orgId: OrgId) => Promise<string[]>) | undefined;
   log?: ((entry: Record<string, unknown>) => void) | undefined;
 }
 
@@ -107,10 +107,20 @@ export async function handleLinearComment(deps: LinearCommentDependencies, input
   // The issue must be one a session of this hook's org AND project follows; anything else is ignored without a word (an unbound issue is not Rovara's business).
   const session = await sessionForSurface({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, { kind: "linear_issue", issueId: comment.issueKey, url: `https://linear.app/issue/${comment.issueKey}` });
   if (session === undefined || session.kind !== "task" || session.subject.kind !== "task" || session.project !== input.hook.project) return "ignored";
-  // An issue key (`ENG-142`) exists in every Linear workspace: the comment must come from the workspace the binding names. A binding made before bindings named theirs asks the org's Linear connection; with no
-  // answer either way it is believed as before. A comment whose own link names another workspace, or none, is ignored without a word (M8).
+  // An issue key (`ENG-142`) exists in every Linear workspace, so the comment must come from the workspace the binding names (M8). A binding made before bindings named theirs asks the org's Linear
+  // connections: exactly one workspace is that one. With several, the signed comment's own link says which workspace this is, and it must be one of the org's; with no link workspace, nothing is posted (S1).
+  // With none known (or unreadable), the comment's own link is used when it has one, and otherwise the comment is believed as it always was.
   const bound = (await sessionBindingsOf({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, session.sessionId).catch(() => [])).find((binding) => binding.kind === "linear_issue" && binding.issueId === comment.issueKey);
-  const expectedWorkspace = (bound === undefined ? undefined : linearWorkspaceOfBinding(bound)) ?? await deps.workspaceOfOrg?.(orgId).catch(() => undefined);
+  let expectedWorkspace = bound === undefined ? undefined : linearWorkspaceOfBinding(bound);
+  if (expectedWorkspace === undefined) {
+    const known = await deps.workspacesOfOrg?.(orgId).catch(() => undefined);
+    if (known !== undefined && known.length > 1) {
+      if (comment.workspace === undefined || !known.includes(comment.workspace)) return "ignored";
+      expectedWorkspace = comment.workspace;
+    } else {
+      expectedWorkspace = known?.length === 1 ? known[0] : comment.workspace;
+    }
+  }
   if (expectedWorkspace !== undefined && comment.workspace !== expectedWorkspace) return "ignored";
   if (!await firstTime(deps, orgId, comment.commentId)) return "duplicate";
   const say = async (text: string): Promise<void> => {

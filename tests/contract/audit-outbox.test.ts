@@ -815,6 +815,7 @@ describe("I4: the builders", () => {
     // Live interaction part 2
     ["auditSessionRedirected", (occurrence) => builders.auditSessionRedirected({ ...base, occurrence, details, sessionId: "ses_1", taskId: "task_1", messageId: "msg_1", mode: "keep_plan", step: "IMPLEMENT", outcome: "restarted" })],
     ["auditTaskAsked (each)", (occurrence) => builders.auditTaskAsked({ ...base, occurrence, details, scope: "each", sessionId: "ses_1", askId: "ask_1", audience: "web", contextBytes: 2048, model: "model_1" })],
+    ["auditAskLinearCommentKept", (occurrence) => builders.auditAskLinearCommentKept({ ...base, occurrence, details, sessionId: "ses_1", askId: "ask_1", reason: "not_rovaras", attempts: 10 })],
     ["auditTaskAsked (daily)", (occurrence) => builders.auditTaskAsked({ ...base, occurrence, details, scope: "daily", projectName: "Secret Project", count: 3 })],
     ["auditDiagnosisStarted", (occurrence) => builders.auditDiagnosisStarted({ ...base, occurrence, details, diagnosisId: "diag_1", errorKind: "task", errorCode: "CHECKS_FAILED", tier: "light" })],
     ["auditDiagnosisProposed", (occurrence) => builders.auditDiagnosisProposed({ ...base, occurrence, details, diagnosisId: "diag_1", counts: { explain: 1, retryWithNote: 1, redirect: 0, settingsChange: 0, newTask: 0, adminSteps: 0, contactSupport: 0 }, dropped: 0 })],

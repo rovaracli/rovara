@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { OrgConnectionStore, LINEAR_GRAPHQL, connectionActorIds, connectionWorkspaceKeys } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
-import { linearCommentIdFor, linearWriteOf, LINEAR_COMMENT_MAX_CHARS } from "../../packages/broker/src/rovara-code/linear-write.js";
+import { linearCommentIdFor, linearWriteOf, LINEAR_COMMENT_MAX_CHARS, LINEAR_RATE_ATTEMPTS, LINEAR_RATE_WAIT_MAX_MS, LINEAR_RATE_WAIT_TOTAL_MS } from "../../packages/broker/src/rovara-code/linear-write.js";
 import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
@@ -27,10 +27,18 @@ function fakeLinear(options: { workspace?: string; viewer?: string; issueKey?: s
   const comments = new Map<string, { id: string; body: string; userId: string; issue: string }>([["person-comment-1", { id: "person-comment-1", body: "a person wrote this", userId: PERSON, issue: issueKey }]]);
   const calls: Array<{ url: string; auth: string | null; query: string; variables: Record<string, unknown>; redirect: unknown }> = [];
   let failed = false;
+  // Controls a test can set after the fake is made: errors for the comment lookup, whether a missing comment is answered as Linear's real not-found error, and a rate limit.
+  const state = { commentReadErrors: undefined as unknown[] | undefined, missingAsError: false, rate: undefined as { times: number; style: "429" | "graphql"; retryAfter?: string } | undefined, rateHits: 0 };
   const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
     const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { query: string; variables: Record<string, unknown> };
     const headers = init?.headers as Record<string, string>;
     calls.push({ url: String(url), auth: headers["authorization"] ?? null, query: body.query, variables: body.variables ?? {}, redirect: init?.redirect });
+    if (state.rate !== undefined && state.rate.times > 0 && !/viewer/u.test(body.query)) {
+      state.rate.times -= 1;
+      state.rateHits += 1;
+      const headers = state.rate.retryAfter === undefined ? {} : { "retry-after": state.rate.retryAfter };
+      return state.rate.style === "429" ? new Response("{}", { status: 429, headers }) : new Response(JSON.stringify({ errors: [{ message: "Rate limit exceeded", extensions: { code: "RATELIMITED" } }] }), { status: 400, headers });
+    }
     const json = (data: unknown, errors?: unknown) => new Response(JSON.stringify({ data, ...(errors === undefined ? {} : { errors }) }), { status: 200 });
     const v = body.variables ?? {};
     if (/viewer/u.test(body.query)) return json({ viewer: { id: options.viewer ?? ROVARA, organization: { urlKey: workspace } } });
@@ -49,7 +57,9 @@ function fakeLinear(options: { workspace?: string; viewer?: string; issueKey?: s
     }
     if (/commentDelete/u.test(body.query)) { comments.delete(String(v["id"])); return json({ commentDelete: { success: true } }); }
     if (/comment\(id/u.test(body.query)) {
+      if (state.commentReadErrors !== undefined) return json(null, state.commentReadErrors);
       const found = comments.get(String(v["id"]));
+      if (found === undefined && state.missingAsError) return json(null, [{ message: "Entity not found: Comment", extensions: { code: "INVALID_INPUT", userError: true } }]);
       return json({ comment: found === undefined ? null : { id: found.id, user: { id: found.userId }, issue: { identifier: found.issue } } });
     }
     if (/issue\(id/u.test(body.query)) {
@@ -57,10 +67,10 @@ function fakeLinear(options: { workspace?: string; viewer?: string; issueKey?: s
     }
     return json(null, [{ message: "unknown" }]);
   }) as unknown as typeof fetch;
-  return { fetchImpl, calls, comments, mutations: () => calls.filter((call) => /mutation/u.test(call.query)) };
+  return { fetchImpl, calls, comments, state, mutations: () => calls.filter((call) => /mutation/u.test(call.query)) };
 }
 
-async function world(connections: Array<{ id: string; key: string; access?: "read" | "read_write"; identity?: "service" | "personal"; linear: ReturnType<typeof fakeLinear> }>, orgId: OrgId = ORG_A) {
+async function world(connections: Array<{ id: string; key: string; access?: "read" | "read_write"; identity?: "service" | "personal"; unchecked?: boolean; linear: ReturnType<typeof fakeLinear> }>, orgId: OrgId = ORG_A, options: { sleeps?: number[] } = {}) {
   const clock = { now: Date.parse("2026-11-02T09:00:00.000Z") };
   const fake = new FakeOrgSecrets({ env: ENV, now: () => clock.now });
   const db = new FakeDynamoDb();
@@ -77,9 +87,9 @@ async function world(connections: Array<{ id: string; key: string; access?: "rea
   const store = new OrgConnectionStore({ ...deps, fetch: fetchImpl });
   for (const connection of connections) {
     await store.put({ orgId, by: "dev-admin", connection: { connectionId: connection.id, type: "linear", label: "Linear", access: connection.access ?? "read_write", ...(connection.identity === undefined ? {} : { identity: connection.identity }) }, secret: { apiKey: connection.key } });
-    await store.check(orgId, connection.id);
+    if (connection.unchecked !== true) await store.check(orgId, connection.id);
   }
-  return { deps, store, db, port: linearWriteOf({ deps, fetch: fetchImpl }), fetchImpl };
+  return { deps, store, db, port: linearWriteOf({ deps, fetch: fetchImpl, sleep: async (ms) => { options.sleeps?.push(ms); } }), fetchImpl };
 }
 
 describe("the connection's check learns the workspace", () => {
@@ -221,5 +231,116 @@ describe("the id", () => {
     const hex = digest.subarray(0, 16).toString("hex");
     expect(linearCommentIdFor(ORG_A, "ask:ask_1").replace(/-/gu, "").length).toBe(32);
     expect(linearCommentIdFor(ORG_A, "ask:ask_1").slice(0, 8)).toBe(hex.slice(0, 8));
+  });
+});
+
+describe("B1: every comment Rovara posts can be edited or deleted later, and \"gone\" means Linear's real not-found only", () => {
+  it("(a) a connection that was never checked as an account posts nothing", async () => {
+    const linear = fakeLinear();
+    const t = await world([{ id: CON_1, key: KEY_1, linear, unchecked: true }]);
+    linear.calls.length = 0;
+    await expect(t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "hello", commentKey: "ask:ask_20" })).rejects.toThrow(/not set up/u);
+    expect(linear.mutations()).toHaveLength(0);
+    expect(linear.calls).toHaveLength(0);
+    // With a checked connection beside it, only the checked one writes.
+    const other = fakeLinear();
+    const both = await world([{ id: CON_1, key: KEY_1, linear, unchecked: true }, { id: CON_2, key: KEY_2, linear: other }]);
+    const posted = await both.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "hello", commentKey: "ask:ask_21" });
+    expect(other.comments.has(posted.commentId)).toBe(true);
+    expect(linear.comments.has(posted.commentId)).toBe(false);
+  });
+
+  it("(b) an error from Linear that is not its real not-found (permission, a 200 with errors) is a fault to retry, never \"gone\": remove and update throw and nothing is deleted", async () => {
+    const linear = fakeLinear();
+    const t = await world([{ id: CON_1, key: KEY_1, linear }]);
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "named Maya", commentKey: "ask:ask_22" });
+    linear.state.commentReadErrors = [{ message: "You do not have access to this comment", extensions: { code: "FORBIDDEN" } }];
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(t.port.update({ orgId: ORG_A, commentId: posted.commentId, text: "x" })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    linear.state.commentReadErrors = [{ message: "Something went wrong" }];
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(linear.comments.has(posted.commentId)).toBe(true);
+    expect(linear.comments.get(posted.commentId)!.body).toBe("named Maya");
+    // Mixed with a real not-found in the same answer is still not a plain not-found.
+    linear.state.commentReadErrors = [{ message: "Entity not found: Comment" }, { message: "You do not have access" }];
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("(b) Linear's real not-found answers (a null comment, or the \"Entity not found\" error) are gone: remove is done and update says NOT_FOUND", async () => {
+    const linear = fakeLinear();
+    const t = await world([{ id: CON_1, key: KEY_1, linear }]);
+    const missing = linearCommentIdFor(ORG_A, "ask:never");
+    await expect(t.port.remove({ orgId: ORG_A, commentId: missing })).resolves.toBeUndefined();
+    await expect(t.port.update({ orgId: ORG_A, commentId: missing, text: "x" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    linear.state.missingAsError = true;
+    await expect(t.port.remove({ orgId: ORG_A, commentId: missing })).resolves.toBeUndefined();
+    await expect(t.port.update({ orgId: ORG_A, commentId: missing, text: "x" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("(b) with two connections, one that is refused does not hide the comment another can see; but a refusal with no sight of it is a fault", async () => {
+    const one = fakeLinear({ workspace: "acme" });
+    const two = fakeLinear({ workspace: "other" });
+    const t = await world([{ id: CON_1, key: KEY_1, linear: one }, { id: CON_2, key: KEY_2, linear: two }]);
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "named Maya", commentKey: "ask:ask_23", workspace: "acme" });
+    one.state.commentReadErrors = [{ message: "no access", extensions: { code: "FORBIDDEN" } }];
+    // CON_1 is refused and CON_2 knows no such comment: nothing proves it is gone.
+    two.state.missingAsError = true;
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(one.comments.has(posted.commentId)).toBe(true);
+  });
+
+  it("(c) a comment whose author is not the connection's account (the connection was re-keyed to another account) is refused, not gone", async () => {
+    const linear = fakeLinear();
+    const t = await world([{ id: CON_1, key: KEY_1, linear }]);
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "named Maya", commentKey: "ask:ask_24" });
+    linear.comments.get(posted.commentId)!.userId = PERSON;
+    await expect(t.port.update({ orgId: ORG_A, commentId: posted.commentId, text: "x" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("(c) with no connection that can be used any more, an edit or a delete is a retryable fault, not gone", async () => {
+    const linear = fakeLinear();
+    const t = await world([{ id: CON_1, key: KEY_1, linear }]);
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "named Maya", commentKey: "ask:ask_25" });
+    await t.store.remove({ orgId: ORG_A, connectionId: CON_1, by: "dev-admin" });
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(t.port.update({ orgId: ORG_A, commentId: posted.commentId, text: "x" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(linear.comments.has(posted.commentId)).toBe(true);
+  });
+});
+
+describe("S4: Linear's rate limits are waited out as it asks, a bounded number of times", () => {
+  it("an HTTP 429 with Retry-After waits that long and then posts once", async () => {
+    const linear = fakeLinear();
+    const sleeps: number[] = [];
+    const t = await world([{ id: CON_1, key: KEY_1, linear }], ORG_A, { sleeps });
+    linear.state.rate = { times: 1, style: "429", retryAfter: "2" };
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "after a wait", commentKey: "ask:ask_26" });
+    expect(sleeps).toEqual([2000]);
+    expect([...linear.comments.values()].filter((comment) => comment.body === "after a wait")).toHaveLength(1);
+    expect(posted.commentId).toBe(linearCommentIdFor(ORG_A, "ask:ask_26"));
+  });
+
+  it("a RATELIMITED answer (Linear sends it with a 400) is the same, and a wait longer than the bound is cut to it", async () => {
+    const linear = fakeLinear();
+    const sleeps: number[] = [];
+    const t = await world([{ id: CON_1, key: KEY_1, linear }], ORG_A, { sleeps });
+    linear.state.rate = { times: 1, style: "graphql", retryAfter: "600" };
+    await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "later", commentKey: "ask:ask_27" });
+    expect(sleeps).toEqual([LINEAR_RATE_WAIT_MAX_MS]);
+  });
+
+  it("a limit that does not lift is TOO_MANY_REQUESTS after the bounded tries, with no key or text in the fault, and writes nothing", async () => {
+    const linear = fakeLinear();
+    const sleeps: number[] = [];
+    const t = await world([{ id: CON_1, key: KEY_1, linear }], ORG_A, { sleeps });
+    linear.state.rate = { times: 99, style: "429" };
+    const error = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "SECRET-WORDS", commentKey: "ask:ask_28" }).then(() => undefined, (caught: Error & { code?: string }) => caught);
+    expect(error).toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    expect(JSON.stringify(error?.message)).not.toMatch(/SECRET-WORDS|lin_api_/u);
+    expect(sleeps.length).toBe(LINEAR_RATE_ATTEMPTS - 1);
+    expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(LINEAR_RATE_WAIT_TOTAL_MS);
+    expect(linear.state.rateHits).toBe(LINEAR_RATE_ATTEMPTS);
+    expect(linear.comments.size).toBe(1);
   });
 });

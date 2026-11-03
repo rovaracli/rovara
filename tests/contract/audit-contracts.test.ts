@@ -189,7 +189,7 @@ describe("the event catalog", () => {
       "mcp_server.installed", "mcp_server.probed", "mcp_server.changed_needs_review", "mcp_server.task_started", "mcp_server.task_stopped", "mcp_server.egress_updated", "mcp_server.secret_replaced",
       "context_source.proposed", "context_source.applied", "context_source.rejected",
       // Live interaction part 2
-      "session.redirected", "task.asked", "diagnosis.started", "diagnosis.proposed", "diagnosis.proposal_raised", "diagnosis.support_escalated", "diagnosis.bundle_prepared", "setup.host_asked", "setup.host_refused", "setup.limits_changed", "setup.locks_changed", "setup.locks_change_proposed", "setup.locks_change_approved",
+      "session.redirected", "task.asked", "ask.linear_comment_kept", "diagnosis.started", "diagnosis.proposed", "diagnosis.proposal_raised", "diagnosis.support_escalated", "diagnosis.bundle_prepared", "setup.host_asked", "setup.host_refused", "setup.limits_changed", "setup.locks_changed", "setup.locks_change_proposed", "setup.locks_change_approved",
       "sso.sign_in", "sso.sign_in_refused", "sso.break_glass_used", "sso.group_mapping_changed", "sso.break_glass_changed", "sso.saml_changed",
       // v1.2 learning loop (B7)
       "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.withdrawn", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",

@@ -753,6 +753,19 @@ export function askLinearScrubKey(orgId: OrgId, sessionId: SessionId, askId: str
   return { pk: askLinearScrubPk(orgId), sk: `${keyPart(sessionId, "a session id")}#${keyPart(askId, "an ask id")}` };
 }
 
+/**
+ * Lane ask-linear: the lasting record of a Linear comment that could not be rewritten after an erase (given up after the bounded tries). One item per Ask in the org's `ASKLINEARKEPT` partition, for an
+ * admin to read: ids, a fixed reason word and counts only, never words. It is kept for a year.
+ */
+export function askLinearKeptKey(orgId: OrgId, sessionId: SessionId, askId: string): OrgKey {
+  return { pk: askLinearKeptPk(orgId), sk: `${keyPart(sessionId, "a session id")}#${keyPart(askId, "an ask id")}` };
+}
+
+/** The partition of the comments Rovara could not rewrite. */
+export function askLinearKeptPk(orgId: OrgId): string {
+  return orgScoped(orgId, "ASKLINEARKEPT");
+}
+
 /** The partition of the Linear comments that wait to be rewritten (what the ask maintenance run queries). */
 export function askLinearScrubPk(orgId: OrgId): string {
   return orgScoped(orgId, "ASKLINEARFIX");
