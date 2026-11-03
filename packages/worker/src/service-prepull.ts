@@ -4,7 +4,8 @@
 // its size limit, and the image is already digest-pinned and its stage 2 hash checked. The file names a repository and a digest for each image and nothing else; the registry host is the install's and is given when
 // the pull runs. Every reference built here is `<registry>/<repository>@sha256:<digest>`: no tag can be pulled.
 //
-// The pre-pull is an optimisation and never a requirement: it is bounded (a count, a time budget), an image that fails is reported and skipped, and nothing here throws. A run that needs an image that was not pulled
+// The pre-pull is an optimisation and never a requirement: it is bounded (a count, a time budget that also bounds EACH pull: one hung pull is cut off when the budget ends, by an AbortSignal handed to the port and a timer
+// the pull is raced against, so it cannot block the worker's start), an image that fails is reported and skipped, and nothing here throws. A run that needs an image that was not pulled
 // ahead pulls it itself, by the same digest, through the service runner (TS17).
 //
 // Wiring pending: the caller (the worker's start, after the service runner exists) gives the registry host and a `pull` that runs `docker pull <reference>`; nothing calls this yet.
@@ -39,11 +40,37 @@ export function prepullReferences(list: PrepullList, input: { registry: string; 
 }
 
 export interface PrepullPorts {
-  /** Pulls one digest reference. May throw. */
-  pull: (reference: string) => Promise<void>;
-  /** Whether the host already holds the reference (a pull is skipped then). */
-  present?: (reference: string) => Promise<boolean>;
+  /** Pulls one digest reference. May throw. `signal` aborts when the time budget ends: a port that can stop its `docker pull` (kill the process) should; one that cannot is still not waited for. */
+  pull: (reference: string, signal: AbortSignal) => Promise<void>;
+  /** Whether the host already holds the reference (a pull is skipped then). Bounded by the same budget as a pull. */
+  present?: (reference: string, signal: AbortSignal) => Promise<boolean>;
   now?: () => number;
+}
+
+/** Thrown inside the loop when the budget ends while a call is still running. */
+class PrepullBudgetEnded extends Error {
+  constructor() {
+    super("the pre-pull time budget ended");
+    this.name = "PrepullBudgetEnded";
+  }
+}
+
+/** Runs `run` with an AbortSignal and gives up on it after `ms`: the signal is aborted and the result is `PrepullBudgetEnded`, whether or not `run` ever settles. A late settlement of `run` is handled: the race subscribes to it, so a rejection after the cut-off is not an unhandled rejection. */
+async function withinBudget<T>(ms: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const ended = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new PrepullBudgetEnded());
+    }, Math.max(0, ms));
+  });
+  const running = (async () => run(controller.signal))();
+  try {
+    return await Promise.race([running, ended]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 export interface PrepullResult {
@@ -67,18 +94,28 @@ export async function prepullCatalogImages(input: { list: PrepullList; registry:
     return { ...result, failed: [{ id: "*", reason: error instanceof Error ? error.message.slice(0, 200) : "invalid list" }] };
   }
   for (const [index, { id, reference }] of references.entries()) {
-    if (now() >= deadline) {
+    const remaining = deadline - now();
+    if (remaining <= 0) {
       result.skipped.push(...references.slice(index).map((rest) => rest.id));
       break;
     }
     try {
-      if (input.ports.present !== undefined && (await input.ports.present(reference))) {
-        result.alreadyPresent.push(id);
-        continue;
+      if (input.ports.present !== undefined) {
+        const present = input.ports.present;
+        if (await withinBudget(remaining, (signal) => present(reference, signal))) {
+          result.alreadyPresent.push(id);
+          continue;
+        }
       }
-      await input.ports.pull(reference);
+      await withinBudget(deadline - now(), (signal) => input.ports.pull(reference, signal));
       result.pulled.push(id);
     } catch (error) {
+      if (error instanceof PrepullBudgetEnded) {
+        // The budget ended with this image still running: it is a failure (it may finish on its own later) and nothing after it is tried.
+        result.failed.push({ id, reason: "the pull did not finish inside the time budget" });
+        result.skipped.push(...references.slice(index + 1).map((rest) => rest.id));
+        break;
+      }
       result.failed.push({ id, reason: error instanceof Error ? error.message.slice(0, 200) : "pull failed" });
     }
   }

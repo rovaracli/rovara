@@ -1,24 +1,30 @@
 // Test services, TS19 (design test-services.md, sections 2.5, 5.3 and 10): the registry side of the image catalog.
 //
-// For a named environment, ONLY when the stack parameter `TestServicesEnabled` (switch `tx`) is "1", this creates in the control plane's stack:
+// For a named environment this creates in the control plane's stack:
 //   - one ECR repository per catalog repository (`rovara-catalog/<env>/svc/<name>`: postgres 15, 16 and 17 share one) with IMMUTABLE tags, scan on push and KMS encryption with a key of its own (or the customer's, Enterprise:
 //     `kmsKeyArn`);
 //   - a lifecycle policy: untagged images expire after a day (an image that a manifest list references cannot be expired before the list, so a multi-platform image's platform manifests stay with it), and a count
 //     BACKSTOP of tagged images. Tags are the first 32 hex digits of the digest; the catalog pins DIGESTS, so a tag is only a handle and no run ever starts from one.
-// With `tx` off every resource is conditional on the switch and none exists: nothing is created, nothing costs anything, and today's flow is untouched. The repositories and the key are RETAINED if the switch is turned off again
-// or the stack is deleted (an image a saved environment or a pinned revision still names must stay pullable).
+//
+// These resources are UNCONDITIONAL: they do not depend on the `TestServicesEnabled` switch (`tx`). The repositories have fixed names and are RETAINED, so a condition would break the deploy when the switch goes on,
+// off and on again (the retained repository still exists, and CloudFormation cannot create a second one of that name) and would orphan a retained KMS key at every re-enable. An empty repository is inert and costs
+// nothing; the key costs its monthly fee. Everything that USES them (the build's pushes, the worker's pulls, the helper launcher) stays behind the switch in the tasks that wire it. The repositories and the key are
+// RETAINED if the stack is deleted (an image a saved environment or a pinned revision still names must stay pullable).
 //
 // What is deliberately NOT here:
-//   - no grant for any role. A worker pulls through the instance role's existing ECR read grant (ec2-workers.ts is untouched), and the operator who runs `scripts/catalog-build.ts` pushes with the operator's own credentials.
-//     A push cannot change what a pinned digest means: the catalog names images by digest, the build signs the catalog, and the signature is what a consumer checks;
+//   - no grant for any role. A worker on a NAMED environment has NO pull grant on these repositories today: ec2-workers.ts gives the ECR read grant to the legacy role only, and worker-settings.ts grants one repository.
+//     The grant is deferred to the wiring task (the worker's start or the service runner, TS17): `ecr:BatchGetImage` and `ecr:GetDownloadUrlForLayer` on `repository/rovara-catalog/<env>/svc/*`, plus the key if it is
+//     the customer's. The operator who runs `scripts/catalog-build.ts` pushes with the operator's own credentials. A push cannot change what a pinned digest means: the catalog names images by digest, the build signs
+//     the catalog, and the signature is what a consumer checks;
 //   - nothing in the broker's environment (the Lambda environment is at its 4 KB budget).
 //
 // ENTERPRISE NOTES
 //   - With `kmsKeyArn` the repositories are encrypted with the customer's key, which must be in this account and region. CloudFormation's deploy role creates the repository, so the customer's key policy must let that role
 //     create the grant ECR uses (kms:CreateGrant, kms:DescribeKey), as for any ECR repository encrypted with a customer key.
 //   - An Enterprise install fills these repositories from the signed bundle (the bundle image names are `svc-<id>`, see `catalogBundleImageName` in contracts) or serves the same digests from its own registry; the digest check
-//     is `checkCatalogMirror` / `resolveCatalogImage` in contracts.
-import { Aws, CfnCondition, CfnResource, Fn, RemovalPolicy, Stack, Token, aws_ecr as ecr, aws_kms as kms, type CfnParameter } from "aws-cdk-lib";
+//     is `checkCatalogMirror` / `resolveCatalogImage` in contracts. ANY path that fills a repository from the bundle MUST TAG each image (the tag is the first 32 hex digits of its digest, as the build tags it): the lifecycle
+//     policy expires UNTAGGED images after one day, and an image pushed by digest alone would vanish.
+import { Aws, RemovalPolicy, Stack, Token, aws_ecr as ecr, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { catalogRepositoryName } from "@agentx/contracts";
 
@@ -36,13 +42,36 @@ export function serviceCatalogLifecyclePolicy(): { rules: Array<Record<string, u
   };
 }
 
+/**
+ * The key policy: administration WITHOUT use, and use only through ECR. As the saved environment images key (saved-env-images.ts): the account root may administer the key but is given no Decrypt, Encrypt or
+ * GenerateDataKey, and `kms:CreateAlias` stands in for `kms:Create*` (which would include kms:CreateGrant); an IAM principal of the account may create the grant ECR uses and describe the key only when the call comes
+ * through ECR (`kms:ViaService`) and the grant is for an AWS resource (`kms:GrantIsForAWSResource`). Nobody can use the key directly.
+ */
+export function serviceCatalogKeyPolicy(): iam.PolicyDocument {
+  return new iam.PolicyDocument({
+    statements: [
+      new iam.PolicyStatement({
+        sid: "AdminWithoutUse",
+        principals: [new iam.AccountRootPrincipal()],
+        actions: ["kms:CreateAlias", "kms:Describe*", "kms:Enable*", "kms:List*", "kms:Put*", "kms:Update*", "kms:Revoke*", "kms:Get*", "kms:TagResource", "kms:UntagResource", "kms:CancelKeyDeletion"],
+        resources: ["*"],
+      }),
+      new iam.PolicyStatement({
+        sid: "UseOnlyThroughEcr",
+        principals: [new iam.AccountRootPrincipal()],
+        actions: ["kms:CreateGrant", "kms:DescribeKey"],
+        resources: ["*"],
+        conditions: { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` }, Bool: { "kms:GrantIsForAWSResource": "true" } },
+      }),
+    ],
+  });
+}
+
 export interface ServiceCatalogImagesProps {
   /** The named environment (`staging`, `prod`). */
   readonly env: string;
   /** The catalog's repositories (`svc/postgres`, ...), from `catalogRepositories(catalog)`. */
   readonly repositories: readonly string[];
-  /** The `TestServicesEnabled` parameter (switch `tx`): every resource here exists only when it is "1". */
-  readonly testServicesEnabled: CfnParameter;
   /** Enterprise: the customer's own key, in this account and region. Absent: this construct makes the key. */
   readonly kmsKeyArn?: string;
 }
@@ -55,7 +84,6 @@ export function attachServiceCatalogImages(scope: Construct, props: ServiceCatal
 export class ServiceCatalogImages extends Construct {
   readonly repositories: ecr.CfnRepository[] = [];
   readonly key: kms.Key | undefined;
-  readonly condition: CfnCondition;
 
   constructor(scope: Construct, id: string, props: ServiceCatalogImagesProps) {
     super(scope, id);
@@ -63,7 +91,6 @@ export class ServiceCatalogImages extends Construct {
     if (props.repositories.length === 0) throw new Error("service catalog images: the catalog names no repository");
     const names = props.repositories.map((repository) => catalogRepositoryName(props.env, repository));
     if (new Set(names).size !== names.length) throw new Error("service catalog images: a repository is listed once");
-    this.condition = new CfnCondition(this, "Enabled", { expression: Fn.conditionEquals(props.testServicesEnabled.valueAsString, "1") });
 
     let kmsKey: string;
     if (props.kmsKeyArn !== undefined) {
@@ -77,6 +104,7 @@ export class ServiceCatalogImages extends Construct {
         description: "Rovara test service catalog images: encrypts the catalog repositories",
         enableKeyRotation: true,
         removalPolicy: RemovalPolicy.RETAIN,
+        policy: serviceCatalogKeyPolicy(),
       });
       kmsKey = this.key.keyArn;
     }
@@ -95,11 +123,6 @@ export class ServiceCatalogImages extends Construct {
       });
       created.applyRemovalPolicy(RemovalPolicy.RETAIN);
       this.repositories.push(created);
-    }
-
-    // Everything above exists only while the switch is on.
-    for (const child of this.node.findAll()) {
-      if (CfnResource.isCfnResource(child)) child.cfnOptions.condition = this.condition;
     }
   }
 

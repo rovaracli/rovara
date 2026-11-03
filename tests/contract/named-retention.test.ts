@@ -40,7 +40,7 @@ describe("retained resources in a named environment", () => {
         "AuditLedgerAuditExportsBucket AWS::S3::Bucket", "AuditLedgerAuditIntakeDeadLetterQueue AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue AWS::SQS::Queue",
         "AuditLedgerAuditLedgerBucket AWS::S3::Bucket",
         "DeveloperSignInTable AWS::DynamoDB::Table", "ModelProxySaltKey AWS::SecretsManager::Secret",
-        // Test services (TS19): the image catalog's key and one repository per catalog repository, all present only while TestServicesEnabled is 1. Empty on the first create, so a rolled-back first create may delete them.
+        // Test services (TS19): the image catalog's key and one repository per catalog repository, unconditional (they do not depend on TestServicesEnabled). Empty on the first create, so a rolled-back first create may delete them.
         "ServiceCatalogImagesImagesKey AWS::KMS::Key", "ServiceCatalogImagesRepositorysvcdnshelper AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcfakeserver AWS::ECR::Repository",
         "ServiceCatalogImagesRepositorysvclocalaws AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcmysql AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcpostgres AWS::ECR::Repository",
         "ServiceCatalogImagesRepositorysvcrabbitmq AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcredis AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvctestaccountproxy AWS::ECR::Repository",

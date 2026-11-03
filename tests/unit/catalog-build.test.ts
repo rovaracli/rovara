@@ -9,6 +9,7 @@ import {
   PrepullListSchema,
   ServiceCatalogSchema,
   catalogPrepullList,
+  combinedSbomRef,
   loadSignedCatalog,
   sha256HexOf,
   verifyImageStatement,
@@ -18,7 +19,9 @@ import {
   CatalogBuildError,
   buildPinnedCatalog,
   ecrScanPort,
+  childrenProblem,
   evidenceFolderOf,
+  platformSlugOf,
   skopeoMirrorPort,
   syftSbomPort,
   writeCatalogBuild,
@@ -34,24 +37,32 @@ const catalog = unpinnedCatalog();
 const live = catalog.entries.filter((entry) => entry.status !== "retired");
 const sourceDigest = (id: string): string => sha(`source:${id}`);
 const sources = (): SourcesFile => ({ schemaVersion: 1, sources: Object.fromEntries(live.map((entry) => [entry.id, `registry.example.com/library/${entry.family}@sha256:${sourceDigest(entry.id)}`])) });
-const sbomDocument = (id: string): Buffer => Buffer.from(JSON.stringify({ spdxVersion: "SPDX-2.3", name: id, packages: [] }));
+const PLATFORMS = ["linux/arm64", "linux/amd64"] as const;
+/** The child manifest digest of one platform of an image: not the index digest, and different per platform. */
+const childDigest = (id: string, platform: string): string => sha(`child:${id}:${platform}`);
+const sbomDocument = (id: string, platform: string): Buffer => Buffer.from(JSON.stringify({ spdxVersion: "SPDX-2.3", name: `${id} ${platform}`, packages: [] }));
 
 interface Calls { mirror: string[]; sbom: string[]; scan: string[]; sign: number }
-function fakePorts(change: { mirror?: (id: string) => Partial<MirrorResult>; sbom?: (id: string) => Buffer; scan?: (id: string, digest: string) => Partial<ScanResult> } = {}) {
+interface FakeChanges {
+  mirror?: (id: string) => Partial<MirrorResult>;
+  sbom?: (id: string, platform: string) => Buffer | undefined;
+  scan?: (id: string, platform: string, digest: string) => Partial<ScanResult>;
+}
+function fakePorts(change: FakeChanges = {}) {
   const calls: Calls = { mirror: [], sbom: [], scan: [], sign: 0 };
   const signer = testSigner();
   const ports: CatalogBuildPorts = {
     async mirror({ id, source, expectedDigest, repositoryName }) {
       calls.mirror.push(`${id} ${source} -> ${repositoryName}`);
-      return { digest: expectedDigest, platforms: ["linux/arm64", "linux/amd64"], ...change.mirror?.(id) };
+      return { digest: expectedDigest, children: PLATFORMS.map((platform) => ({ platform, digest: childDigest(id, platform) })), ...change.mirror?.(id) };
     },
-    async sbom({ id }) {
-      calls.sbom.push(id);
-      return change.sbom?.(id) ?? sbomDocument(id);
+    async sbom({ id, platform, digest }) {
+      calls.sbom.push(`${id} ${platform} ${digest}`);
+      return change.sbom?.(id, platform) ?? sbomDocument(id, platform);
     },
-    async scan({ id, digest }) {
-      calls.scan.push(id);
-      return { digest, status: "complete", criticalOpen: 0, highOpen: 2, scannedAt: "2026-11-02T10:00:00.000Z", ...change.scan?.(id, digest) };
+    async scan({ id, platform, digest }) {
+      calls.scan.push(`${id} ${platform} ${digest}`);
+      return { digest, status: "complete", criticalOpen: 0, highOpen: 2, scannedAt: "2026-11-02T10:00:00.000Z", ...change.scan?.(id, platform, digest) };
     },
     signer: { publicKeyPem: signer.publicKeyPem, sign: async (message) => { calls.sign += 1; return signer.sign(message); } },
   };
@@ -78,12 +89,37 @@ describe("pinning the catalog", () => {
     expect(pinned).toMatchObject({ pinned: true, revision: catalog.revision + 1 });
     for (const entry of pinned.entries) {
       expect(entry.image.digest, entry.id).toBe(sourceDigest(entry.id));
-      expect(entry.sbomRef, entry.id).toBe(sha256HexOf(sbomDocument(entry.id)));
+      // One SBOM hash per entry in the catalog: the combined hash of its platforms' SBOM hashes (each platform's own is in the evidence and the signed statement).
+      expect(entry.sbomRef, entry.id).toBe(combinedSbomRef(PLATFORMS.map((platform) => ({ platform, sbomRef: sha256HexOf(sbomDocument(entry.id, platform)) }))));
       expect(entry.scan, entry.id).toEqual({ scannedAt: "2026-11-02T10:00:00.000Z", criticalOpen: 0, highOpen: 2 });
     }
     // The file everything vouches for is signed, and loads as a pinned catalog.
     const loaded = loadSignedCatalog({ catalogBytes: output.catalogBytes, signatureBytes: output.signatureBytes, trustedKeys: [signer.publicKeyPem] });
     expect(loaded.ok && loaded.catalog.revision).toBe(catalog.revision + 1);
+  });
+  it("takes the SBOM and the scan of EACH platform's child manifest, never of the index", async () => {
+    const { ports, calls } = fakePorts();
+    await build(ports);
+    expect(calls.sbom).toHaveLength(live.length * 2);
+    expect(calls.scan).toHaveLength(live.length * 2);
+    for (const entry of live) {
+      for (const platform of PLATFORMS) {
+        expect(calls.sbom, `${entry.id} ${platform}`).toContain(`${entry.id} ${platform} ${childDigest(entry.id, platform)}`);
+        expect(calls.scan, `${entry.id} ${platform}`).toContain(`${entry.id} ${platform} ${childDigest(entry.id, platform)}`);
+      }
+      expect(calls.sbom.some((call) => call.endsWith(sourceDigest(entry.id)))).toBe(false);
+      expect(calls.scan.some((call) => call.endsWith(sourceDigest(entry.id)))).toBe(false);
+    }
+  });
+  it("records the oldest scan time and the most highs any one platform shows in the catalog entry, and each platform's own result in the evidence", async () => {
+    const { ports } = fakePorts({
+      scan: (id, platform) => (id === "postgres@16" ? (platform === "linux/arm64" ? { highOpen: 2, scannedAt: "2026-11-02T10:00:00.000Z" } : { highOpen: 7, scannedAt: "2026-11-02T08:00:00.000Z" }) : {}),
+    });
+    const output = await build(ports);
+    expect(output.catalog.entries.find((entry) => entry.id === "postgres@16")!.scan).toEqual({ scannedAt: "2026-11-02T08:00:00.000Z", criticalOpen: 0, highOpen: 7 });
+    const files = new Map(output.evidence.map((item) => [item.path, item.bytes]));
+    expect(JSON.parse(files.get("evidence/postgres-16/linux-arm64/scan.json")!.toString())).toEqual({ platform: "linux/arm64", digest: childDigest("postgres@16", "linux/arm64"), status: "complete", criticalOpen: 0, highOpen: 2, scannedAt: "2026-11-02T10:00:00.000Z" });
+    expect(JSON.parse(files.get("evidence/postgres-16/linux-amd64/scan.json")!.toString())).toEqual({ platform: "linux/amd64", digest: childDigest("postgres@16", "linux/amd64"), status: "complete", criticalOpen: 0, highOpen: 7, scannedAt: "2026-11-02T08:00:00.000Z" });
   });
   it("changes nothing in an entry but its pin (digest, SBOM, scan) and the file's revision and pinned flag", async () => {
     const { ports } = fakePorts();
@@ -93,20 +129,28 @@ describe("pinning the catalog", () => {
       expect({ ...entry, sbomRef: undefined, scan: undefined, image: { ...entry.image, digest: undefined } }).toEqual({ ...before, sbomRef: undefined, scan: undefined, image: { ...before.image, digest: undefined } });
     }
   });
-  it("writes evidence for each image: its SBOM, scan and a signed statement that verifies for exactly that image", async () => {
+  it("writes evidence for each image: each platform's SBOM and scan, and a signed statement that lists the child digests and verifies for exactly that image", async () => {
     const { ports, signer } = fakePorts();
     const output = await build(ports);
     const folder = evidenceFolderOf("postgres@16");
     expect(folder).toBe("postgres-16");
+    expect(platformSlugOf("linux/arm64")).toBe("linux-arm64");
     const files = new Map(output.evidence.map((item) => [item.path, item.bytes]));
-    expect(files.size).toBe(live.length * 3);
-    expect(files.get(`evidence/${folder}/sbom.json`)).toEqual(sbomDocument("postgres@16"));
-    expect(JSON.parse(files.get(`evidence/${folder}/scan.json`)!.toString())).toEqual({ digest: sourceDigest("postgres@16"), status: "complete", criticalOpen: 0, highOpen: 2, scannedAt: "2026-11-02T10:00:00.000Z" });
+    expect(files.size).toBe(live.length * 5);
+    for (const platform of PLATFORMS) {
+      expect(files.get(`evidence/${folder}/${platformSlugOf(platform)}/sbom.json`), platform).toEqual(sbomDocument("postgres@16", platform));
+      expect(JSON.parse(files.get(`evidence/${folder}/${platformSlugOf(platform)}/scan.json`)!.toString()), platform).toEqual({ platform, digest: childDigest("postgres@16", platform), status: "complete", criticalOpen: 0, highOpen: 2, scannedAt: "2026-11-02T10:00:00.000Z" });
+    }
     const signed = JSON.parse(files.get(`evidence/${folder}/statement.json`)!.toString()) as SignedImageStatement;
-    expect(signed.statement).toEqual({ id: "postgres@16", repository: "svc/postgres", digest: sourceDigest("postgres@16"), sbomRef: sha256HexOf(sbomDocument("postgres@16")), scannedAt: "2026-11-02T10:00:00.000Z" });
+    const children = [...PLATFORMS].sort().map((platform) => ({ platform, digest: childDigest("postgres@16", platform), sbomRef: sha256HexOf(sbomDocument("postgres@16", platform)), scannedAt: "2026-11-02T10:00:00.000Z" }));
+    expect(signed.statement).toEqual({ id: "postgres@16", repository: "svc/postgres", digest: sourceDigest("postgres@16"), sbomRef: combinedSbomRef(children), scannedAt: "2026-11-02T10:00:00.000Z", children });
     expect(verifyImageStatement({ signed, trustedKeys: [signer.publicKeyPem] }).ok).toBe(true);
-    // The statement does not verify for another image's digest.
+    // The statement does not verify for another image's digest, nor when a child digest, a child's SBOM hash or a whole platform is changed or left out.
     expect(verifyImageStatement({ signed: { ...signed, statement: { ...signed.statement, digest: sourceDigest("mysql@8") } }, trustedKeys: [signer.publicKeyPem] }).ok).toBe(false);
+    const withChildren = (change: (list: typeof children) => typeof children) => ({ ...signed, statement: { ...signed.statement, children: change(children) } });
+    expect(verifyImageStatement({ signed: withChildren((list) => [{ ...list[0]!, digest: sha("swapped") }, list[1]!]), trustedKeys: [signer.publicKeyPem] }).ok).toBe(false);
+    expect(verifyImageStatement({ signed: withChildren((list) => [list[0]!]), trustedKeys: [signer.publicKeyPem] }).ok).toBe(false);
+    expect(verifyImageStatement({ signed: withChildren((list) => [{ ...list[0]!, sbomRef: sha("other sbom") }, list[1]!]), trustedKeys: [signer.publicKeyPem] }).ok).toBe(false);
   });
   it("makes the worker pre-pull list from the pinned catalog it just made", async () => {
     const { ports } = fakePorts();
@@ -150,23 +194,57 @@ describe("what refuses a build (all of them: nothing is returned, so nothing can
     expect(await refusalsOf(build(ports))).toEqual([{ id: "postgres@16", code: "digest_mismatch" }]);
   });
   it("an image that lacks a platform the catalog lists, or has one it does not", async () => {
-    expect(await refusalsOf(build(fakePorts({ mirror: (id) => (id === "mysql@8" ? { platforms: ["linux/amd64"] } : {}) }).ports))).toEqual([{ id: "mysql@8", code: "platforms_mismatch" }]);
-    expect(await refusalsOf(build(fakePorts({ mirror: (id) => (id === "mysql@8" ? { platforms: ["linux/amd64", "linux/arm64", "linux/s390x"] } : {}) }).ports))).toEqual([{ id: "mysql@8", code: "platforms_mismatch" }]);
+    const onlyAmd64 = [{ platform: "linux/amd64", digest: childDigest("mysql@8", "linux/amd64") }];
+    expect(await refusalsOf(build(fakePorts({ mirror: (id) => (id === "mysql@8" ? { children: onlyAmd64 } : {}) }).ports))).toEqual([{ id: "mysql@8", code: "platforms_mismatch" }]);
+    const extra = [...PLATFORMS, "linux/s390x"].map((platform) => ({ platform, digest: childDigest("mysql@8", platform) }));
+    expect(await refusalsOf(build(fakePorts({ mirror: (id) => (id === "mysql@8" ? { children: extra } : {}) }).ports))).toEqual([{ id: "mysql@8", code: "platforms_mismatch" }]);
+    expect(await refusalsOf(build(fakePorts({ mirror: (id) => (id === "mysql@8" ? { children: [] } : {}) }).ports))).toEqual([{ id: "mysql@8", code: "platforms_mismatch" }]);
   });
-  it("no SBOM, an SBOM that is not an SPDX or CycloneDX document, or an empty one", async () => {
-    for (const bad of [Buffer.alloc(0), Buffer.from("not json"), Buffer.from("[]"), Buffer.from('{"hello":1}')]) {
-      expect(await refusalsOf(build(fakePorts({ sbom: (id) => (id === "valkey@8" ? bad : sbomDocument(id)) }).ports))).toEqual([{ id: "valkey@8", code: "sbom_invalid" }]);
+  it("children that cannot be told apart or are not digests: a platform twice, a shared manifest, a digest that is not sha256", async () => {
+    const arm = { platform: "linux/arm64", digest: childDigest("mysql@8", "linux/arm64") };
+    const amd = { platform: "linux/amd64", digest: childDigest("mysql@8", "linux/amd64") };
+    for (const children of [[arm, { ...arm }], [arm, { ...amd, digest: arm.digest }], [arm, { ...amd, digest: "sha256:abc" }], [arm, { ...amd, digest: "latest" }]]) {
+      expect(await refusalsOf(build(fakePorts({ mirror: (id) => (id === "mysql@8" ? { children } : {}) }).ports)), JSON.stringify(children)).toEqual([{ id: "mysql@8", code: "platforms_mismatch" }]);
     }
-    const cyclone = fakePorts({ sbom: (id) => Buffer.from(JSON.stringify({ bomFormat: "CycloneDX", id })) });
+    expect(childrenProblem([arm, amd], ["linux/amd64", "linux/arm64"])).toBeUndefined();
+    expect(childrenProblem([arm], ["linux/arm64"])).toBeUndefined();
+  });
+  it("no SBOM, an SBOM that is not an SPDX or CycloneDX document, or an empty one, for either platform", async () => {
+    for (const platform of PLATFORMS) {
+      for (const bad of [Buffer.alloc(0), Buffer.from("not json"), Buffer.from("[]"), Buffer.from('{"hello":1}')]) {
+        const refused = await refusalsOf(build(fakePorts({ sbom: (id, which) => (id === "valkey@8" && which === platform ? bad : undefined) }).ports));
+        expect(refused, `${platform} ${bad.toString()}`).toEqual([{ id: "valkey@8", code: "sbom_invalid" }]);
+      }
+    }
+    const cyclone = fakePorts({ sbom: (id, platform) => Buffer.from(JSON.stringify({ bomFormat: "CycloneDX", id, platform })) });
     await expect(build(cyclone.ports)).resolves.toBeDefined();
   });
-  it("the scan gate: a critical finding, an unfinished scan, an unsupported image, and a scan of another image", async () => {
-    expect(await refusalsOf(build(fakePorts({ scan: (id) => (id === "postgres@17" ? { criticalOpen: 1 } : {}) }).ports))).toEqual([{ id: "postgres@17", code: "scan_critical" }]);
-    for (const status of ["pending", "failed", "unsupported"] as const) {
-      expect(await refusalsOf(build(fakePorts({ scan: (id) => (id === "postgres@17" ? { status } : {}) }).ports)), status).toEqual([{ id: "postgres@17", code: "scan_incomplete" }]);
+  it("the scan gate, per platform: a critical finding, an unfinished scan, an unsupported image, and a scan of another image refuse whichever platform it is", async () => {
+    for (const platform of PLATFORMS) {
+      const only = (change: Partial<ScanResult>): FakeChanges => ({ scan: (id, which) => (id === "postgres@17" && which === platform ? change : {}) });
+      expect(await refusalsOf(build(fakePorts(only({ criticalOpen: 1 })).ports)), `${platform} critical`).toEqual([{ id: "postgres@17", code: "scan_critical" }]);
+      for (const status of ["pending", "failed", "unsupported"] as const) {
+        expect(await refusalsOf(build(fakePorts(only({ status })).ports)), `${platform} ${status}`).toEqual([{ id: "postgres@17", code: "scan_incomplete" }]);
+      }
+      expect(await refusalsOf(build(fakePorts(only({ digest: sha("another image") })).ports)), `${platform} other`).toEqual([{ id: "postgres@17", code: "scan_not_for_image" }]);
+      expect(await refusalsOf(build(fakePorts(only({ highOpen: -1 })).ports)), `${platform} negative`).toEqual([{ id: "postgres@17", code: "scan_incomplete" }]);
     }
-    expect(await refusalsOf(build(fakePorts({ scan: (id) => (id === "postgres@17" ? { digest: sha("another image") } : {}) }).ports))).toEqual([{ id: "postgres@17", code: "scan_not_for_image" }]);
-    expect(await refusalsOf(build(fakePorts({ scan: (id) => (id === "postgres@17" ? { highOpen: -1 } : {}) }).ports))).toEqual([{ id: "postgres@17", code: "scan_incomplete" }]);
+  });
+  it("a scan of the INDEX digest instead of the platform's child is not accepted", async () => {
+    expect(await refusalsOf(build(fakePorts({ scan: (id) => ({ digest: sourceDigest(id) }) }).ports))).toContainEqual({ id: "postgres@16", code: "scan_not_for_image" });
+  });
+  it("names the platform in the refusal, and lists every platform's refusal when both fail", async () => {
+    const { ports } = fakePorts({ scan: (id) => (id === "postgres@17" ? { criticalOpen: 2 } : {}) });
+    try {
+      await build(ports);
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CatalogBuildError);
+      const messages = (error as CatalogBuildError).refusals.map((refusal) => refusal.message);
+      expect(messages).toHaveLength(2);
+      expect(messages.some((message) => message.startsWith("linux/arm64:"))).toBe(true);
+      expect(messages.some((message) => message.startsWith("linux/amd64:"))).toBe(true);
+    }
   });
   it("high findings do not refuse; they are recorded", async () => {
     const output = await build(fakePorts({ scan: () => ({ highOpen: 40 }) }).ports);
@@ -229,7 +307,7 @@ describe("writing a build", () => {
     await expect(readFile(join(root, "c", CATALOG_FILE))).rejects.toThrow();
     await expect(readFile(join(root, "c", good.path))).rejects.toThrow();
     await expect(readFile(join(root, "p.json"))).rejects.toThrow();
-    for (const bad of ["evidence/x/other.json", "/etc/passwd", "evidence/UPPER/sbom.json", "evidence/a/b/sbom.json", "outside/postgres-16/sbom.json"]) {
+    for (const bad of ["evidence/x/other.json", "/etc/passwd", "evidence/UPPER/linux-arm64/sbom.json", "evidence/a/b/sbom.json", "evidence/a/linux-arm64/other.json", "evidence/a/linux-s390x/sbom.json", "evidence/a/sbom.json", "evidence/a/linux-arm64/../../b/sbom.json", "outside/postgres-16/linux-arm64/sbom.json"]) {
       await expect(writeCatalogBuild({ ...output, evidence: [{ path: bad, bytes: Buffer.from("x") }] }, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json") }), bad).rejects.toThrow();
     }
     await writeFile(join(root, "keep"), "x");
@@ -243,7 +321,16 @@ describe("writing a build", () => {
 
 describe("the real ports (against fake commands and a fake ECR; nothing is run)", () => {
   const digest = sha("img");
-  const indexManifest = Buffer.from(JSON.stringify({ manifests: [{ platform: { os: "linux", architecture: "arm64" } }, { platform: { os: "linux", architecture: "amd64" } }, { platform: { os: "unknown", architecture: "unknown" } }] }));
+  const armChild = sha("arm child");
+  const amdChild = sha("amd child");
+  const indexManifest = Buffer.from(JSON.stringify({
+    manifests: [
+      { digest: `sha256:${armChild}`, platform: { os: "linux", architecture: "arm64" } },
+      { digest: `sha256:${amdChild}`, platform: { os: "linux", architecture: "amd64" } },
+      { digest: `sha256:${sha("attestation")}`, platform: { os: "unknown", architecture: "unknown" } },
+      { digest: "not-a-digest", platform: { os: "linux", architecture: "s390x" } },
+    ],
+  }));
   function commands(raw: Buffer): { port: CommandPort; log: Array<{ file: string; args: readonly string[]; env?: Record<string, string> | undefined }> } {
     const log: Array<{ file: string; args: readonly string[]; env?: Record<string, string> | undefined }> = [];
     return { log, port: { run: async (file, args, options) => { log.push({ file, args, env: options?.env }); return args.includes("--raw") ? raw : Buffer.from("{}"); } } };
@@ -255,7 +342,8 @@ describe("the real ports (against fake commands and a fake ECR; nothing is run)"
     expect(log[0]).toEqual({ file: "skopeo", args: ["copy", "--all", "--preserve-digests", "--dest-authfile", "/tmp/auth/config.json", `docker://registry.example.com/library/postgres@sha256:${digest}`, `docker://111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres:${digest.slice(0, 32)}`], env: undefined });
     expect(log[1]!.args).toEqual(["inspect", "--raw", "--authfile", "/tmp/auth/config.json", `docker://111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres@sha256:${digest}`]);
     // The digest is HASHED from the manifest bytes the destination served, not read from anything it said.
-    expect(result).toEqual({ digest: sha256HexOf(indexManifest), platforms: ["linux/arm64", "linux/amd64"] });
+    // The platforms are the index's, each with its OWN manifest digest; the attestation manifest and an entry without a real digest are not platforms.
+    expect(result).toEqual({ digest: sha256HexOf(indexManifest), children: [{ platform: "linux/arm64", digest: armChild }, { platform: "linux/amd64", digest: amdChild }] });
     expect(JSON.stringify(log)).not.toMatch(/password|AWS:|Basic /u);
   });
   it("reads a single-platform image's platform from skopeo inspect", async () => {
@@ -263,13 +351,13 @@ describe("the real ports (against fake commands and a fake ECR; nothing is run)"
     const log: string[][] = [];
     const port: CommandPort = { run: async (_file, args) => { log.push([...args]); return args.includes("--raw") ? single : Buffer.from(JSON.stringify({ Os: "linux", Architecture: "arm64" })); } };
     const result = await skopeoMirrorPort({ commands: port, registry: "r.example.com", authFile: "/a" })({ id: "x@1", source: "s.example.com/x@sha256:" + digest, repositoryName: "rovara-catalog/staging/svc/x", expectedDigest: digest });
-    expect(result.platforms).toEqual(["linux/arm64"]);
+    expect(result.children).toEqual([{ platform: "linux/arm64", digest: sha256HexOf(single) }]);
     expect(log).toHaveLength(3);
   });
-  it("runs syft on the registry copy by digest, with the credential directory in the environment", async () => {
+  it("runs syft on the registry copy of ONE platform's child digest, with --platform and the credential directory in the environment", async () => {
     const { port, log } = commands(Buffer.from("{}"));
-    await syftSbomPort({ commands: port, registry: "r.example.com", authDir: "/tmp/auth" })({ id: "postgres@16", repositoryName: "rovara-catalog/staging/svc/postgres", digest });
-    expect(log[0]).toEqual({ file: "syft", args: [`registry:r.example.com/rovara-catalog/staging/svc/postgres@sha256:${digest}`, "-o", "spdx-json", "--quiet"], env: { DOCKER_CONFIG: "/tmp/auth" } });
+    await syftSbomPort({ commands: port, registry: "r.example.com", authDir: "/tmp/auth" })({ id: "postgres@16", repositoryName: "rovara-catalog/staging/svc/postgres", platform: "linux/arm64", digest });
+    expect(log[0]).toEqual({ file: "syft", args: [`registry:r.example.com/rovara-catalog/staging/svc/postgres@sha256:${digest}`, "--platform", "linux/arm64", "-o", "spdx-json", "--quiet"], env: { DOCKER_CONFIG: "/tmp/auth" } });
   });
 
   class Describe { constructor(readonly input: { repositoryName: string; imageId: { imageDigest: string } }) {} }
@@ -279,22 +367,22 @@ describe("the real ports (against fake commands and a fake ECR; nothing is run)"
     const client = { send: async (command: unknown) => { sent.push(command); const next = responses.shift(); if (next instanceof Error) throw next; return next; } };
     return { sent, port: ecrScanPort({ client, commands: { DescribeImageScanFindingsCommand: Describe, StartImageScanCommand: Start }, sleep: async () => undefined, maxPolls: 4, now: () => new Date("2026-11-02T12:00:00.000Z") }) };
   };
-  it("reads ECR's finished scan of the digest, counting critical and high findings", async () => {
+  it("reads ECR's finished scan of the child digest, counting critical and high findings", async () => {
     const { port, sent } = scanWith([{ imageScanStatus: { status: "COMPLETE" }, imageScanFindings: { imageScanCompletedAt: new Date("2026-11-02T09:00:00.000Z"), findingSeverityCounts: { CRITICAL: 1, HIGH: 4, MEDIUM: 9 } } }]);
-    expect(await port({ id: "postgres@16", repositoryName: "rovara-catalog/staging/svc/postgres", digest })).toEqual({ digest, status: "complete", criticalOpen: 1, highOpen: 4, scannedAt: "2026-11-02T09:00:00.000Z" });
+    expect(await port({ id: "postgres@16", repositoryName: "rovara-catalog/staging/svc/postgres", platform: "linux/arm64", digest })).toEqual({ digest, status: "complete", criticalOpen: 1, highOpen: 4, scannedAt: "2026-11-02T09:00:00.000Z" });
     expect((sent[0] as Describe).input).toEqual({ repositoryName: "rovara-catalog/staging/svc/postgres", imageId: { imageDigest: `sha256:${digest}` } });
   });
   it("starts a scan once when there is none, waits, and reads it", async () => {
     const notFound = Object.assign(new Error("none"), { name: "ScanNotFoundException" });
     const { port, sent } = scanWith([notFound, { imageScanStatus: { status: "IN_PROGRESS" } }, { imageScanStatus: { status: "COMPLETE" }, imageScanFindings: { findingSeverityCounts: {} } }]);
-    const result = await port({ id: "x@1", repositoryName: "rovara-catalog/staging/svc/x", digest });
+    const result = await port({ id: "x@1", repositoryName: "rovara-catalog/staging/svc/x", platform: "linux/arm64", digest });
     expect(result).toMatchObject({ status: "complete", criticalOpen: 0, highOpen: 0, scannedAt: "2026-11-02T12:00:00.000Z" });
     expect(sent.filter((command) => command instanceof Start)).toHaveLength(1);
   });
   it("reports an unsupported or failed scan, and a scan that never finishes, as not complete (the gate then refuses)", async () => {
-    expect((await scanWith([{ imageScanStatus: { status: "UNSUPPORTED_IMAGE" } }]).port({ id: "x@1", repositoryName: "r/x", digest })).status).toBe("unsupported");
-    expect((await scanWith([{ imageScanStatus: { status: "FAILED" } }]).port({ id: "x@1", repositoryName: "r/x", digest })).status).toBe("failed");
-    expect((await scanWith(Array.from({ length: 4 }, () => ({ imageScanStatus: { status: "IN_PROGRESS" } }))).port({ id: "x@1", repositoryName: "r/x", digest })).status).toBe("pending");
-    await expect(scanWith([Object.assign(new Error("denied"), { name: "AccessDeniedException" })]).port({ id: "x@1", repositoryName: "r/x", digest })).rejects.toThrow("denied");
+    expect((await scanWith([{ imageScanStatus: { status: "UNSUPPORTED_IMAGE" } }]).port({ id: "x@1", repositoryName: "r/x", platform: "linux/arm64", digest })).status).toBe("unsupported");
+    expect((await scanWith([{ imageScanStatus: { status: "FAILED" } }]).port({ id: "x@1", repositoryName: "r/x", platform: "linux/arm64", digest })).status).toBe("failed");
+    expect((await scanWith(Array.from({ length: 4 }, () => ({ imageScanStatus: { status: "IN_PROGRESS" } }))).port({ id: "x@1", repositoryName: "r/x", platform: "linux/arm64", digest })).status).toBe("pending");
+    await expect(scanWith([Object.assign(new Error("denied"), { name: "AccessDeniedException" })]).port({ id: "x@1", repositoryName: "r/x", platform: "linux/arm64", digest })).rejects.toThrow("denied");
   });
 });

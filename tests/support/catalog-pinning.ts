@@ -1,7 +1,7 @@
 // Test services TS19: a pinned catalog and a signer for tests, built at run time (no key is kept anywhere). The digests are the SHA-256 of the entry's id, so they are stable and differ per entry.
 import { createHash, createSign, generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { ServiceCatalogSchema, type ServiceCatalog } from "@agentx/contracts";
+import { CATALOG_SIGNATURE_ALGORITHM, ServiceCatalogSchema, catalogSigningMessage, loadSignedCatalog, parseBundlePublicKey, sha256HexOf, type ServiceCatalog, type VerifiedCatalog } from "@agentx/contracts";
 
 export const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
 export const unpinnedCatalog = (): ServiceCatalog => ServiceCatalogSchema.parse(JSON.parse(readFileSync("environments/service-catalog/catalog.json", "utf8")));
@@ -35,4 +35,18 @@ export function testSigner(): TestSigner {
       return createSign("sha256").update(message).sign({ key: privateKey, dsaEncoding: "der" });
     },
   };
+}
+
+/**
+ * A catalog as `resolveCatalogImage` takes it: signed with a key made now and loaded through `loadSignedCatalog`, the one function that returns a `VerifiedCatalog`. (Nothing in a test asserts the brand with a cast.)
+ */
+export function verifiedCatalog(catalog: ServiceCatalog): VerifiedCatalog {
+  const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
+  const catalogBytes = Buffer.from(JSON.stringify(catalog, null, 2), "utf8");
+  const signature = createSign("sha256").update(catalogSigningMessage(catalogBytes)).sign({ key: privateKey, dsaEncoding: "der" }).toString("base64");
+  const signatureBytes = Buffer.from(JSON.stringify({ schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId: parseBundlePublicKey(publicKeyPem).keyId, catalogSha256: sha256HexOf(catalogBytes), signature }), "utf8");
+  const loaded = loadSignedCatalog({ catalogBytes, signatureBytes, trustedKeys: [publicKeyPem] });
+  if (!loaded.ok) throw new Error(`the test catalog did not load: ${loaded.reason}`);
+  return loaded.catalog;
 }

@@ -3,7 +3,8 @@
 //   - where a catalog image lives in a registry (`rovara-catalog/<env>/<repository>`) and how it is named in a pull: always by digest, never by a tag;
 //   - the worker pre-pull list, generated from the pinned catalog;
 //   - the Enterprise signed bundle: the bundle image name of a catalog entry, and a check that a bundle holds exactly the digests the catalog pins;
-//   - `resolveCatalogImage`: the one place that decides which digest a backing may start (owner Q9). The image served must be the catalog's digest. A company-built substitute is allowed only for an Enterprise
+//   - `resolveCatalogImage`: the one place that decides which digest a backing may start (owner Q9). It takes a `VerifiedCatalog` (only `loadSignedCatalog` returns one) and, for what the install serves, the RESULT of a
+//     digest check (`MirrorCheck` from the registry check, or `BundleImageCheck` from `checkBundleImages`), never a bare digest. The image served must be the catalog's digest. A company-built substitute is allowed only for an Enterprise
 //     install, only for a local (real software) entry, and only when DC-TS-1's two checks hold:
 //       1. `substituteImage.catalogDigest` equals the digest of the catalog entry named by the backing's `catalogId`;
 //       2. `substituteImage.approvalRef` resolves, through the `SubstituteApprovalPort`, to an admin approval whose catalog id is that `catalogId` and whose two digests are exactly the substitute's
@@ -17,6 +18,13 @@ import { CatalogIdSchema, SubstituteImageSchema, catalogIdName, type SubstituteI
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export type CatalogEdition = (typeof CATALOG_EDITIONS)[number];
+
+declare const verifiedCatalogBrand: unique symbol;
+/**
+ * A catalog whose signature was checked over its exact bytes and whose strict schema held. The ONLY function that returns one is `loadSignedCatalog` (service-catalog-verify.ts); `resolveCatalogImage` takes nothing
+ * else, so an unsigned or hand-built catalog cannot decide which image starts. (A brand is a compile-time guarantee: nothing but that one function may assert it.)
+ */
+export type VerifiedCatalog = ServiceCatalog & { readonly [verifiedCatalogBrand]: true };
 
 // ---- where an image lives
 
@@ -150,12 +158,39 @@ export function bundleCatalogProblems(bundle: { images: ReadonlyArray<{ name: st
   return problems;
 }
 
+/** The result of checking one image of a bundle against the catalog: the bundle holds the catalog's digest (`ok`), or does not (`missing`, `digest_mismatch`). The bundle's own signature is checked elsewhere. */
+export type BundleImageCheck =
+  | { readonly id: string; readonly ok: true; readonly digest: string }
+  | { readonly id: string; readonly ok: false; readonly code: "missing" | "digest_mismatch"; readonly message: string };
+
+/** One result per Enterprise entry the catalog pins; the `digest` of an `ok` result is the digest the bundle's image reference names, which equals the catalog's. */
+export function checkBundleImages(bundle: { images: ReadonlyArray<{ name: string; sourceRef: string }> }, catalog: ServiceCatalog): BundleImageCheck[] {
+  const digestOf = (reference: string): string | undefined => /@sha256:([a-f0-9]{64})$/u.exec(reference)?.[1];
+  return catalogPins(catalog, "enterprise").map((pin): BundleImageCheck => {
+    const service = catalogIdName(pin.id);
+    const image = bundle.images.find((candidate) => candidate.name === catalogBundleImageName(pin.id));
+    if (image === undefined) return { id: pin.id, ok: false, code: "missing", message: `${service} image: the signed bundle does not hold it` };
+    return digestOf(image.sourceRef) === pin.digest
+      ? { id: pin.id, ok: true, digest: pin.digest }
+      : { id: pin.id, ok: false, code: "digest_mismatch", message: `${service} image: the signed bundle holds other bytes than the catalog's digest` };
+  });
+}
+
+/** The result of asking a registry for the manifest of a digest and hashing the bytes (`checkMirrorServesDigest`, service-catalog-verify.ts). */
+export type MirrorCheck =
+  | { id: string; ok: true; digest: string }
+  | { id: string; ok: false; code: "missing" | "digest_mismatch" | "unreachable"; message: string };
+
 // ---- resolving an image to start (owner Q9; DC-TS-1)
 
 export const CATALOG_IMAGE_SOURCES = ["rovara_registry", "signed_bundle", "company_registry"] as const;
-/** What the install actually serves for an entry: the digest it holds and where it comes from. */
-export const ServedImageSchema = z.object({ source: z.enum(CATALOG_IMAGE_SOURCES), digest: Sha256Schema }).strict();
-export type ServedImage = z.infer<typeof ServedImageSchema>;
+/**
+ * What the install actually serves for an entry: where it comes from and the RESULT of the check that the source holds a digest (the registry's bytes hashed, or the bundle's image list read). Not a bare digest: a
+ * caller has to have run a check to have one, and a check that failed is a refusal.
+ */
+export type ServedImage =
+  | { readonly source: "signed_bundle"; readonly check: BundleImageCheck }
+  | { readonly source: "rovara_registry" | "company_registry"; readonly check: MirrorCheck };
 
 /** An admin approval of a substitute image (TS40 makes the record). The port returns a LIVE approval, or nothing (never a revoked one). */
 export interface SubstituteApprovalRecord {
@@ -180,6 +215,7 @@ export const CATALOG_IMAGE_REFUSALS = [
   "substitute_approval_missing",
   "substitute_approval_mismatch",
   "substitute_not_served",
+  "not_verified",
 ] as const;
 export type CatalogImageRefusal = (typeof CATALOG_IMAGE_REFUSALS)[number];
 
@@ -201,16 +237,18 @@ export const CATALOG_IMAGE_MESSAGES: Record<CatalogImageRefusal, (service: strin
   substitute_approval_missing: (service) => `${service} image: the substitute has no admin approval`,
   substitute_approval_mismatch: (service) => `${service} image: the admin approval is not for this image and these digests`,
   substitute_not_served: (service) => `${service} image: the registry does not serve the approved substitute's digest`,
+  not_verified: (service) => `${service} image could not be verified in the registry or bundle`,
 };
 
 /** The evidence label of a substitute (2.4): never plain "real". */
 export const substituteImageLabel = (catalogId: string): string => `company-approved ${catalogIdName(catalogId)} image`;
 
 export interface ResolveCatalogImageInput {
-  readonly catalog: ServiceCatalog;
+  /** From `loadSignedCatalog`: nothing else is accepted. */
+  readonly catalog: VerifiedCatalog;
   readonly catalogId: string;
   readonly edition: CatalogEdition;
-  /** What the install serves for this id. */
+  /** What the install serves for this id, with the result of the digest check. */
   readonly served: ServedImage;
   /** The backing's substitute image, when it names one. */
   readonly substitute?: SubstituteImage | undefined;
@@ -232,20 +270,24 @@ export async function resolveCatalogImage(input: ResolveCatalogImageInput): Prom
   const { catalogId } = input;
   try {
     const id = CatalogIdSchema.safeParse(catalogId);
-    const served = ServedImageSchema.safeParse(input.served);
-    if (!id.success || !served.success) return refuse(catalogId, "unknown_entry");
+    if (!id.success) return refuse(catalogId, "unknown_entry");
+    // The check must have passed, be for THIS id, and carry a digest: a failed or foreign check is a refusal, whatever else is true.
+    const check = (input.served as { check?: { id?: unknown; ok?: unknown; digest?: unknown } } | undefined)?.check;
+    const source = z.enum(CATALOG_IMAGE_SOURCES).safeParse((input.served as { source?: unknown } | undefined)?.source);
+    if (!source.success || check === undefined || check === null || check.ok !== true || check.id !== catalogId || !Sha256Schema.safeParse(check.digest).success) return refuse(catalogId, "not_verified");
+    const served = { source: source.data, digest: check.digest as string };
     const entry: CatalogEntry | undefined = catalogEntryById(input.catalog, catalogId);
     if (entry === undefined) return refuse(catalogId, "unknown_entry");
     if (entry.status === "retired") return refuse(catalogId, "retired");
     const pinned = entry.image.digest;
     if (!input.catalog.pinned || pinned === undefined) return refuse(catalogId, "not_pinned");
     if (!entry.editions.includes(input.edition)) return refuse(catalogId, "edition_not_offered");
-    if (!CATALOG_EDITION_SOURCES[input.edition].includes(served.data.source)) return refuse(catalogId, "source_not_allowed");
+    if (!CATALOG_EDITION_SOURCES[input.edition].includes(served.source)) return refuse(catalogId, "source_not_allowed");
     const repository = entry.image.repository;
 
     if (input.substitute === undefined) {
-      if (served.data.digest !== pinned) return refuse(catalogId, "digest_mismatch");
-      return { ok: true, id: catalogId, kind: "catalog", repository, digest: pinned, source: served.data.source };
+      if (served.digest !== pinned) return refuse(catalogId, "digest_mismatch");
+      return { ok: true, id: catalogId, kind: "catalog", repository, digest: pinned, source: served.source };
     }
 
     // A substitute: Enterprise only, and only for real software from the catalog (Rovara's own emulator, fake server and helpers are never swapped).
@@ -261,9 +303,9 @@ export async function resolveCatalogImage(input: ResolveCatalogImageInput): Prom
       return refuse(catalogId, "substitute_approval_mismatch");
     }
     // What starts is the approved digest: the registry must serve exactly it.
-    if (served.data.digest !== substitute.data.digest) return refuse(catalogId, "substitute_not_served");
+    if (served.digest !== substitute.data.digest) return refuse(catalogId, "substitute_not_served");
     return {
-      ok: true, id: catalogId, kind: "substitute", repository, digest: substitute.data.digest, catalogDigest: pinned, approvalRef: substitute.data.approvalRef, source: served.data.source,
+      ok: true, id: catalogId, kind: "substitute", repository, digest: substitute.data.digest, catalogDigest: pinned, approvalRef: substitute.data.approvalRef, source: served.source,
       label: substituteImageLabel(catalogId),
     };
   } catch {

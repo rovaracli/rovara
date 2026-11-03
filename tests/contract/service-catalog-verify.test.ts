@@ -5,6 +5,7 @@ import {
   MIRROR_MANIFEST_MAX_BYTES,
   catalogSigningMessage,
   checkCatalogMirror,
+  combinedSbomRef,
   checkMirrorServesDigest,
   imageStatementMessage,
   loadSignedCatalog,
@@ -13,6 +14,7 @@ import {
   verifyCatalogSignature,
   verifyImageStatement,
   type CatalogSignature,
+  type ImageChildStatement,
   type ImageStatement,
   type RegistryManifestPort,
   type SignedImageStatement,
@@ -74,20 +76,52 @@ describe("the catalog signature", () => {
 });
 
 describe("an image's signed statement", () => {
-  const statement: ImageStatement = { id: "postgres@16", repository: "svc/postgres", digest: sha("d"), sbomRef: sha("s"), scannedAt: "2026-11-02T00:00:00.000Z" };
+  const children: ImageChildStatement[] = [
+    { platform: "linux/amd64", digest: sha("amd child"), sbomRef: sha("amd sbom"), scannedAt: "2026-11-02T08:00:00.000Z" },
+    { platform: "linux/arm64", digest: sha("arm child"), sbomRef: sha("arm sbom"), scannedAt: "2026-11-02T10:00:00.000Z" },
+  ];
+  const statement: ImageStatement = { id: "postgres@16", repository: "svc/postgres", digest: sha("d"), sbomRef: combinedSbomRef(children), scannedAt: "2026-11-02T08:00:00.000Z", children };
   async function signedStatement(value: ImageStatement = statement) {
     const signer = testSigner();
     const signed: SignedImageStatement = { statement: value, keyId: parseBundlePublicKey(signer.publicKeyPem).keyId, signature: (await signer.sign(imageStatementMessage(value))).toString("base64") };
     return { signer, signed };
   }
-  it("verifies, and verifies for no other image, digest, SBOM or time", async () => {
+  it("verifies, and verifies for no other image, index digest, SBOM or time", async () => {
     const { signer, signed } = await signedStatement();
     expect(verifyImageStatement({ signed, trustedKeys: [signer.publicKeyPem] }).ok).toBe(true);
-    for (const change of [{ id: "postgres@17" }, { repository: "svc/mysql" }, { digest: sha("e") }, { sbomRef: sha("t") }, { scannedAt: "2026-11-03T00:00:00.000Z" }]) {
+    for (const change of [{ id: "postgres@17" }, { repository: "svc/mysql" }, { digest: sha("e") }]) {
       expect(verifyImageStatement({ signed: { ...signed, statement: { ...statement, ...change } }, trustedKeys: [signer.publicKeyPem] }).ok, JSON.stringify(change)).toBe(false);
     }
     expect(verifyImageStatement({ signed, trustedKeys: [testSigner().publicKeyPem] }).ok).toBe(false);
     expect(verifyImageStatement({ signed: { ...signed, signature: "!!" }, trustedKeys: [signer.publicKeyPem] }).ok).toBe(false);
+  });
+  it("covers every platform's child digest, SBOM hash and scan time: changing, swapping or leaving one out does not verify", async () => {
+    const { signer, signed } = await signedStatement();
+    const verifies = (value: unknown): boolean => verifyImageStatement({ signed: { ...signed, statement: value as ImageStatement }, trustedKeys: [signer.publicKeyPem] }).ok;
+    const [amd, arm] = children as [ImageChildStatement, ImageChildStatement];
+    // Each of these keeps the statement well formed (the combined hash and the oldest time are recomputed), so only the signature can refuse them.
+    const rebuilt = (list: ImageChildStatement[]): ImageStatement => ({ ...statement, sbomRef: combinedSbomRef(list), scannedAt: list.map((child) => child.scannedAt).sort()[0]!, children: list });
+    expect(verifies(rebuilt([{ ...amd, digest: sha("swapped") }, arm]))).toBe(false);
+    expect(verifies(rebuilt([amd, { ...arm, digest: sha("swapped") }]))).toBe(false);
+    expect(verifies(rebuilt([{ ...amd, digest: arm.digest }, { ...arm, digest: amd.digest }]))).toBe(false);
+    expect(verifies(rebuilt([amd]))).toBe(false);
+    expect(verifies(rebuilt([arm]))).toBe(false);
+    expect(verifies(rebuilt([{ ...amd, sbomRef: sha("other") }, arm]))).toBe(false);
+    expect(verifies(rebuilt([amd, { ...arm, scannedAt: "2026-11-02T07:00:00.000Z" }]))).toBe(false);
+    expect(verifies(statement)).toBe(true);
+  });
+  it("is not well formed with a combined SBOM hash or an oldest time that the children do not give, a platform twice, a shared manifest, or no platform", () => {
+    const [amd, arm] = children as [ImageChildStatement, ImageChildStatement];
+    for (const bad of [
+      { ...statement, sbomRef: sha("not combined") },
+      { ...statement, scannedAt: "2026-11-02T10:00:00.000Z" },
+      { ...statement, children: [amd, { ...amd }] },
+      { ...statement, children: [amd, { ...arm, digest: amd.digest }] },
+      { ...statement, children: [] },
+      { ...statement, children: [{ ...amd, platform: "linux/s390x" }, arm] },
+    ]) {
+      expect(() => imageStatementMessage(bad as ImageStatement), JSON.stringify(bad)).toThrow();
+    }
   });
   it("is not a catalog signature either", async () => {
     const { signer, signed } = await signedStatement();
@@ -134,5 +168,20 @@ describe("the company registry serves the exact digest", () => {
     expect(byId.get("valkey@8")).toMatchObject({ ok: false, code: "missing" });
     expect(results.length).toBe(catalog.entries.filter((entry) => entry.status !== "retired").length);
     expect(await checkCatalogMirror({ catalog: unpinnedCatalog(), port, repositoryNameFor: (repository) => repository })).toEqual([]);
+  });
+  it("stops only the image whose repository name the company's naming function cannot make", async () => {
+    const catalog = pinnedCatalog();
+    const port: RegistryManifestPort = { manifestBytes: async () => undefined };
+    const results = await checkCatalogMirror({
+      catalog, port,
+      repositoryNameFor: (repository) => {
+        if (repository === "svc/mysql") throw new Error("no such company repository");
+        return `corp/${repository}`;
+      },
+    });
+    const byId = new Map(results.map((result) => [result.id, result]));
+    expect(byId.get("mysql@8")).toMatchObject({ ok: false, code: "unreachable", message: "mysql image: the company registry could not be checked" });
+    expect(byId.get("postgres@16")).toMatchObject({ ok: false, code: "missing" });
+    expect(results.length).toBe(catalog.entries.filter((entry) => entry.status !== "retired").length);
   });
 });

@@ -2,11 +2,19 @@
 //
 // For every catalog entry that is not retired it:
 //   1. MIRRORS the image into the install's registry BY DIGEST from the source named in the sources file (a digest reference; a tag is refused). The digest the registry then serves, hashed from the manifest bytes, must be
-//      exactly the digest the source named, and the platforms the image holds must be exactly the entry's. Anything else refuses the build;
-//   2. records an SBOM (its SHA-256 becomes the entry's `sbomRef`) and a SCAN of that digest. A scan that is not for that digest, did not finish, or shows a critical finding refuses the build (highs are recorded);
-//   3. SIGNS a statement for the image (id, repository, digest, SBOM hash, scan time), and then the catalog file itself (behind a fixed prefix, see contracts `service-catalog-verify.ts`);
+//      exactly the digest the source named, and the platforms the image holds must be exactly the entry's. The mirror also returns the CHILD manifest digest of each platform (read from the index the destination serves).
+//      Anything else refuses the build;
+//   2. for EACH PLATFORM (each child digest), records an SBOM (syft with `--platform`; its SHA-256 is that platform's `sbomRef`) and a SCAN (ECR scans image manifests, not indexes, so the scan is of the child digest). A
+//      scan that is not for that child digest, did not finish, or shows a critical finding refuses the build, whichever platform it is (highs are recorded). A platform that is not complete with 0 critical findings pins
+//      nothing: the workers are arm64 and the amd64 child must be as clean as the arm64 one. The SBOM and scan of an INDEX digest are never taken: they would describe one platform at most;
+//   3. SIGNS a statement for the image (id, repository, the index digest, and for every platform its child digest, SBOM hash and scan time), and then the catalog file itself (behind a fixed prefix, see contracts
+//      `service-catalog-verify.ts`). The catalog entry carries ONE `sbomRef` (the combined hash of the per-platform hashes, `combinedSbomRef`) and one scan (the OLDEST scan time, 0 critical, and the most highs any one
+//      platform shows); the per-platform SBOMs, scans and hashes are in the evidence folder and the signed statement;
 //   4. writes the pinned `catalog.json`, `catalog.sig.json`, the evidence folder and the worker pre-pull list. The pinned file must parse as a pinned catalog: a half-pinned file does not (contract), so a build that pinned
 //      only some entries cannot write one. All outputs are made in memory first; nothing is written when any entry is refused, and the catalog file is written last, each file by rename.
+//
+// SOURCES must be Rovara-built multi-platform INDEXES (OCI image index or Docker manifest list) holding EXACTLY the platforms the catalog entry lists (`linux/arm64`, `linux/amd64`), by digest. A single-platform image is
+// accepted only for an entry that lists that one platform. An index with a platform the entry does not list, or without one it does, refuses the build. (Attestation manifests, `unknown/unknown`, are not platforms.)
 //
 // Everything outside the decision rules is a PORT (mirror, SBOM, scan, signer, files), so the whole pipeline runs against fakes. The real ports at the bottom use skopeo, syft and ECR/KMS through clients the caller passes in;
 // they are only built by `main()`, which runs only when this file is the entry point. Nothing here is imported by the broker or the worker, and no secret is read: the registry credential is ECR's short token, kept in a 0600 file.
@@ -24,12 +32,14 @@ import {
   CATALOG_SIGNATURE_ALGORITHM,
   CATALOG_SIGNATURE_FILE,
   CatalogIdSchema,
+  CATALOG_PLATFORMS,
   CatalogRegistryHostSchema,
   PrepullListSchema,
   ServiceCatalogSchema,
   catalogPrepullList,
   catalogRepositoryName,
   catalogSigningMessage,
+  combinedSbomRef,
   imageStatementMessage,
   parseBundlePublicKey,
   sha256HexOf,
@@ -37,6 +47,7 @@ import {
   verifyImageStatement,
   type CatalogEntry,
   type CatalogSignature,
+  type ImageChildStatement,
   type ServiceCatalog,
   type SignedImageStatement,
 } from "@agentx/contracts";
@@ -65,24 +76,37 @@ const digestOfSource = (ref: string): string => ref.slice(ref.lastIndexOf("@sha2
 
 // ---- ports
 
+/** One platform of a mirrored index: `linux/arm64` and the digest of that platform's own manifest. */
+export interface MirroredChild {
+  readonly platform: string;
+  readonly digest: string;
+}
 export interface MirrorResult {
   /** The digest of the manifest the DESTINATION serves, hashed from its bytes (never the registry's claim). */
   readonly digest: string;
-  /** `linux/arm64`, `linux/amd64`: the platforms the mirrored image holds. */
-  readonly platforms: readonly string[];
+  /** Every platform the mirrored image holds, with its child manifest digest, read from the index the destination serves (a single-platform image is its own one child). */
+  readonly children: readonly MirroredChild[];
 }
 export interface ScanResult {
-  /** The digest the scan was for: checked against the image being pinned. */
+  /** The digest the scan was for: checked against the child being pinned. */
   readonly digest: string;
   readonly status: "complete" | "failed" | "unsupported" | "pending";
   readonly criticalOpen: number;
   readonly highOpen: number;
   readonly scannedAt: string;
 }
+/** What the SBOM and scan ports are asked about: ONE platform's child manifest, never the index. */
+export interface PlatformTarget {
+  readonly id: string;
+  readonly repositoryName: string;
+  readonly platform: string;
+  /** The child manifest digest of `platform`. */
+  readonly digest: string;
+}
 export interface CatalogBuildPorts {
-  mirror(input: { id: string; source: string; repositoryName: string; expectedDigest: string }): Promise<MirrorResult>;
-  sbom(input: { id: string; repositoryName: string; digest: string }): Promise<Uint8Array>;
-  scan(input: { id: string; repositoryName: string; digest: string }): Promise<ScanResult>;
+  mirror: (input: { id: string; source: string; repositoryName: string; expectedDigest: string }) => Promise<MirrorResult>;
+  sbom: (input: PlatformTarget) => Promise<Uint8Array>;
+  scan: (input: PlatformTarget) => Promise<ScanResult>;
   /** Signs bytes. `publicKeyPem` is the public half installers pin; the private half never leaves the signer (KMS). */
   readonly signer: BundleSigner;
 }
@@ -107,6 +131,25 @@ export interface CatalogBuildOutput {
 
 /** The folder name of one entry's evidence (`postgres@16` is `postgres-16`; ids are checked names, so this is a plain path segment). */
 export const evidenceFolderOf = (id: string): string => CatalogIdSchema.parse(id).replace("@", "-").replace(/[._]/gu, "-").toLowerCase();
+
+/** The folder name of one platform inside an entry's evidence folder (`linux/arm64` is `linux-arm64`). */
+export const platformSlugOf = (platform: string): string => platform.replace("/", "-");
+
+/**
+ * Whether the children the mirror reports are exactly the entry's platforms: each a platform the catalog knows, listed once, with a well-formed digest of its own (two platforms never share a manifest). A problem is
+ * returned in words for the operator; nothing when the image is what the entry says it is.
+ */
+export function childrenProblem(children: readonly MirroredChild[], wanted: readonly string[]): string | undefined {
+  const known: readonly string[] = CATALOG_PLATFORMS;
+  const platforms = children.map((child) => child.platform);
+  if (new Set(platforms).size !== platforms.length) return "the image lists a platform twice";
+  if (platforms.some((platform) => !known.includes(platform))) return `the image holds a platform the catalog does not know (${platforms.filter((platform) => !known.includes(platform)).join(",")})`;
+  if (children.some((child) => !/^[a-f0-9]{64}$/u.test(child.digest))) return "a platform's manifest digest is not a sha256 digest";
+  if (new Set(children.map((child) => child.digest)).size !== children.length) return "two platforms share one manifest digest";
+  const held = [...platforms].sort().join(",");
+  const expected = [...wanted].sort().join(",");
+  return held === expected ? undefined : `the image holds ${held === "" ? "no platform" : held} where the catalog lists ${expected}`;
+}
 
 const jsonBytes = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
 
@@ -163,48 +206,65 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
         refuse(entry.id, "digest_mismatch", `the registry serves ${mirrored.digest.slice(0, 12)} where the source named ${expectedDigest.slice(0, 12)}`);
         continue;
       }
-      const held = [...new Set(mirrored.platforms)].sort().join(",");
-      const wanted = [...entry.image.platforms].sort().join(",");
-      if (held !== wanted) {
-        refuse(entry.id, "platforms_mismatch", `the image holds ${held === "" ? "no platform" : held} where the catalog lists ${wanted}`);
+      const childProblem = childrenProblem(mirrored.children, entry.image.platforms);
+      if (childProblem !== undefined) {
+        refuse(entry.id, "platforms_mismatch", childProblem);
         continue;
       }
-      // 2. SBOM and scan.
-      const sbom = await ports.sbom({ id: entry.id, repositoryName, digest: expectedDigest });
-      if (!isSbom(sbom)) {
-        refuse(entry.id, "sbom_invalid", "no SBOM was produced (an SPDX or CycloneDX JSON document is required)");
-        continue;
+      // 2. an SBOM and a scan for EACH platform's child manifest. Every platform is tried, so the operator sees every refusal of the entry at once.
+      const children: ImageChildStatement[] = [];
+      const platformEvidence: Array<{ path: string; bytes: Buffer }> = [];
+      const folder = `${EVIDENCE_DIR}/${evidenceFolderOf(entry.id)}`;
+      const highCounts: number[] = [];
+      let platformRefused = false;
+      for (const child of [...mirrored.children].sort((a, b) => (a.platform < b.platform ? -1 : a.platform > b.platform ? 1 : 0))) {
+        const target: PlatformTarget = { id: entry.id, repositoryName, platform: child.platform, digest: child.digest };
+        const sbom = await ports.sbom(target);
+        if (!isSbom(sbom)) {
+          refuse(entry.id, "sbom_invalid", `${child.platform}: no SBOM was produced (an SPDX or CycloneDX JSON document is required)`);
+          platformRefused = true;
+          continue;
+        }
+        const scan = await ports.scan(target);
+        if (scan.digest !== child.digest) {
+          refuse(entry.id, "scan_not_for_image", `${child.platform}: the scan result is for another image`);
+          platformRefused = true;
+          continue;
+        }
+        if (scan.status !== "complete" || !Number.isInteger(scan.criticalOpen) || !Number.isInteger(scan.highOpen) || scan.criticalOpen < 0 || scan.highOpen < 0 || Number.isNaN(Date.parse(scan.scannedAt))) {
+          refuse(entry.id, "scan_incomplete", `${child.platform}: the scan did not finish (${scan.status})`);
+          platformRefused = true;
+          continue;
+        }
+        if (scan.criticalOpen !== 0) {
+          refuse(entry.id, "scan_critical", `${child.platform}: ${String(scan.criticalOpen)} critical finding${scan.criticalOpen === 1 ? "" : "s"} open`);
+          platformRefused = true;
+          continue;
+        }
+        const scannedAt = new Date(scan.scannedAt).toISOString();
+        const sbomRef = sha256HexOf(sbom);
+        children.push({ platform: child.platform as ImageChildStatement["platform"], digest: child.digest, sbomRef, scannedAt });
+        const platformFolder = `${folder}/${platformSlugOf(child.platform)}`;
+        platformEvidence.push(
+          { path: `${platformFolder}/sbom.json`, bytes: Buffer.from(sbom) },
+          { path: `${platformFolder}/scan.json`, bytes: jsonBytes({ platform: child.platform, digest: child.digest, status: scan.status, criticalOpen: scan.criticalOpen, highOpen: scan.highOpen, scannedAt }) },
+        );
+        highCounts.push(scan.highOpen);
       }
-      const scan = await ports.scan({ id: entry.id, repositoryName, digest: expectedDigest });
-      if (scan.digest !== expectedDigest) {
-        refuse(entry.id, "scan_not_for_image", "the scan result is for another image");
-        continue;
-      }
-      if (scan.status !== "complete" || !Number.isInteger(scan.criticalOpen) || !Number.isInteger(scan.highOpen) || scan.criticalOpen < 0 || scan.highOpen < 0 || Number.isNaN(Date.parse(scan.scannedAt))) {
-        refuse(entry.id, "scan_incomplete", `the scan did not finish (${scan.status})`);
-        continue;
-      }
-      if (scan.criticalOpen !== 0) {
-        refuse(entry.id, "scan_critical", `${String(scan.criticalOpen)} critical finding${scan.criticalOpen === 1 ? "" : "s"} open`);
-        continue;
-      }
-      const sbomRef = sha256HexOf(sbom);
-      const scannedAt = new Date(scan.scannedAt).toISOString();
-      // 3. the image's signed statement.
-      const statement = { id: entry.id, repository: entry.image.repository, digest: expectedDigest, sbomRef, scannedAt };
+      if (platformRefused) continue;
+      const sbomRef = combinedSbomRef(children);
+      const oldestScan = children.map((child) => child.scannedAt).sort((a, b) => Date.parse(a) - Date.parse(b))[0] as string;
+      const highOpen = Math.max(...highCounts);
+      // 3. the image's signed statement: the index digest and every platform's child digest, SBOM hash and scan time.
+      const statement = { id: entry.id, repository: entry.image.repository, digest: expectedDigest, sbomRef, scannedAt: oldestScan, children };
       const signed: SignedImageStatement = { statement, keyId, signature: (await ports.signer.sign(imageStatementMessage(statement))).toString("base64") };
       const own = verifyImageStatement({ signed, trustedKeys: [ports.signer.publicKeyPem] });
       if (!own.ok) {
         refuse(entry.id, "unsigned", `the signer's signature does not verify against its own public key: ${own.reason}`);
         continue;
       }
-      const folder = `${EVIDENCE_DIR}/${evidenceFolderOf(entry.id)}`;
-      evidence.push(
-        { path: `${folder}/sbom.json`, bytes: Buffer.from(sbom) },
-        { path: `${folder}/scan.json`, bytes: jsonBytes({ digest: expectedDigest, status: scan.status, criticalOpen: scan.criticalOpen, highOpen: scan.highOpen, scannedAt }) },
-        { path: `${folder}/statement.json`, bytes: jsonBytes(signed) },
-      );
-      entries.push({ ...entry, image: { ...entry.image, digest: expectedDigest }, sbomRef, scan: { scannedAt, criticalOpen: 0, highOpen: scan.highOpen } });
+      evidence.push(...platformEvidence, { path: `${folder}/statement.json`, bytes: jsonBytes(signed) });
+      entries.push({ ...entry, image: { ...entry.image, digest: expectedDigest }, sbomRef, scan: { scannedAt: oldestScan, criticalOpen: 0, highOpen } });
     } catch (error) {
       refuse(entry.id, "port_failed", error instanceof Error ? error.message.slice(0, 200) : "a step failed");
     }
@@ -240,7 +300,7 @@ export async function writeCatalogBuild(output: CatalogBuildOutput, where: { cat
   const catalogDir = resolve(where.catalogDir);
   // Evidence paths were made from checked ids; every one is re-checked BEFORE anything is written, so none leaves the evidence folder and a bad one leaves no partial output.
   for (const item of output.evidence) {
-    if (!/^evidence\/[a-z0-9][a-z0-9-]*\/(?:sbom|scan|statement)\.json$/u.test(item.path)) throw new Error(`unexpected evidence path ${item.path}`);
+    if (!/^evidence\/[a-z0-9][a-z0-9-]*\/(?:statement\.json|linux-(?:arm64|amd64)\/(?:sbom|scan)\.json)$/u.test(item.path)) throw new Error(`unexpected evidence path ${item.path}`);
   }
   for (const item of output.evidence) await writeAtomic(join(catalogDir, item.path), item.bytes);
   await writeAtomic(resolve(where.prepullFile), output.prepullBytes);
@@ -263,7 +323,10 @@ export const execCommandPort: CommandPort = {
 /** `docker://<registry>/<repository>:<first 32 digits of the digest>`: the tag is a handle, derived from the digest, and immutable in the repository. */
 const tagFor = (digest: string): string => digest.slice(0, 32);
 
-/** skopeo copies every platform with the digests kept; the destination is then asked for the manifest BY DIGEST and the bytes are hashed here. */
+/**
+ * skopeo copies every platform with the digests kept; the destination is then asked for the manifest BY DIGEST, the bytes are hashed here, and the child manifest digest of each platform is read from the index it served.
+ * Attestation manifests (`unknown/unknown`) are not platforms and are left out.
+ */
 export function skopeoMirrorPort(input: { commands: CommandPort; registry: string; authFile: string }): CatalogBuildPorts["mirror"] {
   return async ({ source, repositoryName, expectedDigest }) => {
     const destination = `${input.registry}/${repositoryName}`;
@@ -271,20 +334,26 @@ export function skopeoMirrorPort(input: { commands: CommandPort; registry: strin
     const byDigest = `docker://${destination}@sha256:${expectedDigest}`;
     const raw = await input.commands.run("skopeo", ["inspect", "--raw", "--authfile", input.authFile, byDigest]);
     const digest = createHash("sha256").update(raw).digest("hex");
-    const manifest = JSON.parse(raw.toString("utf8")) as { manifests?: Array<{ platform?: { os?: string; architecture?: string } }> };
+    const manifest = JSON.parse(raw.toString("utf8")) as { manifests?: Array<{ digest?: string; platform?: { os?: string; architecture?: string } }> };
     if (Array.isArray(manifest.manifests)) {
-      // An index: its platform entries, without the attestation manifests (`unknown/unknown`).
-      const platforms = manifest.manifests.flatMap((item) => (item.platform?.os !== undefined && item.platform.architecture !== undefined && item.platform.os !== "unknown" ? [`${item.platform.os}/${item.platform.architecture}`] : []));
-      return { digest, platforms };
+      // An index: its platform entries with their own manifest digests, without the attestation manifests.
+      const children = manifest.manifests.flatMap((item) =>
+        item.platform?.os !== undefined && item.platform.architecture !== undefined && item.platform.os !== "unknown" && /^sha256:[a-f0-9]{64}$/u.test(item.digest ?? "")
+          ? [{ platform: `${item.platform.os}/${item.platform.architecture}`, digest: (item.digest as string).slice("sha256:".length) }]
+          : [],
+      );
+      return { digest, children };
     }
+    // A single-platform image is its own one child.
     const single = JSON.parse((await input.commands.run("skopeo", ["inspect", "--authfile", input.authFile, byDigest])).toString("utf8")) as { Os?: string; Architecture?: string };
-    return { digest, platforms: single.Os !== undefined && single.Architecture !== undefined ? [`${single.Os}/${single.Architecture}`] : [] };
+    return { digest, children: single.Os !== undefined && single.Architecture !== undefined ? [{ platform: `${single.Os}/${single.Architecture}`, digest }] : [] };
   };
 }
 
-/** syft reads the image from the registry (the same credential file, as a Docker config directory) and writes SPDX JSON. */
+/** syft reads ONE platform's child manifest from the registry (`--platform`; the same credential file, as a Docker config directory) and writes SPDX JSON. */
 export function syftSbomPort(input: { commands: CommandPort; registry: string; authDir: string }): CatalogBuildPorts["sbom"] {
-  return async ({ repositoryName, digest }) => input.commands.run("syft", [`registry:${input.registry}/${repositoryName}@sha256:${digest}`, "-o", "spdx-json", "--quiet"], { env: { DOCKER_CONFIG: input.authDir } });
+  return async ({ repositoryName, digest, platform }) =>
+    input.commands.run("syft", [`registry:${input.registry}/${repositoryName}@sha256:${digest}`, "--platform", platform, "-o", "spdx-json", "--quiet"], { env: { DOCKER_CONFIG: input.authDir } });
 }
 
 export interface EcrLike {
@@ -294,7 +363,7 @@ export interface EcrCommands {
   DescribeImageScanFindingsCommand: new (input: { repositoryName: string; imageId: { imageDigest: string } }) => unknown;
   StartImageScanCommand: new (input: { repositoryName: string; imageId: { imageDigest: string } }) => unknown;
 }
-/** ECR's own scan of the pushed digest (scan on push is on for the repository): started if there is none, then read until it finishes. */
+/** ECR's own scan of one pushed CHILD digest (ECR scans image manifests, not indexes; scan on push is on for the repository): started if there is none, then read until it finishes. */
 export function ecrScanPort(input: { client: EcrLike; commands: EcrCommands; sleep?: (ms: number) => Promise<void>; maxPolls?: number; pollMs?: number; now?: () => Date }): CatalogBuildPorts["scan"] {
   const sleep = input.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms)));
   return async ({ repositoryName, digest }) => {
@@ -333,8 +402,10 @@ export function ecrScanPort(input: { client: EcrLike; commands: EcrCommands; sle
 
 function usage(): string {
   return `Usage: tsx scripts/catalog-build.ts --sources <file> --env <environment> --registry <host> --kms-key <key id or ARN> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--prepull-file ${DEFAULT_PREPULL_FILE}]
-Run by an operator with the pipeline's own AWS credentials. It mirrors each catalog image by digest into <host>/rovara-catalog/<environment>/..., records an SBOM and a scan, signs, and writes the pinned catalog.json,
-catalog.sig.json, evidence/ and the worker pre-pull list. Nothing is written if any image is refused. Needs skopeo and syft on PATH.\n`;
+Run by an operator with the pipeline's own AWS credentials. It mirrors each catalog image by digest into <host>/rovara-catalog/<environment>/..., records an SBOM and a scan for EACH PLATFORM, signs, and writes the
+pinned catalog.json, catalog.sig.json, evidence/ and the worker pre-pull list. Nothing is written if any image is refused (a platform with a critical finding refuses the image). Needs skopeo and syft on PATH.
+The sources file maps each catalog id to a digest reference (host/path@sha256:...). Every source must be a Rovara-built multi-platform INDEX holding exactly the platforms the catalog lists for that id (a
+single-platform image only for an id that lists that one platform); an index with another platform set is refused.\n`;
 }
 
 async function main(argv: string[]): Promise<void> {

@@ -1,5 +1,7 @@
-// Test services TS19: the registry side of the image catalog, on the synthesised template. What must hold: one repository per catalog repository with immutable tags, scan on push and KMS; a lifecycle policy; every
-// resource conditional on the test services switch (`TestServicesEnabled`, `tx`), so with it off nothing exists; nothing added to the broker's environment; a legacy install untouched.
+// Test services TS19: the registry side of the image catalog, on the synthesised template. What must hold: one repository per catalog repository with immutable tags, scan on push and KMS; a lifecycle policy; the
+// repositories and their key UNCONDITIONAL (they have fixed names and are retained, so a condition on the test services switch `TestServicesEnabled` / `tx` would break turning it on, off and on again, and would
+// orphan a key at each re-enable); a narrow key policy (administration without use, use only through ECR); no grant for any role (deferred to the wiring task); nothing added to the broker's environment; a legacy
+// install untouched.
 import { App, CfnParameter, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
@@ -15,10 +17,11 @@ const ACCOUNT = "111122223333";
 const REGION = "us-west-2";
 const KMS = "arn:aws:kms:us-west-2:111122223333:key/11111111-2222-3333-4444-555555555555";
 
-function build(props: { repositories?: readonly string[]; kmsKeyArn?: string; account?: string } = {}) {
+function build(props: { repositories?: readonly string[]; kmsKeyArn?: string; account?: string; switchDefault?: "0" | "1" } = {}) {
   const stack = new Stack(new App(), "T", { env: { account: props.account ?? ACCOUNT, region: REGION } });
-  const testServicesEnabled = new CfnParameter(stack, "TestServicesEnabled", { type: "String", default: "0", allowedValues: ["0", "1"] });
-  const images = attachServiceCatalogImages(stack, { env: "test", repositories: props.repositories ?? SERVICE_CATALOG_REPOSITORIES, testServicesEnabled, ...(props.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.kmsKeyArn }) });
+  // The stack has the switch, as the control plane does; the construct is not given it.
+  new CfnParameter(stack, "TestServicesEnabled", { type: "String", default: props.switchDefault ?? "0", allowedValues: ["0", "1"] });
+  const images = attachServiceCatalogImages(stack, { env: "test", repositories: props.repositories ?? SERVICE_CATALOG_REPOSITORIES, ...(props.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.kmsKeyArn }) });
   return { stack, images, template: Template.fromStack(stack) };
 }
 type Resource = { Type: string; Condition?: string; Properties?: Record<string, unknown>; DeletionPolicy?: string; UpdateReplacePolicy?: string };
@@ -53,7 +56,7 @@ describe("the catalog repositories", () => {
       expect(resource.UpdateReplacePolicy).toBe("Retain");
     }
   });
-  it("grant no role anything and add no policy, no output and no role: a worker pulls through the instance role it already has", () => {
+  it("grant no role anything and add no policy, no output and no role: the worker's pull grant is deferred to the wiring task (a named environment's workers have none on these repositories today)", () => {
     const types = new Set(Object.values(resourcesOf(template)).map((resource) => resource.Type));
     expect([...types].sort()).toEqual(["AWS::ECR::Repository", "AWS::KMS::Key"]);
     expect(template.toJSON().Outputs).toBeUndefined();
@@ -65,13 +68,40 @@ describe("the catalog repositories", () => {
 });
 
 describe("the switch", () => {
-  it("makes every resource conditional on TestServicesEnabled being 1, and the condition exists", () => {
-    const { template } = build();
-    const json = template.toJSON() as { Conditions: Record<string, unknown>; Resources: Record<string, Resource> };
-    const conditions = Object.keys(json.Conditions);
-    expect(conditions).toHaveLength(1);
-    expect(json.Conditions[conditions[0]!]).toEqual({ "Fn::Equals": [{ Ref: "TestServicesEnabled" }, "1"] });
-    for (const [id, resource] of Object.entries(json.Resources)) expect(resource.Condition, id).toBe(conditions[0]);
+  it("does not matter: no condition, no reference to TestServicesEnabled, and the same resources whether the switch is on or off", () => {
+    const off = build({ switchDefault: "0" }).template.toJSON() as { Conditions?: Record<string, unknown>; Resources: Record<string, Resource> };
+    const on = build({ switchDefault: "1" }).template.toJSON() as { Conditions?: Record<string, unknown>; Resources: Record<string, Resource> };
+    expect(off.Conditions).toBeUndefined();
+    for (const [id, resource] of Object.entries(off.Resources)) {
+      expect(resource.Condition, id).toBeUndefined();
+      expect(JSON.stringify(resource), id).not.toContain("TestServicesEnabled");
+    }
+    expect(off.Resources).toEqual(on.Resources);
+  });
+});
+
+describe("the key policy", () => {
+  const { template } = build();
+  const statements = (): Array<{ Sid: string; Effect: string; Principal: unknown; Action: string[]; Resource: string; Condition?: Record<string, unknown> }> => {
+    const key = Object.values(resourcesOf(template)).find((resource) => resource.Type === "AWS::KMS::Key")!;
+    return (key.Properties!["KeyPolicy"] as { Statement: ReturnType<typeof statements> }).Statement;
+  };
+  it("lets the account administer the key without ever using it", () => {
+    const admin = statements().find((statement) => statement.Sid === "AdminWithoutUse")!;
+    expect(admin.Effect).toBe("Allow");
+    for (const action of admin.Action) {
+      expect(action, action).not.toMatch(/^kms:(Decrypt|Encrypt|GenerateDataKey|ReEncrypt|CreateGrant|Create\*|\*)/u);
+    }
+    expect(admin.Action).toContain("kms:CreateAlias");
+  });
+  it("allows use only through ECR, for a grant that is for an AWS resource", () => {
+    const use = statements().find((statement) => statement.Sid === "UseOnlyThroughEcr")!;
+    expect(use.Action.sort()).toEqual(["kms:CreateGrant", "kms:DescribeKey"]);
+    expect(use.Condition).toEqual({ StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["ecr.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } }, Bool: { "kms:GrantIsForAWSResource": "true" } });
+  });
+  it("has no other statement (in particular none that opens the key to every use)", () => {
+    expect(statements().map((statement) => statement.Sid).sort()).toEqual(["AdminWithoutUse", "UseOnlyThroughEcr"]);
+    expect(JSON.stringify(statements())).not.toMatch(/kms:(Decrypt|Encrypt|GenerateDataKey|\*")/u);
   });
 });
 
@@ -98,16 +128,16 @@ describe("what it refuses", () => {
 });
 
 describe("in the stacks", () => {
-  it("the staging control plane has the repositories, all conditional on its TestServicesEnabled parameter; nothing else in it changes because of them", () => {
+  it("the staging control plane has the repositories and their key with NO condition; nothing else in it changes because of them", () => {
     const stack = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === "agentx-staging-control-plane")!;
-    const json = normalizedTemplate(stack) as { Parameters: Record<string, { Default?: string }>; Conditions: Record<string, { "Fn::Equals"?: unknown[] }>; Resources: Record<string, Resource> };
+    const json = normalizedTemplate(stack) as { Parameters: Record<string, { Default?: string }>; Resources: Record<string, Resource> };
     expect(json.Parameters["TestServicesEnabled"]!.Default).toBe("0");
     const mine = Object.entries(json.Resources).filter(([id]) => id.startsWith("ServiceCatalogImages"));
     expect(mine.map(([, resource]) => resource.Type).sort()).toEqual([...SERVICE_CATALOG_REPOSITORIES.map(() => "AWS::ECR::Repository"), "AWS::KMS::Key"].sort());
-    const conditions = new Set(mine.map(([, resource]) => resource.Condition));
-    expect(conditions.size).toBe(1);
-    const condition = [...conditions][0]!;
-    expect(json.Conditions[condition]).toEqual({ "Fn::Equals": [{ Ref: "TestServicesEnabled" }, "1"] });
+    for (const [id, resource] of mine) {
+      expect(resource.Condition, id).toBeUndefined();
+      expect(JSON.stringify(resource), id).not.toContain("TestServicesEnabled");
+    }
     // No other resource refers to one of them (the control plane's roles, policies and functions are unchanged).
     const mineIds = new Set(mine.map(([id]) => id));
     const text = (resource: Resource): string => JSON.stringify(resource);

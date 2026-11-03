@@ -2,15 +2,16 @@
 //
 //   - The catalog is SIGNED as a file: `catalog.sig.json` holds an ECDSA P-256 signature over the exact bytes of `catalog.json`, behind a fixed prefix (a catalog signature can never be a bundle signature). The
 //     keys are the same public keys installers already pin for release bundles (`parseBundlePublicKey`). `loadSignedCatalog` is the one way a caller gets a catalog it may trust: the signature, then the strict schema
-//     (a half-pinned file does not parse).
-//   - Each image has a signed STATEMENT (id, repository, digest, SBOM hash, scan time): the evidence the build keeps beside the catalog. A statement for one image or one digest verifies for no other.
+//     (a half-pinned file does not parse). It returns a `VerifiedCatalog`, the only type `resolveCatalogImage` accepts.
+//   - Each image has a signed STATEMENT (id, repository, the index digest, and for EVERY platform its child manifest digest, SBOM hash and scan time): the evidence the build keeps beside the catalog. A statement for one
+//     image or one digest verifies for no other, and one that leaves a platform out is not the statement the build signed.
 //   - The company-registry check (owner Q9, Enterprise): a customer's internal registry must serve the exact digest. The manifest is fetched BY DIGEST and its bytes are hashed here, so a registry that answers with
 //     other bytes (a tag followed, a rebuilt image, a proxy) is a mismatch that stops that image only.
 import { createHash, verify } from "node:crypto";
 import { z } from "zod";
 import { parseBundlePublicKey } from "./bundle.js";
-import { ServiceCatalogSchema, type ServiceCatalog } from "./service-catalog.js";
-import { catalogPins, type CatalogEdition } from "./service-catalog-images.js";
+import { CATALOG_PLATFORMS, ServiceCatalogSchema, type ServiceCatalog } from "./service-catalog.js";
+import { catalogPins, type CatalogEdition, type MirrorCheck, type VerifiedCatalog } from "./service-catalog-images.js";
 import { catalogIdName, CatalogIdSchema } from "./test-env-dependency.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -22,7 +23,7 @@ export const CATALOG_SIGNATURE_ALGORITHM = "ecdsa-p256-sha256";
 export const CATALOG_SIGNATURE_MAX_BYTES = 64 * 1024;
 export const CATALOG_MAX_BYTES = 1024 * 1024;
 const CATALOG_DOMAIN = "rovara-service-catalog/v1\n";
-const IMAGE_DOMAIN = "rovara-catalog-image/v1\n";
+const IMAGE_DOMAIN = "rovara-catalog-image/v2\n";
 
 export const CatalogSignatureSchema = z
   .object({
@@ -73,7 +74,7 @@ export function verifyCatalogSignature(input: { catalogBytes: Uint8Array; signat
  * The catalog a caller may trust: size caps, the signature over the exact bytes, then the strict schema. A signed but half-pinned file does not get through (the schema refuses it), and neither does an unsigned
  * or wrongly signed one. Returns a reason in fixed words instead of throwing.
  */
-export function loadSignedCatalog(input: { catalogBytes: Uint8Array; signatureBytes: Uint8Array; trustedKeys: readonly string[] }): { ok: true; catalog: ServiceCatalog; keyId: string } | { ok: false; reason: string } {
+export function loadSignedCatalog(input: { catalogBytes: Uint8Array; signatureBytes: Uint8Array; trustedKeys: readonly string[] }): { ok: true; catalog: VerifiedCatalog; keyId: string } | { ok: false; reason: string } {
   if (input.catalogBytes.byteLength > CATALOG_MAX_BYTES || input.signatureBytes.byteLength > CATALOG_SIGNATURE_MAX_BYTES) return { ok: false, reason: "the catalog or its signature is too large" };
   let signature: CatalogSignature;
   try {
@@ -85,7 +86,8 @@ export function loadSignedCatalog(input: { catalogBytes: Uint8Array; signatureBy
   if (!checked.ok) return { ok: false, reason: checked.reason };
   try {
     const catalog = ServiceCatalogSchema.parse(JSON.parse(Buffer.from(input.catalogBytes).toString("utf8")));
-    return { ok: true, catalog, keyId: checked.keyId };
+    // The one place a catalog is branded as verified: the signature held over these exact bytes and the schema parsed them.
+    return { ok: true, catalog: catalog as VerifiedCatalog, keyId: checked.keyId };
   } catch {
     return { ok: false, reason: "the catalog is signed but does not pass the catalog schema" };
   }
@@ -93,21 +95,45 @@ export function loadSignedCatalog(input: { catalogBytes: Uint8Array; signatureBy
 
 // ---- one image's signed statement
 
+/** One platform of an image: the child manifest digest of the index, and the SBOM hash and scan time recorded for exactly that manifest. */
+export const ImageChildStatementSchema = z.object({ platform: z.enum(CATALOG_PLATFORMS), digest: Sha256Schema, sbomRef: Sha256Schema, scannedAt: z.string().datetime() }).strict();
+export type ImageChildStatement = z.infer<typeof ImageChildStatementSchema>;
+
+const byPlatform = (a: ImageChildStatement, b: ImageChildStatement): number => (a.platform < b.platform ? -1 : a.platform > b.platform ? 1 : 0);
+
+/** The one SBOM hash an entry carries in the catalog when it has several platforms: the SHA-256 of `<platform>=<sbom hash>` lines in platform order. The per-platform hashes are in the evidence and the statement. */
+export function combinedSbomRef(children: ReadonlyArray<{ platform: string; sbomRef: string }>): string {
+  return createHash("sha256").update([...children].sort((a, b) => (a.platform < b.platform ? -1 : a.platform > b.platform ? 1 : 0)).map((child) => `${child.platform}=${child.sbomRef}\n`).join(""), "utf8").digest("hex");
+}
+
 export const ImageStatementSchema = z
   .object({
     id: CatalogIdSchema,
     repository: z.string().regex(/^svc\/[a-z0-9][a-z0-9._-]{0,62}$/u),
+    /** The digest the catalog pins: the INDEX (manifest list) digest. */
     digest: Sha256Schema,
+    /** The combined SBOM hash the catalog carries (`combinedSbomRef` of the children). */
     sbomRef: Sha256Schema,
+    /** The oldest scan time of the children. */
     scannedAt: z.string().datetime(),
+    /** Every platform, with its child manifest digest and its own SBOM hash and scan time. */
+    children: z.array(ImageChildStatementSchema).min(1).max(CATALOG_PLATFORMS.length),
   })
-  .strict();
+  .strict()
+  .superRefine((statement, context) => {
+    if (new Set(statement.children.map((child) => child.platform)).size !== statement.children.length) context.addIssue({ code: "custom", path: ["children"], message: "a platform is listed once" });
+    if (new Set(statement.children.map((child) => child.digest)).size !== statement.children.length) context.addIssue({ code: "custom", path: ["children"], message: "a child digest is listed once" });
+    if (statement.sbomRef !== combinedSbomRef(statement.children)) context.addIssue({ code: "custom", path: ["sbomRef"], message: "the SBOM hash is the combined hash of the children" });
+    const oldest = [...statement.children.map((child) => child.scannedAt)].sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+    if (Date.parse(statement.scannedAt) !== Date.parse(oldest ?? "")) context.addIssue({ code: "custom", path: ["scannedAt"], message: "the scan time is the oldest of the children" });
+  });
 export type ImageStatement = z.infer<typeof ImageStatementSchema>;
 
-/** The text an image signature covers (domain prefix, then one field per line, in this order). */
+/** The text an image signature covers (domain prefix, then one field per line, in this order; the children by platform, four lines each). */
 export function imageStatementMessage(statement: ImageStatement): Buffer {
   const checked = ImageStatementSchema.parse(statement);
-  return Buffer.from(`${IMAGE_DOMAIN}${checked.id}\n${checked.repository}\n${checked.digest}\n${checked.sbomRef}\n${checked.scannedAt}\n`, "utf8");
+  const children = [...checked.children].sort(byPlatform).map((child) => `${child.platform}\n${child.digest}\n${child.sbomRef}\n${child.scannedAt}\n`).join("");
+  return Buffer.from(`${IMAGE_DOMAIN}${checked.id}\n${checked.repository}\n${checked.digest}\n${checked.sbomRef}\n${checked.scannedAt}\n${String(checked.children.length)}\n${children}`, "utf8");
 }
 
 export const SignedImageStatementSchema = z.object({ statement: ImageStatementSchema, keyId: Sha256Schema, signature: z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/).max(256) }).strict();
@@ -127,10 +153,6 @@ export const MIRROR_MANIFEST_MAX_BYTES = 4 * 1024 * 1024;
 export interface RegistryManifestPort {
   manifestBytes(repositoryName: string, digest: string): Promise<Uint8Array | undefined>;
 }
-
-export type MirrorCheck =
-  | { id: string; ok: true; digest: string }
-  | { id: string; ok: false; code: "missing" | "digest_mismatch" | "unreachable"; message: string };
 
 const MIRROR_MESSAGES = {
   missing: (service: string) => `${service} image: the company registry does not hold the catalog's digest`,
@@ -158,5 +180,16 @@ export async function checkMirrorServesDigest(port: RegistryManifestPort, input:
  * `repositoryNameFor` is the company's own repository path for a catalog repository.
  */
 export async function checkCatalogMirror(input: { catalog: ServiceCatalog; edition?: CatalogEdition; port: RegistryManifestPort; repositoryNameFor: (catalogRepository: string) => string }): Promise<MirrorCheck[]> {
-  return Promise.all(catalogPins(input.catalog, input.edition ?? "enterprise").map((pin) => checkMirrorServesDigest(input.port, { id: pin.id, repositoryName: input.repositoryNameFor(pin.repository), digest: pin.digest })));
+  return Promise.all(
+    catalogPins(input.catalog, input.edition ?? "enterprise").map(async (pin): Promise<MirrorCheck> => {
+      // The company's own naming function is called inside the per-image try: one that throws for one repository is that image's failure to check, not the whole run's.
+      let repositoryName: string;
+      try {
+        repositoryName = input.repositoryNameFor(pin.repository);
+      } catch {
+        return { id: pin.id, ok: false, code: "unreachable", message: MIRROR_MESSAGES.unreachable(catalogIdName(pin.id)) };
+      }
+      return checkMirrorServesDigest(input.port, { id: pin.id, repositoryName, digest: pin.digest });
+    }),
+  );
 }

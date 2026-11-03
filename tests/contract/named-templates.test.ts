@@ -250,8 +250,8 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // 4a605fd (re-recorded there when mainline merged in), so a named environment's templates must stay
 // as they were, apart from issue 46's dispatch dead-letter alarm, issue 173's reconciler backstop,
 // issue 195's stuck-cancel alarm, the false-default Task People controls and the Audit Ledger's
-// storage, each checked and taken out above. The snapshot was retaken for TS19 (test services image catalog): nine ECR repositories and one KMS key in the control plane, every one conditional on the
-// TestServicesEnabled parameter (service-catalog-images-infrastructure.test.ts checks them), and nothing else.
+// storage, each checked and taken out above. The snapshot was retaken for TS19 (test services image catalog): nine ECR repositories and one KMS key in the control plane, UNCONDITIONAL (fixed names, retained: a
+// condition on TestServicesEnabled would break turning it on, off and on again; service-catalog-images-infrastructure.test.ts checks them), and nothing else.
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {

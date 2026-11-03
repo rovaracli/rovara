@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { catalogPrepullList } from "@agentx/contracts";
 import { EMPTY_PREPULL_LIST, PREPULL_LIST_URL, loadPrepullList, prepullCatalogImages, prepullReferences } from "../../packages/worker/src/service-prepull.js";
 import { pinnedCatalog, sha } from "../support/catalog-pinning.js";
@@ -72,6 +72,70 @@ describe("pulling ahead", () => {
     });
     expect(result.pulled).toHaveLength(3);
     expect(result.skipped).toEqual(list.images.slice(3).map((image) => image.id));
+  });
+  it("cuts off ONE hung pull when the budget ends: the call returns, the signal is aborted, and nothing after it is tried", async () => {
+    const seen: Array<{ reference: string; signal: AbortSignal }> = [];
+    const started = Date.now();
+    const result = await prepullCatalogImages({
+      list, registry: REGISTRY, env: "staging", budgetMs: 80,
+      // The first image pulls; the second never settles (a hung `docker pull`).
+      ports: { pull: (reference, signal) => { seen.push({ reference, signal }); return seen.length === 1 ? Promise.resolve() : new Promise<void>(() => undefined); } },
+    });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result.pulled).toEqual([list.images[0]!.id]);
+    expect(result.failed).toEqual([{ id: list.images[1]!.id, reason: "the pull did not finish inside the time budget" }]);
+    expect(result.skipped).toEqual(list.images.slice(2).map((image) => image.id));
+    expect(seen).toHaveLength(2);
+    expect(seen[0]!.signal.aborted).toBe(false);
+    expect(seen[1]!.signal.aborted).toBe(true);
+  });
+  it("reports the budget, not the port's own abort error, and a pull that rejects after it was cut off is not an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown): void => void unhandled.push(reason);
+    process.on("unhandledRejection", record);
+    try {
+      const result = await prepullCatalogImages({
+        list, registry: REGISTRY, env: "staging", budgetMs: 50,
+        ports: { pull: (_reference, signal) => new Promise<void>((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted by the port")))) },
+      });
+      expect(result.failed).toEqual([{ id: list.images[0]!.id, reason: "the pull did not finish inside the time budget" }]);
+      expect(result.skipped).toEqual(list.images.slice(1).map((image) => image.id));
+      await new Promise((done) => setTimeout(done, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", record);
+    }
+  });
+  it("bounds the check for a present image by the same budget", async () => {
+    const result = await prepullCatalogImages({
+      list, registry: REGISTRY, env: "staging", budgetMs: 50,
+      ports: { present: () => new Promise<boolean>(() => undefined), pull: async () => { throw new Error("should not be called"); } },
+    });
+    expect(result.failed).toEqual([{ id: list.images[0]!.id, reason: "the pull did not finish inside the time budget" }]);
+    expect(result.pulled).toEqual([]);
+  });
+  it("does not time a pull that finishes in time: no failure, and every timer it started is cleared", async () => {
+    const BUDGET = 61_234;
+    // Pass-through spies: the real timers run, and the calls and the handles they returned are read afterwards.
+    const setSpy = vi.spyOn(globalThis, "setTimeout");
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    let started: unknown[];
+    let cleared: unknown[];
+    try {
+      const result = await prepullCatalogImages({ list, registry: REGISTRY, env: "staging", budgetMs: BUDGET, ports: { pull: async () => undefined } });
+      expect(result.failed).toEqual([]);
+      expect(result.pulled).toHaveLength(list.images.length);
+      started = setSpy.mock.results.filter((_, index) => {
+        const ms = setSpy.mock.calls[index]?.[1];
+        return typeof ms === "number" && ms > BUDGET - 5_000 && ms <= BUDGET;
+      }).map((call) => call.value as unknown);
+      cleared = clearSpy.mock.calls.map((call) => call[0] as unknown);
+    } finally {
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+    }
+    expect(started.length).toBeGreaterThanOrEqual(list.images.length);
+    for (const handle of started) expect(cleared).toContain(handle);
   });
   it("never throws: a registry or list that does not parse pulls nothing", async () => {
     const pulls: string[] = [];

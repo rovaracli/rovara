@@ -8,6 +8,7 @@ import {
   PrepullListSchema,
   SERVICE_CATALOG_REPOSITORIES,
   bundleCatalogProblems,
+  checkBundleImages,
   catalogBundleImageName,
   catalogBundleImages,
   catalogImageReference,
@@ -17,13 +18,15 @@ import {
   catalogRepositoryName,
   resolveCatalogImage,
   resolveCatalogImages,
+  type MirrorCheck,
   type ResolveCatalogImageInput,
+  type ServedImage,
   type SubstituteApprovalPort,
   type SubstituteApprovalRecord,
 } from "@agentx/contracts";
-import { digestOfId, pinnedCatalog, sha, unpinnedCatalog } from "../support/catalog-pinning.js";
+import { digestOfId, pinnedCatalog, sha, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 
-const catalog = pinnedCatalog();
+const catalog = verifiedCatalog(pinnedCatalog());
 const digest = (id: string): string => digestOfId(id);
 const OTHER = sha("a company-built postgres");
 const OTHER_TWO = sha("another company-built postgres");
@@ -130,8 +133,10 @@ const APPROVAL = "approval:2026-11-02:pg16-hardened";
 const approvalFor = (overrides: Partial<SubstituteApprovalRecord> = {}): SubstituteApprovalRecord => ({ approvalRef: APPROVAL, catalogId: "postgres@16", catalogDigest: digest("postgres@16"), digest: OTHER, ...overrides });
 const portOf = (...records: SubstituteApprovalRecord[]): SubstituteApprovalPort => ({ find: async (ref) => records.find((record) => record.approvalRef === ref) });
 const substitute = (overrides: Record<string, string> = {}) => ({ digest: OTHER, catalogDigest: digest("postgres@16"), approvalRef: APPROVAL, ...overrides });
+/** What the install serves for an id: the RESULT of a passed digest check (never a bare digest). */
+const served = (source: ServedImage["source"], digestHex: string, id = "postgres@16"): ServedImage => ({ source, check: { id, ok: true, digest: digestHex } });
 const request = (overrides: Partial<ResolveCatalogImageInput> = {}): ResolveCatalogImageInput => ({
-  catalog, catalogId: "postgres@16", edition: "enterprise", served: { source: "company_registry", digest: digest("postgres@16") }, approvals: portOf(), ...overrides,
+  catalog, catalogId: "postgres@16", edition: "enterprise", served: served("company_registry", digest("postgres@16")), approvals: portOf(), ...overrides,
 });
 const refusal = async (input: ResolveCatalogImageInput) => {
   const result = await resolveCatalogImage(input);
@@ -140,39 +145,74 @@ const refusal = async (input: ResolveCatalogImageInput) => {
 
 describe("resolving an image to start", () => {
   it("starts the catalog's digest, from Rovara's registry in Public and from the bundle or the company's registry in Enterprise", async () => {
-    expect(await resolveCatalogImage(request({ edition: "public", served: { source: "rovara_registry", digest: digest("postgres@16") } }))).toEqual({
+    expect(await resolveCatalogImage(request({ edition: "public", served: served("rovara_registry", digest("postgres@16")) }))).toEqual({
       ok: true, id: "postgres@16", kind: "catalog", repository: "svc/postgres", digest: digest("postgres@16"), source: "rovara_registry",
     });
     for (const source of ["signed_bundle", "company_registry"] as const) {
-      expect(await refusal(request({ served: { source, digest: digest("postgres@16") } }))).toBe("ok");
+      expect(await refusal(request({ served: served(source, digest("postgres@16")) }))).toBe("ok");
     }
   });
   it("refuses a source the edition does not use", async () => {
-    expect(await refusal(request({ edition: "public", served: { source: "company_registry", digest: digest("postgres@16") } }))).toBe("source_not_allowed");
-    expect(await refusal(request({ edition: "enterprise", served: { source: "rovara_registry", digest: digest("postgres@16") } }))).toBe("source_not_allowed");
+    expect(await refusal(request({ edition: "public", served: served("company_registry", digest("postgres@16")) }))).toBe("source_not_allowed");
+    expect(await refusal(request({ edition: "enterprise", served: served("rovara_registry", digest("postgres@16")) }))).toBe("source_not_allowed");
   });
   it("stops an image whose digest differs from the catalog's when there is no approved substitute, in the owner's words", async () => {
-    const result = await resolveCatalogImage(request({ served: { source: "company_registry", digest: OTHER } }));
+    const result = await resolveCatalogImage(request({ served: served("company_registry", OTHER) }));
     expect(result).toEqual({ ok: false, id: "postgres@16", code: "digest_mismatch", message: "postgres image digest does not match the catalog and has no approved substitute" });
     expect(CATALOG_IMAGE_MESSAGES.digest_mismatch("postgres")).toBe("postgres image digest does not match the catalog and has no approved substitute");
   });
   it("refuses a digest that is not 64 lower-case hex, a tag in place of a digest, and an unknown id", async () => {
     for (const bad of ["latest", "16", digest("postgres@16").toUpperCase(), digest("postgres@16").slice(1), `sha256:${digest("postgres@16")}`]) {
-      expect(await refusal(request({ served: { source: "company_registry", digest: bad } })), bad).toBe("unknown_entry");
+      expect(await refusal(request({ served: served("company_registry", bad) })), bad).toBe("not_verified");
     }
-    expect(await refusal(request({ catalogId: "mongo@7" }))).toBe("unknown_entry");
+    expect(await refusal(request({ catalogId: "mongo@7", served: served("company_registry", digest("postgres@16"), "mongo@7") }))).toBe("unknown_entry");
     expect(await refusal(request({ catalogId: "not an id" }))).toBe("unknown_entry");
+  });
+  it("takes the RESULT of a digest check, not a digest: a check that failed, is for another image, or is not a check at all is refused", async () => {
+    const failedMirror: MirrorCheck = { id: "postgres@16", ok: false, code: "digest_mismatch", message: "postgres image: the company registry serves other bytes than the catalog's digest" };
+    expect(await refusal(request({ served: { source: "company_registry", check: failedMirror } }))).toBe("not_verified");
+    expect(await refusal(request({ served: { source: "company_registry", check: { ...failedMirror, code: "unreachable" } } }))).toBe("not_verified");
+    expect(await refusal(request({ served: { source: "signed_bundle", check: { id: "postgres@16", ok: false, code: "missing", message: "postgres image: the signed bundle does not hold it" } } }))).toBe("not_verified");
+    // A check that did not pass is refused even when it carries a well-formed digest (the `ok` flag decides, not the presence of a digest).
+    expect(await refusal(request({ served: { source: "company_registry", check: { ...failedMirror, digest: digest("postgres@16") } as unknown as MirrorCheck } }))).toBe("not_verified");
+    // A passed check for ANOTHER image does not cover this one, even when the digest is the right one.
+    expect(await refusal(request({ served: served("company_registry", digest("postgres@16"), "mysql@8") }))).toBe("not_verified");
+    // The old shape, a bare digest, and a missing check.
+    expect(await refusal(request({ served: { source: "company_registry", digest: digest("postgres@16") } as unknown as ServedImage }))).toBe("not_verified");
+    expect(await refusal(request({ served: { source: "company_registry" } as unknown as ServedImage }))).toBe("not_verified");
+    expect(await refusal(request({ served: undefined as unknown as ServedImage }))).toBe("not_verified");
+    // The type says the same: neither a plain catalog nor a bare digest compiles.
+    // @ts-expect-error a catalog that did not come from loadSignedCatalog is not accepted
+    void request({ catalog: pinnedCatalog() });
+    // @ts-expect-error a bare digest is not what the install served: a check result is
+    void request({ served: { source: "company_registry", digest: digest("postgres@16") } });
+  });
+  it("takes a bundle check as the proof for a signed bundle, and refuses a bundle that lacks or changes the image", async () => {
+    const images = catalogBundleImages(catalog, { registry: "111122223333.dkr.ecr.us-west-2.amazonaws.com", env: "staging" });
+    const checks = checkBundleImages({ images }, catalog);
+    expect(checks.every((check) => check.ok)).toBe(true);
+    const postgres = checks.find((check) => check.id === "postgres@16")!;
+    expect(await refusal(request({ served: { source: "signed_bundle", check: postgres } }))).toBe("ok");
+    const without = checkBundleImages({ images: images.filter((image) => image.name !== "svc-postgres-16") }, catalog).find((check) => check.id === "postgres@16")!;
+    expect(without).toMatchObject({ ok: false, code: "missing" });
+    expect(await refusal(request({ served: { source: "signed_bundle", check: without } }))).toBe("not_verified");
+    const swapped = checkBundleImages({ images: images.map((image) => (image.name === "svc-postgres-16" ? { ...image, sourceRef: `${image.sourceRef.slice(0, -64)}${OTHER}` } : image)) }, catalog).find((check) => check.id === "postgres@16")!;
+    expect(swapped).toMatchObject({ ok: false, code: "digest_mismatch" });
+    expect(await refusal(request({ served: { source: "signed_bundle", check: swapped } }))).toBe("not_verified");
+    // One result per pinned Enterprise image, and none for an unpinned catalog.
+    expect(checks).toHaveLength(catalogPins(catalog, "enterprise").length);
+    expect(checkBundleImages({ images }, unpinnedCatalog())).toEqual([]);
   });
   it("refuses a retired entry, an unpinned catalog and an edition the entry is not offered in", async () => {
     const retired = pinnedCatalog((entries) => { entries.find((entry) => entry["id"] === "postgres@16")!["status"] = "retired"; });
-    expect(await refusal(request({ catalog: retired }))).toBe("retired");
-    expect(await refusal(request({ catalog: unpinnedCatalog() }))).toBe("not_pinned");
+    expect(await refusal(request({ catalog: verifiedCatalog(retired) }))).toBe("retired");
+    expect(await refusal(request({ catalog: verifiedCatalog(unpinnedCatalog()) }))).toBe("not_pinned");
     const publicOnly = pinnedCatalog((entries) => { entries.find((entry) => entry["id"] === "postgres@16")!["editions"] = ["public"]; });
-    expect(await refusal(request({ catalog: publicOnly }))).toBe("edition_not_offered");
+    expect(await refusal(request({ catalog: verifiedCatalog(publicOnly) }))).toBe("edition_not_offered");
   });
 
   describe("a company-built substitute (DC-TS-1)", () => {
-    const good = (): ResolveCatalogImageInput => request({ substitute: substitute(), approvals: portOf(approvalFor()), served: { source: "company_registry", digest: OTHER } });
+    const good = (): ResolveCatalogImageInput => request({ substitute: substitute(), approvals: portOf(approvalFor()), served: served("company_registry", OTHER) });
     it("starts when the substitute replaces the catalog's digest, the approval is for this id and these two digests, and the registry serves it, and carries the evidence label", async () => {
       expect(await resolveCatalogImage(good())).toEqual({
         ok: true, id: "postgres@16", kind: "substitute", repository: "svc/postgres", digest: OTHER, catalogDigest: digest("postgres@16"), approvalRef: APPROVAL, source: "company_registry",
@@ -194,14 +234,14 @@ describe("resolving an image to start", () => {
       }
     });
     it("runs only the approved digest: a registry that serves anything else is refused, even the catalog's own digest", async () => {
-      expect(await refusal({ ...good(), served: { source: "company_registry", digest: OTHER_TWO } })).toBe("substitute_not_served");
-      expect(await refusal({ ...good(), served: { source: "company_registry", digest: digest("postgres@16") } })).toBe("substitute_not_served");
+      expect(await refusal({ ...good(), served: served("company_registry", OTHER_TWO) })).toBe("substitute_not_served");
+      expect(await refusal({ ...good(), served: served("company_registry", digest("postgres@16")) })).toBe("substitute_not_served");
     });
     it("is not allowed in Public, or for Rovara's own emulator, fake server or helpers, or when its shape is wrong", async () => {
-      expect(await refusal({ ...good(), edition: "public", served: { source: "rovara_registry", digest: OTHER } })).toBe("substitute_not_allowed");
+      expect(await refusal({ ...good(), edition: "public", served: served("rovara_registry", OTHER) })).toBe("substitute_not_allowed");
       for (const id of ["local-aws@r1", "fake-server@r1", "dns-helper@r1"]) {
         const sub = { digest: OTHER, catalogDigest: digest(id), approvalRef: APPROVAL };
-        expect(await refusal(request({ catalogId: id, substitute: sub, served: { source: "company_registry", digest: OTHER }, approvals: portOf({ approvalRef: APPROVAL, catalogId: id, catalogDigest: digest(id), digest: OTHER }) })), id).toBe("substitute_not_allowed");
+        expect(await refusal(request({ catalogId: id, substitute: sub, served: served("company_registry", OTHER, id), approvals: portOf({ approvalRef: APPROVAL, catalogId: id, catalogDigest: digest(id), digest: OTHER }) })), id).toBe("substitute_not_allowed");
       }
       expect(await refusal({ ...good(), substitute: substitute({ digest: digest("postgres@16") }) })).toBe("substitute_not_allowed");
       expect(await refusal({ ...good(), substitute: substitute({ approvalRef: "x" }) })).toBe("substitute_not_allowed");
@@ -210,16 +250,16 @@ describe("resolving an image to start", () => {
       let asked = 0;
       const counting: SubstituteApprovalPort = { find: async () => { asked += 1; return approvalFor(); } };
       await resolveCatalogImage({ ...good(), substitute: substitute({ catalogDigest: OTHER_TWO }), approvals: counting });
-      await resolveCatalogImage({ ...good(), edition: "public", served: { source: "rovara_registry", digest: OTHER }, approvals: counting });
+      await resolveCatalogImage({ ...good(), edition: "public", served: served("rovara_registry", OTHER), approvals: counting });
       expect(asked).toBe(0);
     });
   });
 
   it("stops only the image that mismatches: the others in the same call still start", async () => {
     const results = await resolveCatalogImages([
-      request({ catalogId: "postgres@16", served: { source: "company_registry", digest: OTHER } }),
-      request({ catalogId: "mysql@8", served: { source: "company_registry", digest: digest("mysql@8") } }),
-      request({ catalogId: "valkey@8", approvals: { find: async () => { throw new Error("boom"); } }, served: { source: "company_registry", digest: digest("valkey@8") } }),
+      request({ catalogId: "postgres@16", served: served("company_registry", OTHER) }),
+      request({ catalogId: "mysql@8", served: served("company_registry", digest("mysql@8"), "mysql@8") }),
+      request({ catalogId: "valkey@8", approvals: { find: async () => { throw new Error("boom"); } }, served: served("company_registry", digest("valkey@8"), "valkey@8") }),
     ]);
     expect(results.map((result) => (result.ok ? "ok" : result.code))).toEqual(["digest_mismatch", "ok", "ok"]);
   });
