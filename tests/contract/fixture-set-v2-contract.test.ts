@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { e2eApiMockFixtureToFixtureSet, type E2EApiMockFixture } from "../../packages/contracts/src/e2e-node.js";
 import * as mocks from "../../packages/contracts/src/service-mocks.js";
 
-const dependency = { id: "payments-api", family: "http:api.example-pay.com", protocol: "http_json", target: "api.example-pay.com" } as const;
-const baseMatch = { ignorePaths: ["/requestedAt"], query: ["customer"] };
+const dependency: mocks.FixtureSet["dependency"] = { id: "payments-api", family: "http:api.example-pay.com", protocol: "http_json", target: "api.example-pay.com" };
+const baseMatch: mocks.FixtureSet["match"] = { ignorePaths: ["/requestedAt"], query: ["customer"] };
 const request = (over: Record<string, unknown> = {}) => ({ method: "POST", path: "/v1/charges", query: [{ name: "customer", value: "c1" }], contentType: "application/json", body: '{"amount":5,"requestedAt":"2026-11-02T00:00:00Z"}', ...over });
 const response = (over: Record<string, unknown> = {}) => ({ status: 200, headers: [{ name: "etag", value: "abc" }], contentType: "application/json", body: '{"ok":true}', latencyMs: 12, ...over });
 const entryFor = (over: Record<string, unknown> = {}, match = baseMatch, dep = dependency) => {
