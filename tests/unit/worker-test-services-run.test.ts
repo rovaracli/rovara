@@ -173,6 +173,16 @@ describe("starting the run", () => {
     await nothingLeft(h);
   });
 
+  it("a catalog id the worker image does not carry at all gets the same sentence, not 'mismatch'", async () => {
+    const h = await harness();
+    const error = await h.start([dependency({ catalogId: "postgres@99" })]).then(() => undefined, (caught: unknown) => caught as TestServicesError);
+    expect(error).toBeInstanceOf(TestServicesError);
+    expect(error!.reason).toBe("pull_failed");
+    expect(error!.message).toBe("Dependency image not available on this worker");
+    expect(error!.failures.get("postgres")).toBe("pull_failed");
+    await nothingLeft(h);
+  });
+
   it("a digest the broker approved that this worker image does not pin gets the same sentence (a newer catalog than the image), and nothing is pulled or made", async () => {
     const h = await harness();
     const error = await h.start([dependency({ digest: "c".repeat(64) })]).then(() => undefined, (caught: unknown) => caught as TestServicesError);
@@ -185,7 +195,7 @@ describe("starting the run", () => {
   });
 
   it("refuses a dependency whose repository, digest, family or catalog entry differs from the worker's own signed catalog", async () => {
-    for (const change of [{ repository: "svc/mysql" }, { family: "mysql" }, { catalogId: "postgres@99" }] as const) {
+    for (const change of [{ repository: "svc/mysql" }, { family: "mysql" }] as const) {
       const h = await harness();
       await expect(h.start([dependency(change)])).rejects.toMatchObject({ reason: "mismatch" });
       expect(h.fake.verbs("network").filter((call) => call[1] === "create")).toEqual([]);

@@ -5,7 +5,7 @@
 // with a fixed reason, never a plan that leaves a dependency out (a run with no database would only fail its tests in a confusing way). Pure apart from the catalog source; it never reads a clock, a network or a file itself.
 //
 // Slice 1 starts real software from the catalog only (backing `local`, no substitute image). Every other backing is "not available yet", at approval (`dependenciesStartableNow`) and again here.
-import { loadSignedCatalog, type CatalogEntry, type CatalogTrustContext, type TaskDependencyPlan, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TaskDependencyPlanSchema, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById } from "@agentx/contracts";
+import { loadSignedCatalog, type CatalogEntry, type CatalogTrustContext, type TaskDependencyPlan, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TaskDependencyPlanSchema, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogPrepullList } from "@agentx/contracts";
 import { chooseBacking, effectiveAllowedBackings, type BackingPlace, type SkipReason } from "./backing-choice.js";
 
 /**
@@ -48,6 +48,14 @@ const REFUSAL_OF_SKIP: Partial<Record<SkipReason, DependencyPlanRefusal>> = {
   not_allowed: "not_allowed", not_in_catalog: "not_in_catalog", not_in_edition: "not_in_edition", retired: "retired", no_such_version: "not_in_catalog", not_pinned: "not_pinned",
 };
 
+/**
+ * Slice 1: a worker pulls (as root, at boot) only the images in the pre-pull list baked into its image, and that list holds the DEFAULT entry of each family (`catalogPrepullList`). A pinned entry that is not in it (postgres@15,
+ * postgres@17) would pass approval and then always fail on the worker, so it is "not available yet" at approval and at plan time. Follow-up: pre-pull every pinned local entry, then drop this check.
+ */
+export function isPrepulledEntry(catalog: VerifiedCatalog, catalogId: string): boolean {
+  return catalogPrepullList(catalog).images.some((image) => image.id === catalogId);
+}
+
 const majorOf = (entry: CatalogEntry): string => entry.version.split(".")[0] ?? entry.version;
 
 /** One dependency's plan, or the reason it cannot be pinned. */
@@ -68,6 +76,7 @@ function planOne(dependency: TestEnvDependency, catalog: VerifiedCatalog, editio
     }
   }
   if (entry.image.digest === undefined) return { ok: false, reason: "not_pinned" };
+  if (!isPrepulledEntry(catalog, backing.catalogId)) return { ok: false, reason: "not_available_yet" };
   return { ok: true, plan: {
     id: dependency.id, name: dependency.name, kind: dependency.kind, family: dependency.family, backing: "local", catalogId: backing.catalogId, repository: entry.image.repository, digest: entry.image.digest,
     config: backing.config, aliases: dependency.connect.hostAliases.length > 0 ? dependency.connect.hostAliases : entry.connect.defaultAliases, connect: dependency.connect.env, seeds: dependency.seeds, reset: dependency.reset,

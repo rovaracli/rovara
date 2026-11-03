@@ -44,7 +44,7 @@ import { auditPending, tryAuditEvent, type AuditDeps, type TransactItem } from "
 import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies } from "./second-person-evidence.js";
 import { decideSecondPersonApproval } from "./second-person-approval.js";
 import { clearSetupRunProposal } from "../rovara-code/setup-run-proposal.js";
-import { dependenciesStartableNow } from "../test-env/dependency-plan.js";
+import { dependenciesStartableNow, isPrepulledEntry } from "../test-env/dependency-plan.js";
 import { refuseDependenciesWithDevcontainer } from "../test-env/devcontainer-check.js";
 import { SEED_COMMAND_PROBLEM_WORDS, dependencySeedCommands, seedCommandProblem } from "../test-env/refused-command.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
@@ -184,7 +184,7 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
     for (const dependency of changed) {
       if (dependency.backing.kind !== "local") continue;
       const entry = catalogEntryById(catalog, dependency.backing.catalogId);
-      if (!catalog.pinned || entry === undefined || entry.image.digest === undefined) throw invalid("dependencies: this kind of backing is not available yet; Rovara starts real software from its image list only");
+      if (!catalog.pinned || entry === undefined || entry.image.digest === undefined || !isPrepulledEntry(catalog, dependency.backing.catalogId)) throw invalid("dependencies: this kind of backing is not available yet; Rovara starts real software from its image list only");
     }
   }
   // A seed is a command run with the dependency's network access: it gets the same refusal as any command (a download-and-run, or a secret).

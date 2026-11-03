@@ -325,7 +325,9 @@ const randomAlphanumeric = (length: number): string => randomBytes(length).toStr
 function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly TaskDependencyPlan[], config: Pick<TestServicesConfig, "edition">): Base[] {
   return dependencies.map((plan) => {
     const entry = catalogEntryById(catalog, plan.catalogId);
-    if (entry === undefined || entry.backing !== "local" || entry.status === "retired" || entry.family !== plan.family || !entry.editions.includes(config.edition)
+    // A catalog id this worker image does not carry at all (the broker approved a newer catalog than the image): the same "not available on this worker" sentence as a digest it does not pin.
+    if (entry === undefined) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
+    if (entry.backing !== "local" || entry.status === "retired" || entry.family !== plan.family || !entry.editions.includes(config.edition)
       || entry.image.repository !== plan.repository) throw new TestServicesError("mismatch");
     // The digest must be one PINNED IN THIS WORKER IMAGE (the broker may have approved a newer catalog than the image the worker was built from): the fixed "not available on this worker" sentence, never a generic error.
     if (entry.image.digest !== plan.digest) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));

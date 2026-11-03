@@ -93,7 +93,7 @@ write_test_services_environment() {
 # (catalog repositories `svc/*` only, by digest, never a tag). The worker never pulls: it runs a dependency only if its digest is pinned in the image AND already here. Nothing to pull (no catalog, an empty list) is fine and
 # silent; a login or a pull that fails is logged loudly and returns 1, and the caller then does not offer test services on this worker (the broker refuses a plan to it) while the worker still takes everything else.
 pull_catalog_images() {
-  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 pairs=() reference
+  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 failed="" pairs=() reference
   [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 0
   [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 0
   environment=${BASH_REMATCH[1]}
@@ -108,12 +108,15 @@ pull_catalog_images() {
   ((${#pairs[@]} > 0)) || return 0
   { timeout --foreground --kill-after=10s 120s aws ecr get-login-password --region "$region" \
       | timeout --foreground --kill-after=10s 120s docker login --username AWS --password-stdin "$registry" >/dev/null 2>&1; } \
-    || { log "CATALOG PRE-PULL FAILED: the registry login failed"; return 1; }
+    || { docker logout "$registry" >/dev/null 2>&1 || true; log "CATALOG PRE-PULL FAILED: the registry login failed"; return 1; }
   for reference in "${pairs[@]}"; do
     reference="$registry/rovara-catalog/$environment/$reference"
-    docker image inspect "$reference" >/dev/null 2>&1 || timeout --foreground --kill-after=10s 600s docker pull "$reference" >/dev/null 2>&1 || { log "CATALOG PRE-PULL FAILED: $reference"; return 1; }
+    docker image inspect "$reference" >/dev/null 2>&1 || timeout --foreground --kill-after=10s 600s docker pull "$reference" >/dev/null 2>&1 || { failed=$reference; break; }
     count=$((count + 1))
   done
+  # No ECR token stays on disk after the pulls (the worker has no login of its own and needs none).
+  docker logout "$registry" >/dev/null 2>&1 || true
+  [[ -z "$failed" ]] || { log "CATALOG PRE-PULL FAILED: $failed"; return 1; }
   log "pulled $count catalog image(s) by digest"
 }
 # This optional preload is bounded; failure leaves the worker available.

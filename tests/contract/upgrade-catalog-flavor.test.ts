@@ -139,5 +139,10 @@ describe("prepareDeployment passes the STS account of the upgrade's own client",
     expect(source).toContain("builtSource = await buildSource({ runner, source, flavor: catalogFlavorFor({ env: input.env, account: caller.account }) });");
     expect(source.indexOf("const caller = await identity.get();")).toBeLessThan(source.indexOf("catalogFlavorFor({ env: input.env"));
     expect(source).toContain("await builtSource?.restore()");
+    // And the restore also runs when a step AFTER the build (the synth, the deployer) throws: cleanup() is not returned by then.
+    const after = source.slice(source.indexOf("builtSource = await buildSource("));
+    expect(after.indexOf("} catch (error) {")).toBeGreaterThan(after.indexOf("synthDeclaredParameters("));
+    expect(after.slice(after.indexOf("} catch (error) {"), after.indexOf("} else {"))).toContain("await builtSource.restore()");
+    expect(after.slice(after.indexOf("} catch (error) {"), after.indexOf("} else {"))).toContain("throw error;");
   });
 });

@@ -79,6 +79,7 @@ describe("root pulls the catalog images by digest before the worker starts (H2)"
         `  login) cat >/dev/null; exit ${String(options.loginExit ?? 0)} ;;`,
         `  image) exit ${options.present === true ? "0" : "1"} ;;`,
         `  pull) exit ${String(options.pullExit ?? 0)} ;;`,
+        '  logout) ;;',
         'esac',
       ].join("\n"),
     });
@@ -99,6 +100,8 @@ describe("root pulls the catalog images by digest before the worker starts (H2)"
     expect(r.calls).toContain("/opt/agentx/packages/worker/service-catalog/prepull.json");
     expect(r.calls).not.toContain("docker cp");
     expect(r.calls).not.toContain("docker create");
+    // No ECR token is left on disk: the logout comes after the last pull.
+    expect(r.calls.lastIndexOf("docker logout 944937319445.dkr.ecr.us-west-2.amazonaws.com")).toBeGreaterThan(r.calls.lastIndexOf("docker pull"));
   });
   it("does nothing, quietly and successfully, for a worker whose image pins nothing or has no list (boot is not broken)", () => {
     for (const list of [prepull([]), undefined]) {
@@ -120,6 +123,7 @@ describe("root pulls the catalog images by digest before the worker starts (H2)"
       const r = run(prepull([{ repository: "svc/postgres", digest: REPO_DIGEST }]), options);
       expect(r.status, JSON.stringify(options)).toBe(1);
       expect(r.log, JSON.stringify(options)).toContain("CATALOG PRE-PULL FAILED");
+      expect(r.calls, JSON.stringify(options)).toContain("docker logout 944937319445.dkr.ecr.us-west-2.amazonaws.com");
     }
   });
 });

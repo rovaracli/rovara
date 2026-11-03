@@ -4559,7 +4559,7 @@ describe("test services: the coding dispatch (M4)", () => {
     return outboxPayload(harness, String(implementation.id));
   };
 
-  it("with tx off the IMPLEMENT payload carries no test environment and no test services; with tx on and no dependencies in the environment it has the very same keys", async () => {
+  it("with tx off the IMPLEMENT payload carries no test environment and no test services; with tx on and no dependencies in the environment it is the very same payload, values included", async () => {
     const off = await implementPayload();
     expect(off).not.toHaveProperty("testEnvironment");
     expect(off).not.toHaveProperty("testServices");
@@ -4567,7 +4567,10 @@ describe("test services: the coding dispatch (M4)", () => {
     vi.stubEnv("TEST_ENVIRONMENT_ENABLED", "1");
     vi.stubEnv("TEST_SERVICES_ENABLED", "1");
     const on = await implementPayload();
-    expect(Object.keys(on).sort()).toEqual(Object.keys(off).sort());
+    // The whole payload, values included: ids, times and digests are made by each run, so they are named; everything else (the prompt, the readiness, the settings, the limits) must be the same.
+    const normalised = (payload: Record<string, unknown>): string => JSON.stringify(payload)
+      .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gu, "<uuid>").replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/gu, "<time>").replace(/[0-9a-f]{64}/gu, "<hex>");
+    expect(normalised(on)).toBe(normalised(off));
     expect(on).not.toHaveProperty("testEnvironment");
   });
 });

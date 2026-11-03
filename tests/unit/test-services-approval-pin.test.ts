@@ -1,6 +1,7 @@
 // Test services, slice 1 (L1): at approval, a `local` dependency whose catalog entry has no pinned digest gets the same fixed "not available yet" words as any backing slice 1 cannot start.
 import { describe, expect, it } from "vitest";
 import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { proposeTestEnvironment, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
 import { pinnedCatalog, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
@@ -27,6 +28,26 @@ function deps(serviceCatalog?: () => Promise<ReturnType<typeof verifiedCatalog>>
   return { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => Date.UTC(2026, 10, 3, 10, 0, 0), audit: audit.audit, env: ON, ...(serviceCatalog === undefined ? {} : { serviceCatalog }) };
 }
 const propose = (d: TestEnvDeps) => proposeTestEnvironment(d, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: body() });
+
+const bodyFor = (catalogId: string) => TestEnvironmentBodySchema.parse({ ...body(), dependencies: [{ ...postgres, backing: { kind: "local", catalogId, config: {} } }] });
+
+describe("a pinned entry that the worker does not pre-pull (slice 1)", () => {
+  it("is 'not available yet' at approval: postgres@15 and @17 are pinned but not the default, postgres@16 is", async () => {
+    const source = async () => verifiedCatalog(pinnedCatalog());
+    for (const catalogId of ["postgres@15", "postgres@17"]) {
+      await expect(proposeTestEnvironment(deps(source), { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: bodyFor(catalogId) }), catalogId).rejects.toThrow(/not available yet/u);
+    }
+    await expect(proposeTestEnvironment(deps(source), { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: bodyFor("postgres@16") })).resolves.toBeDefined();
+  });
+  it("is refused at plan time in the same words (an environment approved before this rule still cannot start it)", () => {
+    const catalog = verifiedCatalog(pinnedCatalog());
+    for (const [catalogId, ok] of [["postgres@15", false], ["postgres@17", false], ["postgres@16", true]] as const) {
+      const result = taskDependencyPlansOf({ body: bodyFor(catalogId), catalog, edition: "public", projectId: PROJECT });
+      expect(result.ok, catalogId).toBe(ok);
+      if (!result.ok) expect(result.reason).toBe("not_available_yet");
+    }
+  });
+});
 
 describe("a local dependency without a pinned digest at approval", () => {
   it("is refused with the fixed 'not available yet' words when the catalog does not pin it", async () => {

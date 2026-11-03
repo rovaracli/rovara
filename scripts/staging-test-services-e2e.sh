@@ -73,10 +73,14 @@ api() { # api METHOD PATH [JSON-BODY]  -> prints the body, sets API_STATUS
   cat "$WORK/api.out"
 }
 # ssm_run INSTANCE 'shell text' -> prints the command's output; sets SSM_STATUS (Success|Failed|Timeout...). Polls until the invocation ends or 120 s pass; an empty answer from a command that did not succeed is a FAIL for the caller.
+# The status of the last ssm_run is kept in a file (ssm_run runs in a command substitution, so a variable it sets would be lost): read it with ssm_status.
+ssm_status() { cat "$WORK/ssm-status" 2>/dev/null || echo Unsent; }
 ssm_run() {
-  local instance="$1" text="$2" id status i
-  SSM_STATUS=Unsent
-  id=$("$STAGING" aws ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --parameters "commands=[\"$text\"]" --query Command.CommandId --output text 2>/dev/null) || return 1
+  local instance="$1" text="$2" id status i params="$WORK/ssm-params.json" SSM_STATUS=Unsent
+  trap 'printf "%s" "$SSM_STATUS" > "$WORK/ssm-status"' RETURN
+  # The parameters are JSON in a file, never the `commands=[...]` shorthand: a command with quotes or braces ("{{.Names}}") would break the shorthand's own parser.
+  python3 -c 'import json,sys; print(json.dumps({"commands": [sys.argv[1]]}))' "$text" > "$params" || return 1
+  id=$("$STAGING" aws ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --parameters "file://$params" --query Command.CommandId --output text 2>/dev/null) || return 1
   [[ -n "$id" && "$id" != None ]] || return 1
   for i in $(seq 1 60); do
     sleep 2
@@ -112,10 +116,10 @@ if wanted P3; then
 fi
 if wanted P4 && [[ -n "$WORKER" ]]; then
   cmd='echo START; docker ps -a --filter label=rovara.run-network --format "{{.Names}}"; docker network ls --filter label=rovara.run-network --format "{{.Name}}"; echo END'
-  if out=$(ssm_run "$WORKER" "$cmd") && [[ "$SSM_STATUS" == Success && "$out" == *START* && "$out" == *END* ]]; then
+  if out=$(ssm_run "$WORKER" "$cmd") && [[ "$(ssm_status)" == Success && "$out" == *START* && "$out" == *END* ]]; then
     objects=$(echo "$out" | grep -v '^START$\|^END$' | tr -d '[:space:]')
     [[ -z "$objects" ]] && say P4 PASS "no leftovers before the run" "no container or network with the run-network label on $WORKER" || say P4 FAIL "no leftovers before the run" "leftover objects: $(echo "$out" | grep -v '^START$\|^END$' | head -3 | tr '\n' ' ')"
-  else say P4 FAIL "no leftovers before the run" "the SSM command did not complete (status ${SSM_STATUS:-unknown}) or answered nothing"; fi
+  else say P4 FAIL "no leftovers before the run" "the SSM command did not complete (status $(ssm_status)) or answered nothing"; fi
 elif wanted P4; then say P4 OPERATOR "no leftovers before the run" "pass --worker <instance id> (an SSM managed worker)"; fi
 
 # ---- 1 dependencies listed, 9 other backings refused (the broker's own words)
@@ -160,9 +164,9 @@ fi
 if wanted 4 && [[ -n "$TASK_ID" ]]; then
   # The worker logs one fixed line per pull; the image digest is read from the catalog pin, never from the log's free text.
   if [[ -n "$WORKER" ]]; then
-    if out=$(ssm_run "$WORKER" 'echo START; docker images --digests --format \"{{.Repository}}@{{.Digest}}\" | grep rovara-catalog/; echo END') && [[ "$SSM_STATUS" == Success && "$out" == *START* && "$out" == *END* ]]; then
+    if out=$(ssm_run "$WORKER" 'echo START; docker images --digests --format "{{.Repository}}@{{.Digest}}" | grep rovara-catalog/; echo END') && [[ "$(ssm_status)" == Success && "$out" == *START* && "$out" == *END* ]]; then
       [[ "$out" == *"rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX@sha256:"* ]] && say 4 PASS "pre-pulled by digest" "$(echo "$out" | grep rovara-catalog | head -1)" || say 4 FAIL "pre-pulled by digest" "no rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX@sha256:<digest> image on the worker (root pre-pulls at boot; the worker never pulls)"
-    else say 4 FAIL "pre-pulled by digest" "the SSM command did not complete (status ${SSM_STATUS:-unknown}) or answered nothing"; fi
+    else say 4 FAIL "pre-pulled by digest" "the SSM command did not complete (status $(ssm_status)) or answered nothing"; fi
   else say 4 OPERATOR "pre-pulled by digest" "pass --worker <instance id>"; fi
 fi
 if wanted 5 && [[ -n "$EVIDENCE_FILE" ]]; then
@@ -177,11 +181,11 @@ if wanted 6 && [[ -n "$EVIDENCE_FILE" ]]; then
 fi
 if wanted 7 && [[ -n "$WORKER" && -n "$TASK_ID" ]]; then
   cmd='echo START; docker ps -a --filter label=rovara.run-network --format "{{.Names}}"; docker network ls --filter label=rovara.run-network --format "{{.Name}}"; echo RUNDIR; ls /run/agentx-test-services 2>/dev/null; echo END'
-  if out=$(ssm_run "$WORKER" "$cmd") && [[ "$SSM_STATUS" == Success && "$out" == *START* && "$out" == *RUNDIR* && "$out" == *END* ]]; then
+  if out=$(ssm_run "$WORKER" "$cmd") && [[ "$(ssm_status)" == Success && "$out" == *START* && "$out" == *RUNDIR* && "$out" == *END* ]]; then
     objects=$(echo "$out" | sed -n '/^START$/,/^RUNDIR$/p' | grep -v '^START$\|^RUNDIR$' | tr -d '[:space:]')
     rundir=$(echo "$out" | sed -n '/^RUNDIR$/,/^END$/p' | grep -v '^RUNDIR$\|^END$' | tr -d '[:space:]')
     [[ -z "$objects" && -z "$rundir" ]] && say 7 PASS "teardown is clean" "no run-network object and an empty /run/agentx-test-services after the task (repeat after a failing task, a cancel and a killed worker; each is its own run of this check)" || say 7 FAIL "teardown is clean" "left: ${objects:-nothing} / run dir: ${rundir:-empty}"
-  else say 7 FAIL "teardown is clean" "the SSM command did not complete (status ${SSM_STATUS:-unknown}) or answered nothing"; fi
+  else say 7 FAIL "teardown is clean" "the SSM command did not complete (status $(ssm_status)) or answered nothing"; fi
 elif wanted 7; then say 7 OPERATOR "teardown is clean" "pass --worker and --task; repeat after success, failure, cancel and a killed worker (kill the worker's container mid-round, restart it, then run this check)"; fi
 
 # ---- 8 switch off = today, 9 other backings refused
