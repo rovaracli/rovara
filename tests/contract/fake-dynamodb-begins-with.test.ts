@@ -22,3 +22,19 @@ describe("the fake table's begins_with on an index", () => {
     await expect(query(db(), "placePk = :v AND begins_with(sk, :p)")).rejects.toMatchObject({ name: "ValidationException" });
   });
 });
+
+describe("the fake table's begins_with on the base table", () => {
+  const run = (values: Record<string, unknown>, condition = "pk = :pk AND begins_with(sk, :prefix)") => {
+    const fake = new FakeDynamoDb();
+    fake.set({ pk: "a", sk: "1" });
+    return fake.send(new QueryCommand({ TableName: "t", KeyConditionExpression: condition, ExpressionAttributeValues: values }));
+  };
+
+  it("refuses an empty prefix, as DynamoDB does (the intake poll sent one every minute)", async () => {
+    await expect(run({ ":pk": "a", ":prefix": "" })).rejects.toMatchObject({ name: "ValidationException" });
+  });
+  it("reads a whole partition when the key condition is the partition alone, and a prefix when there is one", async () => {
+    expect(((await run({ ":pk": "a" }, "pk = :pk")) as { Items: unknown[] }).Items).toHaveLength(1);
+    expect(((await run({ ":pk": "a", ":prefix": "1" })) as { Items: unknown[] }).Items).toHaveLength(1);
+  });
+});
