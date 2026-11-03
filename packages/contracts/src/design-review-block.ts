@@ -2,14 +2,15 @@
 // A reviewer, the merge step and the planner's resolve step are models; what they write is untrusted. Each ends its answer with one fenced JSON block, and this is the one place
 // that reads them (the worker asks once more when a block is unreadable; the broker decides). Modelled on `readPlanCritique` (plan-critique-block.ts), but stricter: a block that
 // breaks a rule is an error in words the model can fix, never a block with the bad part quietly dropped. Nothing here can approve, lower a risk tier, or set a cost.
-// Merge checks (3.5): every raw finding appears in exactly one merged finding, a merged finding keeps the highest severity of its raw findings, and its citations are only ever
-// the raw findings' citations. A merge that fails any check is thrown away for a code-only merge (exact duplicates only, no rewording).
+// Merge checks (3.5): every raw finding appears in exactly one merged finding, a group holds one section only, a merged finding keeps the highest severity of its raw findings, its text is
+// one of its highest-severity raw findings' own words, and its citations are only ever the raw findings' citations. The raw findings' words are kept on the merged finding. A merge that
+// fails any check is thrown away for a code-only merge (exact duplicates only, no rewording).
 import { z } from "zod";
 import { redactText } from "./redaction.js";
 import { lastFencedBlock } from "./workflow-proposed-checks.js";
 import {
   DESIGN_FINDING_SEVERITIES, DESIGN_REASONS, DESIGN_REVIEW_FINDINGS_MAX, DESIGN_REVIEW_QUESTIONS_MAX, DESIGN_SECTIONS, DesignCitationSchema, DesignQuestionSchema, DesignReasonSchema,
-  DesignSectionSchema, REVIEWER_ROLES, designFindingFingerprint, type DesignCitation, type DesignFinding, type DesignQuestion, type ReviewerRole,
+  DesignSectionSchema, REVIEWER_ROLES, designFindingFingerprint, normalizedFindingText, type DesignCitation, type DesignFinding, type DesignQuestion, type ReviewerRole,
 } from "./design-review.js";
 
 export const DESIGN_REVIEW_INFO_STRING = "rovara-design-review";
@@ -104,14 +105,16 @@ export type ReadDesignReview = { ok: true; role: ReviewerRole; paraphrase?: stri
 /**
  * A reviewer's findings from the last `rovara-design-review` block of its answer. Strict: a missing, unclosed or unreadable block, more than 15 findings, a finding with no
  * citation, an unknown field or a repeated id is an `error`, and the worker may ask once more. Finding text is redacted, put on one line and cut to 500 characters. The comprehension
- * reviewer must give a paraphrase; no other reviewer may. A block with no findings is a valid answer ("I found nothing"): it is information, and lowers nothing.
+ * reviewer must give a paraphrase; no other reviewer may, except the Light tier's Critic (`withParaphrase: true`), which must. A block with no findings is a valid answer ("I found nothing"): it is information, and lowers nothing.
  */
-export function readDesignReview(answer: string, role: ReviewerRole): ReadDesignReview {
+export function readDesignReview(answer: string, role: ReviewerRole, options: { withParaphrase?: boolean } = {}): ReadDesignReview {
   const parsed = readBlock(answer, DESIGN_REVIEW_INFO_STRING, ReviewerBlockSchema, "optional paraphrase, then findings of at most 15, each with id, severity, section, text and 1 to 5 citations");
   if (!parsed.ok) return parsed;
   const { paraphrase, findings } = parsed.value;
-  if (role === "comprehension" && paraphrase === undefined) return { ok: false, error: `The ${DESIGN_REVIEW_INFO_STRING} block needs a paraphrase with "proposes" and "today" before the findings.` };
-  if (role !== "comprehension" && paraphrase !== undefined) return { ok: false, error: `Only the comprehension reviewer writes a paraphrase; remove it from the ${DESIGN_REVIEW_INFO_STRING} block.` };
+  // The Light tier runs one Critic "with the comprehension paraphrase" (3.4): the caller says so with `withParaphrase`. Every other role of every other tier follows its role.
+  const writesParaphrase = role === "comprehension" || options.withParaphrase === true;
+  if (writesParaphrase && paraphrase === undefined) return { ok: false, error: `The ${DESIGN_REVIEW_INFO_STRING} block needs a paraphrase with "proposes" and "today" before the findings.` };
+  if (!writesParaphrase && paraphrase !== undefined) return { ok: false, error: `Only the comprehension reviewer writes a paraphrase; remove it from the ${DESIGN_REVIEW_INFO_STRING} block.` };
   if (new Set(findings.map((finding) => finding.id)).size !== findings.length) return { ok: false, error: `Each finding in the ${DESIGN_REVIEW_INFO_STRING} block needs its own id.` };
   const kept: RawDesignFinding[] = [];
   for (const finding of findings) {
@@ -223,26 +226,46 @@ function ordered<T extends { severity: DesignFinding["severity"]; section: strin
 }
 
 function buildFinding(index: number, group: readonly RawDesignFinding[], severity: DesignFinding["severity"], section: DesignFinding["section"], text: string): DesignFinding {
+  // The reviewers' words are copied by code and kept; the identity comes from them (M4), so a merge text, whatever it says, cannot decide whether a finding is "the same as" an earlier one.
+  const rawFindings = group.map((finding) => ({ rawId: finding.rawId, role: finding.role, severity: finding.severity, text: finding.text }));
   return {
-    id: `m${index + 1}`, severity, section, text, citations: citationUnion(group), fromReviewers: rolesOf(group), rawIds: group.map((finding) => finding.rawId),
-    fingerprint: designFindingFingerprint({ section, text }),
+    id: `m${index + 1}`, severity, section, text, citations: citationUnion(group), fromReviewers: rolesOf(group), rawIds: group.map((finding) => finding.rawId), rawFindings,
+    fingerprint: designFindingFingerprint({ section, text, rawFindings }),
   };
 }
 
-export type DesignMergeFailure = "raw_missing" | "raw_repeated" | "raw_unknown" | "severity_changed" | "section_invented" | "too_many";
+export type DesignMergeFailure = "raw_missing" | "raw_repeated" | "raw_unknown" | "raw_duplicate" | "severity_changed" | "section_invented" | "section_mixed" | "text_not_from_raw" | "too_many";
 export type DesignMergeCheck = { ok: true; findings: DesignFinding[] } | { ok: false; failure: DesignMergeFailure };
 
+const sameRaw = (a: RawDesignFinding, b: RawDesignFinding): boolean => a.role === b.role && a.severity === b.severity && a.section === b.section && a.text === b.text && citationsKey(a.citations) === citationsKey(b.citations);
+const citationsKey = (citations: readonly DesignCitation[]): string => JSON.stringify(citations.map(citationKey).sort());
+
+/** The same raw id with different content is a bug in the caller (the same role passed twice, two reviewers sharing an id). It is never resolved by dropping one. */
+function hasConflictingRaw(raw: readonly RawDesignFinding[]): boolean {
+  const seen = new Map<string, RawDesignFinding>();
+  for (const finding of raw) {
+    const earlier = seen.get(finding.rawId);
+    if (earlier !== undefined && !sameRaw(earlier, finding)) return true;
+    seen.set(finding.rawId, finding);
+  }
+  return false;
+}
+
+/** Exact repeats of one raw finding (the same list read twice) are one finding. A repeat with different content throws: see `hasConflictingRaw`. */
 function uniqueRaw(raw: readonly RawDesignFinding[]): RawDesignFinding[] {
+  if (hasConflictingRaw(raw)) throw new Error("Two raw design findings share an id but differ.");
   const seen = new Set<string>();
   return raw.filter((finding) => (seen.has(finding.rawId) ? false : (seen.add(finding.rawId), true)));
 }
 
 /**
  * The merge model's groups, checked against the raw findings (3.5, 3.12 item 6). Every raw id appears in exactly one group and no group names an unknown id; a group's severity is
- * exactly the highest of its raw findings (so the model can neither soften a blocker nor raise a nit); its section is one of its raw findings' sections; its citations are taken by
- * code from the raw findings, so none can be added. The model's only free choice is the wording of the text.
+ * exactly the highest of its raw findings (so the model can neither soften a blocker nor raise a nit); all its raw findings share one section, which is the group's; its text is one of its
+ * highest-severity raw findings' own words; its citations are taken by code from the raw findings, so none can be added. The model's free choices are the grouping and which top-severity
+ * wording to show. The reviewers' words are kept on the finding (`rawFindings`), and its identity across rounds comes from them.
  */
 export function checkDesignMerge(rawFindings: readonly RawDesignFinding[], merged: readonly DesignMergeDraft[]): DesignMergeCheck {
+  if (hasConflictingRaw(rawFindings)) return { ok: false, failure: "raw_duplicate" };
   const raw = uniqueRaw(rawFindings);
   const byId = new Map(raw.map((finding) => [finding.rawId, finding] as const));
   if (merged.length > DESIGN_REVIEW_FINDINGS_MAX) return { ok: false, failure: "too_many" };
@@ -258,7 +281,12 @@ export function checkDesignMerge(rawFindings: readonly RawDesignFinding[], merge
       group.push(finding);
     }
     if (draft.severity !== severityOf(group)) return { ok: false, failure: "severity_changed" };
-    if (!group.some((finding) => finding.section === draft.section)) return { ok: false, failure: "section_invented" };
+    // One section per group: a severe finding cannot be filed under another section's text, and the card can show the group at its section.
+    if (new Set(group.map((finding) => finding.section)).size > 1) return { ok: false, failure: "section_mixed" };
+    if (group[0]!.section !== draft.section) return { ok: false, failure: "section_invented" };
+    // The group's words are one of its highest-severity raw findings' words (same words, case and punctuation aside). Another finding's text, or text no reviewer wrote, is refused.
+    const wording = normalizedFindingText(draft.text);
+    if (!group.some((finding) => finding.severity === draft.severity && normalizedFindingText(finding.text) === wording)) return { ok: false, failure: "text_not_from_raw" };
     groups.push({ draft, group });
   }
   if (used.size !== byId.size) return { ok: false, failure: "raw_missing" };
@@ -296,15 +324,22 @@ export interface DesignMergeResult {
   fallback?: DesignMergeFailure | "no_answer" | "unreadable";
 }
 
-/** The merged findings. With no model answer (the Light tier, or a failed merge call), an unreadable one or one that fails a check, the code-only merge is used. */
-export function mergeDesignFindings(rawFindings: readonly RawDesignFinding[], mergeAnswer?: string): DesignMergeResult {
-  const byCode = (fallback: NonNullable<DesignMergeResult["fallback"]>): DesignMergeResult => ({ ...mergeDesignFindingsByCode(rawFindings), source: "code", fallback });
+/**
+ * The merged findings. With no model answer (the Light tier, or a failed merge call), an unreadable one or one that fails a check, the code-only merge is used.
+ * `verifiedRoles`: when given, raw findings of any other reviewer are left out BEFORE the merge (a voided reviewer's findings do not count and must not fail the round, 3.13); the count is
+ * returned as `droppedUnverified`. Two raw findings that share an id but differ throw: that is a bug in the caller, never resolved by dropping one.
+ */
+export function mergeDesignFindings(rawFindings: readonly RawDesignFinding[], mergeAnswer?: string, options: { verifiedRoles?: ReadonlySet<ReviewerRole> } = {}): DesignMergeResult & { droppedUnverified: number } {
+  const counted = options.verifiedRoles === undefined ? rawFindings : rawFindings.filter((finding) => options.verifiedRoles!.has(finding.role));
+  const droppedUnverified = rawFindings.length - counted.length;
+  if (hasConflictingRaw(counted)) throw new Error("Two raw design findings share an id but differ.");
+  const byCode = (fallback: NonNullable<DesignMergeResult["fallback"]>): DesignMergeResult & { droppedUnverified: number } => ({ ...mergeDesignFindingsByCode(counted), source: "code", fallback, droppedUnverified });
   if (mergeAnswer === undefined) return byCode("no_answer");
   const read = readDesignMerge(mergeAnswer);
   if (!read.ok) return byCode("unreadable");
-  const checked = checkDesignMerge(rawFindings, read.merged);
+  const checked = checkDesignMerge(counted, read.merged);
   if (!checked.ok) return byCode(checked.failure);
-  return { findings: checked.findings, omitted: 0, source: "model" };
+  return { findings: checked.findings, omitted: 0, source: "model", droppedUnverified };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -333,10 +368,12 @@ export function readDesignResolve(answer: string, findingIds: readonly string[])
   const parsed = readBlock(answer, DESIGN_RESOLVE_INFO_STRING, ResolveBlockSchema, "resolutions with findingId, action, note, and questions");
   if (!parsed.ok) return parsed;
   // Redacted like every other model word: a question quotes the design and the repository, which may hold a secret.
+  // A question whose words are empty once cleaned is refused, never kept as the model wrote it (a whitespace-only or all-hidden string would be stored as is).
   const questions = (parsed.value.questions ?? []).map((question): DesignQuestion => ({
-    ...question, unclear: oneLine(question.unclear, 200) || question.unclear, why: oneLine(question.why, 160) || question.why,
-    options: question.options.map((option) => ({ ...option, label: oneLine(option.label, 80) || option.label, consequence: oneLine(option.consequence, 120) || option.consequence })),
+    ...question, unclear: oneLine(question.unclear, 200), why: oneLine(question.why, 160),
+    options: question.options.map((option) => ({ ...option, label: oneLine(option.label, 80), consequence: oneLine(option.consequence, 120) })),
   }));
+  if (questions.some((question) => question.unclear === "" || question.why === "" || question.options.some((option) => option.label === "" || option.consequence === ""))) return { ok: false, error: "A question has no readable text." };
   const questionIds = new Set(questions.map((question) => question.id));
   if (questionIds.size !== questions.length) return { ok: false, error: "Each question needs its own id (q1, q2, q3)." };
   const wanted = new Set(findingIds);

@@ -1,7 +1,7 @@
 // Design review stage, DR3 (design-review-stage.md 3.5, 3.12): reading the reviewers', merge step's and planner's blocks, and checking the merge.
 import { describe, expect, it } from "vitest";
 import {
-  DESIGN_REVIEW_FINDINGS_MAX, DesignFindingSchema, checkDesignMerge, findingRestsOnSourceAlone, mergeDesignFindings, mergeDesignFindingsByCode, readDesignMerge, readDesignMeta, readDesignResolve,
+  DESIGN_REVIEW_FINDINGS_MAX, DesignFindingSchema, checkDesignMerge, designFindingCoveredBy, designFindingFingerprint, designRawFingerprints, findingRestsOnSourceAlone, mergeDesignFindings, mergeDesignFindingsByCode, readDesignMerge, readDesignMeta, readDesignResolve,
   readDesignReview, type DesignCitation, type RawDesignFinding,
 } from "../../packages/contracts/src/index.js";
 
@@ -123,8 +123,8 @@ describe("merge checks", () => {
     raw("comprehension-1", "comprehension", "nit", "Term X is undefined.", [source], "§2"),
   ];
   const good = [
-    { rawIds: ["critic-1", "codebase-1"], severity: "blocker" as const, section: "§3" as const, text: "Retries are unbounded." },
-    { rawIds: ["comprehension-1"], severity: "nit" as const, section: "§2" as const, text: "Define term X." },
+    { rawIds: ["critic-1", "codebase-1"], severity: "blocker" as const, section: "§3" as const, text: "The retry helper is unbounded." },
+    { rawIds: ["comprehension-1"], severity: "nit" as const, section: "§2" as const, text: "Term X is undefined." },
   ];
 
   it("accepts a grouping that follows the rules, and builds citations, reviewers and ids in code", () => {
@@ -216,6 +216,147 @@ describe("merge checks", () => {
 
   it("an empty review merges to nothing", () => {
     expect(mergeDesignFindings([], fence("rovara-design-merge", { merged: [] }))).toMatchObject({ findings: [], source: "model" });
+  });
+});
+
+describe("M3: the merge model cannot bury a severe finding behind another's text", () => {
+  const auth = raw("critic-1", "critic", "blocker", "Auth bypass: any caller can read other tenants' data.", [design]);
+  const nit = raw("codebase-1", "codebase", "nit", "Rename helper foo to bar.", [code]);
+
+  it("the reviewer's probe: one group, severity blocker, text of the nit, is refused and the code merge keeps the auth finding's words", () => {
+    const answer = fence("rovara-design-merge", { merged: [{ rawIds: ["critic-1", "codebase-1"], severity: "blocker", section: "§3", text: "Rename helper foo to bar." }] });
+    expect(checkDesignMerge([auth, nit], [{ rawIds: ["critic-1", "codebase-1"], severity: "blocker", section: "§3", text: "Rename helper foo to bar." }])).toEqual({ ok: false, failure: "text_not_from_raw" });
+    const merged = mergeDesignFindings([auth, nit], answer);
+    expect(merged).toMatchObject({ source: "code", fallback: "text_not_from_raw" });
+    expect(merged.findings.map((finding) => finding.text)).toContain("Auth bypass: any caller can read other tenants' data.");
+    expect(merged.findings.find((finding) => finding.severity === "blocker")!.text).toContain("Auth bypass");
+  });
+
+  it("text that no reviewer wrote is refused too, and a different-case or different-punctuation copy of the top finding is accepted", () => {
+    expect(checkDesignMerge([auth], [{ rawIds: ["critic-1"], severity: "blocker", section: "§3", text: "Some tenants can see data." }])).toEqual({ ok: false, failure: "text_not_from_raw" });
+    expect(checkDesignMerge([auth], [{ rawIds: ["critic-1"], severity: "blocker", section: "§3", text: "AUTH BYPASS - any caller can read other tenants' data" }]).ok).toBe(true);
+  });
+
+  it("a group may show any one of its top-severity findings' words, but never a lower-severity finding's words", () => {
+    const second = raw("zoom_out-1", "zoom_out", "blocker", "Tenant isolation is missing.", [design]);
+    const draft = (text: string) => [{ rawIds: ["critic-1", "zoom_out-1", "codebase-1"], severity: "blocker" as const, section: "§3" as const, text }];
+    expect(checkDesignMerge([auth, second, nit], draft("Tenant isolation is missing.")).ok).toBe(true);
+    expect(checkDesignMerge([auth, second, nit], draft("Rename helper foo to bar."))).toEqual({ ok: false, failure: "text_not_from_raw" });
+  });
+
+  it("a group that holds two sections is refused (grouping across sections)", () => {
+    const other = raw("codebase-2", "codebase", "major", "Term X is undefined.", [source], "§2");
+    expect(checkDesignMerge([auth, other], [{ rawIds: ["critic-1", "codebase-2"], severity: "blocker", section: "§3", text: auth.text }])).toEqual({ ok: false, failure: "section_mixed" });
+    expect(mergeDesignFindings([auth, other], fence("rovara-design-merge", { merged: [{ rawIds: ["critic-1", "codebase-2"], severity: "blocker", section: "§3", text: auth.text }] }))).toMatchObject({ source: "code", fallback: "section_mixed" });
+  });
+
+  it("stores the raw words on each merged finding, copied by code, and the stored shape holds the same rules", () => {
+    const result = checkDesignMerge([auth, nit], [{ rawIds: ["critic-1"], severity: "blocker", section: "§3", text: auth.text }, { rawIds: ["codebase-1"], severity: "nit", section: "§3", text: nit.text }]);
+    if (!result.ok) throw new Error("expected a merge");
+    expect(result.findings[0]!.rawFindings).toEqual([{ rawId: "critic-1", role: "critic", severity: "blocker", text: auth.text }]);
+    for (const finding of result.findings) expect(DesignFindingSchema.safeParse(finding).success).toBe(true);
+    // a finding assembled by hand with another finding's text, a lowered severity or other raw ids does not parse
+    const good = result.findings[0]!;
+    expect(DesignFindingSchema.safeParse({ ...good, text: "Rename helper foo to bar." }).success).toBe(false);
+    expect(DesignFindingSchema.safeParse({ ...good, severity: "major" }).success).toBe(false);
+    expect(DesignFindingSchema.safeParse({ ...good, rawFindings: [{ ...good.rawFindings![0]!, rawId: "critic-9" }] }).success).toBe(false);
+    expect(DesignFindingSchema.safeParse({ ...good, fromReviewers: ["codebase"] }).success).toBe(false);
+  });
+});
+
+describe("M4: a finding's identity across rounds comes from the reviewers' words, not the merge model's", () => {
+  const settled = raw("critic-1", "critic", "major", "The retry queue is shared across tenants.", [design]);
+  const brandNew = raw("codebase-1", "codebase", "blocker", "Deleting a project leaves its queue entries readable.", [code]);
+  const roundOne = (() => {
+    const result = checkDesignMerge([settled], [{ rawIds: ["critic-1"], severity: "major", section: "§3", text: settled.text }]);
+    if (!result.ok) throw new Error("expected a merge");
+    return result.findings[0]!;
+  })();
+
+  it("one raw finding keeps the fingerprint of its own section and words (nothing moves for the common case)", () => {
+    expect(roundOne.fingerprint).toBe(designFindingFingerprint({ section: "§3", text: settled.text }));
+    expect(designFindingFingerprint({ section: "§3", text: "THE retry queue is shared across tenants" })).toBe(roundOne.fingerprint);
+  });
+
+  it("the attack: a new blocker grouped with the old raw finding, shown with the old text, does NOT get the old fingerprint", () => {
+    // the merge model puts the new blocker and the old finding in one group and chooses the old words: the text rule lets it (the old raw is a top-severity member only when equal),
+    // so make the old one a blocker too, which is the case the text rule cannot stop
+    const oldBlocker = raw("critic-1", "critic", "blocker", "The retry queue is shared across tenants.", [design]);
+    const before = checkDesignMerge([oldBlocker], [{ rawIds: ["critic-1"], severity: "blocker", section: "§3", text: oldBlocker.text }]);
+    const after = checkDesignMerge([oldBlocker, brandNew], [{ rawIds: ["critic-1", "codebase-1"], severity: "blocker", section: "§3", text: oldBlocker.text }]);
+    if (!before.ok || !after.ok) throw new Error("expected both merges to pass the checks");
+    expect(after.findings[0]!.text).toBe(before.findings[0]!.text);
+    expect(after.findings[0]!.fingerprint).not.toBe(before.findings[0]!.fingerprint);
+    // and the by-text fingerprint (the old rule) would have matched: that is what the fix closes
+    expect(designFindingFingerprint({ section: "§3", text: after.findings[0]!.text })).toBe(before.findings[0]!.fingerprint);
+    expect(designFindingCoveredBy(after.findings[0]!, before.findings[0]!)).toBe(false);
+  });
+
+  it("the interface for the carry-over: raw fingerprints are sorted, each once, and `designFindingCoveredBy` is subset", () => {
+    const group = checkDesignMerge([settled, brandNew], [{ rawIds: ["critic-1", "codebase-1"], severity: "blocker", section: "§3", text: brandNew.text }]);
+    if (!group.ok) throw new Error("expected a merge");
+    const prints = designRawFingerprints(group.findings[0]!);
+    expect(prints).toHaveLength(2);
+    expect([...prints].sort()).toEqual(prints);
+    expect(designFindingCoveredBy(roundOne, group.findings[0]!)).toBe(true);
+    expect(designFindingCoveredBy(group.findings[0]!, roundOne)).toBe(false);
+    expect(designFindingCoveredBy(roundOne, roundOne)).toBe(true);
+    // the set, not the order, decides
+    const reversed = checkDesignMerge([brandNew, settled], [{ rawIds: ["codebase-1", "critic-1"], severity: "blocker", section: "§3", text: brandNew.text }]);
+    if (!reversed.ok) throw new Error("expected a merge");
+    expect(reversed.findings[0]!.fingerprint).toBe(group.findings[0]!.fingerprint);
+  });
+
+  it("the merge text does not change the fingerprint (display only); a finding with no raw findings falls back to its own words", () => {
+    const a = checkDesignMerge([settled, brandNew], [{ rawIds: ["critic-1", "codebase-1"], severity: "blocker", section: "§3", text: brandNew.text }]);
+    const b = checkDesignMerge([settled, { ...brandNew, severity: "major" }], [{ rawIds: ["critic-1", "codebase-1"], severity: "major", section: "§3", text: settled.text }]);
+    if (!a.ok || !b.ok) throw new Error("expected merges");
+    expect(a.findings[0]!.fingerprint).toBe(b.findings[0]!.fingerprint);
+    expect(designFindingFingerprint({ section: "§3", text: "x y" })).toBe(designFindingFingerprint({ section: "§3", text: "X, Y!", rawFindings: [] }));
+  });
+
+  it("the code-only merge gets the same fingerprints", () => {
+    const { findings } = mergeDesignFindingsByCode([settled]);
+    expect(findings[0]!.fingerprint).toBe(roundOne.fingerprint);
+  });
+});
+
+describe("minors 5 to 8", () => {
+  it("minor 5: two raw findings with the same id but different content are refused, never silently dropped; an exact repeat is one finding", () => {
+    const one = raw("critic-1", "critic", "blocker", "Auth bypass.", [design]);
+    const other = raw("critic-1", "critic", "nit", "Rename helper.", [design]);
+    expect(checkDesignMerge([one, other], [{ rawIds: ["critic-1"], severity: "blocker", section: "§3", text: one.text }])).toEqual({ ok: false, failure: "raw_duplicate" });
+    expect(() => mergeDesignFindingsByCode([one, other])).toThrow(/share an id/u);
+    expect(() => mergeDesignFindings([one, other], fence("rovara-design-merge", { merged: [] }))).toThrow(/share an id/u);
+    expect(mergeDesignFindingsByCode([one, { ...one }]).findings).toHaveLength(1);
+  });
+
+  it("minor 6: findings of a voided reviewer are left out before the merge (counted), so the round does not fail on them", () => {
+    const kept = raw("critic-1", "critic", "major", "Retries are not bounded.", [design]);
+    const voided = raw("codebase-1", "codebase", "blocker", "The helper is unbounded.", [code]);
+    const answer = fence("rovara-design-merge", { merged: [{ rawIds: ["critic-1"], severity: "major", section: "§3", text: kept.text }] });
+    const result = mergeDesignFindings([kept, voided], answer, { verifiedRoles: new Set(["critic"]) });
+    expect(result).toMatchObject({ source: "model", droppedUnverified: 1 });
+    expect(result.findings.flatMap((finding) => finding.fromReviewers)).toEqual(["critic"]);
+    // without the filter the model's answer misses codebase-1 and falls back
+    expect(mergeDesignFindings([kept, voided], answer)).toMatchObject({ source: "code", fallback: "raw_missing", droppedUnverified: 0 });
+  });
+
+  it("minor 7: the Light tier's Critic writes a paraphrase (withParaphrase); without the option a critic still may not", () => {
+    const withParaphrase = fence("rovara-design-review", { paraphrase, findings: [] });
+    expect(readDesignReview(withParaphrase, "critic")).toMatchObject({ ok: false, error: contains("Only the comprehension reviewer") });
+    expect(readDesignReview(withParaphrase, "critic", { withParaphrase: true })).toMatchObject({ ok: true, paraphrase: contains("It adds webhooks.") });
+    expect(readDesignReview(fence("rovara-design-review", { findings: [] }), "critic", { withParaphrase: true })).toMatchObject({ ok: false, error: contains("needs a paraphrase") });
+  });
+
+  it("minor 8: a question whose words are empty once cleaned is refused, not stored as the model wrote it", () => {
+    const base = { id: "q1", unclear: "Is the queue shared?", evidence: [design], options: [{ id: "a", label: "Shared", consequence: "One queue." }, { id: "b", label: "Per project", consequence: "More queues." }], recommended: "a", why: "Fewer parts." };
+    const answers = [{ findingId: "m1", action: "asked", note: "Needs a call.", questionId: "q1" }];
+    const read = (question: unknown) => readDesignResolve(fence("rovara-design-resolve", { resolutions: answers, questions: [question] }), ["m1"]);
+    expect(read(base)).toMatchObject({ ok: true });
+    expect(read({ ...base, unclear: "   " })).toMatchObject({ ok: false, error: contains("no readable text") });
+    expect(read({ ...base, why: "\u00a0\u00a0" })).toMatchObject({ ok: false, error: contains("no readable text") });
+    expect(read({ ...base, options: [{ ...base.options[0], label: " " }, base.options[1]] })).toMatchObject({ ok: false, error: contains("no readable text") });
   });
 });
 
