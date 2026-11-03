@@ -273,6 +273,24 @@ describe("M2: a task keeps the review rule it was started with", () => {
   });
 });
 
+describe("behaviour 6: a task pinned before this deploy keeps the model its reviews ranked to (no review-default marker = the order it started with)", () => {
+  const fable = { provider: "anthropic", modelId: "claude-fable-5-1" };
+  const withFable = [sonnet, opus, fable, gpt, gemini];
+  it("an older pin picks the strongest by the old order (Opus), not the cheaper other-company GPT-5 the one frontier tier now prefers", () => {
+    expect(resolveStageModel(input("code_review", [sonnet, opus, gpt, gemini], { reviewDefaultDifferentCompany: false }))).toMatchObject({ kind: "resolved", model: opus });
+    expect(resolveStageModel(input("code_review", [sonnet, opus, gpt, gemini], { reviewDefaultDifferentCompany: undefined }))).toMatchObject({ kind: "resolved", model: opus });
+    // The new pin, the same models: GPT-5 (a different company, cheaper).
+    expect(resolveStageModel(input("code_review", [sonnet, opus, gpt, gemini]))).toMatchObject({ kind: "resolved", model: gpt, reason: "DEFAULT_DIFFERENT_COMPANY" });
+  });
+  it("Fable stays above Opus for an older pin, and after Opus is refused the next try is still Fable (the old tier-by-tier demotion)", () => {
+    expect(resolveStageModel(input("plan_check", withFable, { reviewDefaultDifferentCompany: false }))).toMatchObject({ kind: "resolved", model: fable });
+    expect(resolveStageModel(input("plan_check", withFable, { reviewDefaultDifferentCompany: false, deniedModels: [opus] }))).toMatchObject({ kind: "resolved", model: fable });
+  });
+  it("the legacy fallback of an older pin keeps the old order as well", () => {
+    expect(resolveStageModel(input("security_review", withFable, { reviewDefaultDifferentCompany: false, allowLegacyDefaultFallback: true, defaultLastAttempt: false }))).toMatchObject({ kind: "resolved", model: fable });
+  });
+});
+
 describe("M3 and L5: the pool matches the approved list exactly and compares models by canonical name", () => {
   const bedrockGpt = { provider: "amazon-bedrock", modelId: "openai.gpt-5" };
   it("approved amazon-bedrock/openai.gpt-5 does not admit openai/gpt-5", () => {

@@ -14,7 +14,7 @@ import { PLAN_CRITIQUE_ANSWER_MAX_BYTES, settlePlanCritique } from "../../packag
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { servableModels } from "../../packages/broker/src/model-sources/routing.js";
 import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js";
-import { CRITIC_MODEL_ATTEMPTS_MAX, criticCapabilityTier, criticModelFor, criticModelUnusable, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
+import { CRITIC_MODEL_ATTEMPTS_MAX, criticCapabilityTier, legacyCriticCapabilityTier, criticModelFor, criticModelUnusable, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
 import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
 import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
 import { critiqueLines, critiqueModelOf } from "../../packages/broker/src/rovara-code/critic.js";
@@ -379,6 +379,33 @@ describe("the capability order", () => {
 
   it("falls back to the same model with the note when the planner's is the only one allowed", () => {
     expect(choose({ planModel: model("us.anthropic.claude-haiku-5-5"), sources: [model("us.anthropic.claude-haiku-5-5")] })).toMatchObject({ sameModelAsPlanner: true });
+  });
+});
+
+describe("a task started before the frontier tier keeps the order it started with (legacyRanking)", () => {
+  const model = (modelId: string, provider: string): ModelIdentifier => ({ provider, modelId });
+  const opus = model("claude-opus-5-5", "anthropic"), fable = model("claude-fable-5-1", "anthropic"), gpt = model("gpt-5", "openai"), pro = model("gemini-2.5-pro", "google");
+  const ids = (models: readonly ModelIdentifier[]) => models.map((entry) => entry.modelId);
+
+  it("ranks Fable, Opus, GPT-5, Gemini Pro whatever the company of the reference or the price", () => {
+    expect(ids(rankCriticModels([pro, gpt, opus, fable], gpt, true))).toEqual(["claude-fable-5-1", "claude-opus-5-5", "gpt-5", "gemini-2.5-pro"]);
+    expect(ids(rankCriticModels([pro, gpt, opus, fable], opus, true))).toEqual(["claude-fable-5-1", "claude-opus-5-5", "gpt-5", "gemini-2.5-pro"]);
+    // The same models in the one frontier tier: a different company from the reference and the cheaper one lead.
+    expect(ids(rankCriticModels([pro, gpt, opus, fable], opus))).toEqual(["gpt-5", "gemini-2.5-pro", "claude-opus-5-5", "claude-fable-5-1"]);
+    expect(legacyCriticCapabilityTier(gpt)).toBeGreaterThan(legacyCriticCapabilityTier(opus));
+  });
+
+  it("the plan check's recommendation for a pin-less task is the one it had: the newest Fable, not the cheapest frontier model", () => {
+    const catalog = ["us.anthropic.claude-fable-5-1", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-sonnet-4-6"].map((id) => model(id, "amazon-bedrock"));
+    expect(chosenModel(choose({ planModel: SONNET, sources: catalog, legacyRanking: true }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5-1");
+    expect(chosenModel(choose({ planModel: SONNET, sources: catalog }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+  });
+
+  it("a refusal demotes the whole tier it was in, as it did: after Opus failed, a Fable (its own tier then) is still next", () => {
+    const limits = { unusable: [opus], legacyRanking: true };
+    expect(recommendCriticModel(limits, SONNET, [opus, fable, gpt])?.model.modelId).toBe("claude-fable-5-1");
+    // One frontier tier now: Fable shares Opus's company and tier, so GPT-5 comes first.
+    expect(recommendCriticModel({ unusable: [opus] }, SONNET, [opus, fable, gpt])?.model.modelId).toBe("gpt-5");
   });
 });
 

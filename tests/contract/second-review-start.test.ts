@@ -58,6 +58,17 @@ const proof = (model: ModelIdentifier): { verdicts: SecondReviewVerdict[]; repla
   verdicts: [{ model: secondReviewModelKey(model), replayRunId: "run-1", baseline: OPUS, shadow: { startedAt: "2026-11-02T00:00:00.000Z", endedAt: "2026-11-16T00:00:00.000Z", findings: 10, agreed: 4, reviews: 10 }, createdAt: "2026-11-20T00:00:00.000Z", createdBy: "staff:alice" }],
 });
 
+describe("a task started before the frontier tier keeps its second reviewer's default (legacyRanking)", () => {
+  const FABLE: ModelIdentifier = { provider: "anthropic", modelId: "claude-fable-5-1" };
+  const OPUS_NEW: ModelIdentifier = { provider: "anthropic", modelId: "claude-opus-5-5" };
+  const GPT5: ModelIdentifier = { provider: "openai", modelId: "gpt-5" };
+  const tops = (legacyRanking: boolean) => secondReviewPicker({ sources: [OPUS_NEW, FABLE, GPT5, GEMINI], project: {}, forbidden: [], against: [GPT5], legacyRanking }).suggested.map((entry) => entry.model.modelId);
+  it("an older task ranks Fable above Opus above Gemini Pro; a new one puts the cheaper Opus first", () => {
+    expect(tops(true)).toEqual(["claude-fable-5-1", "claude-opus-5-5", "google/gemini-3-pro"]);
+    expect(tops(false)[0]).toBe("claude-opus-5-5");
+  });
+});
+
 describe("the model picker", () => {
   const picked = secondReviewPicker({ sources: [OPUS, SONNET, GPT, GPT_FREE, GEMINI, NOVA, MYSTERY], project: {}, forbidden: [], against: [SONNET], price: () => ({ inputUsdPerMTok: 2, outputUsdPerMTok: 10 }) });
 

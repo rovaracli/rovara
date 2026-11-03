@@ -43,6 +43,8 @@ export interface SecondReviewPlanInput {
   price?: PickerInput["price"];
   /** The model this task's last second review used while nobody had chosen: when it no longer qualifies the default moves on and the plan says so (`defaultChanged`). */
   previousDefault?: SecondReviewModelRef | undefined;
+  /** The task started before the frontier tier: the picker ranks as it did then (`CriticModelLimits.legacyRanking`). */
+  legacyRanking?: boolean | undefined;
   /** The evidence on record and the replay runs it names: `on` is allowed for a model only while `secondReviewVerdictHolds` for one of them (recomputed here, never read as a stored pass). */
   verdicts: readonly SecondReviewVerdict[];
   replayRuns: readonly SecondReviewReplayRun[];
@@ -93,7 +95,7 @@ export function planSecondReview(input: SecondReviewPlanInput): SecondReviewPlan
   if (!input.switchOn) return { run: false, reason: "switch-off" };
   if (input.mode === "off") return { run: false, reason: "mode-off" };
   if (input.against.length === 0) return { run: false, reason: "no-reference-model" };
-  const picked = secondReviewPicker({ sources: input.sources, project: input.project, forbidden: input.forbidden, unusable: input.unusable, against: input.against, price: input.price, verdicts: input.verdicts, replayRuns: input.replayRuns });
+  const picked = secondReviewPicker({ sources: input.sources, project: input.project, forbidden: input.forbidden, unusable: input.unusable, against: input.against, price: input.price, verdicts: input.verdicts, replayRuns: input.replayRuns, legacyRanking: input.legacyRanking });
   const { models: named, choice } = narrowedSecondReviewModels({ company: input.companyModels, project: input.projectModels });
   const skipped: SecondReviewSkipped[] = [];
   const find = (model: SecondReviewModelRef) => picked.entries.find((entry) => secondReviewModelKey(entry.model) === secondReviewModelKey(model));

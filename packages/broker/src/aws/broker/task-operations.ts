@@ -217,6 +217,7 @@ async function reviewerModelOfStep(
     project: { approved }, guardrails, differentCompanyFrom: priors.flatMap((prior) => (prior.model === undefined ? [] : [prior.model])),
     sources: routing === undefined ? [] : await servableModels(routing, orgId, workspace.projectName),
     unusable: history.models, lastAttempt: history.sinceLatestBuild + 1 >= CRITIC_MODEL_ATTEMPTS_MAX,
+    legacyRanking: true,
   });
   // The company's own model stands and says nothing; a choice that couldn't be made leaves the project's model, which may be the build's.
   if (chosen?.chosenBy === "company") return { recipe, sameModelAsBuilder: false };
@@ -259,6 +260,8 @@ async function criticModelOfStep(
     sources: routing === undefined ? [] : await servableModels(routing, orgId, workspace.projectName),
     unusable: history.models,
     lastAttempt: history.sinceLatestPlan + 1 >= CRITIC_MODEL_ATTEMPTS_MAX,
+    // A task with no model pin started before the frontier tier: it keeps the order it started with.
+    legacyRanking: true,
   });
   if ("refuse" in chosen) throw chosen.refuse;
   if ("unavailable" in chosen) throw new PlanCheckUnavailableError();
@@ -379,7 +382,7 @@ export async function taskOperationParts(
   if (leftThePlan) chatgpt = undefined;
   // SR-1 (switch `cr`, off: nothing here changes): a REVIEW that carries a second reviewer from another AI company, inside this same operation, or the fixed reason it could not.
   const secondReview = await prepareSecondReview({ dependencies, orgId, project: workspace.projectName, workspaceId: workspace.id, conversationId: input.conversationId, task, workflowMode: input.workflowMode, agentRun: input.agentRun,
-    workflowReviewers: input.workflowReviewers, firstReviewerModel: payloadModel, approved: settings.definition.models?.approved, routing });
+    workflowReviewers: input.workflowReviewers, firstReviewerModel: payloadModel, approved: settings.definition.models?.approved, routing, legacyRanking: frozen?.modelPolicyPin?.frozenInputs?.reviewDefault !== "different_company" });
   // Learning v2: the approved lessons for this stage, only where the install has lesson ports and the project's learning mode allows (lessons-dispatch.ts). Delivery drops the field for an older worker.
   const { load: learnedLoad, ...learned } = await learnedContextForOperation(dependencies, { orgId, task, workflowMode: input.workflowMode, legacyTask: input.legacyTask, agentRun: input.agentRun, definition: settings.definition });
   const operationId = input.operationId ?? randomUUID();
