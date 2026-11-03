@@ -161,6 +161,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.savedEnvDeps === undefined || !savedEnvEnabled() ? {} : { savedEnv: dependencies.savedEnvDeps }),
           // Team record (fix round 1: the first round put this in the review-page branch by mistake): the record routes, and its erase on project archive and company close, only where its switch is on.
           ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
+          // Test services (slice 1): the signed service image catalog the setup draft's dependency candidates are proposed from (only with the switch `tx` on).
+          ...(dependencies.serviceCatalog === undefined ? {} : { serviceCatalog: dependencies.serviceCatalog }),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           createProject: (caller, input) => createCloudProject(dependencies, caller, input),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),

@@ -517,7 +517,7 @@ export async function taskOperationParts(
   if (contextToolsOn && dependencies.contextSources?.prewarm !== undefined) await prewarmStageServers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, prewarm: dependencies.contextSources.prewarm }, orgId, workspace.projectName, input.workflowMode);
   // Test environment (wire-testenv): the plan of the environment this task pinned, for a verification run whose first commands are the environment's checks. Nothing while the switch is off.
   const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
-    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness }) : undefined;
+    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness }) : undefined;
   // SH30 + SR-3 (switch `sp`): the company recipes a setup draft is offered, recorded on this operation (id and revision) so the run's reported recipe sources are intersected with what was sent. Nothing while `sp` is off.
   const recipeOffers = input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? await setupRecipeOffersFor(dependencies, orgId, workspace.projectName) : [];
   if (recipeOffers.length > 0) operation.setupRecipeOffers = recordedOffersOf(recipeOffers);
