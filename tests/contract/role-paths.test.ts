@@ -101,7 +101,9 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
     for (const { stack, resources } of others) {
       for (const [id, resource] of roleResources(resources)) {
         count += 1;
-        if (resource.Properties.Path !== path) wrong.push(`${stack}/${id}: ${String(resource.Properties.Path)}`);
+        // The one exception among the environment's own roles: the saved environment images' creation role sits at the root, because ECR's CustomRoleArn pattern has no room for a path.
+        const expected = resource.Properties.RoleName === savedEnvCreateRoleName(env) ? "/" : path;
+        if (resource.Properties.Path !== expected) wrong.push(`${stack}/${id}: ${String(resource.Properties.Path)}`);
       }
     }
     expect(count).toBeGreaterThan(20);
@@ -137,7 +139,7 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
         if (names.some((name) => rest.endsWith(name))) found.push(text);
       }
     }
-    for (const text of found) expect(text).toMatch(new RegExp(`:iam::${ACCOUNT}:role${path}[^/]+$`));
+    for (const text of found) expect(text).toMatch(new RegExp(`:iam::${ACCOUNT}:role(${path}|/)[^/]+$`));
     // The boundary names the connector secrets role, and the broker builds its ARN from the environment alone: all three agree.
     const arn = `arn:aws:iam::${ACCOUNT}:role${path}agentx-${env}-connector-secrets`;
     const boundaryStatement = defaultBoundaryStatements(scope()).find((statement) => statement.Sid === "ConnectorSecretsRole");
@@ -145,6 +147,30 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
     const built: MutableEnvironment = { AGENTX_ENV: env, AGENTX_NAMES: "{}", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: ACCOUNT };
     hydrateBrokerEnvironment(built);
     expect(built.CONNECTOR_SECRETS_ROLE_ARN).toBe(arn);
+  });
+
+  it("give ECR's creation template a CustomRoleArn that matches ECR's pattern (no IAM path), and the deploy role and boundary may manage exactly that role at the root", () => {
+    const { others } = synthesized.get(env)!;
+    const all = others.flatMap(({ resources }) => Object.entries(resources));
+    const template = all.find(([, resource]) => resource.Type === "AWS::ECR::RepositoryCreationTemplate");
+    expect(template, "the control plane stack has the creation template").toBeDefined();
+    const arn = template![1].Properties.CustomRoleArn as { "Fn::GetAtt": [string, string] };
+    const role = all.find(([id]) => id === arn["Fn::GetAtt"][0])![1];
+    expect(role.Properties.Path).toBe("/");
+    const resolved = `arn:aws:iam::${ACCOUNT}:role${String(role.Properties.Path)}${flatten(role.Properties.RoleName)}`;
+    expect(resolved).toMatch(/^arn:aws[-a-z0-9]*:iam::[0-9]{12}:role\/[A-Za-z0-9+=,\-.@_]*$/u);
+    expect(resolved).toBe(`arn:aws:iam::${ACCOUNT}:role/${savedEnvCreateRoleName(env)}`);
+    for (const [label, statements] of [["deploy role", serviceRoleStatements(scope())], ["boundary", defaultBoundaryStatements(scope())]] as const) {
+      for (const action of ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:PassRole", "iam:DeleteRole"]) {
+        expect(allowed(statements, action, resolved), `${label} allows ${action} on ${resolved}`).toBe(true);
+      }
+      // Only that one role at the root.
+      expect(allowed(statements, "iam:CreateRole", `${resolved}-other`), `${label} refuses a similar name`).toBe(false);
+      expect(allowed(statements, "iam:CreateRole", `arn:aws:iam::${ACCOUNT}:role/${savedEnvPushRoleName(env)}`), `${label} refuses the push role at the root`).toBe(false);
+    }
+    // The deploy role still has to set the boundary on it.
+    const requireBoundary = serviceRoleStatements(scope()).find((statement) => statement.Sid === "IamRequireBoundary")!;
+    expect(asList(requireBoundary.Resource)).toContain(resolved);
   });
 
   it("can be looked up, and cleaned up on a rollback, by the deploy role and the boundary it carries, before they exist", () => {
@@ -155,8 +181,8 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
         for (const action of ["iam:GetRole", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:GetRolePolicy", "iam:DeleteRolePolicy", "iam:DetachRolePolicy", "iam:DeleteRole"]) {
           expect(allowed(statements, action, pathless), `${label} allows ${action} on ${pathless}`).toBe(true);
         }
-        // Not create or change: a role at the root path would escape the path scoping and the boundary requirement.
-        for (const action of ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:PutRolePermissionsBoundary", "iam:PassRole"]) {
+        // Not create or change: a role at the root path would escape the path scoping and the boundary requirement. The one exception is ECR's creation role (see rootPathRoles), checked in the test above.
+        if (name !== savedEnvCreateRoleName(env)) for (const action of ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:PutRolePermissionsBoundary", "iam:PassRole"]) {
           expect(allowed(statements, action, pathless), `${label} refuses ${action} on ${pathless}`).toBe(false);
         }
         // Only that exact role, and the real path still works.

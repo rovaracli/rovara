@@ -499,22 +499,40 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     "iam:ListAttachedRolePolicies",
                   ],
                   "Effect": "Allow",
-                  "Resource": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition",
-                        },
-                        ":iam::",
-                        {
-                          "Ref": "AWS::AccountId",
-                        },
-                        ":role/agentx/staging/*",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx/staging/*",
+                        ],
                       ],
-                    ],
-                  },
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-img-create",
+                        ],
+                      ],
+                    },
+                  ],
                   "Sid": "IamRoles",
                 },
                 {
@@ -657,22 +675,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         ],
                       ],
                     },
-                    {
-                      "Fn::Join": [
-                        "",
-                        [
-                          "arn:",
-                          {
-                            "Ref": "AWS::Partition",
-                          },
-                          ":iam::",
-                          {
-                            "Ref": "AWS::AccountId",
-                          },
-                          ":role/agentx-staging-img-create",
-                        ],
-                      ],
-                    },
                   ],
                   "Sid": "IamFixedNameRolesNotYetCreated",
                 },
@@ -762,22 +764,40 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     },
                   },
                   "Effect": "Deny",
-                  "Resource": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition",
-                        },
-                        ":iam::",
-                        {
-                          "Ref": "AWS::AccountId",
-                        },
-                        ":role/agentx/staging/*",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx/staging/*",
+                        ],
                       ],
-                    ],
-                  },
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-img-create",
+                        ],
+                      ],
+                    },
+                  ],
                   "Sid": "IamRequireBoundary",
                 },
                 {
@@ -785,22 +805,40 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     "iam:DeleteRolePermissionsBoundary",
                   ],
                   "Effect": "Deny",
-                  "Resource": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition",
-                        },
-                        ":iam::",
-                        {
-                          "Ref": "AWS::AccountId",
-                        },
-                        ":role/agentx/staging/*",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx/staging/*",
+                        ],
                       ],
-                    ],
-                  },
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-img-create",
+                        ],
+                      ],
+                    },
+                  ],
                   "Sid": "IamKeepBoundary",
                 },
                 {
@@ -831,22 +869,40 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     "iam:PassRole",
                   ],
                   "Effect": "Allow",
-                  "Resource": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition",
-                        },
-                        ":iam::",
-                        {
-                          "Ref": "AWS::AccountId",
-                        },
-                        ":role/agentx/staging/*",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx/staging/*",
+                        ],
                       ],
-                    ],
-                  },
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-img-create",
+                        ],
+                      ],
+                    },
+                  ],
                   "Sid": "PassRoles",
                 },
                 {
@@ -1259,22 +1315,40 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "iam:ListAttachedRolePolicies",
               ],
               "Effect": "Allow",
-              "Resource": {
-                "Fn::Join": [
-                  "",
-                  [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition",
-                    },
-                    ":iam::",
-                    {
-                      "Ref": "AWS::AccountId",
-                    },
-                    ":role/agentx/staging/*",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx/staging/*",
+                    ],
                   ],
-                ],
-              },
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-create",
+                    ],
+                  ],
+                },
+              ],
             },
             {
               "Action": [
@@ -1416,22 +1490,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     ],
                   ],
                 },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":role/agentx-staging-img-create",
-                    ],
-                  ],
-                },
               ],
             },
             {
@@ -1512,6 +1570,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         "Ref": "AWS::AccountId",
                       },
                       ":role/agentx/staging/*",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-create",
                     ],
                   ],
                 },
@@ -10140,7 +10214,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           "Version": "2012-10-17",
         },
         "Description": "Rovara saved environment images: ECR assumes this to create a repository from the creation template",
-        "Path": "/agentx/staging/",
+        "Path": "/",
         "PermissionsBoundary": {
           "Fn::If": [
             "HasPermissionsBoundary",

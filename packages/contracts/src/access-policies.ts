@@ -375,7 +375,8 @@ function fixedNameRoleLookupStatement(scope: Pick<PolicyScope, "env" | "partitio
     Sid: "IamFixedNameRolesNotYetCreated",
     Effect: "Allow",
     Action: [...FIXED_NAME_ROLE_LOOKUP_ACTIONS],
-    Resource: fixedNameEnvironmentRoleNames(scope.env).map((name) => `arn:${scope.partition}:iam::${scope.account}:role/${name}`),
+    // Not the root-path roles: IamRoles names those in full (the same ARN), and the deployed boundary has little room.
+    Resource: fixedNameEnvironmentRoleNames(scope.env).map((name) => `arn:${scope.partition}:iam::${scope.account}:role/${name}`).filter((arn) => !rootPathRoles(scope).includes(arn)),
   };
 }
 
@@ -402,6 +403,15 @@ function environmentRoles(scope: Pick<PolicyScope, "env" | "partition" | "accoun
   return `arn:${scope.partition}:iam::${scope.account}:role${environmentRolePath(scope.env)}*`;
 }
 
+/**
+ * Roles of this environment that must sit at the root path: ECR's CustomRoleArn pattern (^arn:aws[-a-z0-9]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,-.@_]*$)
+ * has no room for a path, so the saved environment images' creation role (named in the creation template) cannot live under /agentx/<env>/.
+ * Each is granted the same role actions as the roles under the path, on its one exact ARN, with the boundary required as for the rest.
+ */
+function rootPathRoles(scope: Pick<PolicyScope, "env" | "partition" | "account">): string[] {
+  return [`arn:${scope.partition}:iam::${scope.account}:role/${savedEnvCreateRoleName(scope.env)}`];
+}
+
 /** Instance profiles under the environment's IAM path, like its roles. */
 function environmentInstanceProfiles(scope: Pick<PolicyScope, "env" | "partition" | "account">): string {
   return `arn:${scope.partition}:iam::${scope.account}:instance-profile${environmentRolePath(scope.env)}*`;
@@ -413,6 +423,7 @@ function environmentInstanceProfiles(scope: Pick<PolicyScope, "env" | "partition
  */
 export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[] {
   const roles = environmentRoles(scope);
+  const withRootRoles = [roles, ...rootPathRoles(scope)];
   const boundary = scope.permissionsBoundaryArn ?? defaultBoundaryArn(scope);
   return [
     { Sid: "Services", Effect: "Allow", Action: SERVICE_ROLE_SERVICES.map((s) => `${s}:*`), Resource: "*" },
@@ -421,7 +432,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
     ...appsyncEvents(scope),
     ...cloudFrontStatements(scope),
-    { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: roles },
+    { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: withRootRoles },
     fixedNameRoleLookupStatement(scope),
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
     { Sid: "IamManagedPolicies", Effect: "Allow", Action: [...MANAGED_POLICY_ACTIONS], Resource: agentxManagedPolicies(scope) },
@@ -440,14 +451,14 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
         "iam:PutRolePolicy",
         "iam:DeleteRolePolicy",
       ],
-      Resource: roles,
+      Resource: withRootRoles,
       Condition: { StringNotEquals: { "iam:PermissionsBoundary": boundary } },
     },
-    { Sid: "IamKeepBoundary", Effect: "Deny", Action: ["iam:DeleteRolePermissionsBoundary"], Resource: roles },
+    { Sid: "IamKeepBoundary", Effect: "Deny", Action: ["iam:DeleteRolePermissionsBoundary"], Resource: withRootRoles },
     // The boundary in force (a company's own, or the default) is never edited, versioned, tagged or deleted by the deploy (ruling M2
     // review): a new default version of the boundary would lift the ceiling for every role.
     { Sid: "IamKeepBoundaryPolicy", Effect: "Deny", Action: ["iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:SetDefaultPolicyVersion", "iam:DeletePolicy", "iam:TagPolicy", "iam:UntagPolicy"], Resource: boundary },
-    { Sid: "PassRoles", Effect: "Allow", Action: ["iam:PassRole"], Resource: roles },
+    { Sid: "PassRoles", Effect: "Allow", Action: ["iam:PassRole"], Resource: withRootRoles },
     {
       Sid: "ServiceLinkedRoles",
       Effect: "Allow",
@@ -491,6 +502,7 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     throw new Error(`the Rovara organization id must be an AWS Organizations id (o- and 10 to 32 lowercase letters or digits), got ${JSON.stringify(rovaraOrganizationId)}`);
   }
   const roles = environmentRoles(scope);
+  const withRootRoles = [roles, ...rootPathRoles(scope)];
   return [
     { Sid: "Services", Effect: "Allow", Action: [...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS], Resource: "*" },
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
@@ -538,7 +550,7 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     // The operator's EC2 quota reads (prerequisites on a resume); named like CallerIdentity above,
     // not scoped further, since scoped ARNs in the identity policy already limit it to two quotas.
     { Sid: "Quotas", Effect: "Allow", Action: ["servicequotas:GetServiceQuota"], Resource: "*" },
-    { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: roles },
+    { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: withRootRoles },
     // The service role carries this boundary, so the path-less lookups it is granted (see fixedNameRoleLookupStatement) are named here too.
     fixedNameRoleLookupStatement(scope),
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
@@ -550,7 +562,7 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       Sid: "PassRoles",
       Effect: "Allow",
       Action: ["iam:PassRole"],
-      Resource: [roles, `arn:${partition}:iam::${account}:role/${scope.cloudFormationRoleName}`],
+      Resource: [...withRootRoles, `arn:${partition}:iam::${account}:role/${scope.cloudFormationRoleName}`],
     },
     {
       Sid: "ServiceLinkedRoles",
