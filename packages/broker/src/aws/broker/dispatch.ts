@@ -3,6 +3,7 @@
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@agentx/contracts";
+import { withDesignReviewPorts } from "../../design-review/wiring.js";
 import { StoredBaselineSourceSchema } from "../baseline-source.js";
 import { queryAllItems } from "../admin-reads.js";
 import { z } from "zod";
@@ -267,7 +268,7 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
     // Plan 6 Task 17: a merge of the base whose machine was lost (the row names its operation): judged from what GitHub shows.
     if (item.kind === "SYNC" && workflow.state === "RUNNING") return await settleLostBranchSync(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
     const caller = await ownerCallerOf(dependencies, task, "workflow-dispatch");
-    const routeDependencies = developerTaskRouteDependencies({
+    const routeDependencies = withDesignReviewPorts(dependencies, developerTaskRouteDependencies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
       now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
       workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
@@ -289,7 +290,7 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       },
       // Plan 6 Task 17: the commit the pull request's base branch is at now, which is the commit a merge of the base takes.
       currentBaseCommit: currentBaseCommitOf(dependencies),
-    }, caller, undefined, null);
+    }, caller, undefined, null));
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.
     let outcome: "STARTED" | "DUPLICATE" | "STALE" | "WAITING";

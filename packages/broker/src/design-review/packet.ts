@@ -99,8 +99,8 @@ export const PacketBuildInputSchema = z.object({
   baseCommits: z.record(z.string().min(1).max(200), Sha1),
   knowledgeCommit: Sha1.optional(),
   sources: z.array(SourceRef).max(PACKET_SOURCES_LOOKED_AT_MAX),
-  /** The task's own request thread (the Linear, Jira or GitHub issue it came from). An item that is it, or continues it (its comments), is never put in a packet (M6). */
-  origin: z.array(z.object({ sourceId: z.string().min(1).max(64), itemRef: z.string().min(1).max(200) }).strict()).max(20).optional(),
+  /** The task's own request thread (the Linear, Jira or GitHub issue it came from). An item that is it, or continues it (its comments), is never put in a packet (M6). An `itemRef` of "" names the whole source: the task does not record which item it came from, so every item of that tracker is withheld. */
+  origin: z.array(z.object({ sourceId: z.string().min(1).max(64), itemRef: z.string().max(200) }).strict()).max(20).optional(),
 }).strict();
 export type PacketBuildInput = z.input<typeof PacketBuildInputSchema>;
 
