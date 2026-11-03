@@ -1,7 +1,7 @@
 // Design review stage, DR4 (design-review-stage.md 3.4 steps 2 to 4): the broker verifies a worker's report against the packet it built.
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { READ_ONLY_TOOLS, REVIEWER_VERIFY_FAILURES, ReviewerRunSchema } from "@agentx/contracts";
+import { READ_ONLY_TOOLS, REVIEWER_VERIFY_FAILURES, ReviewerRunSchema, inputProofSentence } from "@agentx/contracts";
 import { buildReviewerPacket, packetDigestOf, type PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import {
   verifyReviewerReport, verifyRound, runVerdictOf, type FirstCallUsageReader, type UsageCheck, type VerifyReviewerInput,
@@ -28,7 +28,7 @@ const input = (overrides: Partial<VerifyReviewerInput> = {}): VerifyReviewerInpu
 
 describe("verifyReviewerReport: a clean run", () => {
   it("passes when digest, session, tools, key and first call all hold, and says the proxy confirmed the input", async () => {
-    await expect(verifyReviewerReport(input())).resolves.toEqual({ verified: true, sessionId: "ses_1", filesRead: ["src/a.ts"], inputProof: "digest_and_usage", firstCallInputTokens: 10_000 });
+    await expect(verifyReviewerReport(input())).resolves.toEqual({ verified: true, sessionId: "ses_1", filesRead: ["src/a.ts"], inputProof: "proxy_first_call", firstCallInputTokens: 10_000 });
   });
 
   it("accepts every read-only tool the platform defines, and a reviewer that read no files", async () => {
@@ -88,6 +88,24 @@ describe("verifyReviewerReport: each failure voids the run with its own code", (
     }
   });
 
+  it("minor 1: a tolerance that is NaN, infinite, negative or above 1 is a failure, never a pass", async () => {
+    for (const tolerance of [Number.NaN, Number.POSITIVE_INFINITY, -0.1, 1.5]) {
+      await expect(verifyReviewerReport(input({ tolerance, usage: proxy(reader({ firstCallInputTokens: 999_999, calls: 1 })) })), String(tolerance)).resolves.toEqual({ verified: false, failure: "first_call_mismatch" });
+      await expect(verifyReviewerReport(input({ tolerance, usage: proxy(reader({ firstCallInputTokens: 10_000, calls: 1 })) })), String(tolerance)).resolves.toEqual({ verified: false, failure: "first_call_mismatch" });
+    }
+    await expect(verifyReviewerReport(input({ tolerance: 0, usage: proxy(reader({ firstCallInputTokens: 10_000, calls: 1 })) }))).resolves.toMatchObject({ verified: true });
+  });
+
+  it("minor 2: filesRead loses bidi and control characters, and an entry that is only such characters is dropped", async () => {
+    const result = await verifyReviewerReport(input({ report: report({ filesRead: ["\u202eevil.ts", "ok\u0007.ts", "\u200b\u202e", "src/a.ts"] }) }));
+    expect(result).toMatchObject({ verified: true, filesRead: ["evil.ts", "ok.ts", "src/a.ts"] });
+    const run = ReviewerRunSchema.safeParse({
+      role: "critic", promptId: "p", promptVersion: 1, promptDigest: DIGEST, model: { provider: "a", modelId: "m" }, sourceId: "s", sessionId: "ses_1", modelKeyId: KEY, packetDigest: DIGEST,
+      packet: [], filesRead: result.verified ? result.filesRead : [], tokensIn: 0, tokensOut: 0, costUsd: 0, startedAt: "2026-11-03T10:00:00Z", endedAt: "2026-11-03T10:01:00Z", ...runVerdictOf(result),
+    });
+    expect(run.success).toBe(true);
+  });
+
   it("a key with no usage record is no_usage_record, never a pass; so is a reader that throws or returns nonsense", async () => {
     for (const record of ["none", "throw", { firstCallInputTokens: 0, calls: 1 }, { firstCallInputTokens: Number.NaN, calls: 1 }, { firstCallInputTokens: 10_000, calls: 0 }] as const) {
       await expect(verifyReviewerReport(input({ usage: proxy(reader(record as never)) }))).resolves.toEqual({ verified: false, failure: "no_usage_record" });
@@ -116,7 +134,23 @@ describe("verifyReviewerReport: each failure voids the run with its own code", (
       packet: [], filesRead: [], tokensIn: 0, tokensOut: 0, costUsd: 0, startedAt: "2026-11-03T10:00:00Z", endedAt: "2026-11-03T10:01:00Z", ...runVerdictOf(result),
     };
     expect(ReviewerRunSchema.safeParse(run).success).toBe(true);
-    expect(ReviewerRunSchema.safeParse({ ...run, ...runVerdictOf({ verified: true, sessionId: "s", filesRead: [], inputProof: "digest_only" }) }).success).toBe(false);
+    // a void's verdict plus a "verified" verdict is contradictory
+    expect(ReviewerRunSchema.safeParse({ ...run, ...runVerdictOf({ verified: true, sessionId: "s", filesRead: [], inputProof: "digest_only" }), verifyFailure: "timeout" }).success).toBe(false);
+  });
+
+  it("B1: runVerdictOf carries the input proof into a ReviewerRun that parses, for both proofs", async () => {
+    const base = {
+      role: "critic", promptId: "p", promptVersion: 1, promptDigest: DIGEST, model: { provider: "a", modelId: "m" }, sourceId: "s", sessionId: "ses_1", modelKeyId: KEY, packetDigest: DIGEST,
+      packet: [], filesRead: [], tokensIn: 0, tokensOut: 0, costUsd: 0, startedAt: "2026-11-03T10:00:00Z", endedAt: "2026-11-03T10:01:00Z",
+    };
+    const digestOnly = await verifyReviewerReport(input({ usage: { kind: "unavailable" } }));
+    const viaProxy = await verifyReviewerReport(input());
+    expect(runVerdictOf(digestOnly)).toEqual({ verified: true, inputProof: "digest_only" });
+    expect(runVerdictOf(viaProxy)).toEqual({ verified: true, inputProof: "proxy_first_call" });
+    for (const result of [digestOnly, viaProxy]) expect(ReviewerRunSchema.safeParse({ ...base, ...runVerdictOf(result) }).success).toBe(true);
+    // a record built from a digest-only result never reads as proxy-confirmed
+    const stored = ReviewerRunSchema.parse({ ...base, ...runVerdictOf(digestOnly) });
+    expect(inputProofSentence(stored.inputProof!)).not.toContain("and the proxy's first call");
   });
 
   it("does not carry any text from the report or the proxy error into the result", async () => {

@@ -113,6 +113,24 @@ export const ReviewerPacketItemSchema = z.object({
 /** Why the broker voided a reviewer's result (3.4 step 4). Fixed codes only. */
 export const REVIEWER_VERIFY_FAILURES = ["packet_digest_mismatch", "session_reused", "tool_not_read_only", "model_key_mismatch", "first_call_mismatch", "no_usage_record", "unreadable_output", "timeout"] as const;
 
+/**
+ * What proved a verified reviewer's input (3.4, DR-FU2). "proxy_first_call": the packet digest matched AND the model proxy's own count of the key's first call was within tolerance of the
+ * packet. "digest_only": only the packet digest was checked (no proxy first-call reader is installed yet). A verified run must say which; the card words come from `INPUT_PROOF_SENTENCES`.
+ */
+export const INPUT_PROOFS = ["proxy_first_call", "digest_only"] as const;
+export const InputProofSchema = z.enum(INPUT_PROOFS);
+export type InputProof = z.infer<typeof InputProofSchema>;
+/** The one fixed sentence for each proof. The card shows these and nothing that sounds stronger: "digest_only" never says the proxy confirmed anything. */
+export const INPUT_PROOF_SENTENCES: Readonly<Record<InputProof, string>> = Object.freeze({
+  digest_only: "verified by packet digest; the proxy's first-call size was not checked",
+  proxy_first_call: "verified by packet digest and the proxy's first call",
+});
+export function inputProofSentence(proof: InputProof): string {
+  return INPUT_PROOF_SENTENCES[proof];
+}
+/** The label for `ReviewerRun.filesRead` on the card: the worker's own list, not something Rovara checked (never use it as citation proof). */
+export const FILES_READ_LABEL = "reported by the worker";
+
 /** One reviewer's run: what it was given and what it cost. This record is the fresh-context evidence on the decision card. */
 export const ReviewerRunSchema = z.object({
   role: ReviewerRoleSchema,
@@ -125,9 +143,12 @@ export const ReviewerRunSchema = z.object({
   modelKeyId: z.string().min(1).max(200),
   packetDigest: Digest,
   packet: z.array(ReviewerPacketItemSchema).max(DESIGN_REVIEW_PACKET_ITEMS_MAX),
-  filesRead: z.array(z.string().min(1).max(500)).max(200),
+  /** The worker's own list of files it says it read (`FILES_READ_LABEL`). Plain text only. */
+  filesRead: z.array(PlainLine(500)).max(200),
   verified: z.boolean(),
   verifyFailure: z.enum(REVIEWER_VERIFY_FAILURES).optional(),
+  /** Required when `verified`: what proved the input. Absent when not verified. */
+  inputProof: InputProofSchema.optional(),
   tokensIn: z.number().int().min(0),
   tokensOut: z.number().int().min(0),
   costUsd: Usd,
@@ -139,6 +160,8 @@ export const ReviewerRunSchema = z.object({
   if (run.paraphrase !== undefined && run.role !== "comprehension") context.addIssue({ code: "custom", path: ["paraphrase"], message: "only the comprehension reviewer writes a paraphrase" });
   if (!run.verified && run.verifyFailure === undefined) context.addIssue({ code: "custom", path: ["verifyFailure"], message: "an unverified run says why" });
   if (run.verified && run.verifyFailure !== undefined) context.addIssue({ code: "custom", path: ["verifyFailure"], message: "a verified run has no failure" });
+  if (run.verified && run.inputProof === undefined) context.addIssue({ code: "custom", path: ["inputProof"], message: "a verified run says what proved its input" });
+  if (!run.verified && run.inputProof !== undefined) context.addIssue({ code: "custom", path: ["inputProof"], message: "an unverified run has no input proof" });
 });
 export type ReviewerRun = z.infer<typeof ReviewerRunSchema>;
 

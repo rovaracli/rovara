@@ -31,7 +31,7 @@ describe("design review prompts", () => {
 
   it("fills the prompt fields of a reviewer run", () => {
     const record = promptRecord(REVIEWER_PROMPTS.critic);
-    const run = { ...record, role: "critic", model: { provider: "p", modelId: "m" }, sourceId: "s", sessionId: "x", modelKeyId: "k", packetDigest: "b".repeat(64), packet: [], filesRead: [], verified: true, tokensIn: 1, tokensOut: 1, costUsd: 0, startedAt: "2026-11-03T10:00:00Z", endedAt: "2026-11-03T10:01:00Z" };
+    const run = { ...record, role: "critic", model: { provider: "p", modelId: "m" }, sourceId: "s", sessionId: "x", modelKeyId: "k", packetDigest: "b".repeat(64), packet: [], filesRead: [], verified: true, inputProof: "digest_only", tokensIn: 1, tokensOut: 1, costUsd: 0, startedAt: "2026-11-03T10:00:00Z", endedAt: "2026-11-03T10:01:00Z" };
     expect(ReviewerRunSchema.safeParse(run).success).toBe(true);
   });
 

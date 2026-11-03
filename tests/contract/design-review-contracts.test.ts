@@ -1,7 +1,7 @@
 // Design review stage, DR1 (designs-2026-10-30/design-review-stage.md 3.1 and 3.5): the stored shapes. Strict everywhere; old intents, playbooks and stage lists still parse.
 import { describe, expect, it } from "vitest";
 import {
-  DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_HIGH_RISK_REASONS, DESIGN_REVIEW_ROUNDS_MAX, DesignFindingSchema, DesignQuestionSchema, DesignReviewSettingSchema, IntentAssessmentSchema,
+  DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_HIGH_RISK_REASONS, DESIGN_REVIEW_ROUNDS_MAX, DesignFindingSchema, FILES_READ_LABEL, INPUT_PROOFS, INPUT_PROOF_SENTENCES, inputProofSentence, DesignQuestionSchema, DesignReviewSettingSchema, IntentAssessmentSchema,
   ProjectPlaybookBodySchema, ProjectPlaybookSchema, ReviewerRunSchema, STAGE_IDS, WorkflowDesignReviewSchema, designReviewSettingOf, isHighRiskDesign,
 } from "../../packages/contracts/src/index.js";
 import * as web from "../../packages/contracts/src/web.js";
@@ -12,7 +12,7 @@ const run = {
   role: "critic", promptId: "design-critic", promptVersion: 1, promptDigest: digest, model: { provider: "anthropic", modelId: "claude-opus-5-5" }, sourceId: "src_1",
   sessionId: "ses_1", modelKeyId: "key_1", packetDigest: digest,
   packet: [{ kind: "design", ref: "design.md", commitOrFetchedAt: sha, digest, bytes: 1200 }],
-  filesRead: ["packages/a.ts"], verified: true, tokensIn: 1000, tokensOut: 200, costUsd: 0.01, startedAt: "2026-11-03T10:00:00Z", endedAt: "2026-11-03T10:01:00Z",
+  filesRead: ["packages/a.ts"], verified: true, inputProof: "proxy_first_call", tokensIn: 1000, tokensOut: 200, costUsd: 0.01, startedAt: "2026-11-03T10:00:00Z", endedAt: "2026-11-03T10:01:00Z",
 };
 const finding = { id: "f1", severity: "major", section: "§3", text: "Retries are not bounded.", citations: [{ kind: "design", section: "§3" }], fromReviewers: ["critic"], rawIds: ["critic-1"], fingerprint: digest };
 
@@ -91,7 +91,29 @@ describe("design review contracts", () => {
     expect(ReviewerRunSchema.safeParse({ ...run, paraphrase: "It adds webhooks." }).success).toBe(false);
     expect(ReviewerRunSchema.parse({ ...run, role: "comprehension", paraphrase: "It adds webhooks." }).paraphrase).toBe("It adds webhooks.");
     expect(ReviewerRunSchema.safeParse({ ...run, verified: false }).success).toBe(false);
-    expect(ReviewerRunSchema.parse({ ...run, verified: false, verifyFailure: "packet_digest_mismatch" }).verified).toBe(false);
+    expect(ReviewerRunSchema.parse({ ...run, verified: false, verifyFailure: "packet_digest_mismatch", inputProof: undefined }).verified).toBe(false);
+  });
+
+  // Fix round B1: a "digest only" verification must be recordable, and must never read as proxy-confirmed.
+  it("a verified run must say what proved its input; an unverified run must not", () => {
+    const { inputProof: _dropped, ...withoutProof } = run;
+    expect(ReviewerRunSchema.safeParse(withoutProof).success).toBe(false);
+    expect(ReviewerRunSchema.safeParse({ ...run, inputProof: "digest_and_usage" }).success).toBe(false);
+    expect(ReviewerRunSchema.parse({ ...run, inputProof: "digest_only" }).inputProof).toBe("digest_only");
+    expect(ReviewerRunSchema.safeParse({ ...run, verified: false, verifyFailure: "timeout" }).success).toBe(false);
+  });
+
+  it("the fixed card sentences: digest_only never says the proxy confirmed anything", () => {
+    expect(inputProofSentence("digest_only")).toBe("verified by packet digest; the proxy's first-call size was not checked");
+    expect(inputProofSentence("proxy_first_call")).toBe("verified by packet digest and the proxy's first call");
+    expect(inputProofSentence("digest_only")).not.toMatch(/confirm|proxy's first call(?! size)/iu);
+    expect(Object.keys(INPUT_PROOF_SENTENCES).sort()).toEqual([...INPUT_PROOFS].sort());
+  });
+
+  it("filesRead holds plain text only (bidi and control characters are refused); the card labels it as the worker's word", () => {
+    expect(ReviewerRunSchema.safeParse({ ...run, filesRead: ["\u202eevil"] }).success).toBe(false);
+    expect(ReviewerRunSchema.safeParse({ ...run, filesRead: ["a\u0000b"] }).success).toBe(false);
+    expect(FILES_READ_LABEL).toBe("reported by the worker");
   });
 
   it("bounds rounds to 2 and keeps a design question to 2-4 options with a recommended one", () => {
