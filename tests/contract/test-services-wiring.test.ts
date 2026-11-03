@@ -1,18 +1,19 @@
 // Test services, slice 1 wiring: the broker's signed service image catalog reaches the places that pin dependencies (the task plan, the setup draft's proposal), only with the switch `tx` on. With it off the dependencies the
 // broker is built with are exactly what they were (golden).
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CATALOG_FILE, CATALOG_SIGNATURE_FILE, CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf } from "@agentx/contracts";
 import { brokerDependencies } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
-import { SHIPPED_CATALOG_FOLDER, catalogSigningPublicKeys, releaseServiceCatalogSource, shippedCatalogDirectory } from "../../packages/broker/src/test-env/shipped-catalog.js";
+import { forgetInvokedFunctionArn, lambdaAccountId, noteInvokedFunctionArn } from "../../packages/broker/src/test-env/lambda-identity.js";
+import { SHIPPED_CATALOG_FOLDER, releaseServiceCatalogSource, shippedCatalogDirectory } from "../../packages/broker/src/test-env/shipped-catalog.js";
 import { pinnedCatalog, testSigner } from "../support/catalog-pinning.js";
 import { setupWizardBench } from "../support/setup-wizard-testenv.js";
 
 const roots: string[] = [];
-afterEach(async () => { delete process.env.TEST_SERVICES_ENABLED; for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { delete process.env.TEST_SERVICES_ENABLED; forgetInvokedFunctionArn(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 async function shipped() {
   const root = await mkdtemp(join(tmpdir(), "rovara-catalog-"));
@@ -34,21 +35,59 @@ describe("the release's catalog source", () => {
 
   it("loads the shipped, signed catalog with tx on and the release's key", async () => {
     const { root, signer } = await shipped();
-    const source = releaseServiceCatalogSource({ TEST_SERVICES_ENABLED: "1", LAMBDA_TASK_ROOT: root }, () => [signer.publicKeyPem]);
+    const source = releaseServiceCatalogSource({ TEST_SERVICES_ENABLED: "1", LAMBDA_TASK_ROOT: root }, [signer.publicKeyPem]);
     expect((await source!())?.pinned).toBe(true);
   });
 
   it("is nothing for a catalog the release's key did not sign, with no key, or with no files (fail closed)", async () => {
     const { root, signer } = await shipped();
     const env = { TEST_SERVICES_ENABLED: "1", LAMBDA_TASK_ROOT: root };
-    expect(await releaseServiceCatalogSource(env, () => [testSigner().publicKeyPem])!()).toBeUndefined();
-    expect(await releaseServiceCatalogSource(env, () => [])!()).toBeUndefined();
-    expect(await releaseServiceCatalogSource({ ...env, LAMBDA_TASK_ROOT: join(root, "nowhere") }, () => [signer.publicKeyPem])!()).toBeUndefined();
+    expect(await releaseServiceCatalogSource(env, [testSigner().publicKeyPem])!()).toBeUndefined();
+    expect(await releaseServiceCatalogSource(env, [])!()).toBeUndefined();
+    expect(await releaseServiceCatalogSource({ ...env, LAMBDA_TASK_ROOT: join(root, "nowhere") }, [signer.publicKeyPem])!()).toBeUndefined();
   });
 
-  it("has no key until the release lane plugs it into catalogSigningPublicKeys", () => {
-    expect(catalogSigningPublicKeys()).toEqual([]);
+  it("trusts nothing today: the contract's key lists are empty, so a signed catalog does not load in any account (fail closed)", async () => {
+    const { root } = await shipped();
+    noteInvokedFunctionArn("arn:aws:lambda:us-west-2:944937319445:function:broker");
+    const source = releaseServiceCatalogSource({ TEST_SERVICES_ENABLED: "1", LAMBDA_TASK_ROOT: root });
+    expect(await source!()).toBeUndefined();
+  });
+
+  it("names its directory beside the code", () => {
     expect(shippedCatalogDirectory({ LAMBDA_TASK_ROOT: "/var/task" })).toBe("/var/task/service-catalog");
+  });
+});
+
+describe("the account this broker runs in", () => {
+  it("is learned from the Lambda's own function ARN and from nothing else", () => {
+    expect(lambdaAccountId()).toBeUndefined();
+    noteInvokedFunctionArn("arn:aws:lambda:us-west-2:944937319445:function:broker");
+    expect(lambdaAccountId()).toBe("944937319445");
+    // Garbage, a missing ARN or a non-ARN leave what was learned.
+    for (const bad of [undefined, 7, "", "944937319445", "arn:aws:lambda:us-west-2::function:x", { arn: "arn:aws:lambda:us-west-2:111122223333:function:x" }]) noteInvokedFunctionArn(bad);
+    expect(lambdaAccountId()).toBe("944937319445");
+  });
+
+  it("is read from no setting, variable or request: the source files name no such input", () => {
+    for (const path of ["packages/broker/src/test-env/lambda-identity.ts", "packages/broker/src/test-env/shipped-catalog.ts", "packages/broker/src/test-env/dependency-plan.ts"]) {
+      const text = readFileSync(path, "utf8").replace(/\/\/.*$/gmu, "").replace(/\/\*[\s\S]*?\*\//gu, "");
+      expect(text, path).not.toMatch(/process\.env\[?["'.]?(?:AWS_ACCOUNT|AGENTX_ACCOUNT|ACCOUNT_ID)/iu);
+      expect(text, path).not.toMatch(/BROKER_SETTINGS|AGENTX_SETTINGS/u);
+    }
+  });
+
+  it("keeps the test-only key seam out of every other file", () => {
+    const hits: string[] = [];
+    const walk = (directory: string): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (path.endsWith(".ts") && readFileSync(path, "utf8").includes("testOnlyTrustedKeys")) hits.push(path);
+      }
+    };
+    walk("packages");
+    expect(hits.filter((path) => !path.includes("node_modules") && !path.includes("/dist/")).sort()).toEqual(["packages/broker/src/test-env/dependency-plan.ts", "packages/broker/src/test-env/shipped-catalog.ts"]);
   });
 });
 
@@ -71,5 +110,6 @@ describe("the one-line hunks in the hot files", () => {
     expect(read("packages/broker/src/aws/broker/task-operations.ts")).toContain("now: Date.now, serviceCatalog: dependencies.serviceCatalog }");
     expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("{ serviceCatalog: dependencies.serviceCatalog }");
     expect(read("packages/broker/src/aws/broker/dependency-wiring.ts")).toContain("rest.serviceCatalog ?? releaseServiceCatalogSource()");
+    expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("noteInvokedFunctionArn(context?.invokedFunctionArn)");
   });
 });

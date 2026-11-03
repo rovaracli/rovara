@@ -90,22 +90,39 @@ describe("the signed catalog source", () => {
     const signature = { schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId: parseBundlePublicKey(signer.publicKeyPem).keyId, catalogSha256: sha256HexOf(catalogBytes), signature: (await signer.sign(catalogSigningMessage(catalogBytes))).toString("base64") };
     return { signer, catalogBytes, signatureBytes: Buffer.from(JSON.stringify(signature)) };
   }
+  const trust = { runningAccountId: undefined };
 
   it("loads the catalog once, verified, and refuses a bad signature, an untrusted key and a catalog older than the minimum", async () => {
     const good = await signed();
     let reads = 0;
-    const source = serviceCatalogSourceOf({ read: async () => { reads += 1; return good; }, trustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
+    const source = serviceCatalogSourceOf({ read: async () => { reads += 1; return good; }, trust, testOnlyTrustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
     expect((await source())?.pinned).toBe(true);
     await source();
     expect(reads).toBe(1);
-    const other = serviceCatalogSourceOf({ read: async () => good, trustedKeys: [testSigner().publicKeyPem], minRevision: 1 });
+    const other = serviceCatalogSourceOf({ read: async () => good, trust, testOnlyTrustedKeys: [testSigner().publicKeyPem], minRevision: 1 });
     expect(await other()).toBeUndefined();
-    const old = serviceCatalogSourceOf({ read: async () => good, trustedKeys: [good.signer.publicKeyPem], minRevision: 3 });
+    const old = serviceCatalogSourceOf({ read: async () => good, trust, testOnlyTrustedKeys: [good.signer.publicKeyPem], minRevision: 3 });
     expect(await old()).toBeUndefined();
-    const broken = serviceCatalogSourceOf({ read: async () => { throw new Error("no file"); }, trustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
+    const broken = serviceCatalogSourceOf({ read: async () => { throw new Error("no file"); }, trust, testOnlyTrustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
     expect(await broken()).toBeUndefined();
-    const tampered = serviceCatalogSourceOf({ read: async () => ({ ...good, catalogBytes: Buffer.concat([good.catalogBytes, Buffer.from(" ")]) }), trustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
+    const tampered = serviceCatalogSourceOf({ read: async () => ({ ...good, catalogBytes: Buffer.concat([good.catalogBytes, Buffer.from(" ")]) }), trust, testOnlyTrustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
     expect(await tampered()).toBeUndefined();
+  });
+
+  it("takes its keys from the contract's trust lists and nothing else: with them empty (today) nothing verifies, and the reason is said", async () => {
+    const good = await signed();
+    const reasons: string[] = [];
+    const source = serviceCatalogSourceOf({ read: async () => good, trust: { runningAccountId: "944937319445" }, onRefused: (reason) => reasons.push(reason) });
+    expect(await source()).toBeUndefined();
+    expect(reasons).toEqual(["no trusted catalog key"]);
+  });
+
+  it("asks for the trust when it loads, so an account learned later is used", async () => {
+    const good = await signed();
+    const seen: Array<string | undefined> = [];
+    const source = serviceCatalogSourceOf({ read: async () => good, trust: () => { const context = { runningAccountId: seen.length === 0 ? undefined : "944937319445" }; seen.push(context.runningAccountId); return context; }, testOnlyTrustedKeys: [good.signer.publicKeyPem] });
+    expect((await source())?.pinned).toBe(true);
+    expect(seen).toEqual([undefined]);
   });
 });
 

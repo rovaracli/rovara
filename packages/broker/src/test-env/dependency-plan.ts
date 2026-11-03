@@ -5,7 +5,7 @@
 // with a fixed reason, never a plan that leaves a dependency out (a run with no database would only fail its tests in a confusing way). Pure apart from the catalog source; it never reads a clock, a network or a file itself.
 //
 // Slice 1 starts real software from the catalog only (backing `local`, no substitute image). Every other backing is "not available yet", at approval (`dependenciesStartableNow`) and again here.
-import { loadSignedCatalog, type CatalogEntry, type TaskDependencyPlan, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TaskDependencyPlanSchema, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById } from "@agentx/contracts";
+import { loadSignedCatalog, type CatalogEntry, type CatalogTrustContext, type TaskDependencyPlan, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TaskDependencyPlanSchema, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById } from "@agentx/contracts";
 import { chooseBacking, effectiveAllowedBackings, type BackingPlace, type SkipReason } from "./backing-choice.js";
 
 /**
@@ -104,17 +104,28 @@ export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; catalo
 export type ServiceCatalogSource = () => Promise<VerifiedCatalog | undefined>;
 
 /**
- * A catalog source over a reader of the shipped catalog and its signature: it verifies the signature over the exact bytes with the release's trusted keys (`loadSignedCatalog`), refuses a revision under the minimum,
- * and keeps the first good answer for the life of the process. A failure is not kept (the next call tries again) and never says why: undefined. Never throws.
+ * A catalog source over a reader of the shipped catalog and its signature. It verifies the signature over the exact bytes with the keys the CONTRACT trusts for the account the process runs in (`loadSignedCatalog` with
+ * `trust`, catalog-trust.ts: compiled-in key lists, and the staging-only key only in the staging account on a staging build), refuses a revision under the minimum, and keeps the first good answer for the life of the
+ * process. `trust` is the running account from the process's own identity (never a setting, a variable or a request); it may be a function, because a Lambda learns its account from its first invocation. Nothing here takes
+ * a key: `testOnlyTrustedKeys` is a seam for tests, and a source guard keeps it out of every other file. A failure is not kept (the next call tries again) and says nothing but undefined; `onRefused` gets the fixed reason
+ * `loadSignedCatalog` gave (for a log). Never throws.
  */
-export function serviceCatalogSourceOf(input: { read: () => Promise<{ catalogBytes: Uint8Array; signatureBytes: Uint8Array }>; trustedKeys: readonly string[]; minRevision?: number }): ServiceCatalogSource {
+export function serviceCatalogSourceOf(input: {
+  read: () => Promise<{ catalogBytes: Uint8Array; signatureBytes: Uint8Array }>;
+  trust: CatalogTrustContext | (() => CatalogTrustContext);
+  minRevision?: number;
+  testOnlyTrustedKeys?: readonly string[];
+  onRefused?: (reason: string) => void;
+}): ServiceCatalogSource {
   let kept: VerifiedCatalog | undefined;
   return async () => {
     if (kept !== undefined) return kept;
     try {
       const files = await input.read();
-      const loaded = loadSignedCatalog({ catalogBytes: files.catalogBytes, signatureBytes: files.signatureBytes, trustedKeys: input.trustedKeys });
-      if (!loaded.ok || loaded.catalog.revision < (input.minRevision ?? TEST_SERVICES_MIN_CATALOG_REVISION)) return undefined;
+      const trust = typeof input.trust === "function" ? input.trust() : input.trust;
+      const loaded = loadSignedCatalog({ catalogBytes: files.catalogBytes, signatureBytes: files.signatureBytes, trust, ...(input.testOnlyTrustedKeys === undefined ? {} : { trustedKeys: input.testOnlyTrustedKeys }) });
+      if (!loaded.ok) { input.onRefused?.(loaded.reason); return undefined; }
+      if (loaded.catalog.revision < (input.minRevision ?? TEST_SERVICES_MIN_CATALOG_REVISION)) { input.onRefused?.("the catalog is older than this release allows"); return undefined; }
       kept = loaded.catalog;
       return kept;
     } catch {
