@@ -53,6 +53,8 @@ const REGION = /^[a-z]{2}(?:-[a-z]+)+-[0-9]{1,2}$/u;
 const USER = /^[a-z][a-z0-9_]{0,30}$/u;
 const DATABASE = /^[a-z][a-z0-9_]{0,62}$/u;
 const PASSWORD = /^[A-Za-z0-9]{8,64}$/u;
+/** The plain forms a per-run user, database and password must have, so none can break out of an env file, a URL or an option. The env channel (service-env.ts) uses the same. */
+export const HELPER_CREDENTIAL_PATTERNS = { user: USER, database: DATABASE, password: PASSWORD } as const;
 const FILE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const RESERVED_FILE_NAMES = ["env", "conf"];
 const MOUNT_TARGET = /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){0,8}$/u;

@@ -54,10 +54,12 @@ const NON_SECRET_NAMES = new Set(["AWS_REGION", "AWS_DEFAULT_REGION", "PI_SESSIO
  * The names of the variables that look like credentials, by the project's own key rule (`isCredentialKey`), by an AWS prefix, or because the value has a credential shape that `redactText` would
  * redact (a key, a token, a private key, a URL with a password). Names only, in the order given: a value is never returned.
  */
-export function credentialShapedVariables(environment: Readonly<Record<string, string | undefined>>): string[] {
+export function credentialShapedVariables(environment: Readonly<Record<string, string | undefined>>, exemptValues?: ReadonlySet<string>): string[] {
   const names: string[] = [];
   for (const [name, value] of Object.entries(environment)) {
     if (value === undefined) continue;
+    // The exact fake values Rovara's own env channel injects (service-env.ts, 4.0.5) are not secrets. Matched by VALUE, never by name, and only when the caller names them: with no set, today's rule is unchanged.
+    if (exemptValues?.has(value) === true) continue;
     const pair = `${name}=${value}`;
     const byName = !NON_SECRET_NAMES.has(name) && (isCredentialKey(name) || name.startsWith("AWS_"));
     if (byName || redactText(value) !== value || (!NON_SECRET_NAMES.has(name) && redactText(pair) !== pair)) names.push(name);
