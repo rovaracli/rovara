@@ -93,23 +93,25 @@ describe("a candidate check that carries a dependency plan", () => {
     // The test check ran in the sealed sandbox, with the env file, in a round of its own.
     expect(sealed.length).toBeGreaterThan(0);
     expect(calls.filter((call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-check"))).toHaveLength(1);
+    // The sealed round started helpers of its own: two services networks were made in all (the working phase's, and the round's).
+    expect(calls.filter((call) => call[0] === "network" && call[1] === "create")).toHaveLength(2);
     expect(h.fake.execs.filter((exec) => exec.args.some((arg) => arg.endsWith("-check")) && exec.envFile?.includes("DATABASE_URL=postgres://app:") === true).length).toBeGreaterThan(0);
     await nothingLeft(h);
   });
 
-  it("hands on one usage record, taken before the services stop, with the reset the sealed round made", async () => {
+  it("hands on one usage record, taken before the services stop", async () => {
     const h = await harness();
     await h.prepare();
     expect(h.records).toHaveLength(1);
-    expect(h.records[0]!.dependencies).toEqual([expect.objectContaining({ id: "postgres", started: true, healthy: true, resetCount: 1 })]);
+    expect(h.records[0]!.dependencies).toEqual([expect.objectContaining({ id: "postgres", started: true, healthy: true, resetCount: 0 })]);
     expect(JSON.stringify(h.records)).not.toMatch(/[A-Za-z0-9]{32}/u);
   });
 
-  it("with no testChecks every readiness command is sealed (two rounds)", async () => {
+  it("with testChecks naming every readiness command, each runs sealed in a round of its own (a working network and two round networks)", async () => {
     const h = await harness({ testChecks: [0, 1] });
     await h.prepare();
     expect(h.fake.calls.filter((call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-check"))).toHaveLength(2);
-    expect(h.records[0]!.dependencies[0]!.resetCount).toBe(2);
+    expect(h.fake.calls.filter((call) => call[0] === "network" && call[1] === "create")).toHaveLength(3);
   });
 
   it("a test check that fails fails the preparation, still reports the record, and leaves nothing", async () => {
@@ -146,7 +148,7 @@ describe("a candidate check that carries a dependency plan", () => {
   it("a dev container is refused before anything is made", async () => {
     const h = await harness();
     const before = h.fake.calls.length;
-    await expect(startPrepareTestServices({ options: h.testServices, sandbox: undefined, devcontainer: true, operationId: "x", rootPath: h.root })).rejects.toThrow("Test services are not available yet for a project that uses a dev container.");
+    await expect(startPrepareTestServices({ options: h.testServices, sandbox: undefined, devcontainer: true, operationId: "x", rootPath: h.root, repositoryPaths: [] })).rejects.toThrow("Test services are not available yet for a project that uses a dev container.");
     expect(h.fake.calls.length).toBe(before);
     expect(h.records).toEqual([]);
   });

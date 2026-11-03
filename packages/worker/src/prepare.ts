@@ -426,7 +426,7 @@ async function prepareWorkspaceOnce(options: PrepareWorkspaceOptions): Promise<P
       }));
     }
 
-    services = await startPrepareTestServices({ options: options.testServices, sandbox, devcontainer: target !== undefined, operationId: options.creationIdentity ?? "agentx-worker", rootPath: canonicalRoot });
+    services = await startPrepareTestServices({ options: options.testServices, sandbox, devcontainer: target !== undefined, operationId: options.creationIdentity ?? "agentx-worker", rootPath: canonicalRoot, repositoryPaths: project.repositories.map((repository) => resolve(canonicalRoot, repository.path)) });
     for (const [index, command] of project.setup.entries()) {
       if (manifest.completedSetupSteps.includes(index)) continue;
       let result: CommandResult;

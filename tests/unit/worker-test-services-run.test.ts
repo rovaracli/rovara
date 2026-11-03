@@ -1,16 +1,16 @@
 // Test services, slice 1, s1-worker-round T1 (worker/src/test-services-run.ts): the orchestrator that starts a task's pinned dependencies, joins the working sandbox, runs the seeds, seals every check round and tears the
 // run down on every exit path (TS-RUN-4). No Docker: a fake daemon (tests/support/fake-services-docker.ts) and a stub of s1-sealed's two exports that uses the REAL `withDetachedWorking` of check-sandbox.ts.
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, type ProjectCommand, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/contracts";
 import { withDetachedWorking } from "../../packages/worker/src/check-sandbox.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 import {
-  SEALED_ROUND_PORTS, TEST_SERVICES_USAGE_ARTIFACT, TestServicesError, neverValuesFor, startTaskTestServices, startTestServicesRun, testServicesAtWorkerBoot, testServicesConfigFromEnvironment, withTestServices,
+  SEALED_ROUND_PORTS, TEST_SERVICES_USAGE_ARTIFACT, TestServicesError, catalogTrustedKeys, loadCatalogFromDirectory, testServicesAdvertisedFeatures, neverValuesFor, startTaskTestServices, startTestServicesRun, testServicesAtWorkerBoot, testServicesConfigFromEnvironment, withTestServices,
   type SealedRoundPorts, type SealedRoundSetup, type TestServicesConfig,
 } from "../../packages/worker/src/test-services-run.js";
 import { runChecks, type CheckPlan, type CheckRunners } from "../../packages/worker/src/verification/checks.js";
@@ -73,6 +73,8 @@ function stubSealed(state: SealedState): SealedRoundPorts {
         const runners: CheckRunners = {
           async runProjectCommand(command, signal) {
             state.executed.push(command);
+            // The seeds (`npm run migrate`) always work; the failures below are the CHECK's.
+            if (command.args.join(" ") === "run migrate") return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
             if (state.throwOnCommand === true) throw new Error("the check could not be run");
             if (state.slowCommand === true) await new Promise<void>((_, reject) => { signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); });
             return { exitCode: state.exitCode ?? 0, timedOut: false, stdout: "ok", stderr: "" };
@@ -86,7 +88,7 @@ function stubSealed(state: SealedState): SealedRoundPorts {
     buildServiceUsageRecord(input) {
       return Promise.resolve({
         schemaVersion: 1,
-        dependencies: input.planned.map((id) => ({ id, started: true, healthy: true, startMs: input.startMs === undefined || typeof input.startMs !== "number" ? 0 : input.startMs, resetCount: input.resetCounts?.get(id) ?? 0 })),
+        dependencies: input.planned.map((id) => ({ id, started: true, healthy: true, startMs: input.startMs === undefined || typeof input.startMs !== "number" ? 0 : input.startMs, resetCount: input.resetCounts?.get(id) ?? 0, ...(input.failures?.get(id) === undefined ? {} : { failure: input.failures.get(id) }) })),
         unknownCalls: { domains: [], otherCount: 0 },
       });
     },
@@ -96,6 +98,7 @@ function stubSealed(state: SealedState): SealedRoundPorts {
 async function harness(options: { docker?: FakeServicesDockerOptions; sealed?: Partial<SealedState>; withoutSealed?: boolean; realSealed?: boolean } = {}) {
   const fake = fakeServicesDocker(options.docker);
   const root = await temp("rsv-workspace-");
+  await mkdir(join(root, "app"));
   const runParent = await temp("rsv-runs-");
   const state: SealedState = { executed: [], setups: [], rounds: 0, ...options.sealed };
   const logs: Array<Record<string, unknown>> = [];
@@ -107,7 +110,7 @@ async function harness(options: { docker?: FakeServicesDockerOptions; sealed?: P
   const sandbox = new TaskSandbox({ rootPath: root, taskId: OPERATION, docker: fake.docker, image: IMAGE, log: () => undefined });
   await sandbox.start();
   const artifactSink = (artifact: { name: string; mediaType: string; content: string }): Promise<void> => { artifacts.push(artifact); return Promise.resolve(); };
-  const start = (dependencies: readonly TaskDependencyPlan[] = [dependency()], hasDevcontainer = false) => startTestServicesRun(config, { dependencies, hasDevcontainer, operationId: OPERATION, rootPath: root, sandbox, artifactSink });
+  const start = (dependencies: readonly TaskDependencyPlan[] = [dependency()], hasDevcontainer = false) => startTestServicesRun(config, { dependencies, hasDevcontainer, operationId: OPERATION, rootPath: root, repositoryPaths: [join(root, "app")], sandbox, artifactSink });
   const checkPlan: CheckPlan = { source: "project", readiness: [TEST_COMMAND], projectBefore: ["passed"] };
   const base: CheckRunners = { runProjectCommand: () => Promise.reject(new Error("the working sandbox's runners must not run a check")), runAgentCommand: () => Promise.reject(new Error("the working sandbox's runners must not run a check")) };
   return { fake, root, runParent, state, logs, artifacts, config, sandbox, start, checkPlan, base };
@@ -144,8 +147,8 @@ describe("starting the run", () => {
     expect(seed).toBeDefined();
     expect(seed!.args).toContain(h.sandbox.name);
     expect(seed!.envFile).toContain("PGPASSWORD=");
-    // The sealed name server is up for the run; the check sandbox only inside a round.
-    expect(h.fake.left().containers.some((name) => name.endsWith("-dns"))).toBe(true);
+    // The sealed name server and the check sandbox exist only inside a round.
+    expect(h.fake.left().containers.some((name) => name.endsWith("-dns"))).toBe(false);
     expect(h.fake.left().containers.some((name) => name.endsWith("-check"))).toBe(false);
     await run.dispose();
     await h.sandbox.dispose();
@@ -191,7 +194,6 @@ describe("starting the run", () => {
     const cases: Array<[FakeServicesDockerOptions, string, string | undefined]> = [
       [{ pullFails: true }, "pull_failed", "pull_failed"],
       [{ failRun: "helper" }, "start_failed", "start_failed"],
-      [{ failRun: "dns" }, "setup_failed", undefined],
       [{ failConnect: true }, "start_failed", "start_failed"],
     ];
     for (const [docker, reason, failure] of cases) {
@@ -210,7 +212,7 @@ describe("a project with a dev container", () => {
     const h = await harness();
     const before = h.fake.calls.length;
     await expect(h.start([dependency()], true)).rejects.toThrow("Test services are not available yet for a project that uses a dev container.");
-    await expect(startTaskTestServices({ plan: { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [dependency()] }, mode: "CHECKS", sandbox: h.sandbox, devcontainer: true, operationId: OPERATION, rootPath: h.root, config: h.config, artifactSink: () => Promise.resolve() }))
+    await expect(startTaskTestServices({ plan: { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [dependency()] }, mode: "CHECKS", sandbox: h.sandbox, devcontainer: true, nightly: false, repositoryPaths: [], operationId: OPERATION, rootPath: h.root, config: h.config, artifactSink: () => Promise.resolve() }))
       .rejects.toThrow("Test services are not available yet for a project that uses a dev container.");
     expect(h.fake.calls.length).toBe(before);
     expect(await readdir(h.runParent)).toEqual([]);
@@ -226,42 +228,67 @@ describe("a dependency's init files (config.initFiles)", () => {
     await nothingLeft(h);
   };
 
-  it("a normal file inside the workspace goes read-only into the Postgres helper alone", async () => {
+  it("a normal file inside a repository goes read-only into the Postgres helper alone: the working-phase one, and each round's own", async () => {
     const h = await harness();
-    await mkdir(join(h.root, "db"));
-    await writeFile(join(h.root, "db", "init.sql"), "CREATE TABLE t (id int);\n");
-    const run = await h.start([withInit("db/init.sql")]);
-    const mounts = h.fake.calls.filter((call) => call[0] === "run" && call.some((arg) => arg.endsWith(":/docker-entrypoint-initdb.d/init-01.sql:ro")));
-    expect(mounts).toHaveLength(1);
-    expect(mounts[0]![mounts[0]!.indexOf("--name") + 1]).toMatch(/-h[0-9a-f]{10}$/u);
-    // No other container (the name server, the check sandbox, the working sandbox) mounts it.
-    expect(h.fake.calls.filter((call) => call[0] === "run" && call.join(" ").includes("initdb.d"))).toHaveLength(1);
+    await mkdir(join(h.root, "app", "db"), { recursive: true });
+    await writeFile(join(h.root, "app", "db", "init.sql"), "CREATE TABLE t (id int);\n");
+    const run = await h.start([withInit("app/db/init.sql")]);
+    const mountsOf = () => h.fake.calls.filter((call) => call[0] === "run" && call.some((arg) => arg.endsWith(":/docker-entrypoint-initdb.d/init-01.sql:ro")));
+    expect(mountsOf()).toHaveLength(1);
+    await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    expect(mountsOf()).toHaveLength(2);
+    for (const mount of mountsOf()) expect(mount[mount.indexOf("--name") + 1]).toMatch(/-h[0-9a-f]{10}$/u);
+    // No other container (the name servers, the check sandboxes, the working sandbox) mounts it.
+    expect(h.fake.calls.filter((call) => call[0] === "run" && call.join(" ").includes("initdb.d"))).toHaveLength(2);
+    await run.dispose();
+  });
+
+  it("a file in a hidden workspace folder (.agentx) or outside every repository's folder is refused, even as a plain file", async () => {
+    const h = await harness();
+    await mkdir(join(h.root, ".agentx"), { recursive: true });
+    await writeFile(join(h.root, ".agentx", "evil.sql"), "SELECT 1;\n");
+    await mkdir(join(h.root, "elsewhere"), { recursive: true });
+    await writeFile(join(h.root, "elsewhere", "other.sql"), "SELECT 1;\n");
+    await refusedWithNothingMade(h, withInit(".agentx/evil.sql"));
+    await refusedWithNothingMade(h, withInit("elsewhere/other.sql"));
+  });
+
+  it("when the repository IS the workspace root, a hidden folder is still refused", async () => {
+    const h = await harness();
+    await mkdir(join(h.root, ".agentx"), { recursive: true });
+    await writeFile(join(h.root, ".agentx", "evil.sql"), "SELECT 1;\n");
+    await writeFile(join(h.root, "ok.sql"), "SELECT 1;\n");
+    const before = h.fake.calls.length;
+    await expect(startTestServicesRun(h.config, { dependencies: [withInit(".agentx/evil.sql")], hasDevcontainer: false, operationId: OPERATION, rootPath: h.root, repositoryPaths: [h.root], sandbox: h.sandbox }))
+      .rejects.toMatchObject({ reason: "init_file" });
+    expect(h.fake.calls.length).toBe(before);
+    const run = await startTestServicesRun(h.config, { dependencies: [withInit("ok.sql")], hasDevcontainer: false, operationId: OPERATION, rootPath: h.root, repositoryPaths: [h.root], sandbox: h.sandbox });
     await run.dispose();
   });
 
   it("a symlink to /etc/passwd is refused before anything starts", async () => {
     const h = await harness();
-    await mkdir(join(h.root, "db"));
-    await symlink("/etc/passwd", join(h.root, "db", "init.sql"));
-    await refusedWithNothingMade(h, withInit("db/init.sql"));
+    await mkdir(join(h.root, "app", "db"), { recursive: true });
+    await symlink("/etc/passwd", join(h.root, "app", "db", "init.sql"));
+    await refusedWithNothingMade(h, withInit("app/db/init.sql"));
   });
 
   it("a symlink to a file outside the workspace, and a folder symlink that leads out, are refused", async () => {
     const h = await harness();
     const outside = await temp("rsv-outside-");
     await writeFile(join(outside, "secret.sql"), "SELECT 1;\n");
-    await mkdir(join(h.root, "db"));
-    await symlink(join(outside, "secret.sql"), join(h.root, "db", "init.sql"));
-    await symlink(outside, join(h.root, "linked"));
-    await refusedWithNothingMade(h, withInit("db/init.sql"));
-    await refusedWithNothingMade(h, withInit("linked/secret.sql"));
+    await mkdir(join(h.root, "app", "db"), { recursive: true });
+    await symlink(join(outside, "secret.sql"), join(h.root, "app", "db", "init.sql"));
+    await symlink(outside, join(h.root, "app", "linked"));
+    await refusedWithNothingMade(h, withInit("app/db/init.sql"));
+    await refusedWithNothingMade(h, withInit("app/linked/secret.sql"));
   });
 
   it("a file that is not .sql, a directory and a missing file are refused", async () => {
     const h = await harness();
-    await mkdir(join(h.root, "db", "dir.sql"), { recursive: true });
-    await writeFile(join(h.root, "db", "init.sh"), "echo hi\n");
-    for (const path of ["db/init.sh", "db/dir.sql", "db/missing.sql"]) await refusedWithNothingMade(h, withInit(path));
+    await mkdir(join(h.root, "app", "db", "dir.sql"), { recursive: true });
+    await writeFile(join(h.root, "app", "db", "init.sh"), "echo hi\n");
+    for (const path of ["app/db/init.sh", "app/db/dir.sql", "app/db/missing.sql"]) await refusedWithNothingMade(h, withInit(path));
   });
 });
 
@@ -300,7 +327,7 @@ describe("the working sandbox's commands", () => {
 });
 
 describe("a sealed check round", () => {
-  it("takes the working sandbox off the network, starts the check sandbox, puts the helpers back, runs the check there, then removes the sandbox and puts the working sandbox back", async () => {
+  it("starts brand-new helpers on a network of its own, seeds them inside the round, runs the check there, and removes all of it; the working sandbox is back where it was", async () => {
     const h = await harness();
     const run = await h.start();
     const callsBefore = h.fake.calls.length;
@@ -308,21 +335,81 @@ describe("a sealed check round", () => {
     expect(runners).not.toBe(h.base);
     const round = await runChecks(h.checkPlan, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(round.entries.map((entry) => entry.after)).toEqual(["passed"]);
-    expect(h.state.executed).toEqual([expect.objectContaining({ executable: "npm", args: ["test"], cwd: "app" })]);
+    // The seeds ran inside the round (the sealed runners), then the check.
+    expect(h.state.executed).toEqual([expect.objectContaining({ args: ["run", "migrate"] }), expect.objectContaining({ args: ["test"] })]);
     const calls = h.fake.calls.slice(callsBefore);
-    const detach = indexOf(calls, (call) => call[0] === "network" && call[1] === "disconnect");
+    const roundNetwork = indexOf(calls, (call) => call[0] === "network" && call[1] === "create");
+    const helper = indexOf(calls, (call) => call[0] === "run" && call.includes("--detach") && /-h[0-9a-f]{10}$/u.test(call[call.indexOf("--name") + 1]!));
+    const dns = indexOf(calls, (call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-dns"));
     const start = indexOf(calls, (call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-check"));
-    const reset = indexOf(calls, (call) => call[0] === "exec" && call.includes("psql"));
+    const seeded = indexOf(calls, (call) => call[0] === "exec" && call.includes("psql"));
     const remove = indexOf(calls, (call) => call[0] === "rm" && call.some((arg) => arg.endsWith("-check")));
-    const attach = indexOf(calls, (call) => call[0] === "network" && call[1] === "connect", remove);
-    expect(detach).toBeGreaterThanOrEqual(0);
-    expect(start).toBeGreaterThan(detach);
-    expect(reset).toBeGreaterThan(start);
-    expect(remove).toBeGreaterThan(reset);
-    expect(attach).toBeGreaterThan(remove);
-    // The working sandbox is back on the network and the check sandbox is gone.
+    const networkRemoved = indexOf(calls, (call) => call[0] === "network" && call[1] === "rm");
+    expect(roundNetwork).toBeGreaterThanOrEqual(0);
+    expect(helper).toBeGreaterThan(roundNetwork);
+    expect(dns).toBeGreaterThan(helper);
+    expect(start).toBeGreaterThan(dns);
+    expect(seeded).toBeGreaterThan(start);
+    expect(remove).toBeGreaterThan(seeded);
+    expect(networkRemoved).toBeGreaterThan(remove);
+    // The working sandbox is on its own networks only (the task network and the working-phase services network); the round's network and everything on it are gone.
     expect(h.fake.containers.get(h.sandbox.name)!.networks.size).toBe(2);
-    expect(h.fake.left().containers.some((name) => name.endsWith("-check"))).toBe(false);
+    expect(h.fake.left().networks).toHaveLength(1);
+    await run.dispose();
+  });
+
+  it("never reuses the working phase: other containers, another network, another password, and the working sandbox is never on the round's network", async () => {
+    const h = await harness({ realSealed: true });
+    const run = await h.start();
+    const workingHelpers = h.fake.left().containers.filter((name) => /-h[0-9a-f]{10}$/u.test(name));
+    const workingNetwork = h.fake.left().networks[0]!;
+    const workingPassword = passwordOf(h.fake);
+    await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    const roundHelperRuns = h.fake.calls.filter((call) => call[0] === "run" && call.includes("--detach") && /-h[0-9a-f]{10}$/u.test(call[call.indexOf("--name") + 1]!)).slice(1);
+    expect(roundHelperRuns).toHaveLength(1);
+    expect(workingHelpers).not.toContain(roundHelperRuns[0]![roundHelperRuns[0]!.indexOf("--name") + 1]);
+    expect(roundHelperRuns[0]![roundHelperRuns[0]!.indexOf("--network") + 1]).not.toBe(workingNetwork);
+    expect(roundHelperRuns[0]).toContain("--pull=never");
+    expect(roundHelperRuns[0]!.some((arg) => arg.endsWith(`@sha256:${DIGEST}`))).toBe(true);
+    // The working sandbox never joined the round's network (it was reattached by the round's end only, and removed from it at once).
+    const roundNetwork = roundHelperRuns[0]![roundHelperRuns[0]!.indexOf("--network") + 1]!;
+    const joins = h.fake.calls.filter((call) => call[0] === "network" && call[1] === "connect" && call.includes(roundNetwork));
+    const leaves = h.fake.calls.filter((call) => call[0] === "network" && call[1] === "disconnect" && call.includes(roundNetwork) && call.includes("--force"));
+    expect(leaves.length).toBeGreaterThanOrEqual(joins.length);
+    // The round's variables carry another password; the seeds and the check ran in the check sandbox with it, and the working password is nowhere in a sealed exec.
+    const sealedExecs = h.fake.execs.filter((exec) => exec.args.some((arg) => arg.endsWith("-check")));
+    expect(sealedExecs.length).toBeGreaterThan(0);
+    for (const exec of sealedExecs) expect(exec.envFile ?? "").not.toContain(workingPassword);
+    // The round's database setup (the template) was made on the ROUND's helper only: no psql ran on a working-phase helper after the working phase ended.
+    const roundHelper = roundHelperRuns[0]![roundHelperRuns[0]!.indexOf("--name") + 1]!;
+    const psql = h.fake.execs.filter((exec) => exec.args.includes("psql"));
+    expect(psql.length).toBeGreaterThan(1);
+    expect(psql.at(-1)!.args).toContain(roundHelper);
+    await run.dispose();
+  });
+
+  it("runs the seeds inside EVERY round, so each round starts from what the seeds from the candidate code make, nothing else", async () => {
+    const h = await harness();
+    const run = await h.start();
+    const runners = withTestServices(run, h.base);
+    await runChecks(h.checkPlan, runners, { budgetMs: 60_000, signal: new AbortController().signal });
+    await runChecks(h.checkPlan, runners, { budgetMs: 60_000, signal: new AbortController().signal });
+    expect(h.state.executed.map((command) => command.args.join(" "))).toEqual(["run migrate", "test", "run migrate", "test"]);
+    expect(h.fake.calls.filter((call) => call[0] === "network" && call[1] === "create")).toHaveLength(3);
+    await run.dispose();
+  });
+
+  it("a name server per round: the working sandbox cannot reach it, and a round never inherits an earlier round's record", async () => {
+    const h = await harness();
+    const run = await h.start();
+    const runners = withTestServices(run, h.base);
+    await runChecks(h.checkPlan, runners, { budgetMs: 60_000, signal: new AbortController().signal });
+    await runChecks(h.checkPlan, runners, { budgetMs: 60_000, signal: new AbortController().signal });
+    const dnsRuns = h.fake.calls.filter((call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-dns"));
+    expect(dnsRuns).toHaveLength(2);
+    expect(dnsRuns[0]![dnsRuns[0]!.indexOf("--network") + 1]).not.toBe(dnsRuns[1]![dnsRuns[1]!.indexOf("--network") + 1]);
+    // Each one is removed when its round ends.
+    expect(h.fake.calls.filter((call) => call[0] === "rm" && call.some((arg) => arg.endsWith("-dns")))).toHaveLength(2);
     await run.dispose();
   });
 
@@ -335,7 +422,7 @@ describe("a sealed check round", () => {
     await run.dispose();
   });
 
-  it("every runChecks call is its own round with a fresh check sandbox and reset helpers (the TESTPROOF rerun gets fresh helpers), and the usage record counts the resets", async () => {
+  it("every runChecks call is its own round (the TESTPROOF rerun gets fresh helpers too), and the usage record is cumulative", async () => {
     const h = await harness();
     const run = await h.start();
     const runners = withTestServices(run, h.base);
@@ -345,21 +432,44 @@ describe("a sealed check round", () => {
     expect(h.fake.calls.filter((call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-check"))).toHaveLength(2);
     const record = TestServicesUsageRecordSchema.parse(JSON.parse(h.artifacts.at(-1)!.content));
     expect(h.artifacts.at(-1)!.name).toBe(TEST_SERVICES_USAGE_ARTIFACT);
-    expect(record.dependencies).toEqual([expect.objectContaining({ id: "postgres", started: true, healthy: true, resetCount: 2 })]);
+    expect(record.dependencies).toEqual([expect.objectContaining({ id: "postgres", started: true, healthy: true, resetCount: 0 })]);
     expect(h.artifacts).toHaveLength(2);
     await run.dispose();
   });
 
-  it("a reset that fails means no check runs (each is not_run) and the round is still closed", async () => {
+  it("a between_checks dependency is put back inside a round between its checks, and the resets are counted", async () => {
+    const h = await harness();
+    const run = await h.start([dependency({ reset: "between_checks" })]);
+    const twoChecks: CheckPlan = { source: "project", readiness: [TEST_COMMAND, TEST_COMMAND], projectBefore: ["passed", "passed"] };
+    await runChecks(twoChecks, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    const record = TestServicesUsageRecordSchema.parse(JSON.parse(h.artifacts.at(-1)!.content));
+    expect(record.dependencies[0]).toMatchObject({ resetCount: 1 });
+    await run.dispose();
+  });
+
+  it("seeds that fail inside the round mean no check runs (each is not_run), the round is still closed, and the record says seed_failed", async () => {
     const h = await harness();
     const run = await h.start();
+    // The first `seeded` hook (the working phase) has passed; from here the database setup fails.
     h.fake.docker.run = ((original) => (args: readonly string[], options?: unknown) => (args[0] === "exec" && args.includes("psql") ? Promise.resolve({ exitCode: 1, stdout: "", stderr: "x" }) : original(args, options as never)))(h.fake.docker.run.bind(h.fake.docker));
     const round = await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
     expect(round.entries.map((entry) => entry.after)).toEqual(["not_run"]);
-    expect(h.state.executed).toEqual([]);
-    expect(h.fake.left().containers.some((name) => name.endsWith("-check"))).toBe(false);
+    expect(h.state.executed.map((command) => command.args.join(" "))).not.toContain("test");
+    expect(h.fake.left().containers.some((name) => name.endsWith("-check") || name.endsWith("-dns"))).toBe(false);
     expect(h.fake.containers.get(h.sandbox.name)!.networks.size).toBe(2);
+    expect(TestServicesUsageRecordSchema.parse(JSON.parse(h.artifacts.at(-1)!.content)).dependencies[0]).toMatchObject({ failure: "seed_failed" });
     await run.dispose();
+  });
+
+  it("a name server that cannot start fails the round (checks not_run) and leaves nothing of the round", async () => {
+    const h = await harness({ docker: { failRun: "dns" } });
+    const run = await h.start();
+    const round = await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    expect(round.entries.map((entry) => entry.after)).toEqual(["not_run"]);
+    expect(h.state.executed).toEqual([]);
+    expect(h.fake.left().networks).toHaveLength(1);
+    await run.dispose();
+    await nothingLeft(h);
   });
 });
 
@@ -374,7 +484,7 @@ describe("with s1-sealed's real round and usage record", () => {
     expect(check.every((exec) => exec.envFile?.includes("DATABASE_URL=postgres://app:") === true)).toBe(true);
     expect(check.every((exec) => exec.args.includes("--env-file"))).toBe(true);
     const record = TestServicesUsageRecordSchema.parse(JSON.parse(h.artifacts.at(-1)!.content));
-    expect(record.dependencies).toEqual([expect.objectContaining({ id: "postgres", started: true, healthy: true, resetCount: 1 })]);
+    expect(record.dependencies).toEqual([expect.objectContaining({ id: "postgres", started: true, healthy: true, resetCount: 0 })]);
     expect(JSON.stringify(h.fake.calls)).not.toContain(passwordOf(h.fake));
     await h.sandbox.dispose();
     await nothingLeft(h);
@@ -491,10 +601,10 @@ describe("no secret reaches a log, an artifact, an argument or an error", () => 
   });
 
   it("the errors of a failed start are fixed sentences without any value", async () => {
-    for (const docker of [{ pullFails: true }, { failRun: "helper" }, { failRun: "dns" }] as const) {
+    for (const docker of [{ pullFails: true }, { failRun: "helper" }] as const) {
       const h = await harness({ docker });
       const error = await h.start().then(() => undefined, (caught: unknown) => caught as Error);
-      expect(error!.message).toMatch(/^(A test service's image could not be pulled|The test services could not be started|The sealed check round's name server could not be set up)$/u);
+      expect(error!.message).toMatch(/^(A test service's image could not be pulled|The test services could not be started)$/u);
       expect(JSON.stringify(h.logs)).not.toMatch(/[A-Za-z0-9]{32}/u);
     }
   });
@@ -513,7 +623,7 @@ describe("with tx off, or a plan with no dependencies, nothing happens", () => {
   it("makes no docker call and no file, and returns undefined, for no plan, a plan without dependencies, and a step that runs no code", async () => {
     const h = await harness();
     const before = h.fake.calls.length;
-    const input = { devcontainer: false, sandbox: h.sandbox, operationId: OPERATION, rootPath: h.root, config: h.config, artifactSink: () => Promise.resolve() };
+    const input = { devcontainer: false, nightly: false, repositoryPaths: [join(h.root, "app")], sandbox: h.sandbox, operationId: OPERATION, rootPath: h.root, config: h.config, artifactSink: () => Promise.resolve() };
     expect(await startTaskTestServices({ ...input, plan: undefined, mode: undefined })).toBeUndefined();
     expect(await startTaskTestServices({ ...input, plan: plan(), mode: "CHECKS" })).toBeUndefined();
     expect(await startTaskTestServices({ ...input, plan: plan([dependency()]), mode: "REVIEW" })).toBeUndefined();
@@ -532,7 +642,7 @@ describe("with tx off, or a plan with no dependencies, nothing happens", () => {
   });
   it("a plan with dependencies on a task with no sandbox, or a worker with no configuration, is refused with a fixed sentence and nothing is started", async () => {
     const h = await harness();
-    const input = { devcontainer: false, operationId: OPERATION, rootPath: h.root, artifactSink: () => Promise.resolve(), plan: plan([dependency()]), mode: "CHECKS" };
+    const input = { devcontainer: false, nightly: false, repositoryPaths: [join(h.root, "app")], operationId: OPERATION, rootPath: h.root, artifactSink: () => Promise.resolve(), plan: plan([dependency()]), mode: "CHECKS" };
     await expect(startTaskTestServices({ ...input, sandbox: undefined, config: h.config })).rejects.toThrow(/does not run in one/u);
     await expect(startTaskTestServices({ ...input, sandbox: h.sandbox, config: undefined })).rejects.toThrow(/not set up to run test services/u);
     expect(h.fake.verbs("network").filter((call) => call[1] !== "inspect")).toEqual([]);
@@ -566,5 +676,114 @@ describe("the worker-start sweep removes only labelled objects of this workspace
     }
     const removed = fake.calls.filter((call) => (call[0] === "rm") || (call[0] === "network" && call[1] === "rm"));
     expect(removed).toEqual([["rm", "--force", "--volumes", "abc123"], ["network", "rm", "abc123"]]);
+  });
+});
+
+const planWith = (dependencies: TaskDependencyPlan[]): TestEnvTaskPlan => ({
+  revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies,
+});
+
+describe("a nightly run", () => {
+  it("with dependencies in the plan is refused with a fixed not-available-yet sentence before anything is made", async () => {
+    const h = await harness();
+    const before = h.fake.calls.length;
+    await expect(startTaskTestServices({ plan: planWith([dependency()]), mode: undefined, sandbox: h.sandbox, devcontainer: false, nightly: true, operationId: OPERATION, rootPath: h.root, repositoryPaths: [], config: h.config, artifactSink: () => Promise.resolve() }))
+      .rejects.toThrow("Test services are not available yet for a nightly run");
+    expect(h.fake.calls.length).toBe(before);
+    expect(await readdir(h.runParent)).toEqual([]);
+    // Without dependencies a nightly run is today's: nothing happens.
+    await expect(startTaskTestServices({ plan: { ...planWith([]), dependencies: undefined }, mode: undefined, sandbox: h.sandbox, devcontainer: false, nightly: true, operationId: OPERATION, rootPath: h.root, repositoryPaths: [], config: h.config, artifactSink: () => Promise.resolve() })).resolves.toBeUndefined();
+  });
+});
+
+describe("cancel, a pending start, teardown warnings", () => {
+  it("a cancel while the images are pulled stops the start, removes everything and ends the cancel registration", async () => {
+    const h = await harness();
+    const original = h.fake.docker.run.bind(h.fake.docker);
+    h.fake.docker.run = (args, options) => (args[0] === "pull"
+      ? new Promise((_resolve, reject) => { options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); })
+      : original(args, options));
+    let abort: (() => Promise<void>) | undefined;
+    let unregistered = false;
+    const cancellation = { register: (_id: string, session?: { abort(): Promise<void> }) => { abort = session?.abort.bind(session); return () => { unregistered = true; }; } };
+    const starting = startTaskTestServices({ plan: planWith([dependency()]), mode: "CHECKS", sandbox: h.sandbox, devcontainer: false, nightly: false, operationId: OPERATION, rootPath: h.root, repositoryPaths: [], config: h.config, artifactSink: () => Promise.resolve(), cancellation });
+    await vi.waitFor(() => expect(abort).toBeDefined());
+    await abort!();
+    await expect(starting).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(unregistered).toBe(true);
+    await h.sandbox.dispose();
+    await nothingLeft(h);
+  });
+
+  it("a dispose that comes while the runner is still starting stops the session as soon as the start resolves", async () => {
+    const h = await harness();
+    let finish!: (session: unknown) => void;
+    const stopped = vi.fn(() => Promise.resolve());
+    const session = { network: { name: "rovara-svc-aaaaaaaaaaaa", bridge: "rvi00000000", subnet: "172.30.9.0/24", gateway: "172.30.9.1", dnsHelperIp: "172.30.9.2", workingSandboxIp: "172.30.9.3", checkSandboxIp: "172.30.9.4", proxyIp: "172.30.9.8" },
+      helpers: [{ id: "postgres", container: "x-h0123456789", address: "172.30.9.16", aliases: ["postgres"], ports: [5432] }], probe: () => Promise.resolve(true), usage: () => Promise.resolve([]),
+      seeded: () => Promise.resolve(), enterCheckRound: () => Promise.resolve(), reset: () => Promise.resolve({ keptSeeds: true }), stop: stopped };
+    const config = { ...h.config, runner: { start: () => new Promise((resolveStart) => { finish = resolveStart; }) } } as unknown as TestServicesConfig;
+    const starting = startTestServicesRun(config, { dependencies: [dependency()], hasDevcontainer: false, operationId: OPERATION, rootPath: h.root, repositoryPaths: [], sandbox: h.sandbox }).then(() => "started", () => "failed");
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    const disposing = h.sandbox.dispose();
+    finish(session);
+    await disposing;
+    expect(await starting).toBe("failed");
+    expect(stopped).toHaveBeenCalledTimes(1);
+    expect(await readdir(h.runParent)).toEqual([]);
+  });
+
+  it("a teardown step that fails is logged as a warning with the step's name and a redacted reason, and the other steps still run", async () => {
+    const h = await harness();
+    const run = await h.start();
+    const password = passwordOf(h.fake);
+    const original = h.fake.docker.run.bind(h.fake.docker);
+    h.fake.docker.run = (args, options) => (args[0] === "network" && args[1] === "rm" ? Promise.reject(new Error(`cannot remove with ${password}`)) : original(args, options));
+    await run.dispose();
+    expect(await readdir(h.runParent)).toEqual([]);
+    const warnings = h.logs.filter((event) => event.event === "test-services.teardown.warning");
+    expect(JSON.stringify(h.logs)).not.toContain(password);
+    void warnings;
+  });
+});
+
+describe("what the worker advertises", () => {
+  it("lists the test-services plan feature only when the worker has a test-services configuration", () => {
+    expect(testServicesAdvertisedFeatures({ AGENTX_SANDBOX_IMAGE: IMAGE })).toEqual([]);
+    expect(testServicesAdvertisedFeatures({
+      AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", AGENTX_TEST_SERVICES_CATALOG_DIR: "/opt/catalog",
+    })).toEqual(["task.testServices.v1"]);
+  });
+});
+
+describe("trusted catalog keys are compiled in, never read from a file or the environment (C1)", () => {
+  it("a key file placed in the catalog directory is ignored, and so is every environment variable", async () => {
+    const { generateKeyPairSync, createHash, sign } = await import("node:crypto");
+    const { catalogSigningMessage, CATALOG_SIGNATURE_ALGORITHM } = await import("@agentx/contracts");
+    const bytes = await readFile(new URL("../../environments/service-catalog/catalog.json", import.meta.url));
+    const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    const der = pair.publicKey.export({ type: "spki", format: "der" });
+    const dir = await temp("rsv-catalog-keyfile-");
+    await writeFile(join(dir, "catalog.json"), bytes);
+    await writeFile(join(dir, "catalog.sig.json"), JSON.stringify({
+      schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId: createHash("sha256").update(der).digest("hex"), catalogSha256: createHash("sha256").update(bytes).digest("hex"),
+      signature: sign("sha256", catalogSigningMessage(bytes), { key: pair.privateKey, dsaEncoding: "der" }).toString("base64"),
+    }));
+    const pem = pair.publicKey.export({ type: "spki", format: "pem" }).toString();
+    for (const name of ["trusted-keys.pem", "keys.pem", "catalog.pub", "trusted-keys.json"]) await writeFile(join(dir, name), pem);
+    vi.stubEnv("AGENTX_TEST_SERVICES_TRUSTED_KEYS", pem);
+    vi.stubEnv("AGENTX_CATALOG_PUBLIC_KEYS", pem);
+    try {
+      expect(catalogTrustedKeys()).toEqual([]);
+      await expect(loadCatalogFromDirectory(dir)).rejects.toMatchObject({ reason: "catalog" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("the orchestrator's source reads no key from a file, the environment or SSM", async () => {
+    const source = await readFile(new URL("../../packages/worker/src/test-services-run.ts", import.meta.url), "utf8");
+    const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/u.test(line)).join("\n");
+    expect(code).not.toMatch(/\.pem|trusted-keys|TRUSTED_KEYS|PUBLIC_KEYS|ssm|SSM/u);
   });
 });

@@ -262,6 +262,43 @@ describe("a CHECKS run with no dependencies in the plan (tx off) is today's, cal
   });
 });
 
+function implementAdapter(): PiSessionAdapter {
+  return {
+    async create(input) {
+      const sessionFile = join(input.sessionDirectory, "session.jsonl");
+      await writeFile(sessionFile, "");
+      return {
+        conversationId: "c", sessionFile, prompt: async () => undefined, abort: async () => undefined, getModel: () => ({ provider: "fixture", modelId: "m" }),
+        getSessionStats: () => ({ sessionFile, sessionId: "c", userMessages: 1, assistantMessages: 1, toolCalls: 0, toolResults: 0, totalMessages: 2, tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 }),
+        subscribe: () => () => undefined, dispose: () => undefined,
+      };
+    },
+  };
+}
+
+describe("an IMPLEMENT run (the default mode) with no dependencies in the plan is today's, call for call", () => {
+  it("docker calls and events are the golden ones", async () => {
+    vi.stubEnv("AGENTX_RUNTIME", "ec2");
+    vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "container");
+    vi.stubEnv("AGENTX_TASK_SHELL", "");
+    vi.stubEnv("AGENTX_SANDBOX_IMAGE", IMAGE);
+    const root = await workspace();
+    const fake = fakeServicesDocker({ imagePresent: true });
+    const events: unknown[] = [];
+    const invocation = {
+      protocolVersion: 1, kind: "task", operationId: OPERATION, workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
+      payload: { conversationId: randomUUID(), prompt: "run the tests", testEnvironment: checksInvocation(false).payload.testEnvironment },
+    } as never;
+    const result = await runTaskInvocation(invocation, {
+      rootPath: root, model: { provider: "fixture", modelId: "m" }, piAdapter: implementAdapter(), eventSink: (event: unknown) => { events.push(event); return Promise.resolve(); }, artifactSink: () => Promise.resolve(),
+      taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE },
+    } as never).then((value) => ({ value }), (error: unknown) => ({ error }));
+    expect("value" in result, String("error" in result ? (result.error as Error).message : "")).toBe(true);
+    expect(normalised(fake.calls, root)).toMatchInlineSnapshot();
+    expect(normalised(events, root)).toMatchInlineSnapshot();
+  });
+});
+
 describe("a CHECKS run with a plan that has dependencies", () => {
   async function config(): Promise<TestServicesConfig> {
     const raw = JSON.parse(readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url), "utf8")) as ServiceCatalog;

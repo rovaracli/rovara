@@ -23,15 +23,16 @@
 // usage record reads), Prove's use of this module (T2, prepare.ts), and any backing but `local` (the plan schema allows only that).
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { open, readFile, realpath } from "node:fs/promises";
+import { open, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import {
-  CATALOG_FILE, CATALOG_REGISTRY_ROOT, CATALOG_SIGNATURE_FILE, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName, loadSignedCatalog,
+  CATALOG_FILE, CATALOG_REGISTRY_ROOT, CATALOG_SIGNATURE_FILE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName, loadSignedCatalog,
   type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import type { ArtifactSink } from "./artifacts.js";
+import type { WorkerCancellationController } from "./cancel.js";
 import type { CommandResult } from "./readiness.js";
 import {
   checkSandboxPlan, writeCheckSandboxFiles,
@@ -47,7 +48,7 @@ import {
   buildServiceEnvironment, createRunDirectoryFiles, createServiceRedactor, helperSecretValues, removeRunDirectory, withServiceEnvFile,
   type ServiceEnvDependency, type ServiceEnvironment, type ServiceRedactor,
 } from "./service-env.js";
-import { freshHelpers, createResetHooks, resetForNextCheck, seedRun, type ResetDependency, type SeedPorts } from "./service-reset.js";
+import { createResetHooks, resetForNextCheck, seedRun, type ResetDependency, type SeedPorts } from "./service-reset.js";
 import {
   createDockerServiceRunner, type SandboxAttachment, type ServiceRunner, type ServiceSession,
 } from "./service-runner.js";
@@ -80,11 +81,12 @@ const MODES_WITH_SERVICES: ReadonlySet<string | undefined> = new Set([undefined,
 // ---- errors
 
 export type TestServicesFailureReason =
-  | "not_configured" | "unsupported" | "init_file" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "setup_failed";
+  | "not_configured" | "unsupported" | "nightly" | "init_file" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "setup_failed";
 
 const SENTENCES: Record<TestServicesFailureReason, string> = {
   not_configured: "This worker is not set up to run test services",
   init_file: "A test service's init file is not a plain SQL file inside the workspace",
+  nightly: "Test services are not available yet for a nightly run",
   unsupported: "Test services need the task sandbox, and this task does not run in one",
   catalog: "The test services catalog could not be used",
   mismatch: "A test service in the plan is not the one this worker's catalog pins",
@@ -248,13 +250,24 @@ export async function testServicesAtWorkerBoot(input: { rootPath: string; config
 
 // ---- the plan to helper requests and the run's environment
 
-interface Resolved {
+/** One dependency of the plan checked against the worker's own signed catalog; credentials and requests are made per phase (`materialize`). */
+interface Base {
   plan: TaskDependencyPlan;
   entry: CatalogEntry;
+  aliases: string[];
+  host: string;
+  port: number;
+  user: string;
+  database: string;
+  resetDependency: ResetDependency;
+  /** The dependency's init files (read once, checked), mounted into ITS helper alone, in the working phase and in every round. */
+  files: NonNullable<HelperRequest["files"]>;
+}
+
+/** A dependency with one phase's own helper request and credentials (the working phase's, or one sealed round's). */
+interface Resolved extends Base {
   request: HelperRequest;
   env: ServiceEnvDependency;
-  resetDependency: ResetDependency;
-  image: string;
 }
 
 /** The most an init file may hold (the launcher's own limit for a helper's file). */
@@ -263,23 +276,34 @@ const INIT_FILE_FAMILIES: ReadonlySet<string> = new Set(["postgres", "mysql"]);
 
 /**
  * A dependency's `config.initFiles` (init SQL from the repository), as files for ITS helper alone. The broker only checks that each is a relative path without `..`; a symlink inside the repository can still point anywhere,
- * so here each path is resolved to its real path, which must be a regular file INSIDE the workspace root (the root is already canonical), ending in `.sql` (the image runs a `.sh` it finds there), and small. It is opened
- * without following a link and read through that handle. The content goes into the launcher's `HelperRequest.files`: the launcher writes it to the run's directory and mounts it read-only into that one helper. Anything else
- * is one fixed error (`init_file`) and nothing has been started yet.
+ * so here each path is resolved to its real path, which must be a regular file under one of the REPOSITORIES' own folders (the manifest's paths, resolved), never under a hidden folder of the workspace (the worker's state,
+ * the agent's sessions, the Docker data root), ending in `.sql` (the image runs a `.sh` it finds there), and small. It is opened without following a link, and the opened file must be the very file that was resolved (same device and
+ * inode), then read through that handle. The content goes into the launcher's `HelperRequest.files`: the launcher writes it to the run's directory and mounts it read-only into that one helper. Anything else is one fixed error
+ * (`init_file`) and nothing has been started yet.
  */
-async function initFilesOf(plan: TaskDependencyPlan, root: string): Promise<NonNullable<HelperRequest["files"]>> {
+async function initFilesOf(plan: TaskDependencyPlan, root: string, repositoryPaths: readonly string[]): Promise<NonNullable<HelperRequest["files"]>> {
   const paths = plan.config.initFiles ?? [];
   if (paths.length === 0) return [];
   if (!INIT_FILE_FAMILIES.has(plan.family)) throw new TestServicesError("init_file");
+  const within = (path: string, folder: string): boolean => path === folder || path.startsWith(`${folder}${sep}`);
+  let repositories: string[];
+  let hidden: string[];
+  try {
+    repositories = (await Promise.all(repositoryPaths.map((path) => realpath(path).catch(() => undefined)))).filter((path): path is string => path !== undefined);
+    hidden = await Promise.all((await hiddenWorkspaceDirectories(root)).map((path) => realpath(path).catch(() => path)));
+  } catch {
+    throw new TestServicesError("init_file");
+  }
   const files: Array<{ name: string; content: string; to: string }> = [];
   for (const [index, path] of paths.entries()) {
     try {
       const real = await realpath(resolve(root, path));
-      if (!real.startsWith(`${root}${sep}`) || !real.endsWith(".sql")) throw new Error("outside");
+      if (!real.endsWith(".sql") || !repositories.some((folder) => real.startsWith(`${folder}${sep}`)) || hidden.some((folder) => within(real, folder))) throw new Error("outside");
+      const resolvedInfo = await stat(real);
       const handle = await open(real, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
       try {
         const info = await handle.stat();
-        if (!info.isFile() || info.size > INIT_FILE_MAX_BYTES) throw new Error("not a plain file");
+        if (!info.isFile() || info.size > INIT_FILE_MAX_BYTES || info.dev !== resolvedInfo.dev || info.ino !== resolvedInfo.ino) throw new Error("not the file that was resolved");
         const number = String(index + 1).padStart(2, "0");
         files.push({ name: `init-${number}.sql`, content: await handle.readFile("utf8"), to: `/docker-entrypoint-initdb.d/init-${number}.sql` });
       } finally {
@@ -296,9 +320,9 @@ const randomAlphanumeric = (length: number): string => randomBytes(length).toStr
 
 /**
  * The plan's dependencies against the worker's own signed catalog: the plan names an entry, a repository and a digest, and the catalog must say the same (family, backing, pinned digest, edition, not retired). Anything else
- * is `mismatch`: the broker's plan is never trusted to name an image. Each helper gets a fresh per-run password; the user and the database come from the plan's config or fixed defaults, and must have the launcher's plain form.
+ * is `mismatch`: the broker's plan is never trusted to name an image. The user and the database come from the plan's config or fixed defaults, and must have the launcher's plain form.
  */
-function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly TaskDependencyPlan[], config: Pick<TestServicesConfig, "edition" | "registry" | "catalogEnv">): Resolved[] {
+function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly TaskDependencyPlan[], config: Pick<TestServicesConfig, "edition">): Base[] {
   return dependencies.map((plan) => {
     const entry = catalogEntryById(catalog, plan.catalogId);
     if (entry === undefined || entry.backing !== "local" || entry.status === "retired" || entry.family !== plan.family || !entry.editions.includes(config.edition)
@@ -310,15 +334,18 @@ function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly Tas
     const host = aliases[0];
     const port = entry.run.ports[0];
     if (host === undefined || port === undefined) throw new TestServicesError("mismatch");
-    const credentials = { user, password: randomAlphanumeric(32), database };
-    return {
-      plan, entry,
-      request: { id: plan.id, name: plan.name, entry, aliases, credentials },
-      env: { id: plan.id, host, port, credentials, connect: { env: plan.connect, hostAliases: aliases } },
-      resetDependency: { id: plan.id, seeds: plan.seeds, reset: plan.reset },
-      image: `${CATALOG_REGISTRY_ROOT}/${config.catalogEnv}/${plan.repository}@sha256:${plan.digest}`,
-    };
+    return { plan, entry, aliases, host, port, user, database, resetDependency: { id: plan.id, seeds: plan.seeds, reset: plan.reset }, files: [] };
   });
+}
+
+/** One phase's helper request and variables, with a password made now: the working phase and every sealed round have their own, so no phase's helpers or password are another's. */
+function materialize(base: Base): Resolved {
+  const credentials = { user: base.user, password: randomAlphanumeric(32), database: base.database };
+  return {
+    ...base,
+    request: { id: base.plan.id, name: base.plan.name, entry: base.entry, aliases: base.aliases, credentials, ...(base.files.length === 0 ? {} : { files: base.files }) },
+    env: { id: base.plan.id, host: base.host, port: base.port, credentials, connect: { env: base.plan.connect, hostAliases: base.aliases } },
+  };
 }
 
 /**
@@ -400,12 +427,15 @@ export interface StartTestServicesInput {
   operationId: string;
   /** The canonical workspace root. */
   rootPath: string;
+  /** The repositories' folders (absolute, as the manifest has them): a dependency's init files may come only from under them. */
+  repositoryPaths: readonly string[];
   /** The task's working sandbox, already started. */
   sandbox: TaskSandbox;
   /** The project has a dev container. Refused before anything is made (the first step). */
   hasDevcontainer: boolean;
   /** Where the usage record is written after each sealed round. */
   artifactSink?: ArtifactSink | undefined;
+  /** Stops the start (pulls, helper starts, seeds) when the task is cancelled. */
   signal?: AbortSignal;
 }
 
@@ -422,9 +452,48 @@ function failureOf(error: unknown): TestServicesError {
   return new TestServicesError("start_failed");
 }
 
+/** Adds two usage records of one run: the later record's health and failures, the resets of both, and the unknown names of both (counts are lower bounds, so their sums are too). */
+function mergeUsageRecords(earlier: TestServicesUsageRecord | undefined, later: TestServicesUsageRecord): TestServicesUsageRecord {
+  if (earlier === undefined) return later;
+  const limits = TEST_SERVICES_USAGE_LIMITS;
+  const before = new Map(earlier.dependencies.map((entry) => [entry.id, entry]));
+  const domains = new Map<string, number>();
+  for (const row of [...earlier.unknownCalls.domains, ...later.unknownCalls.domains]) domains.set(row.domain, Math.min(limits.count, (domains.get(row.domain) ?? 0) + row.count));
+  const ranked = [...domains].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+  const overflow = ranked.slice(limits.unknownDomains).reduce((sum, [, count]) => sum + count, 0);
+  return {
+    schemaVersion: 1,
+    dependencies: later.dependencies.map((entry) => ({ ...entry, resetCount: Math.min(limits.resets, entry.resetCount + (before.get(entry.id)?.resetCount ?? 0)) })),
+    unknownCalls: {
+      domains: ranked.slice(0, limits.unknownDomains).map(([domain, count]) => ({ domain, count })),
+      otherCount: Math.min(limits.count, earlier.unknownCalls.otherCount + later.unknownCalls.otherCount + overflow),
+    },
+  };
+}
+
+/** What one sealed round holds while it is open. Everything in it is the round's own: its network, its helpers, its passwords, its name server and its directory. */
+interface RoundState {
+  number: number;
+  session: ServiceSession;
+  counted: ServiceSession;
+  resets: ReadonlyMap<string, number>;
+  plan: CheckSandboxPlan;
+  files: HelperFiles & { directory: string };
+  redactor: ServiceRedactor;
+  startMs: number;
+  dnsStarted: boolean;
+  /** Absent while the round is still starting. */
+  runners: CheckRunners | undefined;
+  /** Ends the sealed round (the check sandbox removed, the working sandbox put back). */
+  sealedClose(): Promise<void>;
+}
+
 /**
- * Starts the run: pulls the pinned images, makes the network, starts and health-waits the helpers, joins the working sandbox, starts the sealed name server, and runs the seeds. On ANY failure everything made so far is
- * removed before this throws a `TestServicesError`. On success the sandbox's `dispose()` tears the run down.
+ * Starts the run's WORKING PHASE: pulls the pinned images, makes the network, starts and health-waits the helpers, joins the working sandbox, and runs the seeds there. This is where the agent codes; the helpers here
+ * are for the working phase ONLY. Every official check round (`checkRunners`) starts BRAND-NEW helpers of its own from the same pinned digests, on a network of its own that the working sandbox is never on, with new
+ * passwords and its own name server, seeds them INSIDE the round from the candidate code, and removes all of it when the round ends (design 4.0 and 8.1): nothing the agent did to the working-phase database (a table, an
+ * `ALTER SYSTEM`, a template, a file written by `COPY ... PROGRAM`) can reach a round. The working-phase helpers keep running between rounds. The working-phase Postgres user is the image's superuser (the catalog has
+ * no field for a lesser role); that is why no round reuses it. On ANY failure everything made so far is removed before this throws a `TestServicesError`. On success the sandbox's `dispose()` tears the run down.
  */
 export async function startTestServicesRun(config: TestServicesConfig, input: StartTestServicesInput): Promise<TestServicesRun> {
   // The very first step: a project with a dev container is "not available yet", before a directory, a network, a name server or a helper exists.
@@ -435,57 +504,107 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   const now = config.now ?? Date.now;
   const docker = config.docker;
   const catalog = await config.catalog().catch(() => { throw new TestServicesError("catalog"); });
-  const resolved = resolveDependencies(catalog, input.dependencies, config);
+  const bases = resolveDependencies(catalog, input.dependencies, config);
   const root = await realpath(resolve(input.rootPath));
-  // Before anything is made: the init files of each dependency, checked against the real workspace root.
-  for (const item of resolved) {
-    const files = await initFilesOf(item.plan, root);
-    if (files.length > 0) item.request = { ...item.request, files };
-  }
+  // Before anything is made: the init files of each dependency, checked against the repositories' real folders.
+  for (const base of bases) base.files = await initFilesOf(base.plan, root, input.repositoryPaths);
   const runId = `${input.operationId.replace(/[^A-Za-z0-9-]/gu, "-").slice(0, 48)}-${randomAlphanumeric(8)}`;
   const workspace = await setupWorkspaceKey(root);
   const files = await createRunDirectoryFiles(config.runDirectoryParent, `rsv-${sha(runId).slice(0, 16)}`).catch(() => { throw new TestServicesError("start_failed"); });
+  const runner = config.runner ?? createDockerServiceRunner(docker);
 
-  const requests = resolved.map((item) => item.request);
   const failures = new Map<string, TestServicesStartFailure>();
-  const ids = resolved.map((item) => item.plan.id);
-  let resets: ReadonlyMap<string, number> = new Map<string, number>();
-  let session: ServiceSession | undefined;
-  let counted: ServiceSession | undefined;
-  let sealedPlan: CheckSandboxPlan | undefined;
-  let sealedInput: SealedRoundSetup | undefined;
-  let redactor: ServiceRedactor = createServiceRedactor(helperSecretValues(requests));
-  let startMs = 0;
+  const ids = bases.map((base) => base.plan.id);
+  const secrets: string[] = [];
+  const pendingStarts = new Set<Promise<ServiceSession>>();
+  let workSession: ServiceSession | undefined;
+  let workStartMs = 0;
   let active = true;
   let torndown: Promise<void> | undefined;
-  let round: { runners: CheckRunners | undefined; close(): Promise<void> } | undefined;
-  let dnsStarted = false;
+  let round: RoundState | undefined;
+  let opening: Promise<unknown> | undefined;
+  let rounds = 0;
+  let cumulative: TestServicesUsageRecord | undefined;
+  let redactor: ServiceRedactor = createServiceRedactor([]);
 
-  const closeRound = async (): Promise<void> => {
+  /** One teardown step: a failure is a warning with the step's name and a redacted reason, and the next step still runs. */
+  const step = async (name: string, action: () => Promise<unknown>): Promise<void> => {
+    try { await action(); } catch (error) { log({ event: "test-services.teardown.warning", step: name, reason: redactor.text(error instanceof Error ? error.message : String(error)).slice(0, 200) }); }
+  };
+  /** A start that teardown can still find: if `dispose` comes while it is pending, the session it returns is stopped. */
+  const trackedStart = (input2: Parameters<ServiceRunner["start"]>[0]): Promise<ServiceSession> => {
+    const pending = runner.start(input2);
+    pendingStarts.add(pending);
+    pending.then(() => undefined, () => undefined).finally(() => { pendingStarts.delete(pending); });
+    return pending;
+  };
+  const registry = `${config.registry}/${CATALOG_REGISTRY_ROOT}/${config.catalogEnv}`;
+  const startInput = (phaseRunId: string, resolved: readonly Resolved[], phaseFiles: HelperFiles, extra: Partial<Parameters<ServiceRunner["start"]>[0]>): Parameters<ServiceRunner["start"]>[0] => ({
+    runId: phaseRunId, workspace, roundBudgetMs: TEST_SERVICES_RUN_LIFETIME_MS, registry, edition: config.edition, probeImage: config.probeImage, maxMemMiB: config.maxMemMiB,
+    helpers: resolved.map((item) => item.request), files: phaseFiles, resetHooks: createResetHooks(),
+    ...(config.now === undefined ? {} : { now: config.now }), ...(config.sleep === undefined ? {} : { sleep: config.sleep }), ...extra,
+  });
+
+  const recordOf = async (open: RoundState): Promise<TestServicesUsageRecord | undefined> => {
+    try {
+      const built = await ports.buildServiceUsageRecord({
+        planned: ids, session: open.session, startMs: open.startMs, resetCounts: open.resets, failures, redactor: open.redactor, dns: { docker, dnsHelperName: open.plan.dnsHelperName },
+      });
+      const parsed = TestServicesUsageRecordSchema.safeParse(built);
+      return parsed.success ? parsed.data : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** Ends the open round: the sealed round first (the check sandbox removed), then (when asked) its usage record while its helpers and name server still run, then everything the round made. */
+  const closeRound = async (emit: boolean): Promise<void> => {
     const open = round;
     round = undefined;
-    await open?.close().catch(() => log({ event: "test-services.round.close.failed" }));
+    if (open === undefined) return;
+    await step("sealed-round", () => open.sealedClose());
+    if (emit && active) {
+      const record = await recordOf(open);
+      if (record !== undefined) {
+        cumulative = mergeUsageRecords(cumulative, record);
+        if (input.artifactSink !== undefined) await input.artifactSink({ name: TEST_SERVICES_USAGE_ARTIFACT, mediaType: "application/json", content: JSON.stringify(cumulative) }).catch(() => log({ event: "test-services.usage.save.failed" }));
+      }
+    }
+    await cleanupRound(open);
   };
+  const cleanupRound = async (open: Pick<RoundState, "plan" | "session" | "files" | "dnsStarted">): Promise<void> => {
+    // `withDetachedWorking` puts the working sandbox back on the round's network when the round ends; it leaves before the network is removed.
+    await step("working-sandbox", () => docker.run(["network", "disconnect", "--force", open.plan.network.name, input.sandbox.name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }));
+    if (open.dnsStarted) await step("name-server", () => docker.run(["rm", "--force", open.plan.dnsHelperName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }));
+    await step("round-helpers", () => open.session.stop());
+    await step("round-directory", () => removeRunDirectory(open.files.directory));
+  };
+
   const teardown = (): Promise<void> => {
     torndown ??= (async () => {
       active = false;
-      await closeRound();
-      if (dnsStarted && sealedPlan !== undefined) await docker.run(["rm", "--force", sealedPlan.dnsHelperName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
-      await session?.stop().catch(() => undefined);
-      await removeRunDirectory(files.directory);
+      await step("opening", async () => { await opening?.catch(() => undefined); });
+      await closeRound(false);
+      // A start that was still pending when the run was disposed: its session is stopped as soon as it exists.
+      for (const pending of [...pendingStarts]) await step("pending-start", async () => { (await pending.catch(() => undefined))?.stop(); });
+      await step("helpers", async () => { await workSession?.stop(); });
+      await step("directory", () => removeRunDirectory(files.directory));
     })();
     return torndown;
   };
 
+  // ---- the working phase
+
   try {
-    const working = buildServiceEnvironment({ sandbox: "working", sinkholeUrl: SINKHOLE_URL, dependencies: resolved.map((item) => item.env), neverValues: neverValuesFor(resolved) });
-    const checkEnvironment = buildServiceEnvironment({ sandbox: "check", sinkholeUrl: SINKHOLE_URL, dependencies: resolved.map((item) => item.env), neverValues: neverValuesFor(resolved) });
-    redactor = createServiceRedactor([...helperSecretValues(requests), ...working.secretValues, ...checkEnvironment.secretValues]);
+    const working = materializeAll(bases);
+    const workingEnv = buildServiceEnvironment({ sandbox: "working", sinkholeUrl: SINKHOLE_URL, dependencies: working.map((item) => item.env), neverValues: neverValuesFor(working) });
+    secrets.push(...helperSecretValues(working.map((item) => item.request)), ...workingEnv.secretValues);
+    redactor = createServiceRedactor(secrets);
     // The sandbox runs every command with the run's variables from here on, and tears the run down when it is disposed, even if the start below fails.
-    input.sandbox.attachServices({ wrapExec: workingExec(docker, files, input.sandbox.name, working, () => active), teardown });
+    input.sandbox.attachServices({ wrapExec: workingExec(docker, files, input.sandbox.name, workingEnv, () => active), teardown });
 
     // The images, by digest, before anything starts (the launcher runs with `--pull=never`).
-    for (const item of resolved) {
+    for (const item of working) {
       const reference = `${config.registry}/${catalogRepositoryName(config.catalogEnv, item.plan.repository)}@sha256:${item.plan.digest}`;
       const present = await docker.run(["image", "inspect", "--format", "{{.Id}}", reference], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(input.signal === undefined ? {} : { signal: input.signal }) }).catch(() => undefined);
       if (present?.exitCode === 0) continue;
@@ -496,53 +615,24 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       }
     }
 
-    const runner = config.runner ?? createDockerServiceRunner(docker);
     const startedAt = now();
     try {
-      session = await runner.start({
-        runId, workspace, roundBudgetMs: TEST_SERVICES_RUN_LIFETIME_MS, registry: `${config.registry}/${CATALOG_REGISTRY_ROOT}/${config.catalogEnv}`, edition: config.edition,
-        probeImage: config.probeImage, maxMemMiB: config.maxMemMiB, helpers: requests, files, sandboxes: workingSandboxAttachment(docker, input.sandbox.name),
-        resetHooks: createResetHooks(), ...(input.signal === undefined ? {} : { signal: input.signal }), ...(config.now === undefined ? {} : { now: config.now }), ...(config.sleep === undefined ? {} : { sleep: config.sleep }),
-      });
+      workSession = await trackedStart(startInput(runId, working, files, { sandboxes: workingSandboxAttachment(docker, input.sandbox.name), ...(input.signal === undefined ? {} : { signal: input.signal }) }));
     } catch (error) {
       const failure = failureOf(error);
       for (const id of ids) if (!failure.failures.has(id)) failures.set(id, failure.reason === "not_healthy" ? "not_healthy" : "start_failed");
       for (const [id, reason] of failure.failures) failures.set(id, reason);
       throw new TestServicesError(failure.reason, failures);
     }
-    startMs = Math.max(0, now() - startedAt);
-    const live = session;
-    // `reset` is counted for the usage record; everything that resets goes through the counted session.
-    const countedSession = countResets(live);
-    counted = countedSession.session;
-    resets = countedSession.resets;
-
-    // The sealed name server and the check sandbox's files (the sandbox itself starts only inside a round).
-    const view = live.network;
-    const slot = Number(/^172\.30\.(\d{1,3})\.0\/24$/u.exec(view.subnet)?.[1]);
-    const createdAt = now();
-    const expiresAt = createdAt + servicesNetworkStaleAfterMs(TEST_SERVICES_RUN_LIFETIME_MS);
-    const net: CheckSandboxNetwork = {
-      name: view.name, slot, subnet: view.subnet, dnsHelperIp: view.dnsHelperIp, workingSandboxIp: view.workingSandboxIp, checkSandboxIp: view.checkSandboxIp,
-      labelArgs: () => runNetworkLabelArgs({ runId, workspace, createdAt, expiresAt }),
-    };
-    sealedPlan = checkSandboxPlan({
-      net, taskId: input.operationId, image: config.probeImage, rootPath: root, maskedPaths: await hiddenWorkspaceDirectories(root), filesDir: files.directory,
-      helpers: live.helpers.flatMap((helper) => helper.aliases.map((alias) => ({ alias, address: helper.address }))), sinkholeIp: runNetworkHelperIp(slot, SINKHOLE_HELPER_INDEX),
-      workingSandboxName: input.sandbox.name,
-    });
-    await writeCheckSandboxFiles(sealedPlan);
-    dnsStarted = true;
-    const dns = await docker.run(sealedPlan.dnsHelperRunArgs, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
-    if (dns === undefined || dns.exitCode !== 0) throw new TestServicesError("setup_failed");
-    sealedInput = { docker, hasDevcontainer: false, plan: sealedPlan, rootPath: root, files, environment: checkEnvironment, redactor };
+    workStartMs = Math.max(0, now() - startedAt);
+    if (!active) throw new TestServicesError("start_failed");
 
     // The seeds, in the working sandbox (attached, with the run's variables), one dependency at a time so a failure names its dependency.
     const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), ...(input.signal === undefined ? [] : [input.signal])]);
     const workingSeeds: SeedPorts = seedPorts((command, signal) => executionFor(SANDBOX_TARGET, { sandbox: input.sandbox }).runCommand(command, signal));
-    for (const item of resolved) {
+    for (const item of working) {
       try {
-        await seedRun(counted, [item.resetDependency], workingSeeds, seedSignal);
+        await seedRun(countResets(workSession).session, [item.resetDependency], workingSeeds, seedSignal);
       } catch {
         failures.set(item.plan.id, "seed_failed");
         throw new TestServicesError("seed_failed", failures);
@@ -555,49 +645,117 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     throw failure;
   }
 
-  // ---- the sealed round
+  // ---- one sealed round
 
-  const openRound = async (): Promise<CheckRunners> => {
-    if (!active || sealedInput === undefined) throw agentXError("RUNTIME_UNAVAILABLE", SENTENCES.setup_failed);
-    await closeRound();
-    let release!: () => void;
-    const closed = new Promise<void>((done) => { release = done; });
-    let handOver!: (runners: CheckRunners) => void;
-    let failStart!: (error: unknown) => void;
-    const ready = new Promise<CheckRunners>((done, fail) => { handOver = done; failStart = fail; });
-    const running = ports.withSealedCheckRound(sealedInput, async (runners) => {
-      handOver(runners);
-      await closed;
-    });
-    // A rejection before the round was handed over is the start's failure; after it, `close` reports it.
-    running.then(() => undefined, (error: unknown) => failStart(error));
-    // Registered BEFORE the start finishes, so a teardown that arrives while the check sandbox is still starting waits for it and removes it.
-    const open: { runners: CheckRunners | undefined; close(): Promise<void> } = { runners: undefined, close: async () => { release(); await running; } };
-    round = open;
+  /** Brand-new helpers, a network of its own, a name server of its own, the sealed check sandbox, and the seeds run INSIDE it from the candidate code. */
+  const startRound = async (signal: AbortSignal): Promise<RoundState> => {
+    const check = (): void => { if (!active) throw new TestServicesError("start_failed"); };
+    check();
+    await closeRound(false);
+    rounds += 1;
+    const number = rounds;
+    const resolved = materializeAll(bases);
+    const environment = buildServiceEnvironment({ sandbox: "check", sinkholeUrl: SINKHOLE_URL, dependencies: resolved.map((item) => item.env), neverValues: neverValuesFor(resolved) });
+    secrets.push(...helperSecretValues(resolved.map((item) => item.request)), ...environment.secretValues);
+    redactor = createServiceRedactor(secrets);
+    const roundRedactor = redactor;
+    const roundFiles = await createRunDirectoryFiles(files.directory, `round-${String(number)}`).catch(() => { throw new TestServicesError("start_failed"); });
+    const startedAt = now();
+    let session: ServiceSession | undefined;
+    let plan: CheckSandboxPlan | undefined;
+    let dnsStarted = false;
+    let closeSealed: (() => Promise<void>) | undefined;
+    const partial = (): Pick<RoundState, "plan" | "session" | "files" | "dnsStarted"> | undefined => (session === undefined || plan === undefined ? undefined : { plan, session, files: roundFiles, dnsStarted });
     try {
-      open.runners = await ready;
+      session = await trackedStart(startInput(`${runId}-r${String(number)}`, resolved, roundFiles, { signal }));
+      check();
+      const startMs = Math.max(0, now() - startedAt);
+      const view = session.network;
+      const slot = Number(/^172\.30\.(\d{1,3})\.0\/24$/u.exec(view.subnet)?.[1]);
+      const createdAt = now();
+      const expiresAt = createdAt + servicesNetworkStaleAfterMs(TEST_SERVICES_RUN_LIFETIME_MS);
+      const net: CheckSandboxNetwork = {
+        name: view.name, slot, subnet: view.subnet, dnsHelperIp: view.dnsHelperIp, workingSandboxIp: view.workingSandboxIp, checkSandboxIp: view.checkSandboxIp,
+        labelArgs: () => runNetworkLabelArgs({ runId: `${runId}-r${String(number)}`, workspace, createdAt, expiresAt }),
+      };
+      const roundHelpers = session.helpers;
+      plan = checkSandboxPlan({
+        net, taskId: input.operationId, image: config.probeImage, rootPath: root, maskedPaths: await hiddenWorkspaceDirectories(root), filesDir: roundFiles.directory,
+        helpers: roundHelpers.flatMap((helper) => helper.aliases.map((alias) => ({ alias, address: helper.address }))), sinkholeIp: runNetworkHelperIp(slot, SINKHOLE_HELPER_INDEX),
+        workingSandboxName: input.sandbox.name,
+      });
+      await writeCheckSandboxFiles(plan);
+      dnsStarted = true;
+      const dns = await docker.run(plan.dnsHelperRunArgs, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+      if (dns === undefined || dns.exitCode !== 0) throw new TestServicesError("setup_failed");
+      check();
+
+      // The sealed round: the working sandbox was never on this network; the check sandbox starts inside `withSealedCheckRound`.
+      const setup: SealedRoundSetup = { docker, hasDevcontainer: false, plan, rootPath: root, files: roundFiles, environment, redactor: roundRedactor };
+      let release!: () => void;
+      const closed = new Promise<void>((done) => { release = done; });
+      let handOver!: (runners: CheckRunners) => void;
+      let failStart!: (error: unknown) => void;
+      const ready = new Promise<CheckRunners>((done, fail) => { handOver = done; failStart = fail; });
+      const running = ports.withSealedCheckRound(setup, async (runners) => {
+        handOver(runners);
+        await closed;
+      });
+      // A rejection before the round was handed over is the start's failure; after it, `sealedClose` reports it.
+      running.then(() => undefined, (error: unknown) => failStart(error));
+      closeSealed = async () => { release(); await running; };
+      const runners = await ready;
+
+      const countedRound = countResets(session);
+      const state: RoundState = { number, session, counted: countedRound.session, resets: countedRound.resets, plan, files: roundFiles, redactor: roundRedactor, startMs, dnsStarted, runners, sealedClose: closeSealed };
+      round = state;
+
+      // The seeds run INSIDE the round, in the sealed sandbox, from the candidate code: the agent's own migrations are applied, and the helpers hold nothing but what the seeds made.
+      const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), signal]);
+      const roundSeeds = seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal));
+      for (const item of resolved) {
+        try {
+          await seedRun(state.counted, [item.resetDependency], roundSeeds, seedSignal);
+        } catch {
+          failures.set(item.plan.id, "seed_failed");
+          throw new TestServicesError("seed_failed", failures);
+        }
+      }
+      return state;
     } catch (error) {
-      if (round === open) round = undefined;
-      await running.catch(() => undefined);
-      throw error;
+      const failure = failureOf(error);
+      if (failure.reason !== "seed_failed") for (const id of ids) failures.set(id, failure.failures.get(id) ?? (failure.reason === "not_healthy" ? "not_healthy" : "start_failed"));
+      if (round === undefined || round.session !== session) {
+        // Not yet recorded as the open round: this attempt's own parts are removed here.
+        await step("sealed-round", async () => { await closeSealed?.(); });
+        const parts = partial();
+        if (parts !== undefined) await cleanupRound(parts);
+        else {
+          await step("round-helpers", async () => { await session?.stop(); });
+          await step("round-directory", () => removeRunDirectory(roundFiles.directory));
+        }
+      }
+      throw failure;
     }
-    return open.runners;
   };
   const currentRound = (): CheckRunners => {
     const runners = round?.runners;
     if (runners === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed check round is not open, so no check was run");
     return runners;
   };
-  const roundSeeds = (runners: CheckRunners): SeedPorts => seedPorts((command, signal) => runners.runProjectCommand(command, signal));
-  const resetDependencies = resolved.map((item) => item.resetDependency);
+  const resetDependencies = bases.map((base) => base.resetDependency);
 
   const usageRecord = async (): Promise<TestServicesUsageRecord | undefined> => {
-    if (!active || session === undefined) return undefined;
+    if (!active) return undefined;
+    if (round !== undefined) {
+      const live = await recordOf(round);
+      return live === undefined ? cumulative : mergeUsageRecords(cumulative, live);
+    }
+    if (cumulative !== undefined) return cumulative;
+    // No round has run: the working phase's own answer, with whatever failed since.
+    if (workSession === undefined) return undefined;
     try {
-      const built = await ports.buildServiceUsageRecord({
-        planned: ids, session, startMs, resetCounts: resets, failures, redactor,
-        ...(sealedPlan === undefined ? {} : { dns: { docker, dnsHelperName: sealedPlan.dnsHelperName } }),
-      });
+      const built = await ports.buildServiceUsageRecord({ planned: ids, session: workSession, startMs: workStartMs, failures, redactor });
       const parsed = TestServicesUsageRecordSchema.safeParse(built);
       return parsed.success ? parsed.data : undefined;
     } catch {
@@ -612,27 +770,22 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
         runProjectCommand: async (command, signal) => currentRound().runProjectCommand(command, signal),
         runAgentCommand: async (replay, timeoutMs, signal) => currentRound().runAgentCommand(replay, timeoutMs, signal),
         async freshServices(signal) {
-          const sealed = await openRound();
-          try {
-            await freshHelpers(counted, resetDependencies, roundSeeds(sealed), signal);
-          } catch (error) {
-            for (const id of ids) failures.set(id, "reset_failed");
-            throw error;
-          }
+          opening = startRound(signal);
+          await opening;
         },
         async resetBetweenChecks(signal) {
+          const open = round;
+          if (open === undefined || open.runners === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed check round is not open, so no check was run");
+          const runners = open.runners;
           try {
-            await resetForNextCheck(counted, resetDependencies, roundSeeds(currentRound()), signal);
+            await resetForNextCheck(open.counted, resetDependencies, seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal)), signal);
           } catch (error) {
             for (const id of ids) failures.set(id, "reset_failed");
             throw error;
           }
         },
         async endRound() {
-          await closeRound();
-          if (input.artifactSink === undefined) return;
-          const record = await usageRecord();
-          if (record !== undefined) await input.artifactSink({ name: TEST_SERVICES_USAGE_ARTIFACT, mediaType: "application/json", content: JSON.stringify(record) }).catch(() => log({ event: "test-services.usage.save.failed" }));
+          await closeRound(true);
         },
       };
     },
@@ -640,6 +793,10 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     dispose: teardown,
   };
   return run;
+}
+
+function materializeAll(bases: readonly Base[]): Resolved[] {
+  return bases.map(materialize);
 }
 
 /** The seeds' ports: a command runs where the caller says; a fixture file is not available in slice 1 (refused, so the seed fails closed). */
@@ -662,30 +819,52 @@ export interface StartTaskTestServicesInput {
   sandbox: TaskSandbox | undefined;
   /** The task runs in a dev container (refused with the fixed "not available yet" sentence, before anything else). */
   devcontainer: boolean;
+  /** The invocation is a nightly run: refused with a fixed "not available yet" (the nightly with dependencies is TS31, later). */
+  nightly: boolean;
   operationId: string;
   rootPath: string;
+  /** The repositories' folders (absolute): init files come only from under them. */
+  repositoryPaths: readonly string[];
   config?: TestServicesConfig | undefined;
   artifactSink: ArtifactSink;
+  /** The worker's cancellation controller: a cancel while the services start stops the pulls, the helper starts and the seeds. */
+  cancellation?: Pick<WorkerCancellationController, "register"> | undefined;
 }
 
 /**
  * The one call run-task makes after the working sandbox has started. Returns undefined, having done nothing at all (no Docker call, no file), when the task's plan has no dependencies, or the step does not run code.
- * Otherwise starts the run or throws one fixed-sentence error (the task then fails before the agent runs, as a sandbox that cannot start does). A plan with dependencies on a task with no sandbox is refused.
+ * Otherwise starts the run or throws one fixed-sentence error (the task then fails before the agent runs, as a sandbox that cannot start does). A plan with dependencies on a task with no sandbox, on a dev container or
+ * in a nightly run is refused.
  */
 export async function startTaskTestServices(input: StartTaskTestServicesInput): Promise<TestServicesRun | undefined> {
   const dependencies = input.plan?.dependencies;
-  if (dependencies === undefined || !MODES_WITH_SERVICES.has(input.mode)) return undefined;
-  refuseTestServicesWithDevcontainer({ dependencies, devcontainer: input.devcontainer });
+  if (dependencies === undefined) return undefined;
   const refuse = (reason: TestServicesFailureReason): never => { throw agentXError("RUNTIME_UNAVAILABLE", SENTENCES[reason]); };
+  if (input.nightly) return refuse("nightly");
+  if (!MODES_WITH_SERVICES.has(input.mode)) return undefined;
+  refuseTestServicesWithDevcontainer({ dependencies, devcontainer: input.devcontainer });
   if (input.sandbox === undefined) return refuse("unsupported");
   const config = input.config ?? testServicesConfigFromEnvironment();
   if (config === undefined) return refuse("not_configured");
+  // A cancel that arrives while the services start stops the start. The registration ends before the task registers its own.
+  const stop = new AbortController();
+  const unregister = input.cancellation?.register(input.operationId, { abort: () => { stop.abort(); return Promise.resolve(); } });
   try {
-    return await startTestServicesRun(config, { dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: input.devcontainer, artifactSink: input.artifactSink });
+    return await startTestServicesRun(config, {
+      dependencies, operationId: input.operationId, rootPath: input.rootPath, repositoryPaths: input.repositoryPaths, sandbox: input.sandbox, hasDevcontainer: input.devcontainer,
+      artifactSink: input.artifactSink, signal: stop.signal,
+    });
   } catch (error) {
     const failure = failureOf(error);
     throw agentXError("RUNTIME_UNAVAILABLE", failure.message);
+  } finally {
+    unregister?.();
   }
+}
+
+/** The features this worker adds to /ping for test services: the plan feature only when the worker has a test-services configuration (a worker without one would only refuse such a plan). */
+export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env): Array<typeof TEST_SERVICES_PLAN_FEATURE> {
+  return testServicesConfigFromEnvironment(environment, undefined, undefined) === undefined ? [] : [TEST_SERVICES_PLAN_FEATURE];
 }
 
 // ---- the candidate check (Prove, worker side): prepare.ts
@@ -718,7 +897,7 @@ function failedStartRecord(ids: readonly string[], failures: ReadonlyMap<string,
  * sandbox (setup and readiness commands then run with the run's variables, and a test check runs sealed); a dev container is refused first, a start that fails reports a failed-start record and throws a fixed sentence
  * (the preparation then fails and removes everything). The sandbox's `dispose()` (prepare's `finally`) tears the run down on every exit path.
  */
-export async function startPrepareTestServices(input: { options: PrepareTestServices | undefined; sandbox: TaskSandbox | undefined; devcontainer: boolean; operationId: string; rootPath: string }): Promise<PrepareServices | undefined> {
+export async function startPrepareTestServices(input: { options: PrepareTestServices | undefined; sandbox: TaskSandbox | undefined; devcontainer: boolean; operationId: string; rootPath: string; repositoryPaths: readonly string[] }): Promise<PrepareServices | undefined> {
   const options = input.options;
   if (options === undefined) return undefined;
   refuseTestServicesWithDevcontainer({ dependencies: options.dependencies, devcontainer: input.devcontainer });
@@ -731,7 +910,7 @@ export async function startPrepareTestServices(input: { options: PrepareTestServ
   let run: TestServicesRun;
   try {
     await input.sandbox.start();
-    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false });
+    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false, repositoryPaths: input.repositoryPaths });
   } catch (error) {
     const failure = failureOf(error);
     await report(failure.failures);
