@@ -7,8 +7,17 @@
 //   - every list, body and schema is bounded (a recorded body is at most 64 KiB, a set holds at most 500 entries, a schema at most 32 levels deep and 2,048 nodes);
 //   - an unmatched request is `fail` unless the maintainer chose `schema_synth`, and either way it is counted (`ServiceMockUsageSchema`), so "mock answered 3 unrecorded requests" is always true;
 //   - a fixture that holds personal data or names production is refused by the data guard before it is stored (that check is the verifier's; its report shape is in test-environment.ts).
+//
+// Test services TS3 (design test-services.md, 7.1): `FixtureSetSchema` (schemaVersion 2) is the one fixture format for tasks, Prove, nightly and the end-to-end checker. It replaces
+// `ServiceMockFixtureSetSchema` (v1) and the E2E checker's `E2EApiMockFixture` once those are wired to it; both convert to it (`fixtureSetFromV1`, and `e2eApiMockFixtureToFixtureSet` in e2e-node.ts). The v1
+// schema and its hash stay as they are for now, so every stored v1 set still reads. Differences that matter:
+//   - an entry keeps its method, path and the query values that identify it, and the hash covers them (v1 hashed a target string only);
+//   - `match.ignorePaths` lists JSON pointers (timestamps, request ids) that are taken out of a JSON body before it is hashed, so a recorded answer still matches when only those differ;
+//   - `match.query` names the query parameters that identify a request; no other parameter does;
+//   - a response keeps only headers from a closed allow-list (never a redirect or a cookie), a set is at most 2,000 entries and 4 MiB, and `syntheticOnly` is still literally true.
 import { z } from "zod";
 import { canonicalJson } from "./canonical-json.js";
+import { FamilyIdSchema, TestEnvDependencyIdSchema, awsServiceOfHost, testEnvDependencyIdFromName } from "./test-env-dependency.js";
 import { TEST_ENV_SERVICE_KINDS, TEST_ENV_UNMATCHED } from "./test-environment.js";
 import { sha256Hex } from "./web-hash.js";
 
@@ -170,4 +179,219 @@ export function serviceMockRequestHash(input: { service: (typeof TEST_ENV_SERVIC
 export function awsEndpointUrlVariable(serviceId: string): string {
   if (!/^[A-Za-z][A-Za-z0-9 ]{0,63}$/u.test(serviceId)) throw new RangeError("a service id is letters, digits and spaces");
   return `AWS_ENDPOINT_URL_${serviceId.toUpperCase().replace(/ /gu, "_")}`;
+}
+
+
+// ---- FixtureSet v2 (test services TS3, design 7.1)
+
+export const FIXTURE_SET_SCHEMA_VERSION = 2;
+export const FIXTURE_SET_ENTRIES_MAX = 2_000;
+export const FIXTURE_SET_MAX_BYTES = 4 * 1024 * 1024;
+export const FIXTURE_IGNORE_PATHS_MAX = 20;
+export const FIXTURE_MATCH_QUERY_MAX = 8;
+export const FIXTURE_RESPONSE_HEADERS_MAX = 8;
+export const FIXTURE_PROTOCOLS = ["http_json", "http_any", "aws_json", "aws_query", "model_invoke"] as const;
+export const FIXTURE_ORIGINS = ["recorded", "written", "imported"] as const;
+export const FIXTURE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+/** The only response headers a fixture keeps. No redirect, cookie or credential header is on it, so a recorded answer cannot send the app somewhere else or plant state. */
+export const FIXTURE_RESPONSE_HEADER_NAMES = ["cache-control", "content-language", "etag", "expires", "last-modified", "retry-after", "x-amz-request-id", "x-amzn-errortype", "x-amzn-requestid", "x-request-id"] as const;
+
+/** An RFC 6901 JSON pointer into a request body. The empty pointer (the whole body) is not one: ignoring everything would make every request the same. */
+export const JsonPointerSchema = z.string().min(1).max(200).regex(/^(?:\/(?:[^~/]|~[01])*)+$/u, "a JSON pointer");
+const QueryNameSchema = z.string().regex(/^[A-Za-z0-9_.~-]{1,64}$/u).refine((name) => name !== "__proto__", "a plain name");
+const FixturePathSchema = z
+  .string()
+  .regex(/^\/[A-Za-z0-9._~%:@!$&'()*+,;=/-]{0,511}$/u)
+  .refine((path) => !path.includes("//") && !path.split("/").includes(".."), "a canonical path");
+
+const FixtureRequestSchema = z
+  .object({
+    method: z.enum(FIXTURE_METHODS),
+    path: FixturePathSchema,
+    /** The identifying query values, as name and value, one name once. */
+    query: z.array(z.object({ name: QueryNameSchema, value: z.string().max(256) }).strict()).max(FIXTURE_MATCH_QUERY_MAX).optional(),
+    contentType: line(100, 0),
+    body: BodySchema,
+  })
+  .strict();
+
+const FixtureResponseSchema = z
+  .object({
+    status: z.number().int().min(100).max(599),
+    headers: z.array(z.object({ name: z.enum(FIXTURE_RESPONSE_HEADER_NAMES), value: line(256) }).strict()).max(FIXTURE_RESPONSE_HEADERS_MAX),
+    contentType: line(100),
+    body: BodySchema,
+    latencyMs: z.number().int().min(0).max(SERVICE_MOCK_LATENCY_MAX_MS),
+  })
+  .strict()
+  .refine((response) => new Set(response.headers.map((header) => header.name)).size === response.headers.length, { message: "a header is listed once", path: ["headers"] });
+
+export const FixtureEntrySchema = z.object({ requestHash: Sha256Schema, request: FixtureRequestSchema, response: FixtureResponseSchema }).strict();
+export type FixtureEntry = z.infer<typeof FixtureEntrySchema>;
+
+export const FixtureSetSchema = z
+  .object({
+    schemaVersion: z.literal(FIXTURE_SET_SCHEMA_VERSION),
+    dependency: z.object({ id: TestEnvDependencyIdSchema, family: FamilyIdSchema, protocol: z.enum(FIXTURE_PROTOCOLS), target: line(253) }).strict(),
+    origin: z.enum(FIXTURE_ORIGINS),
+    revision: z.number().int().min(1),
+    recordedAt: z.string().datetime().optional(),
+    writtenBy: line(80).optional(),
+    /** Recorded or written from synthetic inputs only; the data guard has scanned the entries. */
+    syntheticOnly: z.literal(true),
+    requestSchema: ServiceMockJsonSchemaSchema.optional(),
+    responseSchema: ServiceMockJsonSchemaSchema.optional(),
+    match: z.object({ ignorePaths: z.array(JsonPointerSchema).max(FIXTURE_IGNORE_PATHS_MAX), query: z.array(QueryNameSchema).max(FIXTURE_MATCH_QUERY_MAX).optional() }).strict(),
+    entries: z.array(FixtureEntrySchema).max(FIXTURE_SET_ENTRIES_MAX),
+    faults: z.array(ServiceMockFaultSchema).max(SERVICE_MOCK_FAULTS_MAX),
+  })
+  .strict()
+  .superRefine((set, context) => {
+    const problem = (path: (string | number)[], message: string) => context.addIssue({ code: "custom", path, message });
+    if ((set.origin === "recorded") !== (set.recordedAt !== undefined)) problem(["recordedAt"], "a recorded set says when, and no other set does");
+    if (set.writtenBy !== undefined && set.origin !== "written") problem(["writtenBy"], "only a written set says who wrote it");
+    if (new Set(set.match.ignorePaths).size !== set.match.ignorePaths.length) problem(["match", "ignorePaths"], "a path is listed once");
+    if (new Set(set.match.query ?? []).size !== (set.match.query ?? []).length) problem(["match", "query"], "a parameter is listed once");
+    if (set.match.ignorePaths.length > 0 && set.dependency.protocol === "aws_query") problem(["match", "ignorePaths"], "a form-encoded body has no JSON pointers");
+    if (new Set(set.entries.map((entry) => entry.requestHash)).size !== set.entries.length) problem(["entries"], "a request has one recording");
+    if (new Set(set.faults.map((fault) => fault.name)).size !== set.faults.length) problem(["faults"], "fault names are unique");
+    const identifying = new Set(set.match.query ?? []);
+    set.entries.forEach((entry, index) => {
+      const names = (entry.request.query ?? []).map((pair) => pair.name);
+      if (new Set(names).size !== names.length) problem(["entries", index, "request", "query"], "a parameter is listed once");
+      if (names.some((name) => !identifying.has(name))) problem(["entries", index, "request", "query"], "only the parameters the set matches on are kept");
+      if (set.dependency.protocol === "model_invoke" && (entry.request.method !== "POST" || entry.request.path !== `/endpoints/${set.dependency.target}/invocations`)) problem(["entries", index, "request"], "a model endpoint is invoked with POST /endpoints/<name>/invocations");
+    });
+    if (set.dependency.protocol === "model_invoke" && (set.dependency.family !== "aws:sagemaker-runtime" || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})$/u.test(set.dependency.target))) problem(["dependency"], "a model endpoint set is for SageMaker Runtime, named by its endpoint");
+    if (new TextEncoder().encode(JSON.stringify(set)).length > FIXTURE_SET_MAX_BYTES) problem([], "a fixture set is at most 4 MiB");
+  });
+export type FixtureSet = z.infer<typeof FixtureSetSchema>;
+
+/** The digest a v2 fixture set is pinned by (`fixtureSetRef`): the canonical JSON of the parsed set. */
+export function fixtureSetDigest(set: FixtureSet): string {
+  return sha256Hex(canonicalJson(FixtureSetSchema.parse(set)));
+}
+
+/** Takes the pointed-at members out of a parsed JSON value, in place: an object member is deleted, an array element becomes null (so the others keep their places). A pointer that leads nowhere does nothing. */
+function withoutPointers(value: unknown, pointers: readonly string[]): unknown {
+  for (const pointer of pointers) {
+    if (pointer === "" || !pointer.startsWith("/")) continue;
+    const tokens = pointer.slice(1).split("/").map((token) => token.replace(/~1/gu, "/").replace(/~0/gu, "~"));
+    let node: unknown = value;
+    for (const token of tokens.slice(0, -1)) {
+      if (Array.isArray(node)) node = /^(?:0|[1-9]\d*)$/u.test(token) ? (node as unknown[])[Number(token)] : undefined;
+      else if (node !== null && typeof node === "object" && Object.hasOwn(node, token)) node = (node as Record<string, unknown>)[token];
+      else node = undefined;
+      if (node === undefined) break;
+    }
+    const last = tokens[tokens.length - 1] ?? "";
+    if (Array.isArray(node)) {
+      if (/^(?:0|[1-9]\d*)$/u.test(last) && Number(last) < node.length) (node as unknown[])[Number(last)] = null;
+    } else if (node !== null && typeof node === "object" && Object.hasOwn(node, last)) {
+      delete (node as Record<string, unknown>)[last];
+    }
+  }
+  return value;
+}
+
+export interface FixtureRequestParts {
+  method: string;
+  path: string;
+  /** Every query pair of the request; only those the set matches on count. */
+  query?: ReadonlyArray<{ name: string; value: string }> | undefined;
+  contentType: string;
+  body: string;
+}
+
+/**
+ * The key a request is looked up by in a v2 set. Canonical JSON bodies as in v1 (a re-ordered body is the same request), plus the dependency's family and target, the method, the path and the
+ * identifying query values, minus the body members `match.ignorePaths` names. A body that is not JSON is hashed as written, and ignorePaths never apply to it. The version is part of the key, so a v1
+ * hash and a v2 hash never meet.
+ */
+export function fixtureRequestHash(set: Pick<FixtureSet, "dependency" | "match">, request: FixtureRequestParts): string {
+  const type = request.contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  let body = request.body;
+  if (type === "application/json" || type.endsWith("+json")) {
+    try {
+      body = canonicalJson(withoutPointers(JSON.parse(request.body) as unknown, set.match.ignorePaths));
+    } catch {
+      // Not valid JSON: hashed as written, so it can only match a recording of the same bytes.
+    }
+  }
+  const identifying = new Set(set.match.query ?? []);
+  const query = (request.query ?? []).filter((pair) => identifying.has(pair.name)).map((pair) => [pair.name, pair.value] as const).sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) : a[0] < b[0] ? -1 : 1));
+  return sha256Hex(canonicalJson({ v: 2, family: set.dependency.family, target: set.dependency.target, method: request.method.toUpperCase(), path: request.path, query, contentType: type, body }));
+}
+
+/** The positions of the entries whose `requestHash` is not the hash of their own request. A set read from storage is trusted only when this is empty; the schema does not hash 2,000 bodies on every parse. */
+export function fixtureSetHashProblems(set: FixtureSet): number[] {
+  return set.entries.flatMap((entry, index) => (entry.requestHash === fixtureRequestHash(set, entry.request) ? [] : [index]));
+}
+
+/** A request the set does not already hold, completed with its hash: the entry a recorder or a writer adds. */
+export function fixtureEntry(set: Pick<FixtureSet, "dependency" | "match">, request: FixtureEntry["request"], response: FixtureEntry["response"]): FixtureEntry {
+  return { requestHash: fixtureRequestHash(set, request), request, response };
+}
+
+// ---- converters to v2
+
+export type FixtureConversion = { ok: true; set: FixtureSet } | { ok: false; reason: "invalid" | "request_line_unknown" | "unreadable_host" };
+
+/**
+ * A v1 set as a v2 one. A SageMaker Runtime set is `POST /endpoints/<target>/invocations`, so every entry is rebuilt exactly and rehashed. Any other v1 entry kept only a hash, never its method or path, so
+ * the caller must say what each request was (`resolveRequest`); an entry it cannot place stops the conversion (`request_line_unknown`). Nothing is guessed. The result is a recorded set with the v1 date and revision.
+ */
+export function fixtureSetFromV1(
+  v1: ServiceMockFixtureSet,
+  options: { resolveRequest?: (entry: ServiceMockEntry) => { method: (typeof FIXTURE_METHODS)[number]; path: string; query?: Array<{ name: string; value: string }> } | undefined } = {},
+): FixtureConversion {
+  const parsed = ServiceMockFixtureSetSchema.safeParse(v1);
+  if (!parsed.success) return { ok: false, reason: "invalid" };
+  const old = parsed.data;
+  let family: string;
+  let protocol: (typeof FIXTURE_PROTOCOLS)[number];
+  if (old.service.kind === "sagemaker_runtime") {
+    family = "aws:sagemaker-runtime";
+    protocol = "model_invoke";
+  } else if (old.service.kind === "http") {
+    family = `http:${old.service.target}`;
+    protocol = "http_json";
+  } else {
+    const service = awsServiceOfHost(old.service.target);
+    if (service === undefined) return { ok: false, reason: "unreadable_host" };
+    family = `aws:${service}`;
+    protocol = "http_any";
+  }
+  const skeleton = { dependency: { id: testEnvDependencyIdFromName(old.service.name), family, protocol, target: old.service.target }, match: { ignorePaths: [] as string[] } };
+  const entries: FixtureEntry[] = [];
+  const queryNames = new Set<string>();
+  for (const entry of old.entries) {
+    const placed =
+      old.service.kind === "sagemaker_runtime"
+        ? { method: "POST" as const, path: `/endpoints/${old.service.target}/invocations`, query: undefined }
+        : options.resolveRequest?.(entry);
+    if (placed === undefined) return { ok: false, reason: "request_line_unknown" };
+    for (const pair of placed.query ?? []) queryNames.add(pair.name);
+    entries.push({
+      requestHash: "",
+      request: { method: placed.method, path: placed.path, ...(placed.query === undefined ? {} : { query: placed.query }), contentType: entry.request.contentType, body: entry.request.body },
+      response: { status: entry.response.status, headers: [], contentType: entry.response.contentType, body: entry.response.body, latencyMs: entry.response.latencyMs },
+    });
+  }
+  const match = { ignorePaths: [] as string[], ...(queryNames.size === 0 ? {} : { query: [...queryNames].sort() }) };
+  const built = {
+    schemaVersion: 2,
+    dependency: skeleton.dependency,
+    origin: "recorded",
+    revision: old.revision,
+    recordedAt: old.recordedAt,
+    syntheticOnly: true,
+    ...(old.requestSchema === null ? {} : { requestSchema: old.requestSchema }),
+    ...(old.responseSchema === null ? {} : { responseSchema: old.responseSchema }),
+    match,
+    entries: entries.map((entry) => ({ ...entry, requestHash: fixtureRequestHash({ dependency: skeleton.dependency, match }, entry.request) })),
+    faults: old.faults,
+  };
+  const result = FixtureSetSchema.safeParse(built);
+  return result.success ? { ok: true, set: result.data } : { ok: false, reason: "invalid" };
 }

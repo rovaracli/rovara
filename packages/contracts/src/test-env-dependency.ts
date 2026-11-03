@@ -336,7 +336,8 @@ export type LegacyServiceConversion =
   | { ok: true; dependency: TestEnvDependency; movedPreprod?: LegacyPreprodTarget & { accountId: string } }
   | { ok: false; reason: "not_an_aws_host" | "invalid" };
 
-const slug = (name: string): string => {
+/** A dependency id made from a name: lower case, runs of other characters as one hyphen, at most 40 characters; a name with nothing usable gets `dep-` and eight characters of its hash. */
+export const testEnvDependencyIdFromName = (name: string): string => {
   let text = name.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "");
   if (text !== "" && !/^[a-z]/u.test(text)) text = `d-${text}`;
   text = text.slice(0, 40).replace(/-+$/gu, "");
@@ -346,7 +347,7 @@ const slug = (name: string): string => {
 const AWS_REGION_LABEL = /^[a-z]{2}(?:-[a-z]+)+-\d$/u;
 const AWS_SERVICE_LABEL = /^[a-z0-9-]+$/u;
 /** The service an AWS endpoint host names: `dynamodb.<region>.amazonaws.com` and `sts.amazonaws.com` are `dynamodb` and `sts`; `runtime.sagemaker.<region>...` is `sagemaker-runtime`. Anything else (dual-stack, FIPS, a made-up name) is undefined. */
-function awsServiceOfHost(host: string): string | undefined {
+export function awsServiceOfHost(host: string): string | undefined {
   if (!host.endsWith(".amazonaws.com")) return undefined;
   const labels = host.slice(0, -".amazonaws.com".length).split(".");
   if (labels.length > 1 && AWS_REGION_LABEL.test(labels[labels.length - 1] ?? "")) labels.pop();
@@ -360,8 +361,8 @@ function awsServiceOfHost(host: string): string | undefined {
  * becomes a test account with a fake fallback; a mock becomes a fake. Anything that cannot be read as a valid dependency is refused, never guessed.
  */
 export function testEnvServiceToDependency(service: TestEnvService, taken: ReadonlySet<string> = new Set()): LegacyServiceConversion {
-  let id = slug(service.name);
-  for (let n = 2; taken.has(id); n += 1) id = `${slug(service.name).slice(0, 36)}-${String(n)}`;
+  let id = testEnvDependencyIdFromName(service.name);
+  for (let n = 2; taken.has(id); n += 1) id = `${testEnvDependencyIdFromName(service.name).slice(0, 36)}-${String(n)}`;
   let kind: TestEnvDependencyKind;
   let family: string;
   let config: { endpointName: string } | undefined;

@@ -9,6 +9,8 @@ import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS, E2E_AGENT_APPROVAL_REFUSALS } from "./
 import { e2eCaseIdFromIdentity, e2eUpstreamTestIdFromIdentity, e2eApplicationUpstreamTestIdFromIdentity } from "./e2e-case-identity.js";
 import { type WorkflowVerificationResults } from "./task-workflow-node.js";
 import { copyBoundedE2EJsonArrayItems } from "./e2e-safe-data.js";
+import { FixtureSetSchema, fixtureRequestHash, type FixtureConversion, type FixtureSet } from "./service-mocks.js";
+import { testEnvDependencyIdFromName } from "./test-env-dependency.js";
 
 const ids = (max = 64) => z.array(id()).min(1).max(max).refine((values) => new Set(values).size === values.length, "identifiers must be unique");
 
@@ -482,6 +484,34 @@ export type E2EApiMockFixture = z.infer<typeof E2EApiMockFixtureSchema>;
 export const E2EMockSpecSchema = z.object({ componentId: id(120), requestedTargetId: id(80), effectiveTargetId: id(80), kind: z.enum(["api", "database", "queue", "identity", "device-service", "os-service", "model", "driver"]), contractDigest: digest, fixtureVersion: id(80), sourceRefs: z.array(z.object({ path: sourceRelativePath, sha256: digest }).strict()).max(64), reason: z.enum(["unconnected", "unapproved", "declined", "unqualified", "phase-unavailable"]), apiFixture: E2EApiMockFixtureSchema.optional() }).strict();
 
 export type E2EMockSpec = z.infer<typeof E2EMockSpecSchema>;
+
+/**
+ * An E2E checker API fixture as a v2 fixture set (test services TS3, design 7.1): each of its three variants becomes an entry keyed by its query value (`match.query` is the input field), `origin: "imported"`.
+ * The fixture names no host, so the caller says which one it is for (`host`, the component's own). A variant whose body is not JSON, or a set that does not parse, is `invalid`; nothing is repaired.
+ * Exported for the wiring that retires `E2EApiMockFixture`; nothing calls it yet.
+ */
+export function e2eApiMockFixtureToFixtureSet(fixtureInput: E2EApiMockFixture, options: { host: string; revision?: number }): FixtureConversion {
+  const fixture = E2EApiMockFixtureSchema.safeParse(fixtureInput);
+  if (!fixture.success) return { ok: false, reason: "invalid" };
+  const { operationId, path, inputField, variants } = fixture.data;
+  const dependency = { id: testEnvDependencyIdFromName(operationId), family: `http:${options.host}`, protocol: "http_json", target: options.host } as const;
+  const match = { ignorePaths: [] as string[], query: [inputField] };
+  const entries = [];
+  for (const variant of variants) {
+    let body: string | undefined;
+    try {
+      // JSON text of a value; `undefined` (a variant with no body) has none, and is refused.
+      body = canonicalJson(variant.body);
+    } catch {
+      return { ok: false, reason: "invalid" };
+    }
+    if (body === undefined) return { ok: false, reason: "invalid" };
+    const request = { method: "GET" as const, path, query: [{ name: inputField, value: variant.inputValue }], contentType: "", body: "" };
+    entries.push({ requestHash: fixtureRequestHash({ dependency, match }, request), request, response: { status: variant.status, headers: [], contentType: "application/json", body, latencyMs: 0 } });
+  }
+  const set = FixtureSetSchema.safeParse({ schemaVersion: 2, dependency, origin: "imported", revision: options.revision ?? 1, syntheticOnly: true, match, entries, faults: [] });
+  return set.success ? { ok: true, set: set.data satisfies FixtureSet } : { ok: false, reason: "invalid" };
+}
 
 export const E2ERuntimeAvailabilitySchema = z.object({ targetId: id(80), profileId: id(120), connection: z.enum(["connected", "unconnected"]), approval: z.enum(["approved", "pending", "declined"]), qualification: z.enum(["qualified", "unqualified"]), authorizationRevision: id(120) }).strict();
 
