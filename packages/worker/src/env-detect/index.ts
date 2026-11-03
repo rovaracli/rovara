@@ -1,13 +1,15 @@
 // Runs the detectors over a bounded reader and merges what they found. Bounded: a repository with more than 5,000 files is cut (and says so), a file over 256 KiB is not read, and a detection reads at most 4 MiB.
 import type { ProjectCommand } from "@agentx/contracts";
 import { detectBrazil } from "./brazil.js";
+import { detectCompose } from "./compose.js";
+import { mergeCandidates } from "./dependency-candidates.js";
 import { detectGo } from "./go.js";
 import { detectIac } from "./iac.js";
 import { detectJava } from "./java.js";
 import { detectNode } from "./node.js";
 import { detectPython } from "./python.js";
 import { detectServices } from "./services.js";
-import { emptyDetection, type Detection, type Detector, type RepositoryReader } from "./types.js";
+import { emptyDetection, type DependencyCandidate, type Detection, type Detector, type RepositoryReader } from "./types.js";
 
 export const DETECTORS: ReadonlyArray<{ name: string; run: Detector }> = [
   { name: "python", run: detectPython },
@@ -17,6 +19,7 @@ export const DETECTORS: ReadonlyArray<{ name: string; run: Detector }> = [
   { name: "iac", run: detectIac },
   { name: "services", run: detectServices },
   { name: "brazil", run: detectBrazil },
+  { name: "compose", run: detectCompose },
 ];
 
 export const ENV_DETECT_MAX_PATHS = 5_000;
@@ -78,6 +81,7 @@ function freeId(id: string, detector: string, taken: ReadonlySet<string>): strin
  */
 export async function runDetectors(reader: RepositoryReader, cwd: string): Promise<Detection> {
   const merged = emptyDetection();
+  const candidates: DependencyCandidate[] = [];
   const ids = new Set<string>();
   let cutChecks = false;
   for (const detector of DETECTORS) {
@@ -93,6 +97,7 @@ export async function runDetectors(reader: RepositoryReader, cwd: string): Promi
     }
     merged.services.push(...(part.services ?? []));
     merged.iac.push(...(part.iac ?? []));
+    candidates.push(...(part.dependencies ?? []));
     merged.fullSuiteOn.push(...(part.fullSuiteOn ?? []));
     merged.notes.push(...(part.notes ?? []));
     merged.questions.push(...(part.questions ?? []));
@@ -101,6 +106,8 @@ export async function runDetectors(reader: RepositoryReader, cwd: string): Promi
   merged.setupCommands = dedupe(merged.setupCommands, (item) => JSON.stringify(item.value));
   merged.fullSuiteOn = dedupe(merged.fullSuiteOn, (item) => item.value);
   merged.services = dedupe(merged.services, (item) => `${item.value.kind}:${item.value.target}`);
+  // Dependency candidates (test services D1-D7): present only when a detector found one, so a repository with none gives today's detection byte for byte.
+  if (candidates.length > 0) merged.dependencies = mergeCandidates(candidates);
   if (cutChecks) merged.notes.push(`More than ${String(ENV_DETECT_MAX_CHECKS)} checks were found; the first ${String(ENV_DETECT_MAX_CHECKS)} are proposed.`);
   if (merged.setupCommands.length > ENV_DETECT_MAX_SETUP_COMMANDS) { merged.setupCommands = merged.setupCommands.slice(0, ENV_DETECT_MAX_SETUP_COMMANDS); merged.notes.push(`More than ${String(ENV_DETECT_MAX_SETUP_COMMANDS)} setup commands were found; the first ${String(ENV_DETECT_MAX_SETUP_COMMANDS)} are proposed.`); }
   if (merged.fullSuiteOn.length > ENV_DETECT_MAX_FULL_SUITE_GLOBS) { merged.fullSuiteOn = merged.fullSuiteOn.slice(0, ENV_DETECT_MAX_FULL_SUITE_GLOBS); merged.notes.push(`More than ${String(ENV_DETECT_MAX_FULL_SUITE_GLOBS)} full-suite paths were found; the first ${String(ENV_DETECT_MAX_FULL_SUITE_GLOBS)} are proposed.`); }
@@ -109,5 +116,5 @@ export async function runDetectors(reader: RepositoryReader, cwd: string): Promi
   return merged;
 }
 
-export { emptyDetection, type Detection, type RepositoryReader } from "./types.js";
+export { emptyDetection, type DependencyCandidate, type Detection, type RepositoryReader } from "./types.js";
 export { buildEnvironmentDraft, proposalFromDraft, type EnvironmentDraft, type PendingService } from "./propose.js";

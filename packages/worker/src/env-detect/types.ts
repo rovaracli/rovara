@@ -1,6 +1,6 @@
 // Environment detectors (E2, design proof-test-env section 4.1): CODE reads the repository first and says what it found, with where (file and line) or which detector. The read-only setup agent then fills only the gaps.
 // Detectors are pure over a bounded reader: they never run a command and never read outside the file list they are given.
-import type { CheckKind, ProjectCommand } from "@agentx/contracts";
+import type { CheckKind, ProjectCommand, TestEnvDependencyKind } from "@agentx/contracts";
 
 /** Where a detected value came from: a file and line, or a detector's name. */
 export type DetectedSource = { path: string; line: number } | `detector:${string}` | `recipe:${string}@${string}`;
@@ -33,11 +33,67 @@ export interface DetectedService {
 
 export interface DetectedIac { provider: "cdk" | "cloudformation" | "terraform"; path: string }
 
+/** A file and line a dependency was seen at (test services D1-D7). Never a detector name: a candidate's evidence is always something a person can open. */
+export interface DependencyEvidence { path: string; line: number }
+
+/** How sure a detector is: `declared` (a compose, CI or IaC file says it runs), `used` (code or settings reach for it), `mentioned` (a manifest lists a driver). */
+export type DependencyStrength = "declared" | "used" | "mentioned";
+
+/** A flag on something Rovara will not do as written. Closed list: a flag is fixed words, never repository text. */
+export const DEPENDENCY_REFUSED_FIELDS = ["privileged", "host_network", "host_pid", "host_ipc", "host_volume", "docker_socket", "cap_add", "devices", "build"] as const;
+export type DependencyRefusedField = (typeof DEPENDENCY_REFUSED_FIELDS)[number];
+
+/**
+ * What a detector learned beyond the family. Every value here is a name, a number or a fixed word: a value from a file (a password, a token, a host) is never copied. `url` keeps a connection setting's scheme and
+ * host FAMILY (`local`, `private`, `cloud`, `unknown`), never the host.
+ */
+export interface DependencyHints {
+  /** The major version an image tag or manifest named (`16` for `postgres:16.4-alpine`). */
+  version?: string;
+  /** The names (not values) of the settings that point the code at it. */
+  envNames?: string[];
+  ports?: number[];
+  hasHealthcheck?: boolean;
+  /** Repository-relative files that seed it (an init script mounted into the image). */
+  initFiles?: string[];
+  /** Compose service names this one waits for. Names only. */
+  dependsOn?: string[];
+  /** Things Rovara would refuse to run as written (compose / CI / dev container). */
+  refused?: DependencyRefusedField[];
+  /** Code hard-codes an endpoint, bypassing the endpoint variables (owner Q1: settings only in v1). */
+  explicitEndpoint?: boolean;
+  /** The project's own tests already fake it in their process (`faked_by_tests`). */
+  fakedByTests?: boolean;
+  /** Testcontainers starts it in the tests (cannot run inside Rovara). */
+  testcontainers?: boolean;
+  /** The settings that name it parsed down to scheme and host family. */
+  url?: { scheme: string; hostFamily: "local" | "private" | "cloud" | "unknown" };
+  /** An AWS table's key schema, read from infrastructure code. */
+  keySchema?: { partitionKey: { name: string; type: string }; sortKey?: { name: string; type: string } };
+  /** An infrastructure resource's logical kind and its name in the template (`table`, `bucket`, `queue`, `topic`). */
+  resource?: { kind: "table" | "bucket" | "queue" | "topic"; name: string };
+  /** Which detector families saw it (`compose`, `ci`, `env`, `driver`, `sdk`, `test`, `iac`). */
+  seenBy?: string[];
+}
+
+/** What every dependency detector (D1-D7) reports. Candidates with the same family merge into one (`mergeCandidates`). A person or the chooser still decides the backing; nothing here is a `TestEnvDependency`. */
+export interface DependencyCandidate {
+  /** A `FamilyId`: `postgres`, `redis`, `aws:s3`, `http:<host>`, ... */
+  family: string;
+  kind: TestEnvDependencyKind;
+  /** Where it was seen: files and lines, at most 8 once merged. */
+  evidence: DependencyEvidence[];
+  strength: DependencyStrength;
+  hints: DependencyHints;
+}
+
 export interface Detection {
   setupCommands: Array<Located<ProjectCommand>>;
   checks: Array<Located<DetectedCheck>>;
   services: Array<Located<DetectedService>>;
   iac: Array<Located<DetectedIac>>;
+  /** Dependency candidates (test services D1-D7). Absent unless a detector found one, so a repository with none gives today's detection byte for byte. */
+  dependencies?: DependencyCandidate[];
   /** Globs that change the meaning of every test (lockfiles, conftest, build and CI config). */
   fullSuiteOn: Array<Located<string>>;
   /** Plain statements for the maintainer: what was found that the proposal cannot use, and what is not known. Fixed words, never repository text. */
