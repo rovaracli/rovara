@@ -4,7 +4,7 @@ import { COMMON_RULES, CITATION_TEXT, DESIGN_TEMPLATE_TEXT, SEVERITY_TEXT, assem
 
 export const COMPREHENSION_PROMPT: ReviewPrompt = {
   id: "design-review-comprehension",
-  version: 1,
+  version: 2,
   text: assemblePrompt([
     COMMON_RULES,
     [

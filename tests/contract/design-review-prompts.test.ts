@@ -31,7 +31,7 @@ describe("design review prompts", () => {
 
   it("fills the prompt fields of a reviewer run", () => {
     const record = promptRecord(REVIEWER_PROMPTS.critic);
-    const run = { ...record, role: "critic", model: { provider: "p", modelId: "m" }, sourceId: "s", sessionId: "x", modelKeyId: "k", packetDigest: "b".repeat(64), packet: [], filesRead: [], verified: true, tokensIn: 1, tokensOut: 1, costUsd: 0, startedAt: "2026-11-03T10:00:00Z", endedAt: "2026-11-03T10:01:00Z" };
+    const run = { ...record, role: "critic", model: { provider: "p", modelId: "m" }, sourceId: "s", sessionId: "x", modelKeyId: "k", packetDigest: "b".repeat(64), packet: [], filesRead: [], verified: true, inputProof: "digest_only", tokensIn: 1, tokensOut: 1, costUsd: 0, startedAt: "2026-11-03T10:00:00Z", endedAt: "2026-11-03T10:01:00Z" };
     expect(ReviewerRunSchema.safeParse(run).success).toBe(true);
   });
 
@@ -56,6 +56,14 @@ describe("design review prompts", () => {
     }
     expect(MERGE_PROMPT.text).toContain("```rovara-design-merge");
     expect(ALL_DESIGN_REVIEW_PROMPTS.find((prompt) => prompt.id === "design-review-resolve")!.text).toContain("```rovara-design-resolve");
+  });
+
+  it("fix round M1/M3: rule 3 names the frames, and the merge prompt asks for one section and a top finding's own words", () => {
+    for (const prompt of ALL_DESIGN_REVIEW_PROMPTS) for (const tag of ["source-file", "source-result", "request-information"]) expect(prompt.text, `${prompt.id} ${tag}`).toContain(`<${tag}`);
+    expect(MERGE_PROMPT.text).toContain("Only findings of the same section can share a group");
+    expect(MERGE_PROMPT.text).toContain("copied word for word");
+    // each prompt's version was raised when its text changed, so the recorded digest is a new one
+    for (const prompt of ALL_DESIGN_REVIEW_PROMPTS) expect(prompt.version, prompt.id).toBeGreaterThanOrEqual(2);
   });
 
   it("the example blocks in the prompts are readable by the readers", () => {

@@ -49,10 +49,10 @@ const started = (workflow: WorkflowSnapshot, extra: { estimateUsd?: number } = {
 const MODEL = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-5-5-v1" };
 const reviewerRun = (role: "comprehension" | "critic" | "codebase" | "zoom_out" | "critic_b", extra: Record<string, unknown> = {}) => ({
   role, promptId: `design-${role}`, promptVersion: 1, promptDigest: hex(7), model: MODEL, sourceId: "src_1", sessionId: `ses_${role}`, modelKeyId: `key_${role}`, packetDigest: hex(8),
-  packet: [{ kind: "design", ref: "design.md", commitOrFetchedAt: "a".repeat(40), digest: hex(9), bytes: 1200 }], filesRead: [], verified: true, tokensIn: 1000, tokensOut: 200, costUsd: 0.1,
+  packet: [{ kind: "design", ref: "design.md", commitOrFetchedAt: "a".repeat(40), digest: hex(9), bytes: 1200 }], filesRead: [], verified: true, inputProof: "digest_only", tokensIn: 1000, tokensOut: 200, costUsd: 0.1,
   startedAt: NOW, endedAt: LATER, ...extra,
 });
-const failedRun = (role: "critic" | "codebase", failure: string) => reviewerRun(role, { verified: false, verifyFailure: failure });
+const failedRun = (role: "critic" | "codebase", failure: string) => reviewerRun(role, { verified: false, verifyFailure: failure, inputProof: undefined });
 const finding = (id: string, severity: "blocker" | "major" | "nit", text: string, from: Array<"comprehension" | "critic" | "codebase" | "zoom_out" | "critic_b"> = ["critic"], section: "§1" | "§3" | "§4" = "§3") => ({
   id, severity, section, text, citations: [{ kind: "design", section }], fromReviewers: from, rawIds: from.map((role) => `${role}-${id}`), fingerprint: hex(1),
 });

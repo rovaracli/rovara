@@ -119,7 +119,7 @@ describe("the facts of a stored review", () => {
   const finding = (id: string, severity: "blocker" | "major" | "nit", section: DesignSection = "§3") => ({ id, severity, section, text: `finding ${id}`, citations: [{ kind: "design" as const, section: "§3" as const }], fromReviewers: ["critic" as const], rawIds: [id], fingerprint: "a".repeat(64) });
   const run = (verified: boolean) => ({
     role: "critic" as const, promptId: "p", promptVersion: 1, promptDigest: "a".repeat(64), model: { provider: "anthropic", modelId: "m" }, sourceId: "s", sessionId: `ses-${String(Math.random())}`, modelKeyId: "k", packetDigest: "b".repeat(64),
-    packet: [], filesRead: [], verified, ...(verified ? {} : { verifyFailure: "timeout" as const }), tokensIn: 1, tokensOut: 1, costUsd: 0.1, startedAt: "2026-11-03T10:00:00.000Z", endedAt: "2026-11-03T10:01:00.000Z",
+    packet: [], filesRead: [], verified, ...(verified ? { inputProof: "digest_only" as const } : { verifyFailure: "timeout" as const }), tokensIn: 1, tokensOut: 1, costUsd: 0.1, startedAt: "2026-11-03T10:00:00.000Z", endedAt: "2026-11-03T10:01:00.000Z",
   });
   const review = (overrides: Partial<WorkflowDesignReview> = {}): WorkflowDesignReview => ({
     decidedBy: "auto", reasons: ["new_api"], status: "done", tier: "standard", spentUsd: 0.96,

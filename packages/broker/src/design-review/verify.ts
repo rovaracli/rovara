@@ -11,8 +11,9 @@
 //   - tools are all read-only (READ_ONLY_TOOLS).
 //   - the model key was minted for this reviewer alone: it is not any other reviewer's key, and the worker, when it names a key, names this one.
 //   - the model proxy's record of that key's FIRST call reads the input the packet predicts, within 10%. This is the only check the worker cannot fake, because the proxy counts the tokens.
-//     It needs a reader of the proxy's per-call usage. When the install has none, the result says `inputProof: "digest_only"` and the card must say so (report.md).
-import { READ_ONLY_TOOLS, type REVIEWER_VERIFY_FAILURES } from "@agentx/contracts";
+//     It needs a reader of the proxy's per-call usage. When the install has none, the result says `inputProof: "digest_only"`; `runVerdictOf` carries it into `ReviewerRun.inputProof`,
+//     and the card shows `inputProofSentence(...)`, which never claims the proxy checked anything.
+import { READ_ONLY_TOOLS, type InputProof, type REVIEWER_VERIFY_FAILURES } from "@agentx/contracts";
 import { z } from "zod";
 
 export type ReviewerVerifyFailure = (typeof REVIEWER_VERIFY_FAILURES)[number];
@@ -22,11 +23,14 @@ export const FIRST_CALL_TOLERANCE = 0.1;
 /** The first request of a fresh session is the system message and one user message. */
 export const FIRST_REQUEST_MESSAGES = 2;
 
+const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}]/gu;
+
 export const WorkerReportSchema = z.object({
   sessionId: z.string().min(1).max(200),
   packetDigest: z.string().regex(/^[a-f0-9]{64}$/),
   firstRequestMessages: z.number().int().min(0).max(1_000),
-  filesRead: z.array(z.string().min(1).max(500)).max(200),
+  /** The worker's own word. Control, bidi and other invisible characters are removed (an entry that is empty afterwards is dropped); never used as proof of what was read. */
+  filesRead: z.array(z.string().min(1).max(500)).max(200).transform((files) => files.map((file) => file.replace(HIDDEN_CHARACTERS, "")).filter((file) => file !== "")),
   tools: z.array(z.string().min(1).max(64)).max(32),
   /** The id (SHA-256) of the model key the session used, when the worker names it. The broker does not rely on this: the proxy check reads the key the broker minted. */
   modelKeyId: z.string().min(1).max(200).optional(),
@@ -51,8 +55,8 @@ export type VerifyResult =
     verified: true;
     sessionId: string;
     filesRead: string[];
-    /** "digest_and_usage": the proxy confirmed the first call. "digest_only": the packet digest was the only proof of input (no usage reader). */
-    inputProof: "digest_and_usage" | "digest_only";
+    /** "proxy_first_call": the proxy confirmed the first call. "digest_only": the packet digest was the only proof of input (no usage reader). */
+    inputProof: InputProof;
     firstCallInputTokens?: number;
   }
   | { verified: false; failure: ReviewerVerifyFailure };
@@ -95,8 +99,11 @@ export async function verifyReviewerReport(input: VerifyReviewerInput): Promise<
   if (record === undefined || !Number.isFinite(record.firstCallInputTokens) || record.firstCallInputTokens <= 0 || !Number.isFinite(record.calls) || record.calls < 1) return fail("no_usage_record");
   const estimate = input.packet.estimatedInputTokens;
   if (!Number.isFinite(estimate) || estimate <= 0) return fail("first_call_mismatch");
-  if (Math.abs(record.firstCallInputTokens - estimate) > estimate * (input.tolerance ?? FIRST_CALL_TOLERANCE)) return fail("first_call_mismatch");
-  return { verified: true, sessionId: report.sessionId, filesRead: report.filesRead, inputProof: "digest_and_usage", firstCallInputTokens: record.firstCallInputTokens };
+  // A tolerance that is NaN, infinite or outside 0..1 would pass everything (NaN fails the comparison below) or nothing: it is a failure, never a pass.
+  const tolerance = input.tolerance ?? FIRST_CALL_TOLERANCE;
+  if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > 1) return fail("first_call_mismatch");
+  if (!(Math.abs(record.firstCallInputTokens - estimate) <= estimate * tolerance)) return fail("first_call_mismatch");
+  return { verified: true, sessionId: report.sessionId, filesRead: report.filesRead, inputProof: "proxy_first_call", firstCallInputTokens: record.firstCallInputTokens };
 }
 
 export interface RoundReviewer {
@@ -136,7 +143,7 @@ export async function verifyRound(input: { reviewers: readonly RoundReviewer[]; 
   return results;
 }
 
-/** The two fields of `ReviewerRun` that a result decides. */
-export function runVerdictOf(result: VerifyResult): { verified: true } | { verified: false; verifyFailure: ReviewerVerifyFailure } {
-  return result.verified ? { verified: true } : { verified: false, verifyFailure: result.failure };
+/** The fields of `ReviewerRun` that a result decides. A verified run always carries what proved its input (`inputProof`); the card words come from `inputProofSentence`. */
+export function runVerdictOf(result: VerifyResult): { verified: true; inputProof: InputProof } | { verified: false; verifyFailure: ReviewerVerifyFailure } {
+  return result.verified ? { verified: true, inputProof: result.inputProof } : { verified: false, verifyFailure: result.failure };
 }

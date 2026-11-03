@@ -23,6 +23,6 @@ export const CRITIC_STEPS_TEXT = [
 
 export const CRITIC_PROMPT: ReviewPrompt = {
   id: "design-review-critic",
-  version: 1,
+  version: 2,
   text: assemblePrompt([COMMON_RULES, CRITIC_ROLE_TEXT, DESIGN_TEMPLATE_TEXT, CRITIC_STEPS_TEXT, SEVERITY_TEXT, CITATION_TEXT, reviewerOutputText(false)]),
 };

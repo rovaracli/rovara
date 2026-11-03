@@ -4,7 +4,7 @@ import { COMMON_RULES, DESIGN_TEMPLATE_TEXT, assemblePrompt, type ReviewPrompt }
 
 export const MERGE_PROMPT: ReviewPrompt = {
   id: "design-review-merge",
-  version: 1,
+  version: 2,
   text: assemblePrompt([
     COMMON_RULES,
     [
@@ -14,17 +14,17 @@ export const MERGE_PROMPT: ReviewPrompt = {
     DESIGN_TEMPLATE_TEXT,
     [
       "WHAT TO DO",
-      "1. Put findings that report the same problem in one group, even if worded differently or reported from a different angle. Keep distinct problems apart, even in the same section. When unsure, do not merge.",
+      "1. Put findings that report the same problem in one group, even if worded differently or reported from a different angle. Only findings of the same section can share a group: a group that holds two sections is thrown away. Keep distinct problems apart, even in the same section. When unsure, do not merge.",
       "2. Every rawId appears in exactly one group. Do not drop one, repeat one, or invent one.",
       "3. A group's severity is the highest severity among its findings. You cannot lower it, and you cannot raise it.",
-      "4. A group's section is the section of one of its findings.",
-      "5. A group's text is one or two plain sentences, at most 500 characters, that say what is wrong, why it matters and what would fix it. Keep the facts of the strongest finding; do not add facts that no finding stated. A group of one keeps its text unless it can be said shorter.",
+      "4. A group's section is the section its findings share.",
+      "5. A group's text is copied word for word from the text of one of the findings in the group that has the group's highest severity. Do not reword it, shorten it or combine texts: a text that is not one of those is thrown away. Pick the one that says the problem best.",
       "6. Citations are not yours to write or change: code keeps each group's citations from its findings.",
       "7. Order the groups most serious first. At most 30 groups.",
     ].join("\n"),
     [
       "OUTPUT",
-      "End your answer with exactly one fenced block whose info string is rovara-design-merge. It holds one JSON object and nothing else. Unknown fields are refused. If your block breaks a rule above, it is thrown away and the findings are merged by code without rewording.",
+      "End your answer with exactly one fenced block whose info string is rovara-design-merge. It holds one JSON object and nothing else. Unknown fields are refused. If your block breaks a rule above, it is thrown away and the findings are merged by code.",
       "```rovara-design-merge",
       '{"merged":[{"rawIds":["critic-1","codebase-3"],"severity":"major","section":"§3","text":"..."}]}',
       "```",

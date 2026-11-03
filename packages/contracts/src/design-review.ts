@@ -113,6 +113,24 @@ export const ReviewerPacketItemSchema = z.object({
 /** Why the broker voided a reviewer's result (3.4 step 4). Fixed codes only. */
 export const REVIEWER_VERIFY_FAILURES = ["packet_digest_mismatch", "session_reused", "tool_not_read_only", "model_key_mismatch", "first_call_mismatch", "no_usage_record", "unreadable_output", "timeout"] as const;
 
+/**
+ * What proved a verified reviewer's input (3.4, DR-FU2). "proxy_first_call": the packet digest matched AND the model proxy's own count of the key's first call was within tolerance of the
+ * packet. "digest_only": only the packet digest was checked (no proxy first-call reader is installed yet). A verified run must say which; the card words come from `INPUT_PROOF_SENTENCES`.
+ */
+export const INPUT_PROOFS = ["proxy_first_call", "digest_only"] as const;
+export const InputProofSchema = z.enum(INPUT_PROOFS);
+export type InputProof = z.infer<typeof InputProofSchema>;
+/** The one fixed sentence for each proof. The card shows these and nothing that sounds stronger: "digest_only" never says the proxy confirmed anything. */
+export const INPUT_PROOF_SENTENCES: Readonly<Record<InputProof, string>> = Object.freeze({
+  digest_only: "verified by packet digest; the proxy's first-call size was not checked",
+  proxy_first_call: "verified by packet digest and the proxy's first call",
+});
+export function inputProofSentence(proof: InputProof): string {
+  return INPUT_PROOF_SENTENCES[proof];
+}
+/** The label for `ReviewerRun.filesRead` on the card: the worker's own list, not something Rovara checked (never use it as citation proof). */
+export const FILES_READ_LABEL = "reported by the worker";
+
 /** One reviewer's run: what it was given and what it cost. This record is the fresh-context evidence on the decision card. */
 export const ReviewerRunSchema = z.object({
   role: ReviewerRoleSchema,
@@ -125,9 +143,12 @@ export const ReviewerRunSchema = z.object({
   modelKeyId: z.string().min(1).max(200),
   packetDigest: Digest,
   packet: z.array(ReviewerPacketItemSchema).max(DESIGN_REVIEW_PACKET_ITEMS_MAX),
-  filesRead: z.array(z.string().min(1).max(500)).max(200),
+  /** The worker's own list of files it says it read (`FILES_READ_LABEL`). Plain text only. */
+  filesRead: z.array(PlainLine(500)).max(200),
   verified: z.boolean(),
   verifyFailure: z.enum(REVIEWER_VERIFY_FAILURES).optional(),
+  /** Required when `verified`: what proved the input. Absent when not verified. */
+  inputProof: InputProofSchema.optional(),
   tokensIn: z.number().int().min(0),
   tokensOut: z.number().int().min(0),
   costUsd: Usd,
@@ -139,10 +160,31 @@ export const ReviewerRunSchema = z.object({
   if (run.paraphrase !== undefined && run.role !== "comprehension") context.addIssue({ code: "custom", path: ["paraphrase"], message: "only the comprehension reviewer writes a paraphrase" });
   if (!run.verified && run.verifyFailure === undefined) context.addIssue({ code: "custom", path: ["verifyFailure"], message: "an unverified run says why" });
   if (run.verified && run.verifyFailure !== undefined) context.addIssue({ code: "custom", path: ["verifyFailure"], message: "a verified run has no failure" });
+  if (run.verified && run.inputProof === undefined) context.addIssue({ code: "custom", path: ["inputProof"], message: "a verified run says what proved its input" });
+  if (!run.verified && run.inputProof !== undefined) context.addIssue({ code: "custom", path: ["inputProof"], message: "an unverified run has no input proof" });
 });
 export type ReviewerRun = z.infer<typeof ReviewerRunSchema>;
 
 export const DESIGN_FINDING_SEVERITIES = ["blocker", "major", "nit"] as const;
+const SEVERITY_ORDER: Record<(typeof DESIGN_FINDING_SEVERITIES)[number], number> = { blocker: 0, major: 1, nit: 2 };
+
+/** A finding's text with case, spacing and punctuation taken out: the form in which two texts are "the same words". */
+export function normalizedFindingText(text: string): string {
+  return text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+/**
+ * A reviewer's own finding, as it was written, kept on the merged finding it was grouped into (M3). The merge step cannot touch these: they are copied by code from the raw findings, so the card can
+ * expand a merged finding to the reviewers' words, and the identity of the finding across rounds (`designFindingFingerprint`) is taken from them, never from the merge model's wording (M4).
+ */
+export const RawFindingRecordSchema = z.object({
+  rawId: z.string().min(1).max(64),
+  role: ReviewerRoleSchema,
+  severity: z.enum(DESIGN_FINDING_SEVERITIES),
+  text: z.string().min(1).max(500),
+}).strict();
+export type RawFindingRecord = z.infer<typeof RawFindingRecordSchema>;
+
 export const DesignFindingSchema = z.object({
   id: z.string().min(1).max(64),
   severity: z.enum(DESIGN_FINDING_SEVERITIES),
@@ -153,11 +195,27 @@ export const DesignFindingSchema = z.object({
   origin: z.enum(["reviewers", "rovara"]).optional(),
   fromReviewers: z.array(ReviewerRoleSchema).max(DESIGN_REVIEW_REVIEWERS_MAX),
   rawIds: z.array(z.string().min(1).max(64)).max(DESIGN_REVIEW_REVIEWERS_MAX * 15),
+  /** The reviewers' own words for every raw finding in `rawIds` (same ids). Absent only on a finding Rovara adds itself, or one stored before this field. */
+  rawFindings: z.array(RawFindingRecordSchema).max(DESIGN_REVIEW_REVIEWERS_MAX * 15).optional(),
   fingerprint: Digest,
 }).strict().superRefine((finding, context) => {
   const byRovara = finding.origin === "rovara";
   if (byRovara && (finding.fromReviewers.length > 0 || finding.rawIds.length > 0)) context.addIssue({ code: "custom", path: ["origin"], message: "a finding Rovara adds names no reviewer" });
   if (!byRovara && (finding.fromReviewers.length === 0 || finding.rawIds.length === 0)) context.addIssue({ code: "custom", path: ["fromReviewers"], message: "a reviewer finding names its reviewers and raw findings" });
+  const raw = finding.rawFindings;
+  if (raw === undefined) return;
+  // What the merge step may and may not have done is checked on the stored shape too, so a finding built any other way is held to the same rules.
+  const ids = raw.map((entry) => entry.rawId);
+  if (ids.length !== finding.rawIds.length || new Set(ids).size !== ids.length || finding.rawIds.some((id) => !ids.includes(id))) {
+    context.addIssue({ code: "custom", path: ["rawFindings"], message: "the raw findings are the ones named in rawIds" });
+    return;
+  }
+  if (raw.length === 0) return;
+  const top = raw.reduce((highest, entry) => (SEVERITY_ORDER[entry.severity] < SEVERITY_ORDER[highest] ? entry.severity : highest), raw[0]!.severity);
+  if (finding.severity !== top) context.addIssue({ code: "custom", path: ["severity"], message: "a finding keeps the highest severity of its raw findings" });
+  const own = normalizedFindingText(finding.text);
+  if (!raw.some((entry) => entry.severity === top && normalizedFindingText(entry.text) === own)) context.addIssue({ code: "custom", path: ["text"], message: "a finding's text is one of its highest-severity raw findings" });
+  if (!finding.fromReviewers.every((role) => raw.some((entry) => entry.role === role)) || !raw.every((entry) => finding.fromReviewers.includes(entry.role))) context.addIssue({ code: "custom", path: ["fromReviewers"], message: "the reviewers are the raw findings' reviewers" });
 });
 export type DesignFinding = z.infer<typeof DesignFindingSchema>;
 
@@ -307,10 +365,36 @@ export function designReviewSettingOf(playbook: { designReview?: DesignReviewSet
 }
 
 /**
- * The identity of a finding across rounds and in the merge step's exact-duplicate check: a hash of its section and its text with case, spacing and punctuation taken out.
- * Code computes it; one a reviewer or the merge step wrote is replaced, so a model can neither hide a new finding behind an old fingerprint nor split an old one.
+ * The identity of one reviewer's finding: a hash of its section and its text with case, spacing and punctuation taken out.
  */
-export function designFindingFingerprint(finding: { section: string; text: string }): string {
-  const text = finding.text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  return sha256Hex(JSON.stringify([finding.section, text]));
+function rawFindingFingerprint(section: string, text: string): string {
+  return sha256Hex(JSON.stringify([section, normalizedFindingText(text)]));
+}
+
+/**
+ * The reviewers' fingerprints behind a finding, sorted and each once. They come from the raw findings (the reviewers' own words, grouped by the merge step), and from the finding's own
+ * section and text only when it has no raw findings (a finding Rovara adds, or one stored before raw findings were kept). The merge model's wording is never a source.
+ */
+export function designRawFingerprints(finding: { section: string; text: string; rawFindings?: readonly { text: string }[] | undefined }): string[] {
+  const raw = finding.rawFindings ?? [];
+  const prints = raw.length === 0 ? [rawFindingFingerprint(finding.section, finding.text)] : raw.map((entry) => rawFindingFingerprint(finding.section, entry.text));
+  return [...new Set(prints)].sort();
+}
+
+/**
+ * The identity of a finding across rounds and in the merge step's exact-duplicate check (M4). Code computes it from the reviewers' raw findings: one raw finding gives that finding's own
+ * fingerprint (section + normalised words); a group gives a hash of the sorted set of its members' fingerprints. A model can neither hide a new finding behind an old fingerprint (adding
+ * the new raw finding to the group changes the set) nor choose the words the identity is taken from (the merge text is display only).
+ * Interface for the carry-over of settled resolutions: equality of this value means the same set of raw findings; `designFindingCoveredBy` is the "every new raw finding was in the earlier
+ * one" test; the carry-over adds its own checks (severity, role) on top.
+ */
+export function designFindingFingerprint(finding: { section: string; text: string; rawFindings?: readonly { text: string }[] | undefined }): string {
+  const prints = designRawFingerprints(finding);
+  return prints.length === 1 ? prints[0]! : sha256Hex(JSON.stringify(["group", prints]));
+}
+
+/** True when every raw finding of `next` was already a raw finding of `earlier` (same section and words): nothing new is hidden in `next`. */
+export function designFindingCoveredBy(next: { section: string; text: string; rawFindings?: readonly { text: string }[] | undefined }, earlier: { section: string; text: string; rawFindings?: readonly { text: string }[] | undefined }): boolean {
+  const known = new Set(designRawFingerprints(earlier));
+  return designRawFingerprints(next).every((print) => known.has(print));
 }

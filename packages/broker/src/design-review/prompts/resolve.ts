@@ -5,7 +5,7 @@ import { COMMON_RULES, DESIGN_TEMPLATE_TEXT, assemblePrompt, type ReviewPrompt }
 /** Runs in the planner's own session (it wrote the design), not in a fresh one. */
 export const RESOLVE_PROMPT: ReviewPrompt = {
   id: "design-review-resolve",
-  version: 1,
+  version: 2,
   text: assemblePrompt([
     COMMON_RULES,
     [
