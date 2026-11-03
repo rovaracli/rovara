@@ -66,8 +66,15 @@ export const DecisionCardsViewReaderSchema = z.looseObject({
 export const DecisionOpenedBodySchema = z.object({ requestId: z.string().uuid(), shownDigest: DecisionDigestSchema }).strict();
 export type DecisionOpenedBody = z.infer<typeof DecisionOpenedBodySchema>;
 
-/** `POST /v1/app/decisions/{kind}/{subject}/approve`. `tab` is required on a card with tabs (one approval per tab) and refused on one without; `shownDigest` is what the person was shown. Not bulk: one card, one tab, one request. */
-export const DecisionApproveBodySchema = z.object({ requestId: z.string().uuid(), shownDigest: DecisionDigestSchema, tab: DecisionTabIdSchema.optional() }).strict();
+/** The longest one-line reason a person gives for approving a design that still has an open blocker (owner Q8). */
+export const DECISION_APPROVE_REASON_MAX = 200;
+
+/**
+ * `POST /v1/app/decisions/{kind}/{subject}/approve`. `tab` is required on a card with tabs (one approval per tab) and refused on one without; `shownDigest` is what the person was shown. Not bulk: one card, one tab, one
+ * request. `reason` is one plain line, accepted ONLY where the card has an open design blocker, and REQUIRED there (Q8): the handler of that card refuses it anywhere else and refuses the approval without it. It is
+ * put on the PR's Proof line, so it is bounded and has no control or hidden characters here, and is cleaned again where it is used.
+ */
+export const DecisionApproveBodySchema = z.object({ requestId: z.string().uuid(), shownDigest: DecisionDigestSchema, tab: DecisionTabIdSchema.optional(), reason: line(DECISION_APPROVE_REASON_MAX).optional() }).strict();
 export type DecisionApproveBody = z.infer<typeof DecisionApproveBodySchema>;
 
 /** What an approve or a reject answers when it was decided: the card, what was recorded and, on a card with tabs, which documents are still waiting. */

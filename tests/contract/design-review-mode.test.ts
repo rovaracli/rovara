@@ -8,9 +8,10 @@ import {
 import {
   designClassificationLine, designReasonPhrase, resolveDesignMode, skipRefusalText, skipVerdict, type DesignModeDecision, type DesignModeInput,
 } from "../../packages/broker/src/design-review/mode.js";
+import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, markEffective, type EffectiveDesignReviewSetting } from "../../packages/broker/src/design-review/effective-setting.js";
 import { UNDERSTAND_RULES } from "../../packages/broker/src/rovara-code/understand.js";
 
-const setting = (patch: Partial<DesignReviewSetting> = {}): DesignReviewSetting => ({ ...DESIGN_REVIEW_DEFAULT_SETTING, ...patch });
+const setting = (patch: Partial<DesignReviewSetting> = {}): EffectiveDesignReviewSetting => markEffective({ ...DESIGN_REVIEW_DEFAULT_SETTING, ...patch });
 const ready = (design?: { needed: boolean; reasons: DesignReason[]; note?: string }): IntentAssessment => ({
   kind: "ready", path: "QUICK", restatement: "Do the thing.", assumptions: [],
   ...(design === undefined ? {} : { design: { needed: design.needed, reasons: design.reasons, note: design.note ?? "Rovara's reading." } }),
@@ -40,7 +41,7 @@ describe("the table of 3.1, row by row", () => {
     { name: "setting auto and design.needed: ON", input: { setting: setting(), assessment: needed }, on: true, decidedBy: "auto" },
     { name: "setting auto and not needed: OFF", input: { setting: setting(), assessment: notNeeded }, on: false, decidedBy: "auto", offBecause: "not_needed" },
     { name: "setting auto and an older worker with no design field: OFF (reads as not needed)", input: { setting: setting(), assessment: ready() }, on: false, decidedBy: "auto", offBecause: "not_needed" },
-    { name: "a playbook with no setting runs the defaults (auto)", input: { setting: undefined, assessment: needed }, on: true, decidedBy: "auto" },
+    { name: "a playbook with no setting runs the defaults (auto)", input: { setting: setting(), assessment: needed }, on: true, decidedBy: "auto" },
   ];
   for (const row of rows) {
     it(row.name, () => {
@@ -248,4 +249,16 @@ describe("Understand eval cases (fixtures: 5 needs design, 5 does not)", () => {
       expect(decide({ setting: setting(), assessment: read.ok ? read.assessment : undefined }).on).toBe(entry.expect.needed);
     });
   }
+});
+
+describe("fix round (M3): mode resolution takes only a setting held to the company's lock", () => {
+  it("a raw playbook setting does not compile, and at run time is read as the strictest posture, never as itself", () => {
+    const raw = { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" as const, allowSkip: true };
+    // @ts-expect-error a raw DesignReviewSetting is not an EffectiveDesignReviewSetting
+    const result = resolveDesignMode({ setting: raw, assessment: notNeeded });
+    expect(result).toMatchObject({ decided: true, on: true, decidedBy: "always", skip: { allowed: false, because: "skip_off" } });
+    // The same values, held to a lock, are the effective setting and are honoured.
+    expect(resolveDesignMode({ setting: markEffective(raw), assessment: notNeeded })).toMatchObject({ on: false, decidedBy: "never" });
+    expect(DESIGN_REVIEW_FAIL_CLOSED_SETTING.mode).toBe("always");
+  });
 });

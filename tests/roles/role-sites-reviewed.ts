@@ -35,6 +35,8 @@ export const REVIEWED_ROLE_SITES: readonly ReviewedRoleSite[] = [
   { file: "packages/broker/src/org/reviewed-project-restore.ts", needle: 'auth.actor.role === "member"', why: LIFECYCLE },
   { file: "packages/broker/src/org/project-working-branch-save.ts", needle: 'auth.actor.role==="member"?read', why: LIFECYCLE },
   { file: "packages/broker/src/org/project-working-branch-save.ts", needle: 'if(auth.actor.role==="member")add("grant"', why: LIFECYCLE },
+  // ---- design review (DR8/DR9 fix round)
+  { file: "packages/broker/src/design-review/card-source.ts", needle: "roles.includes(run.role)", why: "REVIEWER role (comprehension, critic, codebase...), the design review reviewer kind, not a company or project role. It decides whether a later reviewer run could confirm an earlier finding fixed; no person is judged and an Auditor is not involved." },
   // ---- approvals and role changes
   { file: "packages/broker/src/org/role-changes.ts", needle: 'change.role === "member" || change.role === "auditor"', why: "A demotion from owner or admin to member OR Auditor moves the approval-membership generation, so an approval the person made as an admin stops counting." },
   { file: "packages/broker/src/org/store.ts", needle: 'role === "member" || role === "auditor"', why: "The same demotion rule in the store's legacy role change." },

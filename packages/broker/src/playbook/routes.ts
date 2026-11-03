@@ -1,12 +1,14 @@
 // "How we work" (H2): `GET` and `PUT /v1/app/projects/{p}/playbook`. Anyone who can see the project reads it; the PUT needs `edit_settings` (a maintainer), as the project's code
 // settings do, and the revision the caller read. The project is found through `projectFor`, so another org's project and one the caller has no role in answer the same 404.
 import {
+  DESIGN_REVIEW_LOCKED_FIELDS,
   ProjectPlaybookBodySchema,
   agentXError,
   projectAllows,
   type AgentId,
   type EditionPolicy,
   type HowWeWorkView,
+  type OrgId,
   type ProjectPlaybookResponse,
   type ProjectRole,
 } from "@agentx/contracts";
@@ -15,10 +17,10 @@ import { assertStoredVersionModelsResolvable, pointerModelGuards } from "../agen
 import type { AuditRuntime, TransactItem } from "../audit/outbox.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
-import { checkDesignReviewWrite, readDesignReviewLock } from "../design-review/lock.js";
+import { checkDesignReviewWrite, effectiveDesignReviewSetting, lockedFields, readDesignReviewLock, type DesignReviewLockRead } from "../design-review/lock.js";
 import { computeHowWeWork, type HowWeWorkDependencies } from "./effective.js";
 import { postProjectProcess } from "./process-layer.js";
-import { readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
+import { DESIGN_REVIEW_GROUP_EDITION, DESIGN_REVIEW_LOCKED, DESIGN_REVIEW_LOCK_UNREADABLE, readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
 import { registerPlaybookApprovals } from "./process-switch-approval.js";
 import { holdBuiltinSwitch, type SwitchAgentStore } from "./process-switch.js";
 import { requireProcessLayer } from "./project-process.js";
@@ -48,20 +50,26 @@ export interface ProjectPlaybookDependencies {
    * Wiring pending: the dependency builder (a hot file) passes the install's policy.
    */
   edition?: EditionPolicy | undefined;
+  /**
+   * Who may be named as the high-risk approver in a project: its maintainers and members whose role can approve, never an Auditor or a viewer. When present, a setting that names anyone else is refused
+   * (store). Wiring pending: the dependency builder (a hot file) passes it.
+   */
+  namedApproverCandidates?: ((orgId: OrgId, project: string) => Promise<readonly string[]>) | undefined;
   /** The caller's role in the project: the project's name, or the one `PROJECT_NOT_FOUND` for no access, no such project and another org's. */
   projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }>;
 }
 
 const MAINTAINERS_ONLY = "only a project maintainer can change how the project works";
-/** What a refused design review setting says. Field names only; the company's lock values and the project's are never echoed. */
-const DESIGN_REVIEW_LOCKED = "your company has set a stricter rule for design review";
-const DESIGN_REVIEW_GROUP_EDITION = "a group can be the high-risk approver only in the Enterprise edition";
-const DESIGN_REVIEW_LOCK_UNREADABLE = "your company's design review rules can't be read right now, so this can't be saved";
 
 /** `GET /v1/app/projects/{p}/playbook`: to anyone who can see the project. */
 export async function getProjectPlaybook(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, rawProject: string): Promise<ProjectPlaybookResponse> {
   const { name } = await deps.projectFor(caller, rawProject);
-  return { playbook: await readProjectPlaybook(deps, caller.orgId, name, { lenient: true }) };
+  const playbook = await readProjectPlaybook(deps, caller.orgId, name, { lenient: true });
+  // The setting shown is the one the project RUNS with: held to the company's lock, with the locked fields named (M3). A lock that cannot be read (or a read that fails) is never "no lock".
+  const lock: DesignReviewLockRead = await readDesignReviewLock(deps, caller.orgId).catch((): DesignReviewLockRead => ({ kind: "unreadable" }));
+  if (lock.kind === "none") return { playbook };
+  const held = effectiveDesignReviewSetting(playbook, lock);
+  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewLocked: lock.kind === "lock" ? lockedFields(lock.lock) : [...DESIGN_REVIEW_LOCKED_FIELDS] };
 }
 
 /**
