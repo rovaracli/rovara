@@ -466,7 +466,7 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         /** SH30 (switch `sp`): the company recipes offered to the detectors' proposal. Only with `testEnvDetect`; only to a worker whose /ping lists "task.setupRecipes.v1". */
         testEnvRecipes: z.array(SetupRecipeOfferSchema).max(SETUP_RECIPE_OFFERS_MAX).optional(),
         /**
-         * Test environment (wire-testenv): the approved environment as this verification run needs it (which commands are its checks, how to select tests, the round budget). Verification mode only. Sent only while the
+         * Test environment (wire-testenv): the approved environment as this verification run needs it (which commands are its checks, how to select tests, the round budget). Verification mode only; a coding run is sent it too, but only a plan with dependencies (test services: the working sandbox gets them while the agent codes). Sent only while the
          * switch is on and the task pinned an environment a task may use, and only to a worker whose /ping lists "task.testEnvironment.v1"; never dropped, because an older worker's strict parse would refuse it.
          */
         testEnvironment: TestEnvTaskPlanSchema.optional(),
@@ -496,8 +496,9 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         if (payload.testEnvDetect !== undefined && (payload.workflowMode !== "SETUP_DRAFT" || payload.diagnosis !== undefined)) {
           context.addIssue({ code: "custom", path: ["testEnvDetect"], message: "test environment detection requires the setup draft mode and is not a diagnosis" });
         }
-        if (payload.testEnvironment !== undefined && payload.workflowMode !== "CHECKS") {
-          context.addIssue({ code: "custom", path: ["testEnvironment"], message: "a test environment plan requires the verification (checks) mode" });
+        // Test services (slice 1): a coding run carries the plan too, but only one with dependencies (the working sandbox gets them while the agent codes); every other mode is as it was.
+        if (payload.testEnvironment !== undefined && payload.workflowMode !== "CHECKS" && !(payload.workflowMode === "IMPLEMENT" && (payload.testEnvironment.dependencies?.length ?? 0) > 0)) {
+          context.addIssue({ code: "custom", path: ["testEnvironment"], message: "a test environment plan requires the verification (checks) mode, or a coding run with dependencies" });
         }
         if (payload.ownerRedirect !== undefined && payload.workflowMode !== "IMPLEMENT") {
           context.addIssue({ code: "custom", path: ["ownerRedirect"], message: "an owner redirect requires implementation mode" });

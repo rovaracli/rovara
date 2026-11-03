@@ -1,10 +1,10 @@
 // Test services, slice 1 T2: which dependencies a task's plan starts (pinned from the signed catalog), when an approved environment with dependencies may be used by a task, and what happens when it cannot be planned.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TestEnvironmentBodySchema, TestEnvTaskPlanSchema, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@agentx/contracts";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, TEST_SERVICES_MIN_CATALOG_REVISION, dependenciesStartableNow, serviceCatalogSourceOf, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS } from "../../packages/broker/src/test-env/devcontainer-check.js";
-import { testEnvPlanFor } from "../../packages/broker/src/test-env/task-plan.js";
+import { testEnvImplementPlanFor, testEnvPlanFor } from "../../packages/broker/src/test-env/task-plan.js";
 import { UNUSED_WORDS, environmentUnusedReason, testEnvironmentForStart } from "../../packages/broker/src/test-env/usable.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
 import { pinnedCatalog, testSigner, unpinnedCatalog, verifiedCatalog, digestOfId } from "../support/catalog-pinning.js";
@@ -211,6 +211,59 @@ describe("the plan of a run with dependencies", () => {
     h.deps.serviceCatalog = async () => { reads += 1; return catalog(); };
     expect(await planOf(h, { TEST_ENVIRONMENT_ENABLED: "1" })).toBeUndefined();
     expect(reads).toBe(0);
+  });
+});
+
+describe("the plan a coding run is sent (the working sandbox gets the dependencies)", () => {
+  const harnessWith = async (environment = body(), env: NodeJS.ProcessEnv = ON, devcontainer = false) => {
+    const db = new FakeDynamoDb();
+    const audit = capturingAuditDeps({ db });
+    db.set({ ...projectMetaKey(ORG, PROJECT), status: "active" });
+    db.set(projectRow(false));
+    const clock = { now: Date.UTC(2026, 10, 3, 10, 0, 0) };
+    const deps: TestEnvDeps & { serviceCatalog?: () => Promise<VerifiedCatalog | undefined> } = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit, env: ON };
+    const proposal = await proposeTestEnvironment(deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: environment });
+    await recordTestEnvProveReport(deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }, { step: "dependencies", status: "passed", durationMs: 0 }, { step: "dependency_usage", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(clock.now).toISOString() } });
+    await approveTestEnvironment(deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-12345678", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: clock.now - 1_000 });
+    const start = await testEnvironmentForStart(deps, { orgId: ORG, project: PROJECT, taskId: "t1" }, env);
+    if (start.pin !== undefined) db.set((start.pin as { Put: { Item: Record<string, unknown> } }).Put.Item);
+    if (devcontainer) db.set(projectRow(true));
+    return { db, deps };
+  };
+  const implementPlan = (h: Awaited<ReturnType<typeof harnessWith>>, env: NodeJS.ProcessEnv = ON) => testEnvImplementPlanFor(h.deps, { orgId: ORG, project: PROJECT, taskId: "t1" }, env);
+
+  it("carries the pinned dependencies, with the same pinning as the checks, and needs no readiness commands", async () => {
+    const h = await harnessWith();
+    h.deps.serviceCatalog = async () => catalog();
+    const plan = (await implementPlan(h))!;
+    expect(plan.digest).toBe(testEnvDigest(body()));
+    expect(plan.dependencies?.map((entry) => [entry.id, entry.catalogId, entry.digest])).toEqual([["postgres", "postgres@16", digestOfId("postgres@16")]]);
+    expect(TestEnvTaskPlanSchema.safeParse(plan).success).toBe(true);
+    expect(plan.lastNightlyFailures).toBeUndefined();
+  });
+
+  it("is nothing with tx off (and nothing is read), and nothing for an environment without dependencies or a task without a pin", async () => {
+    const h = await harnessWith();
+    h.deps.serviceCatalog = async () => catalog();
+    const reads = vi.fn(h.db.send.bind(h.db));
+    h.deps.documentClient = { send: reads };
+    expect(await implementPlan(h, { TEST_ENVIRONMENT_ENABLED: "1" })).toBeUndefined();
+    expect(await implementPlan(h, {})).toBeUndefined();
+    expect(reads).not.toHaveBeenCalled();
+    const without = await harnessWith(body({ dependencies: undefined }));
+    expect(await implementPlan(without)).toBeUndefined();
+    const none = await harnessWith();
+    expect(await testEnvImplementPlanFor(none.deps, { orgId: ORG, project: PROJECT, taskId: "t9" }, ON)).toBeUndefined();
+  });
+
+  it("refuses the run, in fixed words, when the catalog cannot pin it or the project has a dev container", async () => {
+    const h = await harnessWith();
+    await expect(implementPlan(h)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.no_catalog);
+    h.deps.serviceCatalog = async () => verifiedCatalog(unpinnedCatalog());
+    await expect(implementPlan(h)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.not_pinned);
+    h.deps.serviceCatalog = async () => catalog();
+    h.db.set(projectRow(true));
+    await expect(implementPlan(h)).rejects.toThrow(DEPENDENCIES_WITH_DEVCONTAINER_WORDS);
   });
 });
 
