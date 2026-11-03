@@ -12,7 +12,9 @@ import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { TEST_ENV_DRAFT_MAX_BYTES, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
-import { ENV_DETECT_MAX_FILE_BYTES, ENV_DETECT_MAX_PATHS, boundedReader, buildEnvironmentDraft, proposalFromDraft, runDetectors } from "./env-detect/index.js";
+import { ENV_DETECT_MAX_FILE_BYTES, ENV_DETECT_MAX_PATHS, boundedReader, buildEnvironmentDraft, proposalFromDraft } from "./env-detect/index.js";
+import { runDetectorsGuarded } from "./env-detect/guarded.js";
+import type { WorkerLogSink } from "./worker-log.js";
 import { applyRecipe, type RecipeOffer } from "./env-detect/recipes.js";
 
 export interface DetectRepository { name: string; path: string; defaultBranch: string; checkedOut?: unknown }
@@ -93,7 +95,7 @@ function uniqueId(id: string, taken: Set<string>): string {
  * The draft environment of a workspace: the detectors' findings for every repository (default branch only), merged into one sandbox-tier environment, with the setup agent's commands added where code found none.
  * Undefined when there is nothing to propose (no repository was readable, or no detector found a check) or the merged environment is not valid: a draft that cannot be proposed is not reported.
  */
-export async function detectTestEnvironment(input: { rootPath: string; repositories: readonly DetectRepository[]; setupProposal?: SetupProposal | undefined; recipes?: readonly RecipeOffer[] | undefined }): Promise<TestEnvDraft | undefined> {
+export async function detectTestEnvironment(input: { rootPath: string; repositories: readonly DetectRepository[]; setupProposal?: SetupProposal | undefined; recipes?: readonly RecipeOffer[] | undefined; detectTimeoutMs?: number | undefined; log?: WorkerLogSink | undefined }): Promise<TestEnvDraft | undefined> {
   const environments: TestEnvironmentBody[] = [];
   const valueSources: TestEnvDraft["valueSources"] = [];
   const pending: TestEnvDraft["pendingServices"] = [];
@@ -105,7 +107,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     const directory = join(input.rootPath, repository.path);
     const paths = await listRepositoryFiles(directory);
     const { reader } = boundedReader(paths, (path) => readRepositoryFile(directory, path));
-    const detected = await runDetectors(reader, repository.path);
+    const detected = await runDetectorsGuarded(reader, repository.path, { timeoutMs: input.detectTimeoutMs, log: input.log });
     // Company recipes (SH30, switch `sp`): offered only when the broker's switch is on. A recipe adds commands and checks the detectors did not find, each cited `recipe:<id>@<revision>`, from the same default-branch
     // reader as the detectors; it never fails the draft.
     const detection = input.recipes === undefined || input.recipes.length === 0 ? detected : await applyRecipe(detected, input.recipes, reader, repository.path).then((applied) => applied.detection, () => detected);

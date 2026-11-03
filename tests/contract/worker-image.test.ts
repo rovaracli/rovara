@@ -129,3 +129,99 @@ describe("the worker image", () => {
     expect(() => webApiProbeRunnerConfig({ EXECUTOR_IMAGE: "" }, "linux", "arm64")).toThrow(/EXECUTOR_IMAGE/);
   });
 });
+
+// The environment detectors run in a thread started from packages/worker/dist/env-detect/detect-thread.js (guarded.ts). The image has no tsx (npm prune --omit=dev), so if that compiled file were missing the detectors would run
+// unguarded. There is no Docker in CI for this test, so it follows the chain through the files: build context -> build stage compile -> final stage copy -> the path guarded.ts resolves.
+describe("the worker image ships the detector thread", () => {
+  const buildStage = dockerfile.slice(dockerfile.indexOf("AS build"), dockerfile.indexOf(" AS tools"));
+  const THREAD_SOURCES = ["packages/worker/src/env-detect/detect-thread.ts", "packages/worker/src/env-detect/guarded.ts", "packages/worker/src/env-detect/index.ts", "packages/worker/src/worker-log.ts", "packages/worker/tsconfig.json", "packages/worker/package.json"];
+
+  /** Docker's .dockerignore rules, for the patterns this repository uses: rooted, `*` and `?` stay inside one path part, `**` crosses parts, `!` re-includes, and an ignored directory ignores everything in it. */
+  const ignoreRules = readFileSync(".dockerignore", "utf8").split("\n").map((line) => line.trim()).filter((line) => line !== "" && !line.startsWith("#"));
+  const globToRegex = (pattern: string): RegExp => {
+    const body = pattern.replace(/\/+$/u, "");
+    let out = "";
+    for (let index = 0; index < body.length; index += 1) {
+      const char = body[index]!;
+      if (char === "*" && body[index + 1] === "*") { out += body[index + 2] === "/" ? "(?:.*/)?" : ".*"; index += body[index + 2] === "/" ? 2 : 1; }
+      else if (char === "*") out += "[^/]*";
+      else if (char === "?") out += "[^/]";
+      else out += char.replace(/[.+^${}()|[\]\\]/gu, "\\$&");
+    }
+    return new RegExp(`^${out}$`, "u");
+  };
+  const ignored = (path: string): boolean => {
+    const parts = path.split("/");
+    let result = false;
+    for (const rule of ignoreRules) {
+      const negate = rule.startsWith("!");
+      const regex = globToRegex(negate ? rule.slice(1) : rule);
+      // A pattern matches the path itself or any directory above it.
+      if (parts.some((_, index) => regex.test(parts.slice(0, index + 1).join("/")))) result = !negate;
+    }
+    return result;
+  };
+
+  it("keeps the thread's sources in the build context, while host build output stays out of it (so the image must compile them)", () => {
+    expect(ignored("packages/worker/dist/env-detect/detect-thread.js")).toBe(true);
+    expect(ignored("packages/worker/node_modules/yaml/index.js")).toBe(true);
+    for (const file of THREAD_SOURCES) {
+      expect(existsSync(file), `${file} exists`).toBe(true);
+      expect(ignored(file), `${file} is sent to the build`).toBe(false);
+    }
+    // The pattern list holds nothing that names the detectors or the worker's source.
+    expect(ignoreRules.filter((rule) => /env-detect|detect-thread|packages\/worker|\bsrc\b/u.test(rule))).toEqual([]);
+  });
+
+  it("compiles packages/worker with tsc -b inside the build stage, from the sources copied into it, after the dependencies are installed", () => {
+    const install = buildStage.indexOf("RUN npm ci");
+    const copy = buildStage.indexOf("COPY packages/worker packages/worker\n");
+    const compile = /RUN npx tsc -b ([^\n]*)packages\/worker\b[^\n]*/u.exec(buildStage);
+    expect(install).toBeGreaterThan(-1);
+    expect(copy).toBeGreaterThan(install);
+    expect(compile, "a tsc -b line that builds packages/worker").not.toBeNull();
+    expect(buildStage.indexOf(compile![0])).toBeGreaterThan(copy);
+  });
+
+  it("takes packages/worker, with its compiled dist, from the build stage into the final stage, never from the host", () => {
+    const copies = finalStage.split("\n").filter((line) => /^COPY\b/u.test(line) && line.includes("packages/worker"));
+    expect(copies).toContain("COPY --from=build /opt/agentx/packages/worker ./packages/worker");
+    // The only other copy of a worker file from the host is the read-only boot script; nothing copies a host dist over the compiled one.
+    expect(copies.filter((line) => !line.includes("--from=build"))).toEqual(["COPY --chown=root:root --chmod=0444 packages/worker/ec2/boot-stage2.sh /opt/agentx/boot/stage2.sh"]);
+    expect(finalStage.indexOf("COPY --from=build /opt/agentx/packages/worker ./packages/worker")).toBeGreaterThan(finalStage.indexOf("COPY --from=build /opt/agentx/node_modules ./node_modules"));
+    // Dev dependencies are pruned in the build stage, so the image has no tsx: the thread must start from the compiled file.
+    expect(buildStage).toContain("npm prune --omit=dev --workspaces");
+  });
+
+  it("compiles src/env-detect/detect-thread.ts to dist/env-detect/detect-thread.js, the file the build check and guarded.ts name", () => {
+    const tsconfig = JSON.parse(readFileSync("packages/worker/tsconfig.json", "utf8")) as { compilerOptions: { rootDir: string; outDir: string }; include: string[]; exclude?: string[] };
+    expect(tsconfig.include).toContain("src/**/*.ts");
+    expect(tsconfig.exclude ?? []).toEqual([]);
+    const { rootDir, outDir } = tsconfig.compilerOptions;
+    const emitted = `${outDir}/${"src/env-detect/detect-thread.ts".slice(`${rootDir}/`.length).replace(/\.ts$/u, ".js")}`;
+    expect(emitted).toBe("dist/env-detect/detect-thread.js");
+    expect(readFileSync("scripts/check-worker-dist.ts", "utf8")).toContain(`packages/worker/${emitted}`);
+    const base = JSON.parse(readFileSync("tsconfig.base.json", "utf8")) as { compilerOptions: { module?: string } };
+    expect(base.compilerOptions.module ?? "").toMatch(/^(?:node16|nodenext|esnext|es20\d\d)$/iu);
+  });
+
+  it("starts the worker from dist/main.js, and guarded.ts looks for the thread beside its own compiled file", () => {
+    expect(finalStage).toContain('CMD ["node", "packages/worker/dist/main.js"]');
+    expect(finalStage).toMatch(/WORKDIR \/opt\/agentx\n/u);
+    const guarded = readFileSync("packages/worker/src/env-detect/guarded.ts", "utf8");
+    expect(guarded).toContain('new URL("./detect-thread.js", import.meta.url)');
+    // The compiled file is preferred; the tsx source route is only for a checkout that has not been built.
+    expect(guarded.indexOf("existsSync(fileURLToPath(compiled))")).toBeGreaterThan(-1);
+    expect(guarded.indexOf("return { url: compiled, execArgv: [] }")).toBeLessThan(guarded.indexOf('execArgv: ["--import", "tsx"]'));
+    // The environment draft (the only caller of the detectors) goes through the guard.
+    expect(readFileSync("packages/worker/src/test-env-detect.ts", "utf8")).toContain('from "./env-detect/guarded.js"');
+  });
+
+  it("lists the thread's runtime dependency (yaml) as a production dependency of the worker, and relies on no dev tool", () => {
+    const worker = JSON.parse(readFileSync("packages/worker/package.json", "utf8")) as { dependencies: Record<string, string>; devDependencies?: Record<string, string> };
+    expect(worker.dependencies["yaml"]).toBeDefined();
+    expect(Object.keys(worker.dependencies)).not.toContain("tsx");
+    const lock = JSON.parse(readFileSync("package-lock.json", "utf8")) as { packages: Record<string, { dependencies?: Record<string, string> }> };
+    expect(lock.packages["packages/worker"]?.dependencies?.["yaml"]).toBe(worker.dependencies["yaml"]);
+  });
+});

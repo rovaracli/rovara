@@ -7,7 +7,7 @@
 // The pull request that adds the proposed file MUST be create-only: it must fail, not overwrite, when a file already exists at the path (the list read here can be stale).
 // Pure over a bounded reader: nothing is run, downloaded or written. The file content is a PROPOSAL; the dev container item's own reader re-checks its size, shape and path.
 import { DEVCONTAINER_PATH_PATTERN, SETUP_DEVCONTAINER_MAX_BYTES } from "@agentx/contracts";
-import { GRADLE_JAVA_VERSION, MAVEN_JAVA_VERSION, blank } from "./java.js";
+import { GRADLE_JAVA_VERSION, MAVEN_JAVA_VERSION, blank, blankBlocks } from "./java.js";
 import { goDirectives } from "./go.js";
 import { findLine, lineOf, type DetectedSource, type RepositoryReader } from "./types.js";
 
@@ -95,7 +95,7 @@ type JavaFacts = { version?: NonNullable<Need["version"]>; tools: string[] };
 
 async function mavenFacts(repo: RepositoryReader): Promise<JavaFacts> {
   const raw = await repo.read("pom.xml");
-  const pom = raw === undefined ? undefined : blank(raw, /<!--[\s\S]*?-->/gu);
+  const pom = raw === undefined ? undefined : blankBlocks(raw, "<!--", "-->");
   const match = pom === undefined ? null : MAVEN_JAVA_VERSION.exec(pom);
   const value = match === null ? undefined : javaMajor(match[1]!);
   const wrapper = repo.paths.includes("mvnw") && repo.paths.includes(".mvn/wrapper/maven-wrapper.properties");
@@ -104,7 +104,7 @@ async function mavenFacts(repo: RepositoryReader): Promise<JavaFacts> {
 
 async function gradleFacts(repo: RepositoryReader, file: string | undefined): Promise<JavaFacts> {
   const raw = file === undefined ? undefined : await repo.read(file);
-  const build = raw === undefined ? undefined : blank(blank(raw, /\/\*[\s\S]*?\*\//gu), /(^|[ \t])\/\/[^\n]*/gmu);
+  const build = raw === undefined ? undefined : blank(blankBlocks(raw, "/*", "*/"), /(^|[ \t])\/\/[^\n]*/gmu);
   const match = build === undefined ? null : GRADLE_JAVA_VERSION.exec(build);
   const value = match === null ? undefined : javaMajor(match.slice(1).find((part) => part !== undefined) ?? "");
   const wrapper = repo.paths.includes("gradlew") && repo.paths.includes("gradle/wrapper/gradle-wrapper.properties") && repo.paths.includes("gradle/wrapper/gradle-wrapper.jar");

@@ -1,13 +1,19 @@
 // Runs the detectors over a bounded reader and merges what they found. Bounded: a repository with more than 5,000 files is cut (and says so), a file over 256 KiB is not read, and a detection reads at most 4 MiB.
 import type { ProjectCommand } from "@agentx/contracts";
 import { detectBrazil } from "./brazil.js";
+import { detectIacResources } from "./iac-resources.js";
+import { detectTestFakes } from "./test-fakes.js";
+import { detectEnvConfig } from "./env-config.js";
+import { detectCiServices } from "./ci-services.js";
+import { detectCompose } from "./compose.js";
+import { mergeCandidates } from "./dependency-candidates.js";
 import { detectGo } from "./go.js";
 import { detectIac } from "./iac.js";
 import { detectJava } from "./java.js";
 import { detectNode } from "./node.js";
 import { detectPython } from "./python.js";
-import { detectServices } from "./services.js";
-import { emptyDetection, type Detection, type Detector, type RepositoryReader } from "./types.js";
+import { detectSdkCalls, detectServices } from "./services.js";
+import { emptyDetection, type DependencyCandidate, type Detection, type Detector, type RepositoryReader } from "./types.js";
 
 export const DETECTORS: ReadonlyArray<{ name: string; run: Detector }> = [
   { name: "python", run: detectPython },
@@ -17,7 +23,16 @@ export const DETECTORS: ReadonlyArray<{ name: string; run: Detector }> = [
   { name: "iac", run: detectIac },
   { name: "services", run: detectServices },
   { name: "brazil", run: detectBrazil },
+  { name: "compose", run: detectCompose },
+  { name: "ci", run: detectCiServices },
+  { name: "env", run: detectEnvConfig },
+  { name: "sdk", run: detectSdkCalls },
+  { name: "test-fakes", run: detectTestFakes },
+  { name: "iac-resources", run: detectIacResources },
 ];
+
+/** The detectors that only report dependency candidates (test services D1-D7). The language detectors also report their manifests' drivers, which `legacyOnly` drops. */
+export const DEPENDENCY_DETECTOR_NAMES: ReadonlySet<string> = new Set(["compose", "ci", "env", "sdk", "test-fakes", "iac-resources"]);
 
 export const ENV_DETECT_MAX_PATHS = 5_000;
 export const ENV_DETECT_MAX_FILE_BYTES = 256 * 1_024;
@@ -31,16 +46,19 @@ export function boundedReader(paths: readonly string[], load: (path: string) => 
   const kept = paths.filter((path) => path.length > 0 && path.length <= 512 && !path.startsWith("/") && !path.split("/").includes("..") && !path.includes("\\")).slice(0, ENV_DETECT_MAX_PATHS);
   const allowed = new Set(kept);
   let total = 0;
+  let exhausted = false;
   const cache = new Map<string, string | undefined>();
   return {
     reader: {
       paths: kept,
       truncated: paths.length > ENV_DETECT_MAX_PATHS,
+      budgetExhausted: () => exhausted,
       async read(path) {
         if (!allowed.has(path)) return undefined;
         if (cache.has(path)) return cache.get(path);
         let text: string | undefined;
         try { text = await load(path); } catch { text = undefined; }
+        if (text !== undefined && Buffer.byteLength(text) <= ENV_DETECT_MAX_FILE_BYTES && total + Buffer.byteLength(text) > ENV_DETECT_MAX_TOTAL_BYTES) exhausted = true;
         if (text !== undefined && (Buffer.byteLength(text) > ENV_DETECT_MAX_FILE_BYTES || total + Buffer.byteLength(text) > ENV_DETECT_MAX_TOTAL_BYTES)) text = undefined;
         if (text !== undefined) total += Buffer.byteLength(text);
         cache.set(path, text);
@@ -74,13 +92,15 @@ function freeId(id: string, detector: string, taken: ReadonlySet<string>): strin
 /**
  * Runs every detector and merges what they found into one detection. Order is precedence. A check whose command (program, arguments, directory) another detector already proposed is dropped, keeping the first
  * one's citation; a check whose id is taken by a different command is KEPT under `<id>-<detector>` rather than silently replaced; setup commands, globs, services, notes and questions are de-duplicated; and the
- * environment's limits hold, each cut saying so.
+ * environment's limits hold, each cut saying so. `legacyOnly` runs the detectors that existed before test services, without any dependency candidate (used when the full pass was stopped for taking too long).
  */
-export async function runDetectors(reader: RepositoryReader, cwd: string): Promise<Detection> {
+export async function runDetectors(reader: RepositoryReader, cwd: string, options: { legacyOnly?: boolean } = {}): Promise<Detection> {
   const merged = emptyDetection();
+  const candidates: DependencyCandidate[] = [];
   const ids = new Set<string>();
   let cutChecks = false;
   for (const detector of DETECTORS) {
+    if (options.legacyOnly === true && DEPENDENCY_DETECTOR_NAMES.has(detector.name)) continue;
     let part: Partial<Detection>;
     try { part = await detector.run({ repo: reader, cwd }); } catch { merged.notes.push(`The ${detector.name} detector could not finish.`); continue; }
     merged.setupCommands.push(...(part.setupCommands ?? []));
@@ -93,6 +113,7 @@ export async function runDetectors(reader: RepositoryReader, cwd: string): Promi
     }
     merged.services.push(...(part.services ?? []));
     merged.iac.push(...(part.iac ?? []));
+    if (options.legacyOnly !== true) candidates.push(...(part.dependencies ?? []));
     merged.fullSuiteOn.push(...(part.fullSuiteOn ?? []));
     merged.notes.push(...(part.notes ?? []));
     merged.questions.push(...(part.questions ?? []));
@@ -101,6 +122,9 @@ export async function runDetectors(reader: RepositoryReader, cwd: string): Promi
   merged.setupCommands = dedupe(merged.setupCommands, (item) => JSON.stringify(item.value));
   merged.fullSuiteOn = dedupe(merged.fullSuiteOn, (item) => item.value);
   merged.services = dedupe(merged.services, (item) => `${item.value.kind}:${item.value.target}`);
+  // Dependency candidates (test services D1-D7): present only when a detector found one, so a repository with none gives today's detection byte for byte.
+  if (candidates.length > 0) merged.dependencies = mergeCandidates(candidates);
+  if (reader.budgetExhausted?.() === true) merged.notes.push("Some files were not read: the read budget ran out.");
   if (cutChecks) merged.notes.push(`More than ${String(ENV_DETECT_MAX_CHECKS)} checks were found; the first ${String(ENV_DETECT_MAX_CHECKS)} are proposed.`);
   if (merged.setupCommands.length > ENV_DETECT_MAX_SETUP_COMMANDS) { merged.setupCommands = merged.setupCommands.slice(0, ENV_DETECT_MAX_SETUP_COMMANDS); merged.notes.push(`More than ${String(ENV_DETECT_MAX_SETUP_COMMANDS)} setup commands were found; the first ${String(ENV_DETECT_MAX_SETUP_COMMANDS)} are proposed.`); }
   if (merged.fullSuiteOn.length > ENV_DETECT_MAX_FULL_SUITE_GLOBS) { merged.fullSuiteOn = merged.fullSuiteOn.slice(0, ENV_DETECT_MAX_FULL_SUITE_GLOBS); merged.notes.push(`More than ${String(ENV_DETECT_MAX_FULL_SUITE_GLOBS)} full-suite paths were found; the first ${String(ENV_DETECT_MAX_FULL_SUITE_GLOBS)} are proposed.`); }
@@ -109,5 +133,5 @@ export async function runDetectors(reader: RepositoryReader, cwd: string): Promi
   return merged;
 }
 
-export { emptyDetection, type Detection, type RepositoryReader } from "./types.js";
+export { emptyDetection, type DependencyCandidate, type Detection, type RepositoryReader } from "./types.js";
 export { buildEnvironmentDraft, proposalFromDraft, type EnvironmentDraft, type PendingService } from "./propose.js";

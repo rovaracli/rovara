@@ -4,7 +4,8 @@
 // Reports: `go test` writes no file by itself, and Rovara never wraps the customer's command in a shell, so a JUnit report is proposed only when the module already depends on gotestsum (go.mod names it),
 // run with `go run` at the version go.mod pins. Coverage is a Go cover profile written by the proposed `-coverprofile` flag; the reader for it is in verification/changed-coverage.ts.
 // No per-test selection is proposed: `go test` takes packages, the selection template (`{tests}`) is filled with test ids that are files, and a file argument makes `go test` build only those files, not the package.
-import { type Detection, type DetectedSource, type Detector, type DetectorContext, type RepositoryReader, findLine } from "./types.js";
+import { awsClientCandidate, candidate, isOwnedElsewhere, mergeCandidates, normalizeAwsService, scanDrivers, type DriverRule } from "./dependency-candidates.js";
+import { type DependencyCandidate, type Detection, type DetectedSource, type Detector, type DetectorContext, type RepositoryReader, findLine } from "./types.js";
 import type { GoModuleRoot } from "../verification/changed-coverage.js";
 
 const TIMEOUT = { test: 1_800, lint: 600, setup: 900 } as const;
@@ -34,8 +35,8 @@ interface Directive { value: string; line: number; indirect: boolean }
 /** The values of one go.mod / go.work directive, in its single-line (`use ./a`) and block (`use (` ... `)`) forms, each with its line. Comments are dropped; `// indirect` is remembered. */
 export function goDirectives(text: string, name: string): Directive[] {
   const found: Directive[] = [];
-  const open = new RegExp(`^${name}\\s*\\($`, "u");
-  const single = new RegExp(`^${name}\\s+(.+)$`, "u");
+  const open = new RegExp(`^${name}\\s{0,120}\\($`, "u");
+  const single = new RegExp(`^${name}\\s{1,40}(.+)$`, "u");
   let block = false;
   text.split("\n").forEach((raw, index) => {
     const comment = raw.indexOf("//");
@@ -69,7 +70,7 @@ function versionNote(path: string, text: string): string[] {
 function outsideReplaces(path: string, text: string): string[] {
   const found: string[] = [];
   for (const directive of goDirectives(text, "replace")) {
-    const target = /=>\s*(\S+)/u.exec(directive.value)?.[1];
+    const target = /=>\s{0,40}(\S+)/u.exec(directive.value)?.[1];
     if (target !== undefined && (target.startsWith("/") || target.startsWith("../") || target === "..")) found.push(`${path} line ${String(directive.line)}`);
   }
   return found;
@@ -83,7 +84,7 @@ function nestedModules(paths: readonly string[]): string[] {
 
 const nestedList = (dirs: string[]): string => `${dirs.slice(0, MAX_NESTED_SHOWN).join(", ")}${dirs.length > MAX_NESTED_SHOWN ? ` and ${String(dirs.length - MAX_NESTED_SHOWN)} more` : ""}`;
 
-export const detectGo: Detector = async (context: DetectorContext) => {
+const detectGoBuild: Detector = async (context: DetectorContext) => {
   const { repo, cwd } = context;
   const hasMod = repo.paths.includes("go.mod");
   const hasWork = repo.paths.includes("go.work");
@@ -160,7 +161,7 @@ export const detectGo: Detector = async (context: DetectorContext) => {
   }
 
   // gotestsum only when go.mod itself requires it (not as an indirect dependency): `go run` uses the version go.mod pins.
-  const suiteLine = hasMod ? [...goDirectives(modText, "require"), ...goDirectives(modText, "tool")].find((item) => !item.indirect && item.value.split(/\s+/u)[0] === GOTESTSUM)?.line : undefined;
+  const suiteLine = hasMod ? [...goDirectives(modText, "require"), ...goDirectives(modText, "tool")].find((item) => !item.indirect && item.value.split(/\s{1,40}/u)[0] === GOTESTSUM)?.line : undefined;
   const coverage = `-coverprofile=${GO_COVER_PROFILE}`;
   found.checks.push({
     value: suiteLine === undefined
@@ -206,3 +207,72 @@ export async function readGoModuleRoots(repo: RepositoryReader): Promise<GoModul
   }
   return roots;
 }
+
+// ---- dependencies (test services D4 manifests, D5 code)
+
+const GO_MODULES: ReadonlyArray<[RegExp, string]> = [
+  [/^github\.com\/(?:lib\/pq|jackc\/pgx(?:\/v\d+)?|jackc\/pgconn|uptrace\/bun\/driver\/pgdriver)$/u, "postgres"],
+  [/^github\.com\/go-sql-driver\/mysql$/u, "mysql"],
+  [/^github\.com\/(?:redis\/go-redis(?:\/v\d+)?|go-redis\/redis(?:\/v\d+)?|redis\/rueidis|gomodule\/redigo)$/u, "redis"],
+  [/^go\.mongodb\.org\/mongo-driver(?:\/v2)?$/u, "mongodb"],
+  [/^github\.com\/(?:segmentio\/kafka-go|IBM\/sarama|Shopify\/sarama|confluentinc\/confluent-kafka-go(?:\/v\d+)?|twmb\/franz-go)$/u, "kafka"],
+  [/^github\.com\/(?:streadway\/amqp|rabbitmq\/amqp091-go)$/u, "rabbitmq"],
+  [/^github\.com\/(?:elastic\/go-elasticsearch(?:\/v\d+)?|olivere\/elastic(?:\/v\d+)?)$/u, "elasticsearch"],
+  [/^github\.com\/opensearch-project\/opensearch-go(?:\/v\d+)?$/u, "opensearch"],
+  [/^github\.com\/bradfitz\/gomemcache$/u, "memcached"],
+];
+const AWS_GO_SERVICE = /^github\.com\/aws\/aws-sdk-go(?:-v2)?\/service\/([a-z0-9]+)(?:\/|$)/u;
+
+function goModuleFamily(module: string): string | undefined {
+  for (const [pattern, family] of GO_MODULES) if (pattern.test(module)) return family;
+  const raw = AWS_GO_SERVICE.exec(module)?.[1];
+  const id = raw === undefined ? undefined : normalizeAwsService(raw);
+  return id === undefined || isOwnedElsewhere(`aws:${id}`) ? undefined : `aws:${id}`;
+}
+
+/** Candidates for the drivers and AWS SDK service modules every go.mod lists. Strength `mentioned`. */
+export async function goManifestCandidates(repo: RepositoryReader): Promise<DependencyCandidate[]> {
+  const found: DependencyCandidate[] = [];
+  for (const path of repo.paths.filter((candidatePath) => /(?:^|\/)go\.mod$/u.test(candidatePath)).slice(0, 20)) {
+    const text = await repo.read(path);
+    if (text === undefined) continue;
+    // One line at a time, each cut at 300 characters, with a pattern whose parts cannot overlap: a hostile go.mod costs time in proportion to its size.
+    text.split("\n").slice(0, 5_000).forEach((raw, index) => {
+      const match = /^[ \t]*(?:require[ \t]+)?([A-Za-z0-9._~/-]{3,200})[ \t]+v[0-9]/u.exec(raw.slice(0, 300));
+      if (match === null || !match[1]!.includes(".")) return;
+      const family = goModuleFamily(match[1]!);
+      if (family !== undefined) found.push(candidate(family, "mentioned", { path, line: index + 1 }, { seenBy: ["driver"] }));
+    });
+  }
+  return mergeCandidates(found);
+}
+
+const GO_IMPORT = (paths: string): RegExp => new RegExp(`"(?:${paths})(?:/[^"]*)?"`, "u");
+export const GO_DRIVERS: readonly DriverRule[] = [
+  { family: "postgres", uses: GO_IMPORT("github\\.com/lib/pq|github\\.com/jackc/pgx(?:/v\\d+)?"), call: /\bsql\.Open\s{0,120}\(|\bpgx\.Connect\s{0,120}\(|\bpgxpool\.New\s{0,120}\(/u },
+  { family: "mysql", uses: GO_IMPORT("github\\.com/go-sql-driver/mysql"), call: /\bsql\.Open\s{0,120}\(|\bmysql\.NewConnector\s{0,120}\(/u },
+  { family: "redis", uses: GO_IMPORT("github\\.com/redis/go-redis(?:/v\\d+)?|github\\.com/go-redis/redis(?:/v\\d+)?|github\\.com/redis/rueidis"), call: /\bredis\.New(?:Client|ClusterClient|FailoverClient)\s{0,120}\(|\brueidis\.NewClient\s{0,120}\(/u },
+  { family: "mongodb", uses: GO_IMPORT("go\\.mongodb\\.org/mongo-driver(?:/v2)?"), call: /\bApplyURI\s{0,120}\(|\bmongo\.Connect\s{0,120}\(/u },
+  { family: "kafka", uses: GO_IMPORT("github\\.com/segmentio/kafka-go|github\\.com/IBM/sarama|github\\.com/Shopify/sarama|github\\.com/confluentinc/confluent-kafka-go(?:/v\\d+)?"), call: /\bkafka\.(?:NewWriter|NewReader|Dial|DialContext|NewProducer|NewConsumer)\s{0,120}\(|\bsarama\.New(?:SyncProducer|AsyncProducer|Consumer|Client)\s{0,120}\(/u },
+  { family: "rabbitmq", uses: GO_IMPORT("github\\.com/streadway/amqp|github\\.com/rabbitmq/amqp091-go"), call: /\bamqp\.Dial(?:Config)?\s{0,120}\(/u },
+  { family: "elasticsearch", uses: GO_IMPORT("github\\.com/elastic/go-elasticsearch(?:/v\\d+)?|github\\.com/olivere/elastic(?:/v\\d+)?"), call: /\belasticsearch\.NewClient\s{0,120}\(|\belastic\.NewClient\s{0,120}\(/u },
+  { family: "opensearch", uses: GO_IMPORT("github\\.com/opensearch-project/opensearch-go(?:/v\\d+)?"), call: /\bopensearch\.NewClient\s{0,120}\(/u },
+  { family: "memcached", uses: GO_IMPORT("github\\.com/bradfitz/gomemcache/memcache"), call: /\bmemcache\.New\s{0,120}\(/u },
+];
+
+/** AWS SDK clients (a service package imported) and drivers a Go file uses (test services D5). A `BaseEndpoint` / `Endpoint` written as a string is flagged for every AWS service the file imports. */
+export function goCodeCandidates(path: string, text: string): DependencyCandidate[] {
+  const found = scanDrivers(path, text, GO_DRIVERS);
+  const explicit = /\b(?:BaseEndpoint|Endpoint)\s{0,40}[:=]\s{0,40}aws\.String\(\s{0,120}"/u.test(text);
+  for (const match of text.matchAll(/"github\.com\/aws\/aws-sdk-go(?:-v2)?\/service\/([a-z0-9]+)(?:\/[^"]*)?"/gu)) {
+    const item = awsClientCandidate(path, text, match.index, match[1]!, explicit);
+    if (item !== undefined) found.push(item);
+  }
+  return found;
+}
+
+export const detectGo: Detector = async (context) => {
+  const found = await detectGoBuild(context);
+  const dependencies = await goManifestCandidates(context.repo);
+  return dependencies.length === 0 ? found : { ...found, dependencies };
+};
