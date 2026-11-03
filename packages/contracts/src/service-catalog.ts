@@ -7,8 +7,8 @@
 //   - extra start-up arguments come from a CLOSED list of fixed ones (`CATALOG_FIXED_ARGS`), each valid only for the families it names. An entry holds argument ids, never text, so no repository string
 //     or free-form flag can become a Docker or process option;
 //   - a connection template holds only the run's own placeholders and can never carry a literal password;
-//   - the data file is either unpinned (no digest, scan or SBOM anywhere: the v1 state, until the pin task TS19) or pinned (every entry that is not retired has an image digest, an SBOM and a scan with no critical
-//     finding open); a half-pinned file does not parse;
+//   - the data file is either unpinned (no digest, scan or SBOM anywhere: the v1 state, until the pin task TS19) or pinned (at least one entry, and every pinned entry that is not retired has an image digest, an SBOM
+//     and a scan with no critical finding open; an entry not pinned yet carries none of the three); a half-pinned ENTRY does not parse;
 //   - at most one entry is the default of a family;
 //   - Rovara local AWS (the emulator entry) lists its services in four tiers, each service in one tier, IAM is not enforced and storage is memory only.
 // Nothing here imports a Node module.
@@ -186,7 +186,7 @@ export const ServiceCatalogSchema = z
     schemaVersion: z.literal(CATALOG_SCHEMA_VERSION),
     /** A new number for every catalog release. */
     revision: z.number().int().min(1),
-    /** Whether the images are pinned (TS19). Until then no entry has a digest, a scan or an SBOM; after it, every entry that is not retired has all three. */
+    /** Whether the images are pinned (TS19). Until then no entry has a digest, a scan or an SBOM; after it, at least one entry is pinned, and an entry that is not retired has all three or none. */
     pinned: z.boolean(),
     entries: z.array(CatalogEntrySchema).min(1).max(64),
   })
@@ -200,8 +200,13 @@ export const ServiceCatalogSchema = z
     catalog.entries.forEach((entry, index) => {
       const carriesPin = entry.image.digest !== undefined || entry.sbomRef !== undefined || entry.scan !== undefined || entry.process !== undefined;
       if (!catalog.pinned && carriesPin) problem(["entries", index], "an unpinned catalog has no digest, SBOM, scan or process artifact");
-      if (catalog.pinned && entry.status !== "retired" && (entry.image.digest === undefined || entry.sbomRef === undefined || entry.scan === undefined)) problem(["entries", index], "a pinned entry has a digest, an SBOM and a scan");
+      // Slice 1: a pinned catalog may hold entries that are not pinned YET (a release that pins one image at a time, `catalog-build --entries`). An entry is wholly pinned (digest, SBOM and scan) or carries none of the
+      // three: a half-pinned ENTRY never parses. Nothing starts an unpinned entry (`catalogPins` leaves it out, `resolveCatalogImage` refuses it as `not_pinned`).
+      const pinnedParts = [entry.image.digest, entry.sbomRef, entry.scan].filter((part) => part !== undefined).length;
+      if (catalog.pinned && entry.status !== "retired" && pinnedParts !== 0 && pinnedParts !== 3) problem(["entries", index], "a pinned entry has a digest, an SBOM and a scan");
+      if (catalog.pinned && entry.status !== "retired" && pinnedParts === 0 && entry.process !== undefined) problem(["entries", index], "an entry that is not pinned yet has no process artifact");
     });
+    if (catalog.pinned && !catalog.entries.some((entry) => entry.status !== "retired" && entry.image.digest !== undefined)) problem(["entries"], "a pinned catalog pins at least one image");
   });
 export type ServiceCatalog = z.infer<typeof ServiceCatalogSchema>;
 

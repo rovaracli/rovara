@@ -27,6 +27,7 @@ import {
   ecrScanPort,
   childrenProblem,
   evidenceFolderOf,
+  parseEntryIds,
   platformSlugOf,
   skopeoMirrorPort,
   syftSbomPort,
@@ -44,6 +45,9 @@ const live = catalog.entries.filter((entry) => entry.status !== "retired");
 const sourceDigest = (id: string): string => sha(`source:${id}`);
 const sources = (): SourcesFile => ({ schemaVersion: 1, sources: Object.fromEntries(live.map((entry) => [entry.id, `registry.example.com/library/${entry.family}@sha256:${sourceDigest(entry.id)}`])) });
 const PLATFORMS = ["linux/arm64", "linux/amd64"] as const;
+/** The platforms the catalog lists for an entry: two for most, linux/arm64 alone for Rovara local AWS. */
+const platformsOf = (id: string): readonly ("linux/arm64" | "linux/amd64")[] => (catalog.entries.find((entry) => entry.id === id) as { image: { platforms: ("linux/arm64" | "linux/amd64")[] } }).image.platforms;
+const platformCount = live.reduce((total, entry) => total + entry.image.platforms.length, 0);
 /** The child manifest digest of one platform of an image: not the index digest, and different per platform. */
 const childDigest = (id: string, platform: string): string => sha(`child:${id}:${platform}`);
 const sbomDocument = (id: string, platform: string): Buffer => Buffer.from(JSON.stringify({ spdxVersion: "SPDX-2.3", name: `${id} ${platform}`, packages: [] }));
@@ -60,7 +64,7 @@ function fakePorts(change: FakeChanges = {}) {
   const ports: CatalogBuildPorts = {
     async mirror({ id, source, expectedDigest, repositoryName }) {
       calls.mirror.push(`${id} ${source} -> ${repositoryName}`);
-      return { digest: expectedDigest, children: PLATFORMS.map((platform) => ({ platform, digest: childDigest(id, platform) })), ...change.mirror?.(id) };
+      return { digest: expectedDigest, children: platformsOf(id).map((platform) => ({ platform, digest: childDigest(id, platform) })), ...change.mirror?.(id) };
     },
     async sbom({ id, platform, digest }) {
       calls.sbom.push(`${id} ${platform} ${digest}`);
@@ -96,7 +100,7 @@ describe("pinning the catalog", () => {
     for (const entry of pinned.entries) {
       expect(entry.image.digest, entry.id).toBe(sourceDigest(entry.id));
       // One SBOM hash per entry in the catalog: the combined hash of its platforms' SBOM hashes (each platform's own is in the evidence and the signed statement).
-      expect(entry.sbomRef, entry.id).toBe(combinedSbomRef(PLATFORMS.map((platform) => ({ platform, sbomRef: sha256HexOf(sbomDocument(entry.id, platform)) }))));
+      expect(entry.sbomRef, entry.id).toBe(combinedSbomRef(platformsOf(entry.id).map((platform) => ({ platform, sbomRef: sha256HexOf(sbomDocument(entry.id, platform)) }))));
       expect(entry.scan, entry.id).toEqual({ scannedAt: "2026-11-02T10:00:00.000Z", criticalOpen: 0, highOpen: 2 });
     }
     // The file everything vouches for is signed, and loads as a pinned catalog.
@@ -106,10 +110,10 @@ describe("pinning the catalog", () => {
   it("takes the SBOM and the scan of EACH platform's child manifest, never of the index", async () => {
     const { ports, calls } = fakePorts();
     await build(ports);
-    expect(calls.sbom).toHaveLength(live.length * 2);
-    expect(calls.scan).toHaveLength(live.length * 2);
+    expect(calls.sbom).toHaveLength(platformCount);
+    expect(calls.scan).toHaveLength(platformCount);
     for (const entry of live) {
-      for (const platform of PLATFORMS) {
+      for (const platform of platformsOf(entry.id)) {
         expect(calls.sbom, `${entry.id} ${platform}`).toContain(`${entry.id} ${platform} ${childDigest(entry.id, platform)}`);
         expect(calls.scan, `${entry.id} ${platform}`).toContain(`${entry.id} ${platform} ${childDigest(entry.id, platform)}`);
       }
@@ -142,7 +146,7 @@ describe("pinning the catalog", () => {
     expect(folder).toBe("postgres-16");
     expect(platformSlugOf("linux/arm64")).toBe("linux-arm64");
     const files = new Map(output.evidence.map((item) => [item.path, item.bytes]));
-    expect(files.size).toBe(live.length * 5);
+    expect(files.size).toBe(platformCount * 2 + live.length);
     for (const platform of PLATFORMS) {
       expect(files.get(`evidence/${folder}/${platformSlugOf(platform)}/sbom.json`), platform).toEqual(sbomDocument("postgres@16", platform));
       expect(JSON.parse(files.get(`evidence/${folder}/${platformSlugOf(platform)}/scan.json`)!.toString()), platform).toEqual({ platform, digest: childDigest("postgres@16", platform), status: "complete", criticalOpen: 0, highOpen: 2, scannedAt: "2026-11-02T10:00:00.000Z" });
@@ -279,6 +283,88 @@ describe("what refuses a build (all of them: nothing is returned, so nothing can
     const { ports } = fakePorts();
     const stranger = testSigner();
     expect(await refusalsOf(build({ ...ports, signer: { publicKeyPem: ports.signer.publicKeyPem, sign: (message) => stranger.sign(message) } }))).toContainEqual({ id: "postgres@16", code: "unsigned" });
+  });
+});
+
+describe("pinning chosen entries only (--entries)", () => {
+  const one = (id: string): SourcesFile => ({ schemaVersion: 1, sources: { [id]: sources().sources[id] as string } });
+  const buildOnly = (ports: CatalogBuildPorts, entries: readonly string[], onlySources: SourcesFile = one(entries[0] as string)) => buildPinnedCatalog({ catalog, sources: onlySources, env: "staging", ports, entries });
+
+  it("pins only postgres@16 and leaves every other entry exactly as it was, unpinned, in a catalog that still parses", async () => {
+    const { ports, calls, signer } = fakePorts();
+    const output = await buildOnly(ports, ["postgres@16"]);
+    expect(calls.mirror).toHaveLength(1);
+    expect(calls.mirror[0]).toContain("postgres@16");
+    expect(calls.sbom).toHaveLength(2);
+    expect(calls.scan).toHaveLength(2);
+    const pinned = ServiceCatalogSchema.parse(JSON.parse(output.catalogBytes.toString("utf8")));
+    expect(pinned).toMatchObject({ pinned: true, revision: catalog.revision + 1 });
+    for (const entry of pinned.entries) {
+      if (entry.id === "postgres@16") {
+        expect(entry.image.digest).toBe(sourceDigest("postgres@16"));
+        expect(entry.sbomRef).toBeDefined();
+        expect(entry.scan).toEqual({ scannedAt: "2026-11-02T10:00:00.000Z", criticalOpen: 0, highOpen: 2 });
+      } else {
+        expect(entry, entry.id).toEqual(catalog.entries.find((before) => before.id === entry.id));
+        expect(entry.image.digest, entry.id).toBeUndefined();
+        expect(entry.sbomRef, entry.id).toBeUndefined();
+        expect(entry.scan, entry.id).toBeUndefined();
+      }
+    }
+    const loaded = loadSignedCatalog({ catalogBytes: output.catalogBytes, signatureBytes: output.signatureBytes, trustedKeys: [signer.publicKeyPem] });
+    expect(loaded.ok).toBe(true);
+  });
+  it("writes evidence for the chosen entry alone, and a pre-pull list of what is pinned (postgres@16) and nothing else", async () => {
+    const output = await buildOnly(fakePorts().ports, ["postgres@16"]);
+    expect(output.evidence.map((item) => item.path).sort()).toEqual([
+      "evidence/postgres-16/linux-amd64/sbom.json", "evidence/postgres-16/linux-amd64/scan.json",
+      "evidence/postgres-16/linux-arm64/sbom.json", "evidence/postgres-16/linux-arm64/scan.json", "evidence/postgres-16/statement.json",
+    ]);
+    const list = PrepullListSchema.parse(JSON.parse(output.prepullBytes.toString("utf8")));
+    expect(list.images).toEqual([{ id: "postgres@16", repository: "svc/postgres", digest: sourceDigest("postgres@16"), platforms: ["linux/arm64", "linux/amd64"] }]);
+    expect(list).toEqual(catalogPrepullList(output.catalog));
+  });
+  it("carries an earlier pin over when another entry is pinned later (pinned stays pinned, unpinned stays unpinned)", async () => {
+    const first = await buildOnly(fakePorts().ports, ["postgres@16"]);
+    const second = await buildPinnedCatalog({ catalog: JSON.parse(first.catalogBytes.toString("utf8")) as unknown, sources: one("mysql@8"), env: "staging", ports: fakePorts().ports, entries: ["mysql@8"] });
+    const digests = Object.fromEntries(second.catalog.entries.filter((entry) => entry.image.digest !== undefined).map((entry) => [entry.id, entry.image.digest]));
+    expect(digests).toEqual({ "postgres@16": sourceDigest("postgres@16"), "mysql@8": sourceDigest("mysql@8") });
+    expect(second.catalog.revision).toBe(first.catalog.revision + 1);
+  });
+  it("without --entries every non-retired entry is still required to have a source (no entry is left unpinned silently)", async () => {
+    expect(await refusalsOf(build(fakePorts().ports, { sources: one("postgres@16") }))).toContainEqual({ id: "mysql@8", code: "no_source" });
+  });
+  it("refuses an id the catalog does not have, a retired id, and a source for an entry that was not selected (never ignored)", async () => {
+    expect(await refusalsOf(buildOnly(fakePorts().ports, ["mongo@7"], one("postgres@16")))).toContainEqual({ id: "mongo@7", code: "unknown_entry" });
+    const retiredCatalog = ServiceCatalogSchema.parse({ ...catalog, entries: catalog.entries.map((entry) => (entry.id === "postgres@15" ? { ...entry, status: "retired" } : entry)) });
+    expect(await refusalsOf(buildPinnedCatalog({ catalog: retiredCatalog, sources: one("postgres@15"), env: "staging", ports: fakePorts().ports, entries: ["postgres@15"] }))).toContainEqual({ id: "postgres@15", code: "retired_entry" });
+    const both = sources();
+    expect(await refusalsOf(buildOnly(fakePorts().ports, ["postgres@16"], { schemaVersion: 1, sources: { "postgres@16": both.sources["postgres@16"] as string, "mysql@8": both.sources["mysql@8"] as string } }))).toEqual([{ id: "mysql@8", code: "unselected_source" }]);
+    expect(await refusalsOf(buildOnly(fakePorts().ports, ["postgres@16"], { schemaVersion: 1, sources: {} }))).toEqual([{ id: "postgres@16", code: "no_source" }]);
+  });
+  it("refuses an empty or repeated list, and touches no image when it refuses", async () => {
+    const { ports, calls } = fakePorts();
+    await expect(buildOnly(ports, [], one("postgres@16"))).rejects.toThrow(/at least one/u);
+    await expect(buildOnly(ports, ["postgres@16", "postgres@16"])).rejects.toThrow(/twice/u);
+    await expect(buildOnly(ports, ["mongo@7"], one("postgres@16"))).rejects.toThrow();
+    expect(calls.mirror).toEqual([]);
+  });
+  it("still refuses the chosen entry on a critical finding, and writes no catalog", async () => {
+    expect(await refusalsOf(buildOnly(fakePorts({ scan: () => ({ criticalOpen: 1 }) }).ports, ["postgres@16"]))).toEqual([{ id: "postgres@16", code: "scan_critical" }, { id: "postgres@16", code: "scan_critical" }]);
+  });
+  it("reads --entries as checked, comma-separated catalog ids", () => {
+    expect(parseEntryIds(undefined)).toBeUndefined();
+    expect(parseEntryIds("postgres@16")).toEqual(["postgres@16"]);
+    expect(parseEntryIds("postgres@16,mysql@8")).toEqual(["postgres@16", "mysql@8"]);
+    for (const bad of ["", "postgres@16,", ",postgres@16", "postgres@16,postgres@16", "Postgres 16", "postgres@16;rm", "postgres@16 mysql@8"]) expect(() => parseEntryIds(bad), bad).toThrow();
+  });
+  it("lists only the emulator's one platform (linux/arm64) and pins it from an arm64-only image", async () => {
+    expect(platformsOf("local-aws@r1")).toEqual(["linux/arm64"]);
+    const output = await buildOnly(fakePorts().ports, ["local-aws@r1"], one("local-aws@r1"));
+    expect(output.evidence.map((item) => item.path).sort()).toEqual(["evidence/local-aws-r1/linux-arm64/sbom.json", "evidence/local-aws-r1/linux-arm64/scan.json", "evidence/local-aws-r1/statement.json"]);
+    // An image that also holds amd64 is refused: the emulator is arm64 only.
+    const withAmd = [...PLATFORMS].map((platform) => ({ platform, digest: childDigest("local-aws@r1", platform) }));
+    expect(await refusalsOf(buildOnly(fakePorts({ mirror: () => ({ children: withAmd }) }).ports, ["local-aws@r1"], one("local-aws@r1")))).toEqual([{ id: "local-aws@r1", code: "platforms_mismatch" }]);
   });
 });
 

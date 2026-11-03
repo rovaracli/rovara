@@ -11,7 +11,7 @@
 //      `service-catalog-verify.ts`). The catalog entry carries ONE `sbomRef` (the combined hash of the per-platform hashes, `combinedSbomRef`) and one scan (the OLDEST scan time, 0 critical, and the most highs any one
 //      platform shows); the per-platform SBOMs, scans and hashes are in the evidence folder and the signed statement;
 //   4. writes the pinned `catalog.json`, `catalog.sig.json`, the evidence folder and the worker pre-pull list. The pinned file must parse as a pinned catalog: a half-pinned file does not (contract), so a build that pinned
-//      only some entries cannot write one. All outputs are made in memory first; nothing is written when any entry is refused, and the catalog file is written last, each file by rename.
+//      only some entries cannot write one. (Slice 1: `--entries` pins chosen entries on purpose and carries the others over unpinned; the schema allows an entry that is not pinned YET, never a half-pinned one.) All outputs are made in memory first; nothing is written when any entry is refused, and the catalog file is written last, each file by rename.
 //
 // SOURCES must be Rovara-built multi-platform INDEXES (OCI image index or Docker manifest list) holding EXACTLY the platforms the catalog entry lists (`linux/arm64`, `linux/amd64`), by digest. A single-platform image is
 // accepted only for an entry that lists that one platform (its platform is read from the config blob its manifest names, checked against that digest). An index with a platform the entry does not list, or without one it does, refuses the build. (Attestation manifests, `unknown/unknown`, are not platforms.)
@@ -111,7 +111,7 @@ export interface CatalogBuildPorts {
   readonly signer: BundleSigner;
 }
 
-export const BUILD_REFUSAL_CODES = ["no_source", "unknown_source", "digest_mismatch", "platforms_mismatch", "sbom_invalid", "scan_not_for_image", "scan_incomplete", "scan_critical", "port_failed", "unsigned"] as const;
+export const BUILD_REFUSAL_CODES = ["no_source", "unknown_source", "digest_mismatch", "platforms_mismatch", "sbom_invalid", "scan_not_for_image", "scan_incomplete", "scan_critical", "port_failed", "unsigned", "unknown_entry", "retired_entry", "unselected_source"] as const;
 export type BuildRefusalCode = (typeof BUILD_REFUSAL_CODES)[number];
 export class CatalogBuildError extends Error {
   constructor(readonly refusals: ReadonlyArray<{ id: string; code: BuildRefusalCode; message: string }>) {
@@ -168,8 +168,12 @@ function isSbom(bytes: Uint8Array): boolean {
 /**
  * Pins the catalog. Pure apart from the ports: it reads nothing and writes nothing. Throws `CatalogBuildError` listing every refused entry (all entries are tried, so an operator sees the whole list at once), and
  * returns outputs only when every non-retired entry is mirrored, scanned and signed.
+ *
+ * `entries` (slice 1, `--entries <ids>`): pins ONLY those entries, so one image can be pinned at a time. Every other entry is carried over exactly as the current file has it (an entry that was never pinned stays without
+ * a digest, an SBOM and a scan, and nothing starts it; one that an earlier build pinned keeps that pin). The sources file must hold exactly the selected ids: a source for an entry that was not selected is a refusal, never
+ * silently ignored. An id the catalog does not have, a retired id, and an empty or repeated list are refused. Left out, every non-retired entry is built, as before.
  */
-export async function buildPinnedCatalog(input: { catalog: unknown; sources: unknown; env: string; ports: CatalogBuildPorts }): Promise<CatalogBuildOutput> {
+export async function buildPinnedCatalog(input: { catalog: unknown; sources: unknown; env: string; ports: CatalogBuildPorts; entries?: readonly string[] }): Promise<CatalogBuildOutput> {
   const current = ServiceCatalogSchema.parse(input.catalog);
   const sources = SourcesFileSchema.parse(input.sources);
   const { ports } = input;
@@ -180,6 +184,16 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
   // Two ids must not share an evidence folder (`a@1.2` and `a@1-2` would).
   if (new Set(current.entries.map((entry) => evidenceFolderOf(entry.id))).size !== current.entries.length) throw new Error("two catalog ids make the same evidence folder");
   for (const id of Object.keys(sources.sources)) if (!ids.has(id)) refuse(id, "unknown_source", "the sources file names an id the catalog does not have");
+  const selected = input.entries === undefined ? undefined : new Set(input.entries);
+  if (input.entries !== undefined) {
+    if (input.entries.length === 0) throw new Error("--entries needs at least one catalog id");
+    if (selected!.size !== input.entries.length) throw new Error("--entries names an id twice");
+    for (const id of input.entries) {
+      if (!ids.has(id)) refuse(id, "unknown_entry", "--entries names an id the catalog does not have");
+      else if (current.entries.find((entry) => entry.id === id)?.status === "retired") refuse(id, "retired_entry", "a retired entry is not pinned");
+    }
+    for (const id of Object.keys(sources.sources)) if (ids.has(id) && !selected!.has(id)) refuse(id, "unselected_source", "the sources file has a source for an entry that --entries did not select");
+  }
 
   // The signer's own key must be one an installer can pin (an ECDSA P-256 public key); checked before any image is touched.
   const { keyId } = parseBundlePublicKey(ports.signer.publicKeyPem);
@@ -189,6 +203,11 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
   for (const entry of current.entries) {
     if (entry.status === "retired") {
       // A retired entry is not rebuilt; what the previous pin said stays (a pinned environment may still name it).
+      entries.push(entry);
+      continue;
+    }
+    if (selected !== undefined && !selected.has(entry.id)) {
+      // Not selected: carried over as it is (pinned stays pinned, unpinned stays unpinned).
       entries.push(entry);
       continue;
     }
@@ -425,12 +444,24 @@ export function ecrScanPort(input: { client: EcrLike; commands: EcrCommands; sle
 // ---- command line
 
 function usage(): string {
-  return `Usage: tsx scripts/catalog-build.ts --sources <file> --env <environment> --registry <host> --kms-key <key id or ARN> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--prepull-file ${DEFAULT_PREPULL_FILE}] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
+  return `Usage: tsx scripts/catalog-build.ts --sources <file> --env <environment> --registry <host> --kms-key <key id or ARN> [--entries <id,id,...>] [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--prepull-file ${DEFAULT_PREPULL_FILE}] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
 Run by an operator with the pipeline's own AWS credentials. It mirrors each catalog image by digest into <host>/rovara-catalog/<environment>/..., records an SBOM and a scan for EACH PLATFORM, signs, and writes the
 pinned catalog.json, catalog.sig.json, evidence/ and the worker pre-pull list. Nothing is written if any image is refused (a platform with a critical finding refuses the image). Needs skopeo and syft on PATH.
 The sources file maps each catalog id to a digest reference (host/path@sha256:...). Every source must be a Rovara-built multi-platform INDEX holding exactly the platforms the catalog lists for that id (a
 single-platform image only for an id that lists that one platform); an index with another platform set is refused.
+--entries pins only the listed catalog ids (comma-separated, for example postgres@16): the sources file must hold exactly those ids, and every other entry is carried over as it is (never pinned stays unpinned, and nothing starts it).
 Each skopeo inspect is killed after --command-timeout-seconds; each skopeo copy and each syft run after --copy-timeout-seconds.\n`;
+}
+
+/** The value of `--entries`: catalog ids separated by commas (`postgres@16` or `postgres@16,mysql@8`), each a checked catalog id, none twice, none empty. Nothing given is nothing selected (every entry). Shared with catalog-repack. */
+export function parseEntryIds(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  const ids = value.split(",");
+  for (const id of ids) {
+    if (!CatalogIdSchema.safeParse(id).success) throw new Error("--entries is a comma-separated list of catalog ids, such as postgres@16");
+  }
+  if (new Set(ids).size !== ids.length) throw new Error("--entries names an id twice");
+  return ids;
 }
 
 /** A timeout flag in whole seconds, or the default. Shared with catalog-repack. */
@@ -447,6 +478,8 @@ async function main(argv: string[]): Promise<void> {
   const [env] = values("--env");
   const [registry] = values("--registry");
   const [kmsKey] = values("--kms-key");
+  if (values("--entries").length > 1) throw new Error("--entries is given twice");
+  const entryIds = parseEntryIds(values("--entries")[0]);
   const catalogDir = resolve(values("--catalog-dir")[0] ?? DEFAULT_CATALOG_DIR);
   const prepullFile = resolve(values("--prepull-file")[0] ?? DEFAULT_PREPULL_FILE);
   if (!sourcesFile || !env || !registry || !kmsKey) throw new Error("--sources, --env, --registry and --kms-key are required");
@@ -469,6 +502,7 @@ async function main(argv: string[]): Promise<void> {
       catalog: JSON.parse(await readFile(join(catalogDir, CATALOG_FILE), "utf8")) as unknown,
       sources: JSON.parse(await readFile(resolve(sourcesFile), "utf8")) as unknown,
       env,
+      ...(entryIds === undefined ? {} : { entries: entryIds }),
       ports: {
         mirror: skopeoMirrorPort({ commands, registry, authFile, copyTimeoutMs }),
         sbom: syftSbomPort({ commands, registry, authDir, timeoutMs: copyTimeoutMs }),
