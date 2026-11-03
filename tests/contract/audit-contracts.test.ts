@@ -266,7 +266,7 @@ describe("the event catalog", () => {
     "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
     "automatic_run.started": { target: { kind: "project", name: "web" }, keys: ["job", "setupApprovedBy", "runsThisMonth", "cap"], sample: { job: "nightly", setupApprovedBy: "none", runsThisMonth: 3, cap: 100 } },
     "project.automatic_runs_cap_changed": { target: { kind: "project", name: "web" }, keys: ["fromCap", "toCap"], sample: { fromCap: 100, toCap: 200 } },
-    "automatic_run.ended": { target: { kind: "project", name: "web" }, keys: ["job", "reason"], sample: { job: "nightly", reason: "too_old" } },
+    "automatic_run.ended": { target: { kind: "project", name: "web" }, keys: ["job", "cause"], sample: { job: "nightly", cause: "too_old" } },
     "automatic_runs.paused": { target: { kind: "project", name: "web" }, keys: ["month", "cap"], sample: { month: "2026-11", cap: 100 } },
     "project.setup_restored": { target: { kind: "project", name: "web" }, keys: ["revision", "fromRevision", "provenRevision"], sample: { revision: 3, fromRevision: 2, provenRevision: 1 } },
     "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source", "previousSource"], sample: { setting: "on", previous: "off", source: "company", previousSource: "install_default" } },

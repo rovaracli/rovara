@@ -4,11 +4,12 @@
 //   the session sweep     a run older than `AUTOMATIC_RUN_MAX_MS` is cancelled on its worker (best effort), ended and queued for release, and its end audited ("automatic_run.ended").
 // "Ended" is `agentRunEnd` (CANCELLED) plus the release mark the recovery sweep releases from: the workspace and the slot go back there, as they do for a night that finished. Every write is idempotent (the first end stands).
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { AUTOMATIC_RUN_MAX_MS, AutomaticJobSchema, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, isSystemOwnerId, projectPk, type AutomaticRunEndReason } from "@agentx/contracts";
+import { AUTOMATIC_RUN_MAX_MS, AutomaticJobSchema, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, projectPk, type AutomaticRunEndReason } from "@agentx/contracts";
 import { auditAutomaticRunEnded } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditTransact, tryAuditEvent, type AuditDeps } from "../audit/outbox.js";
-import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { isSystemOwned } from "../developer/system-owner.js";
+import { taskKey, type DeveloperTaskRecord, type TaskOwnerSource } from "../developer/task-records.js";
 import { nightFailedItem } from "../test-env/night-status.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
@@ -37,8 +38,8 @@ export async function putAutomaticRunWatch(client: Client, tableName: string, in
  * Ends an automatic task: `agentRunEnd` CANCELLED and the reason (the first end stands), the release mark, and, for a nightly, the night's own `infra` row so the Home card and the same-day retry see it. Refuses a task that
  * is not a system owner's (this is never how a person's task is ended). Never touches a closed task.
  */
-export async function markAutomaticTaskEnded(client: Client, tableName: string, task: Pick<DeveloperTaskRecord, "taskId" | "developerId" | "project" | "nightlyRun"> & { orgId?: string | undefined }, reason: AutomaticRunEndReason, nowIso: string): Promise<void> {
-  if (!isSystemOwnerId(task.developerId)) throw new Error("only a system owner's task is ended this way");
+export async function markAutomaticTaskEnded(client: Client, tableName: string, task: Pick<DeveloperTaskRecord, "taskId" | "project" | "nightlyRun"> & TaskOwnerSource & { orgId?: string | undefined }, reason: AutomaticRunEndReason, nowIso: string): Promise<void> {
+  if (!isSystemOwned(task)) throw new Error("only a system owner's task is ended this way");
   const org = OrgIdSchema.safeParse(task.orgId);
   const failedNight = task.nightlyRun !== undefined && org.success ? [nightFailedItem(tableName, { orgId: org.data, project: task.project, slotId: task.nightlyRun.slotId, reason: "infra", nowIso })] : [];
   try {
@@ -88,7 +89,7 @@ export async function sweepAutomaticRuns(deps: AutomaticRunSweepDependencies): P
   for (const watch of page.Items ?? []) {
     try {
       const task = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(watch.taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord & { automaticEnd?: { reason?: unknown; at?: unknown } } }).Item;
-      if (task === undefined || !isSystemOwnerId(task.developerId)) { await dropWatch(deps, watch); report.dropped += 1; continue; }
+      if (task === undefined || !isSystemOwned(task)) { await dropWatch(deps, watch); report.dropped += 1; continue; }
       let ending = task.automaticEnd;
       if (task.agentRunEnd === undefined && task.closedAt === undefined && deps.now() - Date.parse(watch.startedAt) > AUTOMATIC_RUN_MAX_MS) {
         await deps.cancelLive?.(task).catch((error: unknown) => log({ event: "automatic_run.cancel_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));

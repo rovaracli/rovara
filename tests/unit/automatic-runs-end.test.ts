@@ -47,7 +47,7 @@ describe("the session sweep ends an automatic run that outlives its time", () =>
     expect(b.db.get(FINISHED_RELEASE_PK, `TASK#${taskId(1)}`)).toMatchObject({ taskId: taskId(1) });
     const events = b.audit.recordedBy("automatic_run.ended");
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ actor: { kind: "system", id: "rovara" }, target: { kind: "project", name: PROJECT }, facts: { job: "nightly", reason: "too_old" } });
+    expect(events[0]).toMatchObject({ actor: { kind: "system", id: "rovara" }, target: { kind: "project", name: PROJECT }, facts: { job: "nightly", cause: "too_old" } });
     // the night's own row says it did not finish because of Rovara's side
     expect(b.db.find((item) => item.entityType === "TEST_ENV_NIGHT")).toHaveLength(1);
     // a second pass ends nothing more and audits nothing more
@@ -100,7 +100,7 @@ describe("the session sweep ends an automatic run that outlives its time", () =>
     expect(await b.sweep()).toMatchObject({ ended: 0, dropped: 1 });
     expect(b.task(1).agentRunEnd).toBeUndefined();
     expect(b.cancelled).toEqual([]);
-    await expect(markAutomaticTaskEnded(b.db, AUDIT_CAPTURE_TABLE, { taskId: taskId(1), developerId: person, project: PROJECT }, "too_old", new Date(b.clock.now).toISOString())).rejects.toThrow(/system owner/u);
+    await expect(markAutomaticTaskEnded(b.db, AUDIT_CAPTURE_TABLE, { ...b.task(1), taskId: taskId(1) } as never, "too_old", new Date(b.clock.now).toISOString())).rejects.toThrow(/system owner/u);
   });
 
   it("an end already made by the dispatch guard is audited by the sweep, once", async () => {
@@ -109,6 +109,6 @@ describe("the session sweep ends an automatic run that outlives its time", () =>
     await markAutomaticTaskEnded(b.db, AUDIT_CAPTURE_TABLE, task, "project_stopped", new Date(T0).toISOString());
     expect(await b.sweep()).toMatchObject({ ended: 0, audited: 1 });
     expect(await b.sweep()).toMatchObject({ audited: 0 });
-    expect(b.audit.recordedBy("automatic_run.ended").map((event) => event.facts)).toEqual([{ job: "nightly", reason: "project_stopped" }]);
+    expect(b.audit.recordedBy("automatic_run.ended").map((event) => event.facts)).toEqual([{ job: "nightly", cause: "project_stopped" }]);
   });
 });

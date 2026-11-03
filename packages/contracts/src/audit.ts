@@ -612,8 +612,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project.automatic_runs_cap_changed": ["fromCap", "toCap"],
   // `month` is `YYYY-MM`; `cap` is the cap that was reached.
   "automatic_runs.paused": ["month", "cap"],
-  // Rovara ended an automatic run itself: `job` as above, `reason` is `project_stopped` (the project was archived or the company closed) or `too_old` (it ran past its time and the sweep ended it).
-  "automatic_run.ended": ["job", "reason"],
+  // Rovara ended an automatic run itself: `job` as above, `cause` is `project_stopped` (the project was archived or the company closed) or `too_old` (it ran past its time and the sweep ended it).
+  "automatic_run.ended": ["job", "cause"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
