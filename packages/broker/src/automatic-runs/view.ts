@@ -63,9 +63,9 @@ export async function reviewReminderOf(deps: TestEnvDeps, orgId: OrgId, project:
   if (approved === undefined) return undefined;
   const approver = await readApprovedBy(deps, orgId, project, approved.revision).catch(() => undefined);
   if (approver === undefined) return undefined;
-  const member = await get(deps, orgMemberKey(orgId, approver)).catch(() => "unreadable" as const);
-  // A member row that cannot be read says nothing: no reminder on a doubt (the reminder is advice, not a gate).
-  if (member === "unreadable" || member !== undefined) return undefined;
+  // A member row that cannot be read says nothing (it counts as "still here"): no reminder on a doubt, since the reminder is advice, not a gate.
+  const member = await get(deps, orgMemberKey(orgId, approver)).catch(() => ({}));
+  if (member !== undefined) return undefined;
   return { kind: "approver_left", revision: approved.revision, words: APPROVER_LEFT_WORDS };
 }
 

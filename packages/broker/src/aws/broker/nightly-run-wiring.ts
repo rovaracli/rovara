@@ -12,10 +12,12 @@ import type { TestEnvDeps } from "../../org/test-environment.js";
 import { healthWiringOn } from "../../test-env/health-wiring.js";
 import type { MapStore, NightlyRunPort } from "../../test-env/nightly.js";
 import { nightlyMapKey } from "../../test-env/map-keys.js";
+import { startAutomaticRun, type AutomaticRunDependencies, type AutomaticRunInput, type AutomaticRunOutcome } from "../../automatic-runs/start.js";
 import { nightlyRunPort } from "../../test-env/nightly-run.js";
 import type { DeveloperTaskActions } from "../developer-task-actions.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
-import { agentRunStarterFrom } from "./dependency-wiring.js";
+import { agentRouteDependencies, agentRunStarterFrom, brokerDependencies, developerTaskActions } from "./dependency-wiring.js";
+import type { AwsBrokerInput } from "./definitions.js";
 import { defaultBranchHeadOf, projectUsesRegistries, repositoryDefaultBranchOf } from "./nightly-head.js";
 
 const MAP_READ_MAX_BYTES = 8 * 1_048_576 + 4_096;
@@ -45,6 +47,28 @@ export function nightlyResultDeps(dependencies: AwsBrokerDependencies): TestEnvD
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     maps: s3CoverageMapStore(dependencies.s3, dependencies.artifactBucketName),
   };
+}
+
+/**
+ * What every automatic job starts its run with (the system owner of automatic runs, owner decision 2026-11-02): `startAutomaticRun` bound to this install's table, audit trail and shared run start. Undefined where runs cannot
+ * be started (no agents). It checks NO switch: each job (the nightly run behind `nh`, a saved image's rebuild behind its own) decides whether it runs, and then starts through this. The saved-environments lane calls it
+ * for a rebuild: `automaticRunStarterOf(...)?.({ orgId, project, job: "image_rebuild", requestId, agent, input, origin, setupApprovedBy })`.
+ */
+export function automaticRunStarterOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): ((input: AutomaticRunInput) => Promise<AutomaticRunOutcome>) | undefined {
+  const starter = agentRunStarterFrom(dependencies, tasks, agents);
+  if (starter === undefined) return undefined;
+  const deps: AutomaticRunDependencies = {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+    startAgentRun: (request) => startAgentRun(starter, request),
+  };
+  return (input) => startAutomaticRun(deps, input);
+}
+
+/** `automaticRunStarterOf` from the broker's input, as the other broker factories (`createAgentRunStarter`) are: what a test, or the saved-environments lane's rebuild job, builds its starter from. */
+export function createAutomaticRunStarter(input: AwsBrokerInput): ReturnType<typeof automaticRunStarterOf> {
+  const dependencies = brokerDependencies(input);
+  const tasks = developerTaskActions(dependencies);
+  return automaticRunStarterOf(dependencies, tasks, agentRouteDependencies(dependencies, tasks));
 }
 
 export function nightlyRunsOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined, env: NodeJS.ProcessEnv = process.env): NightlyRunPort | undefined {

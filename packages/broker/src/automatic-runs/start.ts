@@ -25,8 +25,8 @@ export interface AutomaticRunInput {
   requestId: string;
   agent: { agentId: AgentId };
   input: RunInput;
-  /** The work origin the payer rules see; the project must pay for it (a person's origin is refused). `nightly` for the nightly run. */
-  origin: WorkOrigin;
+  /** The work origin the payer rules see; the project must pay for it (a person's origin is refused). `nightly` for the nightly run, `automatic` for any other automatic job. */
+  origin: Extract<WorkOrigin, "nightly" | "automatic">;
   /** The person who approved the setup this run runs (kept for the audit trail and the reminder; they own nothing). */
   setupApprovedBy?: string | undefined;
   /** The nightly run's facts, when the job is the nightly. */
