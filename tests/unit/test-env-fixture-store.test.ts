@@ -532,17 +532,18 @@ describe("a decision is a verified object, not a name (L1, N1, N2)", () => {
 describe("a withdrawal during delivery (N3) and a set nested too deep (N5)", () => {
   it("refuses to hand out a URL when the set is withdrawn while it is being signed", async () => {
     const ports = createMemoryFixturePorts();
-    let store: FixtureStore | undefined;
+    const holder: { store?: FixtureStore } = {};
     let digest = "";
     const objects: FixtureStoreDependencies["objects"] = {
       ...ports.objects,
       presignGet: async (key, seconds) => {
         const url = await ports.objects.presignGet(key, seconds);
-        await store!.withdraw(ORG_A, digest, by("withdraw", ORG_A, digest, "boss"));
+        await holder.store!.withdraw(ORG_A, digest, by("withdraw", ORG_A, digest, "boss"));
         return url;
       },
     };
-    store = createFixtureStore({ enabled: () => true, objects, index: ports.index, denyFor: () => Promise.resolve(DENY), now: () => NOW });
+    const store = createFixtureStore({ enabled: () => true, objects, index: ports.index, denyFor: () => Promise.resolve(DENY), now: () => NOW });
+    holder.store = store;
     const record = await submitOk(store);
     digest = record.digest;
     await store.approve(ORG_A, digest, by("approve", ORG_A, digest, "lead"));
