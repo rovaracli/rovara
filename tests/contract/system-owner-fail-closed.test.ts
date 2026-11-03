@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { agentXError, isSystemOwnerId, orgMetaKey, projectMetaKey, systemOwnerIdOf, systemOwnerName } from "../../packages/contracts/src/index.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { guardTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
+import { requestForPausedTask } from "../../packages/broker/src/spend/requests.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
 import { isSystemOwned, personOwnerOf, requirePerson, systemOwnerCaller, systemOwnerStands } from "../../packages/broker/src/developer/system-owner.js";
 import { effectiveTaskOwner, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
@@ -146,5 +147,14 @@ describe("the standing of a system owner replaces a person's membership", () => 
     const w = world();
     const broken = { ...w.deps, documentClient: { send: (command: unknown) => (JSON.stringify((command as { input?: unknown }).input ?? {}).includes("META") && JSON.stringify((command as { input?: unknown }).input).includes("PROJECT") ? Promise.reject(agentXError("RUNTIME_UNAVAILABLE", "boom")) : w.db.send(command as never)) } };
     expect(await codeOf(guardTaskDispatch(broken, w.record))).toBeDefined();
+  });
+});
+
+describe("an automatic run asks nobody for more money", () => {
+  it("a system-owned task that is paused at a limit makes no spend request: there is no person to ask for", async () => {
+    const w = world();
+    w.db.set({ ...systemTask(), budgetPause: { scope: { kind: "task", taskId: TASK_ID }, at: "2026-11-02T10:30:00.000Z" } } as unknown as Record<string, unknown>);
+    expect(await requestForPausedTask({ documentClient: w.db, tableName: "state", now: Date.now } as never, TASK_ID)).toBeUndefined();
+    expect(w.db.find((item) => String(item.entityType).includes("SPEND_REQUEST"))).toHaveLength(0);
   });
 });
