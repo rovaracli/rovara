@@ -144,9 +144,12 @@ describe("the plan of Rovara local AWS", () => {
     expect(taskDependencyPlansOf({ body: body(threeAws()), catalog: enterpriseOnly, edition: "enterprise" }).ok).toBe(true);
   });
 
-  it("is not available when the image is pinned but not in the pre-pull list the worker image carries (a non-default entry)", () => {
+  // After the merge with s2-catalog the pre-pull list holds EVERY pinned, non-retired local or emulated entry (not only the defaults), so a pinned non-default local-aws is startable; a retired one keeps its own words.
+  it("is available when the pinned local-aws is a non-default entry (the worker image pre-pulls every pinned emulated entry), and not when it is retired", () => {
     const notDefault = catalog((entries) => { for (const entry of entries) if (entry["id"] === "local-aws@r1") entry["status"] = "available"; });
-    expect(reason(plansOf(threeAws(), notDefault))).toBe("not_available_yet");
+    expect(reason(plansOf(threeAws(), notDefault))).toBe("ok");
+    const retired = catalog((entries) => { for (const entry of entries) if (entry["id"] === "local-aws@r1") entry["status"] = "retired"; });
+    expect(reason(plansOf(threeAws(), retired))).not.toBe("ok");
   });
 
   it("wire: an emulated entry names its AWS services, local-aws and an AWS family; a local entry has none", () => {
