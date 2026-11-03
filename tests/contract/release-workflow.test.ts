@@ -71,6 +71,20 @@ function releaseScriptProblems(name: string, command: string, scripts: Record<st
   return problems;
 }
 
+
+/**
+ * What in a `run:` script could execute, load or source something from the downloaded artifact folder: the folder (any spelling of it) anywhere but as the value of `--bundle`, a `cd` into it,
+ * or a NODE_OPTIONS/--require/--import that mentions it. The folder is data for the signer to read; none of it is run.
+ */
+function runsArtifactCode(run: string, folder: string): string[] {
+  const problems: string[] = [];
+  const spellings = [folder, folder.replace("$RUNNER_TEMP", "${RUNNER_TEMP}"), folder.replace("$RUNNER_TEMP", "")].filter((spelling) => spelling.length > 3);
+  const stripped = run.replace(/--bundle\s+"?[^\s"]+"?/gu, "--bundle ARG");
+  for (const spelling of spellings) if (stripped.includes(spelling)) problems.push(`uses ${spelling} other than as --bundle`);
+  if (/\bcd\s+"?\$\{?RUNNER_TEMP/u.test(stripped) || /\bcd\s+"?[^\n]*\/bundle\b/u.test(stripped)) problems.push("changes into the artifact folder");
+  return problems;
+}
+
 describe("release workflow", () => {
   it("runs only on version tags or by hand, never on pull requests or branch pushes", async () => {
     const wf = await workflow();
@@ -132,7 +146,7 @@ describe("release workflow", () => {
     expect(bundle!.needs).toEqual(["images", "release"]);
   });
 
-  it("SK-4 (S1): the sign job is the ONLY job in the bundle path with id-token, AWS credentials, the signing role and the release-signing environment, and it installs and builds nothing", async () => {
+  it("SK-4 (S1): the sign job is the ONLY job in the bundle path with id-token, AWS credentials, the signing role and the release-signing environment", async () => {
     const wf = await workflow();
     const bundle = wf.jobs.bundle!;
     const sign = wf.jobs.sign!;
@@ -140,8 +154,8 @@ describe("release workflow", () => {
     // The build job: read the repository, nothing else; no token for AWS, no credentials step, no environment.
     expect(bundle.permissions).toEqual({ contents: "read" });
     expect(JSON.stringify(bundle)).not.toMatch(/id-token|configure-aws-credentials|AGENTX_BUNDLE_SIGNING_ROLE_ARN|"environment"/u);
-    // The sign job: only the id-token, one credentials step with the signing role variable, the environment its trust policy requires.
-    expect(sign.permissions).toEqual({ "id-token": "write" });
+    // The sign job: the id-token (and read access to check out the signer's source), one credentials step with the signing role variable, the environment its trust policy requires.
+    expect(sign.permissions).toEqual({ contents: "read", "id-token": "write" });
     expect((sign as { environment?: string }).environment).toBe("release-signing");
     expect(sign.needs).toBe("bundle");
     expect(conditionFor(sign.if, PUBLIC_REPOSITORY)).toBe(conditionFor(bundle.if, PUBLIC_REPOSITORY));
@@ -149,16 +163,7 @@ describe("release workflow", () => {
     const credentials = sign.steps.filter((step) => step.uses?.startsWith("aws-actions/configure-aws-credentials") === true);
     expect(credentials).toHaveLength(1);
     expect(credentials[0]!.with?.["role-to-assume"]).toBe("${{ vars.AGENTX_BUNDLE_SIGNING_ROLE_ARN }}");
-    // No checkout, no install, no build, no lifecycle script, no tool from a package: it downloads the artifact, sets up Node and runs the one pre-bundled file.
-    const uses = sign.steps.map((step) => step.uses ?? "").filter((value) => value !== "");
-    expect(uses.map((value) => value.split("@")[0])).toEqual(["actions/download-artifact", "actions/setup-node", "aws-actions/configure-aws-credentials", "actions/upload-artifact"]);
-    const runs = sign.steps.map((step) => step.run ?? "").filter((value) => value !== "");
-    expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatch(/^node "\$RUNNER_TEMP\/in\/signer\/sign-bundle\.mjs" --bundle "\$RUNNER_TEMP\/in\/bundle" --kms-key "\$KMS_KEY"$/u);
-    expect(runs.join("\n")).not.toMatch(/\bnpm\b|\bnpx\b|\byarn\b|\bpnpm\b|\btsx\b|\bpip\b|\bcurl\b|\bsudo\b|\|\||;/u);
-    const setupNode = sign.steps.find((step) => step.uses?.startsWith("actions/setup-node"));
-    expect(setupNode?.with?.cache).toBeUndefined();
-    // The role variable and the key are named in the sign job and nowhere else; the id-token is held by no other bundle-path job.
+    // The role variable is named in the sign job and nowhere else.
     const text = await workflowText();
     expect(text.match(/AGENTX_BUNDLE_SIGNING_ROLE_ARN/gu)).toHaveLength(1);
     for (const [name, job] of Object.entries(wf.jobs)) {
@@ -166,13 +171,71 @@ describe("release workflow", () => {
       expect(JSON.stringify(job), name).not.toContain("BUNDLE_SIGNING");
       expect(JSON.stringify(job), name).not.toContain("release-signing");
     }
-    // The signer the sign job runs is one file the build job made from scripts/release/sign-bundle.ts, with its dependencies inside it, and handed over as an artifact.
+  });
+
+  it("SK-4 (S1): the signer the sign job runs is built from the TAGGED COMMIT's source and its own small lockfile, never from a file the bundle job made", async () => {
+    const wf = await workflow();
+    const bundle = wf.jobs.bundle!;
+    const sign = wf.jobs.sign!;
+    // The bundle job makes data only: it builds no signer, copies none, and uploads only the bundle folder.
     const built = bundle.steps.map((step) => step.run ?? "").join("\n");
-    expect(built).toContain("npx esbuild scripts/release/sign-bundle.ts --bundle");
-    expect(built).toContain('--outfile="$RUNNER_TEMP/signer/sign-bundle.mjs"');
-    const upload = bundle.steps.find((step) => step.uses?.startsWith("actions/upload-artifact"));
-    expect(upload?.with?.name).toBe("bundle-unsigned");
-    expect(sign.steps.find((step) => step.uses?.startsWith("actions/download-artifact"))?.with?.name).toBe("bundle-unsigned");
+    expect(built).not.toMatch(/esbuild|sign-bundle|signer/u);
+    const uploads = bundle.steps.filter((step) => step.uses?.startsWith("actions/upload-artifact"));
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]!.with?.path).toBe("${{ runner.temp }}/bundle");
+    // Every action in the sign job is pinned to a commit.
+    for (const step of sign.steps) if (step.uses !== undefined) expect(step.uses, step.uses).toMatch(/^[\w./-]+@[0-9a-f]{40}$/u);
+    // The sign job's steps, in this order: the tagged commit's source (sparse, no git credential), Node, the signer package's own install (no install scripts), the build of sign-bundle.ts from that source,
+    // the data artifact, the AWS credentials (only after everything that installs or builds has run), the one run of the freshly built file, the upload of the signed folder.
+    expect(sign.steps.map((step) => (step.uses ?? "").split("@")[0] || "run")).toEqual([
+      "actions/checkout", "actions/setup-node", "run", "run", "actions/download-artifact", "aws-actions/configure-aws-credentials", "run", "actions/upload-artifact",
+    ]);
+    const checkout = sign.steps[0]!;
+    expect(checkout.with?.["persist-credentials"]).toBe(false);
+    expect(checkout.with?.ref).toBeUndefined();
+    expect(String(checkout.with?.["sparse-checkout"]).split("\n").filter((line) => line !== "").sort()).toEqual(["packages/contracts/src", "scripts/release"]);
+    expect(sign.steps[1]!.with?.cache).toBeUndefined();
+    expect(sign.steps[1]!.with?.["node-version-file"]).toBe(".node-version");
+    expect(sign.steps[2]!.run).toBe("npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/release/signer");
+    expect(sign.steps[3]!.run).toMatch(/^node scripts\/release\/signer\/node_modules\/esbuild\/bin\/esbuild scripts\/release\/sign-bundle\.ts --bundle /u);
+    expect(sign.steps[3]!.run).toContain("--outfile=scripts/release/signer/dist/sign-bundle.mjs");
+    expect(sign.steps[6]!.run).toBe('node scripts/release/signer/dist/sign-bundle.mjs --bundle "$RUNNER_TEMP/bundle" --kms-key "$KMS_KEY"');
+    const download = sign.steps[4]!;
+    expect(download.with?.name).toBe("bundle-unsigned");
+    expect(download.with?.path).toBe("${{ runner.temp }}/bundle");
+    expect(sign.steps[5]!.uses).toMatch(/^aws-actions\/configure-aws-credentials@/u);
+  });
+
+  it("SK-4 (S1): the sign job never runs a .js, .mjs, .cjs, .ts or shell file from a downloaded artifact (negative controls included)", async () => {
+    const wf = await workflow();
+    const sign = wf.jobs.sign!;
+    const downloaded = sign.steps.filter((step) => step.uses?.startsWith("actions/download-artifact")).map((step) => String(step.with?.path));
+    expect(downloaded).toHaveLength(1);
+    // The artifact folder, as a run script spells it.
+    const folder = downloaded[0]!.replace("${{ runner.temp }}", "$RUNNER_TEMP");
+    expect(folder).toBe("$RUNNER_TEMP/bundle");
+    for (const step of sign.steps) {
+      const problems = runsArtifactCode(step.run ?? "", folder);
+      expect(problems, step.run).toEqual([]);
+    }
+    // The check itself catches what it is for.
+    const hostile = [
+      `node "${folder}/signer/sign-bundle.mjs" --kms-key k`,
+      `node ${folder}/sign-bundle.mjs`,
+      `bash ${folder}/run.sh`,
+      `source ${folder}/env.sh`,
+      `. ${folder}/env.sh`,
+      `chmod +x ${folder}/x && ${folder}/x`,
+      `${folder}/x`,
+      `npx tsx ${folder}/x.ts`,
+      `cd ${folder} && node sign-bundle.mjs`,
+      `cd "${folder}"\nnode ./sign-bundle.mjs`,
+      `node -e "import('${folder}/x.mjs')"`,
+      `NODE_OPTIONS="--require ${folder}/x.cjs" node scripts/release/signer/dist/sign-bundle.mjs`,
+    ];
+    for (const run of hostile) expect(runsArtifactCode(run, folder).length, run).toBeGreaterThan(0);
+    // And lets the one legitimate use through: the folder as the --bundle argument of the signer built from the checkout.
+    expect(runsArtifactCode(`node scripts/release/signer/dist/sign-bundle.mjs --bundle "${folder}" --kms-key "$KMS_KEY"`, folder)).toEqual([]);
   });
 
   it("SK-4: nothing in the signing job can let a failed kit, verify or sign step go on: no `|| true`, no `;` after them, no continue-on-error, no `set +e`, no weakened shell", async () => {

@@ -1,6 +1,7 @@
 // SK-4: the release workflow's signing job. It is the only job that holds the OIDC token and the signing permission, and it builds nothing: it takes the folder `release:bundle --unsigned` made (as an artifact),
 // checks it again from its bytes (verifyPreparedBundle: every file, the kit against kit.json, the images' digests), signs the exact bytes of bundle.json with the KMS key and writes bundle.sig.json.
-// The workflow runs it as one pre-bundled file (esbuild of this script, made in the build job), so the job runs no `npm ci`, no install script and no dependency's code beyond what that file holds.
+// The workflow builds it in the signing job itself, from the tagged commit's source (esbuild from scripts/release/signer's own small, hash-locked package, installed with --ignore-scripts); it never runs a file
+// that came from the build job's artifact, which is data.
 import { realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";

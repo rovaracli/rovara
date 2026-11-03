@@ -1,0 +1,12 @@
+{
+  "name": "rovara-bundle-signer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The release workflow's signing job installs ONLY this package (npm ci --ignore-scripts) to build and run scripts/release/sign-bundle.ts. Keep it to the KMS client, zod and the bundler; anything added here runs with the signing role.",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-kms": "3.1134.0",
+    "esbuild": "0.28.2",
+    "zod": "4.6.6"
+  }
+}

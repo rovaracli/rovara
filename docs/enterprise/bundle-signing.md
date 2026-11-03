@@ -15,10 +15,15 @@ signing key**.
 
 What the code sets up (`infra/lib/bundle-signing.ts`, stack `AgentXBundleSigning`, `us-east-1`):
 
-- **One signing job.** In `release.yml`, `bundle` builds and checks everything and holds no AWS credential
-  and no `id-token`. `sign` is the only job in that path with `id-token: write`; it runs no `npm ci` and
-  no install script: it downloads the unsigned bundle and a single pre-bundled signer file, checks
-  every file again against `bundle.json` (and the kit against `kit.json`), and signs.
+- **One signing job.** In `release.yml`, `bundle` builds and checks everything, holds no AWS credential
+  and no `id-token`, and leaves the unsigned bundle folder as an artifact: **data only**. `sign` is the only
+  job in that path with `id-token: write`. It never runs a file from that artifact. Its program comes from
+  the tagged commit: it checks out only `scripts/release` and `packages/contracts/src` (actions pinned to
+  commit SHAs), installs only `scripts/release/signer` (the KMS client, zod and esbuild, with its own
+  lockfile) using `npm ci --ignore-scripts`, builds `sign-bundle.ts` from the checked-out source, and only
+  then takes the AWS credentials. That program checks every file of the downloaded folder against
+  `bundle.json` again (and the kit against `kit.json`) and signs. Tests pin all of this
+  (`release-workflow.test.ts`, `signer-package.test.ts`).
 - **The role** `rovara-release-bundle-signing` is assumable only through GitHub's OIDC token, and only when
   all of these hold:
   - `aud` is `sts.amazonaws.com`;
@@ -47,8 +52,23 @@ CDK deploy role, the publish role's admin). That is why:
 - the recommended setup is a **dedicated AWS account** for the signing key, protected by the organisation
   service control policy below.
 
-Residual risks, even with everything below done: anyone who controls the tagged commit controls the workflow
-file and the signer built from it, so the environment's required reviewers and the tag ruleset are what
+Residual risks, even with everything below done:
+
+- **The signer's own supply chain.** The sign job runs the KMS client, zod and the esbuild binary from
+  `scripts/release/signer/package-lock.json` (hash-pinned, installed without install scripts). A compromised
+  release of one of those three at the locked version, or a malicious change to the lockfile or to
+  `scripts/release` in the tagged commit, would run with the signing role. Keep that folder tiny, review
+  every change to it as a key-holder change (CODEOWNERS on `scripts/release/signer/**`,
+  `scripts/release/sign-bundle.ts`, `scripts/release/bundle-verify.ts`, `scripts/release/bundle-signer.ts`
+  and `.github/workflows/release.yml`), and upgrade its three dependencies deliberately, not by bot. A
+  committed hash of the built signer would not close this: the tagged commit controls that hash too.
+- **A compromised `bundle` job.** It runs the whole project's dependencies, but it can no longer change
+  the signer: it can only hand over a folder, and the signer signs it only if every file matches
+  `bundle.json` and the kit matches `kit.json` and the release. It can still hand over a bundle that is
+  consistently malicious (a poisoned kit with its own matching `kit.json`), and the kit's self-checks run
+  in that same job, so they do not defend against it. The reviewers of the `release-signing`
+  environment are the defence: they approve a release whose tagged commit they have looked at.
+- Anyone who controls the tagged commit controls the workflow file and the signer built from it, so the environment's required reviewers and the tag ruleset are what
 stop a malicious tag; the tag pattern can only be approximated (`v?*.?*.?*`, the workflow triggers on
 `v[0-9]+.[0-9]+.[0-9]+`; IAM `StringLike` has no character classes), so it also matches names like
 `vx.y.z`, which the ruleset and the reviewers must refuse.

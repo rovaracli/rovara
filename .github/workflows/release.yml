@@ -241,11 +241,13 @@ jobs:
   #
   # `bundle` builds and checks everything and holds NO AWS credential and no id-token: the synthesis kit is made from a clean checkout of the release's commit (its self-checks, all run inside a
   # sandbox: determinism, the release's own templates, every Enterprise profile against a build from source), and `release:bundle --unsigned` takes only a kit made from the same release.json. It
-  # leaves the unsigned folder and a single-file signer (built here) as an artifact.
+  # leaves the unsigned folder as an artifact. That artifact is DATA: the sign job never runs a file from it.
   #
   # `sign` is the ONLY job in the bundle path with id-token: write, and the only one that runs in the release-signing GitHub environment (required reviewers, version tags only), which the signing
-  # role's trust policy requires: the images and npm jobs also hold id-token, but their tokens do not carry that environment. It runs no `npm ci` and no install script: it downloads the artifact,
-  # sets up Node, and runs the one pre-bundled file, which checks every file of the folder against bundle.json again (and the kit against kit.json) and only then signs. docs/enterprise/bundle-signing.md.
+  # role's trust policy requires: the images and npm jobs also hold id-token, but their tokens do not carry that environment. Its program comes from the tagged commit, never from the bundle job:
+  # it checks out only scripts/release and packages/contracts/src, installs ONLY scripts/release/signer (the KMS client, zod and the bundler; its own lockfile; `npm ci --ignore-scripts`, so no
+  # dependency's install script runs), builds sign-bundle.ts from the checked-out source, and only then takes the AWS credentials. The program checks every file of the downloaded folder against
+  # bundle.json again (and the kit against kit.json) and signs. docs/enterprise/bundle-signing.md. Actions here are pinned to commit SHAs.
   bundle:
     needs: [images, release]
     if: github.repository == 'PrepLabsAI/Rovara' && (vars.AGENTX_PUBLISH_ENABLED == 'true' && vars.AGENTX_BUNDLE_ENABLED == 'true' && vars.AGENTX_BUNDLE_KMS_KEY != '')
@@ -282,16 +284,10 @@ jobs:
           image_flags=(--image "litellm=$LITELLM" --image "worker=$WORKER" --image "slack=$SLACK")
           if [ -n "$EXECUTOR" ]; then image_flags+=(--image "executor=$EXECUTOR"); fi
           npm run release:bundle -- --release "$RUNNER_TEMP/release" --out "$RUNNER_TEMP/bundle" --unsigned "${image_flags[@]}" --synth-kit "$RUNNER_TEMP/kit"
-          # The signing job's whole program, as one file with its dependencies inside it, and the Node version it runs on.
-          mkdir -p "$RUNNER_TEMP/signer"
-          cp .node-version "$RUNNER_TEMP/signer/node-version"
-          npx esbuild scripts/release/sign-bundle.ts --bundle --platform=node --format=esm --target=node22 --banner:js="import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" --outfile="$RUNNER_TEMP/signer/sign-bundle.mjs"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: bundle-unsigned
-          path: |
-            ${{ runner.temp }}/bundle
-            ${{ runner.temp }}/signer
+          path: ${{ runner.temp }}/bundle
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -301,21 +297,32 @@ jobs:
     if: github.repository == 'PrepLabsAI/Rovara' && (vars.AGENTX_PUBLISH_ENABLED == 'true' && vars.AGENTX_BUNDLE_ENABLED == 'true' && vars.AGENTX_BUNDLE_KMS_KEY != '')
     runs-on: ubuntu-latest
     environment: release-signing
-    permissions: { id-token: write }
+    permissions: { contents: read, id-token: write }
     steps:
-      - uses: actions/download-artifact@v5
-        with: { name: bundle-unsigned, path: "${{ runner.temp }}/in" }
-      - uses: actions/setup-node@v5
-        with: { node-version-file: "${{ runner.temp }}/in/signer/node-version" }
-      - uses: aws-actions/configure-aws-credentials@v5
+      # The signer's source, from the tagged commit: only what it is built from.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/release
+            packages/contracts/src
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with: { node-version-file: .node-version }
+      # Its own package and lockfile: the KMS client, zod and esbuild, nothing else, and no install script runs.
+      - run: npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/release/signer
+      - run: node scripts/release/signer/node_modules/esbuild/bin/esbuild scripts/release/sign-bundle.ts --bundle --platform=node --format=esm --target=node22 --alias:@agentx/contracts=./packages/contracts/src/index.ts --external:zod --external:@aws-sdk/client-kms --external:typescript --external:@rovara/audit-verifier --external:@aws-crypto/sha256-js --outfile=scripts/release/signer/dist/sign-bundle.mjs
+      # Data only: the folder the bundle job made. Nothing in it is run.
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with: { name: bundle-unsigned, path: "${{ runner.temp }}/bundle" }
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
         with: { role-to-assume: "${{ vars.AGENTX_BUNDLE_SIGNING_ROLE_ARN }}", aws-region: us-east-1 }
       - env:
           KMS_KEY: ${{ vars.AGENTX_BUNDLE_KMS_KEY }}
-        run: node "$RUNNER_TEMP/in/signer/sign-bundle.mjs" --bundle "$RUNNER_TEMP/in/bundle" --kms-key "$KMS_KEY"
-      - uses: actions/upload-artifact@v4
+        run: node scripts/release/signer/dist/sign-bundle.mjs --bundle "$RUNNER_TEMP/bundle" --kms-key "$KMS_KEY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: bundle-signed
-          path: ${{ runner.temp }}/in/bundle
+          path: ${{ runner.temp }}/bundle
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
