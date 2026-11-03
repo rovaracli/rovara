@@ -250,6 +250,12 @@ export function createDispatcherHandler(dependencies: {
   /**
    * The dispatch queue's ARN. When it is given, an event that is not a peek is taken only if it is a batch whose every record says it came from `aws:sqs` and from this queue; anything else (the broker may
    * invoke this function directly, for a peek) is refused (S2). The production entry always passes it, empty when the environment has none, which matches nothing.
+   *
+   * What this check is, and is not (LV-1): it refuses an event that is not shaped like a delivery from the queue, so a mistaken or malformed direct call does nothing. It cannot stop a caller that holds
+   * `lambda:InvokeFunction` on this function and knows the queue's ARN: that caller can write `eventSource` and `eventSourceARN` itself. No further field of an SQS record is secret (the message id, receipt
+   * handle and body hash are all ones the caller can make), so checking more of them would only look like a boundary. The boundary is IAM: the grant is the broker role's alone (`control-plane.ts`,
+   * pinned by tests/contract/live-ask-peek-infrastructure.test.ts), and the broker role already writes the outbox this queue carries. Anyone who is given that invoke grant can make the dispatcher run a
+   * record the guards below accept, so that grant is never widened.
    */
   queueArn?: string;
   log?: (entry: DispatchLogEntry) => void;

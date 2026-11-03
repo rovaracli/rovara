@@ -17,7 +17,7 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditSessionLinked, auditSessionUnlinked, auditOccurrence } from "../audit/events.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
-import { linearIssueKeyOf, parseLinearIssue } from "./linear-close.js";
+import { linearIssueKeyOf, linearWorkspaceOfLink, parseLinearIssue } from "./linear-close.js";
 import { sessionBindingsOf } from "./session-bindings.js";
 
 const BodySchema = z.object({ linear: z.string().max(2048), replace: z.literal(true).optional() }).strict();
@@ -26,7 +26,7 @@ export const LINK_NOT_A_TASK = "Only a Rovara Code task can be linked to a Linea
 export const ISSUE_TAKEN = "This issue already follows another session.";
 const BAD_ISSUE = "linear: give the issue's key (like TEAM-123) or its Linear link";
 
-function parseBody(body: unknown): { issue: { issueId: string; url: string }; replace: boolean } {
+function parseBody(body: unknown): { issue: { issueId: string; url: string; workspace?: string }; replace: boolean } {
   const parsed = BodySchema.safeParse(body);
   if (!parsed.success) {
     // Field names only: never the value.
@@ -36,7 +36,9 @@ function parseBody(body: unknown): { issue: { issueId: string; url: string }; re
   }
   const issue = parseLinearIssue(parsed.data.linear);
   if (issue === undefined) throw agentXError("CONFIG_INVALID", BAD_ISSUE);
-  return { issue, replace: parsed.data.replace === true };
+  // A typed link into a workspace names it on the binding (M8): an issue key such as ENG-142 exists in every Linear workspace. A bare key names none, and the workspace is then read from the org's Linear connection.
+  const workspace = linearWorkspaceOfLink(parsed.data.linear.trim());
+  return { issue: { ...issue, ...(workspace === undefined ? {} : { workspace }) }, replace: parsed.data.replace === true };
 }
 
 /** The timeline line and the audit record of a link or an unlink, for the transaction that makes it. The audit events are kept for flushing after the commit. */
@@ -107,7 +109,7 @@ export async function linkLinearOnSession(deps: SessionReadDependencies, caller:
   const { session } = access;
   if (session.subject.kind !== "task") throw agentXError("CONFIG_INVALID", LINK_NOT_A_TASK);
   if (isEnded(session)) throw agentXError("SESSION_ENDED", "This session has ended.");
-  const binding: SessionBinding = { kind: "linear_issue", issueId: input.issue.issueId, url: input.issue.url };
+  const binding: SessionBinding = { kind: "linear_issue", issueId: input.issue.issueId, url: input.issue.url, ...(input.issue.workspace === undefined ? {} : { workspace: input.issue.workspace }) };
   const current = await linearOf(deps, session.orgId, session.sessionId);
   const currentKey = current === undefined ? undefined : linearIssueKeyOf(current);
   const task = await taskOfSession(deps, session);

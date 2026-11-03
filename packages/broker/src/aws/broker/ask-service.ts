@@ -12,6 +12,9 @@ import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHmac } from "node:crypto";
 import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, liveInteractionFlagOn, type HookRecord, type OrgId } from "@agentx/contracts";
 import { handleLinearComment, type LinearCommentDependencies } from "../../rovara-code/linear-comments.js";
+import { settleLinearScrubs } from "../../agent-sessions/ask-linear-scrub.js";
+import { connectionWorkspaceKeys } from "../../connections/store.js";
+import { taskPageUrl } from "../developer-tasks/common.js";
 import { loadTaskPeople } from "../../developer/task-people.js";
 import { chosenOwnerNames } from "../../agent-sessions/owner-names.js";
 import { effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -239,6 +242,12 @@ export async function runAskMaintenance(dependencies: AwsBrokerDependencies, now
       // One org's trouble never stops the others.
       try {
         await sweepExpiredAsks(table, orgId, nowMs);
+        // Comments Rovara posted on Linear issues that name an erased person are rewritten from the scrubbed Ask (ids only are waiting); only where Rovara can write in Linear.
+        const linear = dependencies.linearReply;
+        if (linear?.update !== undefined && linear.remove !== undefined) {
+          const port = { update: linear.update.bind(linear), remove: linear.remove.bind(linear) };
+          await settleLinearScrubs({ ...table, port, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }), log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })) }, orgId);
+        }
         await sweepErasedAliases(table, orgId, nowMs);
         await flushDailyAskCounts({ ...table, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, edition, orgId, nowMs);
       } catch (error) {
@@ -273,6 +282,12 @@ export async function runAskMaintenance(dependencies: AwsBrokerDependencies, now
 export function linearCommentIntakeOf(dependencies: AwsBrokerDependencies, taskPageLink?: LinearCommentDependencies["taskPageLink"]): ((input: { orgId: OrgId; hook: HookRecord; body: unknown }) => Promise<unknown>) | undefined {
   const ask = dependencies.slackAsk?.ask;
   if (ask === undefined || dependencies.linearReply === undefined) return undefined;
-  const deps: LinearCommentDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ask, reply: dependencies.linearReply, taskPageLink, log: ask.log };
+  // The link a refusal sends a person to is the task's own page, on this install's issuer (none where there is no issuer).
+  const issuer = dependencies.developer?.issuer;
+  const link = taskPageLink ?? (issuer === undefined ? undefined : (_orgId: OrgId, _sessionId: string, taskId: string): string | undefined => { try { return taskPageUrl(issuer, taskId); } catch { return undefined; } });
+  // An older binding (made before bindings named their Linear workspace) asks the org's Linear connections which workspaces they have checked as.
+  const connections = dependencies.orgConnections;
+  const workspacesOfOrg = connections === undefined ? undefined : async (orgId: OrgId): Promise<string[]> => [...await connectionWorkspaceKeys(connections, orgId)].sort();
+  const deps: LinearCommentDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ask, reply: dependencies.linearReply, taskPageLink: link, workspacesOfOrg, log: ask.log };
   return (input) => handleLinearComment(deps, input);
 }

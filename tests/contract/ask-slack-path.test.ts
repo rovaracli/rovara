@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as AskService from "../../packages/broker/src/aws/broker/ask-service.js";
-import { ASK_RATE, orgBanKey, orgRemovedKey, projectMemberKey, sessionRateKey, slackTeamOrgKey } from "../../packages/contracts/src/index.js";
+import { ASK_RATE, orgBanKey, orgRemovedKey, projectArchivedMessage, projectMemberKey, projectMetaKey, sessionRateKey, slackTeamOrgKey } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { SLACK_ASK_NOT_ALLOWED_WORDS, slackAskRefusalContext } from "../../packages/broker/src/aws/broker/thread-workspaces.js";
 import { taskOwnsThread } from "../../packages/broker/src/aws/developer-tasks/task-answer-context.js";
@@ -273,6 +273,32 @@ describe("a question in a task's thread with the Ask switch on", () => {
       expect(rateCount(t)).toBe(before);
       await contextOf(t);
       expect(rateCount(t)).toBe(before + 1);
+    });
+
+    it("a redelivered question spends once, keyed by the saved reply's ts; another reply spends again (LA-5, M3)", async () => {
+      const t = await planWaiting("1695500000.000194");
+      const ensureFor = (noteTs: string) => teammate(t.harness.handler, t.subject, "U0TEAMMATE1", "POST", "/v1/service/threads/workspace", { requestId: randomUUID(), ...TASK_REQUEST, taskAnswer: { taskId: t.taskId, noteTs } });
+      const before = rateCount(t);
+      for (let delivery = 0; delivery < 5; delivery += 1) expect((await ensureFor("1695500004.000001")).status).toBe(200);
+      expect(rateCount(t)).toBe(before + 1);
+      expect(t.harness.db.find((item) => item.entityType === "SESSION_RATE_SPENT")).toHaveLength(1);
+      expect(JSON.stringify(t.harness.db.find((item) => item.entityType === "SESSION_RATE_SPENT"))).not.toContain("1695500004");
+      await ensureFor("1695500004.000002");
+      expect(rateCount(t)).toBe(before + 2);
+      // A reply with no ts (an older service) is not keyed and spends each time, as before.
+      await contextOf(t);
+      await contextOf(t);
+      expect(rateCount(t)).toBe(before + 4);
+    });
+
+    it("an archived project's thread question is answered in the project's fixed words and spends nothing, and it is not an Ask (LA-5, M5)", async () => {
+      const t = await planWaiting("1695500000.000195");
+      const task = t.harness.db.get(`DEVTASK#${t.taskId}`, "META")! as { orgId: string; project: string };
+      const before = rateCount(t);
+      t.harness.db.set({ ...(t.harness.db.get(projectMetaKey(task.orgId, task.project).pk, projectMetaKey(task.orgId, task.project).sk) ?? {}), ...projectMetaKey(task.orgId, task.project), entityType: "PROJECT_META", status: "archived" });
+      expect(await contextOf(t)).toBe(refused(projectArchivedMessage(task.project)));
+      expect(rateCount(t)).toBe(before);
+      expect(asks(t)).toEqual([]);
     });
   });
 

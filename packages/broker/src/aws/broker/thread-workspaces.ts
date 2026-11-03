@@ -3,7 +3,7 @@
 import { approvalGrantChange } from "../../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
 import { PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, plainPageRefs, githubConnectorOf, SlackTaskAnswerRequestSchema, SlackThreadNoteAnsweredRequestSchema, SlackCommentAnsweredRequestSchema, WorkspaceClosePreflightResultSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, unhandledDeploymentMode, type OperationRequester, type ProjectDefinition, type SlackRequester, type SlackThread, type SlackThreadPrepareResult, type SlackThreadWorkspaceResult, type SlackWorkspaceCloseCompleteResult, type SlackWorkspaceCloseStartResult, type ThreadConnector, type WorkerInvocation, type WorkspaceInstance, emailSafeName, defaultWorkspaceKey, slackMemberLimitKey, slackOrganizationLimitKey, type OrgId, INDEX_EXPIRY_ATTRIBUTE, indexExpiresAt, workerProjectDefinition, ROVARA_CODE_AGENT_ID, type Payer } from "@agentx/contracts";
+import { AgentXError, plainPageRefs, projectArchivedMessage, githubConnectorOf, SlackTaskAnswerRequestSchema, SlackThreadNoteAnsweredRequestSchema, SlackCommentAnsweredRequestSchema, WorkspaceClosePreflightResultSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, unhandledDeploymentMode, type OperationRequester, type ProjectDefinition, type SlackRequester, type SlackThread, type SlackThreadPrepareResult, type SlackThreadWorkspaceResult, type SlackWorkspaceCloseCompleteResult, type SlackWorkspaceCloseStartResult, type ThreadConnector, type WorkerInvocation, type WorkspaceInstance, emailSafeName, defaultWorkspaceKey, slackMemberLimitKey, slackOrganizationLimitKey, type OrgId, INDEX_EXPIRY_ATTRIBUTE, indexExpiresAt, workerProjectDefinition, ROVARA_CODE_AGENT_ID, type Payer } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { authorizeWorkspace } from "../../authorization.js";
 import { resolveConnectors, type ResolvedConnector } from "../connector-types.js";
@@ -24,7 +24,7 @@ import { githubLoginOf, personNameForText } from "../../developer/requester-text
 import type { ExtraItems, TransactItems } from "../developer-task-actions.js";
 import { releaseFinishedTasksOf, markWorkflowThreadNoteAnswered, taskCommentSection, taskOwnsThread, workflowTaskAnswerContext } from "../developer-tasks.js";
 import { askContext } from "../../agent-sessions/ask-context.js";
-import { ASK_RATE_TEXT, recordSlackAsk, slackAskerKey, takeSlackAskRates } from "../../agent-sessions/ask.js";
+import { ASK_RATE_TEXT, recordSlackAsk, requireProjectNotArchived, slackAskerKey, takeSlackAskRates } from "../../agent-sessions/ask.js";
 import { publicWorkspace } from "../../workspaces.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { closeReleasesStorage, issueRepositoryGrant, object, uuid, workspaceItem, workspaceKey, workspaceRuntime } from "./admin-and-helpers.js";
@@ -940,6 +940,13 @@ async function taskAnswerWorkspace(
   const context = await askContext(slackAsk.context, { audience: "slack", workspaceId: shared.workspaceId, thread, ...(developerId === undefined ? {} : { asker: { developerId } }) }, shared.taskId, slackAsk.readers);
   const refuse = async (words: string): Promise<SlackThreadWorkspaceResult> => { await markSlackAskRefused(dependencies, shared.taskId, noteTs); return reply(slackAskRefusalContext(words)); };
   if (context === undefined) return refuse(SLACK_ASK_NOT_ALLOWED_WORDS);
+  // An archived project takes no new work, and an Ask costs its payer money (LA-5, M5, as the web's Ask): answered in the project's own fixed words, before anything is spent. A project that cannot be read is the Ask's own retryable fault.
+  try {
+    await requireProjectNotArchived(slackAsk.ask, orgId, task.project);
+  } catch (error) {
+    if ((error as { code?: string }).code === "PROJECT_ARCHIVED") return refuse(projectArchivedMessage(task.project));
+    throw error;
+  }
   // A page-comment answer whose section is gone is not answered, and spends nothing: the section is read before the rates are taken (LA-5, M3).
   let section: string[] | undefined;
   if (commentId !== undefined) {
@@ -947,7 +954,7 @@ async function taskAnswerWorkspace(
     if (section === undefined) return undefined;
   }
   try {
-    await takeSlackAskRates(slackAsk.ask, task, developerId ?? slackAskerKey(thread.teamId, requester.userId));
+    await takeSlackAskRates(slackAsk.ask, task, developerId ?? slackAskerKey(thread.teamId, requester.userId), noteTs);
   } catch (error) {
     const code = (error as { code?: string }).code;
     if (code === "TOO_MANY_REQUESTS") return refuse(ASK_RATE_TEXT);

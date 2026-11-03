@@ -39,6 +39,7 @@ import { chosenOwnerNames, withChosenOwnerName } from "./owner-names.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { ChainControl, SessionControlHost } from "./stop.js";
 import type { SessionTakeOverDependencies } from "./take-over.js";
+import { linearLinkOfBinding } from "../rovara-code/linear-close.js";
 
 /** Who reads: `DeveloperCaller` fits. */
 export interface SessionReadCaller extends SessionCaller { orgRole: OrgRole }
@@ -138,7 +139,7 @@ async function payerOf(deps: SessionReadDependencies, session: AgentSessionRecor
 }
 
 function bindingLink(binding: SessionBinding): { kind: SessionBinding["kind"]; url: string } {
-  if (binding.kind === "linear_issue") return { kind: "linear_issue", url: binding.url };
+  if (binding.kind === "linear_issue") return { kind: "linear_issue", url: linearLinkOfBinding(binding) };
   if (binding.kind === "tracker_item") return { kind: "tracker_item", url: binding.url };
   return { kind: "slack_thread", url: `https://app.slack.com/client/${binding.teamId}/${binding.channelId}/thread/${binding.channelId}-${binding.threadTs}` };
 }

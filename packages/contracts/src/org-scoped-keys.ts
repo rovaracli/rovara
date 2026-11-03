@@ -746,6 +746,32 @@ export function askLinearCommentKey(orgId: OrgId, commentId: string): OrgKey {
 }
 
 /**
+ * Lane ask-linear: a comment Rovara posted on a Linear issue that has to be rewritten because the person it names was erased. One item per Ask (`<sessionId>#<askId>`), in the org's `ASKLINEARFIX`
+ * partition: ids only (the comment's id and issue), never words. The ask maintenance run reads the partition, rewrites the comment from the Ask's already-scrubbed record, and removes the item.
+ */
+export function askLinearScrubKey(orgId: OrgId, sessionId: SessionId, askId: string): OrgKey {
+  return { pk: askLinearScrubPk(orgId), sk: `${keyPart(sessionId, "a session id")}#${keyPart(askId, "an ask id")}` };
+}
+
+/**
+ * Lane ask-linear: the lasting record of a Linear comment that could not be rewritten after an erase (given up after the bounded tries). One item per Ask in the org's `ASKLINEARKEPT` partition, for an
+ * admin to read: ids, a fixed reason word and counts only, never words. It is kept for a year.
+ */
+export function askLinearKeptKey(orgId: OrgId, sessionId: SessionId, askId: string): OrgKey {
+  return { pk: askLinearKeptPk(orgId), sk: `${keyPart(sessionId, "a session id")}#${keyPart(askId, "an ask id")}` };
+}
+
+/** The partition of the comments Rovara could not rewrite. */
+export function askLinearKeptPk(orgId: OrgId): string {
+  return orgScoped(orgId, "ASKLINEARKEPT");
+}
+
+/** The partition of the Linear comments that wait to be rewritten (what the ask maintenance run queries). */
+export function askLinearScrubPk(orgId: OrgId): string {
+  return orgScoped(orgId, "ASKLINEARFIX");
+}
+
+/**
  * Live interaction F2: the partition of one diagnosis (`DIAGNOSIS#<id>`): its request (`REQUEST`, ids, the state and, while it waits, the context text), its result (`RECORD`) and the link to the
  * person who asked (`PERSON`, kept apart so erasure removes the person and keeps the diagnosis).
  */
@@ -839,7 +865,7 @@ export function sessionRequestKey(orgId: OrgId, developerId: string, requestId: 
  * The item that counts one person's comments (`kind` "comment") or changes to them ("change") on one session in the current ten-minute window, or their messages to the agent
  * ("steer") in the current hour: `<kind>#<developerId>` in the session's rate partition. `steer_all` counts every person's messages to the agent on the session (its `developerId` is the word `session`).
  */
-export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all" | "local_update" | "local_status" | "local_stop" | "ask" | "ask_day"): OrgKey {
+export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all" | "local_update" | "local_status" | "local_stop" | "ask" | "ask_day" | "ask_spent"): OrgKey {
   return { pk: orgScoped(orgId, `SESSION_RATE#${keyPart(sessionId, "a session id")}`), sk: `${kind}#${keyPart(developerId, "a developer id")}` };
 }
 

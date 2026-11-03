@@ -12,12 +12,22 @@ import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { ASK_QUESTION_MAX_CHARS, ASK_UNAVAILABLE_MESSAGE, INDEX_EXPIRY_ATTRIBUTE, askLinearCommentKey, redactText, type HookRecord, type OrgId } from "@agentx/contracts";
 import { admitAsk, withoutMentions, type AskDependencies } from "../agent-sessions/ask.js";
 import { sessionForSurface } from "../agent-sessions/bindings.js";
+import { linearWorkspaceOfBinding } from "./linear-close.js";
+import { sessionBindingsOf } from "./session-bindings.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { linearCommentOf } from "../triggers/providers/linear.js";
 
 /** Posts a comment on a Linear issue as Rovara. The only way an Ask's answer or a refusal reaches Linear; absent, the Linear intake does nothing. */
 export interface LinearReplyPort {
-  reply(input: { orgId: OrgId; issueKey: string; text: string }): Promise<void>;
+  /**
+   * Posts the comment. `commentKey` is a stable name for it: the same key again is the same comment (a retry is never a second post). `workspace` is the Linear workspace the issue's binding names, when it
+   * names one. Answers the comment's id when it knows it.
+   */
+  reply(input: { orgId: OrgId; issueKey: string; text: string; commentKey?: string | undefined; workspace?: string | undefined }): Promise<{ commentId: string } | void>;
+  /** Rewrites a comment Rovara posted (an erased person's name taken out). Refuses a comment that is not Rovara's own. Absent: such comments are not rewritten. */
+  update?(input: { orgId: OrgId; commentId: string; text: string }): Promise<void>;
+  /** Deletes a comment Rovara posted. Refuses a comment that is not Rovara's own. Absent: such comments are not deleted. */
+  remove?(input: { orgId: OrgId; commentId: string }): Promise<void>;
   /** Linear's user id of the account Rovara writes as in this org (so a comment Rovara wrote is never read as a person's). Undefined when it cannot be known. */
   ownActorId(orgId: OrgId): Promise<string | undefined>;
 }
@@ -48,8 +58,13 @@ export interface LinearCommentDependencies {
   ask: AskDependencies | undefined;
   /** How Rovara writes in Linear. Absent: the intake does nothing (nothing would be answered). */
   reply: LinearReplyPort | undefined;
-  /** The link to a session's page, for the reply that sends a person there. */
-  taskPageLink?: ((orgId: OrgId, sessionId: string) => string | undefined) | undefined;
+  /** The link to a task's page, for the reply that sends a person there. */
+  taskPageLink?: ((orgId: OrgId, sessionId: string, taskId: string) => string | undefined) | undefined;
+  /**
+   * The Linear workspace url keys the org's Linear connections have checked as (`acme`). Read only for a binding made before bindings named their workspace (dual read, no migration): one key is that
+   * binding's workspace; several keys mean the signed comment's own link decides (and no link, no post); none means the comment's link is used when it has one.
+   */
+  workspacesOfOrg?: ((orgId: OrgId) => Promise<string[]>) | undefined;
   log?: ((entry: Record<string, unknown>) => void) | undefined;
 }
 
@@ -92,14 +107,29 @@ export async function handleLinearComment(deps: LinearCommentDependencies, input
   // The issue must be one a session of this hook's org AND project follows; anything else is ignored without a word (an unbound issue is not Rovara's business).
   const session = await sessionForSurface({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, { kind: "linear_issue", issueId: comment.issueKey, url: `https://linear.app/issue/${comment.issueKey}` });
   if (session === undefined || session.kind !== "task" || session.subject.kind !== "task" || session.project !== input.hook.project) return "ignored";
+  // An issue key (`ENG-142`) exists in every Linear workspace, so the comment must come from the workspace the binding names (M8). A binding made before bindings named theirs asks the org's Linear
+  // connections: exactly one workspace is that one. With several, the signed comment's own link says which workspace this is, and it must be one of the org's; with no link workspace, nothing is posted (S1).
+  // With none known (or unreadable), the comment's own link is used when it has one, and otherwise the comment is believed as it always was.
+  const bound = (await sessionBindingsOf({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, session.sessionId).catch(() => [])).find((binding) => binding.kind === "linear_issue" && binding.issueId === comment.issueKey);
+  let expectedWorkspace = bound === undefined ? undefined : linearWorkspaceOfBinding(bound);
+  if (expectedWorkspace === undefined) {
+    const known = await deps.workspacesOfOrg?.(orgId).catch(() => undefined);
+    if (known !== undefined && known.length > 1) {
+      if (comment.workspace === undefined || !known.includes(comment.workspace)) return "ignored";
+      expectedWorkspace = comment.workspace;
+    } else {
+      expectedWorkspace = known?.length === 1 ? known[0] : comment.workspace;
+    }
+  }
+  if (expectedWorkspace !== undefined && comment.workspace !== expectedWorkspace) return "ignored";
   if (!await firstTime(deps, orgId, comment.commentId)) return "duplicate";
   const say = async (text: string): Promise<void> => {
-    try { await deps.reply!.reply({ orgId, issueKey: comment.issueKey, text: withoutMentions(text) }); } catch (error) { deps.log?.({ event: "linear_comment.reply_failed", error: error instanceof Error ? error.name : "unknown" }); }
+    try { await deps.reply!.reply({ orgId, issueKey: comment.issueKey, text: withoutMentions(text), commentKey: `reply:${comment.commentId}`, ...(expectedWorkspace === undefined ? {} : { workspace: expectedWorkspace }) }); } catch (error) { deps.log?.({ event: "linear_comment.reply_failed", error: error instanceof Error ? error.name : "unknown" }); }
   };
   const question = askQuestionOf(comment.text);
   if (question === undefined) {
     // Anything that is not an Ask (stop, change, approve, do something) changes nothing: one reply, with the link.
-    const link = deps.taskPageLink?.(orgId, session.sessionId);
+    const link = deps.taskPageLink?.(orgId, session.sessionId, session.subject.taskId);
     await say(link === undefined ? `${LINEAR_LINK_REPLY}.` : `${LINEAR_LINK_REPLY}: ${link}`);
     return "link_reply";
   }
@@ -114,7 +144,7 @@ export async function handleLinearComment(deps: LinearCommentDependencies, input
   }
   try {
     await admitAsk(ask, {
-      audience: "linear", orgId, sessionId: session.sessionId, task, askerKey: linearAskerKey(comment.authorId), issueId: comment.issueKey,
+      audience: "linear", orgId, sessionId: session.sessionId, task, askerKey: linearAskerKey(comment.authorId), issueId: comment.issueKey, ...(expectedWorkspace === undefined ? {} : { workspace: expectedWorkspace }),
       question: redactText(question), requestId: comment.commentId,
     });
     return "asked";

@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { ASK_RATE, askCountKey, askRequestKey, askErasedAliasPk, orgBanKey, orgMemberKey, projectArchivedMessage, projectMetaKey, sessionRateKey, sessionAskKey } from "../../packages/contracts/src/index.js";
+import { ASK_RATE, askLinearScrubKey, askCountKey, askRequestKey, askErasedAliasPk, orgBanKey, orgMemberKey, projectArchivedMessage, projectMetaKey, sessionRateKey, sessionAskKey } from "../../packages/contracts/src/index.js";
 
 const mint = vi.hoisted(() => vi.fn((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); }));
 vi.mock("../../packages/broker/src/aws/broker/model-access.js", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), mintChatTurnKey: mint }));
@@ -529,3 +529,40 @@ describe("the erase walk remembers the aliases (LI-2)", () => {
   });
 });
 const rw = (t: { rw: { db: { find(predicate: (item: Record<string, unknown>) => boolean): Array<Record<string, unknown>> } } }) => t.rw;
+
+describe("the daily upkeep rewrites the Linear comments an erase left waiting (lane ask-linear)", () => {
+  const env = { LIVE_ASK_ENABLED: "1" } as NodeJS.ProcessEnv;
+  const COMMENT = "11111111-2222-4333-8444-555555555555";
+  async function seeded(linearReply: unknown) {
+    const w = sessionWorld();
+    const made = w.seedSession({ kind: "task", owner: PRIYA });
+    const { writeAsk } = await import("../../packages/broker/src/agent-sessions/ask-store.js");
+    const store = { documentClient: w.db, tableName: "state", questionHashKey: KEY, isErased: async () => false, erasedPeople: async () => [] };
+    const askId = "ask_" + "4".repeat(20);
+    await writeAsk(store, { edition: "enterprise", orgId: ORG_A, sessionId: made.sessionId, askId, audience: "linear", question: "q", answer: "@former-member did it.", contextBytes: 1, model: "m", nowMs: w.clock.now });
+    w.db.set({ ...w.db.get(sessionAskKey(ORG_A, made.sessionId, askId))!, linearComment: { issueKey: "ENG-142", commentId: COMMENT } });
+    w.db.set({ ...askLinearScrubKey(ORG_A, made.sessionId, askId), entityType: "ASK_LINEAR_FIX", orgId: ORG_A, sessionId: made.sessionId, askId, issueKey: "ENG-142", commentId: COMMENT, attempts: 0 });
+    const broker = { documentClient: w.db, tableName: "state", editionPolicy: { edition: "enterprise" }, linearReply } as unknown as AwsBrokerDependencies;
+    const waiting = () => w.db.find((item) => item.entityType === "ASK_LINEAR_FIX");
+    return { w, broker, waiting };
+  }
+  const orgs = { listOrgs: async (after: string | undefined) => (after === undefined ? [ORG_A] : []) };
+
+  it("rewrites the comment from the scrubbed Ask through the writing client, and the waiting item goes", async () => {
+    const updates: Array<{ commentId: string; text: string }> = [];
+    const t = await seeded({ ownActorId: async () => undefined, reply: async () => ({ commentId: COMMENT }), update: async (input: { commentId: string; text: string }) => { updates.push(input); }, remove: async () => undefined });
+    expect(t.waiting()).toHaveLength(1);
+    expect(await runAskMaintenance(t.broker, t.w.clock.now + 60_000, env, orgs)).toBe("ran");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.commentId).toBe(COMMENT);
+    // (the mention is broken with a zero-width space so it can never notify, as in every Linear post)
+    expect(updates[0]!.text).toContain("@\u200bformer-member did it.");
+    expect(t.waiting()).toHaveLength(0);
+  });
+
+  it("where Rovara cannot write in Linear (no update or remove), the item waits and nothing is posted", async () => {
+    const t = await seeded({ ownActorId: async () => undefined, reply: async () => undefined });
+    await runAskMaintenance(t.broker, t.w.clock.now + 60_000, env, orgs);
+    expect(t.waiting()).toHaveLength(1);
+  });
+});
