@@ -5,7 +5,8 @@
 // not parse, a number that is not a number or a record that is missing is a failure, never a pass.
 //
 // What each check proves, and what it cannot:
-//   - packet digest: the worker sent the packet the broker built (it recomputes the digest from the text it sends, `packetDigestOf`). A worker can still lie about it; that is what the proxy check is for.
+//   - packet digest: the worker FETCHED the packet the broker built (it recomputes the digest from the packet it received, `packetDigestOf`). That is not proof of what the model was sent (the worker can lie, and
+//     pi adds system text of its own); `sentDigest` in the report is the session's own word about that. Only the proxy check below proves anything about the first call.
 //   - first request has two messages (system + one user): no history was sent.
 //   - session id is new for the task (all rounds, and not shared by two reviewers of the same round).
 //   - tools are all read-only (READ_ONLY_TOOLS).
@@ -34,6 +35,10 @@ export const WorkerReportSchema = z.object({
   tools: z.array(z.string().min(1).max(64)).max(32),
   /** The id (SHA-256) of the model key the session used, when the worker names it. The broker does not rely on this: the proxy check reads the key the broker minted. */
   modelKeyId: z.string().min(1).max(200).optional(),
+  /** SHA-256 of what the session SAYS its first request held (system text as pi holds it, harness additions included, and the user message). The worker's own word, kept as a record: never used as proof. */
+  sentDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  /** How many characters of system text the harness added after the role prompt. A record, not a check. */
+  harnessSystemChars: z.number().int().min(0).max(1_000_000).optional(),
 }).strict();
 export type WorkerReport = z.infer<typeof WorkerReportSchema>;
 

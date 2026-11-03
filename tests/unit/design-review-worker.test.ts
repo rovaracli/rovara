@@ -1,5 +1,8 @@
 // Design review stage, DR5 (3.2, 3.4, 3.13): the worker runs every reviewer in a NEW read-only session, in parallel, then the merge step.
 import { createHash } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   DESIGN_REVIEW_WORKER_FEATURE, DesignReviewBindingSchema, DesignReviewWorkerResultSchema, PacketDeliverySchema, READ_ONLY_TOOLS, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema,
@@ -8,8 +11,9 @@ import {
 import { buildReviewerPacket, type PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import { WorkerReportSchema, verifyReviewerReport } from "../../packages/broker/src/design-review/verify.js";
 import { assembleRoundFindings } from "../../packages/broker/src/design-review/round-findings.js";
-import { designReviewRetryPrompt, mergeMaterialOf, modelKeyIdOf, runDesignReview, type DesignReviewPorts, type DesignReviewSession, type OpenDesignReviewSession } from "../../packages/worker/src/design-review.js";
-import { designReviewBindingOf, slotRuntimeFor } from "../../packages/worker/src/design-review-sessions.js";
+import { designReviewRetryPrompt, mergeMaterialOf, modelKeyIdOf, runDesignReview, sentDigestOf, type DesignReviewPorts, type DesignReviewSession, type OpenDesignReviewSession } from "../../packages/worker/src/design-review.js";
+import { createReviewSessionOpener, designReviewBindingOf, slotRuntimeFor } from "../../packages/worker/src/design-review-sessions.js";
+import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 
@@ -37,6 +41,11 @@ interface Script {
   /** Messages the first request claims to hold (default 2). */
   messages?: number;
   alterFirstUser?: boolean;
+  /** Text the harness adds after the role prompt in the system text (pi's cwd and date sections). */
+  harnessSystem?: string;
+  /** Replaces the system text altogether. */
+  replaceSystem?: string;
+  systemObserved?: boolean;
 }
 
 function fakePorts(script: Script, deliveries: Map<string, unknown>) {
@@ -48,12 +57,12 @@ function fakePorts(script: Script, deliveries: Map<string, unknown>) {
       const id = `sess-${++counter}`;
       const state = { input, prompts: [] as string[], aborted: false, disposed: false, keyId: sha(`key-${input.keySlot}`) } as (typeof opened)[number];
       const answers = script.answers[input.purpose === "merge" ? "merge" : input.keySlot] ?? [];
-      let first: { system: string; user: string; messages: number } | undefined;
+      let first: { system: string; user: string; messages: number; systemObserved?: boolean } | undefined;
       const session: DesignReviewSession = {
         sessionId: id,
         prompt: async (text) => {
           state.prompts.push(text);
-          if (first === undefined) first = { system: input.system, user: script.alterFirstUser === true ? `${text} (extra)` : text, messages: script.messages ?? 2 };
+          if (first === undefined) first = { system: script.replaceSystem ?? `${input.system}${script.harnessSystem ?? ""}`, user: script.alterFirstUser === true ? `${text} (extra)` : text, messages: script.messages ?? 2, ...(script.systemObserved === undefined ? {} : { systemObserved: script.systemObserved }) };
           const next = answers[state.prompts.length - 1];
           if (next === "hang") return new Promise<string>(() => undefined);
           if (next instanceof Error) throw next;
@@ -363,6 +372,66 @@ describe("broker side: assembleRoundFindings", () => {
     const round = assembleRoundFindings({ binding, result: tampered, verification: new Map([["critic" as const, { verified: true as const, sessionId: "s", filesRead: [], inputProof: "proxy_first_call" as const }]]), packets: new Map([["critic" as const, packets.get("critic")!.items]]), pins: {} });
     expect(round.findings).toEqual([]);
     expect(round.droppedFindings).toHaveLength(1);
+  });
+});
+
+describe("N2: what the worker records as sent", () => {
+  const harness = "\n<cwd>\n/work\n</cwd>\nDate: 2026-11-03";
+  it("accepts the harness's own system text after the role prompt, digests what was really sent, and records how much the harness added", async () => {
+    const { binding, deliveries } = await setup(["critic"], false);
+    const result = await runDesignReview(binding, fakePorts({ answers: { "slot-critic": [block([])] }, harnessSystem: harness }, deliveries).ports);
+    const outcome = result.reviewers[0]!;
+    expect(outcome).toMatchObject({ status: "answered" });
+    expect(outcome.failure).toBeUndefined();
+    const delivery = PacketDeliverySchema.parse(deliveries.get("slot-critic"));
+    const messages = reviewerMessagesOf(delivery);
+    expect(outcome.report!.harnessSystemChars).toBe(harness.length);
+    expect(outcome.report!.sentDigest).toBe(sentDigestOf({ system: messages.system + harness, user: messages.user }));
+    // the digest of what the model got is not the packet digest, and a different harness text gives a different one
+    expect(outcome.report!.sentDigest).not.toBe(outcome.report!.packetDigest);
+    const other = await runDesignReview(binding, fakePorts({ answers: { "slot-critic": [block([])] }, harnessSystem: "\nother" }, deliveries).ports);
+    expect(other.reviewers[0]!.report!.sentDigest).not.toBe(outcome.report!.sentDigest);
+    expect(WorkerReportSchema.safeParse(outcome.report).success).toBe(true);
+    expect(DesignReviewWorkerResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  it("a session whose system text does not begin with the role prompt, or could not be read back, is sent_mismatch (the check can fire)", async () => {
+    const { binding, deliveries } = await setup(["critic"], false);
+    for (const script of [{ replaceSystem: "You are a helpful assistant." }, { systemObserved: false }, { alterFirstUser: true }]) {
+      const result = await runDesignReview(binding, fakePorts({ answers: { "slot-critic": [block([])] }, ...script }, deliveries).ports);
+      expect(result.reviewers[0], JSON.stringify(script)).toMatchObject({ status: "no_result", failure: "sent_mismatch" });
+    }
+  });
+
+  it("the real opener records the system text pi holds for the call, not the text it was asked to use", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dr-sent-"));
+    const held = "ROLE PROMPT\n<cwd>/work</cwd>";
+    let seenSystem: string | undefined;
+    const adapter: PiSessionAdapter = {
+      async create(input) {
+        seenSystem = input.agentRun?.systemPrompt;
+        const sessionFile = join(input.sessionDirectory, "f.jsonl");
+        await writeFile(sessionFile, "");
+        return {
+          sessionFile, conversationId: "f", prompt: async () => undefined, abort: async () => undefined, getModel: () => ({ provider: "p", modelId: "m" }),
+          getSessionStats: () => ({ sessionFile, sessionId: "f", userMessages: 0, assistantMessages: 0, toolCalls: 0, toolResults: 0, totalMessages: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }),
+          systemPromptText: () => held, subscribe: () => () => undefined, dispose: () => undefined,
+        };
+      },
+    };
+    const open = createReviewSessionOpener({ rootPath: dir, localFileTools: true, runtimeFor: () => ({ model: { provider: "p", modelId: "m" } as never, piAdapter: adapter }) });
+    const session = await open({ purpose: "reviewer", keySlot: "slot-critic", model: { provider: "p", modelId: "m" }, system: "ROLE PROMPT", tools: [...READ_ONLY_TOOLS] });
+    await session.prompt("the user message");
+    expect(seenSystem).toBe("ROLE PROMPT");
+    expect(session.firstRequest()).toEqual({ system: held, user: "the user message", messages: 2, systemObserved: true });
+    session.dispose();
+    // a handle that cannot read its system text back is recorded as not observed
+    const blind: PiSessionAdapter = { create: async (input) => { const handle = await adapter.create(input); const { systemPromptText: _drop, ...rest } = handle; return rest; } };
+    const opener2 = createReviewSessionOpener({ rootPath: dir, localFileTools: true, runtimeFor: () => ({ model: { provider: "p", modelId: "m" } as never, piAdapter: blind }) });
+    const second = await opener2({ purpose: "reviewer", keySlot: "slot-critic", model: { provider: "p", modelId: "m" }, system: "ROLE PROMPT", tools: [...READ_ONLY_TOOLS] });
+    await second.prompt("u");
+    expect(second.firstRequest()).toMatchObject({ systemObserved: false });
+    second.dispose();
   });
 });
 

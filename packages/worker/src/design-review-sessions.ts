@@ -69,7 +69,7 @@ export function createReviewSessionOpener(options: ReviewSessionOptions): Design
     }, runtime.piAdapter);
     let lastOutcome: AssistantOutcome | undefined;
     let lastText: string | undefined;
-    let first: { system: string; user: string; messages: number } | undefined;
+    let first: { system: string; user: string; messages: number; systemObserved: boolean } | undefined;
     const files = new Set<string>();
     const unsubscribe = handle.subscribe((event) => {
       const value = event as { type?: unknown; toolName?: unknown; args?: unknown; message?: unknown } | undefined;
@@ -86,7 +86,12 @@ export function createReviewSessionOpener(options: ReviewSessionOptions): Design
         lastOutcome = undefined;
         lastText = undefined;
         // The first request of a session with no history is the system message and this one user message. A session that already holds messages would say so here.
-        if (first === undefined) first = { system: open.system, user: text, messages: 1 + handle.getSessionStats().totalMessages + 1 };
+        // The system text is what pi itself holds for the call (the role prompt PLUS whatever the harness adds, such as its cwd and date sections), read back from the session: it is not what we asked pi
+        // to use. A handle that cannot say records nothing observed, and the worker then reports the reviewer as not sent as rendered.
+        if (first === undefined) {
+          const observed = handle.systemPromptText?.();
+          first = { system: observed ?? "", user: text, messages: 1 + handle.getSessionStats().totalMessages + 1, systemObserved: observed !== undefined };
+        }
         await handle.prompt(text);
         const failure = failedTurn(lastOutcome);
         if (failure !== undefined) throw failure;

@@ -25,7 +25,7 @@ export interface RoundReviewerState {
   verifyFailure?: ReviewerVerifyFailure;
   /** Why the reviewer was not counted, in more detail than `verifyFailure`: a verify failure code, or one of the answer problems. */
   notUsed?: ReviewerVerifyFailure | "no_answer" | "worker_flagged" | "result_refused";
-  /** Carried from verify.ts untouched, so the card can say "verified by packet digest" when the proxy did not confirm the first call. */
+  /** Carried from verify.ts untouched, so the card can say "verified by the digest of the packet the worker fetched" when the proxy did not confirm the first call. */
   inputProof?: Extract<VerifyResult, { verified: true }>["inputProof"];
   paraphrase?: string;
 }

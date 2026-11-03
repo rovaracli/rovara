@@ -106,8 +106,12 @@ describe("design review contracts", () => {
   });
 
   it("the fixed card sentences: digest_only never says the proxy confirmed anything", () => {
-    expect(inputProofSentence("digest_only")).toBe("verified by packet digest; the proxy's first-call size was not checked");
-    expect(inputProofSentence("proxy_first_call")).toBe("verified by packet digest and the proxy's first call");
+    expect(inputProofSentence("digest_only")).toBe("verified by the digest of the packet the worker fetched; what the model was sent and the proxy's first-call size were not checked");
+    expect(inputProofSentence("proxy_first_call")).toBe("verified by the digest of the packet the worker fetched and the proxy's first call");
+    // N2: the digest is the digest of the packet the worker FETCHED. Nothing that reads as "proved it sent exactly this" may appear unless the proxy checked the first call.
+    expect(inputProofSentence("digest_only")).toContain("fetched");
+    expect(inputProofSentence("digest_only")).toContain("not checked");
+    expect(inputProofSentence("digest_only")).not.toMatch(/sent exactly|was sent the|proved|confirmed/iu);
     expect(inputProofSentence("digest_only")).not.toMatch(/confirm/iu);
     expect(inputProofSentence("digest_only")).not.toContain("and the proxy's first call");
     expect(Object.keys(INPUT_PROOF_SENTENCES).sort()).toEqual([...INPUT_PROOFS].sort());

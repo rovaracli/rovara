@@ -122,8 +122,8 @@ export const InputProofSchema = z.enum(INPUT_PROOFS);
 export type InputProof = z.infer<typeof InputProofSchema>;
 /** The one fixed sentence for each proof. The card shows these and nothing that sounds stronger: "digest_only" never says the proxy confirmed anything. */
 export const INPUT_PROOF_SENTENCES: Readonly<Record<InputProof, string>> = Object.freeze({
-  digest_only: "verified by packet digest; the proxy's first-call size was not checked",
-  proxy_first_call: "verified by packet digest and the proxy's first call",
+  digest_only: "verified by the digest of the packet the worker fetched; what the model was sent and the proxy's first-call size were not checked",
+  proxy_first_call: "verified by the digest of the packet the worker fetched and the proxy's first call",
 });
 export function inputProofSentence(proof: InputProof): string {
   return INPUT_PROOF_SENTENCES[proof];

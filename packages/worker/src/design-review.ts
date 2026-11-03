@@ -1,10 +1,13 @@
 // Design review stage, DR5 (design-review-stage.md 3.2, 3.4, 3.5, 3.12 and 3.13): the worker's side of the design review. One operation runs every reviewer of a round, each in a NEW read-only model
 // session with no history, in parallel, and then the merge step.
 //
-// What this module does, and what it does not believe:
+// What this module does, and what it does not believe (N2): the digest it reports is the digest of the packet it FETCHED. It is not proof of what the model received; that needs the proxy's first-call
+// record (DR-FU2). The first request the session says it made is recorded too (`sentDigest`, `harnessSystemChars`), as the session's own word, never as proof.
+//
+// What this module does:
 //   - It fetches each reviewer's packet from the broker and refuses to start a reviewer whose packet does not hash to the digest the broker built (`packet_changed`).
-//   - It sends exactly two messages, the system message and one user message, both made by `reviewerMessagesOf` from the packet. The session must report that it sent those two strings and nothing
-//     else (`sent_mismatch` otherwise). The digest it reports is `packetDigestOf` of that same delivery.
+//   - It sends two messages, the system message and one user message, both made by `reviewerMessagesOf` from the packet. The session must say its first request had that user message exactly and a
+//     system text that BEGINS with the role prompt (`sent_mismatch` otherwise). Pi adds its own sections to the system text; they are counted in `harnessSystemChars` and digested into `sentDigest`.
 //   - Each reviewer uses the model key of its own slot and the READ_ONLY_TOOLS only; the merge step has no tools. The slot is the broker's: this module never chooses a model or a key.
 //   - Each reviewer has 15 minutes, the stage 40. A reviewer that runs out of time gives no result and the others still count.
 //   - An unreadable `rovara-design-review` block is asked for once more in the same session; after that the reviewer "gave no result".
@@ -25,8 +28,11 @@ export interface DesignReviewSession {
   sessionId: string;
   /** Sends one user message and returns the text of the last assistant message. Throws when the model call fails. */
   prompt(text: string): Promise<string | undefined>;
-  /** The first request this session made, exactly: the system message it was opened with, the text of the first user message, and how many messages the request held (system and user: 2). */
-  firstRequest(): { system: string; user: string; messages: number } | undefined;
+  /**
+   * The first request this session made: the system text the session itself holds for the call (the role prompt plus anything the harness adds), the text of the first user message, and how many
+   * messages the request held (system and user: 2). `systemObserved: false` means the session could not read its system text back: it is then reported as not sent as rendered.
+   */
+  firstRequest(): { system: string; user: string; messages: number; systemObserved?: boolean } | undefined;
   /** The files the read-only tools opened, as the tools named them. */
   filesRead(): string[];
   /** The tools the session had. */
@@ -170,7 +176,7 @@ export async function runDesignReview(binding: DesignReviewBinding, ports: Desig
       opening = false;
       answer = await within(session.prompt(messages.user), own.promise);
       const first = session.firstRequest();
-      if (first === undefined || first.system !== messages.system || first.user !== messages.user) {
+      if (!sentAsRendered(first, messages)) {
         failure = "sent_mismatch";
       } else {
         // The Light tier's Critic has its own registered prompt that asks for the paraphrase; the prompt id is part of the packet digest checked above, so the worker reads with the paraphrase for that
@@ -203,7 +209,11 @@ export async function runDesignReview(binding: DesignReviewBinding, ports: Desig
           const keyId = await session.keyId().catch(() => undefined);
           report = {
             sessionId: session.sessionId,
+            // The digest of the packet the worker FETCHED (checked equal to the broker's above). It is not proof of what the model was sent: that is `sentDigest` (what the session says it sent, harness text
+            // included) and, only when the proxy has checked the first call, the broker's `inputProof`.
             packetDigest: packetDigestOf(delivery),
+            sentDigest: sentDigestOf(first),
+            harnessSystemChars: Math.max(0, first.system.length - reviewerMessagesOf(delivery).system.length),
             firstRequestMessages: first.messages,
             filesRead: session.filesRead().slice(0, 200).map((file) => file.slice(0, 500)),
             tools: session.tools(),
@@ -268,6 +278,19 @@ export async function runDesignReview(binding: DesignReviewBinding, ports: Desig
     // Whatever is still open ends with the operation.
     for (const session of sessions) { await session.abort().catch(() => undefined); session.dispose(); }
   }
+}
+
+/** SHA-256 of what a session says its first request held (system text as pi holds it, harness additions included, and the user message). */
+export function sentDigestOf(first: { system: string; user: string }): string {
+  return createHash("sha256").update(JSON.stringify([first.system, first.user]), "utf8").digest("hex");
+}
+
+/**
+ * Whether the first request is the rendered packet: the user message is exactly the rendered one, and the system text BEGINS with the role prompt (pi appends its own sections after it, so equality
+ * cannot hold; what it adds is recorded as `harnessSystemChars`). A session whose system text could not be read back is not accepted.
+ */
+export function sentAsRendered(first: { system: string; user: string; systemObserved?: boolean } | undefined, rendered: { system: string; user: string }): boolean {
+  return first !== undefined && first.systemObserved !== false && first.user === rendered.user && first.system.startsWith(rendered.system);
 }
 
 /** SHA-256 of a model key, hex: the id the broker knows a key by. */

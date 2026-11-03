@@ -30,7 +30,7 @@ export const DESIGN_REVIEW_RUN_FAILURES = [
   "model_not_allowed",
   /** The packet the worker fetched does not hash to the digest the broker built, so nothing was sent. */
   "packet_changed",
-  /** The session was not sent exactly the rendered packet, so its digest cannot vouch for it. */
+  /** The session did not say its first request was the rendered packet (the user message exactly, a system text that begins with the role prompt). */
   "sent_mismatch",
   /** The session could not be opened. */
   "session_failed",
@@ -45,6 +45,10 @@ export const DesignReviewerReportSchema = z.object({
   filesRead: z.array(z.string().min(1).max(500)).max(200),
   tools: z.array(z.string().min(1).max(64)).max(32),
   modelKeyId: z.string().min(1).max(200).optional(),
+  /** SHA-256 of what the session SAYS its first request held (system text as pi holds it, harness additions included, and the user message). The worker's own word, kept as a record: never used as proof. */
+  sentDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  /** How many characters of system text the harness added after the role prompt. A record, not a check. */
+  harnessSystemChars: z.number().int().min(0).max(1_000_000).optional(),
 }).strict();
 export type DesignReviewerReport = z.infer<typeof DesignReviewerReportSchema>;
 

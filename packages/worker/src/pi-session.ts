@@ -83,6 +83,8 @@ export interface PiSessionHandle {
   /** Pi's own resolved level, even one outside AgentX's six (Pi's "max"); for artifacts only, never telemetry. */
   piThinkingLevel?(): string | undefined;
   getSessionStats(): SessionStats;
+  /** The system prompt pi is using for its next model call, complete with whatever sections the harness adds (cwd, date, project context). Design review records it as what was actually sent. */
+  systemPromptText?(): string;
   /** What this session loaded and left out so far, as references only (K1 C5a). Absent for sessions that load no knowledge. */
   loadedKnowledge?(): LoadedKnowledgeManifest;
   subscribe(listener: (event: unknown) => void): () => void;
@@ -589,6 +591,7 @@ async function createDefaultSession(
       }),
       piThinkingLevel: () => session.thinkingLevel,
       getSessionStats: () => conversationStats(session.getSessionStats(), session.sessionManager.getEntries()),
+      systemPromptText: () => session.systemPrompt,
       subscribe: (listener) => session.subscribe((event) => { if (!isSystemMessageEvent(event)) listener(withoutStructuredContent(withoutSystemMessages(event))); }),
       dispose: () => { session.dispose(); if (sourceTools.length > 0) void stubPersistedContextResults(savedFile).catch(() => undefined); },
     };
