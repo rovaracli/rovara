@@ -38,7 +38,13 @@ const escapeMarkdown = (text: string) => text.replace(/[\\`*_~[\]()>|]/gu, "\\$&
 const ZERO_WIDTH_JOINER = String.fromCharCode(0x200d);
 
 /** A name made inert (redacted, one line, no mention, link, issue reference or hidden comment) and with its markdown escaped. */
-const safeName = (name: string, max: number) => escapeMarkdown(inertLine(name, max)) || "a dependency";
+const safeName = (name: string, max: number) => escapeLeadingBlock(escapeMarkdown(inertLine(name, max))) || "a dependency";
+
+/**
+ * A name can start a bullet's text ("- <name> behaviour ..."), and there a leading `#`, `-`, `+` (a heading, a nested list, a rule) or `1.` (a numbered list; a `)` is already escaped with the other brackets) would change what the bullet is. The first character
+ * of each is escaped, so the name stays words. (A name in the middle of a line starts nothing.)
+ */
+const escapeLeadingBlock = (text: string) => text.replace(/^(?:[#+-]|(\d+)(?=\.))/u, (match, digits: string | undefined) => (digits === undefined ? `\\${match}` : `${digits}\\`));
 
 /**
  * Whether a finished line can still do anything on GitHub: open a link, an image, a code span, emphasis, a tag or a hidden comment, mention someone, cross-reference an issue, or autolink. Used on every line after
@@ -46,6 +52,8 @@ const safeName = (name: string, max: number) => escapeMarkdown(inertLine(name, m
  */
 export function dependencyLineIsInert(line: string): boolean {
   const plain = line.replaceAll(ZERO_WIDTH_JOINER, "");
+  // A bullet whose text starts a heading, a list or a rule is not the bullet it was written as.
+  if (/^- (?:#|[+-]|\d+[.)])/u.test(line)) return false;
   if (/[\p{Cc}\p{Cf}]/u.test(plain) || /[<]/u.test(line)) return false;
   // Unescaped markdown characters (a bracket left open is how `](` and `![` would appear): a backslash escapes the one after it, a pair of them is one backslash.
   const unescaped = line.replace(/\\./gu, "");

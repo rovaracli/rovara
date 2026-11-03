@@ -340,6 +340,23 @@ describe("the pull request lines (design 9.3)", () => {
       expect(dependencyLineIsInert("a \\[x\\] \\_y\\_ \\\\")).toBe(true);
       expect(dependencyLineIsInert("a \\\\[x")).toBe(false);
     });
+    it("a name that would start a heading, a list or a rule starts nothing in a bullet", () => {
+      const cases: Array<[string, string]> = [["# heading", "\\# heading"], ["- item", "\\- item"], ["+ item", "\\+ item"], ["1. item", "1\\. item"], ["--- rule", "\\--- rule"], ["12) item", "12\\) item"], ["## two", "\\## two"]];
+      for (const [name, escaped] of cases) {
+        const out = dependencyLines([emulated(name), dep({ name, label: "not_available", backing: "none" }), dep({ name: `x ${name}`, label: "hand_written_fake", backing: "fake" })], 0);
+        expect(out.notTested[0], name).toBe(`- ${escaped} behaviour against real AWS (emulated)`);
+        expect(out.notTested[1], name).toBe(`- ${escaped}: not available`);
+        // In the middle of a line it starts nothing, and is left as it is.
+        expect(out.lines[0], name).toContain(`x ${name.replace(")", "\\)")}`);
+        for (const line of [...out.lines, ...out.notTested]) expect(dependencyLineIsInert(line), `${name}: ${line}`).toBe(true);
+      }
+      // A whole name of the form is kept as words at every level.
+      for (let level = 0; level <= 4; level += 1) expect(dependencyLines([emulated("# h")], level).notTested[0]).toMatch(/^- \\# h/u);
+    });
+    it("flags a bullet that starts a heading, a list or a rule, and keeps the bullets it writes itself", () => {
+      for (const bad of ["- # x", "- - x", "- + x", "- 1. x", "- 2) x", "- --- x"]) expect(dependencyLineIsInert(bad), bad).toBe(false);
+      for (const good of ["- \\# x", "- \\- x", "- 12 tests not run: they need Kafka", "- 1 test not run: it needs Kafka", "- S3 behaviour against real AWS (emulated)", "Integration tests ran against: # x (real)."]) expect(dependencyLineIsInert(good), good).toBe(true);
+    });
     it("keeps a service's name exactly as it is in the company-approved words (L5)", () => {
       const out = dependencyLines([dep({ name: "Post (gres", label: "company_approved", backing: "local", imageDigest: sha("a") })], 0);
       expect(out.lines[0]).toBe("Integration tests ran against: Post \\(gres (company-approved Post \\(gres image).");

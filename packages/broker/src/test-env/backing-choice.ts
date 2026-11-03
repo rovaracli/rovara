@@ -250,12 +250,12 @@ function emulatedStep(input: BackingChoiceInput): Step<ChosenBacking> {
   return best === undefined ? { skip: "emulator_does_not_cover" } : { pick: { kind: "emulated", catalogId: best.id, awsService: service } };
 }
 
-/** The test account step, as if the place were sealed; the caller applies the place and the nightly-only rules. */
 /** The optional parts of the production check, passed only when given. */
 function prodOptions(input: BackingChoiceInput): { alsoDeny?: TestEnvProdDeny; rovaraAccountIds?: readonly string[] } {
   return { ...(input.alsoDeny === undefined ? {} : { alsoDeny: input.alsoDeny }), ...(input.rovaraAccountIds === undefined ? {} : { rovaraAccountIds: input.rovaraAccountIds }) };
 }
 
+/** The test account step, as if the place were sealed; the caller applies the place and the nightly-only rules. */
 function testAccountStep(input: BackingChoiceInput): Step<ChosenBacking> {
   if (input.allowed.testAccounts !== true) return { skip: "not_allowed" };
   const covering = input.accounts.filter((account) => account.family === input.dependency.family);
