@@ -6,16 +6,18 @@ const candidate = (key: string, label: string, status = "verified", extra: Recor
 /** The per-stage lists a company picker offers (lane C's optional `candidates`). */
 export const companyCandidates = () => Object.fromEntries(["understand", "plan", "plan_check", "build", "code_review", "security_review", "pull_request"].map(stage => [stage, [candidate(COMPANY_REVIEW, "Opus 5.5"), candidate(COMPANY_BUILD, "Sonnet 4.6"), candidate("openai/gpt-5-codex", "GPT-5 Codex", "unverified")]]));
 /** Build is set (model, effort) and unlocked; Review is set and locked; Plan check has only an effort. */
-export const companyPolicyRaw = (overrides: Json = {}, revision = 4) => ({
- version: 1, revision, rankingVersion: "g3-v1",
- stepOverrides: {
+export const companyPolicyRaw = (overrides: Json = {}, revision = 4) => {
+ const stepOverrides: Record<string, Json> = {
   build: { model: mid(COMPANY_BUILD), thinkingLevel: "medium", locked: false },
   code_review: { model: mid(COMPANY_REVIEW), thinkingLevel: null, differentFrom: { stage: "build", level: "vendor" }, locked: true },
   security_review: { model: mid(COMPANY_REVIEW), thinkingLevel: null, differentFrom: { stage: "build", level: "vendor" }, locked: true },
   plan_check: { thinkingLevel: "low", locked: false },
-  ...overrides,
- },
-});
+  ...overrides as Record<string, Json>,
+ };
+ // What the server says (owner decision 2026-11-02): the checking steps with no model and no different-from rule saved default to a different company's model.
+ const reviewDefaults = Object.fromEntries(["plan_check", "code_review", "security_review"].filter(stage => stepOverrides[stage] !== undefined ? stepOverrides[stage].model === undefined && stepOverrides[stage].differentFrom === undefined : true).map(stage => [stage, "different_company"]));
+ return { version: 1, revision, rankingVersion: "g3-v1", stepOverrides, reviewDefaults };
+};
 export const PROJECT_NAMES = ["payments", "checkout", "ledger", "mobile", "search", "billing", "reports"];
 const impacts = ["changed", "blocked", "unchanged", "unavailable", "changed", "unchanged", "blocked"];
 const reasons: string[][] = [["STAGE_LOCKED"], ["MODEL_FORBIDDEN", "SOME_FUTURE_CODE"], [], ["MODEL_NOT_VERIFIED"], [], [], ["LOCK_UNSATISFIABLE"]];

@@ -6,6 +6,7 @@ import {
   AgentXError, PLAN_CRITIC_BLOCK_HEADER, PLAN_CRITIQUE_INFO_STRING, agentXError, canonicalModelName, errorStatus, forbiddenModelMatcher, modelCompany, redactText, sameModelOrUnrecognised,
   type AgentGuardrails, type ModelIdentifier, type ModelSelection, type PlanCritique,
 } from "@agentx/contracts";
+import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { modelNotAllowedText } from "../model-sources/routing.js";
 
 const sameModel = (left: ModelIdentifier, right: ModelIdentifier): boolean => canonicalModelName(left) === canonicalModelName(right);
@@ -23,9 +24,27 @@ function distinct(models: readonly ModelIdentifier[]): ModelIdentifier[] {
 
 /**
  * How strong a model is taken to be, for choosing a critic on purpose (never by the order a catalog lists its models). Strongest tier first; a model is in the first tier whose pattern its
- * canonical name matches, and a model no tier names is last. Within a tier a newer version is stronger (`opus-5-5` over `opus-5` over `opus-4-8`). The one place this order lives: change it here.
+ * canonical name matches, and a model no tier names is last. The one place this order lives: change it here.
+ *
+ * Hand-made until the replay eval ranks models; no vendor is ranked above another. So the top tier is ONE "frontier" tier (Fable, Opus, GPT-5 that is not a mini or nano, Gemini Pro) with no order
+ * inside it by vendor or by name; below it Sonnet, then the small models (Haiku, mini, nano, flash), then models no tier names. Among frontier models a stage prefers (1) a different company from the
+ * step it checks, then (2) the cheaper model by the catalog's list price (a model with no price counts as the middle price of the frontier models that have one, see `neutralCost`), then
+ * (3) the newer version. Sonnet and below keep "newer version first".
  */
 export const CRITIC_CAPABILITY_TIERS: ReadonlyArray<RegExp> = [
+  /(^|-)fable(-|$)|(^|-)opus(-|$)|^gpt-5(?!.*(mini|nano))|(^|-)gemini-.*pro/u,
+  /(^|-)sonnet(-|$)/u,
+  /(^|-)(haiku|mini|nano|flash)(-|$)/u,
+];
+/** The frontier tier: the one whose models are ordered by company, then cost, then version. */
+const FRONTIER_TIER = 0;
+
+/**
+ * The order before the one frontier tier (owner decision 2026-11-02: tasks already running keep the review model they started with): Fable, then Opus, then GPT-5, then Gemini Pro, then Sonnet, then the
+ * small models, newest version first inside each. A task pinned (or started) before the frontier tier existed ranks by this, so its next review or plan check cannot switch model because the order changed.
+ * Only reached with `legacyRanking`; delete it with that flag once no such task is left.
+ */
+const LEGACY_CRITIC_CAPABILITY_TIERS: ReadonlyArray<RegExp> = [
   /(^|-)fable(-|$)/u,
   /(^|-)opus(-|$)/u,
   /^gpt-5(?!.*(mini|nano))/u,
@@ -39,21 +58,70 @@ const versionOf = (model: ModelIdentifier): number[] => (canonicalModelName(mode
 
 /** The tier of a model (0 is strongest; a model no tier names is last). */
 export function criticCapabilityTier(model: ModelIdentifier): number {
-  const name = canonicalModelName(model);
-  const found = CRITIC_CAPABILITY_TIERS.findIndex((tier) => tier.test(name));
-  return found < 0 ? CRITIC_CAPABILITY_TIERS.length : found;
+  return tierIn(CRITIC_CAPABILITY_TIERS, model);
 }
 
-/** Models strongest first: by tier, then newest version; models that rank the same keep the order they came in. */
-export function rankCriticModels(models: readonly ModelIdentifier[]): ModelIdentifier[] {
+/** The tier of a model by the order before the frontier tier (see `LEGACY_CRITIC_CAPABILITY_TIERS`). A separate function, not a flag, so `models.map(criticCapabilityTier)` stays safe. */
+export function legacyCriticCapabilityTier(model: ModelIdentifier): number {
+  return tierIn(LEGACY_CRITIC_CAPABILITY_TIERS, model);
+}
+
+function tierIn(tiers: ReadonlyArray<RegExp>, model: ModelIdentifier): number {
+  const name = canonicalModelName(model);
+  const found = tiers.findIndex((tier) => tier.test(name));
+  return found < 0 ? tiers.length : found;
+}
+
+/** Whether `model` is from a known company other than `reference`'s (a model of an unrecognised company is never shown to differ). */
+const fromOtherCompany = (model: ModelIdentifier, reference: ModelIdentifier): boolean => modelCompany(model) !== "other" && modelCompany(reference) !== "other" && modelCompany(model) !== modelCompany(reference);
+
+/** What one review costs at the catalog's list price: one million tokens in plus one million out, in dollars; undefined when the catalog has no price for the model. Only used to break a tie inside the frontier tier. */
+function listCost(model: ModelIdentifier): number | undefined {
+  const price = listPricesPerMillion(model);
+  return price === undefined ? undefined : price.input + price.output;
+}
+
+/**
+ * The cost a model with no catalog price counts as: the middle of the frontier models that do have one, so a missing price neither ranks a model first nor last (no vendor is favoured or penalised by what the
+ * catalog happens to list). It ties on cost with the model at that middle price, and the order then falls to the newer version and the name. It is a number, not a "ties with everyone" rule, so the order stays
+ * consistent (a tie with every model would put A before B by price, B before the unpriced model by version and the unpriced model before A by version: a cycle). With no priced frontier model they all tie.
+ */
+function neutralCost(models: readonly ModelIdentifier[]): number {
+  const costs = models.filter((model) => criticCapabilityTier(model) === FRONTIER_TIER).flatMap((model) => listCost(model) ?? []).sort((left, right) => left - right);
+  if (costs.length === 0) return 0;
+  const middle = Math.floor(costs.length / 2);
+  return costs.length % 2 === 1 ? costs[middle]! : (costs[middle - 1]! + costs[middle]!) / 2;
+}
+
+/**
+ * Models strongest first: by tier, then (inside the frontier tier only) a company different from `reference`'s first, then cheaper, then newest version, then canonical name; models that rank the same
+ * otherwise keep the order they came in.
+ */
+export function rankCriticModels(models: readonly ModelIdentifier[], reference?: ModelIdentifier, legacyRanking = false): ModelIdentifier[] {
+  const neutral = legacyRanking ? 0 : neutralCost(models);
+  const costOf = (model: ModelIdentifier): number => listCost(model) ?? neutral;
   return models.map((model, index) => ({ model, index })).sort((left, right) => {
-    const tier = criticCapabilityTier(left.model) - criticCapabilityTier(right.model);
+    const tierOf = legacyRanking ? legacyCriticCapabilityTier : criticCapabilityTier;
+    const tier = tierOf(left.model) - tierOf(right.model);
     if (tier !== 0) return tier;
+    const frontier = !legacyRanking && criticCapabilityTier(left.model) === FRONTIER_TIER;
+    if (frontier) {
+      if (reference !== undefined) {
+        const other = Number(fromOtherCompany(right.model, reference)) - Number(fromOtherCompany(left.model, reference));
+        if (other !== 0) return other;
+      }
+      const dearer = costOf(left.model), cheaper = costOf(right.model);
+      if (dearer !== cheaper) return dearer < cheaper ? -1 : 1;
+    }
     const a = versionOf(left.model);
     const b = versionOf(right.model);
     for (let at = 0; at < Math.max(a.length, b.length); at += 1) {
       const difference = (b[at] ?? -1) - (a[at] ?? -1);
       if (difference !== 0) return difference;
+    }
+    if (frontier) {
+      const name = canonicalModelName(left.model).localeCompare(canonicalModelName(right.model));
+      if (name !== 0) return name;
     }
     return left.index - right.index;
   }).map((entry) => entry.model);
@@ -65,6 +133,10 @@ export interface CriticModelLimits {
   forbidden?: readonly ModelIdentifier[] | undefined;
   /** Models this task's earlier plan checks already tried and the account could not use (staging 0.4.10: Bedrock answered 403 for a model it had not enabled): each is left out, by canonical name. */
   unusable?: readonly ModelIdentifier[] | undefined;
+  /** The model of the step this one checks: among frontier models a different company's is preferred (see `CRITIC_CAPABILITY_TIERS`). Undefined: no company is preferred. */
+  reference?: ModelIdentifier | undefined;
+  /** The task started before the frontier tier: rank by the order it started with (`LEGACY_CRITIC_CAPABILITY_TIERS`), a failed tier is any model of that tier, and no company is preferred. */
+  legacyRanking?: boolean | undefined;
 }
 
 /** Whether `model` is one the limits allow: not forbidden (by canonical name, so another route to a forbidden model is forbidden too) and, when the project lists models, one of them. */
@@ -92,7 +164,7 @@ export class PlanCheckUnavailableError extends AgentXError {
 
 /**
  * Whether a failed plan check's error says its model could not serve this account, whichever provider it ran on (Bedrock's 403 "not available for this account", Anthropic's or OpenAI's
- * 401/403/404 for a model, OpenRouter's 402 or "no endpoints"). The worker words every provider's failure alike, as a class: a refused key, a model not found, a request the provider refused
+ * 401/403/404 for a model, OpenRouter's 402, OpenAI's quota-exhausted 429 or "no endpoints"). The worker words every provider's failure alike, as a class: a refused key, a model not found, a request the provider refused
  * (OpenRouter's 400 for a model with no endpoint), a 402, or a failure it could not classify (a proxy's 403 reads `unknown` on a worker that reads only Bedrock's own diagnostics). Also the
  * broker's `MODEL_NOT_ALLOWED` and a model the install does not serve. A rate limit (without a 402), an outage, a spent budget or a stop is not: another model would not change them.
  */
@@ -100,6 +172,8 @@ export function criticModelUnusable(error: string | undefined): boolean {
   if (error === undefined) return false;
   return /\bthe model call failed: (?:key-rejected|model-not-found|not-in-catalog|request-rejected|unknown)\b/u.test(error)
     || /\bthe model call failed: [a-z-]+(?: [A-Za-z0-9_]+)? HTTP 402\b/u.test(error)
+    // OpenAI answers an account that spent its quota with a 429 (`insufficient_quota`): another model of this account would not change it, so the next model is tried. An ordinary rate-limit 429 is not this: it is retryable.
+    || /\bthe model call failed: limit-or-rate-limited insufficient_quota\b/u.test(error)
     || /^MODEL_NOT_ALLOWED:/u.test(error)
     || /\bis not available on this install\b/u.test(error);
 }
@@ -110,7 +184,7 @@ export function criticModelUnusable(error: string | undefined): boolean {
  */
 export function candidatesOf(limits: CriticModelLimits, sources: readonly ModelIdentifier[]): ModelIdentifier[] {
   const pool = sources.length > 0 ? sources : limits.approved ?? [];
-  const ranked = rankCriticModels(distinct(pool.filter((model) => allowed(limits, model) && !triedAndFailed(limits, model))));
+  const ranked = rankCriticModels(distinct(pool.filter((model) => allowed(limits, model) && !triedAndFailed(limits, model))), limits.reference, limits.legacyRanking === true);
   return failedTiersLast(limits, ranked);
 }
 
@@ -119,9 +193,12 @@ export function candidatesOf(limits: CriticModelLimits, sources: readonly ModelI
  * so after a failure the next try is a tier that has not failed yet, strongest first. A tier that failed once gets another model only when every other tier has also failed. Nothing failed: unchanged.
  */
 function failedTiersLast(limits: CriticModelLimits, ranked: readonly ModelIdentifier[]): ModelIdentifier[] {
-  const failedTiers = new Set((limits.unusable ?? []).map(criticCapabilityTier));
+  // A tier is "failed" for one company at a time: the frontier tier holds several companies, and one company's refusal (GPT-5 with no quota) says nothing about another's (Opus).
+  const legacy = limits.legacyRanking === true;
+  const kind = (model: ModelIdentifier): string => legacy ? String(legacyCriticCapabilityTier(model)) : `${modelCompany(model) === "other" ? `other:${model.provider}` : modelCompany(model)}/${String(criticCapabilityTier(model))}`;
+  const failedTiers = new Set((limits.unusable ?? []).map(kind));
   if (failedTiers.size === 0) return [...ranked];
-  return [...ranked.filter((model) => !failedTiers.has(criticCapabilityTier(model))), ...ranked.filter((model) => failedTiers.has(criticCapabilityTier(model)))];
+  return [...ranked.filter((model) => !failedTiers.has(kind(model))), ...ranked.filter((model) => failedTiers.has(kind(model)))];
 }
 
 /**
@@ -130,7 +207,7 @@ function failedTiersLast(limits: CriticModelLimits, ranked: readonly ModelIdenti
  * recommend from (no source list and no approved list). Exported for Plan 7's agent builder, which shows it as the step's default.
  */
 export function recommendCriticModel(limits: CriticModelLimits, planModel: ModelIdentifier | undefined, sources: readonly ModelIdentifier[]): { model: ModelIdentifier; sameModelAsPlanner: boolean } | undefined {
-  const candidates = candidatesOf(limits, sources);
+  const candidates = candidatesOf({ ...limits, reference: planModel }, sources);
   const different = planModel === undefined ? candidates[0] : candidates.find((model) => !sameModelOrUnrecognised(model, planModel));
   if (different !== undefined) return { model: different, sameModelAsPlanner: false };
   const only = candidates[0];
@@ -155,6 +232,8 @@ export interface CriticModelInput {
    * check, it is the choice: a plan check that ran on the planner's own model (and says so) beats none.
    */
   lastAttempt?: boolean | undefined;
+  /** The task has no pin marked with the review default (it started before it): rank as it did then. See `CriticModelLimits.legacyRanking`. */
+  legacyRanking?: boolean | undefined;
 }
 
 export type CriticModel =
@@ -175,7 +254,7 @@ const selectionOf = (model: ModelSelection | ModelIdentifier): ModelSelection =>
  * Nothing here is ever a forbidden model or one outside the project's list: both are checked here, and again by the step's own dispatch checks. A source list that holds no usable model refuses.
  */
 export function criticModelFor(input: CriticModelInput): CriticModel {
-  const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.guardrails.forbiddenModels };
+  const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.guardrails.forbiddenModels, legacyRanking: input.legacyRanking };
   const failed: CriticModelLimits = { ...limits, unusable: input.unusable };
   const subject = { agent: input.agentName, step: input.step?.name ?? "Plan check" };
   const settings = (input.step?.settings ?? {}) as { model?: ModelSelection | ModelIdentifier | null; fallbackModel?: ModelSelection | ModelIdentifier | null };

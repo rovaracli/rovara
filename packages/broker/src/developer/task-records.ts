@@ -142,6 +142,8 @@ export interface DeveloperTaskRecord {
   workflow?: WorkflowSnapshot;
   /** Trust fix A2: the latest reviews ran on the build's own model, for the code with this digest. Kept here, never in the (strict) workflow, so an older broker still reads the workflow after a rollback; it ignores this key. */
   reviewSameModel?: { candidateDigest: string };
+  /** Owner decision 2026-11-02: the latest reviews ran on the build's own company, because the default is another company's model and none was usable, for the code with this digest and on this model. Kept here for the same reason as `reviewSameModel`. */
+  reviewNoOtherCompany?: { candidateDigest: string; model: { provider: string; modelId: string } };
   /**
    * Second review by another AI company (SH34, switch `cr`). Kept here and NEVER in the (strict) workflow, so the first review's record, `reviewCleared` and everything that reads the workflow are untouched by it
    * and an older broker ignores these keys. `secondOpinion` is its result for one candidate; `secondReviewAcknowledged` holds the keys the task owner acknowledged (`secondReviewAcknowledgement`).

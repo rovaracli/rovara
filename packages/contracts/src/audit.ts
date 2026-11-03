@@ -303,6 +303,8 @@ export const AUDIT_ACTIONS = [
   "rule.correction_remembered",
   "project.learning_changed",
   "rule.suggestions_set",
+  // Owner decision 2026-11-02: a company admin dismissed the one-time notice that reviews now use a model from a different company. No facts: the company is the target.
+  "review_default_notice.dismissed",
   // Company domain verification (owner decision 2026-11-02): a domain claimed, checked, lost or removed. The domain itself is in `details`, never a fact.
   "company_domain.added",
   "company_domain.verified",
@@ -588,6 +590,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project.learning_changed": ["revision", "enabled", "selfConfirmedSoleOwner"],
   // The company's master suggestions switch: `setting` and `previous` are `on` or `off`, `source` is `company`.
   "rule.suggestions_set": ["setting", "previous", "source", "previousSource"],
+  "review_default_notice.dismissed": [],
   // Company domains: `tookOver` is true when the proof moved the domain from another company's lost claim; `wasState` is the state before (pending, verified or lost); `missingDays` the whole days the record was gone.
   "company_domain.added": [],
   "company_domain.verified": ["wasState", "tookOver"],

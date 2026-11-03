@@ -8,7 +8,7 @@ import {readModelSelectionPolicy,inactiveModelSourcesRevision,type ModelPolicyRe
 import {effectiveSources,type RoutingDependencies} from "../model-sources/routing.js";
 import type {TransactItem} from "../agents/table-writes.js";
 const Policy=ModelSelectionPolicyResponseSchema.omit({candidates:true});
-const FrozenInputs=z.object({projectRevision:z.number().int().min(1),projectModels:ProjectModelsSchema.optional(),projectSelection:ModelSelectionSchema.optional(),projectChoices:z.partialRecord(StageIdSchema,StageModelChoiceSchema),recipeDefaults:z.partialRecord(StageIdSchema,StageModelChoiceSchema),clearedFallbacks:z.array(StageIdSchema).max(7)}).strict();
+const FrozenInputs=z.object({projectRevision:z.number().int().min(1),projectModels:ProjectModelsSchema.optional(),projectSelection:ModelSelectionSchema.optional(),projectChoices:z.partialRecord(StageIdSchema,StageModelChoiceSchema),recipeDefaults:z.partialRecord(StageIdSchema,StageModelChoiceSchema),clearedFallbacks:z.array(StageIdSchema).max(7),/** Set when the task is pinned: its review steps default to a different company's model (owner decision 2026-11-02). A task pinned before that keeps resolving as it did. */reviewDefault:z.literal("different_company").optional()}).strict();
 const Pin=z.object({frozenInputs:FrozenInputs.optional(),approvalProof:StageModelApprovalProofSchema.optional(),version:z.literal(1),orgId:OrgIdSchema,project:z.string().min(1).max(63),registeredAt:z.string().datetime(),processAgentId:AgentIdSchema,recipeDigest:z.string().regex(/^[a-f0-9]{64}$/u),policy:Policy,sourcesRevision:z.number().int().min(0)}).strict();
 export type TaskModelPolicyPin=z.infer<typeof Pin>;
 const unavailable=()=>agentXError("RUNTIME_UNAVAILABLE","The task's pinned model policy could not be verified.");
@@ -29,7 +29,7 @@ export async function prepareTaskModelPolicyPin(deps:ModelPolicyReader&{modelRou
  if(row.pk!==key.pk||row.sk!==key.sk||input.projectRevision!==undefined&&input.projectRevision!==definition.data.revision) throw unavailable();
  const selected=selection.Item===undefined?undefined:ModelSelectionSchema.safeParse(selection.Item.model);
  if(selected!==undefined&&!selected.success)throw unavailable();
- const frozenInputs={projectRevision:definition.data.revision,...(definition.data.models===undefined?{}:{projectModels:definition.data.models}),...(selected?.success?{projectSelection:selected.data}:{}),...frozenRecipeModelInputs(input.recipe,input.projectOverlay)};
+ const frozenInputs={projectRevision:definition.data.revision,...(definition.data.models===undefined?{}:{projectModels:definition.data.models}),...(selected?.success?{projectSelection:selected.data}:{}),...frozenRecipeModelInputs(input.recipe,input.projectOverlay),reviewDefault:"different_company" as const};
  return parseTaskModelPolicyPin({frozenInputs,version:1,orgId:input.orgId,project:input.project,registeredAt:row.registeredAt,processAgentId:input.agentId,recipeDigest:input.digest,policy,...(input.approvalProof===undefined?{}:{approvalProof:input.approvalProof}),sourcesRevision:sources?.stored.revision??await inactiveModelSourcesRevision(deps,input.orgId)},{orgId:input.orgId,project:input.project,agentId:input.agentId,recipe:input.recipe,digest:input.digest});
 }
 export function taskModelPolicyAdmissionChecks(tableName:string,pin:TaskModelPolicyPin):TransactItem[] {

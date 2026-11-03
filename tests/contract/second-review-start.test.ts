@@ -58,6 +58,17 @@ const proof = (model: ModelIdentifier): { verdicts: SecondReviewVerdict[]; repla
   verdicts: [{ model: secondReviewModelKey(model), replayRunId: "run-1", baseline: OPUS, shadow: { startedAt: "2026-11-02T00:00:00.000Z", endedAt: "2026-11-16T00:00:00.000Z", findings: 10, agreed: 4, reviews: 10 }, createdAt: "2026-11-20T00:00:00.000Z", createdBy: "staff:alice" }],
 });
 
+describe("a task started before the frontier tier keeps its second reviewer's default (legacyRanking)", () => {
+  const FABLE: ModelIdentifier = { provider: "anthropic", modelId: "claude-fable-5-1" };
+  const OPUS_NEW: ModelIdentifier = { provider: "anthropic", modelId: "claude-opus-5-5" };
+  const GPT5: ModelIdentifier = { provider: "openai", modelId: "gpt-5" };
+  const tops = (legacyRanking: boolean) => secondReviewPicker({ sources: [OPUS_NEW, FABLE, GPT5, GEMINI], project: {}, forbidden: [], against: [GPT5], legacyRanking }).suggested.map((entry) => entry.model.modelId);
+  it("an older task ranks Fable above Opus above Gemini Pro; a new one puts the cheaper Opus first", () => {
+    expect(tops(true)).toEqual(["claude-fable-5-1", "claude-opus-5-5", "google/gemini-3-pro"]);
+    expect(tops(false)[0]).toBe("claude-opus-5-5");
+  });
+});
+
 describe("the model picker", () => {
   const picked = secondReviewPicker({ sources: [OPUS, SONNET, GPT, GPT_FREE, GEMINI, NOVA, MYSTERY], project: {}, forbidden: [], against: [SONNET], price: () => ({ inputUsdPerMTok: 2, outputUsdPerMTok: 10 }) });
 
@@ -86,8 +97,10 @@ describe("the model picker", () => {
       expect(entry.suggestionReason).toMatch(/different AI company/u);
       expect(entry.suggestionReason).not.toMatch(/\n/u);
     }
-    // The strongest eligible one first (the critic's capability tiers).
-    expect(picked.suggested[0]!.model.modelId).toBe(GPT.modelId);
+    // The strongest eligible one first (the critic's capability tiers; inside the frontier tier cheaper first: Gemini has no catalog price, so it counts as the middle price of the priced frontier models and
+    // comes before the dearer GPT-5.5, instead of after it as when a missing price counted as dearest).
+    expect(picked.suggested[0]!.model.modelId).toBe(GEMINI.modelId);
+    expect(picked.suggested.map((entry) => entry.model.modelId)).toContain(GPT.modelId);
     expect(picked.suggested.every((entry) => entry.notes.length === 0)).toBe(true);
   });
 
@@ -121,8 +134,8 @@ describe("the plan: choice, default and the company's sources", () => {
   it("uses the top suggestion while nobody has chosen, records it as the default, and says so", () => {
     const plan = planned();
     expect(plan.choice).toBe("default");
-    expect(plan.model).toEqual({ provider: GPT.provider, modelId: GPT.modelId });
-    expect(defaultModelLine(plan.model, false)).toBe("Using default: openai/gpt-5.5 (change)");
+    expect(plan.model).toEqual({ provider: GEMINI.provider, modelId: GEMINI.modelId });
+    expect(defaultModelLine(plan.model, false)).toBe("Using default: google/gemini-3-pro (change)");
     expect(plan.candidates.length).toBeLessThanOrEqual(2);
   });
 

@@ -770,6 +770,10 @@ function modelPolicyEvent(action:"model_policy.changed"|"model_policy.lock_set"|
 export const auditModelPolicyChanged=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.changed",input);
 export const auditModelPolicyLockSet=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.lock_set",input);
 export const auditModelPolicyLockRemoved=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.lock_removed",input);
+/** A company admin dismissed the one-time "reviews now use a model from a different company" notice (once per company). The target is the company; no facts. */
+export function auditReviewDefaultNoticeDismissed(input: AuditBuilderBase): AuditEventInput {
+  return build("review_default_notice.dismissed", input, { kind: "org", id: input.orgId }, {});
+}
 /**
  * `occurrence`: `auditOccurrence(org, settings revision)`. The company's master "suggestions" switch changed; `setting` and `previous` are `on` or `off`, `source` is `company`, and
  * `previousSource` says where the previous value came from (`company` or `install_default`). The target is the company itself.

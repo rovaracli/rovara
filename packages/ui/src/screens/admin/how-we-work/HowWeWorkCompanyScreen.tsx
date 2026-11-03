@@ -15,7 +15,7 @@ import { EFFORT_OPTIONS, REFUSAL_TEXT, candidateBlock, codedText, effortLabel } 
 import { ReadSection, checkedTime, useAdminRead } from "../models/read.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { PrLearningLockRow } from "../agents/PrLearningLockRow.js";
-import { incompleteLocks, lockIncomplete, normalize, patchRow, rowEntry, rowSplit, sameOverrides, type CompanyRow, type EffortChoice } from "./company-edit.js";
+import { defaultStillApplies, incompleteLocks, lockIncomplete, normalize, patchRow, rowEntry, rowSplit, sameOverrides, vendorOn, type CompanyRow, type EffortChoice } from "./company-edit.js";
 import * as T from "./company-text.js";
 import { LearningSuggestionsRow } from "./LearningSuggestionsRow.js";
 import { KnownFailingPolicyRow } from "./KnownFailingPolicyRow.js";
@@ -56,14 +56,15 @@ function ModelPicker({ entry, candidates, disabled, onPick }: { entry: CompanyOv
  if (!options.some(option => option.value === current)) options.push({ value: current, label: current, disabled: true });
  return <><Select label="Model" value={current} options={options} disabled={disabled} onValueChange={onPick} />{candidates.every(candidate => candidateBlock(candidate) !== undefined) && <p className="rv-muted">{T.NO_VERIFIED}</p>}</>;
 }
-function RowCard({ row, overrides, candidates, disabled, onChange }: { row: CompanyRow; overrides: CompanyOverrides; candidates: StageCandidate[] | undefined; disabled: boolean; onChange: (next: CompanyOverrides) => void }) {
+function RowCard({ row, overrides, saved, serverDefault, candidates, disabled, onChange }: { row: CompanyRow; overrides: CompanyOverrides; saved: CompanyOverride | undefined; serverDefault: boolean; candidates: StageCandidate[] | undefined; disabled: boolean; onChange: (next: CompanyOverrides) => void }) {
  const entry = rowEntry(overrides, row), locked = entry?.locked === true, incomplete = lockIncomplete(entry, row), split = rowSplit(overrides, row);
 const effort = effortChoice(entry?.thinkingLevel), effortOptions = EFFORT_OPTIONS.some(option => option.value === effort) ? EFFORT_OPTIONS : [...EFFORT_OPTIONS, { value: effort, label: effortLabel(effort), disabled: true }];
  const referenceTitle = row.reference === "plan" ? "Plan" : "Build";
  return <section aria-label={row.title} className="rv-hww-company-card"><h2>{row.title}</h2>
   {candidates === undefined ? <p>Model: {entry?.model === undefined ? <>Rovara's default</> : <VisibleText text={modelKey(entry.model)} />}</p> : <ModelPicker entry={entry} candidates={candidates} disabled={disabled} onPick={value => onChange(patchRow(overrides, row, { model: value }))} />}
   <Select label="Effort" value={effort} options={effortOptions} disabled={disabled} onValueChange={value => onChange(patchRow(overrides, row, { effort: value as EffortChoice }))} />
-  {row.reference !== undefined && <Switch label={"Different vendor than " + referenceTitle} checked={entry?.differentFrom?.level === "vendor"} disabled={disabled} onCheckedChange={checked => onChange(patchRow(overrides, row, { vendor: checked }))} />}
+  {row.reference !== undefined && <Switch label={"Different vendor than " + referenceTitle} checked={vendorOn(entry, saved, serverDefault)} disabled={disabled} onCheckedChange={checked => onChange(patchRow(overrides, row, { vendor: checked }))} />}
+  {row.reference !== undefined && defaultStillApplies(entry, saved, serverDefault) && <p className="rv-muted">{T.DEFAULT_VENDOR_NOTE}</p>}
   <Switch label="Lock this stage" checked={locked} disabled={disabled} onCheckedChange={checked => onChange(patchRow(overrides, row, { locked: checked }))} />
   {incomplete && <p role="status" className="rv-hww-company-hint">{T.CARD_INCOMPLETE}</p>}
   {split && <p className="rv-muted">{T.SPLIT[row.id]}</p>}
@@ -113,7 +114,7 @@ function Editor({ policy, notice, setNotice, reload, reread }: { policy: Company
  }
  return <div aria-busy={busy}>
   {COMPANY_ROWS.some(row => rowCandidates(policy, row) === undefined) && <p className="rv-muted">{T.MODEL_NOTE}</p>}
-  <div className="rv-hww-company-cards">{COMPANY_ROWS.map(row => <RowCard key={row.id} row={row} overrides={draft} candidates={rowCandidates(policy, row)} disabled={!allowed || busy} onChange={edit} />)}</div>
+  <div className="rv-hww-company-cards">{COMPANY_ROWS.map(row => <RowCard key={row.id} row={row} overrides={draft} saved={rowEntry(policy.stepOverrides, row)} serverDefault={policy.reviewDefaults?.[row.base] === "different_company"} candidates={rowCandidates(policy, row)} disabled={!allowed || busy} onChange={edit} />)}</div>
   <div className="rv-hww-company-actions"><Button variant="primary" disabled={!allowed || busy || !dirty || outOfDate} onClick={() => { void openReview(); }}>Review changes</Button></div>
   {blocked !== undefined && <p role="alert">{blocked}</p>}
   {review !== undefined && <section aria-label="Review of company changes" className="rv-hww-company-review"><h2>Projects affected</h2>

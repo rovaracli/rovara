@@ -39,5 +39,7 @@ export async function getCompanyModelSelectionPolicy(deps:Deps,caller:StageModel
   return {model,label,provider:model.provider,company:modelCompany(model),status:blocked?"denied" as const:verified?"verified" as const:"unverified" as const,...(blocked?{blockedReason:"MODEL_FORBIDDEN" as const}:verified?{}:{blockedReason:"MODEL_NOT_VERIFIED" as const})};
  });
  await requireCompanyModelPolicyAuthority(deps,caller);
- return ModelSelectionPolicyResponseSchema.parse({...policy,candidates:Object.fromEntries(STAGE_IDS.map(stage=>[stage,candidates]))});
+ // Owner decision 2026-11-02: which checking steps default to a different company's model, from the same rule the resolver applies (nothing set for the step: no model and no different-from rule at any level of the saved policy).
+ const reviewDefaults=Object.fromEntries((["plan_check","code_review","security_review"] as const).filter(stage=>{const entry=policy.stepOverrides[stage];return entry?.model===undefined&&entry?.differentFrom===undefined;}).map(stage=>[stage,"different_company" as const]));
+ return ModelSelectionPolicyResponseSchema.parse({...policy,candidates:Object.fromEntries(STAGE_IDS.map(stage=>[stage,candidates])),reviewDefaults});
 }

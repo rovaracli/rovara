@@ -53,9 +53,12 @@ export interface PickerInput {
   price?: ((model: ModelIdentifier) => SecondReviewPrice | undefined) | undefined;
   verdicts?: readonly SecondReviewVerdict[] | undefined;
   replayRuns?: readonly SecondReviewReplayRun[] | undefined;
+  /** The task started before the frontier tier: its default stays the one the old order gave (`CriticModelLimits.legacyRanking`). */
+  legacyRanking?: boolean | undefined;
 }
 
-const STRENGTH_WORDS = ["top-tier strength", "high strength", "high strength", "high strength", "good strength", "lighter and faster"] as const;
+// By capability tier (critic.ts): frontier, Sonnet, small; a model no tier names reads as the last.
+const STRENGTH_WORDS = ["high strength", "good strength", "lighter and faster"] as const;
 /** A free variant of an OpenRouter model: the provider may train on what it is sent. */
 export const isFreeVariant = (model: ModelIdentifier): boolean => model.provider.toLowerCase() === "openrouter" && /:free$/iu.test(model.modelId);
 
@@ -77,11 +80,11 @@ export function secondReviewTrackRecord(verdict: Pick<SecondReviewVerdict, "shad
  * the SAME company as a recorded one, or whose maker is unknown, is listed greyed out with the reason. Strongest first (the critic's capability tiers; the order of the sources decides nothing).
  */
 export function secondReviewPicker(input: PickerInput): { entries: PickerEntry[]; suggested: PickerEntry[] } {
-  const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.forbidden, unusable: input.unusable };
+  const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.forbidden, unusable: input.unusable, legacyRanking: input.legacyRanking };
   // Every route the company can use, each exactly as the source lists it (a `:free` variant is its own entry, not the same model as the paid one): allowed by the limits, strongest first.
   const exact = new Map<string, ModelIdentifier>();
   for (const model of input.sources.length > 0 ? input.sources : input.project.approved ?? []) exact.set(secondReviewModelKey(model), model);
-  const usable = rankCriticModels([...exact.values()].filter((model) => candidatesOf(limits, [model]).length > 0));
+  const usable = rankCriticModels([...exact.values()].filter((model) => candidatesOf(limits, [model]).length > 0), undefined, input.legacyRanking === true);
   const entries: PickerEntry[] = usable.map((model) => {
     const company = modelCompany(model);
     const eligible = company !== "other" && (input.fitUnknown === true || (input.against.length > 0 && input.against.every((other) => differentCompany(model, other))));

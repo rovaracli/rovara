@@ -89,8 +89,9 @@ describe("editable model rows", () => {
   expect("model" in body.overlay.steps!.build!).toBe(false);
  });
 
- it("writes the different-vendor toggle as differentCompanyFrom: Build on the review, Plan on the plan check", async () => {
-  const f = await open();
+ it("writes the different-vendor toggle as differentCompanyFrom: Build on the review, Plan on the plan check (where a company model means the rule must be written)", async () => {
+  const companyModel = { companyDefault: { model: mid(OPUS), thinkingLevel: null } };
+  const f = await open({ stages: { code_review: stageEntry("code_review", companyModel), security_review: stageEntry("security_review", companyModel), plan_check: stageEntry("plan_check", companyModel) } });
   await waitFor(() => expect(within(card("Review")).getByRole("switch", { name: "Different vendor than Build" })).toBeTruthy());
   expect(within(card("Plan check")).queryByRole("switch", { name: "Different vendor than Build" })).toBeNull();
   expect(within(card("Build")).queryByRole("switch")).toBeNull();
@@ -370,5 +371,119 @@ describe("editable model rows", () => {
   const f = await open({ theme, stages: { plan_check: stageEntry("plan_check", { refusal: { code: "LOCK_UNSATISFIABLE", fixHref: "/app/admin/how-we-work" } }) } });
   await waitFor(() => expect(picker("Build")).toBeTruthy());
   await expectNoAxeViolations(f.container);
+ });
+});
+
+describe("review defaults (owner decision 2026-11-02)", () => {
+ const review = (reason: string, extra: Json = {}) => ({ code_review: stageEntry("code_review", { effective: effective(GPT_REVIEW, { reason, ...extra }) }), security_review: stageEntry("security_review", { effective: effective(GPT_REVIEW, { reason, ...extra }) }) });
+ const GPT_REVIEW = "openai/gpt-5-codex";
+ it("shows a review step's reason in the three fixed phrases, and the ordinary words for a step that is not a check", async () => {
+  await open({ stages: review("DEFAULT_DIFFERENT_COMPANY") });
+  await waitFor(() => expect(within(card("Review")).getByText("Picked because: default: different company", { selector: "[data-stage='code_review'] *" })).toBeTruthy());
+  expect(within(card("Review")).getByText("Picked because: default: different company", { selector: "[data-stage='security_review'] *" })).toBeTruthy();
+  expect(within(card("Build")).getByText("Picked because: Rovara's default")).toBeTruthy();
+ });
+ it("says your choice for a project or company choice and company lock for a lock", async () => {
+  const choice = await open({ stages: review("PROJECT_CHOICE", { decidedBy: "project" }) });
+  await waitFor(() => expect(within(card("Review")).getByText("Picked because: your choice", { selector: "[data-stage='code_review'] *" })).toBeTruthy());
+  choice.unmount();
+  await open({ stages: { code_review: stageEntry("code_review", { locked: true, effective: effective(GPT_REVIEW, { reason: "COMPANY_LOCK", decidedBy: "company", locked: true }) }), security_review: stageEntry("security_review", { locked: true, effective: effective(GPT_REVIEW, { reason: "COMPANY_LOCK", decidedBy: "company", locked: true }) }) } });
+  await waitFor(() => expect(within(card("Review")).getByText("Picked because: company lock", { selector: "[data-stage='code_review'] *" })).toBeTruthy());
+ });
+ it("says in fixed words that the review is on the builder's company when no other company's model is available, and the plan check likewise", async () => {
+  await open({ stages: { ...review("BUILTIN_DEFAULT", { noOtherCompany: true }), plan_check: stageEntry("plan_check", { effective: effective(SONNET, { noOtherCompany: true }) }) } });
+  await waitFor(() => expect(within(card("Review")).getAllByText("Review uses GPT-5 Codex (same company as the builder: no other company's model is available)")).toHaveLength(2));
+  expect(within(card("Review")).getAllByText("Picked because: default: different company").length).toBe(2);
+  expect(within(card("Plan check")).getByText("Plan check uses Sonnet 4.6 (same company as the planner: no other company's model is available)")).toBeTruthy();
+  expect(within(card("Build")).queryByText(/same company as the/)).toBeNull();
+ });
+ it("turning the switch on where a project saved the different-model rule removes that rule: back to the default, so a Claude-only company still reviews", async () => {
+  const optedOut = { projectChoice: { differentFrom: { stage: "build", level: "model" } } };
+  const f = await open({ overlay: { steps: { review: { differentCompanyFrom: null } } }, stages: { code_review: stageEntry("code_review", { ...optedOut, effective: effective(OPUS) }), security_review: stageEntry("security_review", { ...optedOut, effective: effective(OPUS) }) } });
+  const toggle = () => within(card("Review")).getByRole("switch", { name: "Different vendor than Build" });
+  await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("false"));
+  fireEvent.click(toggle());
+  const body = await saved(f);
+  expect(body.overlay.steps?.review ?? {}).not.toHaveProperty("differentCompanyFrom");
+ });
+ it("says in fixed words when another company's model could not be used", async () => {
+  await open({ stages: review("BUILTIN_DEFAULT", { otherCompanyFailed: true }) });
+  await waitFor(() => expect(within(card("Review")).getAllByText("Review uses GPT-5 Codex (same company as the builder: the other company's model could not be used)")).toHaveLength(2));
+ });
+ it("shows the different-vendor switch on while the default applies, and turning it off writes the explicit different-model rule", async () => {
+  const f = await open({ stages: review("DEFAULT_DIFFERENT_COMPANY") });
+  const toggle = () => within(card("Review")).getByRole("switch", { name: "Different vendor than Build" });
+  await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("true"));
+  fireEvent.click(toggle());
+  const body = await saved(f);
+  expect(body.overlay.steps!.review).toEqual({ differentCompanyFrom: null });
+ });
+ it("keeps the switch off for a step with a project choice and no rule, and turning it on writes the vendor rule", async () => {
+  const chosen = { projectChoice: { model: mid(GPT_REVIEW) } };
+  const f = await open({ stages: { code_review: stageEntry("code_review", { ...chosen, effective: effective(GPT_REVIEW, { reason: "PROJECT_CHOICE", decidedBy: "project" }) }), security_review: stageEntry("security_review", { ...chosen, effective: effective(GPT_REVIEW, { reason: "PROJECT_CHOICE", decidedBy: "project" }) }) } });
+  const toggle = () => within(card("Review")).getByRole("switch", { name: "Different vendor than Build" });
+  await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("false"));
+  fireEvent.click(toggle());
+  expect((await saved(f)).overlay.steps!.review).toEqual({ differentCompanyFrom: "build" });
+ });
+});
+
+describe("the one-time review-default notice (owner decision 2026-11-02)", () => {
+ const NOTICE = "/v1/app/org/review-default-notice", GPT_REVIEW = "openai/gpt-5-codex";
+ const onDefault = (reason = "DEFAULT_DIFFERENT_COMPANY") => ({ code_review: stageEntry("code_review", { effective: effective(GPT_REVIEW, { reason }) }), security_review: stageEntry("security_review", { effective: effective(GPT_REVIEW, { reason }) }) });
+ const region = () => screen.getByRole("region", { name: "Reviews now use a different company's model" });
+ const answering = (state: { dismissed: boolean; canDismiss: boolean }, onPost?: (request: { body?: unknown }) => { status: number; body: unknown } | undefined): Handler => (request, url) => {
+  if (url.pathname !== NOTICE) return undefined;
+  if (request.method === "POST") return onPost?.(request) ?? { status: 200, body: { dismissed: true, canDismiss: state.canDismiss } };
+  return { status: 200, body: state };
+ };
+ it("tells every member which model the reviews use, in the fixed words, and lets an owner or admin dismiss it", async () => {
+  const f = await open({ stages: onDefault(), handle: answering({ dismissed: false, canDismiss: true }) });
+  await waitFor(() => expect(region()).toBeTruthy());
+  expect(region().textContent).toContain("Reviews now use a model from a different company: GPT-5 Codex. Change it here.");
+  expect(within(region()).getByRole("link", { name: "Change it here." }).getAttribute("href")).toBe("/app/admin/how-we-work");
+  fireEvent.click(within(region()).getByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Reviews now use a different company's model" })).toBeNull());
+  const posts = f.sent().filter(request => request.path === NOTICE);
+  expect(posts).toHaveLength(1);
+  expect(posts[0]!.body).toEqual({ action: "dismiss" });
+ });
+ it("shows a member the same words with nothing to press", async () => {
+  await open({ stages: onDefault(), handle: answering({ dismissed: false, canDismiss: false }) });
+  await waitFor(() => expect(region()).toBeTruthy());
+  expect(region().textContent).toContain("Reviews now use a model from a different company: GPT-5 Codex. Change it here.");
+  expect(within(region()).queryByRole("button")).toBeNull();
+  expect(within(region()).queryByRole("link")).toBeNull();
+ });
+ it("is not shown once the company dismissed it", async () => {
+  const f = await open({ stages: onDefault(), handle: answering({ dismissed: true, canDismiss: true }) });
+  // The read ran, so the notice is hidden because of its answer, not because nothing was asked.
+  await waitFor(() => expect(f.calls()).toContain("GET " + NOTICE));
+  expect(screen.queryByRole("region", { name: "Reviews now use a different company's model" })).toBeNull();
+ });
+ it("is shown only while a review step is on the new default", async () => {
+  const f = await open({ stages: onDefault("PROJECT_CHOICE"), handle: answering({ dismissed: false, canDismiss: true }) });
+  await waitFor(() => expect(f.calls()).toContain("GET " + NOTICE));
+  expect(screen.queryByRole("region", { name: "Reviews now use a different company's model" })).toBeNull();
+ });
+ it("counts only review steps: a step that is not a check never makes the notice", async () => {
+  const f = await open({ stages: { build: stageEntry("build", { effective: effective(GPT_REVIEW, { reason: "DEFAULT_DIFFERENT_COMPANY" }) }) }, handle: answering({ dismissed: false, canDismiss: true }) });
+  await waitFor(() => expect(f.calls()).toContain("GET " + NOTICE));
+  expect(screen.queryByRole("region", { name: "Reviews now use a different company's model" })).toBeNull();
+ });
+ it("sends one dismissal for a double press", async () => {
+  const f = await open({ stages: onDefault(), handle: answering({ dismissed: false, canDismiss: true }) });
+  await waitFor(() => expect(region()).toBeTruthy());
+  const press = within(region()).getByRole("button", { name: "Dismiss" });
+  fireEvent.click(press);fireEvent.click(press);
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Reviews now use a different company's model" })).toBeNull());
+  expect(f.sent().filter(request => request.path === NOTICE)).toHaveLength(1);
+ });
+ it("keeps the notice and says so when the dismissal is refused", async () => {
+  await open({ stages: onDefault(), handle: answering({ dismissed: false, canDismiss: true }, () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "no" } } })) });
+  await waitFor(() => expect(region()).toBeTruthy());
+  fireEvent.click(within(region()).getByRole("button", { name: "Dismiss" }));
+  expect((await within(region()).findByRole("alert")).textContent).toBe("Only a company owner or admin can dismiss this notice.");
+  expect(region()).toBeTruthy();
  });
 });

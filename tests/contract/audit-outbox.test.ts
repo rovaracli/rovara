@@ -831,6 +831,7 @@ describe("I4: the builders", () => {
     ["auditRuleCorrectionRemembered", (occurrence) => builders.auditRuleCorrectionRemembered({ ...base, occurrence, details, projectName: "Secret Project", correctionId: "cor_1", stage: "build", standing: "member", op: "remember" })],
     ["auditProjectLearningChanged", (occurrence) => builders.auditProjectLearningChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, enabled: true, selfConfirmedSoleOwner: false })],
     ["auditRuleSuggestionsSet", (occurrence) => builders.auditRuleSuggestionsSet({ ...base, occurrence, details, setting: "on", previous: "off", source: "company" })],
+    ["auditReviewDefaultNoticeDismissed", (occurrence) => builders.auditReviewDefaultNoticeDismissed({ ...base, occurrence, details })],
     // Company domain verification
     ["auditCompanyDomainAdded", (occurrence) => builders.auditCompanyDomainAdded({ ...base, occurrence, details, domain: "acme.example" })],
     ["auditCompanyDomainVerified", (occurrence) => builders.auditCompanyDomainVerified({ ...base, occurrence, details, domain: "acme.example", wasState: "pending", tookOver: false })],

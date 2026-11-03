@@ -30,9 +30,25 @@ export const REASON_LINE: Readonly<Record<Reason, string>> = {
  PERSONAL_PLAN_DEFAULT: "Default of your plan",
  RECIPE_DEFAULT: "Default of the process",
  APPROVED_SAME_MODEL: "Approved: same model as Build",
+ DEFAULT_DIFFERENT_COMPANY: "Default: different company",
 };
 export const UNKNOWN_REASON_LINE = "Rovara chose it";
 export const reasonLine = (reason: string): string => isReason(reason) ? REASON_LINE[reason] : UNKNOWN_REASON_LINE;
+/** The steps that check another step's work. Their model's reason is one of three fixed phrases (owner decision 2026-11-02). */
+const CHECKING_STAGES: readonly StageId[] = ["plan_check", "code_review", "security_review"];
+export const isCheckingStage = (stage: StageId): boolean => CHECKING_STAGES.includes(stage);
+export const CHECKING_REASON = { DEFAULT: "default: different company", CHOICE: "your choice", LOCK: "company lock" } as const;
+/** Why a checking step runs on its model: "default: different company", "your choice" (a person or the company chose it) or "company lock"; any other reason keeps its ordinary words. */
+export function checkingReasonLine(reason: string, defaultNotMet: boolean): string {
+ if (defaultNotMet || reason === "DEFAULT_DIFFERENT_COMPANY") return CHECKING_REASON.DEFAULT;
+ if (reason === "COMPANY_LOCK") return CHECKING_REASON.LOCK;
+ if (reason === "PROJECT_CHOICE" || reason === "COMPANY_DEFAULT" || reason === "PROJECT_SELECTION") return CHECKING_REASON.CHOICE;
+ return reasonLine(reason);
+}
+/** Said when a checking step's default is another company's model and none is available: fixed words around the model's name. A plan check names the planner, a review the builder. */
+export function noOtherCompanyText(stage: StageId, model: string): string {
+ return (stage === "plan_check" ? "Plan check uses " : "Review uses ") + model + " (same company as the " + (stage === "plan_check" ? "planner" : "builder") + ": no other company's model is available)";
+}
 export const NOT_VERIFIED_TEXT = "Not verified for your account. Ask an admin to check it in AI & connections.";
 export const DRAFT_CHANGED_TEXT = "This draft changed. Reload and try again.";
 export const EDITS_REMOVED_TEXT = "Some changes were removed because the company locked a stage or a model is no longer verified.";
@@ -53,3 +69,16 @@ export function candidateBlock(candidate: StageCandidate): string | undefined {
 }
 /** Every stage by name, for a refusal that can name any of them. */
 export const STAGE_LABELS: Readonly<Record<StageId, string>> = { understand: "Understand", plan: "Plan", plan_check: "Plan check", build: "Build", code_review: "Code review", security_review: "Security review", pull_request: "Pull request" };
+/** The one-time notice that reviews now use a model from a different company (owner decision 2026-11-02). */
+export const REVIEW_DEFAULT_NOTICE = {
+ LABEL: "Reviews now use a different company's model",
+ PREFIX: "Reviews now use a model from a different company: ",
+ CHANGE: "Change it here.",
+ DISMISS: "Dismiss",
+ FAILED: "Couldn't dismiss the notice. Try again.",
+ NOT_ALLOWED: "Only a company owner or admin can dismiss this notice.",
+} as const;
+/** The same, when another company's model was usable and failed. */
+export function otherCompanyFailedText(stage: StageId, model: string): string {
+ return (stage === "plan_check" ? "Plan check uses " : "Review uses ") + model + " (same company as the " + (stage === "plan_check" ? "planner" : "builder") + ": the other company's model could not be used)";
+}

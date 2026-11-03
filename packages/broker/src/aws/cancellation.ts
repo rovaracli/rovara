@@ -85,6 +85,10 @@ export interface OperationRecord extends Operation {
   criticSameModel?: true;
   /** Trust fix A2: the reviews ran on the same model that wrote the code, because it was the only one usable; their reports say so (absent: another model reviewed). */
   reviewSameModel?: true;
+  /** The reviews' default is another company's model than the build's, and none was usable: they ran on the build's own company (the task page says so; absent: another company reviewed, or the review was set by a person). */
+  reviewNoOtherCompany?: true;
+  /** The plan check's default is another company's model than the planner's, and none was usable, so it ran on the planner's own company (absent: another company checked, or the check was set by a person). */
+  criticNoOtherCompany?: true;
   /** SR-1 (switch `cr`): this REVIEW operation carries a second reviewer (another AI company's model, inside the same operation), or records why it could not: the candidate it is about and the plan (or the fixed reason it did not run). The one REVIEW end reads it (`secondOpinionFromReviewResult`); no other lookup does. */
   secondReviewPlan?: SecondReviewOperationPlan;
   /** SH30: the company recipes (id and revision) the broker offered this SETUP_DRAFT run when it dispatched it. The run's reported recipe sources are intersected with this (`offeredRecipesNamedBy`). */

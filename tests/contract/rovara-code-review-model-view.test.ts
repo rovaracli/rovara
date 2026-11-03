@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
 import { createCandidateManifest, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { REVIEW_SAME_MODEL_NOTE, reviewModelLines } from "../../packages/broker/src/rovara-code/review-model-lines.js";
+import { REVIEW_SAME_MODEL_NOTE, reviewModelLines, reviewNoOtherCompanyLine } from "../../packages/broker/src/rovara-code/review-model-lines.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 
 const now = "2026-10-27T12:00:00.000Z";
@@ -46,6 +46,20 @@ describe("the task view's reviewer model lines", () => {
     expect(view["reviewModelLines"]).toEqual(reviewModelLines(record().workflow, true));
   });
 
+  it("owner decision 2026-11-02: says, in fixed words, that the review ran on the builder's company because no other company's model was usable", async () => {
+    const { harness, read, record } = await reviewedTask();
+    const model = { provider: "anthropic", modelId: "claude-opus-4-6" };
+    expect(await read()).toMatchObject({ reviewModelLines: ["Reviewed by anthropic/claude-opus-4-6"] });
+    harness.db.set({ ...record(), reviewNoOtherCompany: { candidateDigest: CODE.digest, model } });
+    const lines = (await read())["reviewModelLines"];
+    expect(lines).toEqual(["Reviewed by anthropic/claude-opus-4-6", "Review uses anthropic/claude-opus-4-6 (same company as the builder: no other company's model is available)"]);
+    expect(lines).toEqual([...reviewModelLines(record().workflow, false), reviewNoOtherCompanyLine(model)]);
+    expect(DeveloperTaskViewSchema.safeParse(await read()).success).toBe(true);
+    // The note of an earlier candidate's review is not said about the code now on the task.
+    harness.db.set({ ...record(), reviewNoOtherCompany: { candidateDigest: OTHER.digest, model } });
+    expect(await read()).toMatchObject({ reviewModelLines: ["Reviewed by anthropic/claude-opus-4-6"] });
+  });
+
   it("names each role's model when the two reviews ran on different models", async () => {
     const { read } = await reviewedTask({ reviews: [review("CRITIC", "anthropic", "claude-opus-4-6"), review("SECURITY", "openai", "gpt-x")] });
     expect(await read()).toMatchObject({ reviewModelLines: ["Reviewed by code review: anthropic/claude-opus-4-6; security review: openai/gpt-x"] });
@@ -57,6 +71,10 @@ describe("the task view's reviewer model lines", () => {
   });
 
   it("is absent before any review of the current code, for a version 1 task, and for a client that does not ask for the version 2 view", async () => {
+    // (the note alone never makes a line before the code has a review)
+    const early = await reviewedTask({ reviews: [] });
+    early.harness.db.set({ ...early.record(), reviewNoOtherCompany: { candidateDigest: CODE.digest, model: { provider: "anthropic", modelId: "claude-opus-4-6" } } });
+    expect(await early.read()).not.toHaveProperty("reviewModelLines");
     expect(await (await reviewedTask({ reviews: [] })).read()).not.toHaveProperty("reviewModelLines");
     expect(await (await reviewedTask({ reviews: [review("CRITIC", "anthropic", "claude-opus-4-6", OTHER.digest)] })).read()).not.toHaveProperty("reviewModelLines");
     expect(await (await reviewedTask({ definitionVersion: "1.0.0" })).read()).not.toHaveProperty("reviewModelLines");

@@ -19,9 +19,10 @@ import type { Overlay } from "../builder/draft-state.js";
 import { NewerRovaraCodeNotice } from "./NewerRovaraCodeNotice.js";
 import { ReviewChangesDialog } from "./ReviewChangesDialog.js";
 import { RuleField } from "./RuleField.js";
+import { ReviewDefaultNotice } from "./ReviewDefaultNotice.js";
 import { StageModelRows } from "./StageModelRows.js";
 import { DRAFT_CHANGED_TEXT, EDITS_REMOVED_TEXT } from "./stage-model-text.js";
-import { applicableStages, applyModelEdits, mergeEdit, pruneEdits, type ModelEdits, type StageEdit } from "./how-we-work-models.js";
+import { applicableStages, applyModelEdits, mergeEdit, needsExplicitVendor, pruneEdits, type ModelEdits, type StageEdit } from "./how-we-work-models.js";
 import { cleanRuleText, ruleTooLong } from "./rule-text.js";
 const FILTERS: ReadonlyArray<{ value: Filter; label: string }> = [{ value: "all", label: "All" }, { value: "changed", label: "Changed here" }, { value: "locked", label: "Locked" }];
 const NOT_IN_USE = "This project runs Rovara Code's defaults.";
@@ -63,6 +64,8 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  /** The earlier step a checking card's "different vendor" toggle names: the Plan step for the plan check, the Build step for a review. */
  const referenceStage = (kind: string) => { const wanted = referenceKind(kind);return wanted === undefined ? undefined : data.stages.find(other => other.kind === wanted); };
  const references = Object.fromEntries(data.stages.map(stage => [stage.id, referenceStage(stage.kind)?.id]));
+ /** Per step: whether turning "different vendor" on has to write the rule (see `needsExplicitVendor`). */
+ const explicitRule = Object.fromEntries(data.stages.map(stage => { const ids = cardStages(stage.kind);return [stage.id, models.data !== undefined && needsExplicitVendor(ids.flatMap(id => models.data.stages.filter(entry => entry.stage === id)))]; }));
  const stageModelRows = (stage: (typeof data.stages)[number]) => {
   const ids = cardStages(stage.kind), found = models.data === undefined ? [] : ids.flatMap(id => models.data.stages.filter(entry => entry.stage === id));
   if (found.length === 0) return undefined;
@@ -77,7 +80,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   // Model choices were made against one draft revision; if someone else saved since, they are never written onto the newer draft.
   // With no layer at edit time (editRevision undefined) the layer was just created, so there is no earlier revision to have moved.
   if (Object.keys(choices).length > 0 && editRevision !== undefined && current.draft.revision !== editRevision) throw new DraftChanged();
-  const next = await builder.save(layer.agentId, applyModelEdits(applyRuleEdits(current.draft.overlay as Overlay, changes), choices, references), current.draft.revision);
+  const next = await builder.save(layer.agentId, applyModelEdits(applyRuleEdits(current.draft.overlay as Overlay, changes), choices, references, explicitRule), current.draft.revision);
   query.setQueryData([...howWeWorkKey(project), "draft", layer.agentId], next);
   setEnsured(layer.agentId);
  }
@@ -120,6 +123,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  return <section className="rv-hww" aria-label="How we work">
   {data.process.update !== undefined && <NewerRovaraCodeNotice update={data.process.update} agentId={layerId} canEdit={canEdit} disabled={dirty || saving || draft.data === undefined} onMoved={async () => { await query.invalidateQueries({ queryKey: howWeWorkKey(project) });setReviewRequest(count => count + 1); }} />}
   <p className="rv-muted">How Rovara Code works in this project, stage by stage. Every setting says where it comes from.</p>
+  {models.data !== undefined && <ReviewDefaultNotice stages={models.data.stages} labelOf={model => models.data.stages.flatMap(stage => stage.candidates).find(candidate => candidate.model.provider + "/" + candidate.model.modelId === model)?.label ?? model} />}
   {(staleRead || discarded) && <section className="rv-project-section" aria-label="Draft changed"><p role="alert">{DRAFT_CHANGED_TEXT}</p><Button onClick={() => { setDiscarded(false);void draft.refetch();void models.refetch(); }}>Reload</Button></section>}
   {removed && !staleRead && !discarded && <p role="status">{EDITS_REMOVED_TEXT}</p>}
   {savedVersion !== undefined && <section className="rv-project-section" aria-label="Saved version">

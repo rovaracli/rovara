@@ -204,6 +204,28 @@ describe("dispatching the review step of a version 2 task with no model set for 
     expect(t.record()).not.toHaveProperty("reviewSameModel");
   });
 
+  it("owner decision 2026-11-02: a Claude-only company's review is on the builder's company, so the operation, the task record and the task page say so in fixed words", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    const review = t.byMode("REVIEW")[0]!;
+    expect(review.reviewNoOtherCompany).toBe(true);
+    await t.h.finish(t.workspaceId, String(review.id), "SUCCEEDED", { result: {
+      workflowCandidateRepositories: t.candidate.repositories, workflowReviews: t.reports(review.id, OTHER_CLAUDE.provider, OTHER_CLAUDE.modelId) } });
+    expect(t.record().reviewNoOtherCompany).toEqual({ candidateDigest: t.candidate.digest, model: { provider: OTHER_CLAUDE.provider, modelId: OTHER_CLAUDE.modelId } });
+    const view = await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${t.taskId}`, undefined, { "x-agentx-task-view": "2" });
+    expect((view.body.task as { reviewModelLines: string[] }).reviewModelLines).toContain(`Review uses ${OTHER_CLAUDE.provider}/${OTHER_CLAUDE.modelId} (same company as the builder: no other company's model is available)`);
+  });
+
+  it("a review whose operation was not flagged clears the note an earlier review of the same code left", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    const review = t.byMode("REVIEW")[0]!;
+    const { reviewNoOtherCompany: _flag, ...unflagged } = review;void _flag;
+    t.h.db.set(unflagged);
+    t.h.db.set({ ...t.record(), reviewNoOtherCompany: { candidateDigest: t.candidate.digest, model: { provider: OTHER_CLAUDE.provider, modelId: OTHER_CLAUDE.modelId } } });
+    await t.h.finish(t.workspaceId, String(review.id), "SUCCEEDED", { result: {
+      workflowCandidateRepositories: t.candidate.repositories, workflowReviews: t.reports(review.id, OTHER_CLAUDE.provider, OTHER_CLAUDE.modelId) } });
+    expect(t.record()).not.toHaveProperty("reviewNoOtherCompany");
+  });
+
   it("refuses an explicit review on the build model without a bound same-model approval", async () => {
     const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] }, reviewStepSettings: { model: { provider: CLAUDE_DEFAULT.provider, modelId: CLAUDE_DEFAULT.modelId } } });
     expect(t.byMode("REVIEW")).toEqual([]);

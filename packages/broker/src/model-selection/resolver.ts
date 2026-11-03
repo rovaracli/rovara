@@ -1,6 +1,7 @@
 // G3: one choice function. Callers supply server-read policy and source evidence, never browser attestations.
 import { StageModelChoiceSchema, canonicalModelName, forbiddenModelMatcher, modelCompany, sameModelOrUnrecognised, type ModelSelection, type ModelIdentifier, type StageId, type StageModelChoice, type StageModelRefusalCode, type ModelFallback, type ThinkingLevel } from "@agentx/contracts";
 import { reviewerModelFor } from "../rovara-code/reviewer-model.js";
+import { meetsReviewDefaultFloor } from "./review-default-pool.js";
 
 export { STAGE_OPERATION_MAPPING, STAGE_EDIT_GROUPS, STAGE_EDIT_RULES } from "@agentx/contracts";
 export interface SourceModelEvidence {
@@ -37,6 +38,8 @@ export interface StageModelInput {
   projectDefault?: ModelSelection | undefined;
   builtinDefault?: ModelIdentifier | undefined;
   defaultFallbacks?: readonly ModelIdentifier[] | undefined;
+  /** The review default of owner decision 2026-11-02 applies: set for a task pinned with it and for the live How we work read; a task pinned before it resolves as it did. */
+  reviewDefaultDifferentCompany?: boolean | undefined;
   /** Verified server-selected default preference (for example the payer's personal plan). */
   defaultPreferred?: ModelIdentifier | undefined;
   referenceModel?: ModelIdentifier | undefined;
@@ -48,14 +51,22 @@ export interface StageModelInput {
   /** Only an approval validated against the task's frozen recipe and pinned policy may populate this input. */
   sameModelApproval?: { model: ModelIdentifier; referenceModel: ModelIdentifier } | undefined;
 }
-export type StageDecisionReason = "COMPANY_LOCK" | "PROJECT_CHOICE" | "COMPANY_DEFAULT" | "PROJECT_SELECTION" | "PROJECT_DEFAULT" | "BUILTIN_DEFAULT" | "PERSONAL_PLAN_DEFAULT" | "RECIPE_DEFAULT" | "APPROVED_SAME_MODEL";
+export type StageDecisionReason = "COMPANY_LOCK" | "PROJECT_CHOICE" | "COMPANY_DEFAULT" | "PROJECT_SELECTION" | "PROJECT_DEFAULT" | "BUILTIN_DEFAULT" | "PERSONAL_PLAN_DEFAULT" | "RECIPE_DEFAULT" | "APPROVED_SAME_MODEL" | "DEFAULT_DIFFERENT_COMPANY";
 export type StageModelResult = { kind: "refusal"; code: StageModelRefusalCode } | {
   kind: "resolved"; model: ModelIdentifier; sourceId: string; thinkingLevel: ThinkingLevel | null;
   reason: StageDecisionReason; locked: boolean; fallback?: ModelFallback;
+  /** Set when a checking step's default is "a different company" and no other company's model was usable, so the same company's model runs it (shown as a fixed sentence). */
+  noOtherCompany?: true;
+  /** The same, but another company's model was usable and failed (the account refused it), so the same company's model runs the step. */
+  otherCompanyFailed?: true;
 };
 const same = (a: ModelIdentifier, b: ModelIdentifier): boolean => canonicalModelName(a) === canonicalModelName(b);
 const label = (model: ModelIdentifier): string => `${model.provider}/${model.modelId}`;
 const checking = (stage: StageId): boolean => stage === "plan_check" || stage === "code_review" || stage === "security_review";
+/** Both models are from known companies and the companies differ (a model of an unrecognised company can never be shown to differ). */
+const otherCompany = (model: ModelIdentifier, reference: ModelIdentifier): boolean => { const own = modelCompany(model), prior = modelCompany(reference); return own !== "other" && prior !== "other" && own !== prior; };
+/** The model is the reference itself or from the reference's recognised company. */
+const sameCompany = (model: ModelIdentifier, reference: ModelIdentifier): boolean => same(model, reference) || (modelCompany(model) !== "other" && modelCompany(model) === modelCompany(reference));
 
 /** Evidence proves source-level access per the owner's v1.1 rule, not a per-model successful test or future provider availability. */
 export function stageCandidateVerified(input: StageModelInput, candidate: VerifiedStageCandidate): boolean {
@@ -136,25 +147,49 @@ export function resolveStageModel(input: StageModelInput): StageModelResult {
     if (explicit) return refusal(problem ?? (found !== undefined ? "DIFFERENT_FROM_UNSATISFIABLE" : "MODEL_NOT_VERIFIED"));
   }
   if (checking(input.stage)) {
+    // Owner decision 2026-11-02: a checking step nobody has set (no lock, model or rule at any level) defaults to the strongest usable model of a different company than the step it checks. When no such model is usable
+    // it keeps today's behaviour (the same company's other model, then the legacy same-model fallback) and says so; it never blocks the task.
+    // A task pinned before the review default (no marker on its pin) ranks the models as it did when it started, so its next review or plan check cannot change model because the order did.
+    const legacyRanking = input.reviewDefaultDifferentCompany !== true;
+    const defaultVendor = input.reviewDefaultDifferentCompany === true && !explicit && choice?.differentFrom === undefined && input.requireDifferentVendor !== true;
+    const reference = input.referenceModel;
+    // The models the default may take: another company's, of a good capability tier (the floor), and never through a person's ChatGPT plan (the company's own sources serve the default).
+    const usableAbroad = (candidate: VerifiedStageCandidate): boolean => reference !== undefined && otherCompany(candidate.model, reference) && meetsReviewDefaultFloor(candidate.model) && candidate.sourceId !== "personal-chatgpt";
+    const abroad = defaultVendor ? eligible.filter(usableAbroad) : [];
+    // Whether such a model exists at all, before an earlier try's failures are left out: it tells "none is available" from "the one there was failed".
+    const abroadExisted = defaultVendor && input.candidates.some((candidate) => stageCandidateVerified({ ...input, deniedModels: [] }, candidate) && permitted(candidate.model) === undefined && usableAbroad(candidate));
+    const mark = (result: Extract<StageModelResult, { kind: "resolved" }>): StageModelResult => !defaultVendor || reference === undefined || !sameCompany(result.model, reference) ? result : abroadExisted ? { ...result, otherCompanyFailed: true } : { ...result, noOtherCompany: true };
     if (!explicit && input.allowLegacyDefaultFallback === true && input.defaultLastAttempt === true && input.requireDifferentVendor !== true && choice?.differentFrom?.level !== "vendor") {
-      const last = reviewerModelFor({ step: undefined, builderModel: input.referenceModel, unusable: input.deniedModels, lastAttempt: true, project: { approved: eligible.map(entry => entry.model) }, guardrails: { forbiddenModels: [...input.forbidden] }, sources: eligible.map(entry => entry.model) });
+      const last = reviewerModelFor({ step: undefined, legacyRanking, builderModel: input.referenceModel, unusable: input.deniedModels, lastAttempt: true, project: { approved: eligible.map(entry => entry.model) }, guardrails: { forbiddenModels: [...input.forbidden] }, sources: eligible.map(entry => entry.model) });
       if (last?.chosenBy === "rovara" && input.referenceModel !== undefined && same(last.model, input.referenceModel)) {
         const candidate = eligible.find(entry => entry.model.provider === last.model.provider && entry.model.modelId === last.model.modelId);
-        if (candidate !== undefined) return finish(candidate, choice ?? {}, reason, input.referenceModel, "DEFAULT_MODEL_UNAVAILABLE");
+        if (candidate !== undefined) return mark(finish(candidate, choice ?? {}, reason, input.referenceModel, "DEFAULT_MODEL_UNAVAILABLE"));
+      }
+    }
+    if (defaultVendor && reference !== undefined) {
+      const strongest = reviewerModelFor({ step: undefined, legacyRanking, builderModel: reference, unusable: input.deniedModels, project: { approved: abroad.map((candidate) => candidate.model) }, guardrails: { forbiddenModels: [...input.forbidden] }, sources: abroad.map((candidate) => candidate.model) });
+      if (strongest?.chosenBy === "rovara") {
+        const candidate = abroad.find((entry) => entry.model.provider === strongest.model.provider && entry.model.modelId === strongest.model.modelId);
+        if (candidate !== undefined) return finish(candidate, choice ?? {}, "DEFAULT_DIFFERENT_COMPANY");
       }
     }
     // Reuse the existing interim rule, but pass only verified eligible candidates. Its implicit same-model result cannot waive approval.
-    const pool = eligible.filter((candidate) => independent(candidate.model));
-    const chosen = reviewerModelFor({ step: undefined, builderModel: input.referenceModel, unusable: input.deniedModels, project: { approved: pool.map((candidate) => candidate.model) }, guardrails: { forbiddenModels: [...input.forbidden] }, sources: pool.map((candidate) => candidate.model) });
+    // The default never takes a model of a weak tier or a person's ChatGPT plan from another company, even by the model-level rule or the legacy fallback below. Where nothing else is left and the legacy fallback is off
+    // (publish-time validation), today's pool stands, so the default never refuses what was accepted before.
+    const weakAbroad = (candidate: VerifiedStageCandidate): boolean => defaultVendor && reference !== undefined && !sameCompany(candidate.model, reference) && (!meetsReviewDefaultFloor(candidate.model) || candidate.sourceId === "personal-chatgpt");
+    const strongEligible = eligible.filter((candidate) => !weakAbroad(candidate));
+    let pool = strongEligible.filter((candidate) => independent(candidate.model));
+    if (pool.length === 0 && input.allowLegacyDefaultFallback !== true) pool = eligible.filter((candidate) => independent(candidate.model));
+    const chosen = reviewerModelFor({ step: undefined, legacyRanking, builderModel: input.referenceModel, unusable: input.deniedModels, project: { approved: pool.map((candidate) => candidate.model) }, guardrails: { forbiddenModels: [...input.forbidden] }, sources: pool.map((candidate) => candidate.model) });
     if (chosen?.chosenBy === "rovara") {
       const candidate = pool.find((entry) => entry.model.provider === chosen.model.provider && entry.model.modelId === chosen.model.modelId);
-      if (candidate !== undefined) return finish(candidate, choice ?? {}, reason);
+      if (candidate !== undefined) return mark(finish(candidate, choice ?? {}, reason));
     }
     if (!explicit && input.allowLegacyDefaultFallback === true && input.requireDifferentVendor !== true && choice?.differentFrom?.level !== "vendor") {
-      const legacy = reviewerModelFor({ step: undefined, builderModel: input.referenceModel, unusable: input.deniedModels, project: { approved: eligible.map((entry) => entry.model) }, guardrails: { forbiddenModels: [...input.forbidden] }, sources: eligible.map((entry) => entry.model) });
+      const legacy = reviewerModelFor({ step: undefined, legacyRanking, builderModel: input.referenceModel, unusable: input.deniedModels, project: { approved: strongEligible.map((entry) => entry.model) }, guardrails: { forbiddenModels: [...input.forbidden] }, sources: strongEligible.map((entry) => entry.model) });
       if (legacy?.chosenBy === "rovara") {
-        const candidate = eligible.find((entry) => entry.model.provider === legacy.model.provider && entry.model.modelId === legacy.model.modelId);
-        if (candidate !== undefined) return { ...finish(candidate, choice ?? {}, reason, input.referenceModel, "DEFAULT_MODEL_UNAVAILABLE"), reason };
+        const candidate = strongEligible.find((entry) => entry.model.provider === legacy.model.provider && entry.model.modelId === legacy.model.modelId);
+        if (candidate !== undefined) return mark({ ...finish(candidate, choice ?? {}, reason, input.referenceModel, "DEFAULT_MODEL_UNAVAILABLE"), reason });
       }
     }
     return refusal(eligible.length === 0 ? "NO_VERIFIED_CANDIDATE" : "DIFFERENT_FROM_UNSATISFIABLE");

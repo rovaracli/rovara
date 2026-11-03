@@ -43,7 +43,11 @@ export const StageModelCandidateSchema = z.object({
 export const EffectiveStageModelSchema = z.object({
   model: ModelIdentifierSchema, sourceId: SourceId, thinkingLevel: ThinkingLevelSchema.nullable(),
   decidedBy: z.enum(["rovara", "company", "project", "person"]), locked: z.boolean(),
-  reason: z.enum(["COMPANY_LOCK", "PROJECT_CHOICE", "COMPANY_DEFAULT", "BUILTIN_DEFAULT", "PROJECT_SELECTION", "PROJECT_DEFAULT", "PERSONAL_PLAN_DEFAULT", "RECIPE_DEFAULT", "APPROVED_SAME_MODEL"]),
+  reason: z.enum(["COMPANY_LOCK", "PROJECT_CHOICE", "COMPANY_DEFAULT", "BUILTIN_DEFAULT", "PROJECT_SELECTION", "PROJECT_DEFAULT", "PERSONAL_PLAN_DEFAULT", "RECIPE_DEFAULT", "APPROVED_SAME_MODEL", "DEFAULT_DIFFERENT_COMPANY"]),
+  /** A checking step whose default is "a different company than the step it checks" found no other company's model to use, so it runs on the same company's model. Set by the server only. */
+  noOtherCompany: z.literal(true).optional(),
+  /** The same, but another company's model was usable and failed (for example its account refused it), so the same company's model runs the step. Set by the server only. */
+  otherCompanyFailed: z.literal(true).optional(),
 }).strict();
 const StageRowBase = z.object({
   stage: StageIdSchema, projectChoice: StageModelChoiceSchema.nullable(), companyDefault: StageModelChoiceSchema.nullable(),
@@ -67,7 +71,7 @@ export const StageModelsResponseSchema = z.object({
 export type StageModelsResponse = z.infer<typeof StageModelsResponseSchema>;
 export const StageModelsResponseReaderSchema = forwardReader(StageModelsResponseSchema);
 export const StageModelsQuerySchema = z.object({ draft: Revision.optional() }).strict();
-export const ModelSelectionPolicyResponseSchema = z.object({ version: z.literal(1), revision: Revision, rankingVersion: z.literal("g3-v1"), stepOverrides: StageModelOverridesSchema, candidates: z.partialRecord(StageIdSchema, z.array(StageModelCandidateSchema).max(23)).optional() }).strict();
+export const ModelSelectionPolicyResponseSchema = z.object({ version: z.literal(1), revision: Revision, rankingVersion: z.literal("g3-v1"), stepOverrides: StageModelOverridesSchema, candidates: z.partialRecord(StageIdSchema, z.array(StageModelCandidateSchema).max(23)).optional(), /** Owner decision 2026-11-02: the checking steps whose default, while nothing is set for them, is a different company's model. Said by the server on the company page's read only. */ reviewDefaults: z.partialRecord(StageIdSchema, z.literal("different_company")).optional() }).strict();
 export const ModelSelectionPolicyPutSchema = z.object({ version: z.literal(1), requestId: z.uuid(), expectedRevision: Revision, stepOverrides: StageModelOverridesSchema }).strict();
 export type ModelSelectionPolicyResponse = z.infer<typeof ModelSelectionPolicyResponseSchema>;
 export type ModelSelectionPolicyPut = z.infer<typeof ModelSelectionPolicyPutSchema>;
@@ -112,3 +116,8 @@ export const STAGE_EDIT_RULES = {
  security_review:{stepKind:"review",editGroup:"review",reviewerSlot:"security"},
  pull_request:{stepKind:"pull_request",editGroup:"pull_request",reviewerSlot:null},
 } as const;
+/** Owner decision 2026-11-02: the one-time notice on How we work that reviews now use a model from a different company. `GET` and `POST /v1/app/org/review-default-notice`; the dismissal is the company's, made by an owner or admin and audited. */
+export const ReviewDefaultNoticeAnswerSchema = z.object({ dismissed: z.boolean(), canDismiss: z.boolean() }).strict();
+export const ReviewDefaultNoticeBodySchema = z.object({ action: z.literal("dismiss") }).strict();
+export type ReviewDefaultNoticeAnswer = z.infer<typeof ReviewDefaultNoticeAnswerSchema>;
+export const ReviewDefaultNoticeAnswerReaderSchema = forwardReader(ReviewDefaultNoticeAnswerSchema);

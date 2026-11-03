@@ -14,7 +14,7 @@ import { PLAN_CRITIQUE_ANSWER_MAX_BYTES, settlePlanCritique } from "../../packag
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { servableModels } from "../../packages/broker/src/model-sources/routing.js";
 import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js";
-import { CRITIC_MODEL_ATTEMPTS_MAX, criticCapabilityTier, criticModelFor, criticModelUnusable, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
+import { CRITIC_MODEL_ATTEMPTS_MAX, criticCapabilityTier, legacyCriticCapabilityTier, criticModelFor, criticModelUnusable, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
 import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
 import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
 import { critiqueLines, critiqueModelOf } from "../../packages/broker/src/rovara-code/critic.js";
@@ -332,13 +332,48 @@ describe("the capability order", () => {
   ].map((id) => model(id));
   const ids = (models: readonly ModelIdentifier[]) => models.map((entry) => entry.modelId);
 
-  it("ranks the Rovara catalog by tier, newest first within a tier, and not alphabetically", () => {
+  it("ranks the Rovara catalog by tier (frontier, then Sonnet, then small); inside the frontier tier cheaper first, then newest, and not alphabetically", () => {
     expect(ids(rankCriticModels(CATALOG))).toEqual([
-      "us.anthropic.claude-fable-5-1", "us.anthropic.claude-fable-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-opus-4-8", "us.anthropic.claude-opus-4-7",
-      "us.anthropic.claude-opus-4-6-v1", "us.anthropic.claude-opus-4-5-20251101-v1:0", "us.anthropic.claude-opus-4-1-20250805-v1:0",
+      // Frontier (Fable and Opus are one tier, ordered by list price, then newest version): Opus 5.5 is the cheapest, the Opus 4.x and Opus 5 share a price (newest first), Fable and Opus 4.1 cost more.
+      "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-opus-4-8", "us.anthropic.claude-opus-4-7", "us.anthropic.claude-opus-4-6-v1", "us.anthropic.claude-opus-4-5-20251101-v1:0",
+      "us.anthropic.claude-fable-5-1", "us.anthropic.claude-fable-5", "us.anthropic.claude-opus-4-1-20250805-v1:0",
       "us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
       "us.anthropic.claude-haiku-5-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     ]);
+  });
+
+  it("puts GPT-5 and Gemini Pro on the same tier as Opus and Fable, ties broken by company, then cost, then version, and never by vendor", () => {
+    const opus = model("claude-opus-5-5", "anthropic"), fable = model("claude-fable-5-1", "anthropic"), gpt = model("gpt-5", "openai"), pro = model("gemini-2.5-pro", "google");
+    const tier = criticCapabilityTier(opus);
+    expect([fable, gpt, pro].map(criticCapabilityTier)).toEqual([tier, tier, tier]);
+    expect(criticCapabilityTier(model("claude-sonnet-5-5", "anthropic"))).toBe(tier + 1);
+    // 1. A different company from the reference first: from Opus's point of view the OpenAI and Google models lead; from GPT-5's, the Claude and Google ones.
+    expect(ids(rankCriticModels([opus, fable, gpt, pro], opus)).slice(0, 2).sort()).toEqual(["gemini-2.5-pro", "gpt-5"]);
+    expect(ids(rankCriticModels([opus, fable, gpt, pro], gpt)).slice(0, 3).sort()).toEqual(["claude-fable-5-1", "claude-opus-5-5", "gemini-2.5-pro"]);
+    // 2. Then the cheaper one by list price (GPT-5 is cheaper than Opus 5.5, which is cheaper than Fable; a model with no catalog price counts as the middle price of the priced ones, so Gemini Pro ties with Opus 5.5 on cost and then falls to the version).
+    expect(ids(rankCriticModels([pro, fable, opus, gpt]))).toEqual(["gpt-5", "claude-opus-5-5", "gemini-2.5-pro", "claude-fable-5-1"]);
+    expect(ids(rankCriticModels([opus, fable, gpt, pro], opus))).toEqual(["gpt-5", "gemini-2.5-pro", "claude-opus-5-5", "claude-fable-5-1"]);
+    // 3. Equal price falls to the newer version, and then to the canonical name, so the order never depends on the order the models came in.
+    const sameCost = [model("claude-opus-4-8"), model("claude-opus-5"), model("claude-opus-4-7")];
+    expect(ids(rankCriticModels(sameCost))).toEqual(["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7"]);
+    const unpriced = [model("gemini-3-pro", "google"), model("gemini-3-ultra-pro", "google")];
+    expect(ids(rankCriticModels(unpriced))).toEqual(ids(rankCriticModels([...unpriced].reverse())));
+  });
+
+  it("a model with no catalog price is neutral: it ties on cost, then the newer version wins, whichever vendor it is (Gemini Pro is no longer always last)", () => {
+    const priced = model("gpt-5", "openai"), newerUnpriced = model("gemini-6-pro", "google"), olderUnpriced = model("gemini-2.5-pro", "google");
+    // The only priced model sets the neutral cost, so the unpriced ones tie with it and the order is by version (previously both unpriced models came last).
+    expect(ids(rankCriticModels([priced, newerUnpriced]))).toEqual(["gemini-6-pro", "gpt-5"]);
+    expect(ids(rankCriticModels([priced, olderUnpriced]))).toEqual(["gpt-5", "gemini-2.5-pro"]);
+    // Between a cheaper and a dearer priced model it sits in the middle, not after both.
+    const cheap = model("gpt-5", "openai"), dear = model("claude-fable-5-1", "anthropic"), mid = model("claude-opus-5-5", "anthropic");
+    expect(ids(rankCriticModels([dear, olderUnpriced, cheap, mid]))).toEqual(["gpt-5", "claude-opus-5-5", "gemini-2.5-pro", "claude-fable-5-1"]);
+    // With no priced model at all they tie on cost and fall to version, then name.
+    expect(ids(rankCriticModels([olderUnpriced, newerUnpriced, model("gemini-2.5-pro-x", "google")]))).toEqual(["gemini-6-pro", "gemini-2.5-pro", "gemini-2.5-pro-x"]);
+    // The order does not depend on the order the models came in.
+    const all = [dear, olderUnpriced, cheap, mid, newerUnpriced];
+    const expected = ids(rankCriticModels(all));
+    for (const permutation of [[...all].reverse(), [all[2]!, all[4]!, all[0]!, all[3]!, all[1]!], [all[1]!, all[0]!, all[4]!, all[2]!, all[3]!]]) expect(ids(rankCriticModels(permutation))).toEqual(expected);
   });
 
   it("does not depend on the order the models come in", () => {
@@ -351,15 +386,42 @@ describe("the capability order", () => {
     expect(criticCapabilityTier(model("gpt-5.5", "openai"))).toBeLessThan(criticCapabilityTier(model("gpt-5.4-mini", "openai")));
   });
 
-  it("recommends the strongest catalog model other than the planner's: Sonnet 4.6 gets Fable 5.1, Fable 5.1 gets Fable 5", () => {
-    expect(chosenModel(choose({ planModel: model("us.anthropic.claude-sonnet-4-6"), sources: CATALOG }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5-1");
-    expect(chosenModel(choose({ planModel: model("us.anthropic.claude-fable-5-1"), sources: CATALOG }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
-    expect(chosenModel(choose({ planModel: model("us.anthropic.claude-sonnet-4-6"), sources: CATALOG, guardrails: { ...GUARDRAILS, forbiddenModels: CATALOG.filter((entry) => /fable/u.test(entry.modelId)) } })))
-      .toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+  it("recommends the cheapest frontier catalog model other than the planner's: Sonnet 4.6 gets Opus 5.5, Opus 5.5 gets Opus 5", () => {
+    expect(chosenModel(choose({ planModel: model("us.anthropic.claude-sonnet-4-6"), sources: CATALOG }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+    expect(chosenModel(choose({ planModel: model("us.anthropic.claude-opus-5-5"), sources: CATALOG }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5");
+    expect(chosenModel(choose({ planModel: model("us.anthropic.claude-sonnet-4-6"), sources: CATALOG, guardrails: { ...GUARDRAILS, forbiddenModels: CATALOG.filter((entry) => /opus-5/u.test(entry.modelId)) } })))
+      .toBe("amazon-bedrock/us.anthropic.claude-opus-4-8");
   });
 
   it("falls back to the same model with the note when the planner's is the only one allowed", () => {
     expect(choose({ planModel: model("us.anthropic.claude-haiku-5-5"), sources: [model("us.anthropic.claude-haiku-5-5")] })).toMatchObject({ sameModelAsPlanner: true });
+  });
+});
+
+describe("a task started before the frontier tier keeps the order it started with (legacyRanking)", () => {
+  const model = (modelId: string, provider: string): ModelIdentifier => ({ provider, modelId });
+  const opus = model("claude-opus-5-5", "anthropic"), fable = model("claude-fable-5-1", "anthropic"), gpt = model("gpt-5", "openai"), pro = model("gemini-2.5-pro", "google");
+  const ids = (models: readonly ModelIdentifier[]) => models.map((entry) => entry.modelId);
+
+  it("ranks Fable, Opus, GPT-5, Gemini Pro whatever the company of the reference or the price", () => {
+    expect(ids(rankCriticModels([pro, gpt, opus, fable], gpt, true))).toEqual(["claude-fable-5-1", "claude-opus-5-5", "gpt-5", "gemini-2.5-pro"]);
+    expect(ids(rankCriticModels([pro, gpt, opus, fable], opus, true))).toEqual(["claude-fable-5-1", "claude-opus-5-5", "gpt-5", "gemini-2.5-pro"]);
+    // The same models in the one frontier tier: a different company from the reference and the cheaper one lead.
+    expect(ids(rankCriticModels([pro, gpt, opus, fable], opus))).toEqual(["gpt-5", "gemini-2.5-pro", "claude-opus-5-5", "claude-fable-5-1"]);
+    expect(legacyCriticCapabilityTier(gpt)).toBeGreaterThan(legacyCriticCapabilityTier(opus));
+  });
+
+  it("the plan check's recommendation for a pin-less task is the one it had: the newest Fable, not the cheapest frontier model", () => {
+    const catalog = ["us.anthropic.claude-fable-5-1", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-sonnet-4-6"].map((id) => model(id, "amazon-bedrock"));
+    expect(chosenModel(choose({ planModel: SONNET, sources: catalog, legacyRanking: true }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5-1");
+    expect(chosenModel(choose({ planModel: SONNET, sources: catalog }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+  });
+
+  it("a refusal demotes the whole tier it was in, as it did: after Opus failed, a Fable (its own tier then) is still next", () => {
+    const limits = { unusable: [opus], legacyRanking: true };
+    expect(recommendCriticModel(limits, SONNET, [opus, fable, gpt])?.model.modelId).toBe("claude-fable-5-1");
+    // One frontier tier now: Fable shares Opus's company and tier, so GPT-5 comes first.
+    expect(recommendCriticModel({ unusable: [opus] }, SONNET, [opus, fable, gpt])?.model.modelId).toBe("gpt-5");
   });
 });
 
@@ -370,12 +432,18 @@ describe("criticModelFor: Rovara's recommendation", () => {
     expect(result).toMatchObject({ chosenBy: "rovara", sameModelAsPlanner: false });
   });
 
-  it("takes the strongest allowed model that is not the planner's, whatever order the sources list them in", () => {
+  it("takes a frontier model of a different company first, whatever order the sources list them in: Opus and GPT-5.5 are one tier, so the planner's company decides", () => {
     for (const sources of [[SONNET, GPT, OPUS], [OPUS, GPT, SONNET], [GPT, SONNET, OPUS]]) {
-      expect(chosenModel(choose({ sources })), JSON.stringify(sources)).toBe("anthropic/claude-opus-4-6");
-      // The planner was the strongest one: the next strongest.
+      // The planner is Claude: the OpenAI model leads although Opus is as strong.
+      expect(chosenModel(choose({ sources })), JSON.stringify(sources)).toBe("openai/gpt-5.5");
       expect(chosenModel(choose({ planModel: OPUS, sources })), JSON.stringify(sources)).toBe("openai/gpt-5.5");
+      // The planner is the OpenAI model: the Claude frontier model leads.
+      expect(chosenModel(choose({ planModel: GPT, sources })), JSON.stringify(sources)).toBe("anthropic/claude-opus-4-6");
     }
+  });
+
+  it("with only Claude models allowed it is the same company, so the strongest tier then the cheaper one: Opus over Sonnet", () => {
+    expect(chosenModel(choose({ sources: [SONNET, GPT, OPUS], project: { name: "payments", approved: [SONNET, OPUS] } }))).toBe("anthropic/claude-opus-4-6");
   });
 
   it("counts the planner's model by its canonical name, whichever route it ran on", () => {
@@ -545,6 +613,8 @@ describe("a version 2 plan goes to the plan check", () => {
     expect(`${sent.provider}/${sent.modelId}`).not.toBe(`${planner.provider}/${planner.modelId}`);
     expect(check.model).toMatchObject({ provider: sent.provider, modelId: sent.modelId });
     expect(check.criticSameModel).toBeUndefined();
+    // Owner decision 2026-11-02: this company has only Claude models, so the plan check ran on the planner's company; the operation records that (L4).
+    expect(check.criticNoOtherCompany).toBe(true);
   });
 
   it("is not made for a Full task's requirements or design: only its implementation plan", async () => {
@@ -916,7 +986,7 @@ describe("the plan check's choice of model on an install", () => {
     const t = await world();
     const { workspaceId } = await t.planned();
     const sent = t.invocationOf(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id)!.payload.model!;
-    expect(sent.modelId).toBe("us.anthropic.claude-fable-5-1");
+    expect(sent.modelId).toBe("us.anthropic.claude-opus-5-5");
   });
 
   it("takes the planner's model to be the install's default when nothing recorded it and the project names none: the one model left is the same one", async () => {
@@ -1211,12 +1281,13 @@ describe("criticModelFor: models the account could not use (staging 0.4.10)", ()
   const sources = [FABLE, FABLE_5, OPUS_5_5, SONNET_5];
 
   it("skips a model that already failed and takes the next-ranked one, one attempt each", () => {
-    expect(chosenModel(choose({ planModel: PLANNER, sources }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5-1");
-    // After a model fails, the next try is another capability tier (staging 0.4.11): a second model of the tier that just failed is likely to fail the same way.
-    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
-    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5] }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-5");
-    // Only when every other tier has failed does a tier that failed once get another model.
-    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5, SONNET_5] }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+    // After a model fails, the next try is another capability tier (staging 0.4.11): a second model of the tier that just failed is likely to fail the same way. Fable and Opus are one (frontier) tier now.
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [OPUS_5_5] }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE] }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-5");
+    // Only when every other tier has failed does a tier that failed once get another model (the cheaper, then the newer first).
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [OPUS_5_5, SONNET_5] }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5-1");
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [OPUS_5_5, FABLE, SONNET_5] }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
   });
 
   it("staging 0.4.11: after the account refused fable-5-1, fable-5, opus-5-5 and opus-5, a model the account can serve is the next choice", () => {
@@ -1238,12 +1309,12 @@ describe("criticModelFor: models the account could not use (staging 0.4.10)", ()
     expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5], lastAttempt: true, guardrails: { ...GUARDRAILS, forbiddenModels: [PLANNER] } }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-5");
     // Not when it already failed as a check, and not on an earlier try.
     expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5, PLANNER], lastAttempt: true }))).not.toBe("amazon-bedrock/us.anthropic.claude-sonnet-4-6");
-    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [SONNET_5] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
   });
 
   it("counts a failed model by its canonical name, so the same model reached another way is not tried again", () => {
     const viaAnthropic = { provider: "anthropic", modelId: "claude-fable-5-1" };
-    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [viaAnthropic] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [viaAnthropic] }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-5");
     expect(chosenModel(choose({ planModel: PLANNER, sources: [FABLE, FABLE_5], unusable: [viaAnthropic] }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
   });
 
@@ -1272,10 +1343,11 @@ describe("criticModelFor across providers (staging 0.4.10): nothing here assumes
   const PLANNER = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
 
   it("ranks across the providers an org connected, and takes the next one when a provider refuses a model", () => {
-    expect(chosenModel(choose({ planModel: PLANNER, sources: mix }))).toBe("openrouter/anthropic/claude-fable-5.1");
-    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [OPENROUTER_FABLE] }))).toBe("anthropic/claude-opus-5-5");
-    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [OPENROUTER_FABLE, ANTHROPIC_OPUS] }))).toBe("openai/gpt-5.5");
-    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [OPENROUTER_FABLE, ANTHROPIC_OPUS, OPENAI_GPT] }))).toBe("openrouter/anthropic/claude-sonnet-5");
+    // The planner is Claude, so the frontier model of another company leads; a company's refusal demotes that company's tier only.
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix }))).toBe("openai/gpt-5.5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [OPENAI_GPT] }))).toBe("anthropic/claude-opus-5-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [OPENAI_GPT, ANTHROPIC_OPUS] }))).toBe("openrouter/anthropic/claude-sonnet-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [OPENAI_GPT, ANTHROPIC_OPUS, OPENROUTER_FABLE] }))).toBe("openrouter/anthropic/claude-sonnet-5");
     expect(choose({ planModel: PLANNER, sources: mix, unusable: mix })).toEqual({ unavailable: true });
   });
 
@@ -1287,7 +1359,8 @@ describe("criticModelFor across providers (staging 0.4.10): nothing here assumes
 
   it("counts a model refused on one provider as refused on another route to the same model", () => {
     const direct = { provider: "anthropic", modelId: "claude-fable-5-1" };
-    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [direct] }))).toBe("anthropic/claude-opus-5-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [direct] }))).toBe("openai/gpt-5.5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [direct, OPENAI_GPT] }))).toBe("openrouter/anthropic/claude-sonnet-5");
   });
 });
 
@@ -1390,6 +1463,14 @@ describe("criticModelUnusable: which failures say the model can't serve this acc
     expect(criticModelUnusable("RUNTIME_UNAVAILABLE: the model call failed: limit-or-rate-limited HTTP 429 attempt 1; wait, then retry")).toBe(false);
   });
 
+  it("reads OpenAI's quota-exhausted 429 (insufficient_quota) as a model the account can't use, so the next model is tried, while an ordinary rate-limit 429 stays retryable", () => {
+    expect(criticModelUnusable("RUNTIME_UNAVAILABLE: the model call failed: limit-or-rate-limited insufficient_quota HTTP 429 attempt 1; wait, then retry")).toBe(true);
+    for (const error of [
+      "RUNTIME_UNAVAILABLE: the model call failed: limit-or-rate-limited rate_limit_exceeded HTTP 429 attempt 1; wait, then retry",
+      "RUNTIME_UNAVAILABLE: the model call failed: limit-or-rate-limited HTTP 429 attempt 1; wait, then retry",
+    ]) expect(criticModelUnusable(error), error).toBe(false);
+  });
+
   it("does not read a rate limit, an outage, a budget stop, a stop or no error at all as a model the account can't use", () => {
     for (const error of [
       "RUNTIME_UNAVAILABLE: the model call failed: limit-or-rate-limited ThrottlingException attempt 2; wait, then retry",
@@ -1414,15 +1495,15 @@ describe("a plan check whose model the account can't use (staging 0.4.10, bug A)
   it("tries the next-ranked model when the first is refused, and the second one's answer is the check", async () => {
     const t = await world();
     const { taskId, workspaceId } = await t.planned();
-    expect(modelOf(t, workspaceId, 0)).toBe("us.anthropic.claude-fable-5-1");
+    expect(modelOf(t, workspaceId, 0)).toBe("us.anthropic.claude-opus-5-5");
     await failCheck(t, workspaceId, 0);
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "RUNNING" });
     expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(2);
-    expect(modelOf(t, workspaceId, 1)).toBe("us.anthropic.claude-opus-5-5");
+    expect(modelOf(t, workspaceId, 1)).toBe("us.anthropic.claude-sonnet-5-5");
     await t.finishCritique(workspaceId, critiqueAnswer("ok", [{ id: "p1", severity: "note", text: "Name the test file." }]));
     const record = t.meta(taskId);
     expect(record.workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done" } });
-    expect(record.workflow.critique!.critiques[0]!.model).toMatchObject({ modelId: "us.anthropic.claude-opus-5-5" });
+    expect(record.workflow.critique!.critiques[0]!.model).toMatchObject({ modelId: "us.anthropic.claude-sonnet-5-5" });
   });
 
   it("staging 0.4.11: an account that refuses the newest fable and opus models still gets a plan check, from the first model it can serve", async () => {

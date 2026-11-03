@@ -36,6 +36,8 @@ export interface SecondReviewStartInput {
   /** The project's approved models. */
   approved: readonly ModelIdentifier[] | undefined;
   routing: RoutingDependencies | undefined;
+  /** The task's pin has no review-default marker (it started before the frontier tier): rank as it did then. */
+  legacyRanking?: boolean | undefined;
   /** For tests: the plan inputs read from the stores. */
   now?: () => number;
 }
@@ -85,7 +87,7 @@ export async function prepareSecondReview(input: SecondReviewStartInput): Promis
     const previousModel = previous?.opinion.choice === "default" && previous.opinion.unavailable === false && previous.opinion.report !== undefined ? { provider: previous.opinion.report.provider, modelId: previous.opinion.report.version } : undefined;
     const plan = planSecondReview({
       switchOn: true, mode, against, project: { approved: input.approved }, forbidden, sources, verdicts: settings.verdicts, replayRuns: settings.replayRuns,
-      companyModels: settings.companyModels, projectModels: settings.projectModels, previousDefault: previousModel,
+      companyModels: settings.companyModels, projectModels: settings.projectModels, previousDefault: previousModel, legacyRanking: input.legacyRanking,
       price: (model) => { const price = listPricesPerMillion(model); return price === undefined ? undefined : { inputUsdPerMTok: price.input, outputUsdPerMTok: price.output }; },
     });
     // The admins are told once when the reviewer stops qualifying (and again if it comes back and breaks later); best effort, never in the way of the review.

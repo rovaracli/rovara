@@ -20,6 +20,8 @@ export interface ReviewerModelInput {
   unusable?: readonly ModelIdentifier[] | undefined;
   /** This is the last try (`CRITIC_MODEL_ATTEMPTS_MAX`): the builder's own model, which this account just served, is the choice when the policy allows it. */
   lastAttempt?: boolean | undefined;
+  /** The task started before the frontier tier: rank as it did then (`CriticModelLimits.legacyRanking`). */
+  legacyRanking?: boolean | undefined;
 }
 
 /**
@@ -37,7 +39,7 @@ const sameModel = (left: ModelIdentifier, right: ModelIdentifier): boolean => ca
 export function reviewerModelFor(input: ReviewerModelInput): ReviewerModel {
   const settings = (input.step?.settings ?? {}) as { model?: ModelIdentifier | null; fallbackModel?: ModelIdentifier | null };
   if ((settings.model ?? undefined) !== undefined || (settings.fallbackModel ?? undefined) !== undefined) return { chosenBy: "company" };
-  const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.guardrails.forbiddenModels, unusable: input.unusable };
+  const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.guardrails.forbiddenModels, unusable: input.unusable, reference: input.builderModel, legacyRanking: input.legacyRanking };
   const another = input.differentCompanyFrom ?? [];
   const candidates = candidatesOf(limits, input.sources).filter((model) => another.every((other) => differentCompany(model, other)));
   const builder = input.builderModel;

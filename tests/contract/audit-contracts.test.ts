@@ -195,6 +195,8 @@ describe("the event catalog", () => {
       "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.withdrawn", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
       // the company's master suggestions switch
       "rule.suggestions_set",
+      // the one-time review-default notice
+      "review_default_notice.dismissed",
       // company domain verification
       "company_domain.added", "company_domain.verified", "company_domain.lost", "company_domain.removed",
       // company setup recipes (SH29)
@@ -266,6 +268,7 @@ describe("the event catalog", () => {
     "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
     "project.setup_restored": { target: { kind: "project", name: "web" }, keys: ["revision", "fromRevision", "provenRevision"], sample: { revision: 3, fromRevision: 2, provenRevision: 1 } },
     "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source", "previousSource"], sample: { setting: "on", previous: "off", source: "company", previousSource: "install_default" } },
+    "review_default_notice.dismissed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: [], sample: {} },
     "company_domain.added": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: [], sample: {} },
     "company_domain.verified": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["wasState", "tookOver"], sample: { wasState: "pending", tookOver: false } },
     "company_domain.lost": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["missingDays"], sample: { missingDays: 3 } },

@@ -57,7 +57,7 @@ import { agentRunView, taskLevelEvents } from "../../agents/run-engine.js";
 import { verificationReport, workflowReviewRound } from "../../rovara-code/verification-report.js";
 import { publicTrackingItem, readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import { parseChangedFiles } from "../../rovara-code/changed-files.js";
-import { reviewModelLines, reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
+import { reviewModelLines, reviewNoOtherCompanyLine, reviewNoOtherCompanyOf, reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
 import { secondReviewTaskView } from "../../rovara-code/second-review-store.js";
 import type { ChangedFilesRead } from "../../rovara-code/pull-request-body.js";
 import { proofTableView } from "../../rovara-code/proof-view.js";
@@ -331,7 +331,10 @@ export async function taskView(
   const testing = rovaraCodeV2 && options.details && task.workflow !== undefined
     ? await loadTestingView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), nightlyHead: deps.nightlyHead, evidence: deps.evidence !== undefined && await mayReadEvidence(deps, task) ? deps.evidence : undefined }, task, task.workflow) : undefined;
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
-  const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
+  const reviewLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
+  // Owner decision 2026-11-02: the reviews ran on the build's company because no other company's model was usable (the default is another company's). Said with the review lines, so only once the current code has a review.
+  const noOtherCompanyModel = task.workflow === undefined ? undefined : reviewNoOtherCompanyOf(task, task.workflow);
+  const modelLines = reviewLines.length > 0 && noOtherCompanyModel !== undefined ? [...reviewLines, reviewNoOtherCompanyLine(noOtherCompanyModel)] : reviewLines;
   // SH34: the second review by another AI company (switch `cr`), from the task record beside the workflow; full reads only. Silent for shadow that did not run.
   const secondReviewBase = options.details && task.workflow !== undefined ? secondReviewTaskView(task, task.workflow.candidate?.digest) : undefined;
   // The owner (and only the owner) is offered "I've seen it" while an acknowledgement is asked for; the route behind it checks the same thing again.
