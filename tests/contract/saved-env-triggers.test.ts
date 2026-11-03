@@ -207,7 +207,7 @@ describe("the periodic poll", () => {
   it("counts a project whose check fails and moves its time on with a growing backoff, so it cannot take every pass; a poll that works clears the failures", async () => {
     const w = savedEnvWorld();
     w.seed({ nextPollAt: new Date(w.clock.now - 1000).toISOString() });
-    const approved = async (orgId: string, project: string) => w.deps.approved(orgId, project);
+    const approved = w.deps.approved.bind(w.deps);
     w.deps.approved = async () => { throw new Error("down"); };
     const gaps: number[] = [];
     for (let round = 0; round < 8; round += 1) {
