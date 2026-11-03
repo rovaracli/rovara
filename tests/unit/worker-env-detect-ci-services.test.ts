@@ -109,6 +109,11 @@ describe("hostile CI files", () => {
     expect(detection.dependencies!.map((item) => item.family)).toContain("postgres");
     expect(({} as Record<string, unknown>).services).toBeUndefined();
   });
+  it("reads a CI file whose top level is not a map as nothing, without the detector failing", async () => {
+    const detection = await detect({ ".gitlab-ci.yml": "plain text\n", ".gitlab-ci.other.yml": "- just\n- a list\n", ".github/workflows/x.yml": "plain text\n" });
+    expect(detection.dependencies).toBeUndefined();
+    expect(detection.notes.join(" ")).not.toContain("could not finish");
+  });
   it("gives no dependencies and no new keys for a repository with no CI files", async () => {
     expect(Object.hasOwn(await detect({ "README.md": "x" }), "dependencies")).toBe(false);
   });

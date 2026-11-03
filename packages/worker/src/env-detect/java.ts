@@ -3,7 +3,8 @@
 // or from the tool's default (cited as `detector:java`); JaCoCo coverage is proposed only when the build writes the XML report. Only the top-level build files are read, so a plugin applied only inside a module is not
 // seen. A multi-module build gets root-level commands and a module list but no single report path (each module writes its own). Maven and Gradle together at the top is a question, not a guess.
 // No per-test selection is proposed: both tools take one pattern per flag, which the `{tests}` template (one place, separate arguments) cannot express safely, and Rovara never rewrites the customer's command.
-import { type Detection, type DetectedSource, type Detector, type DetectorContext, findLine, lineOf } from "./types.js";
+import { awsClientCandidate, candidate, isOwnedElsewhere, mergeCandidates, normalizeAwsService, scanDrivers, type DriverRule } from "./dependency-candidates.js";
+import { type DependencyCandidate, type Detection, type DetectedSource, type Detector, type DetectorContext, findLine, lineOf } from "./types.js";
 
 const TIMEOUT = { test: 1_800, integration: 3_600, lint: 600, setup: 900 } as const;
 const MAX_MODULES = 20;
@@ -281,7 +282,7 @@ async function detectGradle(context: DetectorContext, hasTests: boolean): Promis
   return found;
 }
 
-export const detectJava: Detector = async (context) => {
+const detectJavaBuild: Detector = async (context) => {
   const { repo } = context;
   const hasMaven = repo.paths.includes("pom.xml");
   const hasGradle = [...GRADLE_BUILD_FILES, ...GRADLE_SETTINGS_FILES].some((name) => repo.paths.includes(name));
@@ -301,4 +302,84 @@ export const detectJava: Detector = async (context) => {
   }
   const hasTests = repo.paths.some((path) => TEST_SOURCE.test(path) || /(?:^|\/)[A-Za-z0-9_]*Tests?\.(?:java|kt|groovy|scala)$/u.test(path));
   return hasMaven ? detectMaven(context, hasTests) : detectGradle(context, hasTests);
+};
+
+// ---- dependencies (test services D4 manifests, D5 code)
+
+const JAVA_ARTIFACTS: ReadonlyArray<[RegExp, string]> = [
+  [/^org\.postgresql:postgresql$/u, "postgres"],
+  [/^(?:mysql:mysql-connector-java|com\.mysql:mysql-connector-j)$/u, "mysql"],
+  [/^org\.mariadb\.jdbc:/u, "mariadb"],
+  [/^(?:redis\.clients:jedis|io\.lettuce:lettuce-core|org\.redisson:[a-z-]+|org\.springframework\.boot:spring-boot-starter-data-redis(?:-reactive)?)$/u, "redis"],
+  [/^(?:org\.mongodb:[a-z-]+|org\.springframework\.boot:spring-boot-starter-data-mongodb(?:-reactive)?)$/u, "mongodb"],
+  [/^(?:org\.apache\.kafka:kafka-clients|org\.springframework\.kafka:spring-kafka)$/u, "kafka"],
+  [/^(?:com\.rabbitmq:amqp-client|org\.springframework\.amqp:[a-z-]+|org\.springframework\.boot:spring-boot-starter-amqp)$/u, "rabbitmq"],
+  [/^(?:co\.elastic\.clients:[a-z-]+|org\.elasticsearch\.client:[a-z-]+|org\.springframework\.boot:spring-boot-starter-data-elasticsearch)$/u, "elasticsearch"],
+  [/^org\.opensearch\.client:[a-z-]+$/u, "opensearch"],
+];
+/** `software.amazon.awssdk:<artifact>` artifacts that are not a service client. */
+const AWS_SDK_NON_SERVICE = new Set(["sdk-core", "aws-core", "bom", "auth", "regions", "apache-client", "url-connection-client", "netty-nio-client", "utils", "http-client-spi", "protocol-core", "aws-sdk-java", "arns", "profiles", "annotations", "metrics-spi", "crt-core", "sts-credentials", "imds", "json-utils", "third-party-jackson-core", "retries", "retries-spi", "checksums", "checksums-spi", "endpoints-spi", "identity-spi", "http-auth", "http-auth-spi", "http-auth-aws", "aws-json-protocol", "aws-query-protocol", "aws-xml-protocol", "aws-cbor-protocol", "codegen", "ssooidc"]);
+const AWS_V1_NON_SERVICE = new Set(["core", "bom", "osgi", "bundle", "test-utils", "swf-libraries", "java-sdk"]);
+const AWS_SDK_SUFFIX = /-(?:enhanced|transfer-manager|crt)$/u;
+
+function javaArtifactFamily(key: string): string | undefined {
+  for (const [pattern, family] of JAVA_ARTIFACTS) if (pattern.test(key)) return family;
+  const v2 = /^software\.amazon\.awssdk:([a-z0-9-]+)$/u.exec(key)?.[1];
+  const v1 = /^com\.amazonaws:aws-java-sdk-([a-z0-9-]+)$/u.exec(key)?.[1];
+  const raw = (v2 ?? v1)?.replace(AWS_SDK_SUFFIX, "");
+  if (raw === undefined || (v2 !== undefined && AWS_SDK_NON_SERVICE.has(raw)) || (v1 !== undefined && AWS_V1_NON_SERVICE.has(raw))) return undefined;
+  const id = normalizeAwsService(raw);
+  return id === undefined || isOwnedElsewhere(`aws:${id}`) ? undefined : `aws:${id}`;
+}
+
+/** Candidates for the drivers and AWS SDK modules the Maven and Gradle build files list (every build file, not only the top one). Strength `mentioned`. */
+export async function javaManifestCandidates(repo: DetectorContext["repo"]): Promise<DependencyCandidate[]> {
+  const found: DependencyCandidate[] = [];
+  for (const path of repo.paths.filter((candidatePath) => /(?:^|\/)(?:pom\.xml|build\.gradle|build\.gradle\.kts)$/u.test(candidatePath)).slice(0, 30)) {
+    const text = await repo.read(path);
+    if (text === undefined) continue;
+    if (path.endsWith("pom.xml")) {
+      for (const block of text.matchAll(/<dependency>[\s\S]*?<\/dependency>/gu)) {
+        const group = /<groupId>\s*([^<\s]+)\s*<\/groupId>/u.exec(block[0])?.[1];
+        const artifact = /<artifactId>\s*([^<\s]+)\s*<\/artifactId>/u.exec(block[0])?.[1];
+        const family = group === undefined || artifact === undefined ? undefined : javaArtifactFamily(`${group}:${artifact}`);
+        if (family !== undefined) found.push(candidate(family, "mentioned", { path, line: lineOf(text, block.index) }, { seenBy: ["driver"] }));
+      }
+    } else {
+      for (const match of text.matchAll(/["']([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)(?::[^"']*)?["']/gu)) {
+        const family = javaArtifactFamily(`${match[1]!}:${match[2]!}`);
+        if (family !== undefined) found.push(candidate(family, "mentioned", { path, line: lineOf(text, match.index) }, { seenBy: ["driver"] }));
+      }
+    }
+  }
+  return mergeCandidates(found);
+}
+
+export const JAVA_DRIVERS: readonly DriverRule[] = [
+  { family: "postgres", uses: /^\s*import\s+org\.postgresql\./mu, call: /DriverManager\.getConnection\s*\(|\.setUrl\s*\(|\.jdbcUrl\s*\(|\.setServerNames?\s*\(/u },
+  { family: "mysql", uses: /^\s*import\s+com\.mysql\./mu, call: /DriverManager\.getConnection\s*\(|\.setUrl\s*\(|\.jdbcUrl\s*\(/u },
+  { family: "redis", uses: /^\s*import\s+(?:redis\.clients\.jedis|io\.lettuce|org\.redisson)\./mu, call: /new\s+Jedis(?:Pool)?\s*\(|RedisClient\.create\s*\(|\.setAddress\s*\(/u },
+  { family: "mongodb", uses: /^\s*import\s+com\.mongodb\./mu, call: /MongoClients\.create\s*\(|new\s+MongoClient\s*\(|new\s+ConnectionString\s*\(/u },
+  { family: "kafka", uses: /^\s*import\s+org\.apache\.kafka\./mu, call: /\.put\s*\(\s*["']bootstrap\.servers["']|BOOTSTRAP_SERVERS_CONFIG\s*,/u },
+  { family: "rabbitmq", uses: /^\s*import\s+com\.rabbitmq\./mu, call: /\.setHost\s*\(|\.setUri\s*\(/u },
+  { family: "elasticsearch", uses: /^\s*import\s+(?:org\.elasticsearch|co\.elastic)\./mu, call: /RestClient\.builder\s*\(|new\s+HttpHost\s*\(/u },
+];
+
+/** AWS SDK clients (v2 `S3Client.builder()`, v1 imports) and drivers a Java or Kotlin file uses (test services D5). An `endpointOverride` / endpoint configuration written as a string is flagged. */
+export function javaCodeCandidates(path: string, text: string): DependencyCandidate[] {
+  const found = scanDrivers(path, text, JAVA_DRIVERS);
+  const builders = [...text.matchAll(/\b([A-Za-z0-9]+?)(?:Async)?Client\.builder\s*\(\s*\)([\s\S]{0,800}?)\.build\s*\(/gu)].map((match) => ({ name: match[1]!.toLowerCase(), explicit: /endpointOverride\s*\(\s*URI\.create\s*\(\s*"|EndpointConfiguration\s*\(\s*"/u.test(match[2]!) }));
+  for (const match of text.matchAll(/^\s*import\s+(?:software\.amazon\.awssdk\.services|com\.amazonaws\.services)\.([a-z0-9]+)\./gmu)) {
+    const id = normalizeAwsService(match[1]!);
+    const explicit = id !== undefined && builders.some((builder) => builder.explicit && builder.name === id.replace(/-/gu, ""));
+    const item = awsClientCandidate(path, text, match.index, match[1]!, explicit);
+    if (item !== undefined) found.push(item);
+  }
+  return found;
+}
+
+export const detectJava: Detector = async (context) => {
+  const found = await detectJavaBuild(context);
+  const dependencies = await javaManifestCandidates(context.repo);
+  return dependencies.length === 0 ? found : { ...found, dependencies };
 };

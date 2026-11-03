@@ -8,6 +8,7 @@ export const MAX_CANDIDATES = 64;
 const MAX_NAMES = 16;
 const MAX_PORTS = 8;
 const MAX_INIT_FILES = 4;
+export const MAX_RESOURCES = 24;
 const STRENGTH_RANK: Record<DependencyStrength, number> = { declared: 3, used: 2, mentioned: 1 };
 
 /** What each recognised family is. The family id is the catalog's: one entry per software, with every image or driver that stands for it listed in the tables below. */
@@ -106,10 +107,9 @@ function mergeHints(left: DependencyHints, right: DependencyHints): DependencyHi
   if (left.testcontainers === true || right.testcontainers === true) merged.testcontainers = true;
   const url = left.url ?? right.url;
   if (url !== undefined) merged.url = url;
-  const keySchema = left.keySchema ?? right.keySchema;
-  if (keySchema !== undefined) merged.keySchema = keySchema;
-  const resource = left.resource ?? right.resource;
-  if (resource !== undefined) merged.resource = resource;
+  const seenResources = new Set<string>();
+  const resources = [...(left.resources ?? []), ...(right.resources ?? [])].filter((item) => { const key = `${item.kind}:${item.name}`; if (seenResources.has(key)) return false; seenResources.add(key); return true; }).slice(0, MAX_RESOURCES);
+  if (resources.length > 0) merged.resources = resources;
   const seenBy = union(left.seenBy, right.seenBy, 8);
   if (seenBy !== undefined) merged.seenBy = seenBy;
   return merged;
@@ -149,3 +149,101 @@ export const dirname = (path: string): string => (path.includes("/") ? path.slic
 
 /** Folders whose files are never the project's own setup. */
 export const DEPENDENCY_SKIP_DIRS = /(?:^|\/)(?:node_modules|dist|build|\.git|venv|\.venv|vendor|\.tox|__pycache__)\//u;
+
+// ---- AWS service ids
+
+const AWS_SERVICE_ALIASES: Readonly<Record<string, string>> = {
+  "secrets-manager": "secretsmanager", sfn: "stepfunctions", "step-functions": "stepfunctions", "cognito-identity-provider": "cognito-idp", cognitoidentityprovider: "cognito-idp", eventbridge: "events", cloudwatchevents: "events",
+  "cloudwatch-logs": "logs", cloudwatchlogs: "logs", "dynamodb-streams": "dynamodbstreams", apigatewayv2: "apigateway", "api-gateway": "apigateway", sagemakerruntime: "sagemaker-runtime", "sagemaker-runtime": "sagemaker-runtime",
+  "bedrock-runtime": "bedrock-runtime", bedrockruntime: "bedrock-runtime", "elastic-search-service": "es", elasticsearchservice: "es", opensearchserverless: "opensearch-serverless",
+};
+
+/**
+ * An AWS service id as the emulator's catalog spells it (`s3`, `dynamodb`, `secretsmanager`, `cognito-idp`), from a boto3, SDK package or Java package spelling. Undefined for anything that is not an id.
+ * `sagemaker-runtime` is returned as is: the model-endpoint detector (D9, `services.ts`) owns it, and the SDK rules skip it (`isOwnedElsewhere`).
+ */
+export function normalizeAwsService(raw: string): string | undefined {
+  const lower = raw.toLowerCase().replace(/_/gu, "-");
+  const id = AWS_SERVICE_ALIASES[lower] ?? lower;
+  return /^[a-z][a-z0-9-]{1,39}$/u.test(id) ? id : undefined;
+}
+
+/** Families an older detector already reports through `Detection.services` (SageMaker Runtime, D9): the SDK rules leave them out so that output stays as it was. */
+export const isOwnedElsewhere = (family: string): boolean => family === "aws:sagemaker-runtime";
+
+// ---- code scanning
+
+/** The text inside the parentheses that open at `open` (the index of "("), balanced, strings skipped, at most `max` characters. Never throws. */
+export function callArguments(text: string, open: number, max = 800): string {
+  let depth = 0;
+  let quote: string | undefined;
+  const end = Math.min(text.length, open + max);
+  for (let i = open; i < end; i += 1) {
+    const char = text[i]!;
+    if (quote !== undefined) { if (char === "\\") i += 1; else if (char === quote) quote = undefined; continue; }
+    if (char === "\"" || char === "'" || char === "`") quote = char;
+    else if (char === "(") depth += 1;
+    else if (char === ")") { depth -= 1; if (depth === 0) return text.slice(open + 1, i); }
+  }
+  return text.slice(open + 1, end);
+}
+
+/** Whether call arguments hard-code where the service is: a connection URL string, or a host / address / brokers / endpoint set to a string literal (not a variable, a setting lookup or a template). */
+export function hardcodedEndpoint(args: string): boolean {
+  return /["'`](?:jdbc:)?(?:postgres(?:ql)?|mysql|mariadb|redis|rediss|mongodb(?:\+srv)?|amqps?|kafka|https?):\/\/[^"'`\s$%{]{2,}/u.test(args)
+    || /\b(?:host|hosts|hostname|addr|address|brokers|bootstrap_servers|bootstrap\.servers|nodes?|endpoint|endpoint_url|endpointOverride|BaseEndpoint|Endpoint|Addr|Brokers|setHost|setUri|URI\.create)\b["']?\s*(?:[=:,(]|=>)\s*\[?\s*(?:aws\.String\(\s*)?[fFrb]?["'`][^"'`$%{\s]{2,}["'`]/u.test(args)
+    // a literal host:port (`"localhost:6379"`), or a libpq / ADO style `host=...` setting inside a connection string
+    || /["'`][A-Za-z0-9][A-Za-z0-9.-]*:\d{2,5}["'`]/u.test(args)
+    || /["'`][^"'`]*\bhost=[^\s"'`$%{]+/u.test(args);
+}
+
+export interface DriverRule {
+  family: string;
+  /** The import / require / usage of the driver in a source file. */
+  uses: RegExp;
+  /** Where the driver is pointed at a server; its arguments are checked for a hard-coded endpoint. */
+  call?: RegExp;
+}
+
+/** Candidates for the drivers a source file uses (strength `used`), flagged when a call hard-codes its endpoint. */
+export function scanDrivers(path: string, text: string, rules: readonly DriverRule[]): DependencyCandidate[] {
+  const found: DependencyCandidate[] = [];
+  for (const rule of rules) {
+    const use = rule.uses.exec(text);
+    if (use === null) continue;
+    let explicit = false;
+    if (rule.call !== undefined) {
+      const flags = rule.call.flags.includes("g") ? rule.call.flags : `${rule.call.flags}g`;
+      for (const call of text.matchAll(new RegExp(rule.call.source, flags))) {
+        const open = text.indexOf("(", call.index + call[0].length - 1);
+        if (open >= 0 && hardcodedEndpoint(callArguments(text, open))) { explicit = true; break; }
+      }
+    }
+    found.push(candidate(rule.family, "used", { path, line: lineAt(text, use.index) }, { ...(explicit ? { explicitEndpoint: true } : {}), seenBy: ["sdk"] }));
+  }
+  return found;
+}
+
+function lineAt(text: string, index: number): number {
+  let line = 1;
+  for (let at = text.indexOf("\n"); at !== -1 && at < index; at = text.indexOf("\n", at + 1)) line += 1;
+  return line;
+}
+
+/** Connection URLs written as string literals in source code: the family, flagged as a hard-coded endpoint. The host is never kept. */
+export function urlLiteralCandidates(path: string, text: string): DependencyCandidate[] {
+  const found: DependencyCandidate[] = [];
+  const families: Record<string, string> = { postgres: "postgres", postgresql: "postgres", mysql: "mysql", mariadb: "mariadb", mongodb: "mongodb", "mongodb+srv": "mongodb", redis: "redis", rediss: "redis", amqp: "rabbitmq", amqps: "rabbitmq" };
+  for (const match of text.matchAll(/["'`](?:jdbc:)?(postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?):\/\/(?![$%{])[^"'`\s]{2,}/gu)) {
+    const family = families[match[1]!];
+    if (family !== undefined) found.push(candidate(family, "used", { path, line: lineAt(text, match.index) }, { explicitEndpoint: true, seenBy: ["sdk"] }));
+  }
+  return found;
+}
+
+/** An AWS client built in code: one candidate per service, flagged when its builder hard-codes an endpoint. */
+export function awsClientCandidate(path: string, text: string, index: number, service: string, explicit: boolean): DependencyCandidate | undefined {
+  const normalized = normalizeAwsService(service);
+  if (normalized === undefined || isOwnedElsewhere(`aws:${normalized}`)) return undefined;
+  return candidate(`aws:${normalized}`, "used", { path, line: lineAt(text, index) }, { ...(explicit ? { explicitEndpoint: true } : {}), seenBy: ["sdk"] });
+}

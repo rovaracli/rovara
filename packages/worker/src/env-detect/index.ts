@@ -10,7 +10,7 @@ import { detectIac } from "./iac.js";
 import { detectJava } from "./java.js";
 import { detectNode } from "./node.js";
 import { detectPython } from "./python.js";
-import { detectServices } from "./services.js";
+import { detectSdkCalls, detectServices } from "./services.js";
 import { emptyDetection, type DependencyCandidate, type Detection, type Detector, type RepositoryReader } from "./types.js";
 
 export const DETECTORS: ReadonlyArray<{ name: string; run: Detector }> = [
@@ -24,6 +24,7 @@ export const DETECTORS: ReadonlyArray<{ name: string; run: Detector }> = [
   { name: "compose", run: detectCompose },
   { name: "ci", run: detectCiServices },
   { name: "env", run: detectEnvConfig },
+  { name: "sdk", run: detectSdkCalls },
 ];
 
 export const ENV_DETECT_MAX_PATHS = 5_000;

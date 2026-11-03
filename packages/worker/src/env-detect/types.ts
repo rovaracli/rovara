@@ -43,6 +43,14 @@ export type DependencyStrength = "declared" | "used" | "mentioned";
 export const DEPENDENCY_REFUSED_FIELDS = ["privileged", "host_network", "host_pid", "host_ipc", "host_volume", "docker_socket", "cap_add", "devices", "build"] as const;
 export type DependencyRefusedField = (typeof DEPENDENCY_REFUSED_FIELDS)[number];
 
+export interface DependencyKeyAttribute { name: string; type: "S" | "N" | "B" }
+export interface DependencyResource {
+  kind: "table" | "bucket" | "queue" | "topic";
+  /** The physical name when the code writes one as a plain identifier, else the template's own id for it. */
+  name: string;
+  keySchema?: { partitionKey: DependencyKeyAttribute; sortKey?: DependencyKeyAttribute };
+}
+
 /**
  * What a detector learned beyond the family. Every value here is a name, a number or a fixed word: a value from a file (a password, a token, a host) is never copied. `url` keeps a connection setting's scheme and
  * host FAMILY (`local`, `private`, `cloud`, `unknown`), never the host.
@@ -68,10 +76,8 @@ export interface DependencyHints {
   testcontainers?: boolean;
   /** The settings that name it parsed down to scheme and host family. */
   url?: { scheme: string; hostFamily: "local" | "private" | "cloud" | "unknown" };
-  /** An AWS table's key schema, read from infrastructure code. */
-  keySchema?: { partitionKey: { name: string; type: string }; sortKey?: { name: string; type: string } };
-  /** An infrastructure resource's logical kind and its name in the template (`table`, `bucket`, `queue`, `topic`). */
-  resource?: { kind: "table" | "bucket" | "queue" | "topic"; name: string };
+  /** Resources infrastructure code declares (tables with their key schema, buckets, queues, topics), at most 24: what Rovara local AWS creates when it starts. */
+  resources?: DependencyResource[];
   /** Which detector families saw it (`compose`, `ci`, `env`, `driver`, `sdk`, `test`, `iac`). */
   seenBy?: string[];
 }
