@@ -30,6 +30,7 @@ export * from "./design-review.js";
 export * from "./design-review-block.js";
 export * from "./design-review-packet.js";
 export * from "./design-review-citations.js";
+export * from "./design-review-words.js";
 export * from "./design-review-worker.js";
 export * from "./project-learning.js";
 export * from "./how-we-work.js";

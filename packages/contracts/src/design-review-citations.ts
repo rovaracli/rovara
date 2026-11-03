@@ -12,15 +12,10 @@
 // The same check runs on the planner's resolve evidence and question evidence (`checkResolveCitations`), against every item the round's reviewers were given and the same pins.
 // A citation that fails is dropped. A finding left with no citation is dropped too and recorded as dropped, with its severity, so the card can say that a blocker was lost rather than hide it.
 import type { DesignCitation, DesignQuestion, ReviewerRole } from "./design-review.js";
+import { codeCitationInPacket, plainPath, type CitablePacketItem } from "./design-review-citation-links.js";
+// The browser-safe part of the citation rules (link path, "not checked" words, the packet match) lives in design-review-citation-links.ts; it is re-exported here so the Node entry keeps one place to import from.
+export { CODE_CITATION_UNCHECKED, codeCitationInPacket, codeCitationLinkPath, type CitablePacketItem } from "./design-review-citation-links.js";
 import type { DesignResolutionDraft, RawDesignFinding } from "./design-review-block.js";
-
-/** The parts of a packet item that a citation is checked against. */
-export interface CitablePacketItem {
-  kind: string;
-  ref: string;
-  commitOrFetchedAt: string;
-  digest: string;
-}
 
 export const CITATION_DROP_REASONS = ["source_not_in_packet", "source_digest_mismatch", "code_not_allowed"] as const;
 export type CitationDropReason = (typeof CITATION_DROP_REASONS)[number];
@@ -49,42 +44,6 @@ function itemsOf(packets: ReviewerPackets, role: ReviewerRole): readonly Citable
 
 /** The pinned base commit of each repository the round may read, by the name section 8 uses. */
 export type PinnedCommits = Readonly<Record<string, string>>;
-
-/** The path rules of the code host's reader: relative, no empty, dot or dot-dot segment, no backslash, no hidden characters. */
-function plainPath(path: string): boolean {
-  if (path.length === 0 || path.length > 512 || path.includes("\\") || /[\p{Cc}\p{Cf}"<>]/u.test(path)) return false;
-  if (hasDotSegment(path)) return false;
-  // A percent-encoded dot segment (`%2e%2e`, also encoded twice) is a dot segment to whoever decodes it later: refused too.
-  let decoded = path;
-  for (let round = 0; round < 3 && /%[0-9a-f]{2}/iu.test(decoded); round += 1) {
-    try { decoded = decodeURIComponent(decoded); } catch { return false; }
-    if (decoded.includes("\\") || /[\p{Cc}\p{Cf}]/u.test(decoded) || hasDotSegment(decoded)) return false;
-  }
-  return true;
-}
-const hasDotSegment = (path: string): boolean => path.split("/").some((segment) => segment === "" || segment === "." || segment === "..");
-
-/**
- * The path of a link to a code citation: each segment is URL-encoded on its own, so `%2e%2e` becomes `%252e%252e` and cannot be read back as `..`, and a `?` or `#` stays part of the name.
- * Undefined when the citation's path or commit is not plain (a link is never built from one). The card shows such a citation as "not checked" (`CODE_CITATION_UNCHECKED`) unless it matched a packet item.
- */
-export function codeCitationLinkPath(citation: Extract<DesignCitation, { kind: "code" }>): string | undefined {
-  if (!/^[a-f0-9]{7,40}$/u.test(citation.commit) || !plainPath(citation.path)) return undefined;
-  return `${encodeURIComponent(citation.commit)}/${citation.path.split("/").map((segment) => encodeURIComponent(segment)).join("/")}`;
-}
-
-/** The words on the card after a code citation that did not match an item a reviewer was given: the path is the reviewer's claim about the pinned commit, not something Rovara looked up. */
-export const CODE_CITATION_UNCHECKED = "path at the pinned commit, not checked";
-
-/** Whether a code citation matches a repository file the reviewer was GIVEN (same repo, path and commit prefix), as opposed to a path at the pin that nobody opened. */
-export function codeCitationInPacket(citation: Extract<DesignCitation, { kind: "code" }>, items: readonly CitablePacketItem[]): boolean {
-  const ref = codeRefOf(citation);
-  return items.some((item) => item.kind === "repo_file" && item.ref === ref && item.commitOrFetchedAt.startsWith(citation.commit));
-}
-
-function codeRefOf(citation: Extract<DesignCitation, { kind: "code" }>): string {
-  return `${citation.repo}:${citation.path}`;
-}
 
 /** Why a citation is not acceptable for this packet, or undefined when it is. */
 export function citationProblem(citation: DesignCitation, items: readonly CitablePacketItem[], pins: PinnedCommits = {}): CitationDropReason | undefined {

@@ -59,13 +59,13 @@ export function createDecisionsApi(host: AppHost) {
   : { kind: "decided", outcome: value.outcome };
  return {
   async evidenceOpened(decision: ReadDecision, tab?: DecisionTabId) { return done(await api.send("POST", evidencePath(decision.card, tab), { requestId: crypto.randomUUID(), shownDigest: decision.digest }, DecisionEvidenceOpenedAnswerSchema)); },
-  async approve(decision: ReadDecision, tab?: DecisionTabId): Promise<DecisionResult> {
+  async approve(decision: ReadDecision, tab?: DecisionTabId, reason?: string): Promise<DecisionResult> {
    const path = mayApproveHere(decision.card) ? decisionActionPath(decision.card, "approve") : undefined;
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
    // A merge asks for the pull requests it names (`merging`), which only a reader that knows the field is sent. Approve, Cancel, Approve of the SAME card as shown (same digest) is one request, not a new pending change each time.
-   const key = decision.card.id + "|" + decision.digest + "|" + (tab ?? ""), requestId = waiting.get(key) ?? crypto.randomUUID();
+   const key = decision.card.id + "|" + decision.digest + "|" + (tab ?? "") + "|" + (reason ?? ""), requestId = waiting.get(key) ?? crypto.randomUUID();
    waiting.delete(key);
-   const result = resultOf(done(await api.send("POST", decision.card.kind === "merge" ? path + "?merging=1" : path, { requestId, shownDigest: decision.digest, ...(tab === undefined ? {} : { tab }) }, DecisionOutcomeReaderSchema, { retry: "never" })));
+   const result = resultOf(done(await api.send("POST", decision.card.kind === "merge" ? path + "?merging=1" : path, { requestId, shownDigest: decision.digest, ...(tab === undefined ? {} : { tab }), ...(reason === undefined ? {} : { reason }) }, DecisionOutcomeReaderSchema, { retry: "never" })));
    if (result.kind === "needs_confirmation") waiting.set(key, requestId);
    return result;
   },
