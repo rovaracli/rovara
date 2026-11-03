@@ -15,6 +15,7 @@ import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agen
 // is read live (`spendApprovers`, R68), never from the stored list, which is kept for the lists and the movers. Deciding goes only through the confirmation
 // page (Task 21a's `requireDecideSession`, R66); an approval changes the limit in the same transaction that ends the request, and then the task goes on where
 // it stopped (`SpendRequestHost.resumeTask`, which is `resumeTaskAfterSpendApproval` in developer-tasks.ts).
+import { isSystemOwned } from "../developer/system-owner.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -903,6 +904,8 @@ async function askPausedTask(
 ): Promise<{ record: SpendRequestRecord; created: boolean } | undefined> {
   let task = await getItem(deps, taskKey(taskId)) as DeveloperTaskRecord | undefined;
   if (task?.orgId === undefined) return undefined;
+  // An automatic run (a project's system owner) asks nobody for more money: its limit is the project's monthly cap on automatic runs, which a maintainer sets. There is no person to ask on its behalf.
+  if (isSystemOwned(task)) return undefined;
   const orgId = task.orgId;
   if (task.budgetPause === undefined) {
     const scope = await derivedPause(deps, task, refusal);

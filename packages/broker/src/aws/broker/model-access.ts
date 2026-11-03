@@ -58,6 +58,7 @@ import { agentRouteDependencies, developerTaskActions } from "./dependency-wirin
 import { auditPendingItem } from "../../audit/outbox.js";
 import { nativeSnapshotConditions } from "../../org/native-snapshot-conditions.js";
 import { ownerCallerOf } from "./feedback-and-codebuild.js";
+import { SYSTEM_OWNER_REFUSAL, isSystemOwned } from "../../developer/system-owner.js";
 import { requireTaskStopWindowContext, taskStopKeyActorChecks, withAdmittedTaskSource } from "../../org/task-stop-window.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { taskRecipeKey } from "../../developer/task-records.js";
@@ -271,6 +272,8 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
     const withAgents = dependencies.agents !== undefined;
     if (task !== undefined) {
       if (task.orgId === undefined) return undefined;
+      // A project's system owner (automatic runs) is given no model key, ever: its jobs run without a model, and nothing may act as it to ask for one.
+      if (isSystemOwned(task)) throw agentXError("TASK_ACCESS_DENIED", SYSTEM_OWNER_REFUSAL);
       // A payer recorded before a merge counts against the member they are now (Task 21, M-3); a merge pointer that can't be read is the proxy's retryable answer.
       const payment = withAgents ? await unreadable("payer", () => paymentOfTaskResolved(task, resolveMember)) : undefined;
       // The org must be open and the task's owner (and the member whose budget pays) still in it, or no key is minted (Task 21, Re-check R-2).

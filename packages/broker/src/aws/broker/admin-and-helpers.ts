@@ -11,6 +11,7 @@ import { requireOrgId } from "../../org/resolve.js";
 import { e2eRegisteredRuntimeKey } from "../e2e-runtime-readiness.js";
 import { getItem, requireOperation, type CallbackClaims, type OperationRecord } from "../cancellation.js";
 import { requireWorkspaceCreatorStillMember } from "../../developer/creator-member.js";
+import { personOwnerOf } from "../../developer/system-owner.js";
 import { effectiveTaskOwner, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { ModelCheckError, readCurrentTiers, readModelCheck, startModelCheck, type ModelCheckDependencies } from "../../e2e/model-checks.js";
 import type { ConnectedAwsAccounts } from "../../triggers/hooks.js";
@@ -213,7 +214,7 @@ export async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, id
   }
   // The route dependencies act for the task's developer (the task's owner); the request is the administrator's, and is recorded as theirs (Task FU2, REPLAYACTOR).
   // The task's owner now (Plan 5 Task 12a): the person who took it over, else its creator.
-  const owner = effectiveTaskOwner(task);
+  const owner = personOwnerOf(effectiveTaskOwner(task));
   const caller: DeveloperCaller = { developerId: owner.developerId, sessionId: "replay-admin", amr: owner.provider, name: owner.name, orgId,
     orgRole: (await readOrgMember(dependencies, orgId, owner.developerId))?.role ?? "member" };
   const claimed = [identity.claims.name, identity.claims.email].find((claim): claim is string => typeof claim === "string" && claim.trim() !== "");

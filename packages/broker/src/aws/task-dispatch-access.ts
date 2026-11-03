@@ -1,9 +1,12 @@
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, OrgRoleSchema, agentXError, orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, isWriterOrgRole } from "@agentx/contracts";
+import { OrgIdSchema, OrgRoleSchema, agentXError, isSystemOwnerId, orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, isWriterOrgRole } from "@agentx/contracts";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
 import { taskOpen } from "../developer/task-access.js";
 import { effectiveProjectRole } from "../developer/project-roles.js";
+import { systemOwnerStands } from "../developer/system-owner.js";
+import { markAutomaticTaskEnded } from "../automatic-runs/end.js";
+import { failOutboxOperation } from "./outbox-failure.js";
 import { resolveTaskDispatchPeople, type CheckTaskPerson } from "../developer/task-people.js";
 import { effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, ownerFenceOf, taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectAuthorityWitness } from "../developer/task-project-access.js";
@@ -284,6 +287,35 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
       const sidecar = await get<{ revision?: unknown }>(guardDeps, { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" });
       await park(guardDeps, record, pointer, task, sidecar === undefined ? undefined : Number(sidecar.revision), "OWNERLESS");
       return "PARKED";
+    }
+    // A project's system owner (automatic runs) is judged by its standing, not by a person's membership: the company is open and the project is active. It has no People sidecar (a task with no share has none, and no
+    // person is added to it), so a sidecar that is there is a fault and the fence below, which needs none, refuses. A system owner that does not stand pauses the operation, as an ownerless task does.
+    const ownerId = tryEffectiveTaskOwner(task)!.developerId;
+    if (isSystemOwnerId(ownerId)) {
+      const orgId = OrgIdSchema.safeParse((task as unknown as Record<string, unknown>).orgId);
+      const stands = await systemOwnerStands(guardDeps, orgId.success ? orgId.data : deps.orgId!, task.project).catch(() => undefined);
+      if (stands === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the standing of the project's automatic runs could not be verified");
+      if (!stands) {
+        if (deps.remainingTimeMs !== undefined && deps.remainingTimeMs() <= TASK_PAUSE_RESERVE_MS) throw agentXError("RUNTIME_UNAVAILABLE", "task access pause reserve is unavailable");
+        // Nobody can resume an automatic run's operation (it has no owner to press Retry), and a parked one would hold the project's one automatic slot for ever. So the operation is failed for good (it was never
+        // delivered), the task is ended, and its workspace and slot go back through the release mark (`automatic-runs/end.ts`).
+        try {
+          await failOutboxOperation(guardDeps.documentClient as Parameters<typeof failOutboxOperation>[0], deps.tableName, record, "TASK_ACCESS_DENIED: this project's automatic runs can't go on: the project is archived or the company is closed");
+        } catch (error) {
+          // The operation moved on while it was judged (it was delivered, or ended): judge it again from the start.
+          if (conditional(error)) continue;
+          throw error;
+        }
+        // The operation is failed already; if the end cannot be written once, it is tried again (a second miss is left to the session sweep, which ends it, later, as a run past its time).
+        const ended = () => markAutomaticTaskEnded(guardDeps.documentClient, deps.tableName, task, "project_stopped", new Date().toISOString());
+        await ended().catch(() => ended());
+        return "PARKED";
+      }
+      if (await allowedStillCurrent(guardDeps, record, pointer, task, undefined, undefined)) {
+        deps.admission?.assertOpen();
+        return "ALLOWED";
+      }
+      continue;
     }
     const access = await resolveTaskDispatchPeople(guardDeps, task);
     // Plan 2, Task 21: a task with no People sidecar is its owner's alone, and an owner who holds the viewer role in its project starts no work on it. A task with a

@@ -6,6 +6,8 @@ import {
   type ProjectDefinition,
   type TestEnvironmentBody,
   agentXError,
+  SYSTEM_OWNER_PROVIDER,
+  isSystemOwnerId,
   developerTaskPolicy,
   redactText,
   taskTitle,
@@ -98,7 +100,7 @@ export function turnRecordFailed(deps: DeveloperTaskRouteDependencies, error: un
 
 export function partyOf(caller: DeveloperCaller, taskId: string, client: string): TurnParty {
   return {
-    taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client,
+    taskId, developerId: caller.developerId, provider: isSystemOwnerId(caller.developerId) ? SYSTEM_OWNER_PROVIDER : caller.amr, developerName: caller.name, client,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
   };
 }

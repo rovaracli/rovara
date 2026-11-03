@@ -37,7 +37,7 @@ const member = (person: NamedPerson): Payer => ({ kind: "member", developerId: p
 const needs = (what: string) => agentXError("CONFIG_INVALID", `payer: this run needs ${what} to say who pays`);
 
 /**
- * Whose budget a run is charged to, in this order: a nightly run and a test run are the project's (its testing allowance is counted as well, see `budgetScopesFor`); an
+ * Whose budget a run is charged to, in this order: a nightly run, any other automatic job and a test run are the project's (its testing allowance is counted as well, see `budgetScopesFor`); an
  * event or a schedule is the chain's when a chain started it, else the agent's; a chain's step is whoever the chain run named; a project that pays pays; a Linear issue is its person assigner's, else
  * the member who approved a bot's assignment, else the project; an offer is whoever accepted it; any other run is whoever started it. A run whose
  * origin needs a fact it was not given is refused, never charged to someone else by default.
@@ -47,6 +47,8 @@ export function resolvePayer(input: ResolvePayerInput): Payer {
     case "test_run": return { kind: "project", project: input.project };
     // NH-1: the nightly test run is the project's own work (owner Q10: the project's budget, "nightly baseline"), whatever the project's AI settings say about paying for tasks.
     case "nightly": return { kind: "project", project: input.project };
+    // System owner (owner decision 2026-11-02): any other automatic job of a project (a saved image's rebuild, a scheduled check) is the project's own work too, whoever the project's settings say pays for tasks.
+    case "automatic": return { kind: "project", project: input.project };
     case "event":
     case "schedule":
       if (input.chainId !== undefined) return { kind: "chain", chainId: input.chainId };

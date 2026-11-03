@@ -68,7 +68,7 @@ async function queuedFirstTask(
     conversationId: pointer.conversationId,
     prompt: pointer.pendingPrompt,
     conversationStarted: false,
-    requester: { requestedBy: pointer.requester },
+    requester: pointer.requester === undefined ? {} : { requestedBy: pointer.requester },
     workflowMode: pointer.pendingWorkflowMode ?? "IMPLEMENT",
     ...(pointer.pendingWorkflowMode === undefined ? { legacyTask: true } : {}),
     ...(task?.workflow?.reviewPhase === undefined ? {} : { workflowPhase: task.workflow.reviewPhase }),

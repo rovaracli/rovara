@@ -2,7 +2,7 @@
 // and that with the switches off none of it runs. The worker's half is tested in the worker's tests.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AGENT_WORKER_OUTDATED, NIGHTLY_RUN_FEATURE, NIGHTLY_SOURCE, NightlyResultSchema, TestEnvironmentBodySchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, projectPk, testEnvDigest, type NightlyResult } from "../../packages/contracts/src/index.js";
+import { AGENT_WORKER_OUTDATED, NIGHTLY_RUN_FEATURE, NIGHTLY_SOURCE, NightlyResultSchema, TestEnvironmentBodySchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, projectPk, systemOwnerIdOf, testEnvDigest, type NightlyResult } from "../../packages/contracts/src/index.js";
 import { createEc2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { nightlySlotId, coverageMapDigest } from "../../packages/broker/src/test-env/nightly.js";
@@ -72,16 +72,16 @@ describe("with the switches off", () => {
 });
 
 describe("with nh and the test environment on", () => {
-  it("a fire starts a task of its own: the project pays, the approver owns it, it records what it was started to run, and its preparation is read-only", async () => {
+  it("a fire starts a task of its own: the project pays, the project's system owner owns it, it records what it was started to run, and its preparation is read-only", async () => {
     const t = await bench();
     process.env.NIGHTLY_HEALTH_ENABLED = "1";
     const { task, own, slot } = await started(t);
     expect(t.db.find((item) => item.entityType === "TEST_ENV_NIGHTLY_SLOT")).toHaveLength(1);
     expect(task).toMatchObject({
-      purpose: "nightly_run", origin: "nightly", payer: { kind: "project", project: NAME }, developerId: OMAR.developerId,
+      purpose: "nightly_run", origin: "nightly", payer: { kind: "project", project: NAME }, developerId: systemOwnerIdOf(TEST_ORG, NAME), provider: "system", automatic: { job: "nightly", purpose: "nightly_run", approvedBy: OMAR.developerId },
       nightlyRun: { slotId: slot, envRevision: 1, branch: "main", headSha: HEAD },
     });
-    // The approver owns it and did not start it: no starter is named, and the title says it is the nightly run.
+    // The system owner owns it and nobody started it: no starter is named, and the title says it is the nightly run.
     expect(task["startedBy"]).toBeUndefined();
     expect(String(task["title"])).toMatch(/^Nightly test run for the project/u);
     // No pointer of the setup run's kind, no workflow: this is no task a person drives.
@@ -143,6 +143,28 @@ describe("with nh and the test environment on", () => {
     expect(nightlyTasks(t)).toHaveLength(1);
     await t.finish(task.workspaceId, own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "CHECKS" } });
     expect((t.db.get({ pk: `DEVTASK#${task.taskId}`, sk: "META" }) as { agentRunEnd?: { state: string } }).agentRunEnd).toMatchObject({ state: "COMPLETE" });
+  });
+
+  it("the system owner's one slot is held while the night runs and given back when it ends: the next night is not shut out, and no person's slot was ever used", async () => {
+    const t = await bench();
+    process.env.NIGHTLY_HEALTH_ENABLED = "1";
+    const system = systemOwnerIdOf(TEST_ORG, NAME);
+    const counters = () => t.db.find((item) => item.entityType === "DEVELOPER_LIMIT") as Array<{ pk: string; tasks?: Set<string>; count?: number }>;
+    const { task, own, slot } = await started(t);
+    expect(counters().filter((item) => item.pk === `DEVELOPER_LIMIT#${system}`)).toHaveLength(1);
+    // the night's task is counted on the system owner's counter, and on no person's
+    const night = nightlyTasks(t)[0]!.taskId;
+    expect(counters().filter((item) => item.tasks?.has(night) === true).map((item) => item.pk)).toEqual([`DEVELOPER_LIMIT#${system}`]);
+    await t.callback(task.workspaceId, own.id, "nightly-result", { result: resultFor(slot) });
+    await t.finish(task.workspaceId, own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "CHECKS" } });
+    // The night is over: its slot is free for the next automatic run of the project, which the one-at-a-time limit would otherwise refuse.
+    const { createAutomaticRunStarter } = await import("../../packages/broker/src/aws/broker.js");
+    const start = createAutomaticRunStarter(t.brokerInput as never)!;
+    const next = () => start({ orgId: TEST_ORG, project: NAME, job: "scheduled_check", purpose: "saved_env_rebuild", requestId: randomUUID(), agent: { agentId: "rovara-code" }, input: { text: "Check." }, origin: "automatic" });
+    const second = await next();
+    expect("started" in second, JSON.stringify(second)).toBe(true);
+    // ...and that one holds the slot in its turn
+    await expect(next()).rejects.toMatchObject({ code: "WORKSPACE_LIMIT" });
   });
 
   it("a project with no approved environment never starts a run", async () => {

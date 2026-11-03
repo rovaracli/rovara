@@ -320,6 +320,11 @@ export const AUDIT_ACTIONS = [
   "setup_recipe.scope_changed",
   // TE-4: a maintainer went back to the last proved setup after a saved change failed its check. Revisions only: never a command.
   "project.setup_restored",
+  // System owner of automatic runs (owner decision 2026-11-02): an automatic job started (actor `system`; the job and who approved the setup it runs), a maintainer changed the project's monthly cap, the cap paused the project's automatic runs.
+  "automatic_run.started",
+  "project.automatic_runs_cap_changed",
+  "automatic_runs.paused",
+  "automatic_run.ended",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -607,6 +612,14 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "setup_recipe.scope_changed": ["recipeId", "revision", "bodyDigest", "authority"],
   // `revision` is the new revision, `fromRevision` the one that failed its check, `provenRevision` the revision the restored setup was proved at.
   "project.setup_restored": ["revision", "fromRevision", "provenRevision"],
+  // `job` is a fixed word (`nightly`, `image_rebuild`, `scheduled_check`); `setupApprovedBy` is the id of the member who approved the setup the job runs (`none` when it names nobody); `runsThisMonth` and `cap` are counts.
+  "automatic_run.started": ["job", "setupApprovedBy", "runsThisMonth", "cap"],
+  // `fromCap` / `toCap` are the monthly cap on automatic runs before and after (counts).
+  "project.automatic_runs_cap_changed": ["fromCap", "toCap"],
+  // `month` is `YYYY-MM`; `cap` is the cap that was reached.
+  "automatic_runs.paused": ["month", "cap"],
+  // Rovara ended an automatic run itself: `job` as above, `cause` is `project_stopped` (the project was archived or the company closed) or `too_old` (it ran past its time and the sweep ended it).
+  "automatic_run.ended": ["job", "cause"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

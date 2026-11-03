@@ -354,6 +354,7 @@ export { createDeveloperTaskActions, createAgentRouteDependencies, createAgentRu
 export { AI_NAVIGATION_NOT_ON_CLOUD, requireAgentRouteStillCurrent, startPlanGroundingRound, finishPlanGrounding } from "./broker/e2e-rounds.js";
 export { ownerCallerOf, feedbackCriticOwnerNotes } from "./broker/feedback-and-codebuild.js";
 export { createAwsBrokerHandler } from "./broker/handler.js";
+export { automaticRunStarterOf, createAutomaticRunStarter } from "./broker/nightly-run-wiring.js";
 export { registerProjectFor } from "./broker/project-registration.js";
 export { resolveProjectModel, requireProjectAuthority } from "./broker/records.js";
 export type { ModelSourceBrokerOptions } from "./broker/scope-helpers.js";

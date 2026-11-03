@@ -4,6 +4,7 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXError,
   agentXError,
+  isSystemOwnerId,
   MEMBER_GRANT_SK_PREFIX,
   diagnosisRovaraPaidGlobalCents,
   memberGrantsPk,
@@ -186,6 +187,8 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
   return {
     ...deps.agents,
     callerFor: async (orgId, developerId) => {
+      // A project's system owner is no person to act as: it has no sign-in record, and is refused here before one is looked for.
+      if (isSystemOwnerId(developerId)) return undefined;
       const [developer, chosenName] = await Promise.all([
         getSignIn<Pick<DeveloperRecord, "provider" | "displayName" | "slackUserId" | "email" | "revoked">>(deps, `DEVELOPER#${developerId}`),
         readChosenName(deps.documentClient, deps.tableName, developerId),

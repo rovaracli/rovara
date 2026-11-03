@@ -55,10 +55,16 @@ import {
   type WorkflowProgram,
   ROVARA_CODE_AGENT_ID,
   SetupAgentLimitsSchema,
+  SystemOwnerIdSchema,
   type SetupAgentLimits,
   NightlyRunWireSchema,
   type NightlyRunWire,
+  AutomaticRunMarkSchema,
+  isSystemOwnerId,
+  systemOwnerIdOf,
+  type AutomaticRunMark,
 } from "@agentx/contracts";
+import { systemOwnerCaller } from "../developer/system-owner.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { resolvePayer, type PayerFacts } from "../spend/payer.js";
 import type { RequestRunLimit } from "../spend/estimate.js";
@@ -145,6 +151,11 @@ export interface AgentRunRequest {
   setupAgent?: { limits: SetupAgentLimits; seenTaskId?: string | undefined };
   /** NH-1 (switch `nh`): the run is a project's nightly test run (origin `nightly`: the project pays). Only the nightly fire sets it, never a request body. */
   nightlyRun?: NightlyRunWire;
+  /**
+   * System owner (owner decision 2026-11-02): the run is an automatic job of the project (nightly, a saved image's rebuild, a scheduled check). Its owner is the project's system owner, never a person (`owner.developerId` is
+   * `systemOwnerIdOf(orgId, project)`), nobody started it (no `startedBy`), and the project pays. `approvedBy` is the person who approved the setup it runs; they own nothing and may have left. Only broker code sets it.
+   */
+  automatic?: AutomaticRunMark;
   /** The named payer was worked out from the rules by the caller moments ago (not chosen by a client): a difference at the start is the setting changing under it (retryable busy). Only broker code sets it. */
   payerFromRules?: true;
 }
@@ -187,6 +198,8 @@ export interface RunStartOptions {
   setupAgent?: { limits: SetupAgentLimits; seenTaskId?: string | undefined };
   /** NH-1: the run is a nightly test run (see `AgentRunRequest.nightlyRun`). */
   nightlyRun?: NightlyRunWire;
+  /** The run belongs to a project's system owner (see `AgentRunRequest.automatic`). */
+  automatic?: AutomaticRunMark;
 }
 
 /** What `startAgentRun` needs from the developer API: who the owner is as a caller, and the task start. */
@@ -206,7 +219,7 @@ const AgentRunRequestShape = z.object({
   agent: z.object({ agentId: AgentIdSchema, version: z.union([z.number().int().min(1), z.literal("draft")]).optional() }).strict(),
   input: RunInputSchema,
   origin: z.enum(WORK_ORIGINS),
-  owner: z.object({ developerId: Hex64 }).strict(),
+  owner: z.object({ developerId: z.union([Hex64, SystemOwnerIdSchema]) }).strict(),
   startedBy: z.object({ developerId: Hex64 }).strict().optional(),
   payer: PayerSchema.optional(),
   payerFacts: z.object({
@@ -222,8 +235,13 @@ const AgentRunRequestShape = z.object({
   diagnosis: z.object({ diagnosisId: DiagnosisIdSchema, errorRef: ErrorRefSchema }).strict().optional(),
   setupAgent: z.object({ limits: SetupAgentLimitsSchema, seenTaskId: z.string().uuid().optional() }).strict().optional(),
   nightlyRun: NightlyRunWireSchema.optional(),
+  automatic: AutomaticRunMarkSchema.optional(),
   payerFromRules: z.literal(true).optional(),
-}).passthrough().refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
+}).passthrough().refine((request) => (request.automatic !== undefined) === isSystemOwnerId(request.owner.developerId) && (request.automatic === undefined || (request.owner.developerId === systemOwnerIdOf(request.orgId, request.project) && request.startedBy === undefined && request.caller === undefined)), { path: ["owner"], message: "a project's system owner owns exactly its own project's automatic runs, which no person started" })
+  // The automatic origins and the automatic mark go together, both ways: a person's run is never marked automatic, and a run that says it is the project's own work has the system owner. The nightly purpose goes with the night's facts.
+  .refine((request) => (request.origin === "nightly" || request.origin === "automatic") === (request.automatic !== undefined), { path: ["origin"], message: "the nightly and automatic origins are for a project's automatic runs, and only for them" })
+  .refine((request) => request.automatic === undefined || (request.automatic.purpose === "nightly_run") === (request.nightlyRun !== undefined), { path: ["automatic"], message: "the nightly purpose goes with what the night was started to run, and only with it" })
+  .refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
 
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 
@@ -582,6 +600,8 @@ export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">):
     ...(request.setupAgent === undefined ? {} : { purpose: "setup_agent", limits: request.setupAgent.limits }),
     // Likewise: only a nightly run carries this (what it was started to run).
     ...(request.nightlyRun === undefined ? {} : { purpose: "nightly_run", nightlyRun: request.nightlyRun }),
+    // Likewise: only a system-owned run carries this (the job; who approved the setup is not part of what the request IS).
+    ...(request.automatic === undefined ? {} : { automatic: request.automatic.job, automaticPurpose: request.automatic.purpose }),
   });
 }
 
@@ -614,7 +634,8 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
   if (caller !== undefined && (caller.developerId !== request.owner.developerId || caller.orgId !== request.orgId)) {
     throw agentXError("CONFIG_INVALID", "caller: a run is started as its owner");
   }
-  const actingAs = caller ?? await deps.callerFor(request.orgId, request.owner.developerId);
+  // A system owner is not a person to look up: its caller is built here, for this one start, and only for the project it belongs to.
+  const actingAs = request.automatic !== undefined ? systemOwnerCaller(request.orgId, request.project) : caller ?? await deps.callerFor(request.orgId, request.owner.developerId);
   if (actingAs === undefined) throw agentXError("FORBIDDEN", "The person this run is for isn't a member of the organization.");
   // Who pays, from the origin and the project's settings now; a payer the request named must be that one. The owner is who the run acts as, and
   // may differ from who started it and who pays, so everyone else the run names must be allowed to start work here.
@@ -622,6 +643,8 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     orgId: request.orgId, project: request.project, agentId: request.agent.agentId, origin: originOf(request.origin, request.agent),
     startedBy: request.startedBy, payer: request.payer, payerFacts: request.payerFacts, ...(request.payerFromRules === true ? { payerFromRules: true } : {}),
   });
+  // An automatic run is the project's: any other payer would charge a person for work no person started.
+  if (request.automatic !== undefined && payer.kind !== "project") throw agentXError("CONFIG_INVALID", "payer: an automatic run is paid by its project");
   const fingerprint = runRequestFingerprint({ ...rest, payer });
   const named = new Set([request.startedBy?.developerId, payer.kind === "member" ? payer.developerId : undefined].filter((id): id is string => id !== undefined && id !== request.owner.developerId));
   for (const developerId of named) await requireMayStart(deps, { orgId: request.orgId, project: request.project, developerId });
@@ -646,6 +669,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     ...(request.diagnosis === undefined ? {} : { diagnosis: request.diagnosis }),
     ...(request.setupAgent === undefined ? {} : { setupAgent: request.setupAgent }),
     ...(request.nightlyRun === undefined ? {} : { nightlyRun: request.nightlyRun }),
+    ...(request.automatic === undefined ? {} : { automatic: request.automatic }),
   });
   return started.run;
 }

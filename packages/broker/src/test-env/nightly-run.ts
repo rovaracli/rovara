@@ -7,15 +7,17 @@
 //            The task has purpose `nightly_run`, origin `nightly` (the PROJECT pays, whatever its AI settings say about paying for tasks) and carries what it was started to run. Its first operation is the
 //            verification mode (CHECKS) with the payload `nightlyRun`: no model is asked, so no model key is minted (the capability has no `model-access`).
 //
-// Who it runs as: a task has a member for its owner, and a night has no person. It is the person who APPROVED the environment revision (the approval is on the revision's record). If they cannot start
-// work any more (left the company, lost the project) the night is skipped with `owner_unavailable`, nothing is charged and nothing is held; the next approval puts a person in their place.
+// Who it runs as: THE PROJECT'S SYSTEM OWNER, "Rovara (project: X)" (owner decision 2026-11-02; developer/system-owner.ts), never a person. It owns the task, holds its own per-project workspace slot (one night at a time) and
+// is in nobody's task list or notices; the run shows on the project's page as "Started by Rovara (nightly)". The person who APPROVED the environment revision is read from the revision's record for the audit trail
+// ("automatic: nightly", "setup approved by <person>") and nothing else: if they have left, the night still runs, and the project page asks a maintainer to review the setup (`reviewReminderOf`). The project's monthly cap
+// on automatic runs (`automatic-runs/cap.ts`) pauses the nights when it is reached: the night is skipped with `automatic_cap`.
 //
 // The task ends like a setup run: `nightlyEndItems` sets `agentRunEnd`, which gives back its workspace slot and workspace, and the run never feeds the cost estimates (it has a purpose).
 import { createHash } from "node:crypto";
 import { NIGHTLY_RUN_ORIGIN, NIGHTLY_RUN_PURPOSE, ROVARA_CODE_AGENT_ID, agentXError, type NightlyRunPayload, type NightlyRunWire, type NightlySkipReason, type OrgId } from "@agentx/contracts";
-import type { AgentRunRequest, AgentRunResult } from "../agents/runs.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { readApprovedBy, readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
+import { startAutomaticRun, type AutomaticRunDependencies } from "../automatic-runs/start.js";
 import { nightFailedItem } from "./night-status.js";
 import { BUDGET_CODES, type NightlyRunPort } from "./nightly.js";
 
@@ -31,7 +33,7 @@ export function nightlyRequestId(slotId: string): string {
   return `${joined.slice(0, 8)}-${joined.slice(8, 12)}-${joined.slice(12, 16)}-${joined.slice(16, 20)}-${joined.slice(20)}`;
 }
 
-export interface NightlyRunDependencies extends TestEnvDeps {
+export interface NightlyRunDependencies extends TestEnvDeps, Pick<AutomaticRunDependencies, "startAgentRun"> {
   /** The `admitWork` of the install, with the project as payer. Throws the scope's own error when a budget has no room. */
   admitProject(input: { orgId: OrgId; project: string }): Promise<void>;
   /** The project's repository's default branch, or undefined when it cannot be read. */
@@ -40,10 +42,6 @@ export interface NightlyRunDependencies extends TestEnvDeps {
   usesRegistries(input: { orgId: OrgId; project: string }): Promise<boolean | undefined>;
   /** The head commit of the branch, or undefined when it cannot be read. */
   headOf(input: { orgId: OrgId; project: string; branch: string }): Promise<string | undefined>;
-  /** The person an id names read as whoever they were merged into (`resolveSurvivor`): a merged duplicate approver would otherwise own the run. */
-  resolveOwner(orgId: OrgId, developerId: string): Promise<string>;
-  /** The shared run start (`startAgentRun` bound to the install's starter). */
-  startAgentRun(request: AgentRunRequest): Promise<AgentRunResult>;
 }
 
 /** Why a start was refused as a night that cannot run today (not a fault the scheduler's retry would cure). */
@@ -63,19 +61,15 @@ export function nightlyRunPort(deps: NightlyRunDependencies): NightlyRunPort {
     usesRegistries: (input) => deps.usesRegistries(input),
     headOf: (input) => deps.headOf(input),
     async startRun(input) {
-      const approver = await readApprovedBy(deps, input.orgId, input.project, input.envRevision);
-      if (approver === undefined) return { skipped: "owner_unavailable" as const };
-      const owner = await deps.resolveOwner(input.orgId, approver);
+      // Only for the record: who approved the setup this night runs. A revision that names nobody, or a person who has since left, changes nothing about whether the night runs.
+      const approver = await readApprovedBy(deps, input.orgId, input.project, input.envRevision).catch(() => undefined);
       const nightlyRun: NightlyRunWire = { slotId: input.slotId, envRevision: input.envRevision, branch: input.branch, headSha: input.headSha };
       try {
-        await deps.startAgentRun({
-          requestId: nightlyRequestId(input.slotId), orgId: input.orgId, project: input.project, agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: nightlyRunText(input.project) },
-          // The approver owns the task (a task has a member for its owner) but did NOT start it: no `startedBy`, so no person is named as the starter in the task, its session, its audit or its notices. The owner is
-          // the survivor of a merge, so a merged duplicate never owns it.
-          origin: NIGHTLY_RUN_ORIGIN, owner: { developerId: owner }, nightlyRun,
-          // The payer is the project's (the origin says so); named here so a start that worked out another is refused, never charged to someone else.
-          payer: { kind: "project", project: input.project }, payerFromRules: true,
+        const outcome = await startAutomaticRun(deps, {
+          orgId: input.orgId, project: input.project, job: "nightly", requestId: nightlyRequestId(input.slotId), agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: nightlyRunText(input.project) },
+          origin: NIGHTLY_RUN_ORIGIN, purpose: "nightly_run", setupApprovedBy: approver, nightlyRun,
         });
+        if ("skipped" in outcome) return { skipped: outcome.skipped };
       } catch (error) {
         const reason = skipReasonOf(error);
         if (reason !== undefined) return { skipped: reason };

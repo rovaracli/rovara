@@ -1360,6 +1360,8 @@ export function channelOperation(dependencies: AwsBrokerDependencies, identity: 
 /** Who asked, for the operation record (FR-022): a Slack member or a developer. */
 export function requesterOf(identity: AuthenticatedIdentity): { requestedBy?: OperationRequester } {
   if (identity.slack) return { requestedBy: identity.slack.requester };
+  // A system owner (automatic runs) is no requester: its operations name nobody, so nothing reads a person out of them.
+  if (identity.developer?.provider === "system") return {};
   if (identity.developer) return { requestedBy: { kind: "developer", developerId: identity.developer.developerId, provider: identity.developer.provider } };
   return {};
 }

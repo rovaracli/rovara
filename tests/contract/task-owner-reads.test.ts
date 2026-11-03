@@ -109,7 +109,10 @@ const ROWS: readonly Row[] = [
   // decides nothing about who owns the task (it asks `effectiveTaskOwner` for the current owner beside the creator).
   ["aws/broker/ask-service.ts", "peopleOf", "attribution", ".developerId*3", ".developerName", ".slackUserId*2"],
   // the model key of an Ask is paid by the project's rule for the member who asked; the sign-in method the requester record names is the task creator's (it decides nothing about who owns the task)
-  ["aws/broker/ask-service.ts", "handleAskServiceRoute", "history", ".provider"],
+  // System owner (automatic runs): the task's provider is read twice, once to refuse an Ask on a system-owned task (no model key for a system owner) and once as the asker's recorded sign-in method; neither decides who owns the task
+  ["aws/broker/ask-service.ts", "handleAskServiceRoute", "history", ".provider*2"],
+  // System owner (automatic runs): a refused start keeps no turn record when the party is a project's system owner (the party of a start, not a stored task); it decides nothing about who owns a task
+  ["aws/developer-tasks/access.ts", "refuse", "other-record", ".developerId"],
   // a note a person sent from a session, as the Ask context lists it: the note's own sender (not the task's creator)
   ["agent-sessions/ask-readers.ts", "createAskReaders>notes", "other-record", ".developerId", ".slackUserId"],
   // a Slack reply's own sender (the note's author, not the task's creator), matched to the People list to tell a member's information from outsider text (LA-5, M7); it decides nothing about who owns the task
@@ -211,7 +214,7 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/events.ts", "slackReplyAuthor", "other-record", ".developerId", ".developerName*2", ".slackUserId"],
   ["agents/runs.ts", "runStartItems", "other-record", ".developerId"],
   ["aws/admin-change-plans.ts", "planStop", "history", ".developerName*2"],
-  ["aws/broker/thread-workspaces.ts", "requesterOf", "history", ".developerId", ".provider"],
+  ["aws/broker/thread-workspaces.ts", "requesterOf", "history", ".developerId", ".provider*2"],
   ["aws/broker/workspace-preparation.ts", "sharedThread", "principal", ".developerId", ".ownerKey"],
   ["aws/broker/thread-workspaces.ts", "sharedThreadWorkspace", "history", ".developerName"],
   ["aws/broker/workspace-preparation.ts", "slackServiceIdentity", "history", ".developerId", ".developerName", ".ownerKey"],

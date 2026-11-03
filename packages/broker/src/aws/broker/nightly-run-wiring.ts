@@ -7,16 +7,21 @@ import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { ROVARA_CODE_AGENT_ID, canonicalJson } from "@agentx/contracts";
 import { admitWork } from "../../spend/admission.js";
 import type { AgentRouteDependencies } from "../../agents/routes.js";
-import { resolveSurvivor } from "../../agents/access.js";
 import { startAgentRun } from "../../agents/runs.js";
 import type { TestEnvDeps } from "../../org/test-environment.js";
 import { healthWiringOn } from "../../test-env/health-wiring.js";
 import type { MapStore, NightlyRunPort } from "../../test-env/nightly.js";
 import { nightlyMapKey } from "../../test-env/map-keys.js";
+import { sweepAutomaticRuns, type AutomaticRunSweepReport } from "../../automatic-runs/end.js";
+import { developerTaskIdentity } from "../../developer/task-records.js";
+import { requireOrgId } from "../../org/resolve.js";
+import { releaseIfFinished } from "./terminal-and-github-events.js";
+import { startAutomaticRun, type AutomaticRunDependencies, type AutomaticRunInput, type AutomaticRunOutcome } from "../../automatic-runs/start.js";
 import { nightlyRunPort } from "../../test-env/nightly-run.js";
 import type { DeveloperTaskActions } from "../developer-task-actions.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
-import { agentRunStarterFrom } from "./dependency-wiring.js";
+import { agentRouteDependencies, agentRunStarterFrom, brokerDependencies, developerTaskActions } from "./dependency-wiring.js";
+import type { AwsBrokerInput } from "./definitions.js";
 import { defaultBranchHeadOf, projectUsesRegistries, repositoryDefaultBranchOf } from "./nightly-head.js";
 
 const MAP_READ_MAX_BYTES = 8 * 1_048_576 + 4_096;
@@ -48,6 +53,53 @@ export function nightlyResultDeps(dependencies: AwsBrokerDependencies): TestEnvD
   };
 }
 
+/**
+ * What every automatic job starts its run with (the system owner of automatic runs, owner decision 2026-11-02): `startAutomaticRun` bound to this install's table, audit trail and shared run start. Undefined where runs cannot
+ * be started (no agents). It checks NO switch: each job (the nightly run behind `nh`, a saved image's rebuild behind its own) decides whether it runs, and then starts through this. The saved-environments lane calls it
+ * for a rebuild: `automaticRunStarterOf(...)?.({ orgId, project, job: "image_rebuild", requestId, agent, input, origin, setupApprovedBy })`.
+ */
+export function automaticRunStarterOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): ((input: AutomaticRunInput) => Promise<AutomaticRunOutcome>) | undefined {
+  const starter = agentRunStarterFrom(dependencies, tasks, agents);
+  if (starter === undefined) return undefined;
+  const deps: AutomaticRunDependencies = {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+    startAgentRun: (request) => startAgentRun(starter, request),
+  };
+  return (input) => startAutomaticRun(deps, input);
+}
+
+/**
+ * The session sweep's job for automatic runs: a run past its time is cancelled on its worker (as the task's own system identity, best effort), ended, its slot given back and the end audited. Never throws: a failure is
+ * logged and the sweep's other jobs go on.
+ */
+export async function sweepAutomaticRunsOf(dependencies: AwsBrokerDependencies, options: { now?: () => number; budgetMs?: number } = {}): Promise<AutomaticRunSweepReport | "failed"> {
+  const now = options.now ?? Date.now;
+  // Built when a run past its time needs its worker told to stop, not on every tick of a sweep that finds nothing to do.
+  let actions: ReturnType<typeof developerTaskActions> | undefined;
+  const log = (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry }));
+  try {
+    return await sweepAutomaticRuns({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, now, ...(options.budgetMs === undefined ? {} : { budgetMs: options.budgetMs }), ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }), log,
+      cancelLive: async (task) => {
+        actions ??= developerTaskActions(dependencies);
+        const workspace = await actions.workspace(task.workspaceId);
+        if (workspace.status !== "CLOSED" && workspace.activeOperationId != null) await actions.cancelRunning(developerTaskIdentity(task, requireOrgId(task.orgId)), workspace, () => []);
+      },
+      release: (taskId) => releaseIfFinished(dependencies, taskId),
+    });
+  } catch (error) {
+    log({ event: "automatic_run.sweep_failed", error: error instanceof Error ? error.name : "unknown" });
+    return "failed";
+  }
+}
+
+/** `automaticRunStarterOf` from the broker's input, as the other broker factories (`createAgentRunStarter`) are: what a test, or the saved-environments lane's rebuild job, builds its starter from. */
+export function createAutomaticRunStarter(input: AwsBrokerInput): ReturnType<typeof automaticRunStarterOf> {
+  const dependencies = brokerDependencies(input);
+  const tasks = developerTaskActions(dependencies);
+  return automaticRunStarterOf(dependencies, tasks, agentRouteDependencies(dependencies, tasks));
+}
+
 export function nightlyRunsOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined, env: NodeJS.ProcessEnv = process.env): NightlyRunPort | undefined {
   if (!healthWiringOn(env)) return undefined;
   const starter = agentRunStarterFrom(dependencies, tasks, agents);
@@ -61,7 +113,6 @@ export function nightlyRunsOf(dependencies: AwsBrokerDependencies, tasks: Develo
       if (admission === undefined) return;
       await admitWork(admission, { orgId, payer: { kind: "project", project }, project, agentId: ROVARA_CODE_AGENT_ID, agentName: "Rovara Code", path: "QUICK" });
     },
-    resolveOwner: (orgId, developerId) => resolveSurvivor({ signInStore: agents.signInStore, ...(agents.resolveDeveloper === undefined ? {} : { resolveDeveloper: agents.resolveDeveloper }) }, orgId, developerId),
     defaultBranchOf: ({ orgId, project }) => repositoryDefaultBranchOf(dependencies, orgId, project),
     usesRegistries: ({ orgId, project }) => projectUsesRegistries(dependencies, orgId, project),
     headOf: ({ orgId, project, branch }) => defaultBranchHeadOf(dependencies, orgId, project, branch),

@@ -19,8 +19,13 @@ import {
   newPrefixedId,
   sessionSurfaceKey,
   WORKFLOW_PATH_REQUIRED,
+  AUTOMATIC_RUNS_AT_ONCE,
+  isSystemOwnerId,
+  systemOwnerIdOf,
+  SYSTEM_OWNER_PROVIDER,
   type SessionBinding,
 } from "@agentx/contracts";
+import { SYSTEM_OWNER_REFUSAL, isSystemOwnerCaller } from "../../developer/system-owner.js";
 import { decideShare, type BoundChannel, type ShareDecision } from "../../developer/share.js";
 import type { SpendPath } from "../../org/budget.js";
 import { admitWork } from "../../spend/admission.js";
@@ -227,6 +232,14 @@ export async function startAlreadyMade(deps: Pick<DeveloperTaskRouteDependencies
 
 export async function startTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, value: unknown, run?: RunStartOptions): Promise<{ task: DeveloperTaskView; run?: AgentRunResult }> {
   const request = parse(StartDeveloperTaskRequestSchema, value, deps, "start");
+  // A project's system owner starts automatic runs only, and only an automatic run is started by one (fail closed both ways): the owner's id is never a person's, and a person's start is never marked automatic.
+  const systemStart = isSystemOwnerCaller(caller);
+  if (isSystemOwnerId(caller.developerId) !== systemStart || systemStart !== (run?.automatic !== undefined) || (systemStart && (run?.autonomous !== true || run?.startedBy !== undefined || caller.developerId !== systemOwnerIdOf(deps.orgId, request.project)))) {
+    throw agentXError("FORBIDDEN", SYSTEM_OWNER_REFUSAL);
+  }
+  // An automatic run is MODEL-FREE: it declares a purpose that is, and nothing here may turn it into a workflow that asks a model (which it would never be given a key for, and so could never finish).
+  if (systemStart && (run?.automatic?.purpose === "nightly_run") !== (run?.nightlyRun !== undefined)) throw agentXError("CONFIG_INVALID", "an automatic run's purpose must be a model-free one that matches what it was started to run");
+  if (systemStart && request.workflow === true) throw agentXError("CONFIG_INVALID", "an automatic run is not a workflow: it asks no model");
   const turns = turnTable(deps);
   // Only the Slack workflow's own caller can say "slack": an AI tool that sends that name is still an AI tool.
   const client = caller.sessionId === SLACK_WORKFLOW_SESSION_ID && request.client?.trim().toLowerCase() === "slack" ? SLACK_CLIENT_NAME : cleanClientName(request.client);
@@ -350,6 +363,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // Plan 6 Task 10: Rovara drafting the project's dev setup. A read-only look at the repositories with no workflow; paid, admitted and limited like a Quick plan.
   // Live interaction F3: a deep diagnosis is the same read-only look (the boundary, the start rules and the planning limit are a setup draft's); only its purpose, its result and its pointer differ.
   const settingUpDraft = run?.setupDraft !== undefined || run?.diagnosis !== undefined || run?.setupAgent !== undefined || run?.nightlyRun !== undefined;
+  // An automatic run never takes an agent that runs steps with a model.
+  if (systemStart && (prepared === undefined || prepared.runner !== "coding")) return refused(agentXError("CONFIG_INVALID", "an automatic run is not an agent-step run: it asks no model"));
   if (settingUpDraft && (prepared === undefined || prepared.runner !== "coding")) return refused(agentXError("CONFIG_INVALID", "a setup draft is a coding run of Rovara Code"));
   // Plan 6 Task 3: the binding a Rovara Code intent asks for. A Slack thread is bound only by the share this start makes
   // to that very thread, so a start that could not share to it is refused rather than left unbound.
@@ -368,7 +383,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ? await deps.agentRuns?.signInStore.getDeveloper(sessionStartedBy.developerId).then((developer) => developer?.displayName, () => undefined) : undefined;
   // A coding agent chosen by name is a workflow; a start that names none is a workflow only when it says so, as it always was.
   // (A setup draft names Rovara Code but is no workflow: it is a read-only look, answered with a draft.)
-  const asWorkflow = !settingUpDraft && (request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding"));
+  const asWorkflow = !systemStart && !settingUpDraft && (request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding"));
   // Plan 6: a recipe with a plan check step (Rovara Code version 2, or an agent built on it) makes a 1.1.0 workflow, which starts by understanding the intent. Every other task stays 1.0.0.
   const hasPlanCheck = asWorkflow && prepared?.recipe.steps.some((step) => step.kind === "plan_critic") === true;
   // It starts by understanding the intent only once Understand runs (Task 4); until then (`rovaraCodeV2Live`, off) a 1.1.0 task starts on the plan step as before, and needs an explicit path.
@@ -399,7 +414,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   let spendingScopeChecks: TransactItem[] = [];
   // Every task captures once after its existing live principal checks and
   // before monthly admission, workspace creation or key effects.
-  {
+  // A system owner has no spending-stop window to capture and no model funding to pin: an automatic run is model-free and its owner is refused every model key (`requireModelAccessForPerson`), so there is nothing to stop.
+  if (!systemStart) {
     const authorizeSpendingAgent = async (agentId: NonNullable<typeof prepared>["ref"]["agentId"]): Promise<void> => {
       if (deps.agentRuns === undefined) { if (run?.autonomous === true) throw budgetActorRefused(); return; }
       if (run?.autonomous === true) {
@@ -477,7 +493,9 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       throw error;
     }
   }
-  const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
+  const personalLimits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
+  // No personal task slot: a system owner's slot counter is its own (one per project), held to the project's automatic-run limit and the company's total.
+  const limits = systemStart ? { ...personalLimits, member: Math.min(AUTOMATIC_RUNS_AT_ONCE, personalLimits.organization) } : personalLimits;
   const charge = developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: caller.slackUserId, developerId: caller.developerId });
   // A run started paused (run limit 0) takes no workspace slot until its run limit is raised, so there is nothing to count.
   let full = paused ? undefined : await limitReached(deps.documentClient, deps.tableName, charge, limits);
@@ -487,7 +505,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
 
   // Test environment (wire-testenv): the project's approved environment, if a task may use it, decides the checks the task is held to, and its revision is pinned with the task. Nothing while the switch is off.
   const testEnv = asWorkflow ? await testEnvironmentForStart({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, { orgId: deps.orgId, project: request.project, taskId }) : {};
-  const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client }, deps.orgId);
+  const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: systemStart ? SYSTEM_OWNER_PROVIDER : caller.amr, developerName: caller.name, client }, deps.orgId);
   // A setup draft's preparation clones and checks out only (no devcontainer, no setup command, no readiness command), as an agent-step run's does.
   // Saved environments (SH25): only a task that USES the approved environment names its pin, so only its preparation may be told a saved image (never a setup draft, a thread or a registration). A setup agent's run asks for pins (P1) and never a saved image.
   const preparation = await deps.actions.preparation(identity, project, request.requestId, startPreparationOptions({ settingUpDraft, pinHeads: run?.setupAgent !== undefined, agentSteps: prepared?.runner === "agent_steps" ? prepared : undefined, testEnvPin: pinOfUsedEnvironment(testEnv.used) }));
@@ -502,7 +520,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId,
     ...(fundingProof === undefined ? {} : { fundingProof }),
     ...(spendingStop === undefined ? {} : { spendingStop, spendingAdmission: { requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash } }),
-    ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
+    ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: systemStart ? SYSTEM_OWNER_PROVIDER : caller.amr, developerName: caller.name,
+    ...(run?.automatic === undefined ? {} : { automatic: run.automatic }),
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.
@@ -536,14 +555,16 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   };
   const pointer: DeveloperTaskPointerRecord = {
     ...taskPointerKey(workspaceId), entityType: "DEVELOPER_TASK_POINTER", taskId, developerId: caller.developerId,
-    requester: { kind: "developer", developerId: caller.developerId, provider: caller.amr },
+    ...(systemStart ? {} : { requester: { kind: "developer" as const, developerId: caller.developerId, provider: caller.amr } }),
     // FR-019: the instructions exactly as the tool sent them; only the audit record is redacted.
     // An agent-step run queues no coding task: its first step is the engine's (Task 22), never Pi's task run.
     // A task that understands first queues no planning run: its first step is the engine's (like an agent-step run's), so no model is asked before Understand runs.
-    conversationId, firstRequestId: randomUUID(), ...(prepared?.runner === "agent_steps" || understandsFirst ? {} : { pendingPrompt: requestText }),
+    conversationId, firstRequestId: randomUUID(), // An automatic run queues a prompt only when it is the nightly (a verification operation with its own payload and no model); a rebuild queues none.
+    ...(prepared?.runner === "agent_steps" || understandsFirst || (systemStart && run?.nightlyRun === undefined) ? {} : { pendingPrompt: requestText }),
     ...(asWorkflow && !understandsFirst ? { pendingWorkflowMode: "PLAN" as const } : settingUpDraft ? { pendingWorkflowMode: run?.nightlyRun !== undefined ? "CHECKS" as const : run?.setupAgent !== undefined ? "SETUP_AGENT" as const : "SETUP_DRAFT" as const } : {}),
   };
-  const turn = aiToolTurn({
+  // A system owner's start is no AI tool's request, and has no turn record.
+  const turn = systemStart ? undefined : aiToolTurn({
     party: { ...party, workspaceId, settingsRevision: revision }, turnId: randomUUID(), action: "start", phase: "accepted", outcome: "accepted",
     receivedAt, finishedAt: iso(deps), request: request.instructions, response: `Task ${taskId} is STARTING on ${request.project} revision ${revision}.`,
   });
@@ -583,7 +604,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // Plan 6 Task 4: a version 2 task starts by understanding the request, as a dispatch row like every automatic step; it runs once the preparation has ended.
     ...(understandsFirst ? [workflowDispatchItem(deps.tableName, taskId, 1, "UNDERSTAND", WORKFLOW_NO_CANDIDATE_DIGEST, receivedAt)] : []),
     // R12: the accepted record commits with the start or not at all (ruling F15).
-    putNew(turns, turn),
+    ...(turn === undefined ? [] : [putNew(turns, turn)]),
     // Plan 6 Task 10: the project's pointer to this draft, in this same transaction; it holds only while the pointer is the one the route read.
     ...(run?.setupDraft === undefined ? [] : [setupDraftPointerItem(deps.tableName, {
       orgId: deps.orgId, project: request.project, taskId, requestId: request.requestId, requestedBy: caller.developerId, basedOnRevision: revision, startedAt: receivedAt, seenTaskId: run.setupDraft.seenTaskId,

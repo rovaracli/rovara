@@ -103,7 +103,7 @@ describe("resolvePayer", () => {
     }
     expect(resolved).toEqual({
       app: "member", cli: "member", mcp: "member", slack: "member", linear: "member", jira: "member", github_issue: "member", tracker: "member", offer: "member",
-      test_run: "project", event: "agent", schedule: "agent", chain: "project", nightly: "project",
+      test_run: "project", event: "agent", schedule: "agent", chain: "project", nightly: "project", automatic: "project",
     });
     // And with the project paying, only the origins above projectPays in the order keep their payer.
     const paying: Partial<Record<WorkOrigin, Payer["kind"]>> = {};
@@ -112,7 +112,7 @@ describe("resolvePayer", () => {
     }
     expect(paying).toEqual({
       app: "project", cli: "project", mcp: "project", slack: "project", linear: "project", jira: "project", github_issue: "project", tracker: "project", offer: "project",
-      test_run: "project", event: "agent", schedule: "agent", chain: "member", nightly: "project",
+      test_run: "project", event: "agent", schedule: "agent", chain: "member", nightly: "project", automatic: "project",
     });
   });
 });

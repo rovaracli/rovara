@@ -35,7 +35,8 @@ export interface AuthenticatedIdentity {
   /** Spec 025: a developer task's workspace owner (FR-017); never set with `slack`. */
   developer?: {
     developerId: string;
-    provider: DeveloperSignInMethod;
+    /** `system` for a project's system owner (automatic runs): no person signs in that way, and an operation of it has no requester. */
+    provider: DeveloperSignInMethod | "system";
     name: string;
     client: string;
     taskId: string;
