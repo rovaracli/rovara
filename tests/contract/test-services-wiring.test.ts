@@ -111,6 +111,8 @@ describe("the one-line hunks in the hot files", () => {
     expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("{ serviceCatalog: dependencies.serviceCatalog }");
     expect(read("packages/broker/src/aws/broker/dependency-wiring.ts")).toContain("rest.serviceCatalog ?? releaseServiceCatalogSource()");
     expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("noteInvokedFunctionArn(context?.invokedFunctionArn)");
+    expect(read("packages/broker/src/aws/broker/task-operations.ts")).toContain('input.workflowMode === "IMPLEMENT" && task !== undefined');
+    expect(read("packages/broker/src/aws/broker/task-operations.ts")).toContain("await testEnvImplementPlanFor(");
     // The candidate check's plan goes into the preparation, and its report comes back through one hook (the end-to-end behaviour is tests/contract/test-services-candidate-flow.test.ts).
     expect(read("packages/broker/src/aws/developer-routes/project-archive-setup.ts")).toContain("await candidateDependencyPlan(deps, candidate.body,");
     expect(read("packages/broker/src/aws/broker/workspace-preparation.ts")).toContain("{ testServices: { dependencies: [...options.testServices] } }");

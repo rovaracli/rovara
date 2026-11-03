@@ -530,6 +530,22 @@ describe("ec2-ebs delivery", () => {
       expect(await delivery({ workerFeatures: async () => base }).deliver(without, without.invocation)).toBe("DELIVERED");
     });
 
+    it("covers a coding (IMPLEMENT) run too: its plan with dependencies is refused to a worker without task.testServices.v1, and sent to one that has it", async () => {
+      const dependency = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), config: {}, aliases: ["postgres"], connect: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], seeds: [], reset: "fresh_per_round" };
+      const plan = { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [dependency] };
+      const record = taskRecord({ workflowMode: "IMPLEMENT", testEnvironment: plan });
+      const base = ["task.workflowMode", "task.testEnvironment.v1"];
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.testServices.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect((postedPayload(capable.post).testEnvironment as { dependencies: Array<{ id: string }> }).dependencies.map((entry) => entry.id)).toEqual(["postgres"]);
+      // A coding run with no plan is delivered to a worker without the feature, as before.
+      const plain = taskRecord({ workflowMode: "IMPLEMENT" });
+      expect(await delivery({ workerFeatures: async () => ["task.workflowMode"] }).deliver(plain, plain.invocation)).toBe("DELIVERED");
+    });
+
     it("sends a setup draft that asks to detect the test environment to a worker that does not list task.testEnvDetect.v1 WITHOUT the field, and logs that detection did not run (wire-testenv fix round 1)", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const record = taskRecord({ workflowMode: "SETUP_DRAFT", testEnvDetect: true });
