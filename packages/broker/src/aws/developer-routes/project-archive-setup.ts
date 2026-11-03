@@ -13,6 +13,7 @@ import {
   type WorkspaceInstance,
   type TestEnvironmentBody,
   ProjectSetupCheckBodySchema,
+  workerProjectDefinition,
 } from "@agentx/contracts";
 import { readEgressDomains, type EgressDomainsDependencies } from "../../org/egress-domains.js";
 import { applyArchiveRequest, type ProjectArchiveDependencies } from "../../org/project-archive.js";
@@ -25,6 +26,8 @@ import { admitMachineTime, admitTrial } from "../../org/trial.js";
 import { commitSetupCheck, setupCheckLimitMessage, setupCheckReplay, setupStateOfCheck } from "../../org/project-setup-check.js";
 import { readCandidateCheck } from "../../org/test-env-candidate.js";
 import { candidateListsChecked } from "../../test-env/candidate-commands.js";
+import { setupRunCommitsOf } from "../../test-env/setup-run-pin.js";
+import { SETUP_PIN_MOVED } from "../broker/setup-pins.js";
 import { StatusReply } from "../status-reply.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 import { PROJECT_NOT_FOUND_IN_APP, bodyError, signInStoreOf } from "./common.js";
@@ -241,6 +244,11 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     // A candidate check is prepared from the lists the proposal would make; the project's own check from the settings as they are.
     if (candidate !== undefined && "expectedRevision" in candidate && project.definition.revision !== candidate.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", "someone changed this project's settings; reload and try again");
     const lists = candidate === undefined ? undefined : "lists" in candidate ? candidate.lists : candidateListsChecked(candidate.body, project.definition);
+    // SU-1 addendum 3: a setup run's proposal is checked at the commits the run used, never at a head read now. With no complete record of them (the marker names another proposal, the run kept no base) the
+    // check is not started: a re-run is asked for.
+    const runCommits = candidate?.origin === "setup_run" && "body" in candidate
+      ? await setupRunCommitsOf({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller.orgId, name, candidate.digest, workerProjectDefinition(project.definition).repositories.map((repository) => repository.name)) : undefined;
+    if (candidate?.origin === "setup_run" && runCommits === undefined) throw agentXError("CHANGE_STALE", SETUP_PIN_MOVED);
     // The check this one replaces: the project's own, or the candidate record of the same proposal at the same revision.
     const previousCandidate = candidate === undefined ? undefined : await readCandidateCheck(checks, caller.orgId, name, candidate.digest, project.definition.revision);
     const previous = candidate === undefined ? meta?.setupCheck : previousCandidate;
@@ -257,11 +265,11 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     const withoutDevcontainer = { ...project.definition };
     delete withoutDevcontainer.devcontainer;
     const prepared = lists === undefined ? project : { ...project, definition: { ...(devcontainer === null ? withoutDevcontainer : project.definition), setup: lists.setup, readiness: lists.readiness, ...(devcontainer === undefined || devcontainer === null ? {} : { devcontainer }) } };
-    const preparation = await tasks.preparation(identity, prepared, requestId);
+    const preparation = await tasks.preparation(identity, prepared, requestId, runCommits === undefined ? undefined : { pins: runCommits });
     const committed = await commitSetupCheck(checks, {
       orgId: caller.orgId, project: name, requestId, actorId: caller.developerId, revision: project.definition.revision,
       workspaceId: preparation.workspace.id, createdAt: preparation.workspace.createdAt, preparation: preparation.items, charge, limits, seenWorkspaceId: previous?.workspaceId,
-      ...(candidate === undefined || lists === undefined ? {} : { candidate: { digest: candidate.digest, setup: lists.setup, readiness: lists.readiness, ...(candidate.origin === undefined ? {} : { origin: candidate.origin }) } }),
+      ...(candidate === undefined || lists === undefined ? {} : { candidate: { digest: candidate.digest, setup: lists.setup, readiness: lists.readiness, ...(candidate.origin === undefined ? {} : { origin: candidate.origin }), ...(preparation.pins === undefined ? {} : { pins: preparation.pins }) } }),
     });
     if (committed) {
       logDeveloperEvent({ event: candidate === undefined ? "developer.project_setup_check_started" : "developer.test_env_candidate_check_started", orgId: caller.orgId, project: name, workspaceId: preparation.workspace.id });

@@ -2,7 +2,7 @@
 // plus the proposal's), so the commands are run BEFORE they are applied. Its record is keyed by (project, proposal digest, settings revision) and holds the workspace (whose status is the result, read live as the
 // project's own setup check is) and the exact command lists the check ran. Nothing else reads a candidate: the Prove derives its report from it, and the approval writes into the settings only what it ran.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, ProjectCommandSchema, projectPk, type OrgId, type OrgKey, type ProjectCommand } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, PreparePinsSchema, ProjectCommandSchema, projectPk, type OrgId, type OrgKey, type PreparePins, type ProjectCommand } from "@agentx/contracts";
 import { z } from "zod";
 import { TEST_ENV_PROPOSAL_TTL_MS } from "./test-environment.js";
 
@@ -18,8 +18,10 @@ const CandidateCheckSchema = z.object({
   digest: z.string().regex(/^[a-f0-9]{64}$/u), setup: CommandsSchema, readiness: CommandsSchema,
   /** `setup_run`: the proposal this checked was marked as a setup run's when the check started (the mark outlives the proposal item). */
   origin: z.literal("setup_run").optional(),
+  /** SU-1 addendum 3: the commit each repository was prepared at (the pins the preparation was sent). A setup run's proposal is proved only by a check made at the commits its run used. */
+  pins: PreparePinsSchema.optional(),
 });
-export interface CandidateCheck { workspaceId: string; revision: number; startedAt: string; startedBy: string; digest: string; setup: ProjectCommand[]; readiness: ProjectCommand[]; origin?: "setup_run" | undefined }
+export interface CandidateCheck { workspaceId: string; revision: number; startedAt: string; startedBy: string; digest: string; setup: ProjectCommand[]; readiness: ProjectCommand[]; origin?: "setup_run" | undefined; pins?: PreparePins | undefined }
 
 type Send = { send(command: unknown): Promise<unknown> };
 

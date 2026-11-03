@@ -128,4 +128,5 @@ export const TEST_ENV_REFUSAL_WORDS: Record<TestEnvRefusal, string> = {
   nothing_to_prove: "The proposal has no smoke or test command, so there is nothing to prove.",
   services_need_prove: "This environment calls services, which need the full Prove run. It is not available yet.",
   setup_check_old: "The last check of this test environment is more than a week old. Run it again.",
+  setup_run_moved: "The setup run read the code at a different commit than this check ran on. Ask Rovara to run setup again, then check and prove the new proposal.",
 };

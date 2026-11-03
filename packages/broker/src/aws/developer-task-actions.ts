@@ -2,7 +2,7 @@
 // broker builds it (createDeveloperTaskActions) over the existing handlers, so the routes never
 // reach into broker.ts internals.
 import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import type { OwnerRedirectInvocation, OrgId, RunCheckout, ChannelTurn, E2EWorkflowAdmissionRef, Operation, OperationRequest, ProjectCommand, PullRequestLifecycleRequest, PullRequestRequest, WorkflowDependencyInvocation, WorkflowFeedbackApprovalBinding, WorkflowFixPayload, WorkflowReviewBase, WorkflowReviewChecks, WorkflowReviewFeedback, WorkflowReviewNote, WorkflowReviewPlan, WorkspaceInstance } from "@agentx/contracts";
+import type { OwnerRedirectInvocation, OrgId, PreparePins, RunCheckout, ChannelTurn, E2EWorkflowAdmissionRef, Operation, OperationRequest, ProjectCommand, PullRequestLifecycleRequest, PullRequestRequest, WorkflowDependencyInvocation, WorkflowFeedbackApprovalBinding, WorkflowFixPayload, WorkflowReviewBase, WorkflowReviewChecks, WorkflowReviewFeedback, WorkflowReviewNote, WorkflowReviewPlan, WorkspaceInstance } from "@agentx/contracts";
 import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
 import type { ResolvedAttribution } from "../attribution/resolve.js";
 import type { AuthenticatedIdentity } from "../auth.js";
@@ -37,7 +37,7 @@ export interface DeveloperTaskActions {
    * existed from the revision history (index only). CONFIG_INVALID, naming the project, when it cannot be repaired.
    */
   ensureProjectCatalogPointer(orgId: OrgId, projectName: string): Promise<void>;
-  preparation(identity: AuthenticatedIdentity, project: RegisteredProjectRecord, requestId: string, options?: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; testEnvPin?: { revision: number; digest: string } }): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems }>;
+  preparation(identity: AuthenticatedIdentity, project: RegisteredProjectRecord, requestId: string, options?: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; pins?: PreparePins; testEnvPin?: { revision: number; digest: string } }): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; pins?: PreparePins }>;
   /**
    * Plan 3, Task 32: the outbox item that sends an existing workspace's held preparation (a run started with a run limit of 0), with a new capability and
    * repository grant for it. Refuses a workspace or operation that is no longer the held preparation.

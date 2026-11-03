@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { registriesPrepareOf } from "./registry-credentials.js";
 import { savedEnvPrepareOf } from "./saved-env-prepare.js";
-import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition, metaRepositoryOf, type CodeHost } from "@agentx/contracts";
+import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition, metaRepositoryOf, type CodeHost, type PreparePins } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { auditPending, tryAuditEvent } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";
@@ -37,7 +37,7 @@ import { requesterOf } from "./thread-workspaces.js";
 import { metaPrepareFor, needsMetaCheckout, type MetaHeadReader } from "../../meta-repo/prepare-meta.js";
 import { canReadBaseBranchHead, hostOfRepository } from "./repository-hosts.js";
 import { githubScope } from "./scope-helpers.js";
-import { setupPinsOf } from "./setup-pins.js";
+import { pinsStillAtHead, setupPinsOf } from "./setup-pins.js";
 
 /** Meta repo lane A: reads a meta repository's default-branch head through the code host the repository's record names (P6: the port's `baseBranchHead`). Undefined where that host cannot be asked (a project with a meta repo is then refused). */
 export function metaHeadReaderOf(dependencies: AwsBrokerDependencies, host: CodeHost): MetaHeadReader | undefined {
@@ -108,15 +108,17 @@ export async function newWorkspacePreparation(
   project: RegisteredProjectRecord,
   targetOwnerKey: string,
   requestId: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; grantedBy?: unknown; testEnvPin?: { revision: number; digest: string } } = {},
-): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; membership: MembershipRecord | undefined }> {
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; pins?: PreparePins; grantedBy?: unknown; testEnvPin?: { revision: number; digest: string } } = {},
+): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; membership: MembershipRecord | undefined; pins?: PreparePins }> {
   const projectName = project.definition.name;
   const projectRevision = project.definition.revision;
   // Meta repo lane A: read before anything is written, so a meta repo that cannot be read refuses the start.
   // A setup draft reads the meta repo whole, as an ordinary read-only checkout of the project (so no sparse `meta` request, no head to read, no `prepare.metaRepo` needed).
   const metaPrepare = options.setupDraft === true ? {} as Awaited<ReturnType<typeof metaPrepareOf>> : await metaPrepareOf(dependencies, project, requireOrgId(identity.orgId));
   // P1 (su): a setup run's heads are read by the broker and pinned (setup-pins.ts), before anything is written.
-  const pins = options.pinHeads === true ? await setupPinsOf(dependencies, project, requireOrgId(identity.orgId)) : undefined;
+  // SU-1 addendum 3: given pins (the commits a setup run used) must still be the heads; else the heads are read now (a meta repository only for a setup draft's preparation).
+  const pins = options.pins !== undefined ? await pinsStillAtHead(dependencies, project, requireOrgId(identity.orgId), options.pins)
+    : options.pinHeads === true ? await setupPinsOf(dependencies, project, requireOrgId(identity.orgId), options.setupDraft === true) : undefined;
   const now = new Date().toISOString();
   const workspaceId = randomUUID();
   const operationId = randomUUID();
@@ -187,6 +189,7 @@ export async function newWorkspacePreparation(
     workspace,
     operationId,
     membership: existingMembership,
+    ...(pins === undefined ? {} : { pins }),
     items: [
       { Put: { TableName: dependencies.tableName, Item: workspaceItem(requireOrgId(identity.orgId), workspace), ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: { ...defaultWorkspaceKey(requireOrgId(identity.orgId), targetOwnerKey, projectName), entityType: "DEFAULT_WORKSPACE", workspaceId }, ConditionExpression: "attribute_not_exists(pk)" } },

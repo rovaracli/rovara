@@ -170,3 +170,32 @@ it("says what the server refused in its own words", async () => {
   expect(await within(card).findByText("None of the suggestions can be used.")).toBeTruthy();
   f.close();
 });
+
+// SU-1: the setup screen reads companySetupOff and companyLocksUnreadable. "Setup agent off" is shown and no start is offered while either is set; a run already going keeps its Stop.
+it("while a company admin has turned setup runs off, says 'Setup agent off' and offers no start", async () => {
+  const f = setup({ read: { status: 200, body: view({ companySetupOff: true }) } });
+  const section = await region();
+  expect(await within(section).findByText("Setup agent off", { selector: "strong" })).toBeTruthy();
+  expect(within(section).getByText(/No setup run can start in any project of the company/u)).toBeTruthy();
+  expect(within(section).queryByRole("button", { name: "Let Rovara run the setup" })).toBeNull();
+  expect(within(section).queryByRole("button", { name: "Run it again" })).toBeNull();
+  expect(posts(f, "/setup-agent")).toHaveLength(0);
+  f.close();
+});
+
+it("when the company's locks do not read, says so and offers no start (also after a finished run)", async () => {
+  const f = setup({ read: { status: 200, body: view({ status: "ready", stop: "proposed", summary: SUMMARY, proposal: PROPOSAL, companySetupOff: true, companyLocksUnreadable: true }) } });
+  const section = await region();
+  expect(await within(section).findByText(/The company's setup locks can't be read/u)).toBeTruthy();
+  expect(within(section).getByText("Setup agent off", { selector: "strong" })).toBeTruthy();
+  expect(within(section).queryByRole("button", { name: "Run it again" })).toBeNull();
+  f.close();
+});
+
+it("a run that is already going keeps its Stop while setup runs are off", async () => {
+  const f = setup({ read: { status: 200, body: view({ status: "running", taskId: TASK, startedAt: "2026-11-02T12:00:00.000Z", companySetupOff: true }) } });
+  const section = await region();
+  expect(await within(section).findByRole("button", { name: "Stop" })).toBeTruthy();
+  expect(within(section).getByText("Setup agent off", { selector: "strong" })).toBeTruthy();
+  f.close();
+});

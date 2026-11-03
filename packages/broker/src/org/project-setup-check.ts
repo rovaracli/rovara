@@ -11,7 +11,7 @@
 import { QueryCommand, TransactWriteCommand, GetCommand, UpdateCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import {
   INDEX_EXPIRY_ATTRIBUTE, agentXError, formatCommandLine, projectMetaKey, redactText,
-  type AppProjectSummary, type OrgId, type OrgKey, type ProjectCommand,
+  type AppProjectSummary, type OrgId, type OrgKey, type PreparePins, type ProjectCommand,
 } from "@agentx/contracts";
 import { STUCK_SETUP_MS } from "../aws/stuck-setup.js";
 import { chargeConflict, chargeItems, limitReached } from "../developer/limits.js";
@@ -160,7 +160,7 @@ export interface SetupCheckStart {
    * TE-2: a CANDIDATE check of a test-environment proposal. It does not touch META's `setupCheck` (the project's own check): its record is kept under the proposal's digest and the settings revision, with the exact
    * command lists the workspace was prepared with. `seenWorkspaceId` is then the workspace of the earlier candidate record this start read.
    */
-  candidate?: { digest: string; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[]; origin?: "setup_run" | undefined };
+  candidate?: { digest: string; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[]; origin?: "setup_run" | undefined; pins?: PreparePins | undefined };
 }
 
 /**
@@ -184,7 +184,7 @@ export async function commitSetupCheck(deps: SetupCheckDependencies, input: Setu
     TableName: deps.tableName,
     Item: {
       ...candidateCheckKey(input.orgId, input.project, input.candidate.digest, input.revision), entityType: CANDIDATE_CHECK_ENTITY, orgId: input.orgId, project: input.project, digest: input.candidate.digest,
-      workspaceId: input.workspaceId, revision: input.revision, startedAt: check.startedAt, startedBy: input.actorId, setup: [...input.candidate.setup], readiness: [...input.candidate.readiness], ...(input.candidate.origin === undefined ? {} : { origin: input.candidate.origin }),
+      workspaceId: input.workspaceId, revision: input.revision, startedAt: check.startedAt, startedBy: input.actorId, setup: [...input.candidate.setup], readiness: [...input.candidate.readiness], ...(input.candidate.origin === undefined ? {} : { origin: input.candidate.origin }), ...(input.candidate.pins === undefined ? {} : { pins: input.candidate.pins }),
       [INDEX_EXPIRY_ATTRIBUTE]: candidateExpiry(deps.now()),
     },
     // Only over the record this start read (or none, or one past its expiry that the TTL has not yet removed).

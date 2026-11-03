@@ -8,6 +8,7 @@ import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { approveTestEnvironment, proposeTestEnvironment, readProposalSources } from "../../packages/broker/src/org/test-environment.js";
 import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { seedSetupRun } from "../support/candidate-check.js";
 
 afterEach(() => { delete process.env.TEST_ENVIRONMENT_ENABLED; });
 
@@ -250,6 +251,7 @@ describe("approving writes exactly the proven commands", () => {
     await withSwitch("1", async () => {
       const run = proposalBody();
       const digest = await proposed(t, { ...draftOf(run), valueSources: [{ field: "repos[0].setupCommands[1]", source: "observed:abcdefgh#1" }] });
+      seedSetupRun(t.db, { orgId: TEST_ORG, project: NAME, digest, developerId: OMAR.developerId });
       await startCheck(t, digest);
       await reportCheck(t, "SUCCEEDED");
       expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
@@ -353,6 +355,7 @@ describe("B1 residual: the setup-run mark survives the proposal item", () => {
       const body = proposalBody();
       await proposeTestEnvironment(store, { orgId: TEST_ORG, project: NAME, proposedBy: OMAR.developerId, role: "maintainer", body, origin: "setup_run", valueSources: [{ field: "repos[0].setupCommands[1]", source: { path: "package.json", line: 3 } }] });
       const digest = testEnvDigest(body);
+      seedSetupRun(t.db, { orgId: TEST_ORG, project: NAME, digest, developerId: OMAR.developerId });
       expect((await startCheck(t, digest)).status).toBe(202);
       expect(candidates(t)[0]).toMatchObject({ origin: "setup_run" });
       await reportCheck(t, "SUCCEEDED");
