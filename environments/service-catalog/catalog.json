@@ -496,7 +496,7 @@
         "startTimeoutS": 30
       },
       "resources": {
-        "memMiB": 640,
+        "memMiB": 384,
         "cpus": 1,
         "pids": 512
       },
