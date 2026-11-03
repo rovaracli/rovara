@@ -41,7 +41,10 @@ describe("the run network adds no firewall rule", () => {
     const stage2 = scripts["boot-stage2.sh"].split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
     const wall = fn("wall_between_run_networks");
     expect(wall).toContain("-i rvi+ -o rvi+");
-    expect(stage2.split("\n").filter(mentionsRvi)).toEqual(wall.split("\n").filter(mentionsRvi));
+    // TS-SEAL-2: the IPv6 INPUT drop is the one other function that names an rvi bridge.
+    const ipv6 = fn("wall_ipv6_into_host");
+    expect(ipv6).toContain("INPUT -i rvi+ -j DROP");
+    expect(stage2.split("\n").filter(mentionsRvi)).toEqual([...wall.split("\n").filter(mentionsRvi), ...ipv6.split("\n").filter(mentionsRvi)]);
     const block = fn("block_imds");
     expect(block).toContain("rvbs+");
     expect(block).not.toMatch(/\brvi\b/u);
@@ -117,10 +120,53 @@ esac
     expect(at("write_worker_environment")).toBeLessThan(at("set_docker_address_pools"));
     expect(at("set_docker_address_pools")).toBeLessThan(at("metadata_blocked"));
     expect(at("metadata_blocked")).toBeLessThan(at("wall_between_run_networks"));
-    expect(at("wall_between_run_networks")).toBeLessThan(at("write_worker_unit"));
+    expect(at("wall_between_run_networks")).toBeLessThan(at("wall_ipv6_into_host"));
+    expect(at("wall_ipv6_into_host")).toBeLessThan(at("write_worker_unit"));
     expect(at("write_worker_unit")).toBeLessThan(at("systemctl enable --now"));
     expect(at("systemctl enable --now")).toBeLessThan(at("start_e2e_qualification"));
-    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+fi/u);
+    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+wall_ipv6_into_host \|\| fail [^\n]*\n\s+fi/u);
+  });
+
+  // TS-SEAL-2: the IPv6 INPUT drop for the run bridges, run for real against fake iptables and ip6tables that keep their rules in files.
+  describe("the IPv6 drop into the host (TS-SEAL-2)", () => {
+    const WALL = "INPUT -i rvi+ -j DROP";
+    const ipv6Function = () => `${/^ipv6_active\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? ""}\n${fn("wall_ipv6_into_host")}`;
+    /** Runs the step with a fake ip6tables (or none, or one that cannot be used) and says whether IPv6 is active on the pretend host. */
+    const wallIpv6 = (options: { ip6tables: "works" | "missing" | "unusable"; ipv6Active: boolean; times?: number; before?: string[] }) => {
+      const directory = mkdtempSync(join(tmpdir(), "rovara-ipv6-"));
+      const bin = join(directory, "bin");
+      spawnSync("mkdir", ["-p", bin]);
+      for (const tool of options.ip6tables === "missing" ? [] : ["ip6tables"]) {
+        const body = options.ip6tables === "unusable" ? "#!/bin/bash\nexit 3\n" : FAKE.replace('op=$1; shift; rule="$*"', 'op=$1; shift; rule="$*"\n[ "$op" = -S ] && exit 0');
+        writeFileSync(join(bin, tool), body); chmodSync(join(bin, tool), 0o755);
+      }
+      if (options.before !== undefined) writeFileSync(join(directory, "ip6tables.rules"), `${options.before.join("\n")}\n`);
+      // /usr/bin and /bin hold the real tools the step needs (cat); a real ip6tables there would only be found if the fake is missing, so the missing case runs with a PATH that cannot reach it.
+      const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory };
+      const code = `${ipv6Function()}\nipv6_active() { ${options.ipv6Active ? "true" : "false"}; }\n${Array.from({ length: options.times ?? 1 }, () => "wall_ipv6_into_host").join("\n")}\n`;
+      const ran = spawnSync("/bin/bash", ["-c", options.ip6tables === "missing" ? `command() { [ "$1" = -v ] && [ "$2" = ip6tables ] && return 1; builtin command "$@"; }\n${code}` : code], { env, encoding: "utf8" });
+      let rules: string[] = [];
+      try { rules = readFileSync(join(directory, "ip6tables.rules"), "utf8").split("\n").filter(Boolean); } catch { /* no rule file: nothing was inserted */ }
+      return { status: ran.status, rules };
+    };
+    it("inserts the drop at the top of INPUT, once, however many times the step runs, and keeps a rule that is already there", () => {
+      expect(wallIpv6({ ip6tables: "works", ipv6Active: true })).toEqual({ status: 0, rules: [WALL] });
+      expect(wallIpv6({ ip6tables: "works", ipv6Active: true, times: 3 })).toEqual({ status: 0, rules: [WALL] });
+      expect(wallIpv6({ ip6tables: "works", ipv6Active: true, before: [WALL] })).toEqual({ status: 0, rules: [WALL] });
+      expect(wallIpv6({ ip6tables: "works", ipv6Active: true, before: ["INPUT -i lo -j ACCEPT"] }).rules).toEqual([WALL, "INPUT -i lo -j ACCEPT"]);
+    });
+    it("stops the boot when ip6tables is missing or cannot be used while the host has IPv6, and lets it go on only when the host has none", () => {
+      expect(wallIpv6({ ip6tables: "missing", ipv6Active: true }).status).not.toBe(0);
+      expect(wallIpv6({ ip6tables: "unusable", ipv6Active: true }).status).not.toBe(0);
+      expect(wallIpv6({ ip6tables: "missing", ipv6Active: false }).status).toBe(0);
+      expect(wallIpv6({ ip6tables: "unusable", ipv6Active: false }).status).toBe(0);
+    });
+    it("stage 2 is where it lives: boot.sh (at its size limit) holds only its best-effort rule, the INPUT drop is not allowed through (-j DROP only), and it runs after the address pools", () => {
+      const main = fn("stage2_main");
+      expect(main.indexOf("set_docker_address_pools")).toBeLessThan(main.indexOf("wall_ipv6_into_host"));
+      expect(fn("wall_ipv6_into_host")).not.toMatch(/-j (?:RETURN|ACCEPT)/u);
+      expect(scripts["boot.sh"]).not.toContain("wall_ipv6_into_host");
+    });
   });
 
   it("the isolation DROP keeps traffic inside one bridge flowing: it matches only routed (not bridged) rvi-to-rvi packets, and a run network and an end-to-end network are each ONE bridge", () => {

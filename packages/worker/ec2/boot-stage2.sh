@@ -33,6 +33,19 @@ wall_between_run_networks() {
   iptables -C $rule 2>/dev/null || iptables -I $rule || return 1
   ! command -v ip6tables >/dev/null || ! ip6tables -S DOCKER-USER >/dev/null 2>&1 || ip6tables -C $rule 2>/dev/null || ip6tables -I $rule || return 1
 }
+# 4. TS-SEAL-2: nothing on a run bridge (rvi+) reaches the HOST over IPv6 either. The firewall unit's own ip6tables rule is best effort (a failure there only prints a line, and it is skipped when ip6tables is missing), so after the
+#    Docker restart this puts the INPUT drop in place or stops the boot. It is inserted at the top of INPUT, once. Without a usable ip6tables the boot is allowed to go on only when the host has no IPv6 at all.
+ipv6_active() {
+  [[ -e /proc/net/if_inet6 && $(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null) != 1 ]]
+}
+wall_ipv6_into_host() {
+  local rule="INPUT -i rvi+ -j DROP"
+  if command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; then
+    ip6tables -C $rule 2>/dev/null || ip6tables -I $rule
+  else
+    ! ipv6_active
+  fi
+}
 
 # This optional preload is bounded; failure leaves the worker available.
 pull_contained_image() {
@@ -370,6 +383,7 @@ stage2_main() {
     set_docker_address_pools || fail "could not set Docker's address pools"
     metadata_blocked || fail "the metadata block is missing after the Docker restart"
     wall_between_run_networks || fail "could not wall run networks off from each other"
+    wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"
   fi
   write_worker_unit "$region" "$instance_id"
   systemctl daemon-reload
