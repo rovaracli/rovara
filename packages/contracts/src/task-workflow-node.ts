@@ -2753,8 +2753,8 @@ export function decideWorkflow(
   // Changes the person asks for make a new plan, which is checked afresh: the critique of the plan they sent back is dropped (the approved plan's stays for the record).
   const { critique: _sentBackCritique, ...withoutCritique } = current;
   void _sentBackCritique;
-  // The same for a design review: the design the person sent back is reviewed afresh, and what the review cost so far stays counted.
-  const rearmed = request.data.decision === "REQUEST_CHANGES" && current.reviewPhase === "DESIGN" && current.designReview !== undefined ? { designReview: rearmedDesignReview(current.designReview) } : {};
+  // The same for a design review: the design the person sent back is reviewed afresh (bounded, and never past a cost stop), what the review cost so far stays counted, and its paid rounds are archived.
+  const rearmed = request.data.decision === "REQUEST_CHANGES" && current.reviewPhase === "DESIGN" && current.designReview !== undefined ? { designReview: rearmedDesignReview(current.designReview, { at: options.now, by: { actorId: actor.actorId } }) } : {};
   return WorkflowSnapshotSchema.parse({
     ...(request.data.decision === "REQUEST_CHANGES" ? withoutCritique : current),
     ...rearmed,
