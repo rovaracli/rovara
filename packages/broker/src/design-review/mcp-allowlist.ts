@@ -5,6 +5,7 @@
 //   - the source must exist and be allowed for the PLAN_CRITIQUE stage;
 //   - it must not be a chat or messaging system (Slack, Teams, Discord and the like), and its tool must not be a thread, channel, history, conversation or message tool: the task's Slack thread and
 //     people's messages are never in a packet (design 3.4 step 1);
+//   - it must not be the task's own request thread (the issue the task came from, and its comments): that is the planner's conversation by another door;
 //   - the tool is one the admin ticked with the `read` role (a lookup of one item), never `search` or `status`;
 //   - the arguments are built by code from the item ref alone.
 // The route then applies its own checks again (stage permission, the ticked tool, argument rules, the stage's allowance) when the call is made.
@@ -23,7 +24,30 @@ export type PacketMcpRefusal = (typeof PACKET_MCP_REFUSALS)[number];
 
 export type PacketMcpCall = { ok: true; sourceId: string; tool: string; arguments: Record<string, unknown> } | { ok: false; reason: PacketMcpRefusal };
 
+/** An item of the task's own origin thread: the Linear, Jira or GitHub issue the task came from. It is named by its source and ref; its comments are refs that continue it (`ABC-1#c5`, `org/repo#12/comments/3`). */
+export interface PacketOriginItem { sourceId: string; itemRef: string }
+
+const foldRef = (value: string): string => value.normalize("NFKC").trim().toLowerCase();
+
+/**
+ * Whether `ref` is the task's own request thread or one of its parts: the same source and the same item, or an item whose ref CONTINUES the origin's after a non-alphanumeric character (a comment, an
+ * anchor, a sub-path). `ABC-12` does not continue `ABC-1`. The comparison is folded (NFKC, case, spaces), and a ref that cannot be told apart is refused, never allowed.
+ */
+export function isOriginItem(origin: readonly PacketOriginItem[] | undefined, ref: { sourceId: string; itemRef: string }): boolean {
+  if (origin === undefined) return false;
+  const sourceId = foldRef(ref.sourceId);
+  const itemRef = foldRef(ref.itemRef).replace(/^#/u, "");
+  return origin.some((entry) => {
+    if (foldRef(entry.sourceId) !== sourceId) return false;
+    const base = foldRef(entry.itemRef).replace(/^#/u, "");
+    if (base === "") return true;
+    return itemRef === base || (itemRef.startsWith(base) && !/[a-z0-9]/u.test(itemRef.charAt(base.length)));
+  });
+}
+
 export interface PacketMcpOptions {
+  /** The task's own request thread (M6): such an item is refused as a conversation, whatever source or tool it comes from. */
+  origin?: readonly PacketOriginItem[];
   /** The arguments that fetch one item, built from the ref by code. Default: `{ id: itemRef }`. [I: refine per system once the sources are listed in staging.] */
   argumentsFor?: (input: { source: ContextSource; tool: ContextSourceTool; itemRef: string }) => Record<string, unknown> | undefined;
 }
@@ -49,6 +73,7 @@ export function packetMcpCall(configured: readonly ContextSource[], ref: { sourc
   const source = configured.find((candidate) => candidate.sourceId === ref.sourceId);
   if (source === undefined || !source.stages.includes("PLAN_CRITIQUE")) return { ok: false, reason: "not_allowed" };
   if (isChatSource(source)) return { ok: false, reason: "conversation" };
+  if (isOriginItem(options.origin, ref)) return { ok: false, reason: "conversation" };
   if (ref.itemRef === "" || ref.itemRef.length > 200 || /[\p{Cc}\p{Cf}]/u.test(ref.itemRef)) return { ok: false, reason: "not_allowed" };
   // Deterministic: the first ticked read tool by upstream name.
   const readTools = source.tools.filter((tool) => tool.role === "read").sort((a, b) => (a.upstreamName < b.upstreamName ? -1 : a.upstreamName > b.upstreamName ? 1 : 0));

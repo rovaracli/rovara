@@ -16,7 +16,7 @@ import {
   DESIGN_REVIEW_PACKET_ITEMS_MAX, DesignReviewTierSchema, PACKET_DIGEST_VERSION, ReviewerPacketItemSchema, ReviewerRoleSchema, itemOf, neutralizePacketText, packetDigestOf, promptDigest, renderPacketDocument, renderPacketRequest, reviewerMessagesOf,
   type ContextSource, type ContextToolCallResponse, type PacketDelivery, type PacketDocument, type PacketItemKind, type ReviewerPacketItem,
 } from "@agentx/contracts";
-import { packetMcpCall, type PacketMcpOptions, type PacketMcpRefusal } from "./mcp-allowlist.js";
+import { isOriginItem, packetMcpCall, type PacketMcpOptions, type PacketMcpRefusal } from "./mcp-allowlist.js";
 import { reviewerPromptFor } from "./prompts/index.js";
 
 // The frames, the defusing of frame-like text, the rendering and the packet digest live ONCE, in contracts/src/design-review-packet.ts: the worker renders and digests the same bytes with the
@@ -99,6 +99,8 @@ export const PacketBuildInputSchema = z.object({
   baseCommits: z.record(z.string().min(1).max(200), Sha1),
   knowledgeCommit: Sha1.optional(),
   sources: z.array(SourceRef).max(PACKET_SOURCES_LOOKED_AT_MAX),
+  /** The task's own request thread (the Linear, Jira or GitHub issue it came from). An item that is it, or continues it (its comments), is never put in a packet (M6). */
+  origin: z.array(z.object({ sourceId: z.string().min(1).max(64), itemRef: z.string().min(1).max(200) }).strict()).max(20).optional(),
 }).strict();
 export type PacketBuildInput = z.input<typeof PacketBuildInputSchema>;
 
@@ -201,6 +203,7 @@ export async function buildReviewerPacket(rawInput: unknown, readers: PacketRead
     const ref = source.kind === "repo_file" ? `${source.repo}:${source.path}` : source.kind === "meta_repo_file" ? `meta:${source.path}` : `${source.sourceId}:${source.itemRef}`;
     // A repository name with a colon would make `a:b` + `c` and `a` + `b:c` the same ref.
     if (!PlainRef.safeParse(ref).success || (source.kind !== "mcp_item" && !plainPath(source.path)) || (source.kind === "repo_file" && source.repo.includes(":"))) { leave(source.kind, ref, "invalid_ref"); continue; }
+    if (source.kind === "mcp_item" && isOriginItem(input.origin, source)) { leave(source.kind, ref, "conversation"); continue; }
     if (seen.has(ref)) { leave(source.kind, ref, "duplicate"); continue; }
     seen.add(ref);
     if (documents.length >= DESIGN_REVIEW_PACKET_ITEMS_MAX) { leave(source.kind, ref, "item_cap"); continue; }
@@ -268,7 +271,7 @@ export function mcpItemReaderOf(
   options: { sources: readonly ContextSource[]; now: () => number; newRequestId: () => string } & PacketMcpOptions,
 ): PacketReaders["fetchMcpItem"] {
   return async (input) => {
-    const planned = packetMcpCall(options.sources, input, options.argumentsFor === undefined ? {} : { argumentsFor: options.argumentsFor });
+    const planned = packetMcpCall(options.sources, input, { ...(options.argumentsFor === undefined ? {} : { argumentsFor: options.argumentsFor }), ...(options.origin === undefined ? {} : { origin: options.origin }) });
     if (!planned.ok) return { ok: false, reason: planned.reason };
     const answer = await call({ requestId: options.newRequestId(), tool: planned.tool, arguments: planned.arguments });
     if (answer.status !== "OK") return { ok: false };
