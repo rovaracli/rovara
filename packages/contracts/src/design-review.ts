@@ -148,10 +148,16 @@ export const DesignFindingSchema = z.object({
   section: DesignSectionSchema,
   text: z.string().min(1).max(500),
   citations: z.array(DesignCitationSchema).min(1).max(5),
-  fromReviewers: z.array(ReviewerRoleSchema).min(1).max(DESIGN_REVIEW_REVIEWERS_MAX),
-  rawIds: z.array(z.string().min(1).max(64)).min(1).max(DESIGN_REVIEW_REVIEWERS_MAX * 15),
+  /** "rovara": a finding the broker adds itself with no model involved (a requirement with no §3 section, a design over the size cap). Absent means "reviewers". */
+  origin: z.enum(["reviewers", "rovara"]).optional(),
+  fromReviewers: z.array(ReviewerRoleSchema).max(DESIGN_REVIEW_REVIEWERS_MAX),
+  rawIds: z.array(z.string().min(1).max(64)).max(DESIGN_REVIEW_REVIEWERS_MAX * 15),
   fingerprint: Digest,
-}).strict();
+}).strict().superRefine((finding, context) => {
+  const byRovara = finding.origin === "rovara";
+  if (byRovara && (finding.fromReviewers.length > 0 || finding.rawIds.length > 0)) context.addIssue({ code: "custom", path: ["origin"], message: "a finding Rovara adds names no reviewer" });
+  if (!byRovara && (finding.fromReviewers.length === 0 || finding.rawIds.length === 0)) context.addIssue({ code: "custom", path: ["fromReviewers"], message: "a reviewer finding names its reviewers and raw findings" });
+});
 export type DesignFinding = z.infer<typeof DesignFindingSchema>;
 
 export const DESIGN_QUESTION_IDS = ["q1", "q2", "q3"] as const;

@@ -78,6 +78,14 @@ describe("design review contracts", () => {
     expect(DesignFindingSchema.parse({ ...finding, citations: [code, { kind: "source", ref: "mcp:wiki/page-1", digest }] }).citations).toHaveLength(2);
   });
 
+  it("carries a finding Rovara adds itself, naming no reviewer, and refuses a reviewer finding with none", () => {
+    const own = { ...finding, origin: "rovara", fromReviewers: [], rawIds: [] };
+    expect(DesignFindingSchema.parse(own)).toEqual(own);
+    expect(DesignFindingSchema.safeParse({ ...own, fromReviewers: ["critic"] }).success).toBe(false);
+    expect(DesignFindingSchema.safeParse({ ...finding, fromReviewers: [] }).success).toBe(false);
+    expect(DesignFindingSchema.safeParse({ ...finding, rawIds: [] }).success).toBe(false);
+  });
+
   it("records a reviewer run, and keeps the paraphrase for the comprehension reviewer only", () => {
     expect(ReviewerRunSchema.parse(run)).toEqual(run);
     expect(ReviewerRunSchema.safeParse({ ...run, paraphrase: "It adds webhooks." }).success).toBe(false);
