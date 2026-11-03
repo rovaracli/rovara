@@ -130,9 +130,14 @@ export class SavedEnvImages extends Construct {
       this.kmsKeyId = props.kmsKeyArn.slice(props.kmsKeyArn.lastIndexOf("/") + 1);
       // The role may use the customer's key through ECR to create the grant. Its identity policy carries the right; the key policy (the statements printed below) opens the key to the account's IAM policies for
       // this one role, and works before the role exists (a named principal that does not exist yet is refused by KMS; a condition on aws:PrincipalArn is not).
+      // Two statements (SV-2): the grant-only condition key GrantIsForAWSResource never matches a DescribeKey request.
       this.createRole.addToPolicy(new iam.PolicyStatement({
-        sid: "CustomerKeyGrantForEcr", actions: ["kms:CreateGrant", "kms:DescribeKey"], resources: [props.kmsKeyArn],
+        sid: "CustomerKeyGrantForEcr", actions: ["kms:CreateGrant"], resources: [props.kmsKeyArn],
         conditions: { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` }, Bool: { "kms:GrantIsForAWSResource": "true" } },
+      }));
+      this.createRole.addToPolicy(new iam.PolicyStatement({
+        sid: "CustomerKeyDescribeForEcr", actions: ["kms:DescribeKey"], resources: [props.kmsKeyArn],
+        conditions: { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` } },
       }));
       new CfnOutput(this, "KmsKeyPolicyStatements", {
         description: "Add these statements to the DEDICATED saved environment images key policy (the key must be used for nothing else): ECR's creation role may create the grant ECR uses, only through ECR, and no other principal may create a grant.",
@@ -208,16 +213,26 @@ export class SavedEnvImages extends Construct {
     return `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:role${environmentRolePath(this.envName)}${savedEnvCreateRoleName(this.envName)}`;
   }
 
-  /** The key statements for ECR's creation role: it may create the one grant ECR uses, through ECR, and nobody else may create any grant. */
+  /**
+   * The key statements for ECR's creation role: it may create the one grant ECR uses and describe the key, both only through ECR, and nobody else may create any grant.
+   * Two allow statements, not one (SV-2): kms:GrantIsForAWSResource is a condition key of the grant actions only (CreateGrant, ListGrants, RevokeGrant); a DescribeKey request does not carry it,
+   * so a Bool condition on it never matches DescribeKey. Each action gets exactly the conditions that apply to it.
+   */
   private createRoleKeyStatements(createRoleArn: string, beforeTheRoleExists: boolean): Array<Record<string, unknown>> {
-    const viaEcr = { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` }, Bool: { "kms:GrantIsForAWSResource": "true" } };
+    const viaEcr = { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` };
+    // Before the role exists the principal is the account root narrowed by aws:PrincipalArn (KMS refuses a named principal that does not exist yet); after, the role itself.
+    const who = beforeTheRoleExists
+      ? { principal: { AWS: `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:root` }, only: { ArnEquals: { "aws:PrincipalArn": createRoleArn } } }
+      : { principal: { AWS: createRoleArn }, only: {} };
     return [
-      beforeTheRoleExists
-        ? {
-          Sid: "CreationRoleGrantForEcr", Effect: "Allow", Principal: { AWS: `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:root` },
-          Action: ["kms:CreateGrant", "kms:DescribeKey"], Resource: "*", Condition: { ...viaEcr, ArnEquals: { "aws:PrincipalArn": createRoleArn } },
-        }
-        : { Sid: "CreationRoleGrantForEcr", Effect: "Allow", Principal: { AWS: createRoleArn }, Action: ["kms:CreateGrant", "kms:DescribeKey"], Resource: "*", Condition: viaEcr },
+      {
+        Sid: "CreationRoleGrantForEcr", Effect: "Allow", Principal: who.principal, Action: ["kms:CreateGrant"], Resource: "*",
+        Condition: { StringEquals: viaEcr, Bool: { "kms:GrantIsForAWSResource": "true" }, ...who.only },
+      },
+      {
+        Sid: "CreationRoleDescribeForEcr", Effect: "Allow", Principal: who.principal, Action: ["kms:DescribeKey"], Resource: "*",
+        Condition: { StringEquals: viaEcr, ...who.only },
+      },
       {
         Sid: "DenyOtherGrants", Effect: "Deny", Principal: "*", Action: ["kms:CreateGrant"], Resource: "*",
         Condition: { ArnNotEquals: { "aws:PrincipalArn": createRoleArn } },

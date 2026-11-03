@@ -338,18 +338,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-02, merge of cloud/next fde551404 into feat/saved-env-build: the four named and foreign digests were retaken for cloud/next's SecondReviewEnabled variable and the saved environment images together. Legacy did not move.
     // 2026-11-02, feat/saved-env-wire: the four named and foreign digests were retaken for TWO intended additions (the legacy digests did not move; named environments only): the broker's AGENTX_NAMES gains `sk` (the saved
     // environment images key's id: Ref SavedEnvImagesImagesKey...), and the Dispatcher function gains the plain variable SAVED_ENV_ENABLED (Ref SavedEnvEnabled), which it honours when it hands a rebuild job's lease to the worker.
+    // 2026-11-03, feat/saved-env-wire (SV-2): the four named and foreign digests were retaken after ONE intended change to the saved environment images key policy (the legacy digests did not move; named environments only):
+    // the creation role's single allow statement (CreateGrant and DescribeKey under a GrantIsForAWSResource condition, which a DescribeKey request never matches) became two, CreationRoleGrantForEcr (CreateGrant, both
+    // conditions) and CreationRoleDescribeForEcr (DescribeKey, ViaService ecr only). DenyOtherGrants did not change. The named-templates snapshot shows the same single change.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "f79dad27af5b121e428a3a20dfd6207a0951abb4708ccf1e2531a8f7fd6460f6",
-        withoutRoute: "b8c8b9f476528724e2e598d9ee2a9bf8acefe2ca145d06b3aff99ffb377a7305",
+        withRoute: "a21ef9e1a3922d85f16ae2216276d1a5738350ac8e5313f041b40c8bd746b6f4",
+        withoutRoute: "a84e7841a4992d6cb9a39074d1ae35174825dfb3004ca50fdc24ebbcb336c8a2",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "3c5177b46e1d94e5f7eab8124975f00cd88bb6fd5841bd74983d39a12a7e4411",
-        withoutRoute: "89c0414b575fdd7ff8df9d3100a4d5c2e869416454a2c71bb6e05f47e32f9de2",
+        withRoute: "013ae1cebd3d969425c41f8031eecf972e2990e9c184c8d5b49075c9fce82708",
+        withoutRoute: "4148e1d4fe46e1770cf248e7c5b073e63fccbfcf11039049ee3de2f372b211d9",
       },
       {
         label: "legacy",

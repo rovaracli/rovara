@@ -10392,10 +10392,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Sid": "DenyDestroy",
             },
             {
-              "Action": [
-                "kms:CreateGrant",
-                "kms:DescribeKey",
-              ],
+              "Action": "kms:CreateGrant",
               "Condition": {
                 "Bool": {
                   "kms:GrantIsForAWSResource": "true",
@@ -10426,6 +10423,36 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
               "Resource": "*",
               "Sid": "CreationRoleGrantForEcr",
+            },
+            {
+              "Action": "kms:DescribeKey",
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "ecr.",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ".amazonaws.com",
+                      ],
+                    ],
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "SavedEnvImagesCreateRole30347FD6",
+                    "Arn",
+                  ],
+                },
+              },
+              "Resource": "*",
+              "Sid": "CreationRoleDescribeForEcr",
             },
             {
               "Action": "kms:CreateGrant",
