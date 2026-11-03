@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const os = require("node:os");
 const { tryConnect } = require("../lib/attempt.js");
 const { ipv6Targets } = require("../lib/targets.js");
+const { setting } = require("../lib/fixture.js");
 
 test("no public IPv6 address can be reached", async () => {
   const reached = [];
@@ -14,7 +15,7 @@ test("no public IPv6 address can be reached", async () => {
 });
 
 test("no global IPv6 address is configured on any interface", () => {
-  if (process.env.ESCAPE_SKIP_IFACES === "1") return;
+  if (setting("ESCAPE_SKIP_IFACES") === "1") return;
   const global = [];
   for (const [name, list] of Object.entries(os.networkInterfaces())) {
     for (const entry of list || []) {

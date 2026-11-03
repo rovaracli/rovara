@@ -34,6 +34,7 @@ function query(databaseUrl, sql, { timeoutMs = 10_000 } = {}) {
     let clientFirstBare = "";
     let expectedServerSignature = "";
     let settled = false;
+    let sent = false;
     const finish = (error) => { if (settled) return; settled = true; socket.destroy(); if (error) reject(error); else resolve(rows); };
     socket.setTimeout(timeoutMs, () => finish(new Error("the database did not answer in time")));
     socket.once("error", finish);
@@ -68,8 +69,8 @@ function query(databaseUrl, sql, { timeoutMs = 10_000 } = {}) {
               if (body.subarray(4).toString() !== `v=${expectedServerSignature}`) throw new Error("the server's signature is wrong");
             } else if (code !== 0) throw new Error(`unsupported authentication method ${code}`);
           } else if (type === "Z") {
-            if (rows.sent) finish();
-            else { rows.sent = true; socket.write(message("Q", Buffer.from(`${sql}\0`))); }
+            if (sent) finish();
+            else { sent = true; socket.write(message("Q", Buffer.from(`${sql}\0`))); }
           } else if (type === "D") {
             const columns = body.readInt16BE(0);
             let at = 2;
