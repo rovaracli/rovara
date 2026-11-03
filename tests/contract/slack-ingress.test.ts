@@ -307,6 +307,45 @@ describe("Slack request signatures", () => {
     expect(queue).toHaveLength(0);
   });
 
+  describe("what a rejected request tells the log", () => {
+    const rejected = (logs: ReturnType<typeof harness>["logs"]) => logs.filter((entry) => entry.event === "request.rejected");
+
+    it("names the unverified app and team ids, the retry number and the clock skew, and nothing of the body or the signature", async () => {
+      const { handler, logs } = harness();
+      const request = signedEvent(mention({ teamId: "T0ABCDEF123" }), { timestamp: nowSeconds - 600, signature: "v0=deadbeefsignaturemarker" });
+      const body = JSON.parse(request.body) as Record<string, unknown>;
+      request.body = JSON.stringify({ ...body, api_app_id: "A0APPID1234" });
+      Object.assign(request.headers, { "X-Slack-Retry-Num": "2" });
+      expect((await send(handler, request)).status).toBe(401);
+      expect(rejected(logs)).toEqual([{ event: "request.rejected", fields: { reason: "invalid_signature", unverifiedApiAppId: "A0APPID1234", unverifiedTeamId: "T0ABCDEF123", slackRetryNum: 2, clockSkewSeconds: 600 } }]);
+      const text = JSON.stringify(logs);
+      expect(text).not.toContain("fix the navigation bug");
+      expect(text).not.toContain("deadbeefsignaturemarker");
+    });
+
+    it("reads the ids of a form body, and reports a request from the future as negative skew", async () => {
+      const { handler, logs } = harness();
+      const request = signedEvent(mention(), { timestamp: nowSeconds + 90, signature: "v0=bad" });
+      request.body = "api_app_id=A0FORM12345&team_id=T0FORM12345&text=secret+words";
+      expect((await send(handler, request)).status).toBe(401);
+      expect(rejected(logs)[0]?.fields).toEqual({ reason: "invalid_signature", unverifiedApiAppId: "A0FORM12345", unverifiedTeamId: "T0FORM12345", clockSkewSeconds: -90 });
+      expect(JSON.stringify(logs)).not.toContain("secret");
+    });
+
+    it("drops an id that is not a short upper-case id, and logs no skew when the timestamp is not a number", async () => {
+      const { handler, logs } = harness();
+      const request = signedEvent(mention(), { signature: "v0=bad" });
+      request.body = JSON.stringify({ api_app_id: "a0lowercase", team_id: "T".repeat(33), type: "event_callback" });
+      Object.assign(request.headers, { "X-Slack-Request-Timestamp": "12x", "X-Slack-Retry-Num": "many" });
+      expect((await send(handler, request)).status).toBe(401);
+      expect(rejected(logs)[0]?.fields).toEqual({ reason: "invalid_signature" });
+      const notJson = signedEvent(mention(), { signature: "v0=bad" });
+      notJson.body = "not json at all {";
+      expect((await send(handler, notJson)).status).toBe(401);
+      expect(rejected(logs)[1]?.fields).toMatchObject({ reason: "invalid_signature", clockSkewSeconds: 0 });
+    });
+  });
+
   it("answers Slack's URL verification challenge", async () => {
     const { handler } = harness();
     const response = await send(handler, signedEvent({ type: "url_verification", challenge: "challenge-value" }));
