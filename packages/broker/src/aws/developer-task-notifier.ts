@@ -16,7 +16,9 @@ import { adminChangeExpiredMessage, adminChangeMessage, adminChangeOutcomeMessag
 import { loadWorkflowDocument } from "../developer/plan-artifacts.js";
 import { PLAN_UNREADABLE_CATEGORIES, planCheckSummary, planUnreadableCategory } from "../developer/plan-check-summary.js";
 import { SELF_CHECK_NOT_APPLICABLE, loadPlanSelfCheck, planRevisionsUsed, type PlanSelfCheckView } from "../developer/plan-self-check.js";
-import { readStream, type Notice, type StreamRecord } from "../developer/notifications.js";
+import { designWaitArms, readStream, type Notice, type StreamRecord } from "../developer/notifications.js";
+import { designWaitArmOf, designWaitNotifyKey } from "../design-review/wait-rows.js";
+import { designWaitWords } from "../design-review/wait-words.js";
 import { CANCELLED_REPLY, CLOSED_REPLY, READY_REPLY, endedReply, modeReply, pullRequestReply, setupFailedReply, startMessage } from "../developer/share-messages.js";
 import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
 import { answeredWorkflowCard, cleanLine, documentSummaryLines, feedbackReviewFailedMessage, planReviewLink, slackSectionTexts, slackText, workflowDocumentType, workflowMessage, workflowMessageKey, type WorkflowMessageContext } from "../developer/workflow-messages.js";
@@ -80,7 +82,7 @@ class CanvasCloseoutPending extends Error {
 /** 30, 60, 120, 240, 480, then 900 seconds, by the delivery attempt that failed. */
 export const retryDelaySeconds = (attempt: number): number => Math.min(900, 30 * 2 ** Math.max(0, Math.min(attempt - 1, 5)));
 
-const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report", "spec_changed", "spec_hold", "settings_proof"]);
+const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report", "spec_changed", "spec_hold", "settings_proof", "design_wait"]);
 
 class PeopleDeliveryRetry extends Error {
   constructor(readonly attempt: number) { super("People notification delivery should retry"); this.name = "PeopleDeliveryRetry"; }
@@ -373,6 +375,7 @@ function parseNotice(body: string): Notice | undefined {
       && (value.kind !== "canvas_closeout" || (value.manifestDigest === undefined || /^[a-f0-9]{64}$/.test(value.manifestDigest))
         && (value.expectedWorkflowRevision === undefined || Number.isSafeInteger(value.expectedWorkflowRevision) && value.expectedWorkflowRevision > 0))
       && (value.workflowRevision === undefined || Number.isSafeInteger(value.workflowRevision) && value.workflowRevision > 0)
+      && (value.kind !== "design_wait" || (value.workflowRevision !== undefined && (value.designWaitStep === "24h" || value.designWaitStep === "72h" || value.designWaitStep === "parked" || value.designWaitStep === "closed")))
       ? value as Notice
       : undefined;
   } catch {
@@ -1458,6 +1461,51 @@ async function deliverChatGptFallback(deps: NotifierDependencies, notice: Notice
   return "posted";
 }
 
+const DESIGN_WAIT_KINDS = new Set(["answers", "cost", "decision"]);
+const DESIGN_WAIT_AUDIENCES = new Set(["normal", "approver_left", "nobody_eligible", "unreadable"]);
+const SLACK_USER_ID = /^[UW][A-Z0-9]{2,20}$/;
+
+/**
+ * DR10: a design review that waits on people has a reminder (24 h, 72 h), its park or its close to say. The NOTIFY row the broker's sweep wrote holds the codes and the people to tell; the words are fixed (`design-review/wait-words.ts`),
+ * with the task's title and the names made safe here. Told once: each direct message and the thread line have a marker of their own, put after the post, so a retry sends only what was not sent. A notice for a step the task has moved
+ * past (a person answered, or decided, meanwhile) is dropped: the workflow's revision is the row's.
+ */
+async function deliverDesignWait(deps: NotifierDependencies, notice: Notice): Promise<string> {
+  const { taskId, workflowRevision, designWaitStep: step } = notice;
+  if (taskId === undefined || workflowRevision === undefined || step === undefined) return "invalid";
+  const row = await getItem<Record<string, unknown>>(deps, designWaitNotifyKey(taskId, workflowRevision, step));
+  if (row === undefined || row.entityType !== "DESIGN_WAIT_NOTIFY" || row.taskId !== taskId || row.workflowRevision !== workflowRevision || row.step !== step
+    || !DESIGN_WAIT_KINDS.has(String(row.waitKind)) || !DESIGN_WAIT_AUDIENCES.has(String(row.audience)) || !Array.isArray(row.dm) || !Array.isArray(row.asked)) return "invalid";
+  const task = await noticeTask(deps, notice);
+  if (task === undefined || task.workflow?.revision !== workflowRevision) return "stale";
+  const page = taskPageUrl(deps, taskId);
+  const names = (row.asked as Array<{ name?: unknown }>).flatMap((person) => typeof person.name === "string" ? [escapedLine(person.name, 40)] : []).slice(0, 8);
+  const text = designWaitWords({
+    step, kind: row.waitKind as "answers" | "cost" | "decision", audience: row.audience as "normal" | "approver_left" | "nobody_eligible" | "unreadable",
+    title: escapedLine(task.title, 80), people: names, link: page === undefined ? undefined : `<${slackText(page)}|Open the task>`,
+  });
+  let posted = 0;
+  for (const [index, channel] of (row.dm as unknown[]).entries()) {
+    if (typeof channel !== "string" || !SLACK_USER_ID.test(channel)) continue;
+    const marker = noticeMarker(taskId, `${notice.id}:dm${String(index)}`);
+    if ((await getItem<NoticeMarker>(deps, marker))?.deliveredAt !== undefined) continue;
+    await deps.post({ channel, text });
+    await putMarker(deps, marker);
+    posted += 1;
+  }
+  // A shared task's thread hears it too, once, where people already look.
+  const share = task.share;
+  if (share?.threadTs !== undefined) {
+    const marker = noticeMarker(taskId, `${notice.id}:thread`);
+    if ((await getItem<NoticeMarker>(deps, marker))?.deliveredAt === undefined) {
+      await deps.post({ channel: share.channelId, threadTs: share.threadTs, text });
+      await putMarker(deps, marker);
+      posted += 1;
+    }
+  }
+  return posted > 0 ? "posted" : "delivered";
+}
+
 async function deliver(deps: NotifierDependencies, notice: Notice): Promise<Outcome> {
   if (notice.kind === "workflow_refusal") return deliverRefusal(deps, notice);
   const task = await noticeTask(deps, notice);
@@ -1713,6 +1761,12 @@ export function createNotifierHandler(deps: NotifierDependencies) {
       // Named by event ID and name only: a record's content could hold a task's text.
       for (const record of skipped) deps.log({ event: "developer_notifier.record_unreadable", ...record });
       if (notices.length > 0) await deps.enqueue(notices);
+      // DR10: a task whose design review waits on people is armed for the broker's wait sweep. After the notices, so a failed write retries the batch without losing them (a notice's id makes its repeat harmless).
+      for (const arm of designWaitArms(records as StreamRecord[])) {
+        const update = designWaitArmOf({ tableName: deps.tableName, taskId: arm.taskId, orgId: arm.orgId, workflow: arm.workflow, nowMs: deps.now() });
+        if (update === undefined) continue;
+        try { await deps.documentClient.send(new UpdateCommand(update as ConstructorParameters<typeof UpdateCommand>[0])); } catch (error) { if (!isConditional(error)) throw error; }
+      }
       return { batchItemFailures: [] };
     }
     const batchItemFailures: Array<{ itemIdentifier: string }> = [];
@@ -1726,6 +1780,7 @@ export function createNotifierHandler(deps: NotifierDependencies) {
         const outcome = notice.kind === "people_dm" ? await deliverPeopleNotification(deps, notice)
           : notice.kind === "settings_proof" ? await deliverSettingsProof(deps, notice)
           : notice.kind === "agent_report" ? await deliverAgentReport(deps, notice)
+          : notice.kind === "design_wait" ? await deliverDesignWait(deps, notice)
           : notice.kind === "admin_change_dm" || notice.kind === "admin_change_outcome" || notice.kind === "admin_change_expiry" ? await deliverAdminChange(deps, notice) : await deliver(deps, notice);
         deps.log({ event: "developer_notifier.notice", kind: notice.kind, noticeId: notice.id, outcome });
       } catch (error) {

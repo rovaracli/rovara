@@ -62,6 +62,7 @@ import { ROVARA_CODE_NAME } from "./model-access.js";
 import { learnModelNotEnabled } from "../../model-sources/learn-not-enabled.js";
 import { planCritiqueOutcome, planRunEstimate, spendLimitKind, storePlanAnswer, type PlannerReplies } from "./plan-answers.js";
 import { requirePullRequest } from "./records.js";
+import { designWaitSweepOf } from "../../design-review/wait-wiring.js";
 import { githubScopeOf } from "./scope-helpers.js";
 import { liveSteerChangeItems, liveSteerCodingStop } from "../../agent-sessions/live-steer-revise.js";
 import { PLAN_EVIDENCE_SWEEP_LIMIT, WORKFLOW_DISPATCH_SWEEP_LIMIT } from "./sweeps-and-readiness.js";
@@ -76,6 +77,8 @@ import { verifyWorkflowE2EEvidence, workflowE2EPresentationDetailed, type Workfl
  */
 export async function retryDueWorkflowDispatches(dependencies: AwsBrokerDependencies): Promise<{ attempted: number; dispatched: number }> {
   await sweepGroundingHolds(dependencies);
+  // DR10: reminders, park and close for design reviews waiting on people (reads nothing while the `dr` switch is off). A failure here never holds back the dispatch rows.
+  await designWaitSweepOf(dependencies).catch((error: unknown) => console.log(JSON.stringify({ component: "broker", event: "design_review.wait_sweep_failed", error: error instanceof Error ? error.name : "unknown" })));
   const page = await dependencies.documentClient.send(new QueryCommand({
     TableName: dependencies.tableName,
     IndexName: WORKFLOW_DISPATCH_DUE_INDEX.name,

@@ -35,7 +35,7 @@ import {
   WorkflowDesignReviewSchema,
   type DesignFinding, type DesignReviewActor, type DesignReviewApproval, type DesignReviewRound, type DesignReviewTier, type FindingResolution, type ReviewerRun, type WorkflowDesignReview,
 } from "./design-review.js";
-import { addDesignUsd, designReviewCapRoom, designRoundHasResult, designRoundResolved, designReviewRevisionsUsed, resolutionOf } from "./design-review-state.js";
+import { addDesignUsd, designReviewCapRoom, designRoundHasResult, designRoundResolved, designReviewRevisionsUsed, designWaitOf, resolutionOf, type DesignWait } from "./design-review-state.js";
 import { redactText } from "./redaction.js";
 import { ActorIdSchema, WorkflowArtifactSchema } from "./task-workflow.js";
 import { WorkflowSnapshotSchema, WorkflowTransitionError, type WorkflowArtifact, type WorkflowSnapshot } from "./task-workflow-node.js";
@@ -520,43 +520,50 @@ export function answerDesignQuestions(
   return moved(current, { stage: "PLAN", state: "READY", review: { ...answered, status: "resolving", rounds: withLastRound(review, record) }, now: input.now });
 }
 
-// ---- no answer, no approval (3.7 / Q5): park at 7 days, close at 30 days parked, resume on an answer. Reminders are DR10; none of these answers, approves or spends.
+// ---- no answer, no approval (3.7 / Q5): park at 7 days, close at 30 days parked, resume on a person's word. The reminders are DR10's sweep (broker); none of these answers, approves or spends. They work on all three waits on
+// people (`designWaitOf`): the question card, the cost hold and the design card's decision. A wait for answers keeps its record from the start; the other two get one when they are parked, bound to the revision it made.
 
-function waitingForAnswers(currentInput: unknown, expectedRevision: number): { current: WorkflowSnapshot; review: WorkflowDesignReview; since: number; parkedAt: number | undefined } {
-  const { current, review } = located(currentInput, expectedRevision, { stage: "PLAN", states: ["WAITING"], statuses: ["waiting_answers"] });
-  const wait = review.waiting;
-  if (wait === undefined || wait.closedAt !== undefined) throw fail("the workflow is not waiting for answers");
-  return { current, review, since: Date.parse(wait.since), parkedAt: wait.parkedAt === undefined ? undefined : Date.parse(wait.parkedAt) };
+function waitingOnPeople(currentInput: unknown, expectedRevision: number): { current: WorkflowSnapshot; review: WorkflowDesignReview; wait: DesignWait } {
+  const current = parsed(currentInput);
+  if (current.revision !== expectedRevision) throw fail("workflow revision is stale");
+  const wait = designWaitOf(current);
+  if (wait === undefined || current.designReview === undefined) throw fail("the workflow is not at that step of the design review");
+  return { current, review: current.designReview, wait };
 }
 
+/** The wait record of the snapshot a move is about to make. A wait for answers has none of the revision; the others name the new revision, so they are read only while the workflow stays there. */
+const waitRecord = (wait: DesignWait, current: WorkflowSnapshot, record: NonNullable<WorkflowDesignReview["waiting"]>): NonNullable<WorkflowDesignReview["waiting"]> =>
+  wait.kind === "answers" ? record : { ...record, revision: current.revision + 1 };
+
 /**
- * The wait for answers has lasted DESIGN_REVIEW_PARK_AFTER_MS (7 days): the task is parked ("Paused: waiting for the design decision"). The stage and state do not change; the record says it is parked, so the
- * broker releases the model keys and nothing spends. Refused before the time is up. Any eligible person can then resume it, or answer, from the card.
+ * The wait on people has lasted DESIGN_REVIEW_PARK_AFTER_MS (7 days): the task is parked ("Paused: waiting for the design decision"). The stage and state do not change; the record says it is parked, so the
+ * broker releases the model keys and nothing spends. Refused before the time is up. Any eligible person can then resume it, or answer or decide, from the card.
  */
 export function parkDesignReview(currentInput: unknown, input: { expectedRevision: number; now: string }): WorkflowSnapshot {
-  const { current, review, since, parkedAt } = waitingForAnswers(currentInput, input.expectedRevision);
-  if (parkedAt !== undefined) throw fail("the design review is already parked");
-  if (!(Date.parse(input.now) - since >= DESIGN_REVIEW_PARK_AFTER_MS)) throw fail("the wait for answers has not lasted long enough to park");
-  return moved(current, { stage: "PLAN", state: "WAITING", review: { ...review, waiting: { ...review.waiting!, parkedAt: input.now } }, now: input.now });
+  const { current, review, wait } = waitingOnPeople(currentInput, input.expectedRevision);
+  if (wait.parkedAt !== undefined) throw fail("the design review is already parked");
+  if (!(Date.parse(input.now) - Date.parse(wait.since) >= DESIGN_REVIEW_PARK_AFTER_MS)) throw fail("the wait for answers has not lasted long enough to park");
+  const waiting = waitRecord(wait, current, { since: wait.since, ...(wait.resumedBy === undefined ? {} : { resumedBy: wait.resumedBy }), parkedAt: input.now });
+  return moved(current, { stage: current.stage, state: "WAITING", review: { ...review, waiting }, now: input.now });
 }
 
-/** A person resumes a parked design review without answering: it waits for the answers again and the clock starts over. Who resumed it is recorded. */
+/** A person resumes a parked design review without answering or deciding: it waits again and the clock starts over. Who resumed it is recorded. */
 export function resumeParkedDesignReview(currentInput: unknown, input: { expectedRevision: number; by: { actorId: string }; now: string }): WorkflowSnapshot {
-  const { current, review, parkedAt } = waitingForAnswers(currentInput, input.expectedRevision);
-  if (parkedAt === undefined) throw fail("the design review is not parked");
+  const { current, review, wait } = waitingOnPeople(currentInput, input.expectedRevision);
+  if (wait.parkedAt === undefined) throw fail("the design review is not parked");
   const by = actorOf(input.by);
-  return moved(current, { stage: "PLAN", state: "WAITING", review: { ...review, waiting: { since: input.now, resumedBy: by } }, now: input.now });
+  return moved(current, { stage: current.stage, state: "WAITING", review: { ...review, waiting: waitRecord(wait, current, { since: input.now, resumedBy: by }) }, now: input.now });
 }
 
 /**
- * Nobody answered for DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS (30 days parked): the task is closed as "not decided" (CLOSED/COMPLETE, outcome CLOSED). The design, findings and questions stay on the record.
+ * Nobody answered or decided for DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS (30 days parked): the task is closed as "not decided" (CLOSED/COMPLETE, outcome CLOSED). The design, findings and questions stay on the record.
  * It records no decision and approves nothing. Refused before the time is up.
  */
 export function closeParkedDesignReview(currentInput: unknown, input: { expectedRevision: number; now: string }): WorkflowSnapshot {
-  const { current, review, parkedAt } = waitingForAnswers(currentInput, input.expectedRevision);
-  if (parkedAt === undefined) throw fail("the design review is not parked");
-  if (!(Date.parse(input.now) - parkedAt >= DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS)) throw fail("the design review has not been parked long enough to close");
-  const record = WorkflowDesignReviewSchema.safeParse({ ...review, waiting: { ...review.waiting!, closedAt: input.now } });
+  const { current, review, wait } = waitingOnPeople(currentInput, input.expectedRevision);
+  if (wait.parkedAt === undefined) throw fail("the design review is not parked");
+  if (!(Date.parse(input.now) - Date.parse(wait.parkedAt) >= DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS)) throw fail("the design review has not been parked long enough to close");
+  const record = WorkflowDesignReviewSchema.safeParse({ ...review, waiting: waitRecord(wait, current, { since: wait.since, ...(wait.resumedBy === undefined ? {} : { resumedBy: wait.resumedBy }), parkedAt: wait.parkedAt, closedAt: input.now }) });
   if (!record.success) throw fail("the design review record is invalid");
   return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED", blockReason: DESIGN_NOT_DECIDED_MESSAGE, designReview: record.data, updatedAt: input.now });
 }
