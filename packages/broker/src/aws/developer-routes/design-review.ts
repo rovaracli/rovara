@@ -391,7 +391,7 @@ async function approveOnPage(env: Env, taskId: string, body: { requestId: string
   const digest = projection.digests[card?.id ?? ""];
   if (card === undefined || digest === undefined) throw agentXError("NOT_FOUND", GONE);
   if (body.shownDigest !== digest) throw agentXError("CHANGE_STALE", DECISION_REFUSALS.stale.message);
-  const outcome = await designApproveHandler(approvePortsOf(env)).approve(env.caller, { card, item, requestId: body.requestId, shown: { cardId: card.id, digest }, ...(body.reason === undefined ? {} : { reason: body.reason }) } as never);
+  const outcome = await designApproveHandler(approvePortsOf(env)).approve(env.caller, { card, item, requestId: body.requestId, shown: { cardId: card.id, digest }, ...(body.reason === undefined ? {} : { reason: body.reason }) });
   if (outcome.kind === "done") return new StatusReply(200, { cardId: card.id, outcome: "approved" });
   if (outcome.kind === "needs_confirmation") return new StatusReply(202, { cardId: card.id, outcome: "needs_confirmation", confirmUrl: outcome.confirmUrl });
   const refusal = DECISION_REFUSALS[outcome.reason];

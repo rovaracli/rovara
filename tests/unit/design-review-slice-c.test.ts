@@ -25,8 +25,10 @@ const deps = { tableName: "state", orgId: ORG, learningAudit: capturingAuditDeps
 describe("the approval's transaction items", () => {
   it("stores the approval under the design's digest with the approver's words as data, and pins the membership generation", () => {
     const { items } = designApprovalItems(deps, { taskId: write().taskId!, digest: "c".repeat(64), write: write(), approver: { developerId: "a".repeat(64), name: "Omar" }, now: "2026-11-03T12:00:00.000Z" });
-    expect(items[0]).toMatchObject({ Put: { Item: { sk: `DESIGN_APPROVAL#${"c".repeat(64)}`, approverLabel: "Omar", tier: "high", openBlockers: 1, proofReason: "Reviewed with the team.", proofLine: expect.stringContaining("open blocker") } } });
-    expect(items[1]).toMatchObject({ ConditionCheck: { ConditionExpression: expect.stringContaining("approvalMembershipVersion = :approvalMembershipVersion"), ExpressionAttributeValues: { ":approvalMembershipVersion": 3 } } });
+    expect(items[0]).toMatchObject({ Put: { Item: { sk: `DESIGN_APPROVAL#${"c".repeat(64)}`, approverLabel: "Omar", tier: "high", openBlockers: 1, proofReason: "Reviewed with the team." } } });
+    expect((items[0] as unknown as { Put: { Item: { proofLine: string } } }).Put.Item.proofLine).toContain("open blocker");
+    expect(items[1]).toMatchObject({ ConditionCheck: { ExpressionAttributeValues: { ":approvalMembershipVersion": 3 } } });
+    expect(JSON.stringify(items[1])).toContain("approvalMembershipVersion = :approvalMembershipVersion");
     expect(items).toHaveLength(2);
   });
 
@@ -77,7 +79,7 @@ describe("the approve handler's friction needs the route to pass what was shown"
       const key = command.input.Key as Record<string, string>;
       return { Item: items.get(`${key.pk}|${key.sk}`) };
     } };
-    const store = dynamoDecisionStore({ documentClient: client, tableName: "state", now: () => 1_700_000_000_000 } as never);
+    const store = dynamoDecisionStore({ documentClient: client, tableName: "state", now: () => 1_700_000_000_000 });
     const who = { orgId: ORG, developerId: "a".repeat(64) };
     await store.recordDecision({ ...who, cardId: "approve_spend:t", kind: "approve_spend", risk: "low", outcome: "approved", reason: "raise_cap", requestId: "22222222-2222-4222-8222-222222222222", createdAt: "x", decidedAt: "y" });
     expect(await store.findDecision(who, "22222222-2222-4222-8222-222222222222")).toMatchObject({ reason: "raise_cap" });

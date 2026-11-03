@@ -20,7 +20,7 @@ import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { MAYA, OMAR, seedMembership, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { browserRequests } from "../support/browser-session.js";
 import { designApprovalKey } from "../../packages/broker/src/aws/developer-tasks/design-decision.js";
-import { designProofPortsOf, proofDesignContextOf } from "../../packages/broker/src/aws/developer-tasks/design-proof.js";
+import { proofDesignContextOf } from "../../packages/broker/src/aws/developer-tasks/design-proof.js";
 import { designSpecStateOf, specDesignLineOf } from "../../packages/broker/src/aws/developer-tasks/design-spec.js";
 import { designProofLine } from "../../packages/broker/src/design-review/proof-line.js";
 import { orgMetaKey } from "../../packages/contracts/src/index.js";
@@ -913,7 +913,7 @@ describe("slice C: the design review's routes", () => {
     }
     w.db.set({ ...(w.db.get(orgMetaKey(TEST_ORG)) as Record<string, unknown>), approvalMembershipVersion: 3, approvalTrackingSince: "2026-01-01T00:00:00.000Z" });
   };
-  const web = (w: World) => browserRequests(w as never);
+  const web = (w: World) => browserRequests(w);
   const designWith = (touches: string[]) => templateDesign("### 3.1 Retry\nR1: retry a timed-out payment once. R2: use the payment id as the idempotency key.", { touches });
   /** A review that ends on the person's card with the planner's blocker still open (its contest rested on a source alone, which the broker does not accept). */
   async function openBlockerCard(options: { touches?: string[]; capUsd?: number } = {}) {
@@ -955,7 +955,8 @@ describe("slice C: the design review's routes", () => {
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "RUNNING", reviewPhase: "IMPLEMENTATION_PLAN", decisions: [expect.anything(), expect.objectContaining({ decision: "APPROVE", actorRole: "TASK_OWNER" })] });
     const digest = sha256(designWith(["new_api"]));
-    expect(w.db.get(...Object.values(designApprovalKey(w.taskId, digest)) as [string, string])).toMatchObject({ approverId: MAYA.developerId, tier: "medium", mode: "requester", openBlockers: 1, proofReason: reason, proofLine: expect.stringContaining(reason) });
+    expect(w.db.get(...Object.values(designApprovalKey(w.taskId, digest)) as [string, string])).toMatchObject({ approverId: MAYA.developerId, tier: "medium", mode: "requester", openBlockers: 1, proofReason: reason });
+    expect((w.db.get(...Object.values(designApprovalKey(w.taskId, digest)) as [string, string]) as { proofLine: string }).proofLine).toContain(reason);
     // The PR's Proof line says it, and the spec is written from that design.
     const context = await proofDesignContextOf({ documentClient: w.db, tableName: "state", taskId: w.taskId, readArtifact: async (key) => w.s3.objects.get(key) ?? "" })(w.task().workflow);
     expect(context).toBeDefined();

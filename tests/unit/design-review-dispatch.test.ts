@@ -194,7 +194,7 @@ describe("the planner's answer to a round's findings", () => {
     const rig = (over: { workflow?: WorkflowSnapshot; notApproverIds?: string[]; members?: string[] } = {}) => {
       const commits: unknown[] = [];
       const handler = designAnswersHandler({
-        context: async () => ({ taskId: TASK_ID, requesterId: P.priya, workflow: over.workflow ?? waiting(), setting: markEffective(DESIGN_REVIEW_DEFAULT_SETTING), edition: undefined,
+        context: async () => ({ taskId: TASK_ID, requesterId: P.priya, workflow: over.workflow ?? waiting(), setting: markEffective(DESIGN_REVIEW_DEFAULT_SETTING), edition: undefined, touches: [],
           directory: { people, projectMemberIds: over.members ?? [P.own, P.max, P.priya, P.arjun], notApproverIds: over.notApproverIds ?? [] } }),
         commit: async (_caller, write) => { commits.push(write); return "done"; }, now: () => Date.parse(LATER),
       });

@@ -108,7 +108,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
           // Second review (`cr`): the model that gives the second opinion stopped qualifying, told to the company's owners and admins. Empty while `cr` is off.
           secondReviewEnabled(env) ? secondReviewNoticeItemsFor({ table, isAdmin: (person) => (person as DeveloperCaller).orgRole === "owner" || (person as DeveloperCaller).orgRole === "admin" }, who) : Promise.resolve([]),
           // Design review (`dr`): the design to approve, the cost question and the questions of the caller's own tasks that carry a review. Empty while `dr` is off.
-          designReviewEnabled(env) ? designReviewItemsFor(deps, who as DeveloperCaller) : Promise.resolve([]),
+          designReviewEnabled(env) ? designReviewItemsFor(deps, who) : Promise.resolve([]),
         ]);
         return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup, ...hosts, ...secondReviewNotices, ...designCards];
       },

@@ -95,7 +95,7 @@ export const DESIGN_REASON_NOT_ALLOWED_MESSAGE = "reason: a reason is taken only
 export function designApproveHandler<C extends DecisionCaller>(ports: DesignApprovePorts<C>): KindHandler<C> {
   return {
     approve: (caller, rawInput) => perform(async (): Promise<PerformOutcome> => {
-      const input = rawInput as DesignApproveInput;
+      const input = rawInput;
       const item = input.item;
       if (item.kind !== "approve_design") return { kind: "refused", reason: "unsupported" };
       const context = await ports.context(caller, item);

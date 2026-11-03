@@ -47,7 +47,7 @@ async function auditorIds(deps: Pick<DesignFactsDeps, "documentClient" | "tableN
  */
 export async function readDesignDirectory(deps: DesignFactsDeps, orgId: OrgId, project: string): Promise<DesignApproverDirectory> {
   const [people, rows, auditors] = await Promise.all([
-    readApproverRoster({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.signInTableName, now: deps.now }, { orgId, project }).catch(() => NOBODY),
+    readApproverRoster({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.signInTableName, now: () => deps.now() }, { orgId, project }).catch(() => NOBODY),
     listProjectMembers(deps.members, orgId, project).catch(() => undefined),
     auditorIds(deps, orgId).catch(() => undefined),
   ]);
@@ -87,7 +87,7 @@ export async function readLatestDesignText(workflow: Pick<WorkflowSnapshot, "art
  */
 export async function freshSignInOf(deps: Pick<DesignFactsDeps, "documentClient" | "tableName" | "signInTableName" | "now">, caller: { developerId: string; sessionId: string }): Promise<boolean> {
   try {
-    const store = new DeveloperSignInStore({ documentClient: deps.documentClient as never, tableName: deps.signInTableName, nameTableName: deps.tableName, now: deps.now });
+    const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.signInTableName, nameTableName: deps.tableName, now: () => deps.now() });
     const session = await store.getSession(caller.sessionId);
     return session !== undefined && session.developerId === caller.developerId && session.revokedAt === undefined && isFreshSignIn(session, deps.now());
   } catch { return false; }
