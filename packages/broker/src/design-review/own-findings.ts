@@ -88,7 +88,9 @@ const RANK: Record<DesignFinding["severity"], number> = { blocker: 0, major: 1, 
  */
 export function withOwnFindings(reviewerFindings: readonly DesignFinding[], own: readonly DesignFinding[]): { findings: DesignFinding[]; omitted: number } {
   const room = Math.max(0, DESIGN_REVIEW_FINDINGS_MAX - own.length);
-  const ordered = reviewerFindings.map((finding, index) => ({ finding, index })).sort((a, b) => RANK[a.finding.severity] - RANK[b.finding.severity] || a.index - b.index).map(({ finding }) => finding);
+  // N6: a reviewer finding that says what an own finding says (the same fingerprint) is folded into it, not added beside it: two findings of one round may not share a fingerprint, and injected text could steer a reviewer into copying one.
+  const ownPrints = new Set(own.map((finding) => finding.fingerprint));
+  const ordered = reviewerFindings.filter((finding) => !ownPrints.has(finding.fingerprint)).map((finding, index) => ({ finding, index })).sort((a, b) => RANK[a.finding.severity] - RANK[b.finding.severity] || a.index - b.index).map(({ finding }) => finding);
   const used = new Set(own.map((finding) => finding.id));
   const kept = ordered.slice(0, room).map((finding) => {
     if (!used.has(finding.id)) { used.add(finding.id); return finding; }
