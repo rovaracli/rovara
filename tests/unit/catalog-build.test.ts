@@ -346,13 +346,52 @@ describe("the real ports (against fake commands and a fake ECR; nothing is run)"
     expect(result).toEqual({ digest: sha256HexOf(indexManifest), children: [{ platform: "linux/arm64", digest: armChild }, { platform: "linux/amd64", digest: amdChild }] });
     expect(JSON.stringify(log)).not.toMatch(/password|AWS:|Basic /u);
   });
-  it("reads a single-platform image's platform from skopeo inspect", async () => {
-    const single = Buffer.from(JSON.stringify({ mediaType: "application/vnd.oci.image.manifest.v1+json" }));
-    const log: string[][] = [];
-    const port: CommandPort = { run: async (_file, args) => { log.push([...args]); return args.includes("--raw") ? single : Buffer.from(JSON.stringify({ Os: "linux", Architecture: "arm64" })); } };
-    const result = await skopeoMirrorPort({ commands: port, registry: "r.example.com", authFile: "/a" })({ id: "x@1", source: "s.example.com/x@sha256:" + digest, repositoryName: "rovara-catalog/staging/svc/x", expectedDigest: digest });
-    expect(result.children).toEqual([{ platform: "linux/arm64", digest: sha256HexOf(single) }]);
-    expect(log).toHaveLength(3);
+  describe("a single-platform image", () => {
+    const configBytes = Buffer.from(JSON.stringify({ architecture: "arm64", os: "linux", config: {} }));
+    const manifestWith = (config: Buffer | undefined): Buffer => Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: "application/vnd.oci.image.manifest.v1+json", ...(config === undefined ? {} : { config: { mediaType: "application/vnd.oci.image.config.v1+json", digest: `sha256:${sha256HexOf(config)}`, size: config.byteLength } }) }));
+    const mirror = (manifest: Buffer, served: Buffer, log: string[][] = []) => {
+      const port: CommandPort = {
+        run: async (_file, args) => {
+          log.push([...args]);
+          if (args[0] === "copy") return Buffer.alloc(0);
+          if (args.includes("--config")) return served;
+          if (args.includes("--raw")) return manifest;
+          throw new Error("a parsed (non-raw) inspect must not be used");
+        },
+      };
+      return skopeoMirrorPort({ commands: port, registry: "r.example.com", authFile: "/a" })({ id: "x@1", source: "s.example.com/x@sha256:" + digest, repositoryName: "rovara-catalog/staging/svc/x", expectedDigest: digest });
+    };
+
+    it("takes its platform from the config blob its hashed manifest names, fetched raw, never from a second parsed inspect", async () => {
+      const manifest = manifestWith(configBytes);
+      const log: string[][] = [];
+      const result = await mirror(manifest, configBytes, log);
+      expect(result).toEqual({ digest: sha256HexOf(manifest), children: [{ platform: "linux/arm64", digest: sha256HexOf(manifest) }] });
+      expect(log).toHaveLength(3);
+      // copy, raw manifest, raw config blob: every inspect is raw.
+      expect(log[0]![0]).toBe("copy");
+      expect(log[1]).toEqual(["inspect", "--raw", "--authfile", "/a", `docker://r.example.com/rovara-catalog/staging/svc/x@sha256:${digest}`]);
+      expect(log[2]).toEqual(["inspect", "--raw", "--config", "--authfile", "/a", `docker://r.example.com/rovara-catalog/staging/svc/x@sha256:${digest}`]);
+      expect(log.filter((args) => args[0] === "inspect" && !args.includes("--raw"))).toEqual([]);
+    });
+    it("reads the architecture and os from the config, whichever they are", async () => {
+      for (const [os, architecture] of [["linux", "amd64"], ["linux", "arm64"], ["windows", "amd64"]] as const) {
+        const config = Buffer.from(JSON.stringify({ architecture, os }));
+        const manifest = manifestWith(config);
+        expect((await mirror(manifest, config)).children).toEqual([{ platform: `${os}/${architecture}`, digest: sha256HexOf(manifest) }]);
+      }
+    });
+    it("refuses a config that does not hash to the digest the manifest names (the registry answered for another image)", async () => {
+      const other = Buffer.from(JSON.stringify({ architecture: "amd64", os: "linux" }));
+      await expect(mirror(manifestWith(configBytes), other)).rejects.toThrow("does not hash");
+    });
+    it("reports no platform when the manifest names no config, or the config names no os or architecture", async () => {
+      expect((await mirror(manifestWith(undefined), configBytes)).children).toEqual([]);
+      const noArch = Buffer.from(JSON.stringify({ os: "linux" }));
+      expect((await mirror(manifestWith(noArch), noArch)).children).toEqual([]);
+      const wrongTypes = Buffer.from(JSON.stringify({ os: 1, architecture: ["arm64"] }));
+      expect((await mirror(manifestWith(wrongTypes), wrongTypes)).children).toEqual([]);
+    });
   });
   it("runs syft on the registry copy of ONE platform's child digest, with --platform and the credential directory in the environment", async () => {
     const { port, log } = commands(Buffer.from("{}"));
