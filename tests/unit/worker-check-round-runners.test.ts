@@ -7,9 +7,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkSandboxPlan, type CheckSandboxInput, type CheckSandboxPlan } from "../../packages/worker/src/check-sandbox.js";
 import { sealedContainerExec, runSealedCheckRound, withSealedCheckRound } from "../../packages/worker/src/check-round-runners.js";
+import { assertSealedNetworkMembers } from "../../packages/worker/src/check-round-runners.js";
 import { runNetworkAddresses, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName } from "../../packages/worker/src/run-network.js";
 import { buildServiceEnvironment, createRunDirectoryFiles, createServiceRedactor, type ServiceEnvironment } from "../../packages/worker/src/service-env.js";
-import type { HelperFiles } from "../../packages/worker/src/service-helpers.js";
+import { helperContainerName, type HelperFiles } from "../../packages/worker/src/service-helpers.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "../../packages/worker/src/git.js";
 import { createCheckRunners, mintSealedCheckOptions, planChecks, runChecks } from "../../packages/worker/src/verification/checks.js";
@@ -43,6 +44,9 @@ function environment(): ServiceEnvironment {
   });
 }
 function plan(): CheckSandboxPlan {
+  return checkSandboxPlan(planInput());
+}
+function planInput(): CheckSandboxInput {
   const addresses = runNetworkAddresses(SLOT);
   const input: CheckSandboxInput = {
     net: {
@@ -52,7 +56,7 @@ function plan(): CheckSandboxPlan {
     taskId: "t1", image: "worker:img", rootPath, maskedPaths: [], filesDir: files.directory, helpers: [{ alias: "postgres", address: runNetworkHelperIp(SLOT, 1) }], sinkholeIp: runNetworkHelperIp(SLOT, 0),
     workingSandboxName: WORK,
   };
-  return checkSandboxPlan(input);
+  return input;
 }
 
 interface ExecSeen { args: string[]; envFile?: { path: string; text: string; mode: number }; command: string[]; envFlags: string[] }
@@ -61,18 +65,38 @@ interface FakeOptions {
   answer?: (seen: ExecSeen) => { exitCode: number; stdout?: string; stderr?: string } | Promise<{ exitCode: number; stdout?: string; stderr?: string }>;
   removeFails?: boolean;
   startExit?: number;
+  /** Containers on the services network besides the DNS helper, the helper and the check sandbox: name and address. */
+  extraMembers?: Array<{ name: string; address: string }>;
+  /** What `network inspect` says instead of the real membership (an unreadable answer). */
+  inspectAnswer?: { exitCode: number; stdout: string };
+  /** The extra members only appear once the check sandbox is up. */
+  extraAfterStart?: boolean;
+  /** A check sandbox that is on the network at the wrong address. */
+  sandboxAddress?: string;
 }
 /** A docker that remembers the working sandbox's networks and whether the check sandbox is up, and logs every call in order. */
 function fakeDocker(sandboxName: string, options: FakeOptions = {}) {
   const calls: string[][] = [];
   const execs: ExecSeen[] = [];
   const state = { workingNetworks: [NET, "agentx-task"], sandboxUp: false };
+  const members = (): Record<string, { Name: string; IPv4Address: string }> => {
+    const addresses = runNetworkAddresses(SLOT);
+    const out: Record<string, { Name: string; IPv4Address: string }> = {
+      dns: { Name: `${NET}-dns`, IPv4Address: `${addresses.dnsHelperIp}/24` },
+      pg: { Name: helperContainerName({ name: NET }, "postgres"), IPv4Address: `${runNetworkHelperIp(SLOT, 1)}/24` },
+    };
+    if (state.workingNetworks.includes(NET)) out["work"] = { Name: WORK, IPv4Address: `${addresses.workingSandboxIp}/24` };
+    if (state.sandboxUp) out["check"] = { Name: sandboxName, IPv4Address: `${options.sandboxAddress ?? addresses.checkSandboxIp}/24` };
+    for (const [index, extra] of (options.extraAfterStart === true && !state.sandboxUp ? [] : options.extraMembers ?? []).entries()) out[`x${String(index)}`] = { Name: extra.name, IPv4Address: `${extra.address}/24` };
+    return out;
+  };
   const docker: DockerCli = {
     run: async (args) => {
       calls.push([...args]);
       const [verb, second] = args;
       if (verb === "network" && second === "disconnect") { state.workingNetworks = state.workingNetworks.filter((name) => name !== args[2]); return { exitCode: 0, stdout: "", stderr: "" }; }
       if (verb === "network" && second === "connect") { state.workingNetworks = [...state.workingNetworks, args[args.length - 2]!]; return { exitCode: 0, stdout: "", stderr: "" }; }
+      if (verb === "network" && second === "inspect") return options.inspectAnswer === undefined ? { exitCode: 0, stdout: JSON.stringify(members()), stderr: "" } : { ...options.inspectAnswer, stderr: "" };
       if (verb === "inspect") return { exitCode: 0, stdout: JSON.stringify(Object.fromEntries(state.workingNetworks.map((name) => [name, {}]))), stderr: "" };
       if (verb === "run") { state.sandboxUp = (options.startExit ?? 0) === 0; return { exitCode: options.startExit ?? 0, stdout: "sandbox-id\n", stderr: "" }; }
       if (verb === "rm") { if (options.removeFails !== true) state.sandboxUp = false; return { exitCode: 0, stdout: "", stderr: "" }; }
@@ -204,7 +228,68 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     const seen: string[] = [];
     const input = roundInput(docker, p, { freshServices: () => { seen.push(verbs(calls).join(",")); return Promise.resolve(); } });
     await runSealedCheckRound(input, planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
-    expect(seen).toEqual(["network disconnect,inspect,inspect,run"]);
+    expect(seen).toEqual(["network disconnect,inspect,network inspect,inspect,run,network inspect"]);
+  });
+
+  it("looks at the services network itself before and after the start", async () => {
+    const p = plan();
+    const { docker, calls } = fakeDocker(p.sandboxName);
+    await runSealedCheckRound(roundInput(docker, p), planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
+    const order = verbs(calls);
+    const inspects = order.flatMap((verb, index) => (verb === "network inspect" ? [index] : []));
+    expect(inspects).toHaveLength(2);
+    expect(inspects[0]!).toBeLessThan(order.indexOf("run"));
+    expect(inspects[1]!).toBeGreaterThan(order.indexOf("run"));
+    expect(inspects[1]!).toBeLessThan(order.indexOf("exec"));
+    expect(calls.filter((call) => call[0] === "network" && call[1] === "inspect")[0]).toEqual(["network", "inspect", "--format", "{{json .Containers}}", NET]);
+  });
+
+  it("does not trust the name the caller gave for the working sandbox: the real one still on the network stops the round before the check sandbox starts", async () => {
+    const p = checkSandboxPlan({ ...planInput(), workingSandboxName: "some-other-container" });
+    const { docker, calls, state } = fakeDocker(p.sandboxName, { extraMembers: [{ name: WORK, address: runNetworkAddresses(SLOT).workingSandboxIp }] });
+    state.workingNetworks = ["agentx-task"];
+    let ran = false;
+    await expect(withSealedCheckRound(roundInput(docker, p), () => { ran = true; return Promise.resolve(); })).rejects.toThrow(/does not expect/u);
+    expect(ran).toBe(false);
+    expect(calls.filter((call) => call[0] === "run")).toEqual([]);
+    expect(calls.filter((call) => call[0] === "rm")).toHaveLength(1);
+  });
+
+  it("fails closed and tears down when something else is on the network, before the start or after it", async () => {
+    const p = plan();
+    const extras = [{ name: "squatter", address: "172.30.7.99" }, { name: WORK, address: runNetworkAddresses(SLOT).workingSandboxIp }, { name: `${NET}-h0123456789`, address: "172.30.7.200" }];
+    for (const extraAfterStart of [false, true]) {
+      for (const extra of extras) {
+        const { docker, calls, state } = fakeDocker(p.sandboxName, { extraMembers: [extra], extraAfterStart });
+        let ran = false;
+        await expect(withSealedCheckRound(roundInput(docker, p), () => { ran = true; return Promise.resolve(); }), `${extra.name} ${String(extraAfterStart)}`).rejects.toThrow(/does not expect/u);
+        expect(ran).toBe(false);
+        // Before the start nothing was run; after it the sandbox is removed. Either way the working sandbox is attached again, last.
+        expect(calls.filter((call) => call[0] === "run")).toHaveLength(extraAfterStart ? 1 : 0);
+        expect(state.sandboxUp).toBe(false);
+        expect(state.workingNetworks).toContain(NET);
+        expect(verbs(calls).at(-1)).toBe("network connect");
+      }
+    }
+  });
+
+  it("assertSealedNetworkMembers: the exact membership passes; a missing DNS helper, a doubled or misplaced check sandbox, and an unreadable list do not", async () => {
+    const p = plan();
+    const ok = fakeDocker(p.sandboxName);
+    ok.state.workingNetworks = ["agentx-task"];
+    await expect(assertSealedNetworkMembers(ok.docker, p, "before_start")).resolves.toBeUndefined();
+    await expect(assertSealedNetworkMembers(ok.docker, p, "after_start")).rejects.toThrow(/does not expect/u);
+    ok.state.sandboxUp = true;
+    await expect(assertSealedNetworkMembers(ok.docker, p, "after_start")).resolves.toBeUndefined();
+    // The check sandbox before its start is not expected.
+    await expect(assertSealedNetworkMembers(ok.docker, p, "before_start")).rejects.toThrow(/does not expect/u);
+    const wrongAddress = fakeDocker(p.sandboxName, { sandboxAddress: "172.30.7.77" });
+    wrongAddress.state.sandboxUp = true;
+    await expect(assertSealedNetworkMembers(wrongAddress.docker, p, "after_start")).rejects.toThrow(/does not expect/u);
+    for (const answer of [{ exitCode: 1, stdout: "" }, { exitCode: 0, stdout: "not json" }, { exitCode: 0, stdout: "[]" }, { exitCode: 0, stdout: "null" }, { exitCode: 0, stdout: "{\"a\":{\"Name\":1}}" }]) {
+      const { docker } = fakeDocker(p.sandboxName, { inspectAnswer: answer });
+      await expect(assertSealedNetworkMembers(docker, p, "before_start"), JSON.stringify(answer)).rejects.toThrow();
+    }
   });
 
   it("a source guard: the check sandbox, the sealed exec and the sealed options are made in one place each (TS-SEAL-3)", async () => {

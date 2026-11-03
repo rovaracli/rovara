@@ -24,6 +24,7 @@ import type { DockerCli } from "./swebench/containers.js";
 import { createCheckRunners, mintSealedCheckOptions, runChecks, type CheckPlan, type CheckRound, type CheckRunners } from "./verification/checks.js";
 
 const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u;
+const NETWORK_CALL_TIMEOUT_MS = 60_000;
 /** The exec inputs `withSealedCheckRound` made (TS-SEAL-3). Module-private: `sealedContainerExec` refuses any other. */
 const ROUND_EXEC_INPUTS = new WeakSet<object>();
 
@@ -67,6 +68,39 @@ export function sealedContainerExec(input: SealedExecInput): ContainerExec {
   };
 }
 
+/** One member of a Docker network as `docker network inspect --format '{{json .Containers}}'` lists it. */
+interface NetworkMember { Name?: unknown; IPv4Address?: unknown }
+
+/**
+ * TS-SEAL-3, from the network's side: reads who is on the run's services network NOW, with a `docker network inspect` of the network itself, so the proof does not rest on the working sandbox's name (which the caller
+ * gives and `detachWorkingSandbox` takes at its word). Before the check sandbox starts the members must be the DNS helper (present) and the run's helpers (at their own addresses) and nothing else; after it starts, also the
+ * check sandbox, once, at .4. Anything else (the working sandbox at .3 under any name, an unknown container, a helper-shaped name at the wrong address, a list that cannot be read) throws and nothing runs.
+ */
+export async function assertSealedNetworkMembers(docker: DockerCli, plan: CheckSandboxPlan, phase: "before_start" | "after_start"): Promise<void> {
+  const refuse = (): never => { throw agentXError("RUNTIME_UNAVAILABLE", "the run's services network holds a container the sealed check round does not expect"); };
+  const inspected = await docker.run(["network", "inspect", "--format", "{{json .Containers}}", plan.network.name], { timeoutMs: NETWORK_CALL_TIMEOUT_MS }).catch(() => undefined);
+  if (inspected === undefined || inspected.exitCode !== 0) throw agentXError("RUNTIME_UNAVAILABLE", "the run's services network could not be read");
+  let parsed: unknown;
+  try { parsed = JSON.parse(inspected.stdout.trim()); } catch { return refuse(); }
+  if (parsed === null) parsed = {};
+  if (typeof parsed !== "object" || Array.isArray(parsed)) return refuse();
+  const helperNames = new Map(plan.names.map((entry) => [entry.address, entry.alias]));
+  const helperName = new RegExp(`^${plan.network.name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}-h[0-9a-f]{10}$`, "u");
+  let dnsHelper = 0;
+  let checkSandbox = 0;
+  for (const member of Object.values(parsed as Record<string, NetworkMember>)) {
+    const name = typeof member?.Name === "string" ? member.Name : undefined;
+    const address = typeof member?.IPv4Address === "string" ? member.IPv4Address.split("/")[0] : undefined;
+    if (name === undefined || address === undefined) return refuse();
+    if (name === plan.dnsHelperName) dnsHelper += 1;
+    else if (name === plan.sandboxName) {
+      if (phase !== "after_start" || address !== plan.network.ip) return refuse();
+      checkSandbox += 1;
+    } else if (!(helperName.test(name) && helperNames.has(address))) return refuse();
+  }
+  if (dnsHelper !== 1 || checkSandbox !== (phase === "after_start" ? 1 : 0)) return refuse();
+}
+
 export interface SealedCheckRoundInput {
   docker: DockerCli;
   /** `checkSandboxPlan(...)`: the sandbox, its names and files. The caller has written the plan's files (`writeCheckSandboxFiles`) and started the DNS helper. */
@@ -91,7 +125,10 @@ export interface SealedCheckRoundInput {
  */
 export async function withSealedCheckRound<T>(input: SealedCheckRoundInput, round: (runners: CheckRunners) => Promise<T>): Promise<T> {
   return withDetachedWorking(input.docker, input.plan, async (start) => {
+    // The network is looked at itself, before and after the start; any surprise throws, and `withDetachedWorking` removes the sandbox and attaches the working sandbox again.
+    await assertSealedNetworkMembers(input.docker, input.plan, "before_start");
     await start();
+    await assertSealedNetworkMembers(input.docker, input.plan, "after_start");
     let live = true;
     const execInput: SealedExecInput = { docker: input.docker, container: input.plan.sandboxName, files: input.files, environment: input.environment, live: () => live };
     ROUND_EXEC_INPUTS.add(execInput);
