@@ -7,6 +7,8 @@ import {
   designReviewDisagreements, designReviewRevisionsUsed, enableDesignReview, holdDesignReviewForCost, resolveDesignReview, retryDesignReview, startDesignReview, submitDesignReview, submitPlanCritique,
   submitWorkflowArtifact, workflowIsDesignReviewing, type WorkflowProgram, type WorkflowSnapshot,
 } from "../../packages/contracts/src/index.js";
+import { gateDesignReviewCost, type DesignReviewEstimate } from "../../packages/broker/src/design-review/estimate.js";
+import { applyDesignSpendChoice } from "../../packages/broker/src/design-review/spend-choice.js";
 import * as web from "../../packages/contracts/src/web.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 
@@ -978,7 +980,7 @@ describe("money fix round 2: skip, spend on resume, a round that found nothing",
     expect(skipped.designReview!.estimateUsd).toBeUndefined();
     // the skip stands: Retry review, a raised cap, a lower tier and a re-arm all leave it alone
     expect(() => retryDesignReviewNotRun(skipped, { expectedRevision: skipped.revision, by: ACTOR2, now: LATER })).toThrow(/did not run/);
-    expect(() => raiseDesignReviewCap(skipped, { expectedRevision: skipped.revision, capUsd: 50, by: ACTOR2, now: LATER })).toThrow(/skipped/);
+    expect(() => raiseDesignReviewCap(skipped, { expectedRevision: skipped.revision, capUsd: 20, by: ACTOR2, now: LATER })).toThrow(/skipped/);
     expect(() => lowerDesignReviewTier(skipped, { expectedRevision: skipped.revision, tier: "light", by: ACTOR2, now: LATER })).toThrow(/skipped/);
     expect(rearmedDesignReview(skipped.designReview!, { at: LATER, by: ACTOR2 })).toEqual(skipped.designReview);
     // control: the same review sent to the same place by close (cost_declined) CAN be retried, which is the hole this closes
@@ -1033,5 +1035,66 @@ describe("money fix round 2: skip, spend on resume, a round that found nothing",
     // control: with a changed design (a new latest artifact) the raise opens it again
     const changed = { ...crafted, artifacts: [...crafted.artifacts, artifact("design", 2)] };
     expect(raiseDesignReviewCap(changed, { expectedRevision: changed.revision, capUsd: 5, by: ACTOR2, now: LATER })).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY" });
+  });
+});
+
+describe("money N1: the spend gate and the workflow agree on what fits", () => {
+  const priced = (usd: number): DesignReviewEstimate => ({ kind: "priced", usd, breakdown: { reviewersUsd: usd, mergeUsd: 0, plannerUsd: 0 }, tier: "standard", reviewers: 3, rounds: 2 });
+  const withSpend = (capUsd: number, spentUsd: number): WorkflowSnapshot => {
+    const base = designSubmitted();
+    return { ...base, designReview: { ...base.designReview!, capUsd, spentUsd } };
+  };
+  const startsOk = (workflow: WorkflowSnapshot, estimateUsd: number): boolean => {
+    try { startDesignReview(workflow, { expectedRevision: workflow.revision, estimateUsd, now: NOW }); return true; } catch { return false; }
+  };
+
+  it("for many cap, spend and estimate combinations the gate says go exactly when startDesignReview accepts, and a raise it offers makes the start accept", () => {
+    let asked = 0;
+    let raised = 0;
+    for (const capUsd of [5, 10, 20]) for (const spentUsd of [0, 0.1, 3.3333333, 4.99, 5, 6.4, 9.99, 10, 12.5, 19.5]) for (const estimateUsd of [0.1, 1, 2.5, 4.9, 5, 6.67, 9.99, 10, 10.01, 25, 40]) {
+      const workflow = withSpend(capUsd, spentUsd);
+      const gate = gateDesignReviewCost({ tier: "standard", capUsd, spentUsd, estimate: priced(estimateUsd), canSkip: true });
+      const label = `cap ${String(capUsd)} spent ${String(spentUsd)} estimate ${String(estimateUsd)}`;
+      expect(gate.kind === "go", label).toBe(startsOk(workflow, estimateUsd));
+      if (gate.kind === "go") continue;
+      asked += 1;
+      const raise = gate.choices.find((choice) => choice.choice === "raise_cap");
+      if (raise?.choice !== "raise_cap") continue;
+      raised += 1;
+      // a raise goes to spent + estimate (rounded up to a cent), and with it the very same start is accepted
+      expect(raise.newCapUsd, label).toBeGreaterThanOrEqual(spentUsd + estimateUsd - 1e-9);
+      expect(startsOk(withSpend(raise.newCapUsd, spentUsd), estimateUsd), label).toBe(true);
+      // the old gate (cap only) would have offered a raise to the estimate, which still leaves the start refused when anything was spent
+      if (spentUsd > 0.5) expect(raise.newCapUsd, label).toBeGreaterThan(estimateUsd);
+    }
+    expect(asked).toBeGreaterThan(40);
+    expect(raised).toBeGreaterThan(20);
+  });
+
+  it("the example from the re-check: cap 10, spent 6, estimate 5 is NOT go (room is 4), and the raise is to 11, not 5", () => {
+    const gate = gateDesignReviewCost({ tier: "standard", capUsd: 10, spentUsd: 6, estimate: priced(5), canSkip: false });
+    expect(gate).toMatchObject({ kind: "ask", why: "over_cap" });
+    expect(gate.kind === "ask" ? gate.choices : []).toEqual([{ choice: "raise_cap", newCapUsd: 11 }]);
+  });
+
+  it("a lower tier is offered only if it fits what is LEFT", () => {
+    const gate = gateDesignReviewCost({ tier: "standard", capUsd: 10, spentUsd: 7, estimate: priced(8), lowerTier: { tier: "light", estimate: priced(4) }, canSkip: false });
+    expect(gate.kind === "ask" ? gate.choices.map((choice) => choice.choice) : []).toEqual(["raise_cap"]);
+    const fits = gateDesignReviewCost({ tier: "standard", capUsd: 10, spentUsd: 7, estimate: priced(8), lowerTier: { tier: "light", estimate: priced(2.5) }, canSkip: false });
+    expect(fits.kind === "ask" ? fits.choices.map((choice) => choice.choice) : []).toEqual(["lower_tier", "raise_cap"]);
+  });
+
+  it("N4: the spend handler's skip maps to skipDesignReview; the other choices map to their moves", () => {
+    const hold = holdDesignReviewForCost(designSubmitted(), { expectedRevision: designSubmitted().revision, estimateUsd: 40, now: NOW });
+    const skip = applyDesignSpendChoice(hold, { actorId: PERSON, applied: { choice: "skip" } }, { expectedRevision: hold.revision, now: LATER });
+    expect(skip.designReview).toMatchObject({ decidedBy: "person_skip", skippedBy: { actorId: PERSON }, notRunReason: "skipped" });
+    const raise = applyDesignSpendChoice(hold, { actorId: PERSON, applied: { choice: "raise_cap", newCapUsd: 45 } }, { expectedRevision: hold.revision, estimateUsd: 40, now: LATER });
+    expect(raise.designReview).toMatchObject({ capUsd: 45, status: "estimating", estimateUsd: 40, approvals: [{ kind: "raise_cap", by: { actorId: PERSON } }] });
+    const lower = applyDesignSpendChoice(hold, { actorId: PERSON, applied: { choice: "lower_tier", tier: "light" } }, { expectedRevision: hold.revision, estimateUsd: 4, now: LATER });
+    expect(lower.designReview).toMatchObject({ tier: "light", approvals: [{ kind: "lower_tier" }] });
+    const noPrice = holdDesignReviewForCost(designSubmitted(), { expectedRevision: designSubmitted().revision, now: NOW });
+    const unpriced = applyDesignSpendChoice(noPrice, { actorId: PERSON, applied: { choice: "run_unpriced", stopAtMeasuredUsd: 10 } }, { expectedRevision: noPrice.revision, now: LATER });
+    expect(unpriced).toMatchObject({ state: "RUNNING", designReview: { status: "running", approvals: [{ kind: "spend", by: { actorId: PERSON } }] } });
+    expect(() => applyDesignSpendChoice(hold, { actorId: PERSON, applied: { choice: "skip" } }, { expectedRevision: hold.revision - 1, now: LATER })).toThrow(/stale/);
   });
 });

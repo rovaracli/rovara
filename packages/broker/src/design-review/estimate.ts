@@ -10,7 +10,7 @@
 // A reviewer review is priced by `estimateSecondReviewUsd`, the same function the second-review picker uses, so the two never disagree.
 // NO PRICE MEANS "COST UNAVAILABLE": a model the catalog has no price for is never guessed at (How we work 5.3). The review then needs one tap from the requester (an `approve_spend` card, low risk).
 // Customer pays (owner 2026-11-03): this file only describes a cost; nothing here spends or mints a key.
-import { DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_TIERS, type DesignReviewTier, type ModelIdentifier, type ReviewerRole } from "@agentx/contracts";
+import { DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_TIERS, addDesignUsd, designReviewCapRoom, type DesignReviewTier, type ModelIdentifier, type ReviewerRole } from "@agentx/contracts";
 import { SECOND_REVIEW_TYPICAL_REVIEW_TOKENS, estimateSecondReviewUsd, type SecondReviewPrice } from "../rovara-code/second-review-picker.js";
 
 /** The reviewers each tier runs per round (3.4). Zoom-out and Critic B are priced in every round of Thorough: the estimate may be high, never low. */
@@ -69,7 +69,8 @@ export type DesignReviewEstimate =
 /** Money to a millionth of a dollar, so a sum of the same parts is the same number whatever the order. */
 const micro = (value: number): number => Math.round(value * 1_000_000) / 1_000_000;
 
-const validTokens = (value: number): boolean => Number.isFinite(value) && value >= 0;
+// A packet always holds at least the design and the requirements: 0 (or less) prices a review with no input and is "cost unavailable", never a free review (money N8).
+const validTokens = (value: number): boolean => Number.isFinite(value) && value > 0;
 
 /**
  * The estimate for one tier. `unavailable` when any model it must price has no catalog price (or was not resolved at all): nothing is guessed, and a zero price is not read as "free" unless the
@@ -123,6 +124,11 @@ export type DesignSpendChoice =
 export interface CapGateInput {
   tier: DesignReviewTier;
   capUsd: number;
+  /**
+   * What the review has already spent (the review record's `spentUsd`, re-arms and retries included). REQUIRED: the gate compares the estimate with what is LEFT under the cap, exactly as the workflow's
+   * `designReviewCapRoom` does when the review starts, so a card can never say "go" for a start the workflow then refuses, or offer a raise that still leaves the start refused (money N1).
+   */
+  spentUsd: number;
   /** The company lock's cap ceiling: a raise never goes above it. */
   capCeilingUsd?: number | undefined;
   estimate: DesignReviewEstimate;
@@ -137,14 +143,16 @@ const roundUpCents = (usd: number): number => Math.ceil(micro(usd) * 100) / 100;
 /**
  * Whether a design review may start, or a person must choose first (3.6):
  *   - priced and within the cap: go;
- *   - over the cap: three choices, each only if it is allowed: run at the next lower tier (only if that tier is priced AND fits), raise the cap for this task (to the estimate, rounded up to a cent, only if
- *     that is at most the highest cap allowed and the company's ceiling), or skip (only if the skip rules allow);
+ *   - over the cap: three choices, each only if it is allowed: run at the next lower tier (only if that tier is priced AND fits in what is left), raise the cap for this task (to what is spent plus the estimate,
+ *     rounded up to a cent, only if that is at most the highest cap allowed and the company's ceiling), or skip (only if the skip rules allow);
+ *   - "fits" means what `designReviewCapRoom` means: the estimate is at most the cap minus the spend so far.
  *   - no price: "Cost unavailable", one tap: run it unpriced, or skip (if allowed). Nothing runs on its own.
  * An estimate above every limit with Skip not allowed leaves no choice at all: the card then says so and the task waits for someone who can skip or change the setting. Never a silent run.
  */
 export function gateDesignReviewCost(input: CapGateInput): DesignReviewCapGate {
   const { estimate } = input;
-  if (estimate.kind === "priced" && estimate.usd <= input.capUsd) return { kind: "go", estimateUsd: estimate.usd };
+  const fits = (usd: number): boolean => designReviewCapRoom({ capUsd: input.capUsd, spentUsd: input.spentUsd, estimateUsd: usd }).kind === "fits";
+  if (estimate.kind === "priced" && fits(estimate.usd)) return { kind: "go", estimateUsd: estimate.usd };
   const choices: DesignSpendChoice[] = [];
   if (estimate.kind === "unavailable") {
     choices.push({ choice: "run_unpriced" });
@@ -152,8 +160,9 @@ export function gateDesignReviewCost(input: CapGateInput): DesignReviewCapGate {
     return { kind: "ask", why: "cost_unavailable", estimateUsd: undefined, choices };
   }
   const lower = input.lowerTier;
-  if (lower !== undefined && lower.estimate.kind === "priced" && lower.estimate.usd <= input.capUsd) choices.push({ choice: "lower_tier", tier: lower.tier, estimateUsd: lower.estimate.usd });
-  const raised = roundUpCents(estimate.usd);
+  if (lower !== undefined && lower.estimate.kind === "priced" && fits(lower.estimate.usd)) choices.push({ choice: "lower_tier", tier: lower.tier, estimateUsd: lower.estimate.usd });
+  // A raise must leave room for the estimate AFTER what is already spent: to spent + estimate, not to the estimate alone.
+  const raised = roundUpCents(addDesignUsd(input.spentUsd, estimate.usd));
   const ceiling = Math.min(DESIGN_REVIEW_CAP_MAX_USD, input.capCeilingUsd ?? DESIGN_REVIEW_CAP_MAX_USD);
   if (raised > input.capUsd && raised <= ceiling) choices.push({ choice: "raise_cap", newCapUsd: raised });
   if (input.canSkip) choices.push({ choice: "skip" });
@@ -172,4 +181,35 @@ export function designReviewSpendStop(input: { capUsd: number; measuredUsd: numb
   if (reading !== undefined && reading >= input.capUsd) return { stop: true, why: "cap_reached" };
   if (reading === undefined && input.unpriced) return { stop: true, why: "spend_unmeasured" };
   return { stop: false };
+}
+
+
+// ---- what each reviewer's key may spend, and what a run records as its cost (money N3). Pure: DR7 puts the budget on the key and the measured cost on the run.
+
+/**
+ * The most each model key of a round may spend: what is left under the cap, split equally between the reviewers and the merge step (when it is a model), rounded DOWN to a micro-dollar so the shares never add up
+ * to more than what is left. The proxy refuses calls past it (`budget_exhausted`), so the reviewers, which start together, cannot run past the cap between two checks. Nothing left gives 0: no key is minted.
+ * `reservedUsd` is held back for work that is not on a reviewer key (the planner's revision), and is never given to a reviewer.
+ */
+export function designReviewKeyBudgets(input: { capUsd: number; spentUsd: number; reviewers: number; hasMergeModel: boolean; reservedUsd?: number }): { reviewerUsd: number; mergeUsd: number; roomUsd: number } {
+  const parts = input.reviewers + (input.hasMergeModel ? 1 : 0);
+  const reserved = input.reservedUsd !== undefined && Number.isFinite(input.reservedUsd) && input.reservedUsd > 0 ? input.reservedUsd : 0;
+  const room = Number.isFinite(input.capUsd) && Number.isFinite(input.spentUsd) ? Math.max(0, addDesignUsd(addDesignUsd(input.capUsd, -input.spentUsd), -reserved)) : 0;
+  if (!Number.isInteger(input.reviewers) || input.reviewers < 1 || parts < 1) return { reviewerUsd: 0, mergeUsd: 0, roomUsd: room };
+  const share = Math.floor((room / parts) * 1_000_000) / 1_000_000;
+  return { reviewerUsd: share, mergeUsd: input.hasMergeModel ? share : 0, roomUsd: room };
+}
+
+export type RecordedCostSource = "measured" | "session_estimate" | "budget_ceiling";
+
+/**
+ * The cost a reviewer's run records. The proxy's MEASURED spend for the reviewer's key wins whenever it is a usable number. The session's own figure (the catalog price times its tokens) is used only when it is above 0:
+ * an unpriced model reports 0, and 0 is never recorded as the cost of a run that used tokens. With no measurement and no usable session figure the run is charged its key's whole budget, the most it could have spent,
+ * so spend toward the cap is never under-counted. (`budgetUsd` is the value from `designReviewKeyBudgets`.)
+ */
+export function recordedReviewerCost(input: { measuredUsd: number | undefined; sessionUsd: number; budgetUsd: number; usedTokens: boolean }): { costUsd: number; source: RecordedCostSource } {
+  const usable = (value: number | undefined): value is number => value !== undefined && Number.isFinite(value) && value >= 0;
+  if (usable(input.measuredUsd)) return { costUsd: input.measuredUsd, source: "measured" };
+  if (usable(input.sessionUsd) && input.sessionUsd > 0) return { costUsd: input.sessionUsd, source: "session_estimate" };
+  return input.usedTokens ? { costUsd: Math.max(0, input.budgetUsd), source: "budget_ceiling" } : { costUsd: 0, source: "session_estimate" };
 }

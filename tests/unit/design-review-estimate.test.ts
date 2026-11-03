@@ -2,7 +2,7 @@
 // own function for one reviewer, "Cost unavailable" is never a number, a gate never runs on its own, and the card's choices are the ones the rules allow.
 import { describe, expect, it } from "vitest";
 import { DecisionCardSchema, type ModelIdentifier } from "@agentx/contracts";
-import { PLANNER_REVISION_TOKENS, MERGE_TOKENS, ROLE_INPUT_TURN_FACTOR, designReviewSpendStop, estimateDesignReviewUsd as estimateWithPacket, gateDesignReviewCost, nextLowerTier, reviewersForRound, TIER_REVIEWERS, type DesignReviewEstimate, type DesignReviewEstimateInput, type PriceLookup } from "../../packages/broker/src/design-review/estimate.js";
+import { PLANNER_REVISION_TOKENS, MERGE_TOKENS, ROLE_INPUT_TURN_FACTOR, designReviewSpendStop, estimateDesignReviewUsd as estimateWithPacket, designReviewKeyBudgets, gateDesignReviewCost, nextLowerTier, recordedReviewerCost, reviewersForRound, TIER_REVIEWERS, type DesignReviewEstimate, type DesignReviewEstimateInput, type PriceLookup } from "../../packages/broker/src/design-review/estimate.js";
 import { designSpendCardItem, designSpendChoicePath } from "../../packages/broker/src/design-review/spend-card.js";
 import { cardOfItem } from "../../packages/broker/src/decisions/project.js";
 import { SECOND_REVIEW_TYPICAL_REVIEW_TOKENS, estimateSecondReviewUsd } from "../../packages/broker/src/rovara-code/second-review-picker.js";
@@ -59,10 +59,11 @@ describe("the estimate", () => {
     const big = priced(estimateDesignReviewUsd({ tier: "light", models, price, packetTokens: 200_000 }));
     expect(small.breakdown.reviewersUsd).toBeLessThan(typical.breakdown.reviewersUsd);
     expect(big.breakdown.reviewersUsd).toBeGreaterThan(typical.breakdown.reviewersUsd);
-    for (const bad of [Number.NaN, -5, Number.POSITIVE_INFINITY]) {
+    // N8: a packet with no tokens prices a review with no input; it is "cost unavailable", never a cheap price.
+    for (const bad of [Number.NaN, -5, Number.POSITIVE_INFINITY, 0]) {
       expect(estimateDesignReviewUsd({ tier: "light", models, price, packetTokens: bad })).toEqual({ kind: "unavailable", tier: "light", missing: ["packet"] });
     }
-    expect(priced(estimateDesignReviewUsd({ tier: "light", models, price, packetTokens: 0 })).breakdown.reviewersUsd).toBeGreaterThan(0);
+    expect(priced(estimateDesignReviewUsd({ tier: "light", models, price, packetTokens: 1 })).breakdown.reviewersUsd).toBeGreaterThan(0);
   });
 
   it("M4: tool-using reviewers re-send the context every turn, so the estimate is a multiple of the packet for them (named factors, Comprehension reads once)", () => {
@@ -115,14 +116,14 @@ describe("the cap gate", () => {
   const standard = priced(est("standard"));
 
   it("goes when the estimate is within the cap (at the cap too)", () => {
-    expect(gateDesignReviewCost({ tier: "standard", capUsd: 10, estimate: standard, canSkip: true })).toEqual({ kind: "go", estimateUsd: standard.usd });
-    expect(gateDesignReviewCost({ tier: "standard", capUsd: standard.usd, estimate: standard, canSkip: true }).kind).toBe("go");
+    expect(gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: 10, estimate: standard, canSkip: true })).toEqual({ kind: "go", estimateUsd: standard.usd });
+    expect(gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: standard.usd, estimate: standard, canSkip: true }).kind).toBe("go");
   });
 
   it("asks when over the cap, with the lower tier only if it fits, a raise only if allowed, and skip only if the rules allow", () => {
     const light = priced(est("light"));
     const capBetween = (light.usd + standard.usd) / 2;
-    const gate = gateDesignReviewCost({ tier: "standard", capUsd: capBetween, estimate: standard, lowerTier: { tier: "light", estimate: light }, canSkip: true });
+    const gate = gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: capBetween, estimate: standard, lowerTier: { tier: "light", estimate: light }, canSkip: true });
     expect(gate.kind).toBe("ask");
     if (gate.kind !== "ask") return;
     expect(gate.why).toBe("over_cap");
@@ -133,36 +134,36 @@ describe("the cap gate", () => {
     expect(raise.newCapUsd).toBeGreaterThanOrEqual(standard.usd);
     expect(raise.newCapUsd - standard.usd).toBeLessThan(0.0101);
     // The lower tier does not fit either: not offered.
-    const tight = gateDesignReviewCost({ tier: "standard", capUsd: light.usd / 2, estimate: standard, lowerTier: { tier: "light", estimate: light }, canSkip: true });
+    const tight = gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: light.usd / 2, estimate: standard, lowerTier: { tier: "light", estimate: light }, canSkip: true });
     expect(tight.kind === "ask" && tight.choices.map((c) => c.choice)).toEqual(["raise_cap", "skip"]);
     // The lower tier has no price: not offered, and never guessed.
-    const unpricedLower = gateDesignReviewCost({ tier: "standard", capUsd: capBetween, estimate: standard, lowerTier: { tier: "light", estimate: { kind: "unavailable", tier: "light", missing: ["reviewer"] } }, canSkip: true });
+    const unpricedLower = gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: capBetween, estimate: standard, lowerTier: { tier: "light", estimate: { kind: "unavailable", tier: "light", missing: ["reviewer"] } }, canSkip: true });
     expect(unpricedLower.kind === "ask" && unpricedLower.choices.map((c) => c.choice)).toEqual(["raise_cap", "skip"]);
     // The skip rules take Skip away.
-    const noSkip = gateDesignReviewCost({ tier: "standard", capUsd: capBetween, estimate: standard, lowerTier: { tier: "light", estimate: light }, canSkip: false });
+    const noSkip = gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: capBetween, estimate: standard, lowerTier: { tier: "light", estimate: light }, canSkip: false });
     expect(noSkip.kind === "ask" && noSkip.choices.map((c) => c.choice)).toEqual(["lower_tier", "raise_cap"]);
   });
 
   it("never offers a raise above the highest cap or the company's ceiling", () => {
     const huge: DesignReviewEstimate = { kind: "priced", usd: 250, breakdown: { reviewersUsd: 250, mergeUsd: 0, plannerUsd: 0 }, tier: "thorough", reviewers: 5, rounds: 2 };
-    const overMax = gateDesignReviewCost({ tier: "thorough", capUsd: 10, estimate: huge, canSkip: true });
+    const overMax = gateDesignReviewCost({ spentUsd: 0, tier: "thorough", capUsd: 10, estimate: huge, canSkip: true });
     expect(overMax.kind === "ask" && overMax.choices.map((c) => c.choice)).toEqual(["skip"]);
-    const ceiling = gateDesignReviewCost({ tier: "standard", capUsd: 1, capCeilingUsd: 1.5, estimate: standard, canSkip: true });
+    const ceiling = gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: 1, capCeilingUsd: 1.5, estimate: standard, canSkip: true });
     expect(standard.usd).toBeGreaterThan(1.5);
     expect(ceiling.kind === "ask" && ceiling.choices.map((c) => c.choice)).toEqual(["skip"]);
   });
 
   it("with no skip and nothing that fits, asks with NO choices: it never runs by itself", () => {
     const huge: DesignReviewEstimate = { kind: "priced", usd: 250, breakdown: { reviewersUsd: 250, mergeUsd: 0, plannerUsd: 0 }, tier: "thorough", reviewers: 5, rounds: 2 };
-    expect(gateDesignReviewCost({ tier: "thorough", capUsd: 10, estimate: huge, canSkip: false })).toEqual({ kind: "ask", why: "over_cap", estimateUsd: 250, choices: [] });
+    expect(gateDesignReviewCost({ spentUsd: 0, tier: "thorough", capUsd: 10, estimate: huge, canSkip: false })).toEqual({ kind: "ask", why: "over_cap", estimateUsd: 250, choices: [] });
   });
 
   it("Cost unavailable: asks, with run-anyway (one tap) and skip if allowed, and no number", () => {
     const unavailable = estimateDesignReviewUsd({ tier: "standard", models, price: () => undefined });
-    expect(gateDesignReviewCost({ tier: "standard", capUsd: 10, estimate: unavailable, canSkip: true })).toEqual({ kind: "ask", why: "cost_unavailable", estimateUsd: undefined, choices: [{ choice: "run_unpriced" }, { choice: "skip" }] });
-    expect(gateDesignReviewCost({ tier: "standard", capUsd: 10, estimate: unavailable, canSkip: false })).toEqual({ kind: "ask", why: "cost_unavailable", estimateUsd: undefined, choices: [{ choice: "run_unpriced" }] });
+    expect(gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: 10, estimate: unavailable, canSkip: true })).toEqual({ kind: "ask", why: "cost_unavailable", estimateUsd: undefined, choices: [{ choice: "run_unpriced" }, { choice: "skip" }] });
+    expect(gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: 10, estimate: unavailable, canSkip: false })).toEqual({ kind: "ask", why: "cost_unavailable", estimateUsd: undefined, choices: [{ choice: "run_unpriced" }] });
     // Even a huge cap does not let an unpriced review start: there is no "within the cap" without a price.
-    expect(gateDesignReviewCost({ tier: "standard", capUsd: 100, estimate: unavailable, canSkip: true }).kind).toBe("ask");
+    expect(gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: 100, estimate: unavailable, canSkip: true }).kind).toBe("ask");
   });
 });
 
@@ -187,7 +188,7 @@ describe("the approve_spend card source", () => {
   const light = priced(estimateDesignReviewUsd({ tier: "light", models, price }));
 
   it("makes a card whose actions are the allowed choices, as POSTs of this server, and which the card contract accepts", () => {
-    const gate = gateDesignReviewCost({ tier: "standard", capUsd: (light.usd + standard.usd) / 2, estimate: standard, lowerTier: { tier: "light", estimate: light }, canSkip: true });
+    const gate = gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: (light.usd + standard.usd) / 2, estimate: standard, lowerTier: { tier: "light", estimate: light }, canSkip: true });
     if (gate.kind !== "ask") throw new Error("expected an ask");
     const item = designSpendCardItem({ ...base, capUsd: (light.usd + standard.usd) / 2, gate });
     const made = cardOfItem(item);
@@ -208,7 +209,7 @@ describe("the approve_spend card source", () => {
 
   it("says Cost unavailable and is low risk when there is no price", () => {
     const unavailable = estimateDesignReviewUsd({ tier: "standard", models, price: () => undefined });
-    const gate = gateDesignReviewCost({ tier: "standard", capUsd: 10, estimate: unavailable, canSkip: true });
+    const gate = gateDesignReviewCost({ spentUsd: 0, tier: "standard", capUsd: 10, estimate: unavailable, canSkip: true });
     if (gate.kind !== "ask") throw new Error("expected an ask");
     const card = cardOfItem(designSpendCardItem({ ...base, capUsd: 10, gate }))!.card;
     expect(card.risk).toBe("low");
@@ -229,5 +230,43 @@ describe("the approve_spend card source", () => {
   it("an ordinary spend request is unchanged", () => {
     const card = cardOfItem({ kind: "approve_spend", subjectId: "spr1", taskId: TASK, project: "payments", title: "t", createdAt: base.createdAt, openPath: base.openPath, contentVersion: "v1", amountUsd: 5, scopeLabel: "this task" })!.card;
     expect(card.actions.map((a) => a.kind)).toEqual(["approve", "reject", "open"]);
+  });
+});
+
+
+describe("money N3 (pure parts): what each reviewer's key may spend, and what a run records", () => {
+  it("splits what is left under the cap between the reviewers and the merge model, rounding down so the shares never exceed it", () => {
+    const standard = designReviewKeyBudgets({ capUsd: 10, spentUsd: 4, reviewers: 3, hasMergeModel: true });
+    expect(standard).toEqual({ reviewerUsd: 1.5, mergeUsd: 1.5, roomUsd: 6 });
+    const light = designReviewKeyBudgets({ capUsd: 10, spentUsd: 4, reviewers: 1, hasMergeModel: false });
+    expect(light).toEqual({ reviewerUsd: 6, mergeUsd: 0, roomUsd: 6 });
+    const odd = designReviewKeyBudgets({ capUsd: 1, spentUsd: 0, reviewers: 3, hasMergeModel: true });
+    expect(odd.reviewerUsd).toBe(0.25);
+    for (const [cap, spent, reviewers] of [[10, 3.3333333, 3], [7, 0.1, 5], [0.5, 0, 4]] as const) {
+      const budgets = designReviewKeyBudgets({ capUsd: cap, spentUsd: spent, reviewers, hasMergeModel: true });
+      expect(budgets.reviewerUsd * reviewers + budgets.mergeUsd).toBeLessThanOrEqual(budgets.roomUsd + 1e-9);
+    }
+  });
+
+  it("holds back a reservation for the planner, and gives nothing when nothing is left or the input is not a number", () => {
+    expect(designReviewKeyBudgets({ capUsd: 10, spentUsd: 0, reviewers: 3, hasMergeModel: false, reservedUsd: 1 })).toEqual({ reviewerUsd: 3, mergeUsd: 0, roomUsd: 9 });
+    for (const bad of [{ capUsd: 10, spentUsd: 10 }, { capUsd: 10, spentUsd: 12 }, { capUsd: Number.NaN, spentUsd: 0 }, { capUsd: 10, spentUsd: Number.NaN }]) {
+      expect(designReviewKeyBudgets({ ...bad, reviewers: 3, hasMergeModel: true }), JSON.stringify(bad)).toMatchObject({ reviewerUsd: 0, mergeUsd: 0, roomUsd: 0 });
+    }
+    expect(designReviewKeyBudgets({ capUsd: 10, spentUsd: 0, reviewers: 0, hasMergeModel: true })).toMatchObject({ reviewerUsd: 0 });
+  });
+
+  it("a run's cost is the proxy's measured spend when there is one, never 0 for an unpriced run that used tokens", () => {
+    expect(recordedReviewerCost({ measuredUsd: 0.42, sessionUsd: 0.1, budgetUsd: 1.5, usedTokens: true })).toEqual({ costUsd: 0.42, source: "measured" });
+    // a measured 0 is a reading, not a gap
+    expect(recordedReviewerCost({ measuredUsd: 0, sessionUsd: 0.1, budgetUsd: 1.5, usedTokens: true })).toEqual({ costUsd: 0, source: "measured" });
+    // the session's own figure is only a stand-in when it is above 0
+    expect(recordedReviewerCost({ measuredUsd: undefined, sessionUsd: 0.1, budgetUsd: 1.5, usedTokens: true })).toEqual({ costUsd: 0.1, source: "session_estimate" });
+    // unpriced model: the session reports 0 and nothing was measured, so the run is charged its key's whole budget
+    expect(recordedReviewerCost({ measuredUsd: undefined, sessionUsd: 0, budgetUsd: 1.5, usedTokens: true })).toEqual({ costUsd: 1.5, source: "budget_ceiling" });
+    expect(recordedReviewerCost({ measuredUsd: Number.NaN, sessionUsd: Number.NaN, budgetUsd: 1.5, usedTokens: true })).toEqual({ costUsd: 1.5, source: "budget_ceiling" });
+    expect(recordedReviewerCost({ measuredUsd: -1, sessionUsd: 0, budgetUsd: 1.5, usedTokens: true }).costUsd).toBe(1.5);
+    // a run that never reached the model costs nothing
+    expect(recordedReviewerCost({ measuredUsd: undefined, sessionUsd: 0, budgetUsd: 1.5, usedTokens: false })).toEqual({ costUsd: 0, source: "session_estimate" });
   });
 });

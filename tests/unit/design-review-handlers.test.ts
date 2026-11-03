@@ -201,7 +201,7 @@ describe("the spend choice handler (M7)", () => {
 
   function contextOf(change: Partial<DesignSpendContext> = {}): DesignSpendContext {
     return {
-      taskId: TASK, requesterId: "priya", tier: "standard", setting: markEffective(DESIGN_REVIEW_DEFAULT_SETTING), taskCapUsd: 10, estimate: priced(40), lowerTier: { tier: "light", estimate: priced(6, "light") },
+      taskId: TASK, requesterId: "priya", tier: "standard", setting: markEffective(DESIGN_REVIEW_DEFAULT_SETTING), taskCapUsd: 10, spentUsd: 0, estimate: priced(40), lowerTier: { tier: "light", estimate: priced(6, "light") },
       reasons: ["new_api"], touches: [], directory: directory(), edition: editionPolicy("enterprise"), freshSignIn: true, revision: "rev-1",
       card: { subjectId: "dr-spend-1", project: "payments", title: "Partner ranking", createdAt: "2026-11-03T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, contentVersion: "v1" }, ...change,
     };
@@ -330,7 +330,7 @@ describe("the spend choice handler (M7)", () => {
 
 describe("a no-skip setting and the spend card", () => {
   it("gives no skip choice to a caller the rules refuse, so the card they are shown never offers it", () => {
-    const base = { taskId: TASK, requesterId: "priya", tier: "standard" as const, setting: markEffective({ ...DESIGN_REVIEW_DEFAULT_SETTING }), taskCapUsd: 10, estimate: { kind: "priced", usd: 40, breakdown: { reviewersUsd: 40, mergeUsd: 0, plannerUsd: 0 }, tier: "standard", reviewers: 3, rounds: 2 } as DesignReviewEstimate, reasons: ["money" as const], touches: [], directory: directory(), edition: editionPolicy("enterprise"), freshSignIn: true, revision: "r", card: { subjectId: "s1", project: "p", title: "t", createdAt: "2026-11-03T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, contentVersion: "v1" } };
+    const base = { taskId: TASK, requesterId: "priya", tier: "standard" as const, setting: markEffective({ ...DESIGN_REVIEW_DEFAULT_SETTING }), taskCapUsd: 10, spentUsd: 0, estimate: { kind: "priced", usd: 40, breakdown: { reviewersUsd: 40, mergeUsd: 0, plannerUsd: 0 }, tier: "standard", reviewers: 3, rounds: 2 } as DesignReviewEstimate, reasons: ["money" as const], touches: [], directory: directory(), edition: editionPolicy("enterprise"), freshSignIn: true, revision: "r", card: { subjectId: "s1", project: "p", title: "t", createdAt: "2026-11-03T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, contentVersion: "v1" } };
     const forRequester = designSpendGateFor(base, "priya").gate;
     const forApprover = designSpendGateFor(base, "own").gate;
     expect(forRequester.kind === "ask" && forRequester.choices.map((c) => c.choice)).toEqual(["raise_cap"]);

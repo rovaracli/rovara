@@ -9,7 +9,7 @@
 //   - the commit is conditional on the task record's revision, and the decision is recorded under the request id (a replay returns the earlier outcome; the same id for another choice is refused).
 // An unpriced run is bounded by MEASURED spend (M5): the applied choice carries `stopAtMeasuredUsd`, the cap, which the dispatch checks with `designReviewSpendStop` before every reviewer and call.
 import { createHash } from "node:crypto";
-import { agentXError, canonicalJson, type DesignReason, type DesignReviewTier, type EditionPolicy } from "@agentx/contracts";
+import { agentXError, canonicalJson, lowerDesignReviewTier, raiseDesignReviewCap, skipDesignReview, startDesignReview, type WorkflowSnapshot, type DesignReason, type DesignReviewTier, type EditionPolicy } from "@agentx/contracts";
 import { DECISION_CHANGED_MESSAGE, DECISION_OPEN_FIRST_MESSAGE, DECISION_FULL_PAGE_MESSAGE, type DecisionCaller } from "../decisions/routes.js";
 import { projectDecisionCards, type DecisionItem } from "../decisions/project.js";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks } from "../decisions/risk-tier.js";
@@ -31,6 +31,8 @@ export interface DesignSpendContext {
   setting: EffectiveDesignReviewSetting;
   /** The cap this task has now (the setting's, or a raise already made for this task). */
   taskCapUsd: number;
+  /** What this review has already spent (the review record's `spentUsd`). The gate compares the estimate with the cap minus this, as the workflow does when it starts (money N1). */
+  spentUsd: number;
   /** The company lock's cap ceiling, if any. */
   capCeilingUsd?: number | undefined;
   estimate: DesignReviewEstimate;
@@ -81,13 +83,13 @@ const has = (list: readonly string[], id: string): boolean => list.some((entry) 
 /** The gate for this caller, and the card item that shows it. `go` when nothing needs asking (the choice is then stale). Used by the card's source and by the handler, so both see the same card. */
 export function designSpendGateFor(context: DesignSpendContext, callerId: string): { gate: DesignReviewCapGate; skip: { ok: true } | { ok: false; code: SkipRefusal } } {
   const skip = maySkipDesignReview({ setting: context.setting, reasons: context.reasons, touches: context.touches, skipperId: callerId, directory: context.directory, edition: context.edition });
-  const gate = gateDesignReviewCost({ tier: context.tier, capUsd: context.taskCapUsd, capCeilingUsd: context.capCeilingUsd, estimate: context.estimate, lowerTier: context.lowerTier, canSkip: skip.ok });
+  const gate = gateDesignReviewCost({ tier: context.tier, capUsd: context.taskCapUsd, spentUsd: context.spentUsd, capCeilingUsd: context.capCeilingUsd, estimate: context.estimate, lowerTier: context.lowerTier, canSkip: skip.ok });
   return { gate, skip };
 }
 
 /** The pending `approve_spend` item for a gate that asks. Its version covers the gate's inputs, so a changed estimate, cap, tier or choice list is a different card. */
 export function designSpendItemFor(context: DesignSpendContext, gate: Extract<DesignReviewCapGate, { kind: "ask" }>): DecisionItem {
-  const inputs = createHash("sha256").update(canonicalJson({ tier: context.tier, cap: context.taskCapUsd, ceiling: context.capCeilingUsd ?? null, gate, revision: context.revision })).digest("hex").slice(0, 16);
+  const inputs = createHash("sha256").update(canonicalJson({ tier: context.tier, cap: context.taskCapUsd, spent: context.spentUsd, ceiling: context.capCeilingUsd ?? null, gate, revision: context.revision })).digest("hex").slice(0, 16);
   const head = context.card.contentVersion.length > 70 ? createHash("sha256").update(context.card.contentVersion).digest("hex").slice(0, 32) : context.card.contentVersion;
   return designSpendCardItem({ taskId: context.taskId, ...context.card, contentVersion: `${head}:${inputs}`, gate, capUsd: context.taskCapUsd });
 }
@@ -186,4 +188,23 @@ export function designSpendChoiceHandler<C extends DecisionCaller>(ports: Design
     try { await ports.store.recordDecision({ ...who, cardId, kind: "approve_spend", risk, outcome: "approved", reason: request.choice, requestId: request.requestId, createdAt: card.createdAt, decidedAt }); } catch { /* history is best effort */ }
     return { kind: "done", choice: request.choice, replay: false, applied };
   };
+}
+
+
+/**
+ * What the commit port does with an applied choice: the contract move for each one, at the revision the gate was worked out from. DR7's commit port calls this inside its conditional write, so the choice
+ * on the card and the move on the workflow can never differ:
+ *   raise_cap -> raiseDesignReviewCap (records who), lower_tier -> lowerDesignReviewTier (records who), run_unpriced -> startDesignReview with the spend approved by this person,
+ *   skip -> skipDesignReview (`person_skip`, with who; the review is not retried or re-armed). `estimateUsd` is the estimate the gate used (the lower tier's, for lower_tier).
+ * Each move throws a WorkflowTransitionError when the workflow is no longer where the card was drawn, which the commit port turns into "stale".
+ */
+export function applyDesignSpendChoice(snapshot: unknown, write: Pick<DesignSpendWrite, "actorId" | "applied">, input: { expectedRevision: number; now: string; estimateUsd?: number | undefined }): WorkflowSnapshot {
+  const by = { actorId: write.actorId };
+  const estimate = input.estimateUsd === undefined ? {} : { estimateUsd: input.estimateUsd };
+  switch (write.applied.choice) {
+    case "raise_cap": return raiseDesignReviewCap(snapshot, { expectedRevision: input.expectedRevision, capUsd: write.applied.newCapUsd, by, ...estimate, now: input.now });
+    case "lower_tier": return lowerDesignReviewTier(snapshot, { expectedRevision: input.expectedRevision, tier: write.applied.tier, by, ...estimate, now: input.now });
+    case "run_unpriced": return startDesignReview(snapshot, { expectedRevision: input.expectedRevision, costApproved: { by }, now: input.now });
+    case "skip": return skipDesignReview(snapshot, { expectedRevision: input.expectedRevision, by, now: input.now });
+  }
 }
