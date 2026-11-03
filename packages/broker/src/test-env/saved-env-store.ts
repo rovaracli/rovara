@@ -31,6 +31,8 @@ export const SAVED_ENV_PURGE_PARTITION = "SAVED_ENV_PURGE";
 export const SAVED_ENV_POLL_PARTITION = "SAVED_ENV_POLL";
 /** The most deleted projects one sweep reads (the nightly runs it daily; a remainder is swept the next night). */
 export const SAVED_ENV_PURGE_PAGE = 200;
+/** The most index pages one poll read looks through. */
+const POLL_PAGES_MAX = 5;
 
 const rowKey = (orgId: string, projectId: string): { pk: string; sk: string } => ({ pk: orgPk(OrgIdSchema.parse(orgId)), sk: `SAVED_ENV#${projectId}` });
 const dueKey = (time: number): string => String(Math.max(0, Math.trunc(time))).padStart(15, "0");
@@ -46,13 +48,13 @@ const ImageSchema = z.object({
 }).strict();
 const JobSchema = z.object({
   jobId: z.string().min(1).max(64), leaseToken: z.string().min(1).max(200), reason: z.enum(["no_image", "key_changed", "max_age", "stale", "reset"]), approved: Approved,
-  commits: z.record(z.string().min(1).max(200), z.string().regex(/^[a-f0-9]{40}$/u)), expectedKey: z.string().regex(/^[a-f0-9]{64}$/u), createdAt: Iso, leaseUntil: Iso, dispatchedAt: Iso.optional(),
+  commits: z.record(z.string().min(1).max(200), z.string().regex(/^[a-f0-9]{40}$/u)), expectedKey: z.string().regex(/^[a-f0-9]{64}$/u), createdAt: Iso, leaseUntil: Iso, dispatchedAt: Iso.optional(), dispatchedOperationId: z.string().max(64).optional(),
 }).strict();
 const StateSchema = z.object({
   orgId: OrgIdSchema, projectId: z.string().min(1).max(200), version: z.number().int().min(1), enabled: z.boolean(), images: z.array(ImageSchema).max(20), job: JobSchema.optional(),
   resetRequested: z.boolean().optional(), archived: z.boolean().optional(), deleted: z.boolean().optional(), deletedAt: Iso.optional(), registryPurgedAt: Iso.optional(), lastResetAt: Iso.optional(),
   lastResetRequestId: z.string().max(100).optional(), lastPushAt: Iso.optional(), lastTaskAt: Iso.optional(), lastRebuildReason: z.enum(["no_image", "key_changed", "max_age", "stale", "reset"]).optional(),
-  lastFailureAt: Iso.optional(), lastFailure: z.string().max(60).optional(), nextPollAt: Iso.optional(), health: z.enum(["never_proved", "healthy", "needs_repair"]),
+  lastFailureAt: Iso.optional(), lastFailure: z.string().max(60).optional(), nextPollAt: Iso.optional(), pollFailures: z.number().int().min(0).max(1000).optional(), health: z.enum(["never_proved", "healthy", "needs_repair"]),
 }).strict();
 
 /** The stored attributes that are not part of the state (keys, entity type, the due index) are dropped. Undefined for a row that does not read back. */
@@ -147,17 +149,24 @@ export function dynamoSavedEnvStore(table: SavedEnvTable): SavedEnvStore {
 
     async pollDue(limit) {
       const now = (table.now ?? Date.now)();
-      const result = await table.documentClient.send(new QueryCommand({
-        TableName: table.tableName, IndexName: WORKFLOW_DISPATCH_DUE_INDEX.name,
-        KeyConditionExpression: `${WORKFLOW_DISPATCH_DUE_INDEX.partitionKey} = :pk AND ${WORKFLOW_DISPATCH_DUE_INDEX.sortKey} BETWEEN :from AND :due`,
-        ExpressionAttributeValues: { ":pk": SAVED_ENV_POLL_PARTITION, ":from": "0", ":due": `${dueKey(now)}~` }, Limit: Math.max(1, Math.min(limit, SAVED_ENV_PURGE_PAGE)),
-      })) as { Items?: Row[] };
       const out: Array<{ orgId: string; projectId: string }> = [];
-      for (const raw of result.Items ?? []) {
-        if (typeof raw.orgId !== "string" || typeof raw.projectId !== "string" || !OrgIdSchema.safeParse(raw.orgId).success) continue;
-        // The index is eventually consistent: the row itself says whether it is live and its time has come.
-        const fresh = stateOf(await read(raw.orgId, raw.projectId));
-        if (fresh !== undefined && fresh.deleted !== true && fresh.archived !== true && fresh.enabled && fresh.nextPollAt !== undefined && Date.parse(fresh.nextPollAt) <= now) out.push({ orgId: fresh.orgId, projectId: fresh.projectId });
+      let start: Row | undefined;
+      // The index lists rows by time, and a row on it may be one that is no longer eligible (turned off, archived, moved on): the pages are read past those until `limit` eligible rows are found, a few pages at most.
+      for (let page = 0; page < POLL_PAGES_MAX && out.length < limit; page += 1) {
+        const result = await table.documentClient.send(new QueryCommand({
+          TableName: table.tableName, IndexName: WORKFLOW_DISPATCH_DUE_INDEX.name,
+          KeyConditionExpression: `${WORKFLOW_DISPATCH_DUE_INDEX.partitionKey} = :pk AND ${WORKFLOW_DISPATCH_DUE_INDEX.sortKey} BETWEEN :from AND :due`,
+          ExpressionAttributeValues: { ":pk": SAVED_ENV_POLL_PARTITION, ":from": "0", ":due": `${dueKey(now)}~` }, Limit: SAVED_ENV_PURGE_PAGE, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+        })) as { Items?: Row[]; LastEvaluatedKey?: Row };
+        for (const raw of result.Items ?? []) {
+          if (out.length >= limit) break;
+          if (typeof raw.orgId !== "string" || typeof raw.projectId !== "string" || !OrgIdSchema.safeParse(raw.orgId).success) continue;
+          // The index is eventually consistent: the row itself says whether it is live and its time has come.
+          const fresh = stateOf(await read(raw.orgId, raw.projectId));
+          if (fresh !== undefined && fresh.deleted !== true && fresh.archived !== true && fresh.enabled && fresh.nextPollAt !== undefined && Date.parse(fresh.nextPollAt) <= now) out.push({ orgId: fresh.orgId, projectId: fresh.projectId });
+        }
+        start = result.LastEvaluatedKey;
+        if (start === undefined) break;
       }
       return out;
     },

@@ -91,10 +91,11 @@ export function createSetupRecipesNegotiationRecorder(input: { documentClient: D
  * job is not delivered. The workspace gives the org and the project: nothing is read from the invocation.
  */
 export function createSavedEnvBuildLease(input: { documentClient: DynamoDBDocumentClient; tableName?: string; now?: () => number; env?: NodeJS.ProcessEnv }) {
-  const tableName = input.tableName ?? requiredEnvironment("STATE_TABLE_NAME");
   const now = input.now ?? Date.now;
   return async (record: Ec2OutboxRecord, jobId: string): Promise<string | undefined> => {
     if (!savedEnvEnabled(input.env)) return undefined;
+    // Read when it is used (as the sibling recorders do), not when the module loads.
+    const tableName = input.tableName ?? requiredEnvironment("STATE_TABLE_NAME");
     const workspace = (await input.documentClient.send(new GetCommand({ TableName: tableName, Key: { pk: `WORKSPACE#${record.workspaceId}`, sk: "META" }, ConsistentRead: true }))).Item as { orgId?: unknown; projectName?: unknown } | undefined;
     if (typeof workspace?.orgId !== "string" || typeof workspace.projectName !== "string") return undefined;
     const ids = { orgId: workspace.orgId, projectId: workspace.projectName };
@@ -102,7 +103,7 @@ export function createSavedEnvBuildLease(input: { documentClient: DynamoDBDocume
     // The job this operation was made for must be the project's current one: a lease is never taken for another job.
     const state = await deps.store.get(ids.orgId, ids.projectId);
     if (state?.job?.jobId !== jobId) return undefined;
-    const leased = await leaseForDispatch(deps, ids);
+    const leased = await leaseForDispatch(deps, ids, record.operationId);
     return leased.ok && leased.job.jobId === jobId ? leased.job.leaseToken : undefined;
   };
 }

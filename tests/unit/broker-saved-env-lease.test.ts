@@ -1,9 +1,9 @@
 // Saved project images (SV wiring): the rebuild job's push login and result, and a preparation's fallback report. The login and the result answer to the job's lease AND the preparation's own grant, for the
 // preparation made for that job only; nothing about the registry is told to the worker beyond one sentence.
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { SavedEnvBuildResultSchema } from "../../packages/contracts/src/index.js";
 import { checkRebuild, leaseForDispatch } from "../../packages/broker/src/test-env/saved-env.js";
-import { savedEnvFallbackCore, savedEnvPushLoginCore, savedEnvResultCore, type SavedEnvLeaseContext } from "../../packages/broker/src/test-env/saved-env-lease.js";
+import { SAVED_ENV_PUSH_LOGIN_MAX_PER_OPERATION, savedEnvFallbackCore, savedEnvPushLoginCore, savedEnvResultCore, type SavedEnvLeaseContext } from "../../packages/broker/src/test-env/saved-env-lease.js";
 import { COMMIT, KEY, dig, imageOf, manifestOf, savedEnvWorld } from "../support/saved-env-world.js";
 
 const WS = "11111111-1111-4111-8111-111111111111";
@@ -18,9 +18,12 @@ async function queued(over: Parameters<typeof savedEnvWorld>[0] = {}) {
   return { w, job: leased.job };
 }
 
+const pushLogins = { count: 0 };
+beforeEach(() => { pushLogins.count = 0; });
 function context(w: ReturnType<typeof savedEnvWorld>, operation: Partial<Awaited<ReturnType<SavedEnvLeaseContext["readOperation"]>>> = {}, options: { deps?: boolean } = {}): SavedEnvLeaseContext {
   return {
     deps: options.deps === false ? undefined : w.deps,
+    countPushLogin: async () => { pushLogins.count += 1; return pushLogins.count <= SAVED_ENV_PUSH_LOGIN_MAX_PER_OPERATION; },
     inspectGrant: (grant) => { if (grant !== "grant-ok") throw Object.assign(new Error("bad grant"), { code: "FORBIDDEN" }); return { workspaceId: WS, operationId: OP }; },
     readOperation: async () => ({ kind: "prepare", status: "RUNNING", savedEnvJobId: undefined, savedEnvDigest: undefined, orgId: w.ids.orgId, projectName: w.ids.projectId, workspace: { status: "PREPARING", activeOperationId: OP }, ...operation }),
     log: () => undefined,
@@ -43,15 +46,10 @@ describe("the push login", () => {
     expect(w.assumed.some((call) => call.roleArn.endsWith("push") || call.roleArn.includes("img-push") || call.policy.includes("PushToThisRepository"))).toBe(true);
   });
 
-  it("needs the grant, the right operation and the lease: each missing piece is refused with a sentence that says nothing about the registry", async () => {
+  it("needs the right operation and the lease: each missing piece is refused with a sentence that says nothing about the registry", async () => {
     const { w, job } = await queued();
     const lease = { jobId: job.jobId, leaseToken: job.leaseToken };
     const own = { savedEnvJobId: job.jobId };
-    await expect(savedEnvPushLoginCore(context(w, own), input(lease, null))).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(savedEnvPushLoginCore(context(w, own), input(lease, "other-grant"))).rejects.toMatchObject({ code: "FORBIDDEN" });
-    // the grant is for another operation
-    const wrongClaims = { ...context(w, own), inspectGrant: () => ({ workspaceId: WS, operationId: "33333333-3333-4333-8333-333333333333" }) };
-    await expect(savedEnvPushLoginCore(wrongClaims, input(lease))).rejects.toMatchObject({ code: "FORBIDDEN" });
     // a task, a finished preparation, or a preparation of another workspace state
     await expect(savedEnvPushLoginCore(context(w, { ...own, kind: "task" }), input(lease))).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(savedEnvPushLoginCore(context(w, { ...own, status: "SUCCEEDED" }), input(lease))).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -79,9 +77,6 @@ describe("the push login", () => {
     await expect(savedEnvFallbackCore(off.context, input({ step: "pull" }))).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(none.asked).toEqual({ grants: 0, reads: 0 });
     expect(off.asked).toEqual({ grants: 0, reads: 0 });
-    const noGrant = counting(w, own);
-    await expect(savedEnvPushLoginCore(noGrant.context, input(lease, null))).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(noGrant.asked).toEqual({ grants: 0, reads: 0 });
     w.clock.now += 4 * 3_600_000;
     await expect(savedEnvPushLoginCore(context(w, own), input(lease))).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(w.assumed).toEqual([]);
@@ -98,6 +93,18 @@ describe("the push login", () => {
     const broken = { ...context(w, { savedEnvJobId: job.jobId }) };
     w.deps.session.ports.authorizationToken = async () => { throw new Error("down"); };
     await expect(savedEnvPushLoginCore(broken, input({ jobId: job.jobId, leaseToken: job.leaseToken }))).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+});
+
+describe("the push login's count", () => {
+  it("is given a few times at most for one operation (the worker asks once; a few more cover a retry of the request), then refused with nothing minted", async () => {
+    const { w, job } = await queued();
+    pushLogins.count = 0;
+    const call = () => savedEnvPushLoginCore(context(w, { savedEnvJobId: job.jobId }), input({ jobId: job.jobId, leaseToken: job.leaseToken }));
+    for (let index = 0; index < SAVED_ENV_PUSH_LOGIN_MAX_PER_OPERATION; index += 1) await expect(call()).resolves.toHaveProperty("login");
+    const minted = w.assumed.length;
+    await expect(call()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(w.assumed.length).toBe(minted);
   });
 });
 
@@ -126,11 +133,10 @@ describe("the result", () => {
     expect(second.w.row()?.health).toBe("needs_repair");
   });
 
-  it("is refused for the wrong grant, operation or job, and a wrong lease records nothing", async () => {
+  it("is refused for the wrong operation or job, and a wrong lease records nothing", async () => {
     const { w, job } = await queued();
     const body = { jobId: job.jobId, leaseToken: job.leaseToken, result: good(w) };
     await expect(savedEnvResultCore(context(w, {}), input(body))).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(savedEnvResultCore(context(w, { savedEnvJobId: job.jobId }), input(body, null))).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(await savedEnvResultCore(context(w, { savedEnvJobId: job.jobId }), input({ ...body, leaseToken: "y".repeat(40) }))).toMatchObject({ recorded: false, reason: "bad_lease" });
     expect(w.row()?.images).toEqual([]);
   });

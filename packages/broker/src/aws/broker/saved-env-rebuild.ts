@@ -1,6 +1,7 @@
 // Saved project images (SV wiring): starting the rebuild job. The registry (test-env/saved-env.ts) queues a job WITH the commits it is for; this makes the job a PREPARATION on a fresh workspace and hands it to
 // the dispatcher, which adds the lease token once, when it delivers (`leaseForDispatch`, see ec2-delivery.ts `savedEnvBuildLease`).
-//   - the workspace is the approver's (the person who approved the environment revision; their access to the repositories is what the clone runs on, as a nightly run's is) and is NOT their default workspace;
+//   - the workspace belongs to `ownerForAutomaticRun` (today the person who approved the environment revision, and only while they are still an active member of the company; their access to the repositories is
+//     what the clone runs on, as a nightly run's is), is NOT their default workspace and is written WITHOUT the project index attributes, so it is in no list of their workspaces or of the project's;
 //   - the preparation is READ ONLY (no setup command runs on it) and PINNED to the job's commits (the same `pins` a setup run has): the worker refuses it if its own resolution of a branch head differs, so the build
 //     is for exactly the commits the job was queued for, and the result is held to them again by `recordBuild`;
 //   - `savedEnvBuild` carries the approved environment, the repository the push login will be for and the key's inputs, and NO credential: the stored invocation (outbox, stream, queue) never holds the lease token;
@@ -8,13 +9,14 @@
 // Fails closed: no approver, a moved approved environment, a repository the job has no commit for, or no build inputs (the base image and secret names, from the install) start nothing, and the job's lease runs out.
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { WorkspaceInstanceSchema, savedEnvRepositoryName, testEnvDigest, workerProjectDefinition, type PrepareSavedEnvBuild, type WorkerInvocation } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_DISPATCH_DUE_INDEX, WorkspaceInstanceSchema, savedEnvRepositoryName, testEnvDigest, workerProjectDefinition, type OrgId, type PrepareSavedEnvBuild, type WorkerInvocation } from "@agentx/contracts";
 import { readApprovedBy, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import type { SavedEnvDeps } from "../../test-env/saved-env.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
 import { issueCapability, operationOrg, operationRecord, outboxRecord } from "../cancellation.js";
 import { hashJson } from "../broker-shared.js";
-import { issueRepositoryGrant, workspaceItem, workspaceRuntime } from "./admin-and-helpers.js";
+import { issueRepositoryGrant, workspaceKey, workspaceRuntime } from "./admin-and-helpers.js";
+import { orgStoreOf } from "./dependency-wiring.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 import { requireLatestProject } from "./records.js";
 
@@ -26,6 +28,29 @@ export type StartRebuildResult =
   | { started: false; why: "disabled" | "nothing_queued" | "no_project" | "approved_moved" | "no_owner" | "commits_mismatch" | "no_build_inputs" | "already_started" };
 
 const startMarkerKey = (jobId: string): { pk: string; sk: string } => ({ pk: `SAVED_ENV_BUILD_START#${jobId}`, sk: "START" });
+/** The partition of the sparse due index that lists the build workspaces whose end has not been settled (saved-env-sweep.ts). */
+export const SAVED_ENV_BUILD_PARTITION = "SAVED_ENV_BUILD";
+/** The first look at a started build, and the gap between looks. */
+export const SAVED_ENV_BUILD_LOOK_MS = 10 * 60_000;
+/** A start marker is kept this long (seconds), then the table's expiry removes it. */
+export const SAVED_ENV_BUILD_MARKER_TTL_SECONDS = 30 * 86_400;
+export const savedEnvBuildDueKey = (atMs: number, jobId: string): string => `${String(Math.max(0, Math.trunc(atMs))).padStart(15, "0")}#${jobId}`;
+
+/**
+ * WHO a rebuild runs as. Today: the person who approved the environment revision, if they are still an active member of the company (a person who left, or lost their place, owns no automatic work; the start is
+ * refused with `no_owner` and the job ended). The decision "System owner for automatic runs" (2026-11-02) replaces this with the project's own automatic identity ("Rovara (project: X)"): that lane swaps THIS function
+ * and nothing else here changes.
+ */
+export async function ownerForAutomaticRun(dependencies: AwsBrokerDependencies, input: { orgId: OrgId; project: string; approvedRevision: number }): Promise<string | undefined> {
+  const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) };
+  const approver = await readApprovedBy(table, input.orgId, input.project, input.approvedRevision);
+  if (approver === undefined) return undefined;
+  try {
+    return (await orgStoreOf(dependencies).orgForDeveloper(approver))?.orgId === input.orgId ? approver : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export async function startSavedEnvRebuild(
   dependencies: AwsBrokerDependencies, ids: { orgId: string; projectId: string },
@@ -44,7 +69,7 @@ export async function startSavedEnvRebuild(
   // The environment the job was queued for is still the newest approved one: the build proves THIS body.
   const approved = await readApprovedTestEnvironment(table, orgId, ids.projectId);
   if (approved === undefined || approved.revision !== job.approved.revision || testEnvDigest(approved.environment) !== job.approved.digest) return { started: false, why: "approved_moved" };
-  const owner = await readApprovedBy(table, orgId, ids.projectId, approved.revision);
+  const owner = await ownerForAutomaticRun(dependencies, { orgId, project: ids.projectId, approvedRevision: approved.revision });
   if (owner === undefined) return { started: false, why: "no_owner" };
   const repositories = workerProjectDefinition(project.definition).repositories;
   // Every repository of the project has a commit in the job, and the job names no other: the pins are the job's commits, whole.
@@ -73,13 +98,19 @@ export async function startSavedEnvRebuild(
     environment: approved.environment, commits: job.commits, detectorGlobs: [...build.detectorGlobs], secretNames: [...build.secretNames], baseImageDigest: build.baseImageDigest,
   };
   const invocation: WorkerInvocation = {
-    protocolVersion: 1, kind: "prepare", operationId, workspaceId, fence: workspace.fence, projectRevision: project.definition.revision, callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
+    protocolVersion: 1, kind: "prepare", operationId, workspaceId, fence: workspace.fence, projectRevision: project.definition.revision, callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence, { savedEnvBuild: true }),
     payload: { project: workerProjectDefinition(project.definition), repositoryGrant: issueRepositoryGrant(dependencies, project, owner, workspaceId, operationId), readOnly: true, pins, savedEnvBuild },
   };
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
-      { Put: { TableName: dependencies.tableName, Item: { ...startMarkerKey(job.jobId), entityType: "SAVED_ENV_BUILD_START", workspaceId, operationId, createdAt: now }, ConditionExpression: "attribute_not_exists(pk)" } },
-      { Put: { TableName: dependencies.tableName, Item: workspaceItem(orgId, workspace), ConditionExpression: "attribute_not_exists(pk)" } },
+      // The marker: one start per job, the ids the sweep needs to settle the end, a time to look again (the sparse index), and an expiry.
+      { Put: { TableName: dependencies.tableName, Item: {
+        ...startMarkerKey(job.jobId), entityType: "SAVED_ENV_BUILD_START", orgId, projectId: ids.projectId, jobId: job.jobId, workspaceId, operationId, createdAt: now,
+        [WORKFLOW_DISPATCH_DUE_INDEX.partitionKey]: SAVED_ENV_BUILD_PARTITION, [WORKFLOW_DISPATCH_DUE_INDEX.sortKey]: savedEnvBuildDueKey(deps.now() + SAVED_ENV_BUILD_LOOK_MS, job.jobId),
+        [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(deps.now() / 1_000) + SAVED_ENV_BUILD_MARKER_TTL_SECONDS,
+      }, ConditionExpression: "attribute_not_exists(pk)" } },
+      // The workspace is written WITHOUT the project index attributes (`workspaceItem` adds them): it is in no list of workspaces, the project's or a person's.
+      { Put: { TableName: dependencies.tableName, Item: { ...workspaceKey(workspace.id), entityType: "WORKSPACE", ...workspace }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: operation, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } },
     ] }));

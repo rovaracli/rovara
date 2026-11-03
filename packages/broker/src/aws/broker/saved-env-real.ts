@@ -22,7 +22,7 @@ import { githubScope } from "./scope-helpers.js";
 import { savedEnvOnQueued } from "./saved-env-triggers.js";
 
 const ACCOUNT = /^[0-9]{12}$/u;
-const KMS_KEY_ARN = /^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key\/[0-9a-f-]{36}$/u;
+const KMS_KEY_ARN = /^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key\/(?:mrk-[0-9a-f]{32}|[0-9a-f-]{36})$/u;
 
 /** The environment the registry's config is read from. Undefined (with the missing name logged) when the install cannot run it. */
 export function savedEnvConfigOf(env: NodeJS.ProcessEnv): { env: string; scope: { partition: string; region: string; account: string }; kmsKeyArn: string } | undefined {

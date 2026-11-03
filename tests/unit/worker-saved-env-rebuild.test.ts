@@ -2,7 +2,7 @@
 // sandbox target; the push login and the result use the job's lease and the preparation's grant; a result is always posted.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PrepareSavedEnvBuildSchema, TestEnvironmentBodySchema, savedEnvRepositoryName, testEnvDigest, type SavedEnvBuildResult, type WorkerInvocation } from "../../packages/contracts/src/index.js";
-import { forbiddenValuesOf, liveTaskSandboxes, runSavedEnvRebuild, workspaceBuildSandbox, type SavedEnvRebuildDependencies } from "../../packages/worker/src/saved-env/rebuild.js";
+import { forbiddenValuesOf, liveTaskSandboxes, rememberCredentials, runSavedEnvRebuild, workspaceBuildSandbox, type SavedEnvRebuildDependencies } from "../../packages/worker/src/saved-env/rebuild.js";
 import type { SavedEnvBuildInput, SavedEnvBuildPorts } from "../../packages/worker/src/saved-env/build.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
@@ -54,8 +54,7 @@ function bench(over: Partial<SavedEnvRebuildDependencies> & { build?: SavedEnvRe
 
 describe("the job", () => {
   it("gives the build the job's commits and environment, and the worker's own view of what else runs here and what is secret", async () => {
-    const credentialProvider = vi.fn(async () => ({ token: "clone-token-value-0123" }));
-    const { deps, calls } = bench({ otherOperations: async () => [{ id: "another-operation", rootPath: "/mnt/workspace" }], credentialProvider, environment: { PATH: "/usr/bin", MODEL_API_KEY: "model-key-value-4567" } });
+    const { deps, calls } = bench({ otherOperations: async () => [{ id: "another-operation", rootPath: "/mnt/workspace" }], cloneCredentialValues: () => ["clone-token-value-0123"], environment: { PATH: "/usr/bin", MODEL_API_KEY: "model-key-value-4567" } });
     await runSavedEnvRebuild(deps);
     const input = calls.input!;
     expect(input).toMatchObject({
@@ -98,7 +97,7 @@ describe("the broker calls", () => {
     const { deps, posted } = bench({ answers: [new Response(JSON.stringify({ login: goodLogin }), { status: 200 }), new Response(JSON.stringify({ login: { ...goodLogin, repository: savedEnvRepositoryName({ env: "test", orgId: "org-2", projectId: "proj-9" }) } }), { status: 200 })], during: async (ports) => { seen.push(await ports.pushSession({ repository: REPOSITORY })); seen.push(await ports.pushSession({ repository: REPOSITORY })); } });
     await runSavedEnvRebuild(deps);
     expect(seen).toEqual([goodLogin, undefined]);
-    expect(posted[0]).toMatchObject({ url: "https://cp.example.test/v1/internal/workspaces/11111111-1111-4111-8111-111111111111/operations/22222222-2222-4222-8222-222222222222/saved-env-push-login", headers: { "x-agentx-repository-grant": GRANT } });
+    expect(posted[0]).toMatchObject({ url: "https://cp.example.test/v1/internal/workspaces/11111111-1111-4111-8111-111111111111/operations/22222222-2222-4222-8222-222222222222/saved-env-push-login", headers: { "x-agentx-callback-capability": CAPABILITY } });
     expect(posted[0]!.body).toEqual({ jobId: "job-1", leaseToken: LEASE });
   });
 
@@ -115,7 +114,7 @@ describe("the broker calls", () => {
     expect(posted).toHaveLength(3);
     for (const call of posted) {
       expect(call.url).toMatch(/\/saved-env-result$/u);
-      expect(call.headers).toMatchObject({ "x-agentx-repository-grant": GRANT });
+      expect(call.headers).toEqual({ "content-type": "application/json", "x-agentx-callback-capability": CAPABILITY });
       expect(call.body).toEqual({ jobId: "job-1", leaseToken: LEASE, result });
     }
   });
@@ -159,10 +158,30 @@ describe("the sandbox", () => {
 });
 
 describe("forbidden values", () => {
-  it("never includes a short value, and survives a clone credential that cannot be had", async () => {
-    const values = await forbiddenValuesOf({ invocation: invocation(), environment: { PATH: "/usr/bin", AWS_ACCESS_KEY_ID: "short", SOME_TOKEN: "a-long-enough-token-value" }, credentialProvider: async () => { throw new Error("no"); } }, LEASE);
+  it("never includes a short value", () => {
+    const values = forbiddenValuesOf({ invocation: invocation(), environment: { PATH: "/usr/bin", AWS_ACCESS_KEY_ID: "short", SOME_TOKEN: "a-long-enough-token-value" } }, LEASE);
     expect(values).toContain("a-long-enough-token-value");
     expect(values).not.toContain("short");
     expect(values).toEqual(expect.arrayContaining([GRANT, CAPABILITY, LEASE]));
+  });
+
+  it("remembers the clone credentials the preparation fetched, and fetches none of its own before the project's code runs", async () => {
+    const fetched = vi.fn(async (repository: { name: string }) => ({ token: `token-for-${repository.name}-0123`, password: "pw", ssh: undefined }));
+    const remembered = rememberCredentials(fetched as never);
+    expect(remembered.values()).toEqual([]);
+    await remembered.provider({ name: "svc" } as never);
+    await remembered.provider({ name: "svc" } as never);
+    expect(remembered.values()).toEqual(["token-for-svc-0123"]);
+    // the build: it reads what was remembered and never calls the provider again
+    const { deps, calls } = bench({ cloneCredentialValues: remembered.values });
+    await runSavedEnvRebuild(deps);
+    expect(fetched).toHaveBeenCalledTimes(2);
+    expect(calls.input!.forbiddenValues).toContain("token-for-svc-0123");
+  });
+
+  it("a provider that fails is not hidden: the preparation fails as it would have", async () => {
+    const remembered = rememberCredentials(async () => { throw new Error("no"); });
+    await expect(remembered.provider({ name: "svc" } as never)).rejects.toThrow("no");
+    expect(remembered.values()).toEqual([]);
   });
 });

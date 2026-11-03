@@ -5,7 +5,7 @@ import { githubInstallationKey, githubRepoProjectKey, orgProjectCatalogKey, proj
 import { GithubWebhookRetryableError } from "../../packages/broker/src/aws/github-webhooks.js";
 import { runSavedEnvPoll, savedEnvBeforeNightly, savedEnvOnQueued, savedEnvPushQueue } from "../../packages/broker/src/aws/broker/saved-env-triggers.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
-import { abandonQueuedJob, checkRebuild, runPoll, SAVED_ENV_POLL_MS, savedEnvForPrepare } from "../../packages/broker/src/test-env/saved-env.js";
+import { abandonQueuedJob, checkRebuild, runPoll, SAVED_ENV_POLL_BACKOFF_MAX_MS, SAVED_ENV_POLL_MS, savedEnvForPrepare } from "../../packages/broker/src/test-env/saved-env.js";
 import { deliverGithubTriggerEvents, githubCodePushes } from "../../packages/broker/src/triggers/github-events.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -204,12 +204,35 @@ describe("the periodic poll", () => {
     expect((await runPoll(many.deps, 3) as { checked: number }).checked).toBe(3);
   });
 
-  it("counts a project whose check fails and leaves its time alone", async () => {
+  it("counts a project whose check fails and moves its time on with a growing backoff, so it cannot take every pass; a poll that works clears the failures", async () => {
     const w = savedEnvWorld();
     w.seed({ nextPollAt: new Date(w.clock.now - 1000).toISOString() });
+    const approved = w.deps.approved;
     w.deps.approved = async () => { throw new Error("down"); };
+    const gaps: number[] = [];
+    for (let round = 0; round < 8; round += 1) {
+      expect(await runPoll(w.deps, 10)).toEqual({ ok: true, checked: 0, failed: 1 });
+      gaps.push(Date.parse(w.row()!.nextPollAt!) - w.clock.now);
+      expect(w.row()?.pollFailures).toBe(round + 1);
+      // not looked at again until its time
+      expect(await runPoll(w.deps, 10)).toEqual({ ok: true, checked: 0, failed: 0 });
+      w.clock.now = Date.parse(w.row()!.nextPollAt!) + 1;
+    }
+    expect(gaps.slice(0, 3)).toEqual([2 * SAVED_ENV_POLL_MS, 4 * SAVED_ENV_POLL_MS, 8 * SAVED_ENV_POLL_MS]);
+    expect(Math.max(...gaps)).toBe(SAVED_ENV_POLL_BACKOFF_MAX_MS);
+    w.deps.approved = approved;
+    expect(await runPoll(w.deps, 10)).toMatchObject({ ok: true, failed: 0 });
+    expect(w.row()?.pollFailures).toBeUndefined();
+    expect(Date.parse(w.row()!.nextPollAt!)).toBe(w.clock.now + SAVED_ENV_POLL_MS);
+  });
+
+  it("counts a check that lost its write as a failure too, and backs the project off", async () => {
+    const w = savedEnvWorld();
+    w.seed({ nextPollAt: new Date(w.clock.now - 1000).toISOString() });
+    w.store.failNextCommit();
     expect(await runPoll(w.deps, 10)).toEqual({ ok: true, checked: 0, failed: 1 });
-    expect(Date.parse(w.row()!.nextPollAt!)).toBeLessThan(w.clock.now);
+    expect(w.row()).toMatchObject({ pollFailures: 1 });
+    expect(Date.parse(w.row()!.nextPollAt!)).toBe(w.clock.now + 2 * SAVED_ENV_POLL_MS);
   });
 
   it("is the broker's pass only while sv is on, and never throws", async () => {

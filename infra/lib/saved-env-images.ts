@@ -121,7 +121,7 @@ export class SavedEnvImages extends Construct {
 
     // ---- the key
     if (props.kmsKeyArn !== undefined) {
-      const parsed = /^arn:aws[a-z-]*:kms:([a-z0-9-]+):(\d{12}):key\/[0-9a-f-]{36}$/u.exec(props.kmsKeyArn);
+      const parsed = /^arn:aws[a-z-]*:kms:([a-z0-9-]+):(\d{12}):key\/(?:mrk-[0-9a-f]{32}|[0-9a-f-]{36})$/u.exec(props.kmsKeyArn);
       if (parsed === null) throw new Error("saved environment images: kmsKeyArn must be a KMS key ARN (not an alias)");
       // The key must be in this account and region (checked when they are concrete; the control plane's own stack may leave them to deploy time).
       if ((!Token.isUnresolved(stack.region) && parsed[1] !== stack.region) || (!Token.isUnresolved(stack.account) && parsed[2] !== stack.account)) throw new Error("saved environment images: kmsKeyArn must be a key in this install's own account and region");

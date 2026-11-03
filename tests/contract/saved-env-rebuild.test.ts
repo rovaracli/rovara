@@ -4,13 +4,16 @@
 vi.hoisted(() => { process.env["STATE_TABLE_NAME"] ??= "state"; });
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PREPARE_SAVED_ENV_BUILD_FEATURE, WORKER_INVOCATION_FEATURES, WORKFLOW_DISPATCH_DUE_INDEX, WorkerInvocationSchema, savedEnvRepositoryName, type Ec2RuntimeBinding, type OrgId, type WorkerInvocation } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, PREPARE_SAVED_ENV_BUILD_FEATURE, SavedEnvBuildResultSchema, WORKER_INVOCATION_FEATURES, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WorkerInvocationSchema, agentXError, savedEnvRepositoryName, type Ec2RuntimeBinding, type OrgId, type WorkerInvocation } from "@agentx/contracts";
 import { createSavedEnvBuildLease } from "../../packages/broker/src/aws/dispatcher.js";
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
-import { startSavedEnvRebuild, type SavedEnvBuildInputs } from "../../packages/broker/src/aws/broker/saved-env-rebuild.js";
+import { ownerForAutomaticRun, startSavedEnvRebuild, type SavedEnvBuildInputs } from "../../packages/broker/src/aws/broker/saved-env-rebuild.js";
 import { brokerDependencies } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
-import { checkRebuild } from "../../packages/broker/src/test-env/saved-env.js";
+import { checkRebuild, leaseForDispatch } from "../../packages/broker/src/test-env/saved-env.js";
+import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
+import { sweepSavedEnvBuilds } from "../../packages/broker/src/aws/broker/saved-env-sweep.js";
+import { call } from "../support/slack-broker.js";
 import { dynamoSavedEnvStore } from "../../packages/broker/src/test-env/saved-env-store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { OMAR } from "../support/developer-task-broker.js";
@@ -224,19 +227,21 @@ describe("the dispatcher's lease", () => {
     return { db, store, lease: createSavedEnvBuildLease({ documentClient: db as never, tableName: "state", env: { SAVED_ENV_ENABLED: "1" } }), record, orgId, w };
   }
 
-  it("hands the token over once, for the job the operation was made for", async () => {
+  it("hands the token to the operation it was made for, again to the same operation, and to no other", async () => {
     const { lease, record, store, orgId } = await leased();
-    expect(await lease(record, "job-1")).toBe("T".repeat(40));
-    expect((await store.get(orgId, NAME))?.job?.dispatchedAt).toBeDefined();
-    expect(await lease(record, "job-1")).toBeUndefined();
+    const mine = { ...record, operationId: "op-1" } as Ec2OutboxRecord;
+    expect(await lease(mine, "job-1")).toBe("T".repeat(40));
+    expect((await store.get(orgId, NAME))?.job).toMatchObject({ dispatchedOperationId: "op-1" });
+    expect(await lease(mine, "job-1")).toBe("T".repeat(40));
+    expect(await lease({ ...record, operationId: "op-2" } as Ec2OutboxRecord, "job-1")).toBeUndefined();
   });
 
   it("does not take the lease for another job, and gives nothing while the switch is off", async () => {
     const { lease, record, store, orgId, db } = await leased();
-    expect(await lease(record, "another-job")).toBeUndefined();
+    expect(await lease({ ...record, operationId: "op-1" } as Ec2OutboxRecord, "another-job")).toBeUndefined();
     expect((await store.get(orgId, NAME))?.job?.dispatchedAt).toBeUndefined();
     const off = createSavedEnvBuildLease({ documentClient: db as never, tableName: "state", env: {} });
-    expect(await off(record, "job-1")).toBeUndefined();
+    expect(await off({ ...record, operationId: "op-1" } as Ec2OutboxRecord, "job-1")).toBeUndefined();
     expect((await store.get(orgId, NAME))?.job?.dispatchedAt).toBeUndefined();
   });
 
@@ -253,12 +258,317 @@ describe("the dispatcher's lease", () => {
       return answer;
     } };
     const lease = createSavedEnvBuildLease({ documentClient: racing as never, tableName: "state", env: { SAVED_ENV_ENABLED: "1" } });
-    expect(await lease(record, "job-1")).toBeUndefined();
+    expect(await lease({ ...record, operationId: "op-1" } as Ec2OutboxRecord, "job-1")).toBeUndefined();
+    void orgId;
+  });
+
+  it("reads the table name when it is used, not when the lease is made", async () => {
+    const { db, record, orgId } = await leased();
+    const before = process.env["STATE_TABLE_NAME"];
+    delete process.env["STATE_TABLE_NAME"];
+    try {
+      const lease = createSavedEnvBuildLease({ documentClient: db as never, env: { SAVED_ENV_ENABLED: "1" } });
+      process.env["STATE_TABLE_NAME"] = "state";
+      expect(await lease({ ...record, operationId: "op-1" } as Ec2OutboxRecord, "job-1")).toBe("T".repeat(40));
+    } finally { if (before === undefined) delete process.env["STATE_TABLE_NAME"]; else process.env["STATE_TABLE_NAME"] = before; }
     void orgId;
   });
 
   it("gives nothing for a workspace it cannot place", async () => {
     const { lease } = await leased();
     expect(await lease({ workspaceId: randomUUID() } as Ec2OutboxRecord, "job-1")).toBeUndefined();
+  });
+});
+
+// ---- who it runs as, and that the workspace is out of every list
+
+describe("who a rebuild runs as", () => {
+  it("is the approver while they are an active member of the company, through one named seam", async () => {
+    const { w, queue, start, dependencies } = await world();
+    await queue();
+    expect(await ownerForAutomaticRun(dependencies, { orgId: TEST_ORG, project: NAME, approvedRevision: 1 })).toBe(OMAR.developerId);
+    expect(await start()).toMatchObject({ started: true });
+    void w;
+  });
+
+  it("is nobody when the approver is no longer a member of the company, or the revision has no approver: the start is refused and nothing is written", async () => {
+    const { t, queue, start, dependencies, mine } = await world();
+    await queue();
+    for (const item of t.db.find((row) => row.approvedBy !== undefined)) t.db.set({ ...item, approvedBy: "dev-who-left" });
+    expect(await ownerForAutomaticRun(dependencies, { orgId: TEST_ORG, project: NAME, approvedRevision: 1 })).toBeUndefined();
+    expect(await start()).toEqual({ started: false, why: "no_owner" });
+    expect(mine().operation).toBeUndefined();
+    // a member of ANOTHER company is not an owner here
+    for (const item of t.db.find((row) => row.approvedBy !== undefined)) t.db.set({ ...item, approvedBy: OMAR.developerId });
+    expect(await ownerForAutomaticRun(dependencies, { orgId: "org_zzzzzzzzzzzzzzzzzzzz", project: NAME, approvedRevision: 1 })).toBeUndefined();
+  });
+
+  it("writes the workspace without the project index attributes, so it is in no list of workspaces", async () => {
+    const { queue, start, mine } = await world();
+    await queue();
+    await start();
+    const workspace = mine().workspace!;
+    expect(workspace[WORKSPACE_PROJECT_INDEX.partitionKey]).toBeUndefined();
+    expect(workspace[WORKSPACE_PROJECT_INDEX.sortKey]).toBeUndefined();
+    expect(workspace).toMatchObject({ entityType: "WORKSPACE", status: "PREPARING", ownerKey: OMAR.developerId });
+  });
+});
+
+// ---- the lease routes answer to the capability, long after the repository grant is gone
+
+const HEADERS = (capability: string) => ({ "x-agentx-callback-capability": capability });
+
+describe("the lease routes, with time moved on", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  async function running() {
+    const built = await world();
+    const job = await built.queue();
+    const started = await built.start();
+    if (!started.started) throw new Error("not started");
+    const invocation = WorkerInvocationSchema.parse((built.mine().outbox as unknown as { invocation: unknown }).invocation);
+    if (invocation.kind !== "prepare") throw new Error("not a preparation");
+    const leased = await leaseForDispatch(built.w.deps, built.w.ids, started.operationId);
+    if (!leased.ok) throw new Error("not leased");
+    const path = (route: string) => `/v1/internal/workspaces/${started.workspaceId}/operations/${started.operationId}/${route}`;
+    const result = () => SavedEnvBuildResultSchema.parse({
+      ok: true, repository: savedEnvRepositoryName({ env: "test", orgId: TEST_ORG, projectId: NAME }), tag: "kcccc-1", imageDigest: `sha256:${"7".repeat(64)}`,
+      manifest: { schemaVersion: 1, environmentKey: "c".repeat(64), testEnvRevision: 1, commits: [{ repositoryId: "web", sha: HEAD }], proveReportDigest: "b".repeat(64), imageDigest: `sha256:${"7".repeat(64)}`, builtAt: new Date().toISOString() },
+    });
+    return { ...built, job, started, invocation, token: leased.job.leaseToken, path, result };
+  }
+
+  it("answer to the callback capability and the lease for the whole lease, when the real repository grant (15 minutes) has long expired", async () => {
+    const r = await running();
+    const grant = r.invocation.payload.repositoryGrant;
+    expect(() => r.dependencies.repositoryGrants.inspect(grant)).not.toThrow();
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    vi.setSystemTime(Date.now() + 2 * 3_600_000);
+    r.w.clock.now += 2 * 3_600_000;
+    // the grant that the lease routes used to need is gone ...
+    expect(() => r.dependencies.repositoryGrants.inspect(grant)).toThrow();
+    // ... and the push login and the result still work
+    const login = await call(r.t.handler, { method: "POST", path: r.path("saved-env-push-login"), headers: HEADERS(r.invocation.callbackCapability), body: { jobId: r.job.jobId, leaseToken: r.token } });
+    expect(login.status, JSON.stringify(login.body)).toBe(200);
+    expect(login.body.login).toMatchObject({ repository: savedEnvRepositoryName({ env: "test", orgId: TEST_ORG, projectId: NAME }), username: "AWS" });
+    const recorded = await call(r.t.handler, { method: "POST", path: r.path("saved-env-result"), headers: HEADERS(r.invocation.callbackCapability), body: { jobId: r.job.jobId, leaseToken: r.token, result: r.result() } });
+    expect(recorded.status, JSON.stringify(recorded.body)).toBe(200);
+    expect(recorded.body).toMatchObject({ recorded: true });
+    expect(r.w.row()?.images[0]?.digest).toBe(`sha256:${"7".repeat(64)}`);
+  });
+
+  it("refuse the repository grant alone, no capability, another operation's capability, a capability without these actions, and a wrong lease", async () => {
+    const r = await running();
+    const body = { jobId: r.job.jobId, leaseToken: r.token };
+    const grantOnly = await call(r.t.handler, { method: "POST", path: r.path("saved-env-push-login"), headers: { "x-agentx-repository-grant": r.invocation.payload.repositoryGrant }, body });
+    expect(grantOnly.status).toBeGreaterThanOrEqual(400);
+    expect((await call(r.t.handler, { method: "POST", path: r.path("saved-env-push-login"), headers: {}, body })).status).toBeGreaterThanOrEqual(400);
+    // refused (a capability for another operation, or without these actions, is forbidden or stale; never accepted)
+    const other = issueCapability(r.dependencies, r.started.workspaceId, randomUUID(), 1, { savedEnvBuild: true });
+    expect((await call(r.t.handler, { method: "POST", path: r.path("saved-env-push-login"), headers: HEADERS(other), body })).status).toBeGreaterThanOrEqual(400);
+    const plain = issueCapability(r.dependencies, r.started.workspaceId, r.started.operationId, 1);
+    expect((await call(r.t.handler, { method: "POST", path: r.path("saved-env-push-login"), headers: HEADERS(plain), body })).status).toBeGreaterThanOrEqual(400);
+    expect((await call(r.t.handler, { method: "POST", path: r.path("saved-env-result"), headers: HEADERS(plain), body: { ...body, result: r.result() } })).status).toBeGreaterThanOrEqual(400);
+    expect((await call(r.t.handler, { method: "POST", path: r.path("saved-env-push-login"), headers: HEADERS(r.invocation.callbackCapability), body: { ...body, leaseToken: "x".repeat(40) } })).status).toBe(403);
+    expect(r.w.row()?.images).toEqual([]);
+  });
+
+  it("count each push login against the operation: three, then refused", async () => {
+    const r = await running();
+    const ask = () => call(r.t.handler, { method: "POST", path: r.path("saved-env-push-login"), headers: HEADERS(r.invocation.callbackCapability), body: { jobId: r.job.jobId, leaseToken: r.token } });
+    expect([(await ask()).status, (await ask()).status, (await ask()).status, (await ask()).status]).toEqual([200, 200, 200, 403]);
+    expect(r.t.db.find((item) => item.entityType === "OPERATION" && item.id === r.started.operationId)[0]).toMatchObject({ savedEnvPushLoginCount: 3 });
+  });
+
+  it("only a rebuild preparation is given the capability for them", async () => {
+    const r = await running();
+    const plain = issueCapability(r.dependencies, r.started.workspaceId, r.started.operationId, 1, { savedEnvBuild: true });
+    expect(r.invocation.callbackCapability).toBeDefined();
+    // the preparation of a task has an ordinary capability: the actions are not in it
+    const ordinary = JSON.parse(Buffer.from(issueCapability(r.dependencies, "w", "o", 1).split(".")[0]!, "base64url").toString("utf8")) as { actions: string[] };
+    expect(ordinary.actions).not.toContain("saved-env-push-login");
+    expect(ordinary.actions).not.toContain("saved-env-result");
+    const build = JSON.parse(Buffer.from(plain.split(".")[0]!, "base64url").toString("utf8")) as { actions: string[] };
+    expect(build.actions).toEqual(expect.arrayContaining(["saved-env-push-login", "saved-env-result"]));
+    const own = JSON.parse(Buffer.from(r.invocation.callbackCapability.split(".")[0]!, "base64url").toString("utf8")) as { actions: string[] };
+    expect(own.actions).toEqual(expect.arrayContaining(["saved-env-push-login", "saved-env-result"]));
+  });
+});
+
+describe("with the switch off the broker is as it was", () => {
+  it("answers the saved image paths as unknown paths, before the body is read, and puts no saved image key in the session sweep's answer", async () => {
+    const { t } = await world();
+    delete process.env.SAVED_ENV_ENABLED;
+    const bad = "{not json";
+    const w = "11111111-1111-4111-8111-111111111111";
+    const ask = (route: string) => t.handler({ rawPath: `/v1/internal/workspaces/${w}/operations/${w}/${route}`, rawQueryString: "", routeKey: "ANY /v1/internal/{proxy+}", headers: { "x-agentx-callback-capability": "x" }, body: bad, requestContext: { requestId: "r", http: { method: "POST" } } });
+    // the answer is the answer to any path that does not exist
+    const unknown = await ask("not-a-route");
+    for (const route of ["saved-env-push-login", "saved-env-result", "saved-env-fallback"]) {
+      const reply = await ask(route);
+      expect(reply.statusCode, route).toBe(unknown.statusCode);
+      expect(reply.body, route).toBe(unknown.body);
+    }
+    const swept = await t.handler({ source: "agentx.session-sweep" } as never);
+    const answer = JSON.parse((swept as { body?: string }).body ?? JSON.stringify(swept)) as Record<string, unknown>;
+    expect(Object.keys(answer).filter((key) => key.startsWith("savedEnv"))).toEqual([]);
+    process.env.SAVED_ENV_ENABLED = "1";
+    const on = await t.handler({ source: "agentx.session-sweep" } as never);
+    const onAnswer = JSON.parse((on as { body?: string }).body ?? JSON.stringify(on)) as Record<string, unknown>;
+    expect(Object.keys(onAnswer)).toEqual(expect.arrayContaining(["savedEnv", "savedEnvBuilds"]));
+  });
+});
+
+// ---- the end of a build: the job, the workspace, its compute
+
+describe("settling the end of a build", () => {
+  async function started() {
+    const r = await world();
+    const job = await r.queue();
+    const begun = await r.start();
+    if (!begun.started) throw new Error("not started");
+    const marker = () => r.t.db.get(`SAVED_ENV_BUILD_START#${job.jobId}`, "START") as Record<string, unknown>;
+    const workspace = () => r.t.db.get(`WORKSPACE#${begun.workspaceId}`, "META") as Record<string, unknown>;
+    const operation = () => r.t.db.get(`WORKSPACE#${begun.workspaceId}`, `OPERATION#${begun.operationId}`) as Record<string, unknown>;
+    const sweep = () => sweepSavedEnvBuilds(r.dependencies, 10, { SAVED_ENV_ENABLED: "1" });
+    // what the setup draft of the harness did to its own workspace is not this build's
+    r.t.deleteEc2Session?.mockClear();
+    const later = (ms: number) => { r.w.clock.now += ms; vi.setSystemTime(Date.now() + ms); };
+    return { ...r, job, begun, marker, workspace, operation, sweep, later };
+  }
+  const TEN = 11 * 60_000;
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("leaves a build that is still running alone and looks at it again later", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    const s = await started();
+    // not due yet
+    expect(await s.sweep()).toEqual({ settled: 0, waiting: 0, failed: 0 });
+    s.later(TEN);
+    const dueBefore = String(s.marker()[WORKFLOW_DISPATCH_DUE_INDEX.sortKey]);
+    expect(await s.sweep()).toEqual({ settled: 0, waiting: 1, failed: 0 });
+    expect(String(s.marker()[WORKFLOW_DISPATCH_DUE_INDEX.sortKey]) > dueBefore).toBe(true);
+    expect(s.t.deleteEc2Session).not.toHaveBeenCalled();
+    expect(s.w.row()?.job?.jobId).toBe(s.job.jobId);
+    expect(s.workspace().status).toBe("PREPARING");
+  });
+
+  it("ends the job and retires the workspace when the operation failed: compute deleted, workspace closed with an expiry, marker settled", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    const s = await started();
+    await s.t.finish(s.begun.workspaceId, s.begun.operationId, "FAILED", { error: "the clone failed" });
+    s.later(TEN);
+    expect(await s.sweep()).toEqual({ settled: 1, waiting: 0, failed: 0 });
+    expect(s.w.row()?.job).toBeUndefined();
+    expect(s.w.row()).toMatchObject({ health: "needs_repair", lastFailure: "operation_failed" });
+    expect(s.t.deleteEc2Session).toHaveBeenCalledWith(s.begun.workspaceId);
+    expect(s.workspace()).toMatchObject({ status: "CLOSED" });
+    expect(s.workspace()[INDEX_EXPIRY_ATTRIBUTE]).toBeGreaterThan(Date.now() / 1000);
+    expect(s.workspace().activeOperationId).toBeUndefined();
+    expect(s.marker().retiredAt).toBeDefined();
+    expect(s.marker()[WORKFLOW_DISPATCH_DUE_INDEX.partitionKey]).toBeUndefined();
+    // settled once: a second pass finds nothing
+    s.later(TEN);
+    expect(await s.sweep()).toEqual({ settled: 0, waiting: 0, failed: 0 });
+    expect(s.t.deleteEc2Session).toHaveBeenCalledTimes(1);
+  });
+
+  it("retires the workspace of a build that was recorded (the operation succeeded) without touching the recorded image", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    const s = await started();
+    s.w.store.rows.set(`${TEST_ORG}#${NAME}`, { ...s.w.row()!, job: undefined, health: "healthy" });
+    await s.t.finish(s.begun.workspaceId, s.begun.operationId, "SUCCEEDED", { result: { manifestPath: "x" } });
+    s.later(TEN);
+    expect(await s.sweep()).toEqual({ settled: 1, waiting: 0, failed: 0 });
+    expect(s.w.row()).toMatchObject({ health: "healthy" });
+    expect(s.w.row()?.lastFailure).toBeUndefined();
+    expect(s.t.deleteEc2Session).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends a build whose lease ran out while its operation never reported (a worker that was lost), and ends the operation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    const s = await started();
+    s.later(4 * 3_600_000);
+    expect(await s.sweep()).toEqual({ settled: 1, waiting: 0, failed: 0 });
+    expect(s.w.row()).toMatchObject({ health: "needs_repair", lastFailure: "lease_expired" });
+    expect(s.operation()).toMatchObject({ status: "FAILED" });
+    expect(s.workspace()).toMatchObject({ status: "CLOSED" });
+  });
+
+  it("requeues for the heads now when the repository moved since the queue", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    const s = await started();
+    s.w.state.heads = new Map([["web", "9".repeat(40)]]);
+    await s.t.finish(s.begun.workspaceId, s.begun.operationId, "FAILED", { error: "the branch moved" });
+    s.later(TEN);
+    await s.sweep();
+    expect(s.w.row()?.job).toMatchObject({ commits: { web: "9".repeat(40) } });
+    expect(s.w.row()?.job?.jobId).not.toBe(s.job.jobId);
+    expect(s.w.row()?.lastFailure).toBeUndefined();
+  });
+
+  it("keeps looking when the compute cannot be deleted just now, and retires it when it can", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    const s = await started();
+    await s.t.finish(s.begun.workspaceId, s.begun.operationId, "FAILED", { error: "x" });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    s.t.deleteEc2Session!.mockRejectedValueOnce(agentXError("WORKSPACE_BUSY", "the compute is starting"));
+    s.later(TEN);
+    expect(await s.sweep()).toEqual({ settled: 0, waiting: 1, failed: 0 });
+    expect(s.workspace().status).not.toBe("CLOSED");
+    expect(s.marker().retiredAt).toBeUndefined();
+    s.later(TEN);
+    expect(await s.sweep()).toEqual({ settled: 1, waiting: 0, failed: 0 });
+    expect(s.workspace()).toMatchObject({ status: "CLOSED" });
+  });
+
+  it("ends a build whose job was recorded but whose operation never ended, after a day", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    const s = await started();
+    s.w.store.rows.set(`${TEST_ORG}#${NAME}`, { ...s.w.row()!, job: undefined, health: "healthy" });
+    s.later(TEN);
+    expect(await s.sweep()).toEqual({ settled: 0, waiting: 1, failed: 0 });
+    s.later(25 * 3_600_000);
+    expect(await s.sweep()).toEqual({ settled: 1, waiting: 0, failed: 0 });
+    expect(s.workspace()).toMatchObject({ status: "CLOSED" });
+    expect(s.w.row()).toMatchObject({ health: "healthy" });
+  });
+
+  it("clears the workspace's active operation when it retires a build whose worker never reported", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    const s = await started();
+    expect(s.workspace().activeOperationId).toBeDefined();
+    s.later(4 * 3_600_000);
+    await s.sweep();
+    expect(s.workspace().activeOperationId).toBeUndefined();
+  });
+
+  it("skips a marker that was settled but is still listed by the index, and deletes no compute twice for a workspace that is already closed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    const s = await started();
+    s.t.db.set({ ...s.marker(), retiredAt: new Date().toISOString() } as never);
+    s.later(TEN);
+    expect(await s.sweep()).toEqual({ settled: 0, waiting: 0, failed: 0 });
+    expect(s.t.deleteEc2Session).not.toHaveBeenCalled();
+    // a workspace closed by an earlier pass whose marker was not updated: settled without another delete
+    const closed = await started();
+    await closed.t.finish(closed.begun.workspaceId, closed.begun.operationId, "FAILED", { error: "x" });
+    closed.t.db.set({ ...closed.workspace(), status: "CLOSED", closedAt: new Date().toISOString() } as never);
+    closed.t.deleteEc2Session?.mockClear();
+    closed.later(TEN);
+    expect(await closed.sweep()).toEqual({ settled: 1, waiting: 0, failed: 0 });
+    expect(closed.t.deleteEc2Session).not.toHaveBeenCalled();
+  });
+
+  it("does nothing with the switch off or no registry", async () => {
+    const s = await started();
+    expect(await sweepSavedEnvBuilds(s.dependencies, 10, {})).toBe("off");
+    expect(await sweepSavedEnvBuilds({ ...s.dependencies, savedEnvDeps: undefined } as never, 10, { SAVED_ENV_ENABLED: "1" })).toBe("off");
+  });
+
+  it("gives every start marker an expiry", async () => {
+    const s = await started();
+    expect(Number(s.marker()[INDEX_EXPIRY_ATTRIBUTE])).toBeGreaterThan(Date.now() / 1000 + 29 * 86_400);
+    expect(s.marker()).toMatchObject({ orgId: TEST_ORG, projectId: NAME, jobId: s.job.jobId, workspaceId: s.begun.workspaceId, operationId: s.begun.operationId });
   });
 });

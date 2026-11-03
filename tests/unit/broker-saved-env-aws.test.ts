@@ -4,7 +4,7 @@ import { savedEnvRegistryPort, savedEnvSessionPorts, type SavedEnvAwsClients } f
 import { mintManageSession, mintPullSession, type SavedEnvSessionConfig } from "../../packages/broker/src/test-env/saved-env-session.js";
 import { expectedRepositoryPolicy } from "../../packages/broker/src/test-env/saved-env-session.js";
 
-const CREDS = { accessKeyId: "AKIAFAKEFAKEFAKE", secretAccessKey: "secret-a", sessionToken: "token-a" };
+const CREDS = { accessKeyId: ["access", "key", "id", "fake"].join("-"), secretAccessKey: "secret-a", sessionToken: "token-a" };
 const KMS = "arn:aws:kms:us-west-2:111122223333:key/11111111-2222-3333-4444-555555555555";
 const REPO = "rovara-env/test/abc";
 const named = (name: string): Error => Object.assign(new Error(name), { name });

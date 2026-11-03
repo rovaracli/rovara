@@ -4,8 +4,9 @@
 //     sandbox that has started a process (`not_fresh`). Its project commands go through `executionFor(SANDBOX_TARGET, { sandbox })`, the only way any project command starts here;
 //   - `notFrom` is the worker's own live lease and sandbox registry: every other operation active on this machine and every other running task sandbox. Nothing is taken from the job payload. A machine that is doing
 //     anything else does not build (the workspace root is shared, so another operation here would share the workspace);
-//   - `forbiddenValues` are this machine's secrets: the credential-shaped environment variables, the preparation's grant, callback capability and lease token, and the clone credential of each repository;
-//   - the push login and the result go to the broker's two lease routes with the preparation's own grant and the job's lease token (a token that only the dispatcher handed over, at delivery).
+//   - `forbiddenValues` are this machine's secrets: the credential-shaped environment variables, the preparation's grant, callback capability and lease token, and the clone credentials the preparation itself fetched (remembered as
+//     it fetched them: nothing is fetched again before the project's code runs);
+//   - the push login and the result go to the broker's two lease routes with the operation's callback capability and the job's lease token (a token that only the dispatcher handed over, at delivery).
 // The result is posted whatever it is (a failure is a fixed word), and the sandbox, the workspace's checkouts and everything the build made are removed. Nothing about the lease token leaves this file: it is not logged.
 import { rm } from "node:fs/promises";
 import path from "node:path";
@@ -64,8 +65,8 @@ export interface SavedEnvRebuildDependencies {
   docker: DockerCli;
   /** The worker's live lease and sandbox registry: every OTHER operation active on this machine, as `{ id, rootPath }`. */
   otherOperations(): Promise<ReadonlyArray<{ id: string; rootPath: string }>>;
-  /** The clone credential of a repository (the preparation's own provider), only to keep its value out of the image. */
-  credentialProvider?: RepositoryCredentialProvider;
+  /** The clone credential values the PREPARATION already fetched (`rememberCredentials` wraps its provider): only to keep them out of the image. No credential is fetched again for the build. */
+  cloneCredentialValues?: () => readonly string[];
   environment?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   fetchImplementation?: typeof fetch;
@@ -83,19 +84,25 @@ export async function liveTaskSandboxes(docker: DockerCli, rootPath: string, own
   return listed.stdout.split("\n").map((name) => name.trim()).filter((name) => name !== "" && name !== own).map((name) => ({ id: name, rootPath }));
 }
 
-export async function forbiddenValuesOf(deps: Pick<SavedEnvRebuildDependencies, "invocation" | "credentialProvider" | "environment">, leaseToken: string): Promise<string[]> {
+/** Wraps the preparation's credential provider so the values it hands out are remembered (for the build's secret scan). The wrapped provider is the only thing that ever fetches the clone credential. */
+export function rememberCredentials(provider: RepositoryCredentialProvider): { provider: RepositoryCredentialProvider; values(): readonly string[] } {
+  const seen = new Set<string>();
+  return {
+    provider: async (repository) => {
+      const credential = await provider(repository);
+      for (const value of [credential.password, credential.token, credential.ssh?.privateKey]) if (value !== undefined && value.length >= 8) seen.add(value);
+      return credential;
+    },
+    values: () => [...seen],
+  };
+}
+
+export function forbiddenValuesOf(deps: Pick<SavedEnvRebuildDependencies, "invocation" | "cloneCredentialValues" | "environment">, leaseToken: string): string[] {
   const environment = deps.environment ?? process.env;
-  const values = new Set<string>([deps.invocation.payload.repositoryGrant, deps.invocation.callbackCapability, leaseToken]);
+  const values = new Set<string>([deps.invocation.payload.repositoryGrant, deps.invocation.callbackCapability, leaseToken, ...(deps.cloneCredentialValues?.() ?? [])]);
   for (const name of credentialShapedVariables(environment)) {
     const value = environment[name];
     if (value !== undefined && value.length >= 8) values.add(value);
-  }
-  for (const repository of deps.invocation.payload.project.repositories) {
-    try {
-      const credential = await deps.credentialProvider?.(repository);
-      if (credential === undefined) continue;
-      for (const value of [credential.password, credential.token, credential.ssh?.privateKey]) if (value !== undefined && value.length >= 8) values.add(value);
-    } catch { /* a clone credential that cannot be had again cannot be in the image either */ }
   }
   return [...values];
 }
@@ -108,7 +115,8 @@ export async function runSavedEnvRebuild(deps: SavedEnvRebuildDependencies): Pro
   if (leaseToken === undefined) throw agentXError("CONFIG_INVALID", "the saved image build has no lease");
   const send = deps.fetchImplementation ?? fetch;
   const base = `${deps.controlPlaneUrl.replace(/\/$/, "")}/v1/internal/workspaces/${deps.invocation.workspaceId}/operations/${deps.invocation.operationId}`;
-  const headers = { "content-type": "application/json", "x-agentx-repository-grant": deps.invocation.payload.repositoryGrant };
+  // The two lease routes answer to the operation's callback capability (it lives as long as the build); the repository grant is 15 minutes and is long gone when the push is done.
+  const headers = { "content-type": "application/json", "x-agentx-callback-capability": deps.invocation.callbackCapability };
   const environment = deps.environment ?? process.env;
 
   const post = async (route: string, body: unknown, timeoutMs: number): Promise<unknown> => {
@@ -144,7 +152,7 @@ export async function runSavedEnvRebuild(deps: SavedEnvRebuildDependencies): Pro
       const builderImage = environment["AGENTX_SAVED_ENV_BUILDER_IMAGE"];
       const input: SavedEnvBuildInput = {
         repository: job.repository, environment: job.environment, approved: job.approved, repositories, detectorGlobs: job.detectorGlobs, secretNames: job.secretNames, baseImageDigest: job.baseImageDigest,
-        notFrom: others, forbiddenValues: await forbiddenValuesOf(deps, leaseToken), signal: deps.signal ?? new AbortController().signal, proveDeadlineMs: SAVED_ENV_PROVE_DEADLINE_MS,
+        notFrom: others, forbiddenValues: forbiddenValuesOf(deps, leaseToken), signal: deps.signal ?? new AbortController().signal, proveDeadlineMs: SAVED_ENV_PROVE_DEADLINE_MS,
         ...(builderImage === undefined || builderImage === "" ? {} : { builderImage }),
       };
       const baseline = { docker: deps.docker, makeFresh, pushSession };

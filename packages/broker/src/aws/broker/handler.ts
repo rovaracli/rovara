@@ -78,8 +78,9 @@ import { dropWatchedBatch, listWatchedBatches, recordWatchedBatchThread, startSl
 import { cancelWorkspaceTask, stopWorkspace } from "./acceptance.js";
 import { exchangeRegistryCredential } from "./registry-credentials.js";
 import { exchangeSavedEnvLogin } from "./saved-env-login.js";
-import { handleSavedEnvLease } from "./saved-env-lease.js";
+import { handleSavedEnvFallback } from "./saved-env-lease.js";
 import { runSavedEnvPoll, savedEnvBeforeNightly, savedEnvPushQueue } from "./saved-env-triggers.js";
+import { sweepSavedEnvBuilds } from "./saved-env-sweep.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
 import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
 import { handleCallback } from "./callbacks.js";
@@ -267,7 +268,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       catch (error) { console.log(JSON.stringify({ component: "broker", event: "redirect.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.redirects = "failed"; }
       outcome.asks = await runAskMaintenance(dependencies, Date.now());
       // Saved project images: the periodic poll (a few due projects a pass; off, nothing is read).
-      outcome.savedEnv = await runSavedEnvPoll(dependencies);
+      // With the switch off the answer is today's, byte for byte: neither key is there.
+      const polled = await runSavedEnvPoll(dependencies);
+      if (polled !== "off") { outcome.savedEnv = polled; outcome.savedEnvBuilds = await sweepSavedEnvBuilds(dependencies); }
       return json(outcome, "session-sweep");
     }
     // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
@@ -746,7 +749,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Lane E: the project's MCP context sources, for an Understand, Plan, Plan-check or Review stage; authorized by the operation's `context-tools` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/context-tools") return json(await handleContextTools(dependencies, request, "list"), request.requestId);
       if (request.method === "POST" && url.pathname === "/v1/internal/context-tools/call") return json(await handleContextTools(dependencies, request, "call"), request.requestId);
-      const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent|nightly-result)$/.exec(
+      // Saved project images: the push login and result are callback actions only where the registry is installed; elsewhere those paths are not found, as any unknown path.
+      const savedEnvOn = dependencies.savedEnvDeps !== undefined && savedEnvEnabled();
+      const callback = new RegExp(`^\\/v1\\/internal\\/workspaces\\/([0-9a-f-]+)\\/operations\\/([0-9a-f-]+)\\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent|nightly-result${savedEnvOn ? "|saved-env-push-login|saved-env-result" : ""})$`).exec(
         url.pathname,
       );
       if (request.method === "POST" && callback?.[1] && callback[2] && callback[3]) {
@@ -763,9 +768,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         return json(await exchangeSavedEnvLogin(dependencies, request, savedEnvLoginExchange[1], savedEnvLoginExchange[2]), request.requestId);
       }
       // Saved project images: the rebuild job's push login and result (answered to the job's lease), and a preparation's fallback report (test-env/saved-env-lease.ts).
-      const savedEnvLease = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/saved-env-(push-login|result|fallback)$/.exec(url.pathname);
-      if (request.method === "POST" && savedEnvLease?.[1] && savedEnvLease[2] && savedEnvLease[3]) {
-        return json(await handleSavedEnvLease(dependencies, request, savedEnvLease[1], savedEnvLease[2], savedEnvLease[3] as "push-login" | "result" | "fallback"), request.requestId);
+      const savedEnvFallback = savedEnvOn ? /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/saved-env-fallback$/.exec(url.pathname) : null;
+      if (request.method === "POST" && savedEnvFallback?.[1] && savedEnvFallback[2]) {
+        return json(await handleSavedEnvFallback(dependencies, request, savedEnvFallback[1], savedEnvFallback[2]), request.requestId);
       }
       const credentialExchange = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/repository-credentials$/.exec(
         url.pathname,

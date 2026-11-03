@@ -36,6 +36,8 @@ import { handleSetupAgentCallback } from "../../rovara-code/setup-agent-callback
 import { companySetupOff } from "../../rovara-code/setup-locks-store.js";
 import { handleNightlyResultCallback } from "../../test-env/nightly-callback.js";
 import { nightlyResultDeps } from "./nightly-run-wiring.js";
+import { savedEnvLeaseContext } from "./saved-env-lease.js";
+import { savedEnvPushLoginCore, savedEnvResultCore } from "../../test-env/saved-env-lease.js";
 import { readStoredCandidateSourceExport } from "./workflow-items.js";
 
 export async function handleCallback(
@@ -95,6 +97,12 @@ export async function handleCallback(
   if (action === "nightly-result") {
     if (cancelClaims !== undefined) throw agentXError("CALLBACK_FORBIDDEN", "a cancel cannot reach a nightly run");
     return json(await handleNightlyResultCallback(nightlyResultDeps(dependencies), operation, body), request.requestId);
+  }
+  // Saved project images: the rebuild job's push login and result. The capability has them only for the preparation made for a job; the lease and the job's own operation are held to again inside.
+  if (action === "saved-env-push-login" || action === "saved-env-result") {
+    if (cancelClaims !== undefined) throw agentXError("CALLBACK_FORBIDDEN", "a cancel cannot reach a saved image rebuild");
+    const input = { workspaceId, operationId, body };
+    return json(action === "saved-env-result" ? await savedEnvResultCore(savedEnvLeaseContext(dependencies), input) : await savedEnvPushLoginCore(savedEnvLeaseContext(dependencies), input), request.requestId);
   }
   if (action === "events") {
     const accepted = await appendEvents(dependencies, operation, body);

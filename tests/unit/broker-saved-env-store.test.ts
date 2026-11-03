@@ -156,6 +156,21 @@ describe("the poll", () => {
   });
 });
 
+describe("the poll's pages", () => {
+  it("reads past rows that are no longer eligible, so they cannot starve an eligible one behind them", async () => {
+    const { db, store } = bench();
+    const early = (index: number) => new Date(NOW - 3_600_000 + index).toISOString();
+    // 450 rows listed first whose time has come but which were turned off meanwhile (the index still lists them), then one that is due
+    for (let index = 0; index < 450; index += 1) {
+      const projectId = `p${String(index).padStart(4, "0")}`;
+      await store.commit(state({ projectId, nextPollAt: early(index) }), null, entry("activity", { projectId }));
+      db.set({ ...(db.get(orgPk(ORG), `SAVED_ENV#${projectId}`) as Record<string, unknown>), enabled: false });
+    }
+    await store.commit(state({ projectId: "late-but-due", nextPollAt: new Date(NOW - 1000).toISOString() }), null, entry("activity", { projectId: "late-but-due" }));
+    expect(await store.pollDue(1)).toEqual([{ orgId: ORG, projectId: "late-but-due" }]);
+  });
+});
+
 describe("deleted projects", () => {
   const deleted = (changes: Partial<SavedEnvState> = {}): SavedEnvState => state({ deleted: true, deletedAt: AT, ...changes });
 

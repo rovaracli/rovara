@@ -22,6 +22,15 @@ describe("the config", () => {
     expect(savedEnvConfigOf({ ...ENV, AWS_REGION: "cn-north-1" })?.scope.partition).toBe("aws-cn");
   });
 
+  it("accepts a multi-region key, and refuses a key id that is neither", () => {
+    const multiRegion = "arn:aws:kms:us-west-2:111122223333:key/mrk-" + "a".repeat(32);
+    expect(savedEnvConfigOf({ ...ENV, SAVED_ENV_KMS_KEY_ARN: multiRegion })?.kmsKeyArn).toBe(multiRegion);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    for (const bad of ["arn:aws:kms:us-west-2:111122223333:key/mrk-short", "arn:aws:kms:us-west-2:111122223333:key/mrk-" + "g".repeat(32), "arn:aws:kms:us-west-2:111122223333:alias/x"]) {
+      expect(savedEnvConfigOf({ ...ENV, SAVED_ENV_KMS_KEY_ARN: bad }), bad).toBeUndefined();
+    }
+  });
+
   it("is nothing when any of them is missing or malformed, and the log names the variable and never a value", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     for (const [name, value] of [["AGENTX_ENV", ""], ["AWS_REGION", undefined], ["AGENTX_ACCOUNT_ID", "12"], ["SAVED_ENV_KMS_KEY_ARN", "alias/x"], ["SAVED_ENV_KMS_KEY_ARN", undefined]] as const) {

@@ -31,7 +31,7 @@ import { removeLeftoverMaskVolumes } from "./devcontainer.js";
 import { removeLeftoverTaskSandboxes, taskShellSelection } from "./task-sandbox.js";
 import { removeLeftoverSetupRuns, setupWorkspaceKey } from "./setup-network.js";
 import { createSavedEnvFallbackReporter, createSavedEnvLoginProvider } from "./saved-env/login.js";
-import { runSavedEnvRebuild } from "./saved-env/rebuild.js";
+import { rememberCredentials, runSavedEnvRebuild } from "./saved-env/rebuild.js";
 import { savedEnvOptionsOf } from "./saved-env/use.js";
 import { createDockerCli } from "./swebench/containers.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
@@ -97,15 +97,14 @@ const state = createWorkerServerState(
       }
       if (invocation.kind === "prepare") {
         const controlPlaneUrl = requiredEnvironment("AGENTX_CONTROL_PLANE_URL");
+        // The clone credential is fetched by the preparation alone; its values are remembered for a rebuild's secret scan.
+        const cloneCredentials = rememberCredentials(createRepositoryCredentialProvider({ controlPlaneUrl, invocation }));
         const manifest = await prepareWorkspace({
           rootPath,
           project: invocation.payload.project,
           creationIdentity: invocation.workspaceId,
           ...(trustedRuntimeBackingOwner === undefined ? {} : { trustedRuntimeBackingOwner }),
-          credentialProvider: createRepositoryCredentialProvider({
-            controlPlaneUrl,
-            invocation,
-          }),
+          credentialProvider: cloneCredentials.provider,
           // An agent-step run that looks at a pull request: its head is checked out after the clone (Plan 3, Task 22).
           ...(invocation.payload.checkout === undefined ? {} : { checkout: invocation.payload.checkout }),
           // An agent-step run's preparation runs none of the repository's code (runs I-2).
@@ -125,7 +124,7 @@ const state = createWorkerServerState(
             rootPath, controlPlaneUrl, invocation, manifest, docker: createDockerCli(),
             // The workspace root is shared by everything on this machine: any other running operation means the build would not be in a workspace of its own.
             otherOperations: async () => (anotherOperationActive(state, invocation.operationId) ? [{ id: "another-operation", rootPath }] : []),
-            credentialProvider: createRepositoryCredentialProvider({ controlPlaneUrl, invocation }),
+            cloneCredentialValues: cloneCredentials.values,
           });
         }
         return {
