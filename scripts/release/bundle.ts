@@ -27,6 +27,7 @@ import {
 } from "@agentx/contracts";
 import { createHash } from "node:crypto";
 import { LITELLM_SOURCE_IMAGE, imageDigestOf } from "../../infra/lib/bundle-images.js";
+import { assertReleaseFlavorImage, skopeoLabelReader, type ImageLabelReader } from "./image-flavor.js";
 import { ociArchiveDigests } from "./oci-archive.js";
 
 const execFileAsync = promisify(execFile);
@@ -65,6 +66,8 @@ export interface BuildBundleInput {
    * `verifyKitForSigning` (release:bundle never passes one); a test double replaces it, as `exportImage` and `signer` are. A failure removes the output folder.
    */
   kitCheck?: (kit: { kitRoot: string; releaseDir: string; release: ReleaseManifest }) => Promise<void>;
+  /** Reads an image's labels: the worker image must say catalog-flavor=release (scripts/release/image-flavor.ts). Defaults to skopeo; a test gives a fake. */
+  readImageLabels?: ImageLabelReader;
 }
 
 async function sha256OfFile(path: string): Promise<{ sha256: string; bytes: number }> {
@@ -179,6 +182,10 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
     const bundled = input.images.find((image) => image.name === name);
     if (bundled === undefined) throw new Error(`the release names a ${name} image (${named}); the bundle must mirror it`);
     if (bundled.sourceRef !== named) throw new Error(`the ${name} image given is not the one release.json names`);
+  }
+  // The worker image is built by Docker from whatever tree it was given, so it is checked by its label, before the output folder is touched.
+  for (const image of input.images) {
+    if (image.name === "worker") await assertReleaseFlavorImage("worker", image.sourceRef, input.readImageLabels ?? skopeoLabelReader);
   }
   await claimOutDir(out);
   claimed.out = out;

@@ -29,7 +29,16 @@ COPY packages/audit-verifier packages/audit-verifier
 COPY packages/contracts packages/contracts
 COPY packages/verifier packages/verifier
 COPY packages/worker packages/worker
-RUN npx tsc -b packages/contracts packages/verifier packages/worker --pretty false
+# The catalog flavor (test services slice 1): the image's flavor is this build argument, never whatever the checkout says. "release" (the default, for every public and Enterprise release) generates the staging-only catalog
+# signing key list EMPTY, so the key is not in the compiled code at all; only the staging build path passes CATALOG_FLAVOR=staging (scripts/test-deploy.ts). The image is labelled with it below, and every release path refuses an
+# image that is not labelled release (scripts/release/image-flavor.ts).
+ARG CATALOG_FLAVOR=release
+COPY environments/service-catalog/catalog.json environments/service-catalog/staging-signing-key*.json environments/service-catalog/
+RUN case "$CATALOG_FLAVOR" in release|staging) ;; *) echo "CATALOG_FLAVOR is release or staging" >&2; exit 1 ;; esac \
+    && node packages/contracts/tools/catalog-flavor.ts "$CATALOG_FLAVOR" --root /opt/agentx
+RUN npx tsc -b packages/contracts packages/verifier packages/worker --pretty false \
+    && grep -q "CATALOG_BUILD_FLAVOR = \"$CATALOG_FLAVOR\";" packages/contracts/dist/catalog-build-flavor.js \
+    && { [ "$CATALOG_FLAVOR" != release ] || grep -q "CATALOG_STAGING_ONLY_SIGNING_KEYS = \[\];" packages/contracts/dist/catalog-staging-keys.js; }
 RUN npm prune --omit=dev --workspaces
 
 # The Docker CLI and Compose plugin, which run a project's devcontainer through the EC2 host's
@@ -92,6 +101,9 @@ COPY --from=build /opt/agentx/packages/audit-verifier ./packages/audit-verifier
 COPY --from=build /opt/agentx/packages/contracts ./packages/contracts
 COPY --from=build /opt/agentx/packages/verifier ./packages/verifier
 COPY --from=build /opt/agentx/packages/worker ./packages/worker
+# The flavor this image was built with, read by scripts/release/image-flavor.ts before a release, a bundle or a production deploy takes the image.
+ARG CATALOG_FLAVOR=release
+LABEL ai.rovara.catalog-flavor="${CATALOG_FLAVOR}"
 # Test services (slice 1): the release's signed service catalog beside the worker's pre-pull list. The glob matches catalog.json and, once the catalog is built, catalog.sig.json.
 COPY environments/service-catalog/catalog*.json ./packages/worker/service-catalog/
 # Stage 2 of the EC2 boot (Task 10): boot.sh reads this file out of the image it pulled by digest and runs it only if its SHA-256 is the one

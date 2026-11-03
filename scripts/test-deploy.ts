@@ -1546,7 +1546,7 @@ async function applyStep(context: ApplyContext, step: DeployStep): Promise<void>
       const options = { ...context.options, repository };
       if (step.image === "executor") assertRepositoryExists(context, repository);
       const imageUri = await buildAndPushImage(context.runner, options, step.image === "worker"
-        ? { repository, repositoryUri: step.repositoryUri, dockerfile: "environments/base/Dockerfile", localName: "agentx-worker", smokeTest: smokeTestWorker, tagPrefix: "test-" }
+        ? { repository, repositoryUri: step.repositoryUri, dockerfile: "environments/base/Dockerfile", localName: "agentx-worker", smokeTest: smokeTestWorker, tagPrefix: "test-", buildArgs: { CATALOG_FLAVOR: "staging" } }
         : { repository, repositoryUri: step.repositoryUri, dockerfile: "environments/e2e-executor/Dockerfile", localName: "agentx-executor", smokeTest: smokeTestExecutor, tagPrefix: "test-" },
       step.revision);
       verifyRepositoryImage(context.runner, options, imageUri);

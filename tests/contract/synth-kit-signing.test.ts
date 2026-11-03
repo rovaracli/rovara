@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildBundle } from "../../scripts/release/bundle.js";
 import { assertBuildIsClean, assertSourceIsRelease, gitSourceState, isExpectedIgnoredPath, releaseCommitOfCleanTree, type SourceState } from "../../scripts/release/source-state.js";
 import { kitFileHashes, verifyKitForSigning } from "../../scripts/release/synth-kit.js";
-import { IMAGES, NO_KIT_CHECK, fakeExporter, newTestKey, writeRelease } from "../support/bundle-fixture.js";
+import { IMAGES, NO_KIT_CHECK, RELEASE_LABELS, fakeExporter, newTestKey, writeRelease } from "../support/bundle-fixture.js";
 import { writeFakeKit } from "../support/synth-kit-fixture.js";
 
 let root: string;
@@ -35,7 +35,7 @@ async function kitDir(change: (dir: string) => Promise<void> = async () => undef
   return dir;
 }
 const sign = (dir: string, extra: Partial<Parameters<typeof buildBundle>[0]> = {}) =>
-  buildBundle({ releaseDir, out: join(root, `out-${String(counter += 1)}`), images: IMAGES, exportImage: fakeExporter, signer: newTestKey().signer, synthKitDir: dir, kitCheck: NO_KIT_CHECK, ...extra });
+  buildBundle({ releaseDir, out: join(root, `out-${String(counter += 1)}`), images: IMAGES, readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, signer: newTestKey().signer, synthKitDir: dir, kitCheck: NO_KIT_CHECK, ...extra });
 
 describe("kit.json names every file of the kit", () => {
   it("the manifest lists the entry and holds nothing else it was not given: the schema wants the hash of the entry and only the paths a kit holds", () => {
@@ -125,7 +125,7 @@ describe("the signing step runs the kit's checks again, on the copy it signs", (
 
   it("without a check of its own, the bundle step runs the real one, which wants the release's commit checked out and a clean tree: this checkout is not the fake release's commit", async () => {
     const out = join(root, "out-default-check");
-    await expect(buildBundle({ releaseDir, out, images: IMAGES, exportImage: fakeExporter, signer: newTestKey().signer, synthKitDir: await kitDir() })).rejects.toThrow(/working tree is at|changed file|sandbox/);
+    await expect(buildBundle({ releaseDir, out, images: IMAGES, readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, signer: newTestKey().signer, synthKitDir: await kitDir() })).rejects.toThrow(/working tree is at|changed file|sandbox/);
     expect(existsSync(out)).toBe(false);
   }, 120_000);
 

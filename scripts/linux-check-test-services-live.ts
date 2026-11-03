@@ -182,13 +182,11 @@ export class BlockedError extends Error {
 
 /**
  * The signed catalog through `loadSignedCatalog` (the compiled-in keys, `catalog-trust.ts`; the account decides whether the staging-only key counts). No trusted key at all is BLOCKED; any other failure is a sentence.
- * `trustedKeys` is a test seam: the command line never sets it.
+ * There is no way to hand it keys: tests build a `VerifiedCatalog` with `@agentx/contracts/testing` and pass that to the checks instead.
  */
-export function loadVerifiedCatalog(input: { catalogBytes: Uint8Array; signatureBytes: Uint8Array; runningAccountId: string | undefined; trustedKeys?: readonly string[] }): VerifiedCatalog {
+export function loadVerifiedCatalog(input: { catalogBytes: Uint8Array; signatureBytes: Uint8Array; runningAccountId: string | undefined }): VerifiedCatalog {
   if (input.signatureBytes.byteLength === 0) throw new Error("the catalog has no signature file yet: run the catalog build for it first");
-  const loaded = loadSignedCatalog({
-    catalogBytes: input.catalogBytes, signatureBytes: input.signatureBytes, trust: { runningAccountId: input.runningAccountId }, ...(input.trustedKeys === undefined ? {} : { trustedKeys: input.trustedKeys }),
-  });
+  const loaded = loadSignedCatalog({ catalogBytes: input.catalogBytes, signatureBytes: input.signatureBytes, trust: { runningAccountId: input.runningAccountId } });
   if (loaded.ok) return loaded.catalog;
   if (loaded.reason === "no trusted catalog key") throw new BlockedError();
   throw new Error(`the catalog is not trusted: ${loaded.reason}`);

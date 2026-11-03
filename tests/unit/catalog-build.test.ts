@@ -10,11 +10,11 @@ import {
   ServiceCatalogSchema,
   catalogPrepullList,
   combinedSbomRef,
-  loadSignedCatalog,
   sha256HexOf,
   verifyImageStatement,
   type SignedImageStatement,
 } from "@agentx/contracts";
+import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
 import {
   CatalogBuildError,
   DEFAULT_COMMAND_TIMEOUT_MS,
@@ -110,7 +110,7 @@ describe("pinning the catalog", () => {
       expect(entry.scan, entry.id).toEqual({ scannedAt: "2026-11-02T10:00:00.000Z", criticalOpen: 0, highOpen: 2 });
     }
     // The file everything vouches for is signed, and loads as a pinned catalog.
-    const loaded = loadSignedCatalog({ catalogBytes: output.catalogBytes, signatureBytes: output.signatureBytes, trustedKeys: [signer.publicKeyPem] });
+    const loaded = loadSignedCatalogWithKeys({ catalogBytes: output.catalogBytes, signatureBytes: output.signatureBytes, trustedKeys: [signer.publicKeyPem] });
     expect(loaded.ok && loaded.catalog.revision).toBe(catalog.revision + 1);
   });
   it("takes the SBOM and the scan of EACH platform's child manifest, never of the index", async () => {
@@ -317,7 +317,7 @@ describe("pinning chosen entries only (--entries)", () => {
         expect(entry.scan, entry.id).toBeUndefined();
       }
     }
-    const loaded = loadSignedCatalog({ catalogBytes: output.catalogBytes, signatureBytes: output.signatureBytes, trustedKeys: [signer.publicKeyPem] });
+    const loaded = loadSignedCatalogWithKeys({ catalogBytes: output.catalogBytes, signatureBytes: output.signatureBytes, trustedKeys: [signer.publicKeyPem] });
     expect(loaded.ok).toBe(true);
   });
   it("writes evidence for the chosen entry alone, and a pre-pull list of what is pinned (postgres@16) and nothing else", async () => {
@@ -431,7 +431,7 @@ describe("writing a build", () => {
     const output = await build(ports);
     const root = await temporary();
     await writeCatalogBuild(output, { catalogDir: join(root, "environments/service-catalog"), prepullFile: join(root, "packages/worker/service-catalog/prepull.json") });
-    const loaded = loadSignedCatalog({
+    const loaded = loadSignedCatalogWithKeys({
       catalogBytes: await readFile(join(root, "environments/service-catalog", CATALOG_FILE)),
       signatureBytes: await readFile(join(root, "environments/service-catalog", CATALOG_SIGNATURE_FILE)),
       trustedKeys: [signer.publicKeyPem],

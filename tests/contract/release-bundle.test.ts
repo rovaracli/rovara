@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BundleManifestSchema, BundleSignatureSchema, sha256OfBytes, verifyBundleSignature } from "@agentx/contracts";
 import { LITELLM_SOURCE_IMAGE } from "../../infra/lib/bundle-images.js";
 import { buildBundle } from "../../scripts/release/bundle.js";
-import { IMAGES, builtBundle, fakeExporter, newTestKey, ociArchive, writeRelease, type BuiltBundle } from "../support/bundle-fixture.js";
+import { IMAGES, builtBundle, fakeExporter, newTestKey, ociArchive, writeRelease, type BuiltBundle, RELEASE_LABELS } from "../support/bundle-fixture.js";
 
 const made: BuiltBundle[] = [];
 afterEach(async () => { await Promise.all(made.splice(0).map((bundle) => bundle.cleanup())); });
@@ -39,7 +39,7 @@ describe("the release bundle", () => {
     try {
       await writeRelease(join(root, "release"));
       const key = newTestKey();
-      const base = { releaseDir: join(root, "release"), exportImage: fakeExporter, signer: key.signer };
+      const base = { releaseDir: join(root, "release"), readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, signer: key.signer };
       await expect(buildBundle({ ...base, out: join(root, "a"), images: [IMAGES[1]!] })).rejects.toThrow(/must carry the LiteLLM image/);
       await expect(buildBundle({ ...base, out: join(root, "b"), images: [{ name: "litellm", sourceRef: `ghcr.io/berriai/litellm-database:v9@sha256:${"c".repeat(64)}` }] })).rejects.toThrow(/not the digest the templates pin/);
       // Refused before anything is written.
@@ -54,10 +54,10 @@ describe("the release bundle", () => {
       await writeRelease(join(root, "release"));
       await writeFile(join(root, "release", "legal", "LICENSE"), "tampered\n");
       const key = newTestKey();
-      await expect(buildBundle({ releaseDir: join(root, "release"), out: join(root, "out"), images: IMAGES, exportImage: fakeExporter, signer: key.signer })).rejects.toThrow(/does not match release.json/);
+      await expect(buildBundle({ releaseDir: join(root, "release"), out: join(root, "out"), images: IMAGES, readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, signer: key.signer })).rejects.toThrow(/does not match release.json/);
       await writeRelease(join(root, "release2"));
       const mismatched = { publicKeyPem: newTestKey().publicKeyPem, sign: (message: Buffer) => key.signer.sign(message) };
-      await expect(buildBundle({ releaseDir: join(root, "release2"), out: join(root, "out2"), images: IMAGES, exportImage: fakeExporter, signer: mismatched })).rejects.toThrow(/does not verify against its own public key/);
+      await expect(buildBundle({ releaseDir: join(root, "release2"), out: join(root, "out2"), images: IMAGES, readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, signer: mismatched })).rejects.toThrow(/does not verify against its own public key/);
       await expect(readdir(join(root, "out2"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -70,13 +70,13 @@ describe("the release bundle", () => {
       const base = { releaseDir: join(root, "release"), signer: key.signer, images: IMAGES };
       // A converted manifest: the archive holds another digest than the source reference.
       const converting = async (sourceRef: string, destFile: string) => { await mkdir(dirname(destFile), { recursive: true }); await writeFile(destFile, ociArchive(`sha256:${"9".repeat(64)}`)); void sourceRef; };
-      await expect(buildBundle({ ...base, out: join(root, "a"), exportImage: converting })).rejects.toThrow(/does not hold sha256:/);
+      await expect(buildBundle({ ...base, out: join(root, "a"), readImageLabels: RELEASE_LABELS, exportImage: converting })).rejects.toThrow(/does not hold sha256:/);
       const garbage = async (_ref: string, destFile: string) => { await mkdir(dirname(destFile), { recursive: true }); await writeFile(destFile, "not a tar"); };
-      await expect(buildBundle({ ...base, out: join(root, "b"), exportImage: garbage })).rejects.toThrow(/does not hold sha256:/);
+      await expect(buildBundle({ ...base, out: join(root, "b"), readImageLabels: RELEASE_LABELS, exportImage: garbage })).rejects.toThrow(/does not hold sha256:/);
       await expect(readdir(join(root, "a"))).rejects.toMatchObject({ code: "ENOENT" });
       // The release names worker and slack images: leaving one out, or giving another, is refused.
-      await expect(buildBundle({ ...base, out: join(root, "c"), exportImage: fakeExporter, images: IMAGES.filter((image) => image.name !== "slack") })).rejects.toThrow(/must mirror it/);
-      await expect(buildBundle({ ...base, out: join(root, "d"), exportImage: fakeExporter, images: [IMAGES[0]!, IMAGES[1]!, { name: "slack", sourceRef: `public.ecr.aws/agentx/agentx-slack@sha256:${"d".repeat(64)}` }] })).rejects.toThrow(/not the one release.json names/);
+      await expect(buildBundle({ ...base, out: join(root, "c"), readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, images: IMAGES.filter((image) => image.name !== "slack") })).rejects.toThrow(/must mirror it/);
+      await expect(buildBundle({ ...base, out: join(root, "d"), readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, images: [IMAGES[0]!, IMAGES[1]!, { name: "slack", sourceRef: `public.ecr.aws/agentx/agentx-slack@sha256:${"d".repeat(64)}` }] })).rejects.toThrow(/not the one release.json names/);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -88,7 +88,7 @@ describe("the release bundle", () => {
       await writeFile(join(root, "same-bytes"), await readFile(target));
       await rm(target);
       await symlink(join(root, "same-bytes"), target);
-      await expect(buildBundle({ releaseDir: join(root, "release"), out: join(root, "out"), images: IMAGES, exportImage: fakeExporter, signer: newTestKey().signer })).rejects.toThrow(/not a regular file/);
+      await expect(buildBundle({ releaseDir: join(root, "release"), out: join(root, "out"), images: IMAGES, readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, signer: newTestKey().signer })).rejects.toThrow(/not a regular file/);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -98,7 +98,7 @@ describe("the release bundle", () => {
       await writeRelease(join(root, "release"));
       await mkdir(join(root, "out"));
       await writeFile(join(root, "out", "keep.txt"), "mine");
-      await expect(buildBundle({ releaseDir: join(root, "release"), out: join(root, "out"), images: IMAGES, exportImage: fakeExporter, signer: newTestKey().signer })).rejects.toThrow(/not empty/);
+      await expect(buildBundle({ releaseDir: join(root, "release"), out: join(root, "out"), images: IMAGES, readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, signer: newTestKey().signer })).rejects.toThrow(/not empty/);
       expect(await readFile(join(root, "out", "keep.txt"), "utf8")).toBe("mine");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
