@@ -249,6 +249,8 @@ export function routingOf(dependencies: AwsBrokerDependencies, stageModel = fals
     // N8: a company endpoint is routed to only while the edition has the feature and none of its models is forbidden (read now, from the company's guardrails).
     ...(dependencies.editionPolicy === undefined ? {} : { edition: dependencies.editionPolicy }),
     forbiddenModels: async (orgId) => (await readGuardrails(settings, orgId)).forbiddenModels,
+    // Owner decision 2026-11-03: the models this account cannot call are left out of every default choice (`servableModels`, and the review default's candidates).
+    ...(dependencies.usableModels === undefined ? {} : { usableModels: dependencies.usableModels }),
   };
 }
 

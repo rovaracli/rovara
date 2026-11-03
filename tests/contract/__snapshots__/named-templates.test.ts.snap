@@ -4141,6 +4141,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Action": [
                 "xray:PutTraceSegments",
                 "xray:PutTelemetryRecords",
+                "bedrock:GetFoundationModelAvailability",
               ],
               "Effect": "Allow",
               "Resource": "*",

@@ -5,7 +5,7 @@
 // (the same allow-list a model check uses), the provider's request id, an attempt count, a delay and a duration. It never reads the provider's message, the model's thinking, the
 // final error text, any prompt or any other free text, so none of them can reach a person through this view. Anything it cannot read as one of these shapes is not shown.
 import { E2E_MODEL_FAILURE_CLASSES, E2E_MODEL_FAILURE_SIGNAL_PATTERN, MODEL_PROVIDERS, type DeveloperTaskEvent, type E2EModelFailureClass, type ModelProvider } from "@agentx/contracts";
-import { classifyProviderFailure } from "@agentx/model-runtime/provider-failure";
+import { MODEL_NOT_ENABLED_SIGNAL, classifyProviderFailure } from "@agentx/model-runtime/provider-failure";
 
 type View = Pick<DeveloperTaskEvent, "kind" | "text">;
 
@@ -55,9 +55,15 @@ const delay = (ms: number): string => `${Math.round(ms / 100) / 10} s`;
 const attemptOf = (attempt: number | undefined, max: number | undefined): string | undefined =>
   attempt === undefined ? undefined : max === undefined ? `attempt ${attempt}` : `attempt ${attempt} of ${max}`;
 
-interface Failure { cls: E2EModelFailureClass; /** The provider said the account is out of credits (HTTP 402), whatever class it was filed under. */ outOfCredits?: boolean | undefined; /** A ChatGPT plan connection was refused: there is no key to check. */ chatgpt?: boolean | undefined; signal?: string | undefined; requestId?: string | undefined; attempt?: string | undefined; durationMs?: number | undefined }
+/** A model name as the worker's note carries it (`claude-opus-5-5`): one short token, nothing else is shown. */
+const MODEL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+const modelName = (value: unknown): string | undefined => (typeof value === "string" && MODEL_NAME_PATTERN.test(value) ? value : undefined);
+
+interface Failure { cls: E2EModelFailureClass; /** Set with the `ModelNotEnabled` signal: the model to enable. */ model?: string | undefined; /** The provider said the account is out of credits (HTTP 402), whatever class it was filed under. */ outOfCredits?: boolean | undefined; /** A ChatGPT plan connection was refused: there is no key to check. */ chatgpt?: boolean | undefined; signal?: string | undefined; requestId?: string | undefined; attempt?: string | undefined; durationMs?: number | undefined }
 
 function failureText(failure: Failure): string {
+  // Owner decision 2026-11-03: a model the account has not enabled is said in its own words, with what to do (the call itself is not retried: Rovara uses another model).
+  if (failure.cls === "key-rejected" && failure.signal === MODEL_NOT_ENABLED_SIGNAL) return `${failure.model ?? "This model"} isn't enabled for your AWS account. Enable it in the Bedrock console, or Rovara will use another model.`;
   const text = failure.outOfCredits === true ? OUT_OF_CREDITS : failure.chatgpt === true && failure.cls === "key-rejected" ? CHATGPT_AGAIN : CLASS_TEXT[failure.cls];
   const { phrase, next } = text;
   const parts = [`${phrase}${failure.signal === undefined || failure.outOfCredits === true ? "" : ` (${failure.signal})`}`];
@@ -130,7 +136,7 @@ function modelCall(value: unknown): View | undefined {
       const derived = classify(providerOf(call.provider), signalOf(call.signal));
       const cls = classOf(call.class) ?? derived.cls;
       const known = derived.cls === cls ? derived.signal : undefined;
-      return { kind: "error", text: failureText({ cls, signal: known, requestId: requestId(call.requestId), attempt: which, durationMs, outOfCredits: call.status === 402, chatgpt: call.chatgpt === true }) };
+      return { kind: "error", text: failureText({ cls, signal: known, model: modelName(call.model), requestId: requestId(call.requestId), attempt: which, durationMs, outOfCredits: call.status === 402, chatgpt: call.chatgpt === true }) };
     }
     case "retrying":
       return retryStart(attempt, max, millis(call.delayMs, MAX_DELAY_MS));

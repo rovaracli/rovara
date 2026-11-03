@@ -61,6 +61,7 @@ import type { RuntimeBinding } from "../lambda.js";
 import type { EvalBatchDependencies } from "../eval-batch.js";
 import type { startPlanGroundingRound } from "./e2e-rounds.js";
 import type { ModelSourceBrokerOptions } from "./scope-helpers.js";
+import type { UsableModels } from "../../model-sources/usable-models.js";
 
 export const MAX_ARTIFACT_BYTES = 5_000_000;
 export const MAX_SETUP_PROPOSAL_BYTES = 24 * 1024 * 1024;
@@ -201,6 +202,8 @@ export interface CodeBuildRecord {
 }
 
 export interface AwsBrokerDependencies {
+  /** Owner decision 2026-11-03: which of Rovara's catalog models this account cannot call (a probe of the account's Bedrock availability, plus refused calls). Routing leaves them out of every default choice. Absent: the whole catalog. */
+  usableModels?: UsableModels | undefined;
   /**
    * Saved environments (SH25): what a preparation's `savedEnv` field is, for a project and the TASK'S approved environment pin (`testEnvPin`, set only by the developer task start and continue paths). Installed by
    * `installSavedEnv` only while the `sv` switch is on; absent otherwise, so nothing is sent. Never throws. The field names an image and carries no credential.

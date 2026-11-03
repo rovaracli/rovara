@@ -10,6 +10,9 @@ import { E2E_MODEL_FAILURE_SIGNAL_PATTERN, type E2EModelFailure, type E2EModelFa
 
 type Cls = E2EModelFailureClass;
 
+/** The signal of a model the account has not enabled (Amazon Bedrock's agreement for it is not in place): class `key-rejected`, shown to the owner with its own words. */
+export const MODEL_NOT_ENABLED_SIGNAL = "ModelNotEnabled";
+
 /** A signal is one token: a Bedrock error type is letters only, a keyed provider's error type or code is lower-case letters, digits and underscores. */
 export const BEDROCK_SIGNAL_PATTERN = /^[A-Za-z]{1,64}$/;
 export const KEYED_SIGNAL_PATTERN = /^[a-z0-9_]{1,64}$/;
@@ -26,7 +29,8 @@ const none = [] as const;
 const SIGNALS: Record<ModelProvider, ReadonlyMap<string, Cls>> = {
   "amazon-bedrock": named({
     "limit-or-rate-limited": ["ThrottlingException", "ServiceQuotaExceededException"],
-    "key-rejected": ["AccessDeniedException", "UnrecognizedClientException", "ExpiredTokenException"],
+    // "ModelNotEnabled" is Rovara's own token (not a Bedrock error type): the model proxy answered 403 "<model> is not available for this account", the account has not enabled that model. A key-rejected failure, told apart so the owner is told what to do.
+    "key-rejected": ["AccessDeniedException", "UnrecognizedClientException", "ExpiredTokenException", MODEL_NOT_ENABLED_SIGNAL],
     "model-not-found": ["ResourceNotFoundException"],
     "request-rejected": ["ValidationException"],
     // ModelNotReadyException comes with a 429 as well: naming it here is what makes it an outage and not a limit.
