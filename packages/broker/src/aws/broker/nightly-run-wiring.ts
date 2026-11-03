@@ -7,7 +7,6 @@ import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { ROVARA_CODE_AGENT_ID, canonicalJson } from "@agentx/contracts";
 import { admitWork } from "../../spend/admission.js";
 import type { AgentRouteDependencies } from "../../agents/routes.js";
-import { resolveSurvivor } from "../../agents/access.js";
 import { startAgentRun } from "../../agents/runs.js";
 import type { TestEnvDeps } from "../../org/test-environment.js";
 import { healthWiringOn } from "../../test-env/health-wiring.js";
@@ -61,7 +60,6 @@ export function nightlyRunsOf(dependencies: AwsBrokerDependencies, tasks: Develo
       if (admission === undefined) return;
       await admitWork(admission, { orgId, payer: { kind: "project", project }, project, agentId: ROVARA_CODE_AGENT_ID, agentName: "Rovara Code", path: "QUICK" });
     },
-    resolveOwner: (orgId, developerId) => resolveSurvivor({ signInStore: agents.signInStore, ...(agents.resolveDeveloper === undefined ? {} : { resolveDeveloper: agents.resolveDeveloper }) }, orgId, developerId),
     defaultBranchOf: ({ orgId, project }) => repositoryDefaultBranchOf(dependencies, orgId, project),
     usesRegistries: ({ orgId, project }) => projectUsesRegistries(dependencies, orgId, project),
     headOf: ({ orgId, project, branch }) => defaultBranchHeadOf(dependencies, orgId, project, branch),

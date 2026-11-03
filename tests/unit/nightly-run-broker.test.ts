@@ -2,7 +2,8 @@
 // switches off nothing runs and nothing is read.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { NightlyResultSchema, TestEnvironmentBodySchema, agentXError, projectMetaKey, projectPk, type NightlyResult, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { NightlyResultSchema, TestEnvironmentBodySchema, agentXError, projectMetaKey, projectPk, systemOwnerIdOf, type NightlyResult, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { setAutomaticRunsCap } from "../../packages/broker/src/automatic-runs/cap.js";
 import { resolvePayer } from "../../packages/broker/src/spend/payer.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
@@ -46,7 +47,6 @@ async function harness(options: { approve?: boolean; services?: boolean; smoke?:
   }
   const head = { value: HEAD };
   const defaultBranch: { value: string | undefined } = { value: "main" };
-  const merged = new Map<string, string>();
   const registries: { value: boolean | undefined } = { value: false };
   const started: Array<Record<string, any>> = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- the request shape is asserted field by field
   const admitted: unknown[] = [];
@@ -56,7 +56,6 @@ async function harness(options: { approve?: boolean; services?: boolean; smoke?:
   const runs = nightlyRunPort({
     ...deps,
     admitProject: (input) => { admitted.push(input); return Promise.resolve(); },
-    resolveOwner: (_org, developerId) => Promise.resolve(merged.get(developerId) ?? developerId),
     defaultBranchOf: () => Promise.resolve(defaultBranch.value),
     usesRegistries: () => Promise.resolve(registries.value),
     headOf: () => Promise.resolve(head.value),
@@ -70,7 +69,7 @@ async function harness(options: { approve?: boolean; services?: boolean; smoke?:
     },
   });
   const fire = (scheduledAt = SCHEDULED) => ({ source: "agentx.test-env-nightly", orgId: ORG, project: PROJECT, scheduledAt });
-  return { db, deps, clock, head, defaultBranch, registries, merged, started, admitted, startError, store, runs, fire, fireNow: (scheduledAt = SCHEDULED) => handleNightlyFire({ ...deps, runs }, fire(scheduledAt)) };
+  return { db, deps, clock, head, defaultBranch, registries, started, admitted, startError, store, runs, fire, fireNow: (scheduledAt = SCHEDULED) => handleNightlyFire({ ...deps, runs }, fire(scheduledAt)) };
 }
 type Harness = Awaited<ReturnType<typeof harness>>;
 
@@ -92,24 +91,24 @@ const baselineOf = (h: Harness) => readNightlyBaseline(h.deps, ORG, PROJECT);
 const codeOf = async (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string }) => error.code);
 
 describe("a fire starts the run", () => {
-  it("as the person who approved the environment, with the project as payer, for the commit the broker read; the budget is asked first", async () => {
+  it("as the project's system owner (no person), with the project as payer, for the commit the broker read; the budget is asked first", async () => {
     const h = await harness();
     expect(await h.fireNow()).toEqual({ outcome: "started", slotId: slotOf() });
     expect(h.admitted).toEqual([{ orgId: ORG, project: PROJECT }]);
     expect(h.started).toHaveLength(1);
     expect(h.started[0]).toMatchObject({
-      requestId: nightlyRequestId(slotOf()), orgId: ORG, project: PROJECT, origin: "nightly", owner: { developerId: "dev_a" },
+      requestId: nightlyRequestId(slotOf()), orgId: ORG, project: PROJECT, origin: "nightly", owner: { developerId: systemOwnerIdOf(ORG, PROJECT) }, automatic: { job: "nightly", approvedBy: "dev_a" },
       payer: { kind: "project", project: PROJECT }, nightlyRun: { slotId: slotOf(), envRevision: 1, branch: "main", headSha: HEAD },
     });
     expect((h.started[0]!["input"] as { text: string }).text).toContain(PROJECT);
     expect(nightlyRequestId(slotOf())).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
   });
 
-  it("the owner is the approver read as whoever they were merged into", async () => {
+  it("the approver is on the record as who approved the setup and owns nothing: the owner is the system owner, and no one started it", async () => {
     const h = await harness();
-    h.merged.set("dev_a", "dev_survivor");
     await h.fireNow();
-    expect(h.started[0]!["owner"]).toEqual({ developerId: "dev_survivor" });
+    expect(h.started[0]!["owner"]).toEqual({ developerId: systemOwnerIdOf(ORG, PROJECT) });
+    expect(h.started[0]!["automatic"]).toEqual({ job: "nightly", approvedBy: "dev_a" });
     expect(h.started[0]!["startedBy"]).toBeUndefined();
     expect((h.started[0]!["input"] as { text: string }).text).toMatch(/^Nightly test run for the project/u);
   });
@@ -138,6 +137,22 @@ describe("a fire starts the run", () => {
     expect(await h.fireNow(new Date(h.clock.now - 5_000).toISOString())).toEqual({ outcome: "skipped", reason: "ran_recently" });
     expect(h.started).toHaveLength(1);
     h.clock.now = T0 + 24 * 3_600_000;
+    expect(await h.fireNow(new Date(h.clock.now - 5_000).toISOString())).toMatchObject({ outcome: "started" });
+    expect(h.started).toHaveLength(2);
+  });
+
+  it("the project's monthly cap on automatic runs pauses the nights: the night is skipped with automatic_cap, nothing is started and the claims are given back; a raised cap lets the next night run", async () => {
+    const h = await harness();
+    const cap = (value: number, requestId: string) => setAutomaticRunsCap(h.deps, { orgId: ORG, project: PROJECT, role: "maintainer", changedBy: "dev_a", cap: value, requestId });
+    await cap(1, "request-cap-0001");
+    await h.fireNow();
+    await record(h, result());
+    h.head.value = "f".repeat(40);
+    h.clock.now = T0 + 24 * 3_600_000;
+    expect(await h.fireNow(new Date(h.clock.now - 5_000).toISOString())).toEqual({ outcome: "skipped", reason: "automatic_cap" });
+    expect(h.started).toHaveLength(1);
+    // nothing stays claimed by the refused night: raising the cap lets the same fire go on
+    await cap(2, "request-cap-0002");
     expect(await h.fireNow(new Date(h.clock.now - 5_000).toISOString())).toMatchObject({ outcome: "started" });
     expect(h.started).toHaveLength(2);
   });
@@ -194,11 +209,13 @@ describe("a fire starts the run", () => {
     expect(skipReasonOf(new Error("plain"))).toBeUndefined();
   });
 
-  it("an environment revision whose record names no approver is not run: nothing is started", async () => {
+  it("an environment revision whose record names no approver still runs: the system owner owns it, and the record names nobody as approver", async () => {
     const h = await harness();
-    const skipped = await nightlyRunPort({ ...h.deps, admitProject: () => Promise.resolve(), resolveOwner: (_org, id) => Promise.resolve(id), defaultBranchOf: () => Promise.resolve("main"), usesRegistries: () => Promise.resolve(false), headOf: () => Promise.resolve(HEAD), startAgentRun: () => Promise.reject(new Error("must not start")) })
+    const skipped = await nightlyRunPort({ ...h.deps, admitProject: () => Promise.resolve(), startAgentRun: (request) => { h.started.push(request as never); return Promise.resolve({ taskId: TASK, runLimitUsd: 1, stopAtUsd: 1, paused: false }); }, defaultBranchOf: () => Promise.resolve("main"), usesRegistries: () => Promise.resolve(false), headOf: () => Promise.resolve(HEAD) })
       .startRun({ orgId: ORG, project: PROJECT, branch: "main", headSha: HEAD, envRevision: 9, slotId: slotOf(), payer: { kind: "project", project: PROJECT }, source: "nightly_baseline" });
-    expect(skipped).toEqual({ skipped: "owner_unavailable" });
+    expect(skipped).toBeUndefined();
+    expect(h.started).toHaveLength(1);
+    expect(h.started[0]!["automatic"]).toEqual({ job: "nightly" });
   });
 
   it("the worker is sent the approved environment of the revision the run was started for, and nothing else is accepted", async () => {

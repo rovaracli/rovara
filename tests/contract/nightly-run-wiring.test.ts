@@ -2,7 +2,7 @@
 // and that with the switches off none of it runs. The worker's half is tested in the worker's tests.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AGENT_WORKER_OUTDATED, NIGHTLY_RUN_FEATURE, NIGHTLY_SOURCE, NightlyResultSchema, TestEnvironmentBodySchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, projectPk, testEnvDigest, type NightlyResult } from "../../packages/contracts/src/index.js";
+import { AGENT_WORKER_OUTDATED, NIGHTLY_RUN_FEATURE, NIGHTLY_SOURCE, NightlyResultSchema, TestEnvironmentBodySchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, projectPk, systemOwnerIdOf, testEnvDigest, type NightlyResult } from "../../packages/contracts/src/index.js";
 import { createEc2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { nightlySlotId, coverageMapDigest } from "../../packages/broker/src/test-env/nightly.js";
@@ -72,16 +72,16 @@ describe("with the switches off", () => {
 });
 
 describe("with nh and the test environment on", () => {
-  it("a fire starts a task of its own: the project pays, the approver owns it, it records what it was started to run, and its preparation is read-only", async () => {
+  it("a fire starts a task of its own: the project pays, the project's system owner owns it, it records what it was started to run, and its preparation is read-only", async () => {
     const t = await bench();
     process.env.NIGHTLY_HEALTH_ENABLED = "1";
     const { task, own, slot } = await started(t);
     expect(t.db.find((item) => item.entityType === "TEST_ENV_NIGHTLY_SLOT")).toHaveLength(1);
     expect(task).toMatchObject({
-      purpose: "nightly_run", origin: "nightly", payer: { kind: "project", project: NAME }, developerId: OMAR.developerId,
+      purpose: "nightly_run", origin: "nightly", payer: { kind: "project", project: NAME }, developerId: systemOwnerIdOf(TEST_ORG, NAME), provider: "system", automatic: { job: "nightly", approvedBy: OMAR.developerId },
       nightlyRun: { slotId: slot, envRevision: 1, branch: "main", headSha: HEAD },
     });
-    // The approver owns it and did not start it: no starter is named, and the title says it is the nightly run.
+    // The system owner owns it and nobody started it: no starter is named, and the title says it is the nightly run.
     expect(task["startedBy"]).toBeUndefined();
     expect(String(task["title"])).toMatch(/^Nightly test run for the project/u);
     // No pointer of the setup run's kind, no workflow: this is no task a person drives.

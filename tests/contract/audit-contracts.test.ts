@@ -200,7 +200,7 @@ describe("the event catalog", () => {
       // company setup recipes (SH29)
       "setup_recipe.proposed", "setup_recipe.created", "setup_recipe.approved", "setup_recipe.revoked", "setup_recipe.scope_changed",
       // TE-4: going back to the last proved setup
-      "project.setup_restored",
+      "project.setup_restored", "automatic_run.started", "project.automatic_runs_cap_changed", "automatic_runs.paused",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -264,6 +264,9 @@ describe("the event catalog", () => {
     "rule.correction_remembered": { target: { kind: "project", name: "web" }, keys: ["correctionId", "stage", "standing", "op"], sample: { correctionId: "cor_1", stage: "build", standing: "member", op: "remember" } },
     "project.test_health_setting_changed": { target: { kind: "project", name: "web" }, keys: ["setting", "enabled"], sample: { setting: "propose_fix_task", enabled: true } },
     "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
+    "automatic_run.started": { target: { kind: "project", name: "web" }, keys: ["job", "setupApprovedBy", "runsThisMonth", "cap"], sample: { job: "nightly", setupApprovedBy: "none", runsThisMonth: 3, cap: 100 } },
+    "project.automatic_runs_cap_changed": { target: { kind: "project", name: "web" }, keys: ["fromCap", "toCap"], sample: { fromCap: 100, toCap: 200 } },
+    "automatic_runs.paused": { target: { kind: "project", name: "web" }, keys: ["month", "cap"], sample: { month: "2026-11", cap: 100 } },
     "project.setup_restored": { target: { kind: "project", name: "web" }, keys: ["revision", "fromRevision", "provenRevision"], sample: { revision: 3, fromRevision: 2, provenRevision: 1 } },
     "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source", "previousSource"], sample: { setting: "on", previous: "off", source: "company", previousSource: "install_default" } },
     "company_domain.added": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: [], sample: {} },
