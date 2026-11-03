@@ -261,7 +261,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       try { outcome.redirects = await sweepRedirects(dependencies, process.env, redirectSweepBudgetMs(Date.now() - startedAt)); }
       catch (error) { console.log(JSON.stringify({ component: "broker", event: "redirect.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.redirects = "failed"; }
       // System owner of automatic runs: a run past its time is ended and its slot given back, so a hung night can never hold the project's one automatic slot for good.
-      outcome.automaticRuns = await sweepAutomaticRunsOf(dependencies);
+      outcome.automaticRuns = await sweepAutomaticRunsOf(dependencies, { budgetMs: Math.max(0, SESSION_EVENT_BUDGET_MS - (Date.now() - startedAt)) });
       outcome.asks = await runAskMaintenance(dependencies, Date.now());
       return json(outcome, "session-sweep");
     }

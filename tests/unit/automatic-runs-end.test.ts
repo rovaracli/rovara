@@ -2,7 +2,7 @@
 // run must not hold the project's only automatic slot for ever.
 import { describe, expect, it, vi } from "vitest";
 import { AUTOMATIC_RUN_MAX_MS, systemOwnerIdOf, systemOwnerName, type OrgId } from "@agentx/contracts";
-import { AUTOMATIC_RUN_WATCH_PK, markAutomaticTaskEnded, putAutomaticRunWatch, sweepAutomaticRuns } from "../../packages/broker/src/automatic-runs/end.js";
+import { AUTOMATIC_RUN_SWEEP_SLICE_MS, AUTOMATIC_RUN_WATCH_PK, markAutomaticTaskEnded, putAutomaticRunWatch, sweepAutomaticRuns } from "../../packages/broker/src/automatic-runs/end.js";
 import { FINISHED_RELEASE_PK } from "../../packages/broker/src/aws/developer-tasks/release.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { AUDIT_CAPTURE_TABLE, capturingAuditDeps } from "../support/audit-capture.js";
@@ -110,5 +110,90 @@ describe("the session sweep ends an automatic run that outlives its time", () =>
     expect(await b.sweep()).toMatchObject({ ended: 0, audited: 1 });
     expect(await b.sweep()).toMatchObject({ audited: 0 });
     expect(b.audit.recordedBy("automatic_run.ended").map((event) => event.facts)).toEqual([{ job: "nightly", cause: "project_stopped" }]);
+  });
+});
+
+describe("a pass over nothing, and a pass with no time", () => {
+  it("with no watches a pass is one query and nothing else (no task read, no worker told, no release asked)", async () => {
+    const b = bench();
+    const before = b.db.commandNames().length;
+    expect(await b.sweep()).toEqual({ ended: 0, audited: 0, watching: 0, dropped: 0 });
+    expect(b.db.commandNames().slice(before)).toEqual(["QueryCommand"]);
+    expect(b.cancelled).toEqual([]);
+    expect(b.released).toEqual([]);
+  });
+
+  it("stops between runs when its time is used, touches nothing, and says so; a pass has a slice of its own whatever its caller has left", async () => {
+    const b = bench();
+    await b.run(1);
+    b.clock.now += AUTOMATIC_RUN_MAX_MS + 60_000;
+    const out = await sweepAutomaticRuns({ documentClient: b.db, tableName: AUDIT_CAPTURE_TABLE, now: () => b.clock.now, audit: b.audit.audit, release: () => Promise.resolve(), budgetMs: 0 });
+    expect(out).toMatchObject({ ended: 0, stoppedForTime: true });
+    expect(b.task(1).agentRunEnd).toBeUndefined();
+    // a caller with a great deal left still gets no more than the slice: the clock moves past it between two runs
+    await b.run(2);
+    let calls = 0;
+    const ticking = { documentClient: b.db, tableName: AUDIT_CAPTURE_TABLE, now: () => b.clock.now + (calls++ > 4 ? AUTOMATIC_RUN_SWEEP_SLICE_MS + 1 : 0), audit: b.audit.audit, release: () => Promise.resolve(), budgetMs: 600_000 };
+    expect(await sweepAutomaticRuns(ticking)).toMatchObject({ stoppedForTime: true });
+  });
+});
+
+describe("a night that completes while the sweep is ending it", () => {
+  it("keeps its own end: the sweep writes nothing (no cause, no audit, no failed-night row, no release mark) and does not tell the worker", async () => {
+    const b = bench();
+    await b.run(1, { nightlyRun: { slotId: slot, envRevision: 1, branch: "main", headSha: "d".repeat(40) } });
+    b.clock.now += AUTOMATIC_RUN_MAX_MS + 60_000;
+    // the completion lands between the sweep's read of the task and its end transaction
+    let landed = false;
+    const racing = { send: (command: { constructor: { name: string }; input?: unknown }) => {
+      if (!landed && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("automaticEnd")) {
+        landed = true;
+        b.db.set({ ...b.task(1), agentRunEnd: { state: "COMPLETE", at: "2026-11-05T07:00:00.000Z" } });
+      }
+      return b.db.send(command as never);
+    } };
+    const report = await sweepAutomaticRuns({ documentClient: racing, tableName: AUDIT_CAPTURE_TABLE, now: () => b.clock.now, audit: b.audit.audit, release: () => Promise.resolve(), cancelLive: (task) => { b.cancelled.push(task.taskId); return Promise.resolve(); } });
+    expect(landed).toBe(true);
+    expect(report).toMatchObject({ ended: 0, audited: 0 });
+    expect(b.task(1)).toMatchObject({ agentRunEnd: { state: "COMPLETE" } });
+    expect(b.task(1).automaticEnd).toBeUndefined();
+    expect(b.audit.recordedBy("automatic_run.ended")).toHaveLength(0);
+    expect(b.db.find((item) => item.entityType === "TEST_ENV_NIGHT")).toHaveLength(0);
+    expect(b.db.get(FINISHED_RELEASE_PK, `TASK#${taskId(1)}`)).toBeUndefined();
+    expect(b.cancelled).toEqual([]);
+  });
+
+  it("an already-ended task is not ended again by the helper either", async () => {
+    const b = bench();
+    const task = await b.run(1, { agentRunEnd: { state: "COMPLETE", at: "2026-11-05T07:00:00.000Z" } });
+    expect(await markAutomaticTaskEnded(b.db, AUDIT_CAPTURE_TABLE, task, "too_old", new Date(T0).toISOString())).toBe(false);
+    expect(b.task(1).automaticEnd).toBeUndefined();
+  });
+});
+
+describe("the night's lock when its run is ended", () => {
+  const lockKey = { pk: `PROJECT#${ORG}#${PROJECT}`, sk: "TESTENV#NIGHTLY#ACTIVE" };
+  const nightly = { slotId: slot, envRevision: 1, branch: "main", headSha: "d".repeat(40) };
+
+  it("is released when it is this run's, so the next night does not wait for it", async () => {
+    const b = bench();
+    const { projectPk } = await import("@agentx/contracts");
+    const key = { pk: projectPk(ORG, PROJECT), sk: lockKey.sk };
+    await b.run(1, { nightlyRun: nightly });
+    b.db.set({ ...key, entityType: "TEST_ENV_NIGHTLY_ACTIVE", slotId: slot, startedAtMs: T0 });
+    b.clock.now += AUTOMATIC_RUN_MAX_MS + 60_000;
+    await b.sweep();
+    expect(b.db.get(key.pk, key.sk)).toBeUndefined();
+  });
+
+  it("is left alone when it belongs to another night", async () => {
+    const b = bench();
+    const { projectPk } = await import("@agentx/contracts");
+    const key = { pk: projectPk(ORG, PROJECT), sk: lockKey.sk };
+    await b.run(1, { nightlyRun: nightly });
+    b.db.set({ ...key, entityType: "TEST_ENV_NIGHTLY_ACTIVE", slotId: "e".repeat(64), startedAtMs: T0 });
+    b.clock.now += AUTOMATIC_RUN_MAX_MS + 60_000;
+    await b.sweep();
+    expect(b.db.get(key.pk, key.sk)).toMatchObject({ slotId: "e".repeat(64) });
   });
 });

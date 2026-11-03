@@ -72,13 +72,16 @@ export function automaticRunStarterOf(dependencies: AwsBrokerDependencies, tasks
  * The session sweep's job for automatic runs: a run past its time is cancelled on its worker (as the task's own system identity, best effort), ended, its slot given back and the end audited. Never throws: a failure is
  * logged and the sweep's other jobs go on.
  */
-export async function sweepAutomaticRunsOf(dependencies: AwsBrokerDependencies, now: () => number = Date.now): Promise<AutomaticRunSweepReport | "failed"> {
-  const actions = developerTaskActions(dependencies);
+export async function sweepAutomaticRunsOf(dependencies: AwsBrokerDependencies, options: { now?: () => number; budgetMs?: number } = {}): Promise<AutomaticRunSweepReport | "failed"> {
+  const now = options.now ?? Date.now;
+  // Built when a run past its time needs its worker told to stop, not on every tick of a sweep that finds nothing to do.
+  let actions: ReturnType<typeof developerTaskActions> | undefined;
   const log = (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry }));
   try {
     return await sweepAutomaticRuns({
-      documentClient: dependencies.documentClient, tableName: dependencies.tableName, now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }), log,
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, now, ...(options.budgetMs === undefined ? {} : { budgetMs: options.budgetMs }), ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }), log,
       cancelLive: async (task) => {
+        actions ??= developerTaskActions(dependencies);
         const workspace = await actions.workspace(task.workspaceId);
         if (workspace.status !== "CLOSED" && workspace.activeOperationId != null) await actions.cancelRunning(developerTaskIdentity(task, requireOrgId(task.orgId)), workspace, () => []);
       },

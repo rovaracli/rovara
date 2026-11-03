@@ -157,6 +157,13 @@ describe("the standing of a system owner replaces a person's membership", () => 
     expect(w.db.get("FINISHED_RELEASE", `TASK#${TASK_ID}`)).toMatchObject({ taskId: TASK_ID });
   });
 
+  it("writes the end again once if its first write fails after the operation was failed, so the cause stays project_stopped", async () => {
+    const w = world({ project: "archived" });
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("automaticEnd"), error: { name: "InternalServerError" }, times: 1 });
+    expect(await guardTaskDispatch(w.deps, w.record)).toBe("PARKED");
+    expect((w.db.get(`DEVTASK#${TASK_ID}`, "META") as { automaticEnd?: { reason: string } }).automaticEnd).toMatchObject({ reason: "project_stopped" });
+  });
+
   it("refuses a system-owned task that somehow has a People sidecar (no person is ever added to it): nothing dispatches", async () => {
     const w = world();
     w.db.set({ pk: `DEVTASK#${TASK_ID}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: [] });

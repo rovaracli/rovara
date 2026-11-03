@@ -38,7 +38,7 @@ export async function putAutomaticRunWatch(client: Client, tableName: string, in
  * Ends an automatic task: `agentRunEnd` CANCELLED and the reason (the first end stands), the release mark, and, for a nightly, the night's own `infra` row so the Home card and the same-day retry see it. Refuses a task that
  * is not a system owner's (this is never how a person's task is ended). Never touches a closed task.
  */
-export async function markAutomaticTaskEnded(client: Client, tableName: string, task: Pick<DeveloperTaskRecord, "taskId" | "project" | "nightlyRun"> & TaskOwnerSource & { orgId?: string | undefined }, reason: AutomaticRunEndReason, nowIso: string): Promise<void> {
+export async function markAutomaticTaskEnded(client: Client, tableName: string, task: Pick<DeveloperTaskRecord, "taskId" | "project" | "nightlyRun"> & TaskOwnerSource & { orgId?: string | undefined }, reason: AutomaticRunEndReason, nowIso: string): Promise<boolean> {
   if (!isSystemOwned(task)) throw new Error("only a system owner's task is ended this way");
   const org = OrgIdSchema.safeParse(task.orgId);
   const failedNight = task.nightlyRun !== undefined && org.success ? [nightFailedItem(tableName, { orgId: org.data, project: task.project, slotId: task.nightlyRun.slotId, reason: "infra", nowIso })] : [];
@@ -48,7 +48,8 @@ export async function markAutomaticTaskEnded(client: Client, tableName: string, 
       { Update: {
         TableName: tableName, Key: taskKey(task.taskId),
         UpdateExpression: "SET agentRunEnd = if_not_exists(agentRunEnd, :end), automaticEnd = if_not_exists(automaticEnd, :why), updatedAt = :now",
-        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)",
+        // Only while the run has not ended: a night that completed between the read and this write keeps its own end, and NOTHING else here (the cause, the night's row, the release mark) is written.
+        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(agentRunEnd)",
         ExpressionAttributeValues: { ":end": { state: "CANCELLED", at: nowIso }, ":why": { reason, at: nowIso }, ":now": nowIso },
       } },
       { Update: {
@@ -58,12 +59,23 @@ export async function markAutomaticTaskEnded(client: Client, tableName: string, 
       } },
     ] }));
   } catch (error) {
-    // A closed (or gone) task has nothing to end.
-    if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
+    // A task that is closed, gone or already ended has nothing to end, and nothing was written.
+    if (error instanceof Error && error.name === "TransactionCanceledException") return false;
+    throw error;
   }
+  // The night's lock, when it is this run's (its slot id): the next night does not wait out the lock's own hours. Best effort and conditional on the run, so another night's lock is never taken.
+  if (task.nightlyRun !== undefined && org.success) {
+    await client.send(new DeleteCommand({ TableName: tableName, Key: { pk: projectPk(org.data, task.project), sk: "TESTENV#NIGHTLY#ACTIVE" }, ConditionExpression: "slotId = :slot", ExpressionAttributeValues: { ":slot": task.nightlyRun.slotId } })).catch(() => undefined);
+  }
+  return true;
 }
 
+/** The most one pass of the sweep takes, whatever its caller has left: the maintenance jobs after it need time too. */
+export const AUTOMATIC_RUN_SWEEP_SLICE_MS = 5_000;
+
 export interface AutomaticRunSweepDependencies extends AuditDeps {
+  /** How long the pass may take in all (it stops between runs once this is used; the rest wait for the next pass). Absent: the slice above. */
+  budgetMs?: number;
   documentClient: Client;
   tableName: string;
   now: () => number;
@@ -74,7 +86,7 @@ export interface AutomaticRunSweepDependencies extends AuditDeps {
   log?: (entry: Record<string, unknown>) => void;
 }
 
-export interface AutomaticRunSweepReport { ended: number; audited: number; watching: number; dropped: number }
+export interface AutomaticRunSweepReport { ended: number; audited: number; watching: number; dropped: number; /** True when the pass stopped for lack of time. */ stoppedForTime?: true }
 
 /**
  * The session sweep's job for automatic runs: reads the watch of every started run (one page, oldest first; there is one automatic slot per project, so it is small), ends a run past its time, and drops the watch of a run whose
@@ -83,19 +95,25 @@ export interface AutomaticRunSweepReport { ended: number; audited: number; watch
 export async function sweepAutomaticRuns(deps: AutomaticRunSweepDependencies): Promise<AutomaticRunSweepReport> {
   const log = deps.log ?? (() => undefined);
   const report: AutomaticRunSweepReport = { ended: 0, audited: 0, watching: 0, dropped: 0 };
+  const startedAt = deps.now();
+  const budgetMs = Math.min(deps.budgetMs ?? AUTOMATIC_RUN_SWEEP_SLICE_MS, AUTOMATIC_RUN_SWEEP_SLICE_MS);
   const page = await deps.documentClient.send(new QueryCommand({
     TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": AUTOMATIC_RUN_WATCH_PK }, ConsistentRead: true, Limit: WATCH_PAGE,
   })) as { Items?: AutomaticRunWatch[] };
   for (const watch of page.Items ?? []) {
+    if (deps.now() - startedAt >= budgetMs) { report.stoppedForTime = true; break; }
     try {
       const task = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(watch.taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord & { automaticEnd?: { reason?: unknown; at?: unknown } } }).Item;
       if (task === undefined || !isSystemOwned(task)) { await dropWatch(deps, watch); report.dropped += 1; continue; }
       let ending = task.automaticEnd;
       if (task.agentRunEnd === undefined && task.closedAt === undefined && deps.now() - Date.parse(watch.startedAt) > AUTOMATIC_RUN_MAX_MS) {
-        await deps.cancelLive?.(task).catch((error: unknown) => log({ event: "automatic_run.cancel_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
-        await markAutomaticTaskEnded(deps.documentClient, deps.tableName, task, "too_old", new Date(deps.now()).toISOString());
-        ending = { reason: "too_old", at: new Date(deps.now()).toISOString() };
-        report.ended += 1;
+        // Ended first, and only if it still was not (a night that completed meanwhile keeps its own end and gets nothing from this pass); then its worker is told to stop.
+        const at = new Date(deps.now()).toISOString();
+        if (await markAutomaticTaskEnded(deps.documentClient, deps.tableName, task, "too_old", at)) {
+          ending = { reason: "too_old", at };
+          report.ended += 1;
+          await deps.cancelLive?.(task).catch((error: unknown) => log({ event: "automatic_run.cancel_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+        }
       }
       if (ending !== undefined && (ending.reason === "too_old" || ending.reason === "project_stopped") && await auditEnd(deps, watch, ending.reason)) report.audited += 1;
       if (task.agentRunEnd !== undefined || ending !== undefined) await deps.release(task.taskId);

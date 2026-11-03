@@ -306,7 +306,9 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
           if (conditional(error)) continue;
           throw error;
         }
-        await markAutomaticTaskEnded(guardDeps.documentClient, deps.tableName, task, "project_stopped", new Date().toISOString());
+        // The operation is failed already; if the end cannot be written once, it is tried again (a second miss is left to the session sweep, which ends it, later, as a run past its time).
+        const ended = () => markAutomaticTaskEnded(guardDeps.documentClient, deps.tableName, task, "project_stopped", new Date().toISOString());
+        await ended().catch(() => ended());
         return "PARKED";
       }
       if (await allowedStillCurrent(guardDeps, record, pointer, task, undefined, undefined)) {
