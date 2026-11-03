@@ -412,3 +412,63 @@ describe("review defaults (owner decision 2026-11-02)", () => {
   expect((await saved(f)).overlay.steps!.review).toEqual({ differentCompanyFrom: "build" });
  });
 });
+
+describe("the one-time review-default notice (owner decision 2026-11-02)", () => {
+ const NOTICE = "/v1/app/org/review-default-notice", GPT_REVIEW = "openai/gpt-5-codex";
+ const onDefault = (reason = "DEFAULT_DIFFERENT_COMPANY") => ({ code_review: stageEntry("code_review", { effective: effective(GPT_REVIEW, { reason }) }), security_review: stageEntry("security_review", { effective: effective(GPT_REVIEW, { reason }) }) });
+ const region = () => screen.getByRole("region", { name: "Reviews now use a different company's model" });
+ const answering = (state: { dismissed: boolean; canDismiss: boolean }, onPost?: (request: { body: unknown }) => { status: number; body: unknown } | undefined): Handler => (request, url) => {
+  if (url.pathname !== NOTICE) return undefined;
+  if (request.method === "POST") return onPost?.(request) ?? { status: 200, body: { dismissed: true, canDismiss: state.canDismiss } };
+  return { status: 200, body: state };
+ };
+ it("tells every member which model the reviews use, in the fixed words, and lets an owner or admin dismiss it", async () => {
+  const f = await open({ stages: onDefault(), handle: answering({ dismissed: false, canDismiss: true }) });
+  await waitFor(() => expect(region()).toBeTruthy());
+  expect(region().textContent).toContain("Reviews now use a model from a different company: GPT-5 Codex. Change it here.");
+  expect(within(region()).getByRole("link", { name: "Change it here." }).getAttribute("href")).toBe("/app/admin/how-we-work");
+  fireEvent.click(within(region()).getByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Reviews now use a different company's model" })).toBeNull());
+  const posts = f.sent().filter(request => request.path === NOTICE);
+  expect(posts).toHaveLength(1);
+  expect(posts[0]!.body).toEqual({ action: "dismiss" });
+ });
+ it("shows a member the same words with nothing to press", async () => {
+  await open({ stages: onDefault(), handle: answering({ dismissed: false, canDismiss: false }) });
+  await waitFor(() => expect(region()).toBeTruthy());
+  expect(region().textContent).toContain("Reviews now use a model from a different company: GPT-5 Codex. Change it here.");
+  expect(within(region()).queryByRole("button")).toBeNull();
+  expect(within(region()).queryByRole("link")).toBeNull();
+ });
+ it("is not shown once the company dismissed it", async () => {
+  const f = await open({ stages: onDefault(), handle: answering({ dismissed: true, canDismiss: true }) });
+  // The read ran, so the notice is hidden because of its answer, not because nothing was asked.
+  await waitFor(() => expect(f.calls()).toContain("GET " + NOTICE));
+  expect(screen.queryByRole("region", { name: "Reviews now use a different company's model" })).toBeNull();
+ });
+ it("is shown only while a review step is on the new default", async () => {
+  const f = await open({ stages: onDefault("PROJECT_CHOICE"), handle: answering({ dismissed: false, canDismiss: true }) });
+  await waitFor(() => expect(f.calls()).toContain("GET " + NOTICE));
+  expect(screen.queryByRole("region", { name: "Reviews now use a different company's model" })).toBeNull();
+ });
+ it("counts only review steps: a step that is not a check never makes the notice", async () => {
+  const f = await open({ stages: { build: stageEntry("build", { effective: effective(GPT_REVIEW, { reason: "DEFAULT_DIFFERENT_COMPANY" }) }) }, handle: answering({ dismissed: false, canDismiss: true }) });
+  await waitFor(() => expect(f.calls()).toContain("GET " + NOTICE));
+  expect(screen.queryByRole("region", { name: "Reviews now use a different company's model" })).toBeNull();
+ });
+ it("sends one dismissal for a double press", async () => {
+  const f = await open({ stages: onDefault(), handle: answering({ dismissed: false, canDismiss: true }) });
+  await waitFor(() => expect(region()).toBeTruthy());
+  const press = within(region()).getByRole("button", { name: "Dismiss" });
+  fireEvent.click(press);fireEvent.click(press);
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Reviews now use a different company's model" })).toBeNull());
+  expect(f.sent().filter(request => request.path === NOTICE)).toHaveLength(1);
+ });
+ it("keeps the notice and says so when the dismissal is refused", async () => {
+  await open({ stages: onDefault(), handle: answering({ dismissed: false, canDismiss: true }, () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "no" } } })) });
+  await waitFor(() => expect(region()).toBeTruthy());
+  fireEvent.click(within(region()).getByRole("button", { name: "Dismiss" }));
+  expect((await within(region()).findByRole("alert")).textContent).toBe("Only a company owner or admin can dismiss this notice.");
+  expect(region()).toBeTruthy();
+ });
+});

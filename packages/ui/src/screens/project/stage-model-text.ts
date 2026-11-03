@@ -69,3 +69,12 @@ export function candidateBlock(candidate: StageCandidate): string | undefined {
 }
 /** Every stage by name, for a refusal that can name any of them. */
 export const STAGE_LABELS: Readonly<Record<StageId, string>> = { understand: "Understand", plan: "Plan", plan_check: "Plan check", build: "Build", code_review: "Code review", security_review: "Security review", pull_request: "Pull request" };
+/** The one-time notice that reviews now use a model from a different company (owner decision 2026-11-02). */
+export const REVIEW_DEFAULT_NOTICE = {
+ LABEL: "Reviews now use a different company's model",
+ PREFIX: "Reviews now use a model from a different company: ",
+ CHANGE: "Change it here.",
+ DISMISS: "Dismiss",
+ FAILED: "Couldn't dismiss the notice. Try again.",
+ NOT_ALLOWED: "Only a company owner or admin can dismiss this notice.",
+} as const;

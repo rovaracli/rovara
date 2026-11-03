@@ -118,7 +118,7 @@ import "./task-e2e-artifact.js";
 import { readOrgServiceStatus } from "../org/service-status.js";
 import { CompanySameModelPolicyRefusal } from "../model-selection/company-prepare.js";
 import { updateCompanyModelPolicy } from "../model-selection/company-approval.js";
-import { ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema } from "@agentx/contracts";
+import { ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema, ReviewDefaultNoticeBodySchema } from "@agentx/contracts";
 import { previewCompanyModelPolicy } from "../model-selection/policy-preview.js";
 import { requireCompanyModelPolicyAuthority, getCompanyModelSelectionPolicy } from "../model-selection/company-read.js";
 import { getStageModels } from "../model-selection/read.js";
@@ -288,6 +288,7 @@ export {
 import { LEARNING_PATH, routeLearning } from "../learning/routes.js";
 import { routeLessonsFor, routeLoadedKnowledgeFor } from "./developer-routes/lessons.js";
 import { LEARNING_SETTINGS_PATH, routeLearningSettings } from "../learning/settings-routes.js";
+import { REVIEW_DEFAULT_NOTICE_PATH, dismissReviewDefaultNotice, readReviewDefaultNotice } from "../model-selection/review-default-notice.js";
 import { clearArchivedProjectLearning } from "./developer-routes/project-archive-setup.js";
 import { forgetTaskComment, rememberTaskComment } from "../learning/capture-comment.js";
 import { getTaskStopEditing, writeTaskStopEditing } from "../org/task-stop-editing.js";
@@ -314,6 +315,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // The company's master suggestions switch is browser-only too: no token, CLI or Slack path reads or changes it.
   if (url.pathname === LEARNING_SETTINGS_PATH && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
+  }
+  // The one-time review-default notice (reading it and dismissing it) is browser-only, like the other company settings.
+  if (url.pathname === REVIEW_DEFAULT_NOTICE_PATH && authenticated?.caller.browserSession !== true) {
+    throw agentXError("FORBIDDEN", "Use a live browser session for this notice.");
   }
   // The company setting "always two people" for known-failing marks: changing it is browser-only (the read is open to members).
   if (url.pathname === KNOWN_FAILING_POLICY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_POLICY_BROWSER_MESSAGE);
@@ -618,6 +623,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const howWeWorkRoute = HOW_WE_WORK_PATH.exec(url.pathname);
   if (request.method === "GET" && howWeWorkRoute !== null) {
     return getProjectHowWeWork({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) }, caller, howWeWorkRoute[1]!);
+  }
+  if (url.pathname === REVIEW_DEFAULT_NOTICE_PATH && (request.method === "GET" || request.method === "POST")) {
+    const notice = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, audit: deps.agents?.audit };
+    if (request.method === "GET") return readReviewDefaultNotice(notice, caller);
+    if (!ReviewDefaultNoticeBodySchema.safeParse(jsonBody(request)).success) throw agentXError("CONFIG_INVALID", "body: has a field this route does not take");
+    return dismissReviewDefaultNotice(notice, caller);
   }
   if (url.pathname === LEARNING_SETTINGS_PATH && (request.method === "GET" || request.method === "PUT")) {
     return routeLearningSettings({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, audit: deps.agents?.audit }, caller, request.method, () => jsonBody(request));

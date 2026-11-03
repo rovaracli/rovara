@@ -114,3 +114,8 @@ export const STAGE_EDIT_RULES = {
  security_review:{stepKind:"review",editGroup:"review",reviewerSlot:"security"},
  pull_request:{stepKind:"pull_request",editGroup:"pull_request",reviewerSlot:null},
 } as const;
+/** Owner decision 2026-11-02: the one-time notice on How we work that reviews now use a model from a different company. `GET` and `POST /v1/app/org/review-default-notice`; the dismissal is the company's, made by an owner or admin and audited. */
+export const ReviewDefaultNoticeAnswerSchema = z.object({ dismissed: z.boolean(), canDismiss: z.boolean() }).strict();
+export const ReviewDefaultNoticeBodySchema = z.object({ action: z.literal("dismiss") }).strict();
+export type ReviewDefaultNoticeAnswer = z.infer<typeof ReviewDefaultNoticeAnswerSchema>;
+export const ReviewDefaultNoticeAnswerReaderSchema = forwardReader(ReviewDefaultNoticeAnswerSchema);
