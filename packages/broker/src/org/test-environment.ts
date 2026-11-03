@@ -44,7 +44,7 @@ import { auditPending, tryAuditEvent, type AuditDeps, type TransactItem } from "
 import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies } from "./second-person-evidence.js";
 import { decideSecondPersonApproval } from "./second-person-approval.js";
 import { clearSetupRunProposal } from "../rovara-code/setup-run-proposal.js";
-import { dependenciesStartableNow, isPrepulledEntry } from "../test-env/dependency-plan.js";
+import { dependenciesStartableNow, emulatorServesAll, isPrepulledEntry } from "../test-env/dependency-plan.js";
 import { refuseDependenciesWithDevcontainer } from "../test-env/devcontainer-check.js";
 import { SEED_COMMAND_PROBLEM_WORDS, dependencySeedCommands, seedCommandProblem } from "../test-env/refused-command.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
@@ -163,6 +163,9 @@ function refuseRecordingOnShared(body: TestEnvironmentBody): void {
   if ((body.capture.video || body.capture.traces) && !mediaTierAllowed(body.tier)) throw invalid("capture: video and traces are kept only in the sandbox and per-task preview tiers");
 }
 
+/** The fixed words of a dependency that cannot be started yet (slice 2: real software from the catalog, and S3, SQS and DynamoDB on Rovara local AWS). */
+const DEPENDENCIES_NOT_AVAILABLE_YET = "dependencies: this kind of backing is not available yet; Rovara starts real software from its image list, and S3, SQS and DynamoDB on Rovara local AWS, only";
+
 /**
  * Test services (slice 1): dependencies are proposed and approved only with the switch `tx` on, only as real software from the catalog (a fake, a test account, a project image or a substitute image is "not available
  * yet"), and not for a project that uses a dev container (the sealed check runners cannot be combined with one). Refused when proposed AND when approved, so a card is never offered that could not be carried out.
@@ -175,16 +178,17 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
   const changed = (body.dependencies ?? []).filter((dependency) => !approved.has(JSON.stringify(dependency)));
   if (changed.length === 0) return;
   if (!testServicesEnabled(deps.env)) throw invalid("dependencies: test services are not switched on for this install");
-  if (!dependenciesStartableNow(changed)) throw invalid("dependencies: this kind of backing is not available yet; Rovara starts real software from its image list only");
+  if (!dependenciesStartableNow(changed)) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
   // A `local` dependency whose catalog entry has no pinned digest is the same "not available yet" (the signed catalog the release ships names no image to start): refused here too, not only when a task is planned. The catalog
   // is asked only when the caller's dependencies carry one (the route's do); one that cannot be read leaves the judgment to the task's plan, which refuses it in fixed words.
   const source = (deps as { serviceCatalog?: () => Promise<VerifiedCatalog | undefined> }).serviceCatalog;
   const catalog = source === undefined ? undefined : await Promise.resolve(source()).catch(() => undefined);
   if (catalog !== undefined) {
     for (const dependency of changed) {
-      if (dependency.backing.kind !== "local") continue;
+      if (dependency.backing.kind !== "local" && dependency.backing.kind !== "emulated") continue;
       const entry = catalogEntryById(catalog, dependency.backing.catalogId);
-      if (!catalog.pinned || entry === undefined || entry.image.digest === undefined || !isPrepulledEntry(catalog, dependency.backing.catalogId)) throw invalid("dependencies: this kind of backing is not available yet; Rovara starts real software from its image list only");
+      if (!catalog.pinned || entry === undefined || entry.image.digest === undefined || !isPrepulledEntry(catalog, dependency.backing.catalogId)) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
+      if (dependency.backing.kind === "emulated" && !emulatorServesAll(entry, dependency.backing.awsServices)) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
     }
   }
   // A seed is a command run with the dependency's network access: it gets the same refusal as any command (a download-and-run, or a secret).

@@ -10,13 +10,17 @@ import { inertLine } from "./inert-text.js";
 export interface PinnedDependency {
   id: string;
   name: string;
-  /** Slice 1 starts real software only. */
-  backing: "local";
+  /** `local`: real software from the catalog. `emulated` (slice 2): Rovara local AWS. */
+  backing: "local" | "emulated";
   /** True when a company-approved substitute image was pinned (not used in slice 1). */
   substituteImage?: boolean;
 }
 
 export const BLOCKED_CALLS_ITEM_ID = "blocked-calls";
+/** Rovara local AWS does not enforce IAM (design 2.4 and 4.2). One fixed item for the Evidence tab; the pull request says it through `dependencyLines`, from the same label. */
+export const AWS_PERMISSIONS_ITEM_ID = "aws-permissions";
+export const AWS_PERMISSIONS_NOT_CHECKED = "AWS permissions (IAM) were not checked: Rovara local AWS does not enforce IAM";
+export const AWS_PERMISSIONS_NOT_CHECKED_SHORT = "AWS permissions not checked (no IAM)";
 export const NO_USAGE_RECORD_ITEM: EvidenceNotTested = { kind: "environment", id: "test-services", text: "What the test services did was not reported", reason: "no usage record" };
 const BLOCKED_LISTED = 5;
 
@@ -37,10 +41,12 @@ export function dependencyEvidenceOf(pinned: readonly PinnedDependency[], usage:
     taken.add(name);
     const used = usage?.dependencies.find((entry) => entry.id === dependency.id);
     const ran = used !== undefined && used.started && used.healthy && used.failure === undefined;
-    if (!ran) return { name, backing: "none", label: "not_available", fellBack: { from: "local", reason: "did_not_start" } };
+    if (!ran) return { name, backing: "none", label: "not_available", fellBack: { from: dependency.backing, reason: "did_not_start" } };
+    if (dependency.backing === "emulated") return { name, backing: "emulated", label: evidenceDependencyLabelFor({ backing: "emulated" }), startedMs: used.startMs };
     return { name, backing: "local", label: evidenceDependencyLabelFor({ backing: "local", ...(dependency.substituteImage === true ? { substituteImage: true } : {}) }), startedMs: used.startMs };
   });
   const notTested: EvidenceNotTested[] = [];
+  if (dependencies.some((dependency) => dependency.label === "rovara_local_aws")) notTested.push({ kind: "environment", id: AWS_PERMISSIONS_ITEM_ID, text: AWS_PERMISSIONS_NOT_CHECKED, reason: "emulated" });
   if (usage === undefined) notTested.push(NO_USAGE_RECORD_ITEM);
   else {
     const total = testServicesUnknownCallCount(usage);

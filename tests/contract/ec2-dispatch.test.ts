@@ -530,6 +530,28 @@ describe("ec2-ebs delivery", () => {
       expect(await delivery({ workerFeatures: async () => base }).deliver(without, without.invocation)).toBe("DELIVERED");
     });
 
+    it("refuses a plan that starts Rovara local AWS to a worker that does not list task.testServices.aws.v1, and sends it to one that does (slice 2)", async () => {
+      const postgres = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), config: {}, aliases: ["postgres"], connect: [], seeds: [], reset: "fresh_per_round" };
+      const s3 = { id: "aws-s3", name: "S3", kind: "object_store", family: "aws:s3", backing: "emulated", catalogId: "local-aws@r1", repository: "svc/local-aws", digest: "c".repeat(64), config: {}, aliases: ["aws"], connect: [], seeds: [], reset: "fresh_per_round", aws: { services: ["s3"], region: "us-east-1" } };
+      const planWith = (dependencies: unknown[]) => ({ revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies });
+      const base = ["task.workflowMode", "task.workflowChecks", "task.readiness", "task.testEnvironment.v1", "task.testServices.v1"];
+      const readiness = [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }];
+      const record = taskRecord({ workflowMode: "CHECKS", readiness, testEnvironment: planWith([postgres, s3]) });
+      // A worker with slice 1 only would refuse the entry at its strict parse: it is refused here, and nothing is dropped.
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.testServices.aws.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect((postedPayload(capable.post).testEnvironment as { dependencies: Array<{ id: string }> }).dependencies.map((entry) => entry.id)).toEqual(["postgres", "aws-s3"]);
+      // Real software only: slice 1's worker still takes it.
+      const realOnly = taskRecord({ workflowMode: "CHECKS", readiness, testEnvironment: planWith([postgres]) });
+      expect(await delivery({ workerFeatures: async () => base }).deliver(realOnly, realOnly.invocation)).toBe("DELIVERED");
+      // A coding run is judged the same way.
+      const coding = taskRecord({ workflowMode: "IMPLEMENT", testEnvironment: planWith([s3]) });
+      await expect(delivery({ workerFeatures: async () => ["task.workflowMode", "task.testEnvironment.v1", "task.testServices.v1"] }).deliver(coding, coding.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+    });
+
     it("covers a coding (IMPLEMENT) run too: its plan with dependencies is refused to a worker without task.testServices.v1, and sent to one that has it", async () => {
       const dependency = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), config: {}, aliases: ["postgres"], connect: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], seeds: [], reset: "fresh_per_round" };
       const plan = { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [dependency] };

@@ -72,7 +72,7 @@ export async function emulatorControlCall(target: EmulatorControlTarget, request
   const bodyName = `${name}.body`;
   const written: string[] = [];
   const removeFiles = async (): Promise<void> => { for (const file of written.splice(0)) await target.files.remove(file).catch(() => undefined); };
-  const call = (args: string[], timeoutMs: number) => target.docker.run(args, { timeoutMs, ...(target.signal === undefined ? {} : { signal: target.signal }) }).catch(() => ({ exitCode: -1 as number | null, stdout: "", stderr: "", timedOut: false }));
+  const call = (args: string[], timeoutMs: number) => target.docker.run(args, { timeoutMs, ...(target.signal === undefined ? {} : { signal: target.signal }) }).catch(() => ({ exitCode: -1, stdout: "", stderr: "", timedOut: false }));
   try {
     let args: string[];
     try {

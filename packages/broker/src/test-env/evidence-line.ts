@@ -28,7 +28,10 @@ export async function evidenceEnvironmentOf(deps: TestEnvDeps, task: { orgId?: O
     const found = await usableTestEnvironment(deps, task.orgId, task.project, pin.revision, env);
     if (!found.ok) return { note: { kind: "environment", id: "test_environment", text: `${UNUSED_WORDS[found.reason]}: the project's own test setup was used`, reason: "not applied" } };
     const body = found.environment.environment;
-    const dependencies = (body.dependencies ?? []).flatMap((dependency): PinnedDependency[] => (dependency.backing.kind === "local" ? [{ id: dependency.id, name: dependency.name, backing: "local", ...(dependency.backing.substituteImage === undefined ? {} : { substituteImage: true }) }] : []));
+    const dependencies = (body.dependencies ?? []).flatMap((dependency): PinnedDependency[] => {
+      if (dependency.backing.kind === "emulated") return [{ id: dependency.id, name: dependency.name, backing: "emulated" }];
+      return dependency.backing.kind === "local" ? [{ id: dependency.id, name: dependency.name, backing: "local", ...(dependency.backing.substituteImage === undefined ? {} : { substituteImage: true }) }] : [];
+    });
     return { environment: { tier: body.tier, envRevision: found.environment.revision, services: [], data: "synthetic", accounts: [] }, deny: body.prodDeny, ...(dependencies.length === 0 ? {} : { dependencies }) };
   } catch {
     return {};

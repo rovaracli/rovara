@@ -1,15 +1,10 @@
-// Slice 2, s2-emulator-run: the AWS resources a plan carries for Rovara local AWS (contracts/src/test-services-aws-resources.ts), and the `aws` facts of the usage record. Names and attribute types only, strict forms.
+// Slice 2, s2-emulator-run: the AWS resources the worker reads from the project's infrastructure code for Rovara local AWS (contracts/src/test-services-aws-resources.ts), and the `aws` facts of the usage record. Names and attribute types only, strict forms.
 import { describe, expect, it } from "vitest";
 import {
-  TASK_AWS_RESOURCES_MAX, TaskAwsResourceSchema, TaskAwsResourcesSchema, TaskDependencyPlanSchema, TestServicesAwsUsageSchema, TestServicesUsageRecordSchema,
+  TASK_AWS_RESOURCES_MAX, TaskAwsResourceSchema, TaskAwsResourcesSchema, TestServicesAwsUsageSchema, TestServicesUsageRecordSchema,
 } from "../../packages/contracts/src/index.js";
 
-const sha = (letter: string) => letter.repeat(64);
 const table = { kind: "table", name: "orders", keySchema: { partitionKey: { name: "orderId", type: "S" }, sortKey: { name: "createdAt", type: "N" } } };
-const plan = (over: Record<string, unknown> = {}) => ({
-  id: "aws-s3", name: "S3", kind: "object_store", family: "aws:s3", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: sha("b"),
-  config: {}, aliases: [], connect: [], seeds: [], reset: "fresh_per_round", ...over,
-});
 
 describe("TaskAwsResourcesSchema", () => {
   it("takes tables with their key schema, buckets and queues, and nothing else", () => {
@@ -36,22 +31,6 @@ describe("TaskAwsResourcesSchema", () => {
     const key = ["AK", "IA", "ABCDEFGHIJKLMNOP"].join("");
     expect(TaskAwsResourcesSchema.safeParse([{ kind: "queue", name: key }]).success).toBe(false);
     expect(TaskAwsResourcesSchema.safeParse([{ kind: "queue", name: key.toLowerCase() }]).success).toBe(false);
-  });
-});
-
-describe("the plan's awsResources", () => {
-  it("is optional, so a plan without it is slice 1's plan byte for byte", () => {
-    const parsed = TaskDependencyPlanSchema.parse(plan());
-    expect("awsResources" in parsed).toBe(false);
-  });
-  it("is accepted on an AWS dependency and round-trips", () => {
-    const parsed = TaskDependencyPlanSchema.parse(plan({ awsResources: [table, { kind: "bucket", name: "orders-archive" }] }));
-    expect(parsed.awsResources).toEqual([table, { kind: "bucket", name: "orders-archive" }]);
-  });
-  it("is refused on a dependency that is not an AWS family, with a bad resource, or with duplicates", () => {
-    expect(TaskDependencyPlanSchema.safeParse(plan({ family: "postgres", awsResources: [table] })).success).toBe(false);
-    expect(TaskDependencyPlanSchema.safeParse(plan({ awsResources: [{ kind: "bucket", name: "BAD" }] })).success).toBe(false);
-    expect(TaskDependencyPlanSchema.safeParse(plan({ awsResources: [table, table] })).success).toBe(false);
   });
 });
 
