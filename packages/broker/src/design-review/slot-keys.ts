@@ -1,22 +1,29 @@
 // Design review stage, DR7 slice A: the model key of one reviewer slot (or the merge step) of a design-review operation.
 //
 // A design-review operation never has a model key of its own: every key request must name a slot of the binding the broker stored (`/v1/internal/model-access?slot=`), and gets a key minted for
-// that (operation, slot) alone, able to call only that slot's resolved model (security S6 to S9, N4). The key is minted ONCE per slot and handed out again for as long as it lives (S7): the
-// proxy's record of "the first call of this key" is what proves what a reviewer was sent, and a second key for the same slot would break it. The proxy cannot return a key it minted, so the key
-// is kept here SEALED (AES-256-GCM under a key derived from the broker's callback signing key, bound to the org, operation, slot and key id), in the operation's own partition, expiring by TTL.
-// The key id (a SHA-256, safe to store) is kept in the clear for `verifyRound`.
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
-import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, type DesignReviewBinding, type ModelSelection, type OrgId } from "@agentx/contracts";
+// that (operation, slot) alone, able to call only that slot's resolved model (security S6 to S9, N4).
+//
+// ONE-SHOT: a slot's key is minted once per operation, with a life past the whole stage (`DESIGN_REVIEW_KEY_TTL_SECONDS`), and a second request for the same slot is REFUSED, not answered with the same
+// or a new key. The proxy cannot return a key it minted, and the broker stores NO key secret anywhere: only the key id (a SHA-256, safe to store), its budget and a few facts. A well-behaved worker asks
+// once per slot. A re-ask fails that slot closed: it is recorded on the slot's row (`askedAgain`), the slot's key is blocked at the proxy, and `designReviewKeyIds` no longer returns it, so the slot
+// counts as "no result". One key per slot also keeps "the first call of this key" (the proxy's record that proves what a reviewer was sent) unambiguous.
+//
+// A slot's money is a fixed ceiling, allocated for the whole round in ONE conditional write at dispatch (`allocateSlotBudgets`); a slot's key can never be given more than its ceiling.
+import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { createHash } from "node:crypto";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, type DesignReviewBinding, type ModelSelection, type OrgId } from "@agentx/contracts";
 import { queryAllItems } from "../aws/admin-reads.js";
 import type { OperationRecord, StateTable } from "../aws/cancellation.js";
+import { designReviewKeyBudgets } from "./estimate.js";
 import { designReviewPartition, SLOT_PACKET_TTL_SECONDS, SLOT_PATTERN } from "./packet-store.js";
 
-/** A reviewer runs at most 15 minutes and the worker asks again 60 seconds before a key expires; the key lives 5 minutes longer than both. */
-export const DESIGN_REVIEW_KEY_TTL_SECONDS = 15 * 60 + 60 + 5 * 60;
-/** A kept key with less than this left is treated as expired (the worker would not use it). */
-export const SLOT_KEY_MIN_REMAINING_MS = 60_000;
-const ENTITY = "DESIGN_REVIEW_SLOT_KEY";
+/**
+ * A slot's key lives for the whole stage: the stage limit is 40 minutes, a reviewer is asked for its key at the start of its run, and the key lives 20 minutes past the limit as a margin (60 minutes).
+ * The proxy's own maximum for a key's life is 7 days (`model-proxy/protocol.ts`), so this is well inside it. The key is blocked and its hold released when the round is recorded; the life only bounds a key nobody closed.
+ */
+export const DESIGN_REVIEW_KEY_TTL_SECONDS = 60 * 60;
+const KEY_ENTITY = "DESIGN_REVIEW_SLOT_KEY";
+const ALLOCATION_ENTITY = "DESIGN_REVIEW_ALLOCATION";
 const KEY_ID = /^[0-9a-f]{64}$/u;
 
 /** What a slot of the stored binding is: a reviewer's or the merge step's, and the model it runs. */
@@ -38,51 +45,99 @@ export function bindingSlotOf(binding: DesignReviewBinding, slot: string | null 
 }
 
 const keyItem = (orgId: string, operationId: string, slot: string) => ({ pk: designReviewPartition(orgId, operationId), sk: `KEY#${slot}` });
+const allocationItem = (orgId: string, operationId: string) => ({ pk: designReviewPartition(orgId, operationId), sk: "ALLOC" });
 
-const sealingKey = (callbackSigningKey: string): Buffer => createHmac("sha256", callbackSigningKey).update("design-review-slot-key-v1").digest();
-const additionalData = (orgId: string, operationId: string, slot: string, keyId: string): Buffer => Buffer.from(`${orgId}|${operationId}|${slot}|${keyId}`, "utf8");
-
-/** Seals a key for storage. The key id is the SHA-256 of the key, so a record whose key does not hash to its id is refused on the way back. */
-export function sealSlotKey(callbackSigningKey: string, scope: { orgId: string; operationId: string; slot: string }, key: string): string {
-  const keyId = createHash("sha256").update(key).digest("hex");
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", sealingKey(callbackSigningKey), iv);
-  cipher.setAAD(additionalData(scope.orgId, scope.operationId, scope.slot, keyId));
-  const sealed = Buffer.concat([cipher.update(key, "utf8"), cipher.final()]);
-  return Buffer.concat([iv, cipher.getAuthTag(), sealed]).toString("base64");
+/** The slots of a binding, reviewers first and then the merge step when it is a model. */
+export function bindingSlots(binding: DesignReviewBinding): BindingSlot[] {
+  return [
+    ...binding.reviewers.map((reviewer): BindingSlot => ({ keySlot: reviewer.keySlot, purpose: "reviewer", role: reviewer.role, model: reviewer.model, modelRoute: reviewer.modelRoute })),
+    ...(binding.merge === undefined ? [] : [{ keySlot: binding.merge.keySlot, purpose: "merge" as const, model: binding.merge.model, modelRoute: binding.merge.modelRoute }]),
+  ];
 }
 
-function unsealSlotKey(callbackSigningKey: string, scope: { orgId: string; operationId: string; slot: string; keyId: string }, sealed: string): string | undefined {
-  try {
-    const raw = Buffer.from(sealed, "base64");
-    if (raw.length < 12 + 16 + 1) return undefined;
-    const decipher = createDecipheriv("aes-256-gcm", sealingKey(callbackSigningKey), raw.subarray(0, 12));
-    decipher.setAAD(additionalData(scope.orgId, scope.operationId, scope.slot, scope.keyId));
-    decipher.setAuthTag(raw.subarray(12, 28));
-    const key = Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString("utf8");
-    return createHash("sha256").update(key).digest("hex") === scope.keyId ? key : undefined;
-  } catch { return undefined; }
+export interface SlotBudgetAllocationInput {
+  orgId: OrgId;
+  operationId: string;
+  binding: DesignReviewBinding;
+  /** What is left under the review's cap for this round (`designReviewKeyBudgets(...).roomUsd`, which already holds back `reservedUsd`). */
+  reviewRoomUsd: number;
+  /** What is left of the task's run limit for model spend (`taskRunRoomUsd`): the least of the stop-at limit and the test cap, less what the task's keys have spent in this window. */
+  taskRoomUsd: number;
+  nowMs: number;
 }
 
-export interface KeptSlotKey {
-  key: string;
-  keyId: string;
-  /** Epoch milliseconds. */
-  expiresAt: number;
+export interface SlotBudgetAllocation {
+  /** The most each slot's key may be given, by key slot. Their sum is at most `min(reviewRoomUsd, taskRoomUsd)`. */
+  ceilings: Readonly<Record<string, number>>;
+  totalUsd: number;
 }
 
 /**
- * The key already minted for a slot, when it can still be used: it is there, belongs to this org, operation and slot, opens under the broker's key, hashes to its id, and has at least
- * `SLOT_KEY_MIN_REMAINING_MS` left. Otherwise undefined, with `previousKeyId` naming the record that a new key must replace (an expired or unreadable one).
+ * Allocates the round's per-slot ceilings, in ONE conditional write (the first allocation of an operation wins; a second is refused). The sum of the ceilings is at most the review's room AND the task's remaining run
+ * limit, so keys minted by slots at the same moment cannot together spend more than either. Slice B calls this at dispatch, BEFORE it stores the binding on the operation. Nothing is allocated (and the caller must
+ * not dispatch: `not_run`) when either room is used up: BUDGET_EXCEEDED. A slot's key request reads this row and is given no key without it.
  */
-export async function readSlotKey(deps: StateTable, callbackSigningKey: string, scope: { orgId: OrgId; operationId: string; slot: string }, nowMs: number): Promise<{ kept?: KeptSlotKey; previousKeyId?: string}> {
+export async function allocateSlotBudgets(deps: StateTable, input: SlotBudgetAllocationInput): Promise<SlotBudgetAllocation> {
+  const slots = bindingSlots(input.binding);
+  if (slots.length < 1 || new Set(slots.map((slot) => slot.keySlot)).size !== slots.length || slots.some((slot) => !SLOT_PATTERN.test(slot.keySlot))) throw agentXError("CONFIG_INVALID", "a design review needs valid, distinct key slots");
+  const room = Math.min(input.reviewRoomUsd, input.taskRoomUsd);
+  if (!Number.isFinite(room) || !(room > 0)) throw agentXError("BUDGET_EXCEEDED", "The design review has no budget left for this round.");
+  // One equal share per slot, rounded down to a millionth of a dollar: the sum can only fall short of the room.
+  const share = designReviewKeyBudgets({ capUsd: room, spentUsd: 0, reviewers: input.binding.reviewers.length, hasMergeModel: input.binding.merge !== undefined });
+  const ceilings: Record<string, number> = {};
+  for (const slot of slots) ceilings[slot.keySlot] = slot.purpose === "merge" ? share.mergeUsd : share.reviewerUsd;
+  const totalUsd = Object.values(ceilings).reduce((sum, usd) => sum + usd, 0);
+  if (!(share.reviewerUsd > 0) || totalUsd > room + 1e-9) throw agentXError("BUDGET_EXCEEDED", "The design review has no budget left for this round.");
+  try {
+    await deps.documentClient.send(new PutCommand({
+      TableName: deps.tableName,
+      Item: { ...allocationItem(input.orgId, input.operationId), entityType: ALLOCATION_ENTITY, orgId: input.orgId, operationId: input.operationId, round: input.binding.round, ceilings, totalUsd, createdAt: input.nowMs,
+        [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(input.nowMs / 1000) + SLOT_PACKET_TTL_SECONDS },
+      ConditionExpression: "attribute_not_exists(pk)",
+    }));
+  } catch (error) {
+    if ((error as { name?: string }).name === "ConditionalCheckFailedException") throw agentXError("CONFIG_INVALID", "this design-review operation already has its budgets allocated");
+    throw error;
+  }
+  return { ceilings, totalUsd };
+}
+
+/** The ceiling allocated to a slot, or undefined when the operation has no allocation (or one that does not name the slot): no key is minted then. */
+export async function readSlotCeiling(deps: StateTable, scope: { orgId: OrgId; operationId: string; slot: string }): Promise<number | undefined> {
+  const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: allocationItem(scope.orgId, scope.operationId), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+  if (item === undefined || item.entityType !== ALLOCATION_ENTITY || item.orgId !== scope.orgId || item.operationId !== scope.operationId) return undefined;
+  const ceilings = item.ceilings as Record<string, unknown> | undefined;
+  const ceiling = ceilings === undefined || typeof ceilings !== "object" ? undefined : ceilings[scope.slot];
+  return typeof ceiling === "number" && Number.isFinite(ceiling) && ceiling > 0 ? ceiling : undefined;
+}
+
+/** What is recorded of a slot's key: ids and facts only, never the key. */
+export interface SlotKeyRecord {
+  keyId: string;
+  purpose: "reviewer" | "merge";
+  budgetUsd: number;
+  expiresAt: number;
+  /** How many times the slot was asked for a key after the first. Above 0 the slot has failed closed. */
+  askedAgain: number;
+}
+
+function recordOf(item: Record<string, unknown> | undefined, scope: { orgId: string; operationId: string; slot: string }): SlotKeyRecord | undefined {
+  if (item === undefined || item.entityType !== KEY_ENTITY || item.orgId !== scope.orgId || item.operationId !== scope.operationId || item.keySlot !== scope.slot) return undefined;
+  const { keyId, purpose, budgetUsd, expiresAt, askedAgain } = item;
+  if (typeof keyId !== "string" || !KEY_ID.test(keyId) || (purpose !== "reviewer" && purpose !== "merge") || typeof budgetUsd !== "number" || typeof expiresAt !== "number") return undefined;
+  return { keyId, purpose, budgetUsd, expiresAt, askedAgain: typeof askedAgain === "number" && askedAgain > 0 ? askedAgain : 0 };
+}
+
+/** Whether the slot has a key row at all, damaged or not: any row means the slot's one key was already minted (or half-recorded), so the slot is closed. */
+export async function slotKeyRowExists(deps: StateTable, scope: { orgId: OrgId; operationId: string; slot: string }): Promise<boolean> {
   const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: keyItem(scope.orgId, scope.operationId, scope.slot), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
-  if (item === undefined || item.entityType !== ENTITY || item.orgId !== scope.orgId || item.operationId !== scope.operationId || item.keySlot !== scope.slot) return {};
-  const { keyId, sealed, expiresAt } = item;
-  if (typeof keyId !== "string" || !KEY_ID.test(keyId)) return {};
-  if (typeof sealed !== "string" || typeof expiresAt !== "number" || expiresAt - SLOT_KEY_MIN_REMAINING_MS <= nowMs) return { previousKeyId: keyId };
-  const key = unsealSlotKey(callbackSigningKey, { ...scope, keyId }, sealed);
-  return key === undefined ? { previousKeyId: keyId } : { kept: { key, keyId, expiresAt } };
+  return item !== undefined;
+}
+
+/** The record of the key already minted for a slot, or undefined when none was. */
+export async function readSlotKeyRecord(deps: StateTable, scope: { orgId: OrgId; operationId: string; slot: string }): Promise<SlotKeyRecord | undefined> {
+  const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: keyItem(scope.orgId, scope.operationId, scope.slot), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+  return recordOf(item, scope);
 }
 
 export interface SlotKeyRecordInput {
@@ -90,33 +145,43 @@ export interface SlotKeyRecordInput {
   operationId: string;
   slot: string;
   purpose: "reviewer" | "merge";
-  key: string;
+  round: number;
   keyId: string;
   expiresAt: number;
   budgetUsd: number;
   alias: string;
   nowMs: number;
-  /** The record this one replaces (an expired key): written only if that is still what is stored. */
-  previousKeyId?: string | undefined;
 }
 
-/** Keeps the key just minted for a slot. False when another request kept one first (or the replaced record changed): the caller gives its own key back and uses the stored one. */
-export async function putSlotKey(deps: StateTable, callbackSigningKey: string, input: SlotKeyRecordInput): Promise<boolean> {
+/** Records the key just minted for a slot (its id and facts, never the key). False when the slot already has a key: the caller gives its own key back and the slot is asked-again. */
+export async function putSlotKey(deps: StateTable, input: SlotKeyRecordInput): Promise<boolean> {
   try {
     await deps.documentClient.send(new PutCommand({
       TableName: deps.tableName,
       Item: {
-        ...keyItem(input.orgId, input.operationId, input.slot), entityType: ENTITY, orgId: input.orgId, operationId: input.operationId, keySlot: input.slot, purpose: input.purpose,
-        keyId: input.keyId, sealed: sealSlotKey(callbackSigningKey, { orgId: input.orgId, operationId: input.operationId, slot: input.slot }, input.key), expiresAt: input.expiresAt,
-        budgetUsd: input.budgetUsd, alias: input.alias, createdAt: input.nowMs, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(input.nowMs / 1000) + SLOT_PACKET_TTL_SECONDS,
+        ...keyItem(input.orgId, input.operationId, input.slot), entityType: KEY_ENTITY, orgId: input.orgId, operationId: input.operationId, keySlot: input.slot, purpose: input.purpose, round: input.round,
+        keyId: input.keyId, expiresAt: input.expiresAt, budgetUsd: input.budgetUsd, alias: input.alias, createdAt: input.nowMs, askedAgain: 0, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(input.nowMs / 1000) + SLOT_PACKET_TTL_SECONDS,
       },
-      ...(input.previousKeyId === undefined
-        ? { ConditionExpression: "attribute_not_exists(pk)" }
-        : { ConditionExpression: "attribute_not_exists(pk) OR keyId = :previous", ExpressionAttributeValues: { ":previous": input.previousKeyId } }),
+      ConditionExpression: "attribute_not_exists(pk)",
     }));
     return true;
   } catch (error) {
     if ((error as { name?: string }).name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
+}
+
+/** Records that a slot was asked for a key again, and answers the key id of the key it already has (the caller blocks it). Undefined when the slot has no row. */
+export async function recordSlotReask(deps: StateTable, scope: { orgId: OrgId; operationId: string; slot: string }, nowMs: number): Promise<string | undefined> {
+  try {
+    const result = await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: keyItem(scope.orgId, scope.operationId, scope.slot),
+      UpdateExpression: "ADD askedAgain :one SET askedAgainAt = :at", ConditionExpression: "attribute_exists(pk)",
+      ExpressionAttributeValues: { ":one": 1, ":at": nowMs }, ReturnValues: "ALL_NEW",
+    })) as { Attributes?: Record<string, unknown> };
+    return recordOf(result.Attributes, scope)?.keyId;
+  } catch (error) {
+    if ((error as { name?: string }).name === "ConditionalCheckFailedException") return undefined;
     throw error;
   }
 }
@@ -128,27 +193,37 @@ export async function putSlotKey(deps: StateTable, callbackSigningKey: string, i
 export const designReviewNoOperationKeyId = (operationId: string): string => createHash("sha256").update(`design-review:no-operation-key:${operationId}`).digest("hex");
 
 export interface DesignReviewKeyIds {
-  /** The key id minted for each slot (reviewer slots and the merge slot), by key slot. A slot that was never asked for has none. */
+  /** The ONE key id minted for each slot (reviewer slots and the merge slot), by key slot. A slot that was never asked for, or that was asked again (it failed closed), is NOT here: it has no result. */
   bySlot: ReadonlyMap<string, string>;
-  /** The merge step's key id (`verifyRound`'s `mergeKeyId`), when the binding has a merge step and it asked. */
+  /** The merge step's key id (`verifyRound`'s `mergeKeyId`), when the binding has a merge step and it asked once. */
   mergeKeyId?: string;
   /** The operation's own key (`verifyRound`'s `operationKeyId`): none is ever minted, so a placeholder no key can equal. */
   operationKeyId: string;
+  /** The slots asked for a key more than once, with the key id each had (blocked at the proxy). They have no result, but their key may have spent: charge `budgetUsdBySlot` for them when nothing was measured. */
+  askedAgain: ReadonlyMap<string, string>;
+  /** What each minted key was capped at (at most its allocated ceiling), by key slot, for every slot with a key row including those that were asked again. */
+  budgetUsdBySlot: ReadonlyMap<string, number>;
 }
 
 /**
- * What `verifyRound` needs of the keys: each reviewer's key (read it with `bySlot.get(reviewer.keySlot)`; a reviewer whose slot has no key never ran and is not verified), the merge key, and the operation key.
- * Read from the records written when the keys were minted, never from the worker.
+ * What `verifyRound` needs of the keys: each reviewer's key (read it with `bySlot.get(reviewer.keySlot)`; a reviewer whose slot has no key never ran, or failed closed, and is not verified), the merge key, and the
+ * operation key. Read from the rows written when the keys were minted, never from the worker. Any extra key minted in a race was blocked at once and never recorded, so it is not here.
  */
 export async function designReviewKeyIds(deps: StateTable, operation: Pick<OperationRecord, "id" | "orgId" | "designReview">): Promise<DesignReviewKeyIds> {
   const bySlot = new Map<string, string>();
+  const askedAgain = new Map<string, string>();
+  const budgetUsdBySlot = new Map<string, number>();
   const binding = operation.designReview;
   if (operation.orgId !== undefined && binding !== undefined) {
     for (const item of await queryAllItems(deps, designReviewPartition(operation.orgId, operation.id), "KEY#")) {
-      if (item.entityType !== ENTITY || item.orgId !== operation.orgId || item.operationId !== operation.id || typeof item.keySlot !== "string" || typeof item.keyId !== "string" || !KEY_ID.test(item.keyId)) continue;
-      if (bindingSlotOf(binding, item.keySlot) !== undefined) bySlot.set(item.keySlot, item.keyId);
+      if (typeof item.keySlot !== "string" || bindingSlotOf(binding, item.keySlot) === undefined) continue;
+      const record = recordOf(item, { orgId: operation.orgId, operationId: operation.id, slot: item.keySlot });
+      if (record === undefined) continue;
+      budgetUsdBySlot.set(item.keySlot, record.budgetUsd);
+      if (record.askedAgain > 0) askedAgain.set(item.keySlot, record.keyId);
+      else bySlot.set(item.keySlot, record.keyId);
     }
   }
   const mergeKeyId = binding?.merge === undefined ? undefined : bySlot.get(binding.merge.keySlot);
-  return { bySlot, ...(mergeKeyId === undefined ? {} : { mergeKeyId }), operationKeyId: designReviewNoOperationKeyId(operation.id) };
+  return { bySlot, ...(mergeKeyId === undefined ? {} : { mergeKeyId }), operationKeyId: designReviewNoOperationKeyId(operation.id), askedAgain, budgetUsdBySlot };
 }

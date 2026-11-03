@@ -3,8 +3,8 @@
 //
 // Layout, all in the state table under one org-scoped partition per operation, each item expiring by the table's TTL (`SLOT_PACKET_TTL_SECONDS`):
 //   pk  ORG#<orgId>#DESIGN_REVIEW#<operationId>
-//   sk  PACKET#<slot>#HEAD        the sizes and the SHA-256 of the stored text; written with the chunks in ONE transaction, never overwritten by a different packet
-//   sk  PACKET#<slot>#C<nn>       the stored text (gzip, base64) in chunks small enough for an item (a packet can be 400 KB and a table item is limited to 400 KB)
+//   sk  PACKET#R<round>#<slot>#HEAD   the sizes and the SHA-256 of the stored text; written with the chunks in ONE transaction, never overwritten by a different packet
+//   sk  PACKET#R<round>#<slot>#C<nn>  the stored text (gzip, base64) in chunks small enough for an item (a packet can be 400 KB and a table item is limited to 400 KB)
 // The stored text is the JSON of the packet's delivery fields only (`PacketDeliverySchema`: nothing of the broker's bookkeeping, estimates, omitted lists or other slots).
 //
 // Slice B calls `putSlotPackets` when it dispatches a round (before the operation is sent; if it throws, nothing is dispatched) and `removeSlotPackets` when the round is recorded.
@@ -28,8 +28,8 @@ export const SLOT_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const ENTITY = "DESIGN_REVIEW_PACKET";
 
 export const designReviewPartition = (orgId: string, operationId: string): string => `ORG#${orgId}#DESIGN_REVIEW#${operationId}`;
-const headKey = (orgId: string, operationId: string, slot: string) => ({ pk: designReviewPartition(orgId, operationId), sk: `PACKET#${slot}#HEAD` });
-const chunkKey = (orgId: string, operationId: string, slot: string, index: number) => ({ pk: designReviewPartition(orgId, operationId), sk: `PACKET#${slot}#C${String(index).padStart(2, "0")}` });
+const headKey = (orgId: string, operationId: string, round: number, slot: string) => ({ pk: designReviewPartition(orgId, operationId), sk: `PACKET#R${round}#${slot}#HEAD` });
+const chunkKey = (orgId: string, operationId: string, round: number, slot: string, index: number) => ({ pk: designReviewPartition(orgId, operationId), sk: `PACKET#R${round}#${slot}#C${String(index).padStart(2, "0")}` });
 
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
@@ -53,6 +53,8 @@ export interface SlotPacketInput {
 export interface SlotPacketStoreInput {
   orgId: OrgId;
   operationId: string;
+  /** The round the packets are for (the binding's `round`): part of every stored key, so a second round on one operation id can never meet the first round's packets. */
+  round: number;
   packets: readonly SlotPacketInput[];
   nowMs: number;
 }
@@ -62,6 +64,7 @@ export interface SlotPacketStoreInput {
  * a different text is refused, because the packet a slot serves must not change once it exists. Throws on any failure: the caller must not dispatch the round.
  */
 export async function putSlotPackets(deps: StateTable, input: SlotPacketStoreInput): Promise<void> {
+  if (!Number.isInteger(input.round) || input.round < 1) throw agentXError("CONFIG_INVALID", "a packet is stored for a round");
   const slots = input.packets.map((entry) => entry.keySlot);
   if (new Set(slots).size !== slots.length) throw agentXError("CONFIG_INVALID", "a key slot holds one packet");
   const expires = Math.floor(input.nowMs / 1000) + SLOT_PACKET_TTL_SECONDS;
@@ -71,17 +74,17 @@ export async function putSlotPackets(deps: StateTable, input: SlotPacketStoreInp
     const encoded = gzipSync(Buffer.from(text, "utf8")).toString("base64");
     const chunks: string[] = [];
     for (let start = 0; start < encoded.length; start += CHUNK_CHARS) chunks.push(encoded.slice(start, start + CHUNK_CHARS));
-    const common = { entityType: ENTITY, orgId: input.orgId, operationId: input.operationId, keySlot, [INDEX_EXPIRY_ATTRIBUTE]: expires };
+    const common = { entityType: ENTITY, orgId: input.orgId, operationId: input.operationId, round: input.round, keySlot, [INDEX_EXPIRY_ATTRIBUTE]: expires };
     try {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
-        { Put: { TableName: deps.tableName, Item: { ...headKey(input.orgId, input.operationId, keySlot), ...common, chunks: chunks.length, bytes: Buffer.byteLength(text, "utf8"), textSha256: sha256(text), role: packet.role, createdAt: input.nowMs }, ConditionExpression: "attribute_not_exists(pk)" } },
-        ...chunks.map((chunk, index) => ({ Put: { TableName: deps.tableName, Item: { ...chunkKey(input.orgId, input.operationId, keySlot, index), ...common, chunk } } })),
+        { Put: { TableName: deps.tableName, Item: { ...headKey(input.orgId, input.operationId, input.round, keySlot), ...common, chunks: chunks.length, bytes: Buffer.byteLength(text, "utf8"), textSha256: sha256(text), role: packet.role, createdAt: input.nowMs }, ConditionExpression: "attribute_not_exists(pk)" } },
+        ...chunks.map((chunk, index) => ({ Put: { TableName: deps.tableName, Item: { ...chunkKey(input.orgId, input.operationId, input.round, keySlot, index), ...common, chunk } } })),
       ] }));
     } catch (error) {
       const failed = failedIndexes(error);
       if (failed === undefined || failed.size === 0) throw error;
       // Already there: fine only when it is the same packet.
-      const kept = await readSlotPacket(deps, input.orgId, input.operationId, keySlot);
+      const kept = await readSlotPacket(deps, input.orgId, input.operationId, input.round, keySlot);
       if (kept?.text !== text) throw agentXError("CONFIG_INVALID", "a different packet is already stored for this key slot");
     }
   }
@@ -98,18 +101,18 @@ export interface StoredSlotPacket {
  * The packet stored for a slot of an operation, or undefined when there is none, when any piece is missing, or when what is read no longer matches the sizes and digest written with it (fail closed: a damaged
  * or tampered packet is never served). Both the org and the operation are part of the key, so another org's operation id reads nothing.
  */
-export async function readSlotPacket(deps: StateTable, orgId: OrgId, operationId: string, keySlot: string): Promise<StoredSlotPacket | undefined> {
-  if (!SLOT_PATTERN.test(keySlot)) return undefined;
+export async function readSlotPacket(deps: StateTable, orgId: OrgId, operationId: string, round: number, keySlot: string): Promise<StoredSlotPacket | undefined> {
+  if (!SLOT_PATTERN.test(keySlot) || !Number.isInteger(round) || round < 1) return undefined;
   const get = async (key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> =>
     (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
-  const head = await get(headKey(orgId, operationId, keySlot));
-  if (head === undefined || head.entityType !== ENTITY || head.orgId !== orgId || head.operationId !== operationId || head.keySlot !== keySlot) return undefined;
+  const head = await get(headKey(orgId, operationId, round, keySlot));
+  if (head === undefined || head.entityType !== ENTITY || head.orgId !== orgId || head.operationId !== operationId || head.keySlot !== keySlot || head.round !== round) return undefined;
   const { chunks, bytes, textSha256, role } = head;
   if (typeof chunks !== "number" || !Number.isInteger(chunks) || chunks < 1 || chunks > 16 || typeof bytes !== "number" || typeof textSha256 !== "string" || typeof role !== "string") return undefined;
   let encoded = "";
   for (let index = 0; index < chunks; index += 1) {
-    const piece = await get(chunkKey(orgId, operationId, keySlot, index));
-    if (piece === undefined || piece.orgId !== orgId || piece.operationId !== operationId || piece.keySlot !== keySlot || typeof piece.chunk !== "string") return undefined;
+    const piece = await get(chunkKey(orgId, operationId, round, keySlot, index));
+    if (piece === undefined || piece.orgId !== orgId || piece.operationId !== operationId || piece.keySlot !== keySlot || piece.round !== round || typeof piece.chunk !== "string") return undefined;
     encoded += piece.chunk;
   }
   let text: string;

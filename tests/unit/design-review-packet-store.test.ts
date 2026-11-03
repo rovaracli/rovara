@@ -21,8 +21,8 @@ describe("the stored packet of a slot", () => {
   it("keeps the delivery text exactly, and the stored text hashes to the packet's own digest", async () => {
     const db = new FakeDynamoDb();
     const built = await packet();
-    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "slot-critic", packet: built }], nowMs: 1_000_000 });
-    const stored = await readSlotPacket(table(db), ORG, OPERATION, "slot-critic");
+    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "slot-critic", packet: built }], nowMs: 1_000_000 });
+    const stored = await readSlotPacket(table(db), ORG, OPERATION, 1, "slot-critic");
     expect(stored?.text).toBe(packetTextOf(built));
     expect(packetDigestOf(PacketDeliverySchema.parse(JSON.parse(stored!.text)))).toBe(built.packetDigest);
     // Only the delivery fields: nothing of the builder's bookkeeping.
@@ -31,27 +31,27 @@ describe("the stored packet of a slot", () => {
 
   it("is keyed by org and operation: another org, another operation and another slot read nothing", async () => {
     const db = new FakeDynamoDb();
-    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "slot-critic", packet: await packet() }], nowMs: 0 });
-    expect(await readSlotPacket(table(db), OTHER_ORG, OPERATION, "slot-critic")).toBeUndefined();
-    expect(await readSlotPacket(table(db), ORG, "22222222-2222-4222-8222-222222222222", "slot-critic")).toBeUndefined();
-    expect(await readSlotPacket(table(db), ORG, OPERATION, "slot-other")).toBeUndefined();
-    expect(await readSlotPacket(table(db), ORG, OPERATION, "../../x")).toBeUndefined();
+    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "slot-critic", packet: await packet() }], nowMs: 0 });
+    expect(await readSlotPacket(table(db), OTHER_ORG, OPERATION, 1, "slot-critic")).toBeUndefined();
+    expect(await readSlotPacket(table(db), ORG, "22222222-2222-4222-8222-222222222222", 1, "slot-critic")).toBeUndefined();
+    expect(await readSlotPacket(table(db), ORG, OPERATION, 1, "slot-other")).toBeUndefined();
+    expect(await readSlotPacket(table(db), ORG, OPERATION, 1, "../../x")).toBeUndefined();
   });
 
   it("keeps a packet far larger than one table item (incompressible text over several chunks) and reads it back identically", async () => {
     const db = new FakeDynamoDb();
     const big = randomBytes(250_000).toString("base64");
     const built = await packet(`## §3 Proposed design\n${big}\n`);
-    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "slot-critic", packet: built }], nowMs: 0 });
+    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "slot-critic", packet: built }], nowMs: 0 });
     const pieces = db.find((item) => item.pk === designReviewPartition(ORG, OPERATION) && String(item.sk).includes("#C"));
     expect(pieces.length).toBeGreaterThan(1);
     expect(pieces.every((item) => Buffer.byteLength(String(item.chunk), "utf8") <= 250_000)).toBe(true);
-    expect((await readSlotPacket(table(db), ORG, OPERATION, "slot-critic"))?.text).toBe(packetTextOf(built));
+    expect((await readSlotPacket(table(db), ORG, OPERATION, 1, "slot-critic"))?.text).toBe(packetTextOf(built));
   });
 
   it("gives every item an expiry (the table's TTL) a day out", async () => {
     const db = new FakeDynamoDb();
-    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "slot-critic", packet: await packet() }], nowMs: 5_000_000 });
+    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "slot-critic", packet: await packet() }], nowMs: 5_000_000 });
     const items = db.find((item) => item.pk === designReviewPartition(ORG, OPERATION));
     expect(items.length).toBeGreaterThanOrEqual(2);
     for (const item of items) expect(item[INDEX_EXPIRY_ATTRIBUTE]).toBe(5_000 + SLOT_PACKET_TTL_SECONDS);
@@ -60,20 +60,20 @@ describe("the stored packet of a slot", () => {
   it("never changes a stored packet: the same text again is fine, a different one is refused and the first stays", async () => {
     const db = new FakeDynamoDb();
     const first = await packet();
-    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "slot-critic", packet: first }], nowMs: 0 });
-    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "slot-critic", packet: first }], nowMs: 10 });
-    await expect(putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "slot-critic", packet: await packet("## §3 Another design\n") }], nowMs: 20 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    expect((await readSlotPacket(table(db), ORG, OPERATION, "slot-critic"))?.text).toBe(packetTextOf(first));
+    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "slot-critic", packet: first }], nowMs: 0 });
+    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "slot-critic", packet: first }], nowMs: 10 });
+    await expect(putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "slot-critic", packet: await packet("## §3 Another design\n") }], nowMs: 20 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect((await readSlotPacket(table(db), ORG, OPERATION, 1, "slot-critic"))?.text).toBe(packetTextOf(first));
   });
 
   it("refuses a damaged copy: a missing chunk, a changed chunk, or a head for another operation", async () => {
     const db = new FakeDynamoDb();
-    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "slot-critic", packet: await packet() }], nowMs: 0 });
+    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "slot-critic", packet: await packet() }], nowMs: 0 });
     const chunk = db.find((item) => String(item.sk).includes("#C00"))[0]!;
     db.set({ ...chunk, chunk: `${String(chunk.chunk).slice(0, -8)}AAAAAAAA` });
-    expect(await readSlotPacket(table(db), ORG, OPERATION, "slot-critic")).toBeUndefined();
+    expect(await readSlotPacket(table(db), ORG, OPERATION, 1, "slot-critic")).toBeUndefined();
     db.delete({ pk: String(chunk.pk), sk: String(chunk.sk) });
-    expect(await readSlotPacket(table(db), ORG, OPERATION, "slot-critic")).toBeUndefined();
+    expect(await readSlotPacket(table(db), ORG, OPERATION, 1, "slot-critic")).toBeUndefined();
   });
 
   it("leaves the builder's bookkeeping out of the stored text, refuses a packet the contract refuses and a slot that is not valid, and writes nothing", async () => {
@@ -83,18 +83,31 @@ describe("the stored packet of a slot", () => {
     expect(packetTextOf(noisy as never)).toBe(packetTextOf(built));
     expect(packetTextOf(built)).not.toContain("secret");
     expect(() => packetTextOf({ ...built, documents: built.documents.slice(0, 1) })).toThrow();
-    await expect(putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "Bad Slot", packet: built }], nowMs: 0 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    await expect(putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "a", packet: built }, { keySlot: "a", packet: built }], nowMs: 0 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "Bad Slot", packet: built }], nowMs: 0 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "a", packet: built }, { keySlot: "a", packet: built }], nowMs: 0 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(db.find(() => true)).toEqual([]);
   });
 
   it("removes every packet of an operation and nothing else", async () => {
     const db = new FakeDynamoDb();
     const built = await packet();
-    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, packets: [{ keySlot: "slot-a", packet: built }, { keySlot: "slot-b", packet: built }], nowMs: 0 });
-    await putSlotPackets(table(db), { orgId: ORG, operationId: "22222222-2222-4222-8222-222222222222", packets: [{ keySlot: "slot-a", packet: built }], nowMs: 0 });
+    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "slot-a", packet: built }, { keySlot: "slot-b", packet: built }], nowMs: 0 });
+    await putSlotPackets(table(db), { orgId: ORG, operationId: "22222222-2222-4222-8222-222222222222", round: 1, packets: [{ keySlot: "slot-a", packet: built }], nowMs: 0 });
     expect(await removeSlotPackets(table(db), ORG, OPERATION)).toBeGreaterThanOrEqual(4);
-    expect(await readSlotPacket(table(db), ORG, OPERATION, "slot-a")).toBeUndefined();
-    expect(await readSlotPacket(table(db), ORG, "22222222-2222-4222-8222-222222222222", "slot-a")).toBeDefined();
+    expect(await readSlotPacket(table(db), ORG, OPERATION, 1, "slot-a")).toBeUndefined();
+    expect(await readSlotPacket(table(db), ORG, "22222222-2222-4222-8222-222222222222", 1, "slot-a")).toBeDefined();
+  });
+
+  it("keys a packet by its round: a second round on one operation id stores its own packet and never meets the first round's", async () => {
+    const db = new FakeDynamoDb();
+    const first = await packet();
+    const second = await packet("## §3 Round two design\n");
+    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 1, packets: [{ keySlot: "slot-critic", packet: first }], nowMs: 0 });
+    // Without the round in the key this second put would be refused as "a different packet is already stored".
+    await putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 2, packets: [{ keySlot: "slot-critic", packet: second }], nowMs: 10 });
+    expect((await readSlotPacket(table(db), ORG, OPERATION, 1, "slot-critic"))?.text).toBe(packetTextOf(first));
+    expect((await readSlotPacket(table(db), ORG, OPERATION, 2, "slot-critic"))?.text).toBe(packetTextOf(second));
+    expect(await readSlotPacket(table(db), ORG, OPERATION, 3, "slot-critic")).toBeUndefined();
+    await expect(putSlotPackets(table(db), { orgId: ORG, operationId: OPERATION, round: 0, packets: [{ keySlot: "slot-critic", packet: first }], nowMs: 0 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 });

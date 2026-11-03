@@ -333,6 +333,16 @@ async function planCap(deps: MintOperationDependencies, input: MintOperationKeyI
   return { capUsd, levels: read.levels };
 }
 
+/**
+ * DR7: what is left of a task's run limit for model spend, the figure a design-review round's slot ceilings are held under (`allocateSlotBudgets`). It is the same arithmetic as `planCap`'s run limits: the stop-at limit
+ * (the lower of the run limit and the agent's max per run) less what the task's keys have spent in this window, and a test run's cap less what the task's keys have spent. It counts SPENT, as the cap of any key does.
+ */
+export async function taskRunRoomUsd(deps: Pick<MintOperationDependencies, "access">, input: Pick<MintOperationKeyInput, "taskKeyIds" | "runLimitUsd" | "stopAtUsd" | "testCapUsd" | "budgetBaselineUsd">): Promise<number> {
+  const spent = await viaProxy(() => deps.access.keySpend(input.taskKeyIds));
+  const left = (limitUsd: number, spentUsd: number) => clean(Math.max(0, limitUsd - spentUsd));
+  return clean(Math.min(left(Math.min(input.stopAtUsd, input.runLimitUsd), clean(Math.max(0, spent - (input.budgetBaselineUsd ?? 0)))), input.testCapUsd === undefined ? Infinity : left(input.testCapUsd, spent)));
+}
+
 /** A key that was minted but could not be reserved: revoked at the proxy, and whatever of its reservation was written is taken back. */
 async function giveBack(deps: MintOperationDependencies, minted: MintedKey, keyId: string, orgId: OrgId): Promise<void> {
   await deps.access.revokeKey(minted.key).catch(() => undefined);

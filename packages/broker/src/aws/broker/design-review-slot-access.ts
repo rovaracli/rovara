@@ -3,21 +3,20 @@
 // A design-review operation has no model key of its own. Every request must name a slot of the binding the broker stored, and gets the key minted for that (operation, slot) alone (security S6 to S9, N4):
 //   - the slot is looked up in the stored binding (reviewers, and the merge step when it is a model); a request with no slot, or an unknown one, is refused, and nothing falls back to the operation's key;
 //   - the key may call only that slot's resolved model: the model must still be offered (the usable-models resolution), not forbidden by the company, and served by a source with an alias for it, which must be the
-//     alias the binding names. A person's ChatGPT plan has no alias and gets no key. A Rovara-catalog model with no list price gets none either (the proxy could not hold its spend to a budget);
-//   - it spends from the same payer as the task's other keys (the customer: the key is minted by the ordinary task path in model-access.ts, so its tags, scopes and budgets are the task's) and from the task
-//     and project budgets, and its own budget is a share of what is left under the review's cap (`designReviewKeyBudgets`); nothing left means no key;
-//   - it is minted once and handed out again while it lives (idempotent, S7), with a life longer than a reviewer's run plus the worker's refresh margin.
-import { DesignReviewBindingSchema, agentXError, designReviewActive, canonicalModelName, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@agentx/contracts";
+//     alias the binding names. A person's ChatGPT plan has no alias and gets no key. A metered-catalog model with no list price gets none either (the proxy could not hold its spend to a budget);
+//   - it spends from the same payer as the task's other keys (the customer: the key is minted by the ordinary task path in model-access.ts, so its tags, scopes and budgets are the task's; the metered catalog is the
+//     customer's provider like any other, billed to the company or project, never to Rovara) and from the task and project budgets. Its own budget is the CEILING allocated to the slot at dispatch
+//     (`allocateSlotBudgets`, one conditional write whose sum is held under the review's room and the task's remaining run limit); a slot with no allocation gets no key;
+//   - it is ONE-SHOT: a slot's key is minted once, with a life past the whole stage, and a second request for the slot is refused (the slot fails closed). No key secret is stored anywhere.
+import { AgentXError, DesignReviewBindingSchema, agentXError, designReviewActive, canonicalModelName, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@agentx/contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { readGuardrails } from "../../agents/guardrails.js";
 import { finalizeKey } from "../../spend/ledger.js";
 import { servableModels, servingRoutes } from "../../model-sources/routing.js";
-import { designReviewKeyBudgets } from "../../design-review/estimate.js";
-import { DESIGN_REVIEW_KEY_TTL_SECONDS, bindingSlotOf, putSlotKey, readSlotKey, type BindingSlot } from "../../design-review/slot-keys.js";
+import { DESIGN_REVIEW_KEY_TTL_SECONDS, bindingSlotOf, putSlotKey, readSlotCeiling, recordSlotReask, slotKeyRowExists, type BindingSlot } from "../../design-review/slot-keys.js";
 import { getItem, type OperationRecord } from "../cancellation.js";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import type { MintOperationKeyInput } from "../../spend/admission.js";
-import { keyIdOf } from "../../org/budget.js";
 import { requireWorkspace } from "./records.js";
 import { routingOf } from "./scope-helpers.js";
 import { ledgerOf } from "./sweeps-and-readiness.js";
@@ -40,16 +39,21 @@ export function designReviewSlotOf(operation: OperationRecord, path: string): Bi
   return slot;
 }
 
-/** What the mint of one slot's key is given, and how a kept key is handed out again. */
+/** Whether an error is this module's fixed refusal (model-access.ts lets it through unchanged instead of answering that the proxy failed). */
+const refusals = new WeakSet<object>();
+export const isSlotRefusal = (error: unknown): boolean => error instanceof AgentXError && refusals.has(error);
+const refusal = () => { const error = agentXError("FORBIDDEN", SLOT_REFUSED); refusals.add(error); return error; };
+
+/** What the mint of one slot's key is given, and how the key just minted is kept. */
 export interface SlotAsk {
   slot: BindingSlot;
   /** The route the key is scoped to: the proxy alias of the slot's model, and the source that serves it. */
   route: { alias: string; sourceId: string };
-  /** A key already minted for this slot that can still be used, as the answer to give; undefined when a new one must be minted. */
-  reuse(): Promise<{ apiKey: string; expiresAt: number } | undefined>;
-  /** The changes to the ordinary mint input for this slot (its own budget, life and recording). Throws when the review has no budget left for the step. */
-  mintInput(scope: Pick<MintOperationKeyInput, "recordOn">): Pick<MintOperationKeyInput, "ttlSeconds" | "keepEarlierKeys" | "recordOn" | "budgetCeilingUsd">;
-  /** Keeps the key just minted, and answers with the key to hand out: this one, or the one another request kept first (this one is then given back). */
+  /** One-shot: throws the fixed refusal when the slot already has a key. The re-ask is recorded and the slot's key is blocked, so the slot fails closed. */
+  claim(): Promise<void>;
+  /** The changes to the ordinary mint input for this slot (its ceiling, life and recording). Throws when the slot has no allocated ceiling. */
+  mintInput(scope: Pick<MintOperationKeyInput, "recordOn">): Promise<Pick<MintOperationKeyInput, "ttlSeconds" | "keepEarlierKeys" | "recordOn" | "budgetCeilingUsd">>;
+  /** Records the key just minted (its id and facts, never the key) and answers with it. When another request recorded a key for the slot first, this one is blocked and released at once, never returned, and the fixed refusal is thrown. */
   keep(minted: { key: string; keyId: string; expiresAt: number; maxBudgetUsd: number }): Promise<{ apiKey: string; expiresAt: number }>;
 }
 
@@ -75,7 +79,7 @@ async function routeOf(dependencies: AwsBrokerDependencies, operation: Operation
   const served = (await servingRoutes(routing, { orgId, project, model })).find((route) => route.alias !== undefined
     && (slot.modelRoute !== undefined ? route.alias === slot.modelRoute.alias : route.sourceId === "rovara" && route.alias === model.modelId));
   if (served?.alias === undefined) throw agentXError("MODEL_NOT_ALLOWED", NO_MODEL);
-  // Rovara's catalog model with no list price: the proxy would not know what a call costs, so no budget could hold it.
+  // A metered-catalog model with no list price: the proxy would not know what a call costs, so no budget could hold it.
   if (served.sourceId === "rovara" && listPricesPerMillion(model) === undefined) throw agentXError("MODEL_NOT_ALLOWED", NO_MODEL);
   return { alias: served.alias, sourceId: served.sourceId };
 }
@@ -85,37 +89,45 @@ export async function resolveSlotAsk(dependencies: AwsBrokerDependencies, operat
   const orgId = operation.orgId;
   if (orgId === undefined || dependencies.modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   const binding = DesignReviewBindingSchema.parse(operation.designReview);
-  const review = await reviewOf(dependencies, operation);
+  await reviewOf(dependencies, operation);
   const route = await routeOf(dependencies, operation, orgId, slot);
   const modelAccess = dependencies.modelAccess;
   const scope = { orgId, operationId: operation.id, slot: slot.keySlot };
-  let previousKeyId: string | undefined;
+  /** Blocks a key at the proxy now (revoking it when the proxy cannot block by id) and releases its hold. Never throws: what cannot be closed here expires with the key. */
+  const close = async (key: { key?: string; keyId: string }): Promise<void> => {
+    await modelAccess.access.blockKey(key.keyId).catch(() => (key.key === undefined ? undefined : modelAccess.access.revokeKey(key.key).catch(() => undefined)));
+    const ledger = ledgerOf(dependencies);
+    if (ledger !== undefined) await finalizeKey(ledger, orgId, key.keyId).catch(() => undefined);
+  };
+  /** A slot asked for a key again: recorded on its row, its key blocked, and the fixed refusal. */
+  const reask = async (): Promise<never> => {
+    const keyId = await recordSlotReask(dependencies, scope, Date.now());
+    console.log(JSON.stringify({ component: "broker", event: "design_review.slot_key_asked_again", operationId: operation.id, slot: slot.keySlot }));
+    if (keyId !== undefined) await close({ keyId });
+    throw refusal();
+  };
   return {
     slot, route,
-    reuse: async () => {
-      const found = await readSlotKey(dependencies, dependencies.callbackSigningKey, scope, Date.now());
-      previousKeyId = found.previousKeyId;
-      return found.kept === undefined ? undefined : { apiKey: found.kept.key, expiresAt: found.kept.expiresAt };
-    },
-    mintInput: (input) => {
-      const budgets = designReviewKeyBudgets({ capUsd: review.capUsd ?? 0, spentUsd: review.spentUsd, reviewers: binding.reviewers.length, hasMergeModel: binding.merge !== undefined });
-      const budgetCeilingUsd = slot.purpose === "merge" ? budgets.mergeUsd : budgets.reviewerUsd;
-      if (!(budgetCeilingUsd > 0)) throw agentXError("BUDGET_EXCEEDED", NO_ROOM);
+    claim: async () => { if (await slotKeyRowExists(dependencies, scope)) await reask(); },
+    mintInput: async (input) => {
+      const ceiling = await readSlotCeiling(dependencies, scope);
+      if (ceiling === undefined || !(ceiling > 0)) throw agentXError("BUDGET_EXCEEDED", NO_ROOM);
       // The other slots' keys are live at the same time and must not be given back: this key competes with their holds, and records without a count (concurrent slots all append).
-      return { ttlSeconds: DESIGN_REVIEW_KEY_TTL_SECONDS, keepEarlierKeys: true, budgetCeilingUsd, ...(input.recordOn === undefined ? {} : { recordOn: input.recordOn.map(({ key }) => ({ key })) }) };
+      return { ttlSeconds: DESIGN_REVIEW_KEY_TTL_SECONDS, keepEarlierKeys: true, budgetCeilingUsd: ceiling, ...(input.recordOn === undefined ? {} : { recordOn: input.recordOn.map(({ key }) => ({ key })) }) };
     },
     keep: async (minted) => {
-      const stored = await putSlotKey(dependencies, dependencies.callbackSigningKey, {
-        ...scope, purpose: slot.purpose, key: minted.key, keyId: minted.keyId, expiresAt: minted.expiresAt, budgetUsd: minted.maxBudgetUsd, alias: route.alias, nowMs: Date.now(), previousKeyId,
-      });
+      let stored: boolean;
+      try {
+        stored = await putSlotKey(dependencies, { ...scope, purpose: slot.purpose, round: binding.round, keyId: minted.keyId, expiresAt: minted.expiresAt, budgetUsd: minted.maxBudgetUsd, alias: route.alias, nowMs: Date.now() });
+      } catch (error) {
+        // The key could not be recorded: it was reserved and recorded on the task, and nobody will use it. Block it and release its hold (it is never handed out).
+        await close({ key: minted.key, keyId: minted.keyId });
+        throw error;
+      }
       if (stored) return { apiKey: minted.key, expiresAt: minted.expiresAt };
-      // Another request kept a key for this slot first: give this one back, and answer with the stored one.
-      await modelAccess.access.blockKey(keyIdOf(minted.key)).catch(() => modelAccess.access.revokeKey(minted.key).catch(() => undefined));
-      const ledger = ledgerOf(dependencies);
-      if (ledger !== undefined) await finalizeKey(ledger, orgId, keyIdOf(minted.key)).catch(() => undefined);
-      const found = await readSlotKey(dependencies, dependencies.callbackSigningKey, scope, Date.now());
-      if (found.kept === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
-      return { apiKey: found.kept.key, expiresAt: found.kept.expiresAt };
+      // Another request recorded a key for this slot first: this one is blocked and released at once and never returned, and the slot has been asked twice (it fails closed).
+      await close({ key: minted.key, keyId: minted.keyId });
+      return reask();
     },
   };
 }

@@ -55,8 +55,8 @@ export async function handleDesignReviewPacket(dependencies: AwsBrokerDependenci
   if (reviewer === undefined) throw agentXError("FORBIDDEN", REFUSED);
   if (await roundRecorded(dependencies, operation, binding.round)) throw agentXError("FORBIDDEN", REFUSED);
 
-  const stored = await readSlotPacket(dependencies, orgId, operation.id, reviewer.keySlot);
-  if (stored === undefined) throw agentXError("NOT_FOUND", "no packet is stored for that slot");
+  const stored = await readSlotPacket(dependencies, orgId, operation.id, binding.round, reviewer.keySlot);
+  if (stored === undefined) throw agentXError("FORBIDDEN", REFUSED);
   // What is served must be the packet the binding names: the stored text parses as the delivery contract, is the reviewer's role, and hashes to the binding's digest.
   let delivery: ReturnType<typeof PacketDeliverySchema.parse>;
   try { delivery = PacketDeliverySchema.parse(JSON.parse(stored.text)); } catch { throw agentXError("FORBIDDEN", REFUSED); }
