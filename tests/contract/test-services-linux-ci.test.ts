@@ -1,9 +1,9 @@
 // Test services slice 1: the Linux checks that need root and a real Docker host run in CI (the last steps of the linux-runtime job), because a staging worker has no SSM and nobody can run them there. Nothing here starts
 // Docker or changes the host: the workflow is read as data, the script's judge is run on sample output, boot-stage2.sh is sourced to see it only defines functions, and the CI Postgres entry is built from the committed catalog.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
 import { ciPostgresEntry } from "../../scripts/linux-check-test-services-live.js";
@@ -57,11 +57,15 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
     expect(YAML.stringify(check)).not.toContain("continue-on-error");
   });
 
-  it("the scope job exposes test_services (false only on a pull request that touches none of what the checks read; empty, so running, otherwise)", () => {
+  it("the scope job exposes test_services (false only when nothing the checks read changed since the previous release tag or the PR base, and the input is not always)", () => {
     const scope = jobs["scope"]!;
     expect(scope.outputs?.["test_services"]).toBe("${{ steps.test_services.outputs.test_services }}");
     const step = scope.steps.find((candidate) => candidate.id === "test_services")!;
-    expect(step.if).toBe("github.event_name == 'pull_request'");
+    // ci.yml is started by hand only, so the manual path decides too: no `if` on the step, the input test_services (auto | always), and a base to compare with.
+    expect(step.if).toBeUndefined();
+    expect(step.env).toEqual({ INPUT_TEST_SERVICES: "${{ inputs.test_services }}" });
+    const input = (YAML.parse(workflowText) as { on: { workflow_dispatch: { inputs: Record<string, { type: string; options: string[]; default: string }> } } }).on.workflow_dispatch.inputs["test_services"]!;
+    expect(input).toMatchObject({ type: "choice", options: ["auto", "always"], default: "auto" });
     const pattern = /grep -Eq '([^']+)'/u.exec(step.run!)![1]!;
     const regex = new RegExp(pattern, "u");
     for (const touched of [
@@ -69,6 +73,29 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
       "infra/lib/worker-settings.ts", "infra/lib/ec2-workers.ts", "scripts/linux-check-test-services.sh", "scripts/linux-check-test-services-live.ts", "scripts/ci-test-services-linux.sh", ".github/workflows/ci.yml",
     ]) expect(regex.test(touched), touched).toBe(true);
     for (const untouched of ["packages/web/src/App.tsx", "packages/broker/src/org/test-environment.ts", "docs/guide.md", "tests/unit/x.test.ts", "environments/slack/Dockerfile"]) expect(regex.test(untouched), untouched).toBe(false);
+    // The step's script, run for real in a throwaway repository: auto with no relevant change skips, auto with a relevant change runs, always runs, and no base to compare with runs (never a silent skip).
+    const decide = (setup: (git: (...args: string[]) => void, write: (path: string) => void) => void, event: string, choice: string): string => {
+      const dir = mkdtempSync(join(tmpdir(), "tse-scope-"));
+      const git = (...args: string[]): void => { const r = spawnSync("git", args, { cwd: dir, encoding: "utf8" }); if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`); };
+      const write = (path: string): void => { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), `${path} ${Math.random()}\n`); git("add", "-A"); git("-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-q", "-m", path); };
+      git("init", "-q", "-b", "main");
+      setup(git, write);
+      const output = join(dir, "github-output");
+      writeFileSync(output, "");
+      const ran = spawnSync("bash", ["-c", step.run!], { cwd: dir, encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", GITHUB_EVENT_NAME: event, GITHUB_OUTPUT: output, RUNNER_TEMP: dir, INPUT_TEST_SERVICES: choice } });
+      expect(ran.status, ran.stderr).toBe(0);
+      return readFileSync(output, "utf8").trim();
+    };
+    const tagged = (change: string) => (git: (...args: string[]) => void, write: (path: string) => void): void => { write("README.txt"); git("tag", "v0.4.1"); write("docs/note.txt"); write(change); };
+    expect(decide(tagged("packages/web/src/App.tsx"), "workflow_dispatch", "auto")).toBe("test_services=false");
+    expect(decide(tagged("packages/worker/src/run-network.ts"), "workflow_dispatch", "auto")).toBe("test_services=true");
+    expect(decide(tagged("packages/worker/ec2/boot-stage2.sh"), "workflow_dispatch", "auto")).toBe("test_services=true");
+    expect(decide(tagged("packages/web/src/App.tsx"), "workflow_dispatch", "always")).toBe("test_services=true");
+    expect(decide((git, write) => { write("a.txt"); write("b.txt"); }, "workflow_dispatch", "auto")).toBe("test_services=true");
+    expect(decide(tagged("packages/web/src/App.tsx"), "pull_request", "auto")).toBe("test_services=false");
+    expect(decide(tagged("infra/lib/worker-settings.ts"), "pull_request", "auto")).toBe("test_services=true");
+    // The gate on both steps reads it: "false" skips them, anything else (including empty) runs them.
+    expect(GATE).toBe("needs.scope.outputs.test_services != 'false'");
     // Nothing else in the workflow reads this output in a way that could skip other jobs.
     expect(workflowText.match(/test_services/gu)?.length).toBeGreaterThanOrEqual(4);
     expect(Object.entries(jobs).filter(([name, other]) => name !== "linux-runtime" && name !== "scope" && JSON.stringify(other).includes("outputs.test_services")).map(([name]) => name)).toEqual([]);

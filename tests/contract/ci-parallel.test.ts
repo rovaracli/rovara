@@ -188,7 +188,9 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
     const manualOnly = !(parsed.on !== null && typeof parsed.on === "object" && "pull_request" in parsed.on);
     if (manualOnly) {
       // Cloud: no push, no pull_request trigger at all, so an event other than a manual run starts nothing...
-      expect(parsed.on).toEqual({ workflow_dispatch: null });
+      // Replaces: `{ workflow_dispatch: null }`. The one trigger is still a manual run; it now takes one input, test_services (auto | always), for the test services Linux checks.
+      expect(Object.keys(parsed.on as object)).toEqual(["workflow_dispatch"]);
+      expect(Object.keys((parsed.on as { workflow_dispatch: { inputs: object } }).workflow_dispatch.inputs)).toEqual(["test_services"]);
       // ...and should a trigger come back, the public repository still skips a push, and Cloud takes only a pull request into cloud/integration or a release branch.
       expect(conditionFor(parsed.jobs.scope!.if, PUBLIC_REPOSITORY)).toBe("github.event.pull_request.draft != true && github.event_name != 'push'");
       expect(conditionFor(parsed.jobs.scope!.if, CLOUD_REPOSITORY)).toBe(
