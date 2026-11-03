@@ -3,13 +3,16 @@
 // Everything a source's server tells us (a tool's description, its schema's descriptions, its results) is text written by someone else. The model
 // reads it, so it is cleaned and bounded here, and the answer is framed as data, never as an instruction (design 3.6, injection safety 1).
 import { createHash } from "node:crypto";
-import { stripHiddenCharacters, type ContextSource, type ContextSourceTool, type ContextToolPresentation } from "@agentx/contracts";
+import { defuseFrameTags, stripHiddenCharacters, type ContextSource, type ContextSourceTool, type ContextToolPresentation } from "@agentx/contracts";
 
 const NAME_LIMIT = 64;
 
-/** Any `<source-result` or `</source-result`, however spaced, loses its angle bracket, so a result cannot close its frame or open a forged, "trusted" one (review M1). */
+/**
+ * Any `<source-result` or `</source-result`, however spelled, loses its angle bracket, so a result cannot close its frame or open a forged, "trusted" one (review M1). The reading is by normalisation
+ * (NFKC, case, spaces, invisible characters, slash and bracket look-alikes such as the fullwidth `＜`), the same one the design-review packet uses (`defuseFrameTags`), not a list of spellings.
+ */
 export function neutralizeFrameTags(text: string): string {
-  return text.replace(/<(\s*\/?\s*source-result)/giu, "&lt;$1");
+  return defuseFrameTags(text, { frames: ["source-result"] });
 }
 
 /** `src_<sourceId>_<tool>`, within the provider's 64 characters; a longer tool name is cut and given a short hash so two long names stay different. */
