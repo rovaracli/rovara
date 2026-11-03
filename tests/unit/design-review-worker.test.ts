@@ -13,7 +13,7 @@ import { WorkerReportSchema, verifyReviewerReport } from "../../packages/broker/
 import { assembleRoundFindings } from "../../packages/broker/src/design-review/round-findings.js";
 import { designReviewRetryPrompt, mergeMaterialOf, modelKeyIdOf, runDesignReview, sentDigestOf, type DesignReviewPorts, type DesignReviewSession, type OpenDesignReviewSession } from "../../packages/worker/src/design-review.js";
 import { createReviewSessionOpener, designReviewBindingOf, slotRuntimeFor } from "../../packages/worker/src/design-review-sessions.js";
-import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
+import type { PiSessionAdapter, PiSessionHandle } from "../../packages/worker/src/pi-session.js";
 import { modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 
@@ -419,15 +419,15 @@ describe("N2: what the worker records as sent", () => {
         };
       },
     };
-    const open = createReviewSessionOpener({ rootPath: dir, localFileTools: true, runtimeFor: () => ({ model: { provider: "p", modelId: "m" } as never, piAdapter: adapter }) });
+    const open = createReviewSessionOpener({ rootPath: dir, localFileTools: true, runtimeFor: () => ({ model: { provider: "p", modelId: "m" }, piAdapter: adapter }) });
     const session = await open({ purpose: "reviewer", keySlot: "slot-critic", model: { provider: "p", modelId: "m" }, system: "ROLE PROMPT", tools: [...READ_ONLY_TOOLS] });
     await session.prompt("the user message");
     expect(seenSystem).toBe("ROLE PROMPT");
     expect(session.firstRequest()).toEqual({ system: held, user: "the user message", messages: 2, systemObserved: true });
     session.dispose();
     // a handle that cannot read its system text back is recorded as not observed
-    const blind: PiSessionAdapter = { create: async (input) => { const handle = await adapter.create(input); const { systemPromptText: _drop, ...rest } = handle; return rest; } };
-    const opener2 = createReviewSessionOpener({ rootPath: dir, localFileTools: true, runtimeFor: () => ({ model: { provider: "p", modelId: "m" } as never, piAdapter: blind }) });
+    const blind: PiSessionAdapter = { create: async (input) => { const handle = await adapter.create(input); const rest: PiSessionHandle = Object.assign({}, handle); delete rest.systemPromptText; return rest; } };
+    const opener2 = createReviewSessionOpener({ rootPath: dir, localFileTools: true, runtimeFor: () => ({ model: { provider: "p", modelId: "m" }, piAdapter: blind }) });
     const second = await opener2({ purpose: "reviewer", keySlot: "slot-critic", model: { provider: "p", modelId: "m" }, system: "ROLE PROMPT", tools: [...READ_ONLY_TOOLS] });
     await second.prompt("u");
     expect(second.firstRequest()).toMatchObject({ systemObserved: false });
@@ -506,7 +506,7 @@ describe("broker side: assembleRoundFindings, fix round 2 (N1, N3, N5)", () => {
     const unreadable = { ...made.result, reviewers: made.result.reviewers.map((r) => ({ ...r, answer: "no block here" })) };
     const out = assembleRoundFindings({ binding: made.binding, result: unreadable, verification: made.verification, packets: made.packets, pins: {} });
     expect(out.reviewers.every((r) => !r.verified && !r.counted && r.verifyFailure === "unreadable_output")).toBe(true);
-    const missing = { ...made.result, reviewers: made.result.reviewers.map(({ answer: _answer, ...rest }) => rest) };
+    const missing = { ...made.result, reviewers: made.result.reviewers.map((entry) => ({ ...entry, answer: undefined })) };
     expect(assembleRoundFindings({ binding: made.binding, result: missing, verification: made.verification, packets: made.packets, pins: {} }).reviewers.every((r) => !r.verified)).toBe(true);
   });
 });

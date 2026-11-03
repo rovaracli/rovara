@@ -210,6 +210,7 @@ describe("verifyRound: a whole round", () => {
 describe("N4: the reviewer's key is its own", () => {
   it("a report that names no model key is refused (it could have run on the operation's key or the install's credential)", async () => {
     const { modelKeyId: _omit, ...without } = report();
+    void _omit;
     await expect(verifyReviewerReport(input({ report: without, usage: { kind: "unavailable" } }))).resolves.toEqual({ verified: false, failure: "unreadable_output" });
     await expect(verifyReviewerReport(input({ report: report({ modelKeyId: keyOf("other") }), usage: { kind: "unavailable" } }))).resolves.toEqual({ verified: false, failure: "model_key_mismatch" });
   });

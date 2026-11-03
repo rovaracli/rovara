@@ -193,15 +193,15 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
       if (body.data.tab === "design" && tabsPending(tabs).includes("requirements")) throw agentXError("CONFIG_INVALID", "tab: approve the requirements first");
     }
     if (body.data.shownDigest !== pending.digest) throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);
+    const acting = actingSubject(pending, body.data.tab);
+    // A reason belongs to a design approved with an open blocker and nowhere else: the body is refused before any friction step or anything is performed, never dropped.
+    const reasonProblem = approveReasonProblem(acting.item.kind, body.data.reason);
+    if (reasonProblem !== undefined) throw agentXError("CONFIG_INVALID", reasonProblem);
     let openedAt: string | undefined;
     if (card.friction.expandEvidenceFirst) {
       openedAt = await deps.store.evidenceOpenedAt({ ...who, cardId, tab: body.data.tab }, pending.digest);
       if (openedAt === undefined) throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);
     }
-    const acting = actingSubject(pending, body.data.tab);
-    // A reason belongs to a design approved with an open blocker and nowhere else: refused before anything is performed, never dropped.
-    const reasonProblem = approveReasonProblem(acting.item.kind, body.data.reason);
-    if (reasonProblem !== undefined) throw agentXError("CONFIG_INVALID", reasonProblem);
     const outcome = await deps.performer.approve(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, tab: body.data.tab, ...(body.data.reason === undefined ? {} : { reason: body.data.reason }) });
     const notDecided = outcomeReply(cardId, outcome, asksForMerging(request));
     if (notDecided !== undefined) return notDecided;

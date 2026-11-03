@@ -123,7 +123,7 @@ describe("N5: a code citation is a claim about the pinned commit, not something 
     expect(citationText(code({ path: "src/a.ts" }))).toBe(`src/a.ts:1 (${CODE_CITATION_UNCHECKED})`);
     const base = { subjectId: "dq1", taskId: "t", project: "p", title: "T", createdAt: "2026-11-03T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, contentVersion: "v1", designTitle: "T" };
     const question = { id: "q1" as const, unclear: "Which?", evidence: [code({ path: "src/a.ts" })], options: [{ id: "a", label: "A", consequence: "x" }, { id: "b", label: "B", consequence: "y" }], recommended: "a", why: "z" };
-    const lines = (packetItems?: CitablePacketItem[]) => (designQuestionsItem({ ...base, questions: [question as never], ...(packetItems === undefined ? {} : { packetItems }) })!.details ?? [])[0]!.lines;
+    const lines = (packetItems?: CitablePacketItem[]) => (designQuestionsItem({ ...base, questions: [question], ...(packetItems === undefined ? {} : { packetItems }) })!.details ?? [])[0]!.lines;
     expect(lines(items)[1]).toBe("Evidence: src/a.ts:1");
     expect(lines()[1]).toContain(CODE_CITATION_UNCHECKED);
   });

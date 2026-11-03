@@ -14,7 +14,7 @@ export {
 
 /** Every item any reviewer of the round was given, each once (the planner reads the same design and sources). */
 export function roundItemsOf(packets: ReviewerPackets): CitablePacketItem[] {
-  const lists: Array<readonly CitablePacketItem[] | undefined> = packets instanceof Map ? [...(packets as ReadonlyMap<ReviewerRole, readonly CitablePacketItem[]>).values()] : Object.values(packets);
+  const lists: Array<readonly CitablePacketItem[] | undefined> = packets instanceof Map ? [...(packets as ReadonlyMap<ReviewerRole, readonly CitablePacketItem[]>).values()] : (Object.values(packets) as Array<readonly CitablePacketItem[] | undefined>);
   const seen = new Set<string>();
   const items: CitablePacketItem[] = [];
   for (const list of lists) for (const item of list ?? []) {

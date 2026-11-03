@@ -216,7 +216,7 @@ describe("groups are Enterprise only", () => {
     expect(await failure(put(w, MAX, { designReview: withGroup }, { edition: undefined }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(stored(w)).toBeUndefined();
     // Maintainers and named people are fine in Public.
-    expect((await put(w, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "people", memberIds: ["a"] } } }, { edition: editionPolicy("public") })).statusCode).toBe(200);
+    expect((await put(w, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "people", memberIds: [PRIYA] } } }, { edition: editionPolicy("public") })).statusCode).toBe(200);
   });
   it("accepts it in Enterprise", async () => {
     const w = mergeWorld();
