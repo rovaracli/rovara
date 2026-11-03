@@ -18,7 +18,7 @@ describe("the whole-line check", () => {
     expect(all.join("\n")).not.toContain("everyone");
     expect(all.join("\n")).not.toContain("hidden");
     expect(out.lines).toEqual(["Integration tests ran against: dependency 1 (Rovara local AWS)."]);
-    expect(out.notTested).toEqual(["- dependency 1 behaviour against real AWS (emulated)", "- 3 tests not run: they need dependency 2"]);
+    expect(out.notTested).toEqual(["- dependency 1 behaviour against real AWS (emulated)", "- 3 tests not run: they need dependency 2", "- AWS permissions (IAM) were not checked: Rovara local AWS does not enforce IAM"]);
     for (const line of all) expect(dependencyLineIsInert(line)).toBe(true);
   });
   it("keeps the names when every line is fine", () => {

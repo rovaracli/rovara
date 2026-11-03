@@ -11,8 +11,8 @@ import { CoverageMapSchema } from "./test-env-nightly.js";
 import { CheckKindSchema } from "./evidence.js";
 import { RelativeWorkspacePathSchema } from "./project.js";
 import {
-  CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, SeedRefSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
-  TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, catalogIdName, testEnvStartedCount,
+  AwsServiceIdSchema, CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, SeedRefSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
+  IacSeedRefSchema, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema, catalogIdName, testEnvStartedCount,
 } from "./test-env-dependency.js";
 import { reservedDependencyEnvName } from "./test-services-shared.js";
 import { TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECTION_METHODS, TEST_ENV_SELECT_PLACEHOLDER, TestEnvValueSourceSchema, TestEnvironmentBodySchema, type TestEnvironmentBody } from "./test-environment.js";
@@ -26,6 +26,11 @@ export const TEST_ENV_COVERAGE_PATH_FEATURE = "task.testEnvCoveragePath.v1";
  * the field (its strict parse would refuse it): the broker refuses the run to such a worker at dispatch (`ec2-delivery.ts`). Also in `WORKER_INVOCATION_FEATURES`; the worker lists it in `implemented-features.ts` when it can do both.
  */
 export const TEST_SERVICES_PLAN_FEATURE = "task.testServices.v1";
+/**
+ * Test services (slice 2): a worker that lists this reads a plan dependency with `backing: "emulated"` and its `aws` block (Rovara local AWS for S3, SQS and DynamoDB). It also lists `TEST_SERVICES_PLAN_FEATURE`. A worker that does
+ * not is never sent such a plan (its strict parse would refuse the field): the broker refuses the run to it at dispatch (`ec2-delivery.ts`). In `WORKER_INVOCATION_FEATURES`; the worker lists it only when it can start the emulator.
+ */
+export const TEST_SERVICES_AWS_PLAN_FEATURE = "task.testServices.aws.v1";
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
@@ -128,7 +133,8 @@ export const TaskDependencyPlanSchema = z
     name: line(80),
     kind: TestEnvDependencyKindSchema,
     family: FamilyIdSchema,
-    backing: z.literal("local"),
+    /** `local`: real software from the catalog. `emulated` (slice 2): Rovara local AWS, with the `aws` block below; every emulated entry of one plan names the same image, and all of them share one helper. */
+    backing: z.enum(["local", "emulated"]),
     catalogId: CatalogIdSchema,
     /** The repository under the install's registry (`svc/postgres`); the registry host is the install's. */
     repository: z.string().regex(/^svc\/[a-z0-9][a-z0-9._-]{0,62}$/u),
@@ -140,11 +146,23 @@ export const TaskDependencyPlanSchema = z
     connect: z.array(z.object({ name: EnvNameSchema, template: ConnectTemplateSchema }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.connectEnv),
     seeds: z.array(SeedRefSchema).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
     reset: z.enum(TEST_ENV_DEPENDENCY_RESETS),
+    /** Only on an `emulated` entry: the AWS services this dependency needs from Rovara local AWS, the region the code is told, and where the project declares its resources (a file, never read by the broker). */
+    aws: z.object({ services: z.array(AwsServiceIdSchema).min(1).max(TEST_ENV_DEPENDENCY_LIMITS.awsServices), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
   })
   .strict()
   .superRefine((plan, context) => {
     const problem = (path: (string | number)[], message: string) => context.addIssue({ code: "custom", path, message });
-    if ((TEST_ENV_HELPER_CATALOG_NAMES as readonly string[]).includes(catalogIdName(plan.catalogId))) problem(["catalogId"], "a local dependency is real software from the catalog, not one of Rovara's helpers");
+    if (plan.backing === "local" && (TEST_ENV_HELPER_CATALOG_NAMES as readonly string[]).includes(catalogIdName(plan.catalogId))) problem(["catalogId"], "a local dependency is real software from the catalog, not one of Rovara's helpers");
+    if (plan.backing === "local" && plan.aws !== undefined) problem(["aws"], "only an emulated dependency has AWS services");
+    if (plan.backing === "emulated") {
+      if (catalogIdName(plan.catalogId) !== "local-aws") problem(["catalogId"], "an emulated dependency runs Rovara local AWS");
+      if (!plan.family.startsWith("aws:")) problem(["family"], "Rovara local AWS backs AWS families only");
+      if (plan.aws === undefined) problem(["aws"], "an emulated dependency names its AWS services");
+      else {
+        if (new Set(plan.aws.services).size !== plan.aws.services.length) problem(["aws", "services"], "a service is listed once");
+        if (plan.family.startsWith("aws:") && !plan.aws.services.includes(plan.family.slice(4))) problem(["aws", "services"], "the services include the family's own service");
+      }
+    }
     if (new Set(plan.aliases).size !== plan.aliases.length) problem(["aliases"], "an alias is listed once");
     plan.aliases.forEach((alias, index) => {
       if ((TEST_ENV_RESERVED_ALIASES as readonly string[]).includes(alias)) problem(["aliases", index], "this name belongs to a Rovara helper");
