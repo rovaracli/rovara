@@ -5,6 +5,7 @@ import {
   AgentXError,
   agentXError,
   MEMBER_GRANT_SK_PREFIX,
+  diagnosisRovaraPaidGlobalCents,
   memberGrantsPk,
   orgMemberKey,
   type AgentId,
@@ -135,6 +136,8 @@ export function diagnosisRouteDepsOf(deps: DeveloperRouteDependencies, caller: D
   const table = { documentClient: deps.documentClient, tableName: deps.tableName };
   return {
     ...table, now: deps.now, enabled: true, edition: deps.editionPolicy?.edition ?? "public", queue: deps.developer.slackRequestQueue,
+    // DG-3: the install-wide daily ceiling on what Rovara pays for light diagnoses (packed setting `fg`; unreadable or absent: the default).
+    rovaraPaidGlobalCents: diagnosisRovaraPaidGlobalCents(process.env["LIVE_FIX_ROVARA_PAID_DAILY_CENTS"]),
     authority: { ...table, access },
     audit: { ...table, ...(deps.audit === undefined ? {} : { audit: deps.audit }) },
     log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),

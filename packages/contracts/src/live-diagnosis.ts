@@ -102,7 +102,8 @@ export const DiagnosisProposalOutcomeSchema = z.object({
   diagnosisId: DiagnosisIdSchema,
   index: z.number().int().min(0),
   target: z.string().min(1).max(40),
-  outcome: z.enum(["applied", "waiting_for_approval"]),
+  /** `held` (DG-4): a token caller's dev container change is held until its check passes (TE-4); nothing is written yet. */
+  outcome: z.enum(["applied", "held", "waiting_for_approval"]),
   /** The approval to decide, when the normal path asks for one. */
   approvalId: z.string().max(200).optional(),
   link: z.string().max(2_000).optional(),
@@ -115,6 +116,8 @@ export type DiagnosisProposalOutcome = z.infer<typeof DiagnosisProposalOutcomeSc
 
 /** DG-2: the button that applies a proposed settings change. It applies the change at once, as the maintainer's own save; it does not create a pending card. */
 export const DIAGNOSIS_APPLY_BUTTON_LABEL = "Apply this change" as const;
+/** DG-4: what to say when "Apply this change" was held instead of applied (an API key's change to the dev container waits for its check; nothing is written until it passes). */
+export const DIAGNOSIS_HELD_WORDS = "Held: this change is waiting for its check to pass. Nothing has been applied yet." as const;
 export const DIAGNOSIS_ANSWER_LABEL = "AI diagnosis from this error's data; it can be wrong, and it has changed nothing." as const;
 export const DIAGNOSIS_REFUSALS = {
   notAvailable: "Fix with agent isn't available for this error.",
@@ -122,6 +125,7 @@ export const DIAGNOSIS_REFUSALS = {
   notAllowed: "You can't ask for a diagnosis of this error.",
   rateLimited: "You've asked for a lot of diagnoses lately. Try again a little later.",
   orgRateLimited: "Fix with agent has reached today's limit for your company. Try again tomorrow, or ask for help from Rovara support.",
+  globalRateLimited: "Fix with agent is paused for today. Try again tomorrow, or ask for help from Rovara support.",
   deepRateLimited: "You've used today's deep diagnoses. Try again tomorrow.",
   notReady: "That diagnosis isn't ready.",
   noDeepNeeded: "That diagnosis didn't ask for the code to be read.",

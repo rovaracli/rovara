@@ -85,7 +85,7 @@ async function citationsHold(ports: DiagnosisProposePorts, orgId: OrgId, project
  */
 export async function proposeDiagnosisChange(
   deps: DiagnosisCoreDependencies, ports: DiagnosisProposePorts | undefined, caller: DeveloperCaller, diagnosisId: string, value: unknown,
-): Promise<{ diagnosisId: string; index: number; target: string; outcome: "applied" }> {
+): Promise<{ diagnosisId: string; index: number; target: string; outcome: "applied" | "held" }> {
   if (!deps.enabled) throw agentXError("NOT_FOUND", "route not found");
   const body = DiagnosisProposeBodySchema.safeParse(value);
   if (!body.success) throw agentXError("CONFIG_INVALID", "a proposal needs a request ID and the number of the change");
@@ -136,10 +136,12 @@ export async function proposeDiagnosisChange(
   if (held === "unread") throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.citationsUnchecked);
   if (held === "wrong") throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.citationsWrong);
 
-  await apply();
+  const result = await apply();
+  // DG-4 (TE-4): an API key's change to the dev container is HELD until its check passes; nothing is written yet, so it is never answered as applied. (A browser session's change is saved at once.)
+  const wasHeld = typeof result === "object" && result !== null && (result as { held?: unknown }).held !== undefined;
   await auditDiagnosis(deps.audit, () => auditDiagnosisProposalRaised({
     orgId, actor: auditActorOf(caller.developerId), occurredAt: new Date(deps.now()).toISOString(), occurrence: `${diagnosisId}:${body.data.requestId}`,
     diagnosisId, proposalKind: "settings_change", approvalId: body.data.requestId,
   }));
-  return { diagnosisId, index: body.data.index, target: proposal.target, outcome: "applied" };
+  return { diagnosisId, index: body.data.index, target: proposal.target, outcome: wasHeld ? "held" : "applied" };
 }

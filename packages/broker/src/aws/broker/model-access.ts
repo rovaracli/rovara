@@ -524,7 +524,10 @@ export async function mintChatTurnKey(
   body: { turnId: string; model?: ModelIdentifier | undefined; classifierModel?: ModelIdentifier | undefined },
   /** SY-7: conditions on the requester's standing, checked in the write that records the key (or, where no key is recorded, in one of their own right) and refused as REMOVED_FROM_ORG. */
   guard?: RegisterGuard,
-  options: { rovaraPays?: true } = {},
+  options: {
+    /** Live interaction F2 (Public light diagnosis): Rovara pays. DG-3: `claimKey` is called once, right before Rovara's own key is minted, and answers false when this diagnosis already took its one key (then none is minted). */
+    rovaraPays?: { claimKey(): Promise<boolean> };
+  } = {},
 ): Promise<{ baseUrl: string; apiKey: string; expiresAt: number | string; route?: unknown; classifierModel?: ModelIdentifier | null }> {
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
@@ -546,7 +549,7 @@ export async function mintChatTurnKey(
     // Live interaction F2 (Public light diagnosis): Rovara pays for its own support. Only a turn routed to Rovara's own AI is let through unmetered, on a key that can call that route alone and spend a
     // fixed small amount; it is counted against none of the customer's budgets and does not need the trial or machine-time admission. A turn that routes anywhere else (the company's own source)
     // is paid like any chat turn, below. The caller decides `rovaraPays` from the edition and the tier; nothing in a request can ask for it.
-    if (options.rovaraPays === true && routed !== undefined && routed.route.sourceId === ROVARA_SOURCE_ID) {
+    if (options.rovaraPays !== undefined && routed !== undefined && routed.route.sourceId === ROVARA_SOURCE_ID) {
       // No key record is written for Rovara's own support turn, so any standing conditions are asserted in a write of their own before the key is minted (fail closed).
       if (guard !== undefined && guard.checks.length > 0) {
         try {
@@ -559,6 +562,8 @@ export async function mintChatTurnKey(
           throw error;
         }
       }
+      // DG-3: one key per diagnosis. A repeat of this call (a retry, a redelivery) finds the claim taken and mints nothing: fail closed, never a second $0.25 key.
+      if (!(await options.rovaraPays.claimKey())) throw agentXError("RUNTIME_UNAVAILABLE", "this diagnosis already has its model key");
       const support = await mintKeyHealing(
         { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
         { orgId: orgId, purpose: "turn", refId: body.turnId, maxBudgetUsd: DIAGNOSIS_LIGHT_BUDGET_USD, ttlSeconds: TURN_KEY_TTL_SECONDS, models: routed.models, rovaraPaid: true },
