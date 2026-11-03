@@ -94,12 +94,13 @@ function freeId(id: string, detector: string, taken: ReadonlySet<string>): strin
  * one's citation; a check whose id is taken by a different command is KEPT under `<id>-<detector>` rather than silently replaced; setup commands, globs, services, notes and questions are de-duplicated; and the
  * environment's limits hold, each cut saying so. `legacyOnly` runs the detectors that existed before test services, without any dependency candidate (used when the full pass was stopped for taking too long).
  */
-export async function runDetectors(reader: RepositoryReader, cwd: string, options: { legacyOnly?: boolean } = {}): Promise<Detection> {
+export async function runDetectors(reader: RepositoryReader, cwd: string, options: { legacyOnly?: boolean; /** Run only the detectors with these names (a caller that wants one kind of finding). */ only?: readonly string[] } = {}): Promise<Detection> {
   const merged = emptyDetection();
   const candidates: DependencyCandidate[] = [];
   const ids = new Set<string>();
   let cutChecks = false;
   for (const detector of DETECTORS) {
+    if (options.only !== undefined && !options.only.includes(detector.name)) continue;
     if (options.legacyOnly === true && DEPENDENCY_DETECTOR_NAMES.has(detector.name)) continue;
     let part: Partial<Detection>;
     try { part = await detector.run({ repo: reader, cwd }); } catch { merged.notes.push(`The ${detector.name} detector could not finish.`); continue; }

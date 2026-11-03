@@ -382,8 +382,10 @@ describe("the approve card", () => {
 
 // ---- evidence and the pull request
 
-const pinnedRows: PinnedDependency[] = [{ id: "postgres", name: "Postgres", backing: "local" }, { id: "aws-s3", name: "S3", backing: "emulated" }, { id: "aws-sqs", name: "SQS", backing: "emulated" }, { id: "aws-dynamodb", name: "DynamoDB", backing: "emulated" }];
-const usageOf = (ids: string[]): RawUsage => ({ schemaVersion: 1, dependencies: ids.map((id) => ({ id, started: true, healthy: true, startMs: 1200, resetCount: 0 })), unknownCalls: { domains: [], otherCount: 0 } });
+const pinnedRows: PinnedDependency[] = [{ id: "postgres", name: "Postgres", backing: "local" }, { id: "aws-s3", name: "S3", backing: "emulated", awsServices: ["s3"] }, { id: "aws-sqs", name: "SQS", backing: "emulated", awsServices: ["sqs"] }, { id: "aws-dynamodb", name: "DynamoDB", backing: "emulated", awsServices: ["dynamodb"] }];
+const usageOf = (ids: string[]): RawUsage => ({ schemaVersion: 1, dependencies: ids.map((id) => ({ id, started: true, healthy: true, startMs: 1200, resetCount: 0 })), unknownCalls: { domains: [], otherCount: 0 },
+  // a clean run of the emulator: its ledger was read and shows only planned services (the broker also judges this; see test-services-aws-usage-verdict.test.ts)
+  aws: { ledger: "read", services: [{ service: "s3", calls: 2, unsupported: 0 }], unsupportedOperations: [], otherCalls: 0, otherUnsupported: 0 } });
 const packOf = (dependencies: ReturnType<typeof dependencyEvidenceOf>["dependencies"]) => ({ environment: { dependencies } }) as never;
 
 describe("evidence and the pull request", () => {

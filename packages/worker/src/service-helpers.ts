@@ -22,7 +22,7 @@
 // Health: a `command` check runs a fixed command inside the helper (`docker exec`). A `tcp` or `http` check is asked from a probe container of its own on the services network (service-probe.ts): the boot firewall drops
 // every packet from an `rvi*` bridge to the host, so the worker cannot ask it itself. A start that fails, or health that does not arrive within the entry's `startTimeoutS` (and the run-wide 120 s), ends the start with one
 // fixed sentence; Docker's own words are never repeated. Everything started is removed.
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   CATALOG_FIXED_ARGS, CatalogEntrySchema, TEST_ENV_RESERVED_ALIASES, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName,
   type CatalogEntry,
@@ -53,8 +53,10 @@ const REGION = /^[a-z]{2}(?:-[a-z]+)+-[0-9]{1,2}$/u;
 const USER = /^[a-z][a-z0-9_]{0,30}$/u;
 const DATABASE = /^[a-z][a-z0-9_]{0,62}$/u;
 const PASSWORD = /^[A-Za-z0-9]{8,64}$/u;
+/** The emulator's own floor: its run contract wants 16 or more characters for each secret (the fork's `RovaraRunContract`), so a shorter value is refused here and the emulator never has to refuse it. */
+const EMULATOR_SECRET = /^[A-Za-z0-9]{16,64}$/u;
 /** The plain forms a per-run user, database and password must have, so none can break out of an env file, a URL or an option. The env channel (service-env.ts) uses the same. */
-export const HELPER_CREDENTIAL_PATTERNS = { user: USER, database: DATABASE, password: PASSWORD, controlToken: PASSWORD } as const;
+export const HELPER_CREDENTIAL_PATTERNS = { user: USER, database: DATABASE, password: PASSWORD, controlToken: PASSWORD, emulatorSecret: EMULATOR_SECRET } as const;
 const FILE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const RESERVED_FILE_NAMES = ["env", "conf"];
 const MOUNT_TARGET = /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){0,8}$/u;
@@ -84,10 +86,22 @@ export interface HelperCredentials {
   /** The database name the project uses (carried over from its compose file or settings). */
   database?: string;
   /**
-   * Rovara local AWS only: the per-run token its control paths (`/_rovara/reset`, `/_rovara/seed`) require, generated like the passwords (8 to 64 letters and digits) and DIFFERENT from `password` (the presign secret).
-   * Required for the emulator, so its control API is never open to the sandbox's code. It goes only into the 0600 env file (`ROVARA_AWS_CONTROL_TOKEN`), never into an argument.
+   * Rovara local AWS only: the per-run token its control paths (`/_rovara/reset`, `/_rovara/seed`, `/_rovara/ledger/summary`) require, 16 to 64 letters and digits and DIFFERENT from `password` (the presign secret) and from
+   * `sqsReceiptSecret`. Required for the emulator, so its control API is never open to the sandbox's code. It goes only into the 0600 env file (`ROVARA_AWS_CONTROL_TOKEN`), never into an argument.
    */
   controlToken?: string;
+  /** Rovara local AWS only: the per-run secret that signs SQS receipt handles (`ROVARA_AWS_SERVICES_SQS_RECEIPT_HANDLE_SECRET`), 16 to 64 letters and digits, different from the other two. Same rules as `controlToken`. */
+  sqsReceiptSecret?: string;
+}
+
+/**
+ * Three FRESH, mutually different values for one Rovara local AWS run (the presign secret as `password`, the control token and the SQS receipt-handle secret), each 48 hex characters from the system's random source. Every
+ * emulator that starts (the working phase's, and each sealed round's) takes its own; the three are distinct by construction (a repeat from the source is refused, never used). `random` is for tests.
+ */
+export function newLocalAwsCredentials(random: (bytes: number) => Buffer = randomBytes): Required<Pick<HelperCredentials, "password" | "controlToken" | "sqsReceiptSecret">> {
+  const values = [0, 1, 2].map(() => random(24).toString("hex"));
+  if (new Set(values).size !== values.length || values.some((value) => !EMULATOR_SECRET.test(value))) throw new RangeError("a credential is not in plain form");
+  return { password: values[0]!, controlToken: values[1]!, sqsReceiptSecret: values[2]! };
 }
 
 export interface HelperFile {
@@ -111,6 +125,11 @@ export interface HelperRequest {
   credentials?: HelperCredentials;
   /** The AWS region of the emulator. Default us-east-1. */
   region?: string;
+  /**
+   * Rovara local AWS only: the AWS services the run asked for (`s3`, `sqs`, `dynamodb`). Every OTHER service the emulator can serve is switched off in its env file (`ROVARA_AWS_SERVICES_<NAME>_ENABLED=false`, the fork's
+   * per-service switch, enforced by its `ServiceEnabledFilter`), so a call outside the plan is refused by the emulator itself and shows in the ledger. Absent: every service stays on (the development default).
+   */
+  awsServices?: readonly string[];
   files?: readonly HelperFile[];
 }
 
@@ -168,13 +187,16 @@ interface Prepared {
   config?: { content: string; to: string };
 }
 interface FamilyRule {
-  prepare(input: { credentials: HelperCredentials; address: string; region: string; aliases: readonly string[] }): Prepared;
+  prepare(input: { credentials: HelperCredentials; address: string; region: string; aliases: readonly string[]; port: number; awsServices: readonly string[] | undefined }): Prepared;
 }
 
 function need(value: string | undefined, pattern: RegExp): string {
   if (value === undefined || !pattern.test(value)) throw new RangeError("a credential is not in plain form");
   return value;
 }
+
+/** The services the fork can switch on or off (`rovara-aws.services.<key>.enabled`, from its application.yml), by key. */
+export const LOCAL_AWS_SERVICE_KEYS: readonly string[] = ["ssm", "sqs", "s3", "dynamodb", "sns", "lambda", "apigateway", "apigatewayv2", "iam", "eventbridge", "eventbridgev2", "cloudwatchlogs", "secretsmanager", "kinesis", "kms", "cognito", "stepfunctions", "sagemaker"];
 
 /** The families a helper may be, and the one way each takes its per-run credentials. A family not listed here is refused: whatever its image does with no setup is not decided by this launcher. */
 const FAMILY_RULES: Record<string, FamilyRule> = {
@@ -184,14 +206,21 @@ const FAMILY_RULES: Record<string, FamilyRule> = {
   rabbitmq: { prepare: ({ credentials }) => ({ env: [`RABBITMQ_DEFAULT_USER=${need(credentials.user, USER)}`, `RABBITMQ_DEFAULT_PASS=${need(credentials.password, PASSWORD)}`] }) },
   // The official cache images read no password variable: a config file does it.
   redis: { prepare: ({ credentials }) => ({ env: [], config: { content: `requirepass ${need(credentials.password, PASSWORD)}\n`, to: "/etc/rovara/redis.conf" } }) },
-  // Rovara local AWS: listens only on its own run address (never a wildcard), with a per-run presign secret.
-  // It also needs its own hostname, or it hands out `localhost` URLs (presigned URLs, queue URLs) that the other containers cannot use: the first alias the code reaches it by.
-  "local-aws": { prepare: ({ credentials, address, region, aliases }) => {
-    const presign = need(credentials.password, PASSWORD);
-    const control = need(credentials.controlToken, PASSWORD);
-    // Two secrets, two jobs: a control token that is the presign secret would let anyone holding a presigned URL's key reset the emulator.
-    if (control === presign) throw new RangeError("control token");
-    return { env: [`QUARKUS_HTTP_HOST=${address}`, `ROVARA_AWS_AUTH_PRESIGN_SECRET=${presign}`, `ROVARA_AWS_CONTROL_TOKEN=${control}`, `ROVARA_AWS_DEFAULT_REGION=${region}`, `ROVARA_AWS_HOSTNAME=${aliases[0] ?? "aws"}`] };
+  // Rovara local AWS (the fork's run contract, rovara-local-aws README "Run contract"): with a control token the emulator refuses to start unless it is given its run address, the URL the code reaches it at and two signing secrets.
+  // QUARKUS_HTTP_HOST is the run address (never a wildcard); ROVARA_AWS_BASE_URL is `http://<first alias>:<port>`, so presigned URLs and queue URLs name something the other containers resolve; the presign secret is `password`.
+  // Three secrets, three jobs, all different: a control token that equalled a signing secret would let anyone holding a presigned URL or a receipt handle drive the control API. All three go only into the 0600 env file.
+  "local-aws": { prepare: ({ credentials, address, region, aliases, port, awsServices }) => {
+    const presign = need(credentials.password, EMULATOR_SECRET);
+    const control = need(credentials.controlToken, EMULATOR_SECRET);
+    const receipt = need(credentials.sqsReceiptSecret, EMULATOR_SECRET);
+    if (new Set([presign, control, receipt]).size !== 3) throw new RangeError("control token");
+    const alias = aliases[0] ?? "aws";
+    if (awsServices !== undefined && (awsServices.length === 0 || new Set(awsServices).size !== awsServices.length || awsServices.some((service) => !LOCAL_AWS_SERVICE_KEYS.includes(service)))) throw new RangeError("aws services");
+    const switchedOff = awsServices === undefined ? [] : LOCAL_AWS_SERVICE_KEYS.filter((key) => !awsServices.includes(key)).map((key) => `ROVARA_AWS_SERVICES_${key.toUpperCase()}_ENABLED=false`);
+    return { env: [
+      `QUARKUS_HTTP_HOST=${address}`, `ROVARA_AWS_BASE_URL=http://${alias}:${String(port)}`, `ROVARA_AWS_AUTH_PRESIGN_SECRET=${presign}`, `ROVARA_AWS_SERVICES_SQS_RECEIPT_HANDLE_SECRET=${receipt}`,
+      `ROVARA_AWS_CONTROL_TOKEN=${control}`, `ROVARA_AWS_DEFAULT_REGION=${region}`, `ROVARA_AWS_HOSTNAME=${alias}`, ...switchedOff,
+    ] };
   } },
   "fake-server": { prepare: () => ({ env: [] }) },
 };
@@ -255,7 +284,7 @@ function planHelpers(net: ServicesNetwork, input: StartHelpersInput): Plan[] {
       const region = request.region ?? "us-east-1";
       if (!REGION.test(region)) throw new RangeError("region");
       const address = net.helperIp(index);
-      const prepared = rule.prepare({ credentials: request.credentials ?? {}, address, region, aliases });
+      const prepared = rule.prepare({ credentials: request.credentials ?? {}, address, region, aliases, port: entry.run.ports[0] ?? 4566, awsServices: request.awsServices });
       for (const [fileIndex, file] of (request.files ?? []).entries()) {
         if (fileIndex >= MAX_FILES_PER_HELPER || !FILE_NAME.test(file.name) || RESERVED_FILE_NAMES.includes(file.name) || Buffer.byteLength(file.content) > MAX_FILE_BYTES) throw new RangeError("file");
         const segments = file.to.split("/");
@@ -322,11 +351,12 @@ function runArgs(net: ServicesNetwork, plan: Plan, container: string, paths: { e
 }
 
 /** The `docker run` arguments of a short-lived container of the worker's own image on the services network: hardened like a helper (no capability, no writable root, small limits), named, and labelled so the sweep finds it. */
-function hardenedProgramRun(net: ServicesNetwork, probeImage: string, name: string, program: string[], envFile?: string): string[] {
+function hardenedProgramRun(net: Pick<ServicesNetwork, "name" | "labelArgs">, probeImage: string, name: string, program: string[], envFile?: string, mounts: readonly string[] = []): string[] {
   return [
     "run", "--rm", "--name", name, "--stop-timeout", "1", "--pull=never", ...net.labelArgs(), "--network", net.name,
     "--user", "1000:1000", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
     "--memory", "64m", "--memory-swap", "64m", "--cpus", "0.25", "--pids-limit", "32", "--log-driver", "none",
+    ...mounts,
     ...(envFile === undefined ? [] : ["--env-file", envFile]),
     "--entrypoint", NODE, probeImage, PROBE_ENTRY, ...program,
   ];
@@ -346,11 +376,31 @@ const CONTROL_PATH = /^\/[A-Za-z0-9._~/-]{1,127}$/u;
  * The arguments of one control call (a POST with the run's control token) to a helper, made from a probe-style container: the worker cannot reach an `rvi*` bridge itself. The token is NOT an argument: it is in the
  * env file the caller wrote on the run's tmpfs (`--env-file`), and the probe program reads it from its environment. Every input is checked here; a bad one throws.
  */
-export function controlCallArgs(net: ServicesNetwork, input: { probeImage: string; address: string; port: number; path: string; name: string; envFile: string }): string[] {
+export function controlCallArgs(net: Pick<ServicesNetwork, "name" | "gateway" | "labelArgs">, input: { probeImage: string; address: string; port: number; path: string; name: string; envFile: string }): string[] {
   if (!IMAGE_REFERENCE.test(input.probeImage) || !PROBE_NAME.test(input.name) || !CONTROL_PATH.test(input.path) || input.path.split("/").includes("..")) throw new RangeError("a control call");
   if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535 || !/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(input.address) || !input.address.startsWith(net.gateway.slice(0, net.gateway.lastIndexOf(".") + 1))) throw new RangeError("a control call");
   if (!HOST_PATH.test(input.envFile) || input.envFile.split("/").includes("..") || input.envFile.includes("//")) throw new RangeError("a control call");
   return hardenedProgramRun(net, input.probeImage, input.name, ["--host", input.address, "--port", String(input.port), "--path", input.path, "--post"], input.envFile);
+}
+
+/** The emulator's control paths a control request may name (the fork's `RovaraControlController`): nothing else is ever sent with the control token. */
+export const EMULATOR_CONTROL_PATHS = { reset: "/_rovara/reset", seed: "/_rovara/seed", ledgerSummary: "/_rovara/ledger/summary" } as const;
+const BODY_TARGET = "/rovara/body.json";
+
+/**
+ * The arguments of one control request to the emulator (`POST /_rovara/seed` with a body, `GET /_rovara/ledger/summary` with its answer printed), made like `controlCallArgs` from a hardened container of the worker's image
+ * on the services network. The token is in the env file (`--env-file`), never an argument. The body (a seed document that names the project's resources) is a file of the run's directory mounted read-only, never an argument,
+ * and the path, method and timeout are fixed words and numbers: no repository string reaches a docker option.
+ */
+export function controlRequestArgs(net: Pick<ServicesNetwork, "name" | "gateway" | "labelArgs">, input: { probeImage: string; address: string; port: number; path: string; method: "GET" | "POST"; name: string; envFile: string; bodyFile?: string; print?: boolean; timeoutMs?: number }): string[] {
+  const known: readonly string[] = Object.values(EMULATOR_CONTROL_PATHS);
+  if (!known.includes(input.path) || (input.method !== "GET" && input.method !== "POST") || (input.method === "GET" && input.bodyFile !== undefined)) throw new RangeError("a control call");
+  if (input.timeoutMs !== undefined && !(Number.isInteger(input.timeoutMs) && input.timeoutMs >= 100 && input.timeoutMs <= 30_000)) throw new RangeError("a control call");
+  if (input.bodyFile !== undefined && (!HOST_PATH.test(input.bodyFile) || input.bodyFile.split("/").includes("..") || input.bodyFile.includes("//"))) throw new RangeError("a control call");
+  // The shared checks (image, name, address, port, env file) are `controlCallArgs`'s own; it throws for a bad one, and its arguments are rebuilt below with the options this call adds.
+  controlCallArgs(net, { probeImage: input.probeImage, address: input.address, port: input.port, path: input.path, name: input.name, envFile: input.envFile });
+  const program = ["--host", input.address, "--port", String(input.port), "--path", input.path, "--control", input.method, ...(input.timeoutMs === undefined ? [] : ["--timeout-ms", String(input.timeoutMs)]), ...(input.bodyFile === undefined ? [] : ["--body-file", BODY_TARGET]), ...(input.print === true ? ["--print"] : [])];
+  return hardenedProgramRun(net, input.probeImage, input.name, program, input.envFile, input.bodyFile === undefined ? [] : ["-v", `${input.bodyFile}:${BODY_TARGET}:ro`]);
 }
 
 // ---- health

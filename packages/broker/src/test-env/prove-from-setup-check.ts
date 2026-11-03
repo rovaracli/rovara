@@ -11,7 +11,7 @@
 //   - test services (slice 1): a proposal with DEPENDENCIES is proved only with the usage record the candidate check reported (the worker started them and ran the test checks sealed). The two steps `dependencies`
 //     ("start dependencies") and `dependency_usage` ("dependency usage check") are derived from that record by the broker; a check with no record proves nothing about them.
 // A report is never read from a worker for this: the worker's word is not asked, so it cannot be forged.
-import { TestEnvProveReportSchema, testServicesUnknownCallCount, type AppProjectSummary, type ProjectCommand, type TestEnvProveReport, type TestEnvRefusal, type TestEnvironmentBody, type TestServicesUsageRecord, testEnvDigest } from "@agentx/contracts";
+import { TestEnvProveReportSchema, testServicesAwsUsageVerdict, testServicesUnknownCallCount, type AppProjectSummary, type ProjectCommand, type TestEnvProveReport, type TestEnvRefusal, type TestEnvironmentBody, type TestServicesUsageRecord, testEnvDigest } from "@agentx/contracts";
 
 /** How old a passing setup check may be and still prove a proposal: the proposal's own life. */
 export const SETUP_CHECK_MAX_AGE_MS = 7 * 86_400_000;
@@ -132,9 +132,13 @@ export function dependencyStepsOf(environment: Pick<TestEnvironmentBody, "depend
   const started = planned.every((dependency) => { const seen = usage.dependencies.find((entry) => entry.id === dependency.id); return seen !== undefined && seen.started && seen.healthy && seen.failure === undefined; });
   const startMs = Math.min(usage.dependencies.reduce((sum, entry) => sum + entry.startMs, 0), 86_400_000);
   const unknown = testServicesUnknownCallCount(usage);
+  // Slice 2: with Rovara local AWS in the plan the AWS usage must be clean too. A record with no ledger facts, an unreadable or flooded ledger, a call to a service outside the plan or an operation the emulator does not offer
+  // FAILS the usage step: "could not be checked" is never a pass.
+  const emulated = planned.filter((dependency) => dependency.backing.kind === "emulated");
+  const awsClean = emulated.length === 0 || testServicesAwsUsageVerdict(usage, emulated.flatMap((dependency) => (dependency.backing.kind === "emulated" ? dependency.backing.awsServices : []))).ok;
   return [
     started ? { step: "dependencies", status: "passed", durationMs: startMs } : { step: "dependencies", status: "failed", durationMs: startMs, failure: "dependency_start_failed" },
-    unknown === 0 ? { step: "dependency_usage", status: "passed", durationMs: 0 } : { step: "dependency_usage", status: "failed", durationMs: 0, failure: "dependency_unexpected_call" },
+    unknown === 0 && awsClean ? { step: "dependency_usage", status: "passed", durationMs: 0 } : { step: "dependency_usage", status: "failed", durationMs: 0, failure: "dependency_unexpected_call" },
   ];
 }
 

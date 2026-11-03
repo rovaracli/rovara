@@ -62,11 +62,23 @@ export async function runSeeds(dependencyId: string, seeds: readonly SeedRef[], 
   }
 }
 
+/** Runs a dependency's `prepare` step, if it has one. A failure is the fixed `seed_failed` (what failed is the emulator's business; its words never go on). */
+async function prepareDependency(dependency: ResetDependency, signal: AbortSignal): Promise<void> {
+  if (dependency.prepare === undefined) return;
+  if (signal.aborted) throw new SeedError("stopped");
+  await dependency.prepare(signal).catch(() => { throw new SeedError(signal.aborted ? "stopped" : "seed_failed"); });
+}
+
 export interface ResetDependency {
   id: string;
   seeds: readonly SeedRef[];
   /** `fresh_per_round`: a new helper each round, no reset between checks. `between_checks`: put back between the round's checks. */
   reset: "fresh_per_round" | "between_checks";
+  /**
+   * Runs before the dependency's seeds, every time they are about to run (after the start, and after a reset that lost the data): creates what the seed commands expect to find. Rovara local AWS creates the project's declared
+   * tables, buckets and queues here (service-seed-aws.ts); a failure ends the run of seeds like a failed seed command. Absent for every other dependency.
+   */
+  prepare?(signal: AbortSignal): Promise<void>;
 }
 
 type Seedable = Pick<ServiceSession, "reset" | "seeded"> & Partial<Pick<ServiceSession, "enterCheckRound">>;
@@ -77,6 +89,7 @@ type Seedable = Pick<ServiceSession, "reset" | "seeded"> & Partial<Pick<ServiceS
  */
 export async function seedRun(session: Seedable, dependencies: readonly ResetDependency[], ports: SeedPorts, signal: AbortSignal): Promise<void> {
   for (const dependency of dependencies) {
+    await prepareDependency(dependency, signal);
     await runSeeds(dependency.id, dependency.seeds, ports, signal);
     await session.seeded(dependency.id, signal);
   }
@@ -102,6 +115,7 @@ async function resetThenReseed(session: Seedable, dependencies: readonly ResetDe
     if (signal.aborted) throw new SeedError("stopped");
     const outcome: ResetOutcome = await session.reset(dependency.id, signal);
     if (outcome.keptSeeds) continue;
+    await prepareDependency(dependency, signal);
     await runSeeds(dependency.id, dependency.seeds, ports, signal);
     await session.seeded(dependency.id, signal);
   }

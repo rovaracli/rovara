@@ -185,6 +185,11 @@ function readCdk(path: string, text: string, out: DependencyCandidate[]): void {
 const TEMPLATE_FILE = /(?:^|\/)(?:template|serverless|[^/]*\.template|[^/]*\.cfn|samconfig)\.(?:ya?ml|json)$|(?:^|\/)(?:cloudformation|cfn|sam|templates|infra|infrastructure|cdk\.out|deploy)\/[^/]*\.(?:ya?ml|json)$/u;
 const CDK_SOURCE = /(?:^|\/)(?:cdk|infra|infrastructure|iac|deploy|stacks?|lib|bin)\/[^/]+\.(?:ts|js|py)$|(?:stack|-stack)\.(?:ts|js)$|_stack\.py$/u;
 
+/** Whether the detector reads this path at all: not under a folder it skips, and a Terraform file, a template by name or place, or infrastructure source. A pointer to any other file gives no resources. */
+export function iacFileIsRead(path: string): boolean {
+  return !DEPENDENCY_SKIP_DIRS.test(path) && (path.endsWith(".tf") || (TEMPLATE_FILE.test(path) && !path.endsWith("samconfig.toml")) || (CDK_SOURCE.test(path) && !path.endsWith(".d.ts")));
+}
+
 async function files(repo: RepositoryReader): Promise<string[]> {
   const live = repo.paths.filter((path) => !DEPENDENCY_SKIP_DIRS.test(path));
   const chosen = [

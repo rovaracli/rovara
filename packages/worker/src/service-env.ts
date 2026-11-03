@@ -74,6 +74,11 @@ export interface ServiceEnvAws {
   emulatedServices: readonly string[];
   /** AWS services the code uses that have no backing: they point at the sinkhole. */
   unbackedServices: readonly string[];
+  /**
+   * Also set the GLOBAL `AWS_ENDPOINT_URL` to the sinkhole in the working sandbox (the sealed sandbox always has it). With an emulator in the run, an AWS service that no per-service variable names (one the table does not know)
+   * must not reach real AWS from the agent's shell either: it reaches the sinkhole, or, where no sinkhole answers, a name that does not resolve. Default false (slice 1's behaviour).
+   */
+  sinkholeUnmapped?: boolean;
 }
 
 export interface ServiceEnvInput {
@@ -159,7 +164,7 @@ export function buildServiceEnvironment(input: ServiceEnvInput): ServiceEnvironm
     if (emulated.size !== aws.emulatedServices.length || aws.unbackedServices.some((service) => emulated.has(service)) || new Set(aws.unbackedServices).size !== aws.unbackedServices.length) refuse();
     for (const service of aws.emulatedServices) add(awsEndpointVariableName(service), `http://${alias}:${String(port)}`);
     for (const service of aws.unbackedServices) add(awsEndpointVariableName(service), input.sinkholeUrl);
-    if (input.sandbox === "check") add("AWS_ENDPOINT_URL", input.sinkholeUrl);
+    if (input.sandbox === "check" || aws.sinkholeUnmapped === true) add("AWS_ENDPOINT_URL", input.sinkholeUrl);
     add("AWS_ACCESS_KEY_ID", AWS_FAKE_ACCESS_KEY_ID);
     add("AWS_SECRET_ACCESS_KEY", AWS_FAKE_SECRET_ACCESS_KEY);
     add("AWS_REGION", region);
@@ -174,11 +179,21 @@ export function buildServiceEnvironment(input: ServiceEnvInput): ServiceEnvironm
 }
 
 /**
- * Every secret value of a run's helpers, for the redactor: each helper's password (for Rovara local AWS, its presign secret) and its control token. Pass the result to `createServiceRedactor` and to
+ * Every secret value of a run's helpers, for the redactor: each helper's password (for Rovara local AWS, its presign secret), its control token and its SQS receipt-handle secret. Pass the result to `createServiceRedactor` and to
  * `ServiceEnvInput.neverValues`; never to `buildServiceEnvironment` as a variable.
  */
-export function helperSecretValues(helpers: ReadonlyArray<{ credentials?: { password?: string; controlToken?: string } }>): string[] {
-  return helpers.flatMap((helper) => [helper.credentials?.password, helper.credentials?.controlToken]).filter((value): value is string => value !== undefined && value !== "");
+export function helperSecretValues(helpers: ReadonlyArray<{ credentials?: { password?: string; controlToken?: string; sqsReceiptSecret?: string } }>): string[] {
+  return helpers.flatMap((helper) => [helper.credentials?.password, helper.credentials?.controlToken, helper.credentials?.sqsReceiptSecret]).filter((value): value is string => value !== undefined && value !== "");
+}
+
+/**
+ * The AWS services of a run that Rovara local AWS does NOT serve: every service the endpoint table knows except the emulated ones. Hand it to `ServiceEnvAws.unbackedServices` so each of them points at the sinkhole (a call to a
+ * service nobody backed fails loudly instead of reaching real AWS). Refuses an emulated id the table does not know.
+ */
+export function unbackedAwsServices(emulated: readonly string[]): string[] {
+  const known = Object.keys(AWS_SDK_ENDPOINT_NAMES);
+  if (emulated.some((service) => !Object.hasOwn(AWS_SDK_ENDPOINT_NAMES, service))) refuse();
+  return known.filter((service) => !emulated.includes(service));
 }
 
 /**

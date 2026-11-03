@@ -47,6 +47,39 @@ export const TestServicesDependencyUsageSchema = z
   });
 export type TestServicesDependencyUsage = z.infer<typeof TestServicesDependencyUsageSchema>;
 
+/** An AWS service key as the emulator's ledger names it (`s3`, `sqs`, `dynamodb`): a short fixed-looking word. */
+export const AwsServiceKeySchema = z.string().regex(/^[a-z][a-z0-9-]{1,39}$/u);
+/** An AWS operation name (`PutObject`, `SendMessage`): an upper camel case word. A path, a method or any other text the program chose is not one. */
+export const AwsOperationNameSchema = z.string().regex(/^[A-Z][A-Za-z0-9]{2,63}$/u).refine((name) => !looksLikeSecretValue(name) && !looksLikeSecretValue(name.toUpperCase()), { message: "an operation name, not a secret" });
+export const TEST_SERVICES_AWS_USAGE_LIMITS = { services: 24, unsupportedOperations: 30 } as const;
+
+/**
+ * Slice 2: what Rovara local AWS's request ledger said about a run (`GET /_rovara/ledger/summary`): calls per AWS service, and the operations the emulator does not offer. Present only when an emulator ran. Counts follow the
+ * record's bucketing rule (`bucketCount`: 1, 2 to 5, 6 to 20, 21 or more, each shown as its lower bound), and a name is shown only when it is a service key or an operation name the program could not have used to carry a
+ * value (the worker's `reduceAwsUsage`); every other call is counted in `otherCalls` and `otherUnsupported` and named nowhere. Never fed back to the agent or a model.
+ */
+export const TestServicesAwsUsageSchema = z
+  .object({
+    /**
+     * `unreadable`: the ledger could not be read (fail closed: the lists below are empty then and say nothing, not "no calls"). `flooded`: the code made so many different calls that the ledger's summary was past its
+     * limits (the emulator's counters are not capped; the reading side is), which is a failure of its own, not a quiet one.
+     */
+    ledger: z.enum(["read", "unreadable", "flooded"]),
+    services: z.array(z.object({ service: AwsServiceKeySchema, calls: z.number().int().min(1).max(TEST_SERVICES_USAGE_LIMITS.count), unsupported: Count }).strict()).max(TEST_SERVICES_AWS_USAGE_LIMITS.services),
+    unsupportedOperations: z.array(z.object({ service: AwsServiceKeySchema, operation: AwsOperationNameSchema, count: z.number().int().min(1).max(TEST_SERVICES_USAGE_LIMITS.count) }).strict()).max(TEST_SERVICES_AWS_USAGE_LIMITS.unsupportedOperations),
+    /** Calls to a service that is not shown (an unknown key, or past the list). */
+    otherCalls: Count,
+    /** Unsupported calls whose service or operation is not shown. */
+    otherUnsupported: Count,
+  })
+  .strict()
+  .superRefine((usage, context) => {
+    if (usage.ledger !== "read" && (usage.services.length > 0 || usage.unsupportedOperations.length > 0 || usage.otherCalls > 0 || usage.otherUnsupported > 0)) context.addIssue({ code: "custom", path: ["ledger"], message: "a ledger that was not read says nothing" });
+    if (new Set(usage.services.map((entry) => entry.service)).size !== usage.services.length) context.addIssue({ code: "custom", path: ["services"], message: "a service is listed once" });
+    if (new Set(usage.unsupportedOperations.map((entry) => `${entry.service}\0${entry.operation}`)).size !== usage.unsupportedOperations.length) context.addIssue({ code: "custom", path: ["unsupportedOperations"], message: "an operation is listed once" });
+  });
+export type TestServicesAwsUsage = z.infer<typeof TestServicesAwsUsageSchema>;
+
 export const TestServicesUsageRecordSchema = z
   .object({
     schemaVersion: z.literal(TEST_SERVICES_USAGE_SCHEMA_VERSION),
@@ -60,6 +93,8 @@ export const TestServicesUsageRecordSchema = z
         otherCount: Count,
       })
       .strict(),
+    /** Slice 2: the emulator's ledger as a record of facts (see `TestServicesAwsUsageSchema`). Absent when no emulator ran, so a record without one is slice 1's record byte for byte. */
+    aws: TestServicesAwsUsageSchema.optional(),
   })
   .strict()
   .superRefine((record, context) => {
@@ -76,4 +111,32 @@ export function testServicesUnknownCallCount(record: TestServicesUsageRecord): n
 /** The ids of the dependencies that did not start healthy: what the Prove step "start dependencies" fails on. */
 export function testServicesUnhealthy(record: TestServicesUsageRecord): string[] {
   return record.dependencies.filter((entry) => !entry.healthy).map((entry) => entry.id);
+}
+
+// ---- what the emulator's usage means for a result (the broker's rule, in one place)
+
+/** Why the AWS usage of a run with an emulator is not clean: in the order they are decided. */
+export const TEST_SERVICES_AWS_USAGE_PROBLEMS = ["not_checked", "flooded", "out_of_plan", "unsupported"] as const;
+export type TestServicesAwsUsageProblem = (typeof TEST_SERVICES_AWS_USAGE_PROBLEMS)[number];
+/** The fixed words for each problem (a person reads these on the Prove report, the pull request and the Evidence tab). */
+export const TEST_SERVICES_AWS_USAGE_WORDS: Readonly<Record<TestServicesAwsUsageProblem, string>> = {
+  not_checked: "AWS usage could not be checked",
+  flooded: "AWS usage could not be checked: the code made too many different AWS calls",
+  out_of_plan: "The code called AWS services that are not in the plan",
+  unsupported: "The code called AWS operations that Rovara local AWS does not support",
+};
+export type TestServicesAwsUsageVerdict = { ok: true } | { ok: false; problem: TestServicesAwsUsageProblem; /** The service keys outside the plan (out_of_plan only; keys that are not shown are not here). */ services: string[] };
+
+/**
+ * Whether the record's AWS usage is clean for a run whose emulator was planned for `planned` services. NOT clean, and never read as a quiet pass, when: the record has no `aws` facts (the ledger was not read at all),
+ * the ledger was unreadable or flooded, the code called a service outside the plan (or one the record does not name), or called an operation the emulator does not offer. Call it only when the plan has an emulated entry.
+ */
+export function testServicesAwsUsageVerdict(usage: TestServicesUsageRecord | undefined, planned: readonly string[]): TestServicesAwsUsageVerdict {
+  const aws = usage?.aws;
+  if (aws === undefined || aws.ledger === "unreadable") return { ok: false, problem: "not_checked", services: [] };
+  if (aws.ledger === "flooded") return { ok: false, problem: "flooded", services: [] };
+  const outside = aws.services.filter((entry) => !planned.includes(entry.service)).map((entry) => entry.service);
+  if (outside.length > 0 || aws.otherCalls > 0) return { ok: false, problem: "out_of_plan", services: outside };
+  if (aws.services.some((entry) => entry.unsupported > 0) || aws.unsupportedOperations.length > 0 || aws.otherUnsupported > 0) return { ok: false, problem: "unsupported", services: [] };
+  return { ok: true };
 }
