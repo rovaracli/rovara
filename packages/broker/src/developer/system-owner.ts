@@ -52,7 +52,7 @@ type Reader = { send(command: unknown): Promise<unknown> };
  */
 export async function systemOwnerStands(deps: { documentClient: Reader; tableName: string }, orgId: OrgId, project: string): Promise<boolean> {
   const get = async (key: { pk: string; sk: string }) => ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
-  const [org, meta] = await Promise.all([get(orgMetaKey(orgId)), readProjectMeta(deps as Parameters<typeof readProjectMeta>[0], orgId, project)]);
+  const [org, meta] = await Promise.all([get(orgMetaKey(orgId)), readProjectMeta(deps, orgId, project)]);
   if (org?.closedAt !== undefined || org?.closingAt !== undefined) return false;
   return meta?.status !== "archived" && (meta as { archivedAt?: unknown } | undefined)?.archivedAt === undefined;
 }

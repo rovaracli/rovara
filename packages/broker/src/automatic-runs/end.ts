@@ -66,12 +66,12 @@ export async function markAutomaticTaskEnded(client: Client, tableName: string, 
 export interface AutomaticRunSweepDependencies extends AuditDeps {
   documentClient: Client;
   tableName: string;
-  now(): number;
+  now: () => number;
   /** Cancels what is running for the task on its worker, best effort (the broker's `cancelRunning` as the task's own identity). Absent: the run is ended without telling a worker. */
-  cancelLive?(task: DeveloperTaskRecord): Promise<void>;
+  cancelLive?: (task: DeveloperTaskRecord) => Promise<void>;
   /** Asks for the task's workspace and slot to be given back now (never throws); the recovery sweep tries again later when the workspace is busy. */
-  release(taskId: string): Promise<void>;
-  log?(entry: Record<string, unknown>): void;
+  release: (taskId: string) => Promise<void>;
+  log?: (entry: Record<string, unknown>) => void;
 }
 
 export interface AutomaticRunSweepReport { ended: number; audited: number; watching: number; dropped: number }

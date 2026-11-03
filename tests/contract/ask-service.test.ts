@@ -66,7 +66,7 @@ describe("model access for an Ask", () => {
     const t = world();
     const ref = await queuedAsk(t);
     const task = t.w.db.get({ pk: `DEVTASK#${t.made.taskId}`, sk: "META" })! as unknown as DeveloperTaskRecord;
-    t.w.db.set({ ...task, provider: "system" } as never);
+    t.w.db.set({ ...task, provider: "system" });
     const before = t.w.db.get(askRequestKey(ORG_A, ref.sessionId, ref.askId))!.keysTaken;
     await expect(handleAskServiceRoute(t.dependencies, t.ask, t.request("/asks/model-access", { ...ref, turnId: "Ev1234567890" }), "/v1/asks/model-access")).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(mint).not.toHaveBeenCalled();

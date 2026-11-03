@@ -116,7 +116,8 @@ describe("a hung automatic run does not keep the project's one automatic slot (t
     const swept = await h.handler({ source: "agentx.session-sweep" });
     const outcome = JSON.parse(String((swept as { body?: string }).body)) as { automaticRuns?: { ended?: number } };
     expect(outcome.automaticRuns).toMatchObject({ ended: 1, audited: 1 });
-    expect(h.db.get(`DEVTASK#${first.started.taskId}`, "META")).toMatchObject({ agentRunEnd: { state: "CANCELLED" }, automaticEnd: { reason: "too_old" }, releasedAt: expect.any(String) });
+    expect(h.db.get(`DEVTASK#${first.started.taskId}`, "META")).toMatchObject({ agentRunEnd: { state: "CANCELLED" }, automaticEnd: { reason: "too_old" } });
+    expect((h.db.get(`DEVTASK#${first.started.taskId}`, "META") as { releasedAt?: string }).releasedAt).toBeDefined();
     expect(h.audit.recordedBy("automatic_run.ended")).toHaveLength(1);
     // the slot is back
     expect("started" in await rebuild()).toBe(true);
