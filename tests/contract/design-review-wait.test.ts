@@ -408,7 +408,7 @@ describe("the sweep", () => {
     const read = w.db.send;
     let first = true;
     w.deps.documentClient = { send: async (command: unknown) => {
-      const result = await read(command);
+      const result = await read(command as never);
       if (first && (command as { constructor: { name: string } }).constructor.name === "GetCommand") { first = false; w.db.set({ ...(w.db.get(`DEVTASK#${TASK_ID}`, "META")!), workflow: answered }); }
       return result;
     } };
