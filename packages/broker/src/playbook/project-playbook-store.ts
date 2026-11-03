@@ -15,14 +15,22 @@ import {
   type AgentId,
   type DefaultProcess,
   type DesignReviewSetting,
+  type EditionPolicy,
   type OrgId,
   type ProjectPlaybook,
 } from "@agentx/contracts";
 import { auditOccurrence, auditPlaybookDefaultProcessChanged, auditPlaybookDesignReviewChanged } from "../audit/events.js";
-import { DESIGN_REVIEW_FAIL_CLOSED_SETTING } from "../design-review/lock.js";
+import { DESIGN_REVIEW_FAIL_CLOSED_SETTING } from "../design-review/effective-setting.js";
+import { checkDesignReviewWrite, lockRevisionCheck, readDesignReviewLock } from "../design-review/lock.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditDeps, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
+
+/** What a refused design review setting says. Field names only; the company's lock values and the project's are never echoed. */
+export const DESIGN_REVIEW_LOCKED = "your company has set a stricter rule for design review";
+export const DESIGN_REVIEW_GROUP_EDITION = "a group can be the high-risk approver only in the Enterprise edition";
+export const DESIGN_REVIEW_LOCK_UNREADABLE = "your company's design review rules can't be read right now, so this can't be saved";
+export const DESIGN_REVIEW_NAMED_PEOPLE = "name only project maintainers or members who can approve";
 
 export interface ProjectPlaybookReader {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -33,6 +41,13 @@ export interface ProjectPlaybookWriter extends ProjectPlaybookReader {
   now: () => number;
   /** The Audit Ledger's outbox; absent on a legacy install, where nothing is audited. */
   audit?: AuditRuntime | undefined;
+  /** The install's edition policy: a design review setting may name a group only where the edition has groups. Absent: groups are refused (fail closed). */
+  edition?: EditionPolicy | undefined;
+  /**
+   * Who may be NAMED as the high-risk approver in this project: its maintainers and the members whose role can approve (never an Auditor or a viewer). When present, a setting that names anyone else is
+   * refused at the write (L4). Absent: not checked here; the decision still counts only members who are not Auditors or viewers. Wiring pending: the dependency builder passes it.
+   */
+  namedApproverCandidates?: ((orgId: OrgId, project: string) => Promise<readonly string[]>) | undefined;
 }
 
 async function readItem(deps: ProjectPlaybookReader, orgId: OrgId, project: string): Promise<Record<string, unknown> | undefined> {
@@ -40,17 +55,31 @@ async function readItem(deps: ProjectPlaybookReader, orgId: OrgId, project: stri
   return found.Item;
 }
 
+/**
+ * The design review setting an item holds, for a read that cannot read the rest of the item (M2). None stored: none. One that parses: itself. One that is there but does not parse: the strictest posture,
+ * never a looser one. Reading the playbook leniently must not drop a strict setting: a later write would carry the defaults over it, with no event, and the project would silently loosen.
+ */
+function storedDesignReview(item: Record<string, unknown> | undefined): DesignReviewSetting | undefined {
+  const stored = item?.["designReview"];
+  if (stored === undefined) return undefined;
+  const setting = DesignReviewSettingSchema.safeParse(stored);
+  return setting.success ? setting.data : { ...DESIGN_REVIEW_FAIL_CLOSED_SETTING };
+}
+
+function lenientPlaybook(item: Record<string, unknown> | undefined, revision: number): ProjectPlaybook {
+  const designReview = storedDesignReview(item);
+  return { revision, defaultProcess: { kind: "builtin" }, ...(designReview === undefined ? {} : { designReview }) };
+}
+
 function playbookOf(item: Record<string, unknown> | undefined): ProjectPlaybook | undefined {
   if (item === undefined) return DEFAULT_PROJECT_PLAYBOOK;
   // A document written before the design review stage has no `designReview`: it reads as the owner's defaults (`designReviewSettingOf`), never as an error.
   const parsed = ProjectPlaybookSchema.safeParse({ revision: item["revision"], defaultProcess: item["defaultProcess"] });
   if (!parsed.success) return undefined;
-  const stored = item["designReview"];
-  if (stored === undefined) return parsed.data;
   // A setting that is there but cannot be read does not make the whole process unavailable (the process is unaffected), and it is never read as a LOOSER setting than the project chose: it reads as the
   // strictest posture (always, no skipping) until a maintainer saves it again.
-  const setting = DesignReviewSettingSchema.safeParse(stored);
-  return { ...parsed.data, designReview: setting.success ? setting.data : { ...DESIGN_REVIEW_FAIL_CLOSED_SETTING } };
+  const designReview = storedDesignReview(item);
+  return designReview === undefined ? parsed.data : { ...parsed.data, designReview };
 }
 
 /**
@@ -63,7 +92,7 @@ export async function readProjectPlaybook(deps: ProjectPlaybookReader, orgId: Or
   const playbook = playbookOf(item);
   if (playbook !== undefined) return playbook;
   const revision = item?.["revision"];
-  if (options.lenient === true && typeof revision === "number" && Number.isInteger(revision) && revision >= 0) return { revision, defaultProcess: { kind: "builtin" } };
+  if (options.lenient === true && typeof revision === "number" && Number.isInteger(revision) && revision >= 0) return lenientPlaybook(item, revision);
   throw agentXError("PROCESS_UNAVAILABLE", PROCESS_UNAVAILABLE_MESSAGE);
 }
 
@@ -76,7 +105,7 @@ export async function readProjectPlaybookState(deps: ProjectPlaybookReader, orgI
   const parsed = playbookOf(item);
   if (parsed !== undefined) return { playbook: parsed, exists: item !== undefined, unreadable: false };
   const revision = item?.["revision"];
-  if (typeof revision === "number" && Number.isInteger(revision) && revision >= 0) return { playbook: { revision, defaultProcess: { kind: "builtin" } }, exists: true, unreadable: true };
+  if (typeof revision === "number" && Number.isInteger(revision) && revision >= 0) return { playbook: lenientPlaybook(item, revision), exists: true, unreadable: true };
   throw agentXError("PROCESS_UNAVAILABLE", PROCESS_UNAVAILABLE_MESSAGE);
 }
 
@@ -117,6 +146,24 @@ export async function writeProjectPlaybook(
   if (input.expectedRevision !== current.revision) throw agentXError("PLAYBOOK_STALE", PLAYBOOK_STALE_MESSAGE);
   // The design review setting is kept across every write: a change of process (which has no setting in its body) must not drop it. A body that carries one replaces it.
   const designReview = input.designReview ?? current.designReview;
+  // A setting this write carries is held to the company's lock HERE, in the writer, and the lock item is read into the same transaction as a condition (M3): a lock set between this read and the commit
+  // refuses the write (`PLAYBOOK_STALE`), so a looser value is never stored behind a newer lock. The route's check is the early, friendly one; this is the one that cannot race.
+  let lockCheck: ReturnType<typeof lockRevisionCheck>;
+  if (input.designReview !== undefined) {
+    const lock = await readDesignReviewLock(deps, orgId);
+    const check = checkDesignReviewWrite(input.designReview, lock, deps.edition);
+    if (!check.ok) {
+      if (check.reason === "locked") throw agentXError("CONFIG_INVALID", `${check.fields.join(", ")}: ${DESIGN_REVIEW_LOCKED}`);
+      throw agentXError("CONFIG_INVALID", `designReview: ${check.reason === "group_not_available" ? DESIGN_REVIEW_GROUP_EDITION : DESIGN_REVIEW_LOCK_UNREADABLE}`);
+    }
+    lockCheck = lockRevisionCheck(deps, orgId, lock);
+    // Named people must be people who can approve in this project (L4): maintainers and members whose role can approve, never an Auditor or a viewer. Only counted, never echoed.
+    const approver = input.designReview.highRiskApprover;
+    if (approver.kind === "people" && deps.namedApproverCandidates !== undefined) {
+      const allowed = await deps.namedApproverCandidates(orgId, project);
+      if (approver.memberIds.some((id) => !allowed.includes(id))) throw agentXError("CONFIG_INVALID", `designReview: ${DESIGN_REVIEW_NAMED_PEOPLE}`);
+    }
+  }
   const applied: ProjectPlaybook = { revision: current.revision + 1, defaultProcess: input.defaultProcess, ...(designReview === undefined ? {} : { designReview }) };
   const at = new Date(deps.now()).toISOString();
   const auditDeps: AuditDeps = deps.audit === undefined ? {} : { audit: deps.audit };
@@ -142,6 +189,7 @@ export async function writeProjectPlaybook(
           ...(item === undefined ? {} : { ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":expected": current.revision } }),
         },
       },
+      ...(lockCheck === undefined ? [] : [lockCheck]),
       ...(input.ifLayer === undefined ? [] : [{
         ConditionCheck: {
           TableName: deps.tableName, Key: agentKey(orgId, input.ifLayer.agentId, "META"), ConditionExpression: "#currentVersion = :layerVersion",

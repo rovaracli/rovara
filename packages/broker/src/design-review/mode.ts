@@ -2,16 +2,20 @@
 // Pure. Code decides ON or OFF, who decided it, and whether the task is forced onto the Full path. Understand's `design` field is a reading of the request, never a decision: model
 // words are shown to people as inert text (through `plainLine`) and never set the tier, the approver, the cost or the mode.
 import {
-  DESIGN_REVIEW_HIGH_RISK_REASONS, designReviewSettingOf, isHighRiskDesign,
+  DESIGN_REVIEW_HIGH_RISK_REASONS, isHighRiskDesign,
   type DesignReason, type DesignReviewSetting, type IntentAssessment,
 } from "@agentx/contracts";
 import { plainLine } from "../decisions/text.js";
+import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, isEffectiveSetting, type EffectiveDesignReviewSetting } from "./effective-setting.js";
 
 export type DesignDecidedBy = "auto" | "always" | "person" | "person_skip" | "never";
 
 export type DesignModeInput = {
-  /** The project's "How we work" setting; a playbook with none runs the owner's defaults. */
-  setting: DesignReviewSetting | undefined;
+  /**
+   * The setting the task runs with: `readEffectiveDesignReview(...).setting`, the project's value held to the company's lock. The type is branded, so a raw playbook setting does not compile, and at run
+   * time one that got here anyway is read as the strictest posture (always, no skipping), never as itself.
+   */
+  setting: EffectiveDesignReviewSetting;
   /** What Understand returned. Undefined until it has returned. */
   assessment: IntentAssessment | undefined;
   /** The person typed `design first:` or pressed Design first. Works even when the setting is `never` (owner Q3). */
@@ -74,7 +78,7 @@ export function resolveDesignMode(input: DesignModeInput): DesignModeDecision {
   const assessment = input.assessment;
   if (assessment === undefined) return { decided: false, why: "not_returned" };
   if (assessment.kind !== "ready") return { decided: false, why: assessment.kind };
-  const setting = designReviewSettingOf({ designReview: input.setting });
+  const setting = isEffectiveSetting(input.setting) ? input.setting : DESIGN_REVIEW_FAIL_CLOSED_SETTING;
   const design = assessment.design;
   const reasons: readonly DesignReason[] = design?.reasons ?? [];
   const note = design === undefined ? undefined : plainLine(design.note, 200);

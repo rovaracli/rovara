@@ -10,6 +10,8 @@
 // A lock that is stored but cannot be read is never read as "no lock": the effective setting is then the strictest posture (always, no skipping), and a write is refused.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
+import type { TransactItem } from "../audit/outbox.js";
+import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, markEffective, type EffectiveDesignReviewSetting } from "./effective-setting.js";
 import {
   DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_TIERS, DesignReviewTierSchema, designReviewSettingOf, featureEnabled, orgMetaKey,
   type DesignReviewSetting, type EditionPolicy,
@@ -31,27 +33,35 @@ export const DesignReviewLockSchema = z.object({
 export type DesignReviewLock = z.infer<typeof DesignReviewLockSchema>;
 
 /** What reading the company's lock gave: none, a lock, or one that is stored but unreadable (never the same as none). */
-export type DesignReviewLockRead = { kind: "none" } | { kind: "lock"; lock: DesignReviewLock } | { kind: "unreadable" };
+export type DesignReviewLockRead = { kind: "none" } | { kind: "lock"; lock: DesignReviewLock; /** The lock item's revision at the read. A write that depends on this read is conditional on it (M3). */ revision: number } | { kind: "unreadable" };
 
 export const DESIGN_REVIEW_LOCK_SK = "DESIGNREVIEW#LOCK";
 export interface DesignReviewLockTable { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 
+/** The condition a write puts on the lock item so that a lock set after the read refuses the write (M3). `none`: the item must still not exist; a lock: its revision must be the one read. Unreadable has none (a write is refused). */
+export function lockRevisionCheck(table: DesignReviewLockTable, orgId: string, read: DesignReviewLockRead): TransactItem | undefined {
+  const Key = { pk: orgMetaKey(orgId).pk, sk: DESIGN_REVIEW_LOCK_SK };
+  if (read.kind === "none") return { ConditionCheck: { TableName: table.tableName, Key, ConditionExpression: "attribute_not_exists(pk)" } };
+  if (read.kind === "lock") return { ConditionCheck: { TableName: table.tableName, Key, ConditionExpression: "#revision = :lockRevision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":lockRevision": read.revision } } };
+  return undefined;
+}
+
 /**
- * Reads the company's lock from the State table beside its other settings. A missing item is no lock; an item whose `lock` does not parse, or that is not an object, is `unreadable` (fail closed).
- * A failed read is the caller's to handle: it must not be taken for "no lock".
+ * Reads the company's lock from the State table beside its other settings. A missing item is no lock; an item whose `lock` does not parse, that is not an object, or that has no whole-number `revision`
+ * (the lock's writer bumps it on every write) is `unreadable` (fail closed). A failed read is the caller's to handle: it must not be taken for "no lock".
  */
 export async function readDesignReviewLock(table: DesignReviewLockTable, orgId: string): Promise<DesignReviewLockRead> {
   const found = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: orgMetaKey(orgId).pk, sk: DESIGN_REVIEW_LOCK_SK }, ConsistentRead: true })) as { Item?: Record<string, unknown> };
   if (found.Item === undefined) return { kind: "none" };
   const parsed = DesignReviewLockSchema.safeParse(found.Item["lock"]);
-  return parsed.success ? { kind: "lock", lock: parsed.data } : { kind: "unreadable" };
+  const revision = found.Item["revision"];
+  return parsed.success && typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0 ? { kind: "lock", lock: parsed.data, revision } : { kind: "unreadable" };
 }
 
 const MODE_RANK = { never: 0, auto: 1, always: 2 } as const;
 const TIER_RANK = Object.fromEntries(DESIGN_REVIEW_TIERS.map((tier, index) => [tier, index])) as Record<DesignReviewSetting["tier"], number>;
 
-/** The strictest posture, used when a stored setting or lock cannot be read: never a looser one. */
-export const DESIGN_REVIEW_FAIL_CLOSED_SETTING: Readonly<DesignReviewSetting> = Object.freeze({ ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "always", allowSkip: false });
+export { DESIGN_REVIEW_FAIL_CLOSED_SETTING };
 
 /** A field a write was refused on, named by its path only (never a value). */
 export type LockViolation = "designReview.mode" | "designReview.tier" | "designReview.allowSkip" | "designReview.capUsdPerTask" | "designReview.highRiskApprover";
@@ -93,10 +103,29 @@ export function lockedFields(lock: DesignReviewLock): LockViolation[] {
  * The setting a task runs with: the project's (or the owner's defaults) held to the company's lock. An unreadable lock gives the strictest posture. Pure.
  * `setting` is what `designReviewSettingOf(playbook)` gave, or `undefined` for a playbook whose setting could not be read (also strictest).
  */
-export function effectiveDesignReviewSetting(playbook: { designReview?: DesignReviewSetting | undefined }, lock: DesignReviewLockRead): DesignReviewSetting {
+export function effectiveDesignReviewSetting(playbook: { designReview?: DesignReviewSetting | undefined }, lock: DesignReviewLockRead): EffectiveDesignReviewSetting {
   const own = designReviewSettingOf(playbook);
-  if (lock.kind === "unreadable") return applyLock(own, { mode: "always", allowSkip: false });
-  return lock.kind === "lock" ? applyLock(own, lock.lock) : own;
+  // An unreadable lock may have set anything, so every field it could hold is clamped to the strictest known value (L1): always on, no skipping, the default cap at most, the default tier at least,
+  // and the maintainers as the approver (a project's own named people could be exactly who the lock was written to replace).
+  if (lock.kind === "unreadable") {
+    return markEffective({
+      ...applyLock(own, { mode: "always", allowSkip: false, tierAtLeast: DESIGN_REVIEW_DEFAULT_SETTING.tier, capCeilingUsd: DESIGN_REVIEW_DEFAULT_SETTING.capUsdPerTask }),
+      highRiskApprover: { kind: "maintainers" },
+    });
+  }
+  return markEffective(lock.kind === "lock" ? applyLock(own, lock.lock) : own);
+}
+
+/** What the page shows when a lock names a group in an edition without groups (L2). */
+export const DESIGN_REVIEW_LOCK_GROUP_EDITION = "group locks need the Enterprise edition";
+
+/**
+ * Whether the company may save this lock (L2). A lock that names an approver group is refused in an edition without groups (Public, or an unknown edition): applied there it would leave every high-risk
+ * design waiting on `group_not_available` with nobody able to skip it. The lock's writer calls this before it writes.
+ */
+export function checkDesignReviewLockWrite(lock: DesignReviewLock, edition: EditionPolicy | undefined): { ok: true } | { ok: false; reason: "group_not_available"; message: string } {
+  if (lock.approverGroupId !== undefined && (edition === undefined || !featureEnabled(edition, "groups"))) return { ok: false, reason: "group_not_available", message: DESIGN_REVIEW_LOCK_GROUP_EDITION };
+  return { ok: true };
 }
 
 export type DesignReviewWriteCheck = { ok: true } | { ok: false; reason: "locked"; fields: LockViolation[] } | { ok: false; reason: "lock_unreadable" } | { ok: false; reason: "group_not_available" };
