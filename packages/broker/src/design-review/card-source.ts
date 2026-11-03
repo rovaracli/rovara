@@ -5,7 +5,7 @@
 //   - `designQuestionsItem`: ONE `answer_question` card per round with up to three questions, each with what is unclear, short cited evidence, the options with consequences, and the recommendation with why.
 // Every line a model wrote (a finding's text, a question) is passed through `plainLine` by the projector; nothing here is executed or followed.
 import { createHash } from "node:crypto";
-import { DESIGN_REVIEW_QUESTIONS_MAX, type DesignCitation, type DesignFinding, type DesignQuestion, type DesignReason, type WorkflowDesignReview } from "@agentx/contracts";
+import { CODE_CITATION_UNCHECKED, DESIGN_REVIEW_QUESTIONS_MAX, codeCitationInPacket, type CitablePacketItem, type DesignCitation, type DesignFinding, type DesignQuestion, type DesignReason, type WorkflowDesignReview } from "@agentx/contracts";
 import type { DecisionItem, ItemBase } from "../decisions/project.js";
 import { plainLine } from "../decisions/text.js";
 import { TIER_REVIEWERS, reviewersForRound } from "./estimate.js";
@@ -66,10 +66,11 @@ export function designContentVersion(sourceVersion: string, review: DesignCardFa
   return `${head}:b${String(review.blockers.length)}:${facts}`;
 }
 
-function citationText(citation: DesignCitation): string {
+/** A code citation that matched a repository file the reviewer was given reads as a path; any other is "a path at the pinned commit, not checked": Rovara never looked it up (N5). */
+export function citationText(citation: DesignCitation, packetItems: readonly CitablePacketItem[] = []): string {
   switch (citation.kind) {
     case "design": return `design ${citation.section}`;
-    case "code": return `${citation.path}:${String(citation.startLine)}`;
+    case "code": return `${citation.path}:${String(citation.startLine)}${codeCitationInPacket(citation, packetItems) ? "" : ` (${CODE_CITATION_UNCHECKED})`}`;
     case "source": return `source ${citation.ref}`;
   }
 }
@@ -78,14 +79,14 @@ function citationText(citation: DesignCitation): string {
  * ONE card for a round's questions (3.7): the item is an `answer_question` with a batch of up to three, each question one detail group the person reads. Zero questions, or more than three, make no card
  * (undefined): the batch is bounded and a broken one is dropped, never trimmed to something the reviewers did not ask.
  */
-export function designQuestionsItem(base: CardBase & { designTitle: string; questions: readonly DesignQuestion[] }): DecisionItem | undefined {
-  const { designTitle, questions, ...rest } = base;
+export function designQuestionsItem(base: CardBase & { designTitle: string; questions: readonly DesignQuestion[]; /** The round's packet items: a code citation that matches one is shown plainly, every other as not checked. */ packetItems?: readonly CitablePacketItem[] }): DecisionItem | undefined {
+  const { designTitle, questions, packetItems, ...rest } = base;
   if (questions.length === 0 || questions.length > DESIGN_REVIEW_QUESTIONS_MAX) return undefined;
   const details = questions.map((question, index) => ({
     title: plainLine(`${String(index + 1)}. ${question.unclear}`, 60),
     lines: [
       plainLine(`Unclear because: ${question.unclear}`, 200),
-      ...(question.evidence.length === 0 ? [] : [plainLine(`Evidence: ${question.evidence.map(citationText).join("; ")}`, 200)]),
+      ...(question.evidence.length === 0 ? [] : [plainLine(`Evidence: ${question.evidence.map((citation) => citationText(citation, packetItems)).join("; ")}`, 200)]),
       ...question.options.map((option) => plainLine(`${option.id}) ${option.label}: ${option.consequence}`, 200)),
       plainLine(`Recommended: ${question.recommended}. Why: ${question.why}`, 200),
     ],

@@ -392,7 +392,7 @@ describe("the batched answer_question card", () => {
     expect(groups.filter((group) => /^\d\./u.test(group.title))).toHaveLength(3);
     expect(groups[0]!.lines).toEqual([
       "Unclear because: What should happen to partners with no region?",
-      "Evidence: design §3; migrations/0042_region.sql:7",
+      "Evidence: design §3; migrations/0042_region.sql:7 (path at the pinned commit, not checked)",
       "a) Exclude them: 312 partners vanish from the ranking",
       "b) Default to global: keeps today's ranking",
       "Recommended: b. Why: no data loss",

@@ -2,7 +2,9 @@
 // the merge prompt that comes only from the registry. Each test fails on the code before the round.
 import { describe, expect, it } from "vitest";
 import { defuseFrameTags, frameTagNameAt, neutralizePacketText, renderPacketDocument, type PacketDocument } from "@agentx/contracts";
-import type { ContextSource } from "@agentx/contracts";
+import { CODE_CITATION_UNCHECKED, type ContextSource, type DesignCitation, type DesignResolutionDraft } from "@agentx/contracts";
+import { checkPlannerEvidence, citationProblem, codeCitationLinkPath, roundItemsOf, type CitablePacketItem } from "../../packages/broker/src/design-review/citations.js";
+import { citationText, designQuestionsItem } from "../../packages/broker/src/design-review/card-source.js";
 import { buildReviewerPacket, mcpItemReaderOf, type PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import { isOriginItem, packetMcpCall } from "../../packages/broker/src/design-review/mcp-allowlist.js";
 import { frameResult, neutralizeFrameTags } from "../../packages/broker/src/context-sources/present.js";
@@ -85,5 +87,72 @@ describe("M6 gap: the task's own request thread is never a packet item", () => {
     expect(withOrigin.omitted).toEqual([{ kind: "mcp_item", ref: "tracker:ABC-1#c2", reason: "conversation" }]);
     expect(withOrigin.documents.map((document) => document.ref)).toEqual(["design.md", "requirements.md", "tracker:ABC-9"]);
     expect((await buildReviewerPacket(base, readers)).documents.map((document) => document.ref)).toContain("tracker:ABC-1#c2");
+  });
+});
+
+describe("N5: a code citation is a claim about the pinned commit, not something Rovara looked up", () => {
+  const PIN = "a".repeat(40);
+  const code = (over: Partial<Extract<DesignCitation, { kind: "code" }>> = {}): Extract<DesignCitation, { kind: "code" }> => ({ kind: "code", repo: "api", path: "src/a.ts", startLine: 1, endLine: 2, anchor: "x", commit: PIN.slice(0, 8), ...over });
+  const items: CitablePacketItem[] = [{ kind: "repo_file", ref: "api:src/a.ts", commitOrFetchedAt: PIN, digest: "1".repeat(64) }];
+
+  it("citationProblem refuses percent-encoded dot segments (also twice encoded) and a short commit, and still accepts a plain path at the pin (control)", () => {
+    const pins = { api: PIN };
+    expect(citationProblem(code({ path: "docs/guide.md" }), [], pins)).toBeUndefined();
+    expect(citationProblem(code({ path: "docs/100%-done.md" }), [], pins)).toBeUndefined();
+    for (const path of ["%2e%2e/%2e%2e/etc/passwd", "a/%2E%2E/b", "a/%252e%252e/b", "a/%2e/b", "a%2f..%2fb", "a/%5c/b", "a/%00b"]) expect(citationProblem(code({ path }), [], pins), path).toBe("code_not_allowed");
+    expect(citationProblem(code({ commit: "abc12" }), [], pins)).toBe("code_not_allowed");
+    expect(citationProblem(code({ commit: PIN.slice(0, 7) }), [], pins)).toBeUndefined();
+  });
+
+  it("a link built from a citation encodes each segment, so nothing decodes to a dot segment; a path that is not plain gets no link", () => {
+    expect(codeCitationLinkPath(code({ path: "src/dir with space/a#b?c.ts" }))).toBe(`${PIN.slice(0, 8)}/src/dir%20with%20space/a%23b%3Fc.ts`);
+    expect(codeCitationLinkPath(code({ path: "100%25/x.ts" }))).toBe(`${PIN.slice(0, 8)}/100%2525/x.ts`);
+    for (const path of ["%2e%2e/etc/passwd", "../x", "/abs", "a//b", "a\\b"]) expect(codeCitationLinkPath(code({ path })), path).toBeUndefined();
+    expect(codeCitationLinkPath(code({ commit: "xyz1234" }))).toBeUndefined();
+    const link = codeCitationLinkPath(code({ path: "a/b%2fc.ts" }));
+    expect(link).toBe(`${PIN.slice(0, 8)}/a/b%252fc.ts`);
+    expect(decodeURIComponent(link!).split("/")).not.toContain("..");
+  });
+
+  it("the card says a code citation is not checked unless it matched a file the reviewer was given", () => {
+    expect(citationText(code({ path: "src/other.ts" }), items)).toBe(`src/other.ts:1 (${CODE_CITATION_UNCHECKED})`);
+    expect(citationText(code({ path: "src/a.ts" }), items)).toBe("src/a.ts:1");
+    expect(citationText(code({ path: "src/a.ts" }))).toBe(`src/a.ts:1 (${CODE_CITATION_UNCHECKED})`);
+    const base = { subjectId: "dq1", taskId: "t", project: "p", title: "T", createdAt: "2026-11-03T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, contentVersion: "v1", designTitle: "T" };
+    const question = { id: "q1" as const, unclear: "Which?", evidence: [code({ path: "src/a.ts" })], options: [{ id: "a", label: "A", consequence: "x" }, { id: "b", label: "B", consequence: "y" }], recommended: "a", why: "z" };
+    const lines = (packetItems?: CitablePacketItem[]) => (designQuestionsItem({ ...base, questions: [question as never], ...(packetItems === undefined ? {} : { packetItems }) })!.details ?? [])[0]!.lines;
+    expect(lines(items)[1]).toBe("Evidence: src/a.ts:1");
+    expect(lines()[1]).toContain(CODE_CITATION_UNCHECKED);
+  });
+});
+
+describe("B2: one call checks the planner's evidence", () => {
+  const PIN = "b".repeat(40);
+  const item = (ref: string, kind = "repo_file", digest = "2".repeat(64)): CitablePacketItem => ({ kind, ref, commitOrFetchedAt: PIN, digest });
+  const packets = new Map([["critic" as const, [item("api:src/a.ts"), item("design.md", "design")]], ["codebase" as const, [item("api:src/a.ts"), item("src1:ITEM-1", "mcp_item", "3".repeat(64))]]]);
+  const resolution = (over: Partial<DesignResolutionDraft>): DesignResolutionDraft => ({ findingId: "m1", action: "fixed", note: "n", ...over });
+
+  it("collects every item of every reviewer once, and keeps a citation that matches any of them", () => {
+    expect(roundItemsOf(packets).map((entry) => entry.ref)).toEqual(["api:src/a.ts", "design.md", "src1:ITEM-1"]);
+    const out = checkPlannerEvidence({
+      resolutions: [resolution({ action: "contested", evidence: [{ kind: "design", section: "§3" }, { kind: "source", ref: "src1:ITEM-1", digest: "3".repeat(64) }, { kind: "source", ref: "src1:ITEM-1", digest: "9".repeat(64) }] })],
+      questions: [], packets, pins: { api: PIN },
+    });
+    expect(out).toMatchObject({ ok: true, droppedCitations: 1 });
+    if (out.ok) expect(out.resolutions[0]!.evidence).toHaveLength(2);
+  });
+
+  it("refuses a contest whose only strong evidence was invented (ok:false, with the finding id); a source alone cannot argue a finding away", () => {
+    const forged: DesignCitation = { kind: "code", repo: "api", path: "src/a.ts", startLine: 1, endLine: 1, anchor: "x", commit: "c".repeat(8) };
+    const out = checkPlannerEvidence({ resolutions: [resolution({ action: "contested", evidence: [forged, { kind: "source", ref: "src1:ITEM-1", digest: "3".repeat(64) }] }), resolution({ findingId: "m2", action: "fixed" })], questions: [], packets, pins: { api: PIN } });
+    expect(out).toEqual({ ok: false, uncontestable: ["m1"], droppedCitations: 1 });
+    expect(checkPlannerEvidence({ resolutions: [resolution({ action: "contested", evidence: [forged, { kind: "design", section: "§3" }] })], questions: [], packets, pins: { api: PIN } }).ok).toBe(true);
+  });
+
+  it("uses the pins it is given: a code citation at a commit that is not the broker's pin is dropped", () => {
+    const at = (commit: string): DesignCitation => ({ kind: "code", repo: "api", path: "docs/x.md", startLine: 1, endLine: 1, anchor: "x", commit });
+    const run = (commit: string) => checkPlannerEvidence({ resolutions: [resolution({ evidence: [at(commit)] })], questions: [], packets, pins: { api: PIN } });
+    expect(run(PIN.slice(0, 9))).toMatchObject({ ok: true, droppedCitations: 0 });
+    expect(run("d".repeat(9))).toMatchObject({ ok: true, droppedCitations: 1 });
   });
 });
