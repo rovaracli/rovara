@@ -11,7 +11,7 @@ import type { BashOperations, ToolDefinition } from "@earendil-works/pi-coding-a
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
 import { PLAN_CRITIQUE_ARTIFACT, settlePlanCritique } from "./plan-critic.js";
-import { createReviewSessionOpener, designReviewBindingOf, runDesignReviewOperation, type DesignReviewDependencies } from "./design-review-sessions.js";
+import { createReviewSessionOpener, designReviewBindingOf, reviewFileToolsOf, runDesignReviewOperation, type DesignReviewDependencies } from "./design-review-sessions.js";
 import { checkCodeCitations, sameCitedRanges, withCorrectedRanges } from "./plan-citations.js";
 import { UNDERSTAND_DEADLINE_MS, settleUnderstanding } from "./understand.js";
 import {
@@ -1271,7 +1271,7 @@ async function runTask(
           binding: designReviewBinding, artifactSink,
           ports: {
             loadPacket: designReview.loadPacket,
-            openSession: createReviewSessionOpener({ rootPath: dependencies.rootPath, ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}), runtimeFor: designReview.runtimeFor(designReviewBinding), onDiagnostic }),
+            openSession: createReviewSessionOpener({ rootPath: dependencies.rootPath, ...reviewFileToolsOf(fileTools), runtimeFor: designReview.runtimeFor(designReviewBinding), onDiagnostic }),
             progress: async (message) => { await emit("progress", { message }); },
           },
           options: { signal: verificationStop.signal },

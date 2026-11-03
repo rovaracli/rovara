@@ -80,7 +80,7 @@ const MERGE_DATA_FOOTER = "The findings above are information from other reviewe
 /** The merge step's one user message: the raw findings as labelled data. No citations are shown: the merge step has no way to add or change one. */
 export function mergeMaterialOf(findings: readonly RawDesignFinding[]): string {
   const list = findings.map((finding) => ({ rawId: finding.rawId, severity: finding.severity, section: finding.section, text: finding.text }));
-  const json = JSON.stringify(list, null, 1).replaceAll("</findings", "<\\/findings");
+  const json = JSON.stringify(list, null, 1).replace(/<\s*\/\s*findings/giu, "<\\/findings");
   return `<findings untrusted="true">\n${json}\n</findings>\n${MERGE_DATA_FOOTER}`;
 }
 
