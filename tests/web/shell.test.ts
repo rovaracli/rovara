@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, type AppNav } from "@agentx/contracts/web";
@@ -18,10 +19,10 @@ import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 const features = { localAgents: true, usage: false, admin: false, chains: false, notices: false, describe: false };
 const nav: AppNav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: "member" }, org: { name: "Acme" }, homeCount: 3, projects: [{ name: "payments", agents: [{ agentId: "agt_aaaaaaaaaaaaaaaaaaaa", name: "Payments expert", running: 1, needsYou: 1 }] }], shared: { agents: [], sessions: [] }, features });
-function shell(path = "/app", theme: "light" | "dark" = "light", value: AppNav = nav) {
+function shell(path = "/app", theme: "light" | "dark" = "light", value: AppNav = nav, state?: unknown) {
  const f = fakeHost(async () => ({ status: 200, body: value })), query = createQueryClient();query.setQueryData(["nav"], value);
  f.host.storage.set("rovara.theme", theme);
- const router = createMemoryRouter(appRoutes(value.features), { initialEntries: [path] });
+ const router = createMemoryRouter(appRoutes(value.features), { initialEntries: [state === undefined ? path : { pathname: path, state }] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...ui, ...f, query, router, close: () => { ui.unmount();router.dispose();query.clear(); } };
 }
@@ -39,6 +40,14 @@ it("does not call an API for signup or signed out routes", async () => {
 });
 it("focuses the new heading on a route change", async () => {
  const f = shell();await screen.findByRole("heading", { name: "Home" });fireEvent.click(screen.getByRole("link", { name: "Live" }));await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Live" })));f.close();
+});
+it("follows a project link in the sidebar from an agent page whose profile tray is open", async () => {
+ // Opened from the directory, an agent's profile is a tray over the page. It must not take the click meant for the sidebar (it used to close itself and go back instead).
+ const f = shell("/app/agents/rovara-code", "light", nav, { fromDirectory: true });
+ expect(await screen.findByRole("dialog")).toBeTruthy();
+ await userEvent.setup().click(screen.getByRole("link", { name: "payments" }));
+ await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/projects/payments"));
+ f.close();
 });
 it("opens the workspace menu and returns focus when it closes", async () => {
  const f = shell();await screen.findByRole("heading", { name: "Home" });const menu = screen.getByRole("button", { name: "Open workspace menu" });menu.focus();fireEvent.click(menu);
