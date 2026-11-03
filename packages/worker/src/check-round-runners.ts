@@ -26,6 +26,23 @@ import { createCheckRunners, mintSealedCheckOptions, runChecks, type CheckPlan, 
 const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u;
 /** A variable name a shell and `docker exec --env` both read as a name (POSIX): a command's own `env` may hold no other (no `=`, no space, no `-`). */
 const POSIX_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+/** The plans with a sealed round running (TS-SEAL-3): one round at a time on a plan. Module-private. */
+const ACTIVE_PLANS = new Set<string>();
+const planKey = (plan: Pick<CheckSandboxPlan, "network" | "sandboxName">): string => `${plan.network.name}|${plan.sandboxName}`;
+
+/** The fixed sentence for a project the test services cannot serve yet. */
+export const TEST_SERVICES_DEVCONTAINER_SENTENCE = "Test services are not available yet for a project that uses a dev container.";
+
+/**
+ * Test services run the checks in the worker's own sealed sandbox, not in the project's dev container, so a project with a dev container would be checked somewhere its tests were never meant to run. The worker calls this
+ * BEFORE it starts any dependency (and `withSealedCheckRound` calls it again before any Docker call): a plan with dependencies for a project with a dev container is refused with the same fixed sentence at approval
+ * (the broker's side) and here. Nothing is started and nothing is written.
+ */
+export function refuseTestServicesWithDevcontainer(input: { dependencies: number | readonly unknown[]; devcontainer: boolean }): void {
+  const count = typeof input.dependencies === "number" ? input.dependencies : input.dependencies.length;
+  if (input.devcontainer && count > 0) throw agentXError("CONFIG_INVALID", TEST_SERVICES_DEVCONTAINER_SENTENCE);
+}
+
 const NETWORK_CALL_TIMEOUT_MS = 60_000;
 /** The exec inputs `withSealedCheckRound` made (TS-SEAL-3). Module-private: `sealedContainerExec` refuses any other. */
 const ROUND_EXEC_INPUTS = new WeakSet<object>();
@@ -108,6 +125,8 @@ export async function assertSealedNetworkMembers(docker: DockerCli, plan: CheckS
 
 export interface SealedCheckRoundInput {
   docker: DockerCli;
+  /** True when the project has a dev container: the round is then refused ("not available yet") before any Docker call. The caller states it, so it cannot be left out. */
+  hasDevcontainer: boolean;
   /** `checkSandboxPlan(...)`: the sandbox, its names and files. The caller has written the plan's files (`writeCheckSandboxFiles`) and started the DNS helper. */
   plan: CheckSandboxPlan;
   /** The workspace root the checks run in (the same as the plan's `rootPath`). */
@@ -129,6 +148,19 @@ export interface SealedCheckRoundInput {
  * Throws when the working sandbox cannot be detached or the check sandbox cannot start or be removed (then `round` is not run, or the working sandbox stays detached): a round that cannot be sealed is not run unsealed.
  */
 export async function withSealedCheckRound<T>(input: SealedCheckRoundInput, round: (runners: CheckRunners) => Promise<T>): Promise<T> {
+  refuseTestServicesWithDevcontainer({ dependencies: 1, devcontainer: input.hasDevcontainer });
+  const key = planKey(input.plan);
+  // One round at a time on a plan: two would share one check sandbox name, and the first one's removal would pull the sandbox out from under the other.
+  if (ACTIVE_PLANS.has(key)) throw agentXError("RUNTIME_UNAVAILABLE", "a sealed check round is already running on this plan");
+  ACTIVE_PLANS.add(key);
+  try {
+    return await sealedRound(input, round);
+  } finally {
+    ACTIVE_PLANS.delete(key);
+  }
+}
+
+async function sealedRound<T>(input: SealedCheckRoundInput, round: (runners: CheckRunners) => Promise<T>): Promise<T> {
   return withDetachedWorking(input.docker, input.plan, async (start) => {
     // The network is looked at itself, before and after the start; any surprise throws, and `withDetachedWorking` removes the sandbox and attaches the working sandbox again.
     await assertSealedNetworkMembers(input.docker, input.plan, "before_start");

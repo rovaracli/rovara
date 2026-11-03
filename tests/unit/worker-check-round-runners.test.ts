@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkSandboxPlan, type CheckSandboxInput, type CheckSandboxPlan } from "../../packages/worker/src/check-sandbox.js";
 import { sealedContainerExec, runSealedCheckRound, withSealedCheckRound } from "../../packages/worker/src/check-round-runners.js";
-import { assertSealedNetworkMembers } from "../../packages/worker/src/check-round-runners.js";
+import { TEST_SERVICES_DEVCONTAINER_SENTENCE, assertSealedNetworkMembers, refuseTestServicesWithDevcontainer } from "../../packages/worker/src/check-round-runners.js";
 import { runNetworkAddresses, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName } from "../../packages/worker/src/run-network.js";
 import { buildServiceEnvironment, createRunDirectoryFiles, createServiceRedactor, type ServiceEnvironment } from "../../packages/worker/src/service-env.js";
 import { helperContainerName, type HelperFiles } from "../../packages/worker/src/service-helpers.js";
@@ -126,7 +126,7 @@ function fakeDocker(sandboxName: string, options: FakeOptions = {}) {
 const verbs = (calls: string[][]) => calls.map((call) => (call[0] === "network" ? `network ${call[1]}` : call[0] === "container" ? "container inspect" : call[0]!));
 
 function roundInput(docker: DockerCli, p: CheckSandboxPlan, extra: Partial<Parameters<typeof withSealedCheckRound>[0]> = {}): Parameters<typeof withSealedCheckRound>[0] {
-  return { docker, plan: p, rootPath, files, environment: environment(), redactor: createServiceRedactor([PASSWORD]), ...extra };
+  return { docker, plan: p, hasDevcontainer: false, rootPath, files, environment: environment(), redactor: createServiceRedactor([PASSWORD]), ...extra };
 }
 const command = (executable: string, args: string[] = [], env?: Record<string, string>) => ({ cwd: ".", executable, args, timeoutSeconds: 60, ...(env === undefined ? {} : { env }) });
 
@@ -290,6 +290,54 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
       const { docker } = fakeDocker(p.sandboxName, { inspectAnswer: answer });
       await expect(assertSealedNetworkMembers(docker, p, "before_start"), JSON.stringify(answer)).rejects.toThrow();
     }
+  });
+
+  it("refuses a second round on a plan while the first runs, and allows one again afterwards (also after a failure)", async () => {
+    const p = plan();
+    const { docker, calls } = fakeDocker(p.sandboxName);
+    let release: () => void = () => undefined;
+    const holding = new Promise<void>((resolve) => { release = resolve; });
+    let inside: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => { inside = resolve; });
+    const first = withSealedCheckRound(roundInput(docker, p), async () => { inside(); await holding; return "first"; });
+    await entered;
+    const before = calls.length;
+    await expect(withSealedCheckRound(roundInput(docker, p), () => Promise.resolve("second"))).rejects.toThrow(/already running on this plan/u);
+    expect(calls.length).toBe(before);
+    release();
+    await expect(first).resolves.toBe("first");
+    await expect(withSealedCheckRound(roundInput(docker, p), () => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
+    await expect(withSealedCheckRound(roundInput(docker, p), () => Promise.resolve("third"))).resolves.toBe("third");
+  });
+
+  it("a plan in use does not block another plan (another run)", async () => {
+    const p = plan();
+    const other = checkSandboxPlan({ ...planInput(), taskId: "t2", net: { ...planInput().net, name: runNetworkName("33333333-3333-4333-8333-333333333333") } });
+    expect(other.sandboxName).not.toBe(p.sandboxName);
+    const a = fakeDocker(p.sandboxName);
+    let release: () => void = () => undefined;
+    const holding = new Promise<void>((resolve) => { release = resolve; });
+    let inside: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => { inside = resolve; });
+    const first = withSealedCheckRound(roundInput(a.docker, p), async () => { inside(); await holding; });
+    await entered;
+    // A different plan reaches its own checks (its fake network is not this run's, so it stops at the network look, not at the lock).
+    await expect(withSealedCheckRound(roundInput(fakeDocker(other.sandboxName).docker, other), () => Promise.resolve())).rejects.not.toThrow(/already running/u);
+    release();
+    await first;
+  });
+
+  it("refuses a project with a dev container before any Docker call (not available yet)", async () => {
+    const p = plan();
+    const { docker, calls } = fakeDocker(p.sandboxName);
+    await expect(withSealedCheckRound(roundInput(docker, p, { hasDevcontainer: true }), () => Promise.resolve())).rejects.toThrow(TEST_SERVICES_DEVCONTAINER_SENTENCE);
+    expect(calls).toEqual([]);
+    expect(() => refuseTestServicesWithDevcontainer({ dependencies: [{}], devcontainer: true })).toThrow(TEST_SERVICES_DEVCONTAINER_SENTENCE);
+    expect(() => refuseTestServicesWithDevcontainer({ dependencies: 2, devcontainer: true })).toThrow(/not available yet/u);
+    expect(() => refuseTestServicesWithDevcontainer({ dependencies: [], devcontainer: true })).not.toThrow();
+    expect(() => refuseTestServicesWithDevcontainer({ dependencies: 3, devcontainer: false })).not.toThrow();
+    // And the lock is not taken by a refused round.
+    await expect(withSealedCheckRound(roundInput(docker, p), () => Promise.resolve("ok"))).resolves.toBe("ok");
   });
 
   it("a source guard: the check sandbox, the sealed exec and the sealed options are made in one place each (TS-SEAL-3)", async () => {
