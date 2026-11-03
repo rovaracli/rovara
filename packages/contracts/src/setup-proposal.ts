@@ -32,7 +32,7 @@ export const SETUP_ITEM_LIMITS = {
 } as const;
 
 /** The only places a dev container's configuration lives. */
-export const DEVCONTAINER_PATH_PATTERN = /^(?:\.devcontainer\/(?:[A-Za-z0-9_.-]{1,64}\/)?devcontainer\.json|\.devcontainer\.json)$/u;
+export const DEVCONTAINER_PATH_PATTERN = /^(?:\.devcontainer\/(?:(?![.]+\/)[A-Za-z0-9_.-]{1,64}\/)?devcontainer\.json|\.devcontainer\.json)$/u;
 const SECRET_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/u;
 
 const commandLine = z.string().min(1).max(SETUP_COMMAND_MAX_CHARS);

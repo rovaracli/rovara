@@ -135,6 +135,44 @@ function verifyKitCopy(kit: SynthKitManifest, file: string, copied: { sha256: st
   if (kit.files[file] !== copied.sha256) throw new Error(`the synthesis kit file ${file} is not what kit.json lists (it was changed after release:kit made it); make the kit again from this release`);
 }
 
+/**
+ * SK-4: the last look before the signature. Everything the manifest says about the kit is measured again from the bytes now in the output folder (read into memory and hashed, so what is
+ * compared is what is read, not a second look at the disk): the folder holds exactly kit.json and the files it lists, every hash equals kit.json's and the manifest's, and kit.json still names this
+ * release. The manifest is then signed with no further step in between. The kit check and the image exports run for minutes after the first hashing; anything that changed the copy meanwhile is refused here.
+ */
+async function reverifyKitBeforeSigning(input: { kitRoot: string; releaseJsonSha256: string; release: ReleaseManifest; manifestFiles: BundleManifest["files"] }): Promise<void> {
+  const { kitRoot, release, manifestFiles } = input;
+  const read = new Map<string, string>();
+  const walk = async (relative: string, depth: number): Promise<void> => {
+    if (depth > 6) throw new Error("the synthesis kit nests deeper than allowed");
+    for (const entry of await readdir(join(kitRoot, relative))) {
+      const path = relative === "" ? entry : `${relative}/${entry}`;
+      const info = await lstat(join(kitRoot, path));
+      if (info.isDirectory()) await walk(path, depth + 1);
+      else if (info.isFile()) read.set(path, sha256OfBytes(await readFile(join(kitRoot, path))));
+      else throw new Error(`the synthesis kit holds a link or a special file (${path}); refusing to sign`);
+    }
+  };
+  await walk("", 0);
+  const kitJsonBytes = await readFile(join(kitRoot, "kit.json"));
+  const kit = SynthKitManifestSchema.parse(JSON.parse(kitJsonBytes.toString("utf8")));
+  // kit.json is hashed again from the bytes just parsed: the manifest's entry must be these very bytes.
+  read.set("kit.json", sha256OfBytes(kitJsonBytes));
+  if (kit.releaseSha256 !== input.releaseJsonSha256 || kit.gitCommit !== release.gitCommit) throw new Error("the synthesis kit was made from a different release than the one being bundled; refusing to sign");
+  const expected = new Map<string, string | undefined>([["kit.json", undefined], ...Object.entries(kit.files)]);
+  for (const file of read.keys()) if (!expected.has(file)) throw new Error(`the synthesis kit holds a file kit.json does not list (${file}); refusing to sign`);
+  for (const [file, listed] of expected) {
+    const hash = read.get(file);
+    if (hash === undefined) throw new Error(`the synthesis kit is missing a file kit.json lists (${file}); refusing to sign`);
+    if (listed !== undefined && hash !== listed) throw new Error(`the synthesis kit file ${file} is not what kit.json lists (it changed after it was copied); refusing to sign`);
+  }
+  const inManifest = new Map(manifestFiles.filter((entry) => entry.kind === "synth-kit").map((entry) => [entry.file, entry.sha256] as const));
+  if (inManifest.size !== read.size) throw new Error("the bundle manifest and the synthesis kit in the output folder list different files; refusing to sign");
+  for (const [file, hash] of read) {
+    if (inManifest.get(`synth-kit/${file}`) !== hash) throw new Error(`the synthesis kit file ${file} is not the one the bundle manifest lists (it changed after it was copied); refusing to sign`);
+  }
+}
+
 /** The signing step's own check of a kit: a clean checkout of the release's commit, and the kit's self-checks again in the sandbox. Loaded here, not at the top: it brings in the whole release build. */
 async function defaultKitCheck(kit: { kitRoot: string; releaseDir: string; release: ReleaseManifest }): Promise<void> {
   const { verifyKitForSigning } = await import("./synth-kit.js");
@@ -228,6 +266,8 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
   }
 
   files.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  // SK-4: the kit in the output folder is measured once more, from its bytes, immediately before the signature; a signing key is never used on a kit that differs from kit.json.
+  if (input.synthKitDir !== undefined) await reverifyKitBeforeSigning({ kitRoot: join(out, "synth-kit"), releaseJsonSha256: releaseJsonHash.sha256, release, manifestFiles: files });
   const manifest = BundleManifestSchema.parse({ schemaVersion: 1, format: "rovara-release-bundle", version: release.version, gitCommit: release.gitCommit, files, images } satisfies BundleManifest);
   const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   const bundleSha256 = sha256OfBytes(manifestBytes);

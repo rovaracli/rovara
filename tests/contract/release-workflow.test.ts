@@ -39,6 +39,38 @@ async function workflow(): Promise<Workflow> {
   return YAML.parse(await workflowText()) as Workflow;
 }
 
+/** A `run:` script as the shell reads it: a backslash at the end of a line joins it to the next one, so `cmd \` + `|| true` is one command. */
+function logicalLines(run: string): string[] {
+  return run.replace(/\\[ \t]*\r?\n/gu, " ").split("\n");
+}
+/** What lets a failing gating command go on: anything chained after it, a pipe, a background, a negation, `|| true`, `|| :`, a trailing `;`. Empty when the line is only the command and its arguments. */
+const SWALLOWS_FAILURE = /\|\||;|&|\||!\s*npm|\bcontinue-on-error\b|\bset\s+\+e\b|\btrue\s*$|\s:\s*$/u;
+function gatingCommandProblems(run: string, command: string): string[] {
+  const lines = logicalLines(run).filter((line) => line.includes(command));
+  if (lines.length !== 1) return [`${command} appears on ${String(lines.length)} logical lines, expected one`];
+  const line = lines[0]!;
+  const problems: string[] = [];
+  if (!line.trimStart().startsWith(command)) problems.push(`${command} does not start its line`);
+  // The arguments may use `"${image_flags[@]}"` and `$RUNNER_TEMP`, never an operator: strip quoted text first, so a `;` or `&` inside a quoted argument is not mistaken for one.
+  const bare = line.replace(/"[^"]*"/gu, '""').replace(/'[^']*'/gu, "''");
+  if (SWALLOWS_FAILURE.test(bare)) problems.push(`${command} is followed by something that can swallow its failure: ${line.trim()}`);
+  return problems;
+}
+/** A package.json script the kit, verify or bundle step runs: one `tsx scripts/release/<name>.ts` and nothing else. No operator, no continuation, no second command, no flag that weakens the check. */
+const RELEASE_SCRIPT = /^tsx scripts\/release\/[a-z-]+\.ts$/u;
+function releaseScriptProblems(name: string, command: string, scripts: Record<string, string>, seen = new Set<string>()): string[] {
+  if (seen.has(name)) return [];
+  seen.add(name);
+  const problems: string[] = [];
+  if (!RELEASE_SCRIPT.test(command)) problems.push(`package.json script ${name} is not a bare \`tsx scripts/release/<name>.ts\`: ${JSON.stringify(command)}`);
+  if (/\\\s*$/mu.test(command) || /\n/u.test(command)) problems.push(`package.json script ${name} spans lines`);
+  if (/\|\||;|&|\||\btrue\b|continue-on-error|allow-unsandboxed|--no-verify/u.test(command)) problems.push(`package.json script ${name} can swallow a failure or weaken a check`);
+  // npm runs pre<name> and post<name> by themselves: one of those could run anything around the gate.
+  for (const hook of [`pre${name}`, `post${name}`]) if (Object.hasOwn(scripts, hook)) problems.push(`package.json has a ${hook} script, which npm runs around ${name}`);
+  for (const match of command.matchAll(/npm run ([\w:-]+)/gu)) if (scripts[match[1]!] !== undefined) problems.push(...releaseScriptProblems(match[1]!, scripts[match[1]!]!, scripts, seen));
+  return problems;
+}
+
 describe("release workflow", () => {
   it("runs only on version tags or by hand, never on pull requests or branch pushes", async () => {
     const wf = await workflow();
@@ -97,6 +129,18 @@ describe("release workflow", () => {
     expect(bundle!.needs).toEqual(["images", "release"]);
   });
 
+  it("SK-4: the bundle job gets its AWS credentials only from the signing role variable, through OIDC, and no other job assumes it", async () => {
+    const wf = await workflow();
+    const bundle = wf.jobs.bundle!;
+    expect(bundle.permissions).toEqual({ contents: "read", "id-token": "write" });
+    const credentials = bundle.steps.filter((step) => step.uses?.startsWith("aws-actions/configure-aws-credentials") === true);
+    expect(credentials).toHaveLength(1);
+    expect(credentials[0]!.with?.["role-to-assume"]).toBe("${{ vars.AGENTX_BUNDLE_SIGNING_ROLE_ARN }}");
+    const text = await workflowText();
+    expect(text.match(/AGENTX_BUNDLE_SIGNING_ROLE_ARN/gu)).toHaveLength(1);
+    for (const [name, job] of Object.entries(wf.jobs)) if (name !== "bundle") expect(JSON.stringify(job), name).not.toContain("BUNDLE_SIGNING");
+  });
+
   it("SK-4: nothing in the signing job can let a failed kit, verify or sign step go on: no `|| true`, no `;` after them, no continue-on-error, no `set +e`, no weakened shell", async () => {
     const wf = await workflow();
     const bundle = wf.jobs.bundle!;
@@ -108,13 +152,8 @@ describe("release workflow", () => {
       expect(step.run ?? "").not.toMatch(/set\s+\+e|set\s+\+o\s+errexit/u);
     }
     const runs = bundle.steps.map((step) => step.run ?? "").join("\n");
-    // Each gating command is the whole of its line, up to the arguments: nothing chained after it that could swallow its failure.
-    for (const command of ["npm run release:verify", "npm run release:kit", "npm run release:bundle"]) {
-      const lines = runs.split("\n").filter((line) => line.includes(command));
-      expect(lines.length, command).toBe(1);
-      expect(lines[0]!, command).not.toMatch(/\|\||;|&\s*$|&&\s*true|\|\s*(?:cat|tee|true)\b|!\s*npm/u);
-      expect(lines[0]!.trimStart().startsWith(command), `${command} starts its line`).toBe(true);
-    }
+    // Each gating command is the whole of its (logical) line, up to the arguments: nothing chained after it that could swallow its failure, and no `\\` continuation that moves the `|| true` to the next line.
+    for (const command of ["npm run release:verify", "npm run release:kit", "npm run release:bundle"]) expect(gatingCommandProblems(runs, command), command).toEqual([]);
     // The build the kit reads is a fresh one made in this job.
     const ci = bundle.steps.findIndex((step) => step.run === "npm ci");
     const build = bundle.steps.findIndex((step) => step.run === "npm run build");
@@ -122,6 +161,54 @@ describe("release workflow", () => {
     expect(ci).toBeGreaterThanOrEqual(0);
     expect(build).toBeGreaterThan(ci);
     expect(kitStep).toBeGreaterThan(build);
+  });
+
+  it("SK-4: the gating check itself catches a `\\` continuation, `|| true`, `;`, a pipe, a background and a second line (negative controls)", () => {
+    const ok = 'npm run release:kit -- --release "$RUNNER_TEMP/release" --out "$RUNNER_TEMP/kit"';
+    expect(gatingCommandProblems(ok, "npm run release:kit")).toEqual([]);
+    expect(gatingCommandProblems(`${ok} --note "a; b && c"`, "npm run release:kit"), "operators inside a quoted argument are text").toEqual([]);
+    const hostile: Record<string, string> = {
+      "|| true": `${ok} || true`,
+      "|| true on the next line": `${ok} \\\n  || true`,
+      "continuation then a semicolon": `${ok} \\\n ; echo done`,
+      "continuation with trailing spaces": `${ok} \\  \n  || true`,
+      "|| :": `${ok} || :`,
+      "pipe to cat": `${ok} | cat`,
+      "pipe to tee": `${ok} |& tee kit.log`,
+      "background": `${ok} &`,
+      "semicolon": `${ok}; true`,
+      "and true": `${ok} && true`,
+      "negated": `! ${ok}`,
+      "run twice": `${ok}\n${ok}`,
+      "not run at all": "echo skipped",
+    };
+    for (const [name, run] of Object.entries(hostile)) expect(gatingCommandProblems(run, "npm run release:kit").length, name).toBeGreaterThan(0);
+  });
+
+  it("SK-4: the package.json scripts the signing job calls are each one bare `tsx scripts/release/<name>.ts`: no `|| true`, no `\\` continuation, no chained command, no pre/post hook", async () => {
+    const scripts = (JSON.parse(await readFile("package.json", "utf8")) as { scripts: Record<string, string> }).scripts;
+    for (const name of ["release:verify", "release:kit", "release:bundle"]) {
+      expect(scripts[name], name).toBeDefined();
+      expect(releaseScriptProblems(name, scripts[name]!, scripts), name).toEqual([]);
+    }
+  });
+
+  it("SK-4: the package.json script check catches `|| true`, a continuation, a chained command, a hook and a nested script (negative controls)", () => {
+    const clean = { "release:kit": "tsx scripts/release/synth-kit.ts" };
+    expect(releaseScriptProblems("release:kit", clean["release:kit"], clean)).toEqual([]);
+    const hostile: Record<string, Record<string, string>> = {
+      "|| true": { "release:kit": "tsx scripts/release/synth-kit.ts || true" },
+      "continuation": { "release:kit": "tsx scripts/release/synth-kit.ts \\\n || true" },
+      "semicolon": { "release:kit": "tsx scripts/release/synth-kit.ts; echo ok" },
+      "and": { "release:kit": "tsx scripts/release/synth-kit.ts && true" },
+      "pipe": { "release:kit": "tsx scripts/release/synth-kit.ts | cat" },
+      "unsandboxed flag": { "release:kit": "tsx scripts/release/synth-kit.ts --allow-unsandboxed-check" },
+      "another program": { "release:kit": "node other.js" },
+      "pre hook": { ...clean, "prerelease:kit": "echo hi" },
+      "post hook": { ...clean, "postrelease:kit": "echo hi" },
+      "nested npm run": { "release:kit": "npm run kit-inner", "kit-inner": "tsx scripts/release/synth-kit.ts || true" },
+    };
+    for (const [name, scripts] of Object.entries(hostile)) expect(releaseScriptProblems("release:kit", scripts["release:kit"]!, scripts).length, name).toBeGreaterThan(0);
   });
 
   it("SK-4: no package.json script passes --allow-unsandboxed-check (the flag is for a developer's own computer, typed by hand)", async () => {

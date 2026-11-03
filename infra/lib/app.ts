@@ -20,6 +20,7 @@ import { assertStdioHostStackBuilt, mcpHostPropsFromInstall, parsePrivateMcpCont
 import { modelEndpointBrokerEnvironment, parseModelEndpointContext } from "./model-endpoints.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { parseTeamRecordSwitch } from "./team-record-wiring.js";
+import { BundleSigningStack, parseBundleSigningContext } from "./bundle-signing.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
 import { RetainExceptOnCreate } from "./retention.js";
 import { EnvironmentRolePath } from "./role-path.js";
@@ -229,6 +230,16 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     new ReleasePipelineStack(app, "AgentXReleasePipeline", {
       description: "AgentX production release pipeline for the mainline branch",
       env: { region: deploymentRegion ?? "us-east-1" },
+    });
+  }
+  // SK-4: the bundle signing key and its one role (off by default; `-c agentxBundleSigning=enabled` with the repository and the account's GitHub OIDC provider; docs/enterprise/bundle-signing.md). No release deploys it.
+  const bundleSigning = parseBundleSigningContext((key) => app.node.tryGetContext(key) as unknown, { named: naming.env !== undefined });
+  if (bundleSigning !== undefined) {
+    new BundleSigningStack(app, "AgentXBundleSigning", {
+      description: "Rovara release bundle signing key, usable only by the release workflow's bundle job through GitHub OIDC",
+      env: { region: "us-east-1" },
+      terminationProtection: true,
+      config: bundleSigning,
     });
   }
   new SlackOrchestratorStack(app, "AgentXSlackOrchestrator", {
