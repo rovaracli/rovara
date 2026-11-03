@@ -40,7 +40,7 @@ describe("an old playbook", () => {
     // A document exactly as the code before this stage wrote it.
     w.db.set({ ...projectPlaybookKey(ORG_A, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG_A, revision: 3, defaultProcess: { kind: "builtin" }, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAX });
     const read = await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web");
-    expect(read).toEqual({ playbook: { revision: 3, defaultProcess: { kind: "builtin" } } });
+    expect(read).toEqual({ designReviewGroups: true, playbook: { revision: 3, defaultProcess: { kind: "builtin" } } });
     expect(designReviewSettingOf(read.playbook)).toEqual(DESIGN_REVIEW_DEFAULT_SETTING);
     expect((await readEffectiveDesignReview(playbookDeps(w), ORG_A, "web")).setting).toEqual(DESIGN_REVIEW_DEFAULT_SETTING);
     const empty = mergeWorld();
@@ -62,8 +62,8 @@ describe("saving the setting", () => {
     const w = mergeWorld();
     const reply = await put(w, MAX, { designReview: SETTING });
     expect(reply.statusCode).toBe(200);
-    expect(reply.body).toEqual({ playbook: { revision: 1, defaultProcess: { kind: "builtin" }, designReview: SETTING } });
-    expect(await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web")).toEqual({ playbook: { revision: 1, defaultProcess: { kind: "builtin" }, designReview: SETTING } });
+    expect(reply.body).toEqual({ designReviewGroups: true, playbook: { revision: 1, defaultProcess: { kind: "builtin" }, designReview: SETTING } });
+    expect(await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web")).toEqual({ designReviewGroups: true, playbook: { revision: 1, defaultProcess: { kind: "builtin" }, designReview: SETTING } });
     const events = designEvents(w);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ actor: { kind: "member", id: MAX }, target: { kind: "project" }, facts: { revision: 1, mode: "always", tier: "thorough", allowSkip: false, capCents: 2500, approverKind: "people", approverCount: 2 } });
@@ -100,7 +100,7 @@ describe("saving the setting", () => {
     const w = mergeWorld();
     await put(w, MAX, { designReview: SETTING });
     const reply = await put(w, MAX, { expectedRevision: 1 });
-    expect(reply.body).toEqual({ playbook: { revision: 2, defaultProcess: { kind: "builtin" }, designReview: SETTING } });
+    expect(reply.body).toEqual({ designReviewGroups: true, playbook: { revision: 2, defaultProcess: { kind: "builtin" }, designReview: SETTING } });
     expect(stored(w)).toMatchObject({ revision: 2, designReview: SETTING });
     expect(designEvents(w)).toHaveLength(1);
   });
@@ -313,7 +313,7 @@ describe("fix round: the lock is enforced in the write transaction and on the re
     expect(stored(w)).toMatchObject({ designReview: { mode: "never", allowSkip: true, capUsdPerTask: 30 } });
     // No lock: the answer is exactly what it was.
     const open = mergeWorld();
-    expect(await getProjectPlaybook(playbookDeps(open), w.caller(PRIYA), "web")).toEqual({ playbook: { revision: 0, defaultProcess: { kind: "builtin" } } });
+    expect(await getProjectPlaybook(playbookDeps(open), w.caller(PRIYA), "web")).toEqual({ designReviewGroups: true, playbook: { revision: 0, defaultProcess: { kind: "builtin" } } });
     // An unreadable lock: the strictest setting, every field shown as locked.
     const broken = mergeWorld();
     setLock(broken, { surprise: true });

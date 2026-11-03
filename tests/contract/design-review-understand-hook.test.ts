@@ -14,7 +14,7 @@ const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSh
 afterEach(() => { vi.unstubAllEnvs(); });
 
 /** `projects`: the allowlist `dp` (default: this project, "payments"; null: none is set). `dropOrgId`: the task record has no orgId when Understand ends (the type allows it). */
-async function understoodAs(assessment: IntentAssessment, options: { switchOn: boolean; playbook?: Record<string, unknown>; projects?: string | null; dropOrgId?: boolean }) {
+async function understoodAs(assessment: IntentAssessment, options: { switchOn: boolean; playbook?: Record<string, unknown>; projects?: string | null; dropOrgId?: boolean; designFirst?: boolean }) {
   if (options.switchOn) vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
   if (options.projects !== null) vi.stubEnv("DESIGN_REVIEW_PROJECTS", options.projects ?? "payments");
   const access = fakeModelAccess();
@@ -38,6 +38,8 @@ async function understoodAs(assessment: IntentAssessment, options: { switchOn: b
     void _orgId;
     h.db.set(orgless);
   }
+  // `design first:` typed in the request (Slack or Linear intake) is recorded on the task before Understand ends.
+  if (options.designFirst === true) h.db.set({ ...(h.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown>), designFirst: { by: MAYA.developerId, at: "2026-11-03T12:00:00.000Z" } });
   await h.finish(workspaceId, String(understand.id), "SUCCEEDED", { result: { workflowMode: "UNDERSTAND" } });
   const playbookRead = reads.mock.calls.some(([command]) => JSON.stringify((command as { input?: unknown }).input ?? {}).includes("PLAYBOOK"));
   return { workflow: (h.db.get(`DEVTASK#${taskId}`, "META") as { workflow: Record<string, unknown> }).workflow, playbookRead };
@@ -101,5 +103,25 @@ describe("the design review at the Understand step's ready answer", () => {
     const result = await understoodAs(needed(), { switchOn: true, playbook: { revision: 1, defaultProcess: { kind: "builtin" }, designReview: { mode: "never", tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } } });
     expect(result.workflow).toMatchObject({ path: "QUICK" });
     expect(result.workflow).not.toHaveProperty("designReview");
+  });
+});
+
+describe("`design first:` typed in the request", () => {
+  const never = { revision: 1, defaultProcess: { kind: "builtin" }, designReview: { mode: "never", tier: "standard", allowSkip: true, capUsdPerTask: 5, highRiskApprover: { kind: "maintainers" } }, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAYA.developerId };
+  const notNeeded = (): IntentAssessment => ({ kind: "ready", path: "QUICK", restatement: "Fix a typo.", assumptions: [], design: { needed: false, reasons: ["small_change"], note: "A small change." } });
+
+  it("turns the review on even when the project says never and Understand says it is not needed, recorded as the person's ask", async () => {
+    const result = await understoodAs(notNeeded(), { switchOn: true, playbook: never, designFirst: true });
+    expect(result.workflow).toMatchObject({ path: "FULL", designReview: { decidedBy: "person", startedBy: { actorId: MAYA.developerId }, status: "estimating" } });
+  });
+
+  it("without the ask the same task gets no review (positive control)", async () => {
+    expect((await understoodAs(notNeeded(), { switchOn: true, playbook: never })).workflow).not.toHaveProperty("designReview");
+  });
+
+  it("with the switch off the ask changes nothing", async () => {
+    const off = await understoodAs(notNeeded(), { switchOn: false, playbook: never, designFirst: true });
+    expect(off.workflow).not.toHaveProperty("designReview");
+    expect(off.workflow).toMatchObject({ path: "QUICK" });
   });
 });

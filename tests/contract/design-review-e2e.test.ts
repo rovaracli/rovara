@@ -832,6 +832,9 @@ describe("slice C: the design review's routes", () => {
   it("Skip: the requester is refused on a high-risk design, the design approver skips and it is recorded as a person's skip; Design first needs the project to run design review", async () => {
     const w = await openBlockerCard({ touches: ["auth"], capUsd: 0.5 });
     seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+    // The task view tells each person what they may do: the requester is told to ask the design approver (the approver reads the task through the page route, not the owner's view).
+    const viewOf = async (who: Developer) => ((await w.dev(who, "GET", `/v1/dev/tasks/${w.taskId}`, undefined, { "x-agentx-task-view": "2" })).body.task as { designActions?: unknown } | undefined)?.designActions;
+    expect(await viewOf(MAYA)).toMatchObject({ designFirst: false, skip: { allowed: false, because: "needs_high_risk_approver" } });
     const refused = await w.dev(MAYA, "POST", `/v1/app/tasks/${w.taskId}/design-review/skip`, { requestId: randomUUID() });
     expect(refused.status).toBe(403);
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING" });
