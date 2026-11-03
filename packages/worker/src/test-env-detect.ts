@@ -7,15 +7,20 @@
 //     up or which commands the test drive runs;
 //   - a link is never followed: every part of a path is `lstat`ed, a link or a special file is skipped, and a file is opened with O_NOFOLLOW;
 //   - bounded: at most 5,000 files listed per repository (env-detect's own cap), a file over 256 KiB is not read, depth 8, and a total of 4 MiB per repository;
-//   - the setup agent's own commands are added only through `proposalFromDraft` (it drops a flagged command, a download-and-run command, and one the detectors already propose).
+//   - the setup agent's own commands are added only through `proposalFromDraft` (it drops a flagged command, a download-and-run command, and one the detectors already propose);
+//   - the dependencies the detectors found (test services D1-D7) ride in the draft as CANDIDATES (`TestEnvDraft.dependencies`), never in its environment: the broker chooses a backing and a person approves. A candidate is a
+//     family, a kind, fixed words, numbers, variable NAMES and repository paths, never a value read from a file. One that cannot be listed (the contract refuses it, or it has no usable sighting) is left out with a fixed
+//     sentence, and the candidates as a whole are left out, not the draft, when they would make it too large: a dependency can never cost the draft it travels in.
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { TEST_ENV_DRAFT_MAX_BYTES, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
+import { TEST_ENV_CANDIDATE_MAX, TEST_ENV_DRAFT_MAX_BYTES, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDependencyCandidate, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
 import { ENV_DETECT_MAX_FILE_BYTES, ENV_DETECT_MAX_PATHS, boundedReader, buildEnvironmentDraft, proposalFromDraft } from "./env-detect/index.js";
 import { runDetectorsGuarded } from "./env-detect/guarded.js";
 import type { WorkerLogSink } from "./worker-log.js";
 import { applyRecipe, type RecipeOffer } from "./env-detect/recipes.js";
+import { joinInside, mergeCandidates } from "./env-detect/dependency-candidates.js";
+import type { DependencyCandidate } from "./env-detect/types.js";
 
 export interface DetectRepository { name: string; path: string; defaultBranch: string; checkedOut?: unknown }
 
@@ -102,6 +107,8 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
   const notes: string[] = [];
   const questions: string[] = [];
   const takenIds = new Set<string>();
+  const found: DependencyCandidate[] = [];
+  let notPlaced = 0;
   for (const repository of input.repositories) {
     if (repository.checkedOut !== undefined) { notes.push(`A pull request's files were checked out in ${repository.name}; only the default branch is read, so it was left out.`); continue; }
     const directory = join(input.rootPath, repository.path);
@@ -111,6 +118,9 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     // Company recipes (SH30, switch `sp`): offered only when the broker's switch is on. A recipe adds commands and checks the detectors did not find, each cited `recipe:<id>@<revision>`, from the same default-branch
     // reader as the detectors; it never fails the draft.
     const detection = input.recipes === undefined || input.recipes.length === 0 ? detected : await applyRecipe(detected, input.recipes, reader, repository.path).then((applied) => applied.detection, () => detected);
+    const placed = inWorkspace(detection.dependencies, repository.path);
+    found.push(...placed.candidates);
+    notPlaced += placed.dropped;
     const draft = buildEnvironmentDraft(detection, { repositoryId: repository.name, nightlyBranch: repository.defaultBranch });
     if ("ok" in draft) { notes.push(`The setup of ${repository.name} could not be put together from what was found.`); continue; }
     // The setup agent fills only the gaps: its commands go through the same schema, and a flagged one is dropped.
@@ -143,15 +153,71 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     },
   };
   if (merged.repos.every((repo) => repo.checks.length === 0)) return undefined;
-  const reported = TestEnvDraftSchema.safeParse({
+  const base = {
     environment: merged,
     valueSources: valueSources.slice(0, 400),
     pendingServices: dedupe(pending, (service) => `${service.kind}:${service.target}`).slice(0, 32),
     notes: [...new Set(notes)].map(plainLine).filter((line) => line !== "").slice(0, 60),
     questions: [...new Set(questions)].map(plainLine).filter((line) => line !== "").slice(0, 60),
-  });
+  };
+  // The dependencies are tried on top of today's draft; if they do not fit or do not parse, today's draft stands.
+  const listed = listableDependencies(found, notPlaced);
+  if (listed.dependencies.length > 0) {
+    const withDependencies = TestEnvDraftSchema.safeParse({ ...base, dependencies: listed.dependencies, notes: addNote(base.notes, listed.note) });
+    if (withDependencies.success && draftFitsCap(withDependencies.data)) return withDependencies.data;
+    base.notes = addNote(base.notes, "The dependencies the detectors found were left out to keep the draft small.");
+  } else if (listed.note !== undefined) {
+    base.notes = addNote(base.notes, listed.note);
+  }
+  const reported = TestEnvDraftSchema.safeParse(base);
   // A draft the broker would refuse for its size is not reported (the setup draft's result stays small).
   return reported.success && draftFitsCap(reported.data) ? reported.data : undefined;
+}
+
+/** The note list with one more fixed sentence, within the draft's limit (60). */
+function addNote(notes: readonly string[], note: string | undefined): string[] {
+  return note === undefined || notes.includes(note) ? [...notes] : [...notes, note].slice(0, 60);
+}
+
+/**
+ * The detectors' candidates of one repository with their paths relative to the workspace (a person opens `svc/docker-compose.yml`, not `docker-compose.yml`). A path that would leave the repository is dropped, and a
+ * candidate left with no sighting is dropped and counted; the contract still has the final say (`listableDependencies`). Anything that is not a list gives none.
+ */
+function inWorkspace(candidates: unknown, repositoryPath: string): { candidates: DependencyCandidate[]; dropped: number } {
+  if (!Array.isArray(candidates)) return { candidates: [], dropped: 0 };
+  const base = repositoryPath === "." ? "" : repositoryPath;
+  // Inside the repository first (a `..` may not climb out of it into a sibling), then under its folder of the workspace.
+  const placed = (path: unknown): string | undefined => {
+    const inside = typeof path === "string" ? joinInside("", path) : undefined;
+    return inside === undefined || base === "" ? inside : `${base}/${inside}`;
+  };
+  const kept: DependencyCandidate[] = [];
+  let dropped = 0;
+  for (const item of candidates as DependencyCandidate[]) {
+    const evidence = typeof item === "object" && item !== null && Array.isArray(item.evidence)
+      ? item.evidence.flatMap((entry) => { const path = placed(entry?.path); return path === undefined ? [] : [{ path, line: entry.line }]; })
+      : [];
+    if (evidence.length === 0) { dropped += 1; continue; }
+    const hints = typeof item.hints === "object" && item.hints !== null ? { ...item.hints } : {};
+    if (Array.isArray(hints.initFiles)) hints.initFiles = hints.initFiles.flatMap((path) => { const placedPath = placed(path); return placedPath === undefined ? [] : [placedPath]; });
+    kept.push({ ...item, evidence, hints });
+  }
+  return { candidates: kept, dropped };
+}
+
+/** The merged candidates the contract accepts, at most TEST_ENV_CANDIDATE_MAX, and a fixed sentence when some were left out. */
+function listableDependencies(candidates: readonly DependencyCandidate[], notPlaced: number): { dependencies: TestEnvDependencyCandidate[]; note?: string } {
+  if (candidates.length === 0 && notPlaced === 0) return { dependencies: [] };
+  const merged = mergeCandidates(candidates);
+  const dependencies: TestEnvDependencyCandidate[] = [];
+  let refused = 0;
+  for (const item of merged) {
+    const parsed = TestEnvDependencyCandidateSchema.safeParse(item);
+    if (parsed.success && dependencies.length < TEST_ENV_CANDIDATE_MAX) dependencies.push(parsed.data);
+    else refused += 1;
+  }
+  const lost = refused + notPlaced;
+  return lost === 0 ? { dependencies } : { dependencies, note: `${String(lost)} ${lost === 1 ? "dependency" : "dependencies"} the detectors found could not be listed.` };
 }
 
 /** Whether a draft weighs no more than the broker keeps. */
