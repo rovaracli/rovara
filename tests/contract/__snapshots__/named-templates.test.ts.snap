@@ -3170,13 +3170,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "1: Fix with agent is on (only after the chat service that carries the diagnosis route is deployed); 0: every diagnosis route answers not found (agentx config set liveFix.enabled 1)",
       "Type": "String",
     },
-    "LiveFixRovaraPaidDailyCents": {
-      "Default": 10000,
-      "Description": "The most Rovara pays, in cents, for Fix with agent's light diagnoses across every company of this install in one UTC day (10000 = $100). 0 pauses them for the day. Each company is also limited to its own $15 a day; an alarm fires when the day reaches 80 percent of this ceiling (agentx config set liveFix.rovaraPaidDailyCents 10000)",
-      "MaxValue": 1000000,
-      "MinValue": 0,
-      "Type": "Number",
-    },
     "LiveRedirectEnabled": {
       "AllowedValues": [
         "0",
@@ -3842,10 +3835,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   {
                     "Ref": "LiveFixEnabled",
                   },
-                  ",fg=",
-                  {
-                    "Ref": "LiveFixRovaraPaidDailyCents",
-                  },
                   ",fx=",
                   {
                     "Ref": "AutofixEnabled",
@@ -4057,22 +4046,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "MetricName": "ChainWriteApproverSelectorFailures",
             "MetricNamespace": "AgentX/staging",
             "MetricValue": "1",
-          },
-        ],
-      },
-      "Type": "AWS::Logs::MetricFilter",
-    },
-    "BrokerLogsDiagnosisRovaraPaidGlobalPercentMetricFFA39FBE": {
-      "Properties": {
-        "FilterPattern": "{ $.event = "diagnosis.rovara_paid" }",
-        "LogGroupName": {
-          "Ref": "BrokerLogs003CD6FC",
-        },
-        "MetricTransformations": [
-          {
-            "MetricName": "DiagnosisRovaraPaidGlobalPercent",
-            "MetricNamespace": "AgentX/staging",
-            "MetricValue": "$.globalDayPercent",
           },
         ],
       },
@@ -7632,32 +7605,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           },
         ],
         "Threshold": 1,
-        "TreatMissingData": "notBreaching",
-      },
-      "Type": "AWS::CloudWatch::Alarm",
-    },
-    "DiagnosisRovaraPaidGlobalAlarmCA974976": {
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "OperatorAlertsA2431256",
-          },
-        ],
-        "AlarmDescription": "Rovara-paid Fix with agent diagnoses have reached 80 percent of today's install-wide ceiling (LiveFixRovaraPaidDailyCents). At 100 percent every company is told it is paused for the day. Check the broker logs for diagnosis.rovara_paid lines to see which company is spending; raise the stack parameter only after looking.",
-        "AlarmName": "agentx-staging-DiagnosisRovaraPaidGlobal80",
-        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
-        "EvaluationPeriods": 1,
-        "MetricName": "DiagnosisRovaraPaidGlobalPercent",
-        "Namespace": "AgentX/staging",
-        "Period": 300,
-        "Statistic": "Maximum",
-        "Tags": [
-          {
-            "Key": "agentx:env",
-            "Value": "staging",
-          },
-        ],
-        "Threshold": 80,
         "TreatMissingData": "notBreaching",
       },
       "Type": "AWS::CloudWatch::Alarm",

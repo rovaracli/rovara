@@ -5,15 +5,24 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_PLANNING_LIMIT_USD, DIAGNOSIS_DEEP_PREAMBLE, DIAGNOSIS_DEEP_TITLE, ErrorRefSchema, WorkerInvocationSchema, diagnosisKey, orgGithubInstallationKey, githubInstallationKey,
-  orgProjectCatalogKey, projectMetaKey, projectRevisionKey, setupDraftKey, type DiagnosisRecord, type GithubInstallationRecord,
+  ModelSourceSchema, modelSourcesKey, orgProjectCatalogKey, projectMetaKey, sourceAlias, projectRevisionKey, setupDraftKey, type DiagnosisRecord, type GithubInstallationRecord,
 } from "../../packages/contracts/src/index.js";
 import { SETUP_DRAFT_PREAMBLE } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { admitDiagnosis, settleDiagnosis } from "../../packages/broker/src/diagnosis/store.js";
 import { heldPreparationOptions } from "../../packages/broker/src/aws/developer-tasks/continue.js";
+import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
+
+// 2026-11-03: a diagnosis (the deep tier included) is offered only where the company has a usable AI provider of its own. Which provider is tests/contract/diagnosis-customer-provider.test.ts's; this file plays the
+// answer, so the real broker's wiring (the route, the refusal, nothing started) is what is under test here.
+const provider = vi.hoisted(() => ({ usable: true, real: false }));
+vi.mock("../../packages/broker/src/model-sources/diagnosis-provider.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  chooseDiagnosisRoute: async (...args: unknown[]) => provider.real ? (await importOriginal<{ chooseDiagnosisRoute: (...a: unknown[]) => Promise<unknown> }>()).chooseDiagnosisRoute(...args) : (provider.usable ? { model: { provider: "anthropic", modelId: "claude-sonnet-4-6" }, route: { sourceId: "src_aaaaaaaaaaaaaaaaaaaa", alias: "an-alias", api: "anthropic-messages", catalog: "claude-sonnet-4-6" } } : undefined),
+}));
 
 const NAME = "web";
 const BINDING = {
@@ -23,7 +32,7 @@ const BINDING = {
 const PREPARED = { result: { preparedBase: [{ repositoryId: "web", baseCommitSha: "e".repeat(40) }] } };
 const TOKEN = `ghp_${"a1B2".repeat(9)}`;
 const ENV = process.env["LIVE_FIX_ENABLED"];
-beforeEach(() => { process.env["LIVE_FIX_ENABLED"] = "1"; });
+beforeEach(() => { process.env["LIVE_FIX_ENABLED"] = "1"; provider.usable = true; provider.real = false; });
 afterEach(() => { if (ENV === undefined) delete process.env["LIVE_FIX_ENABLED"]; else process.env["LIVE_FIX_ENABLED"] = ENV; });
 
 function seedInstallation(db: FakeDynamoDb): void {
@@ -38,15 +47,20 @@ function seedInstallation(db: FakeDynamoDb): void {
 /** A cloud install with agents and the project `web`, whose setup check ran on revision 0 (so "outdated" is the error the app shows), and Omar as an org owner (a maintainer of every project). */
 async function setup() {
   const access = fakeModelAccess();
+  const agents: Record<string, unknown> = { modelRouting: {} };
   const h = await createDeveloperTaskBroker({
     register: false,
     brokerExtra: {
-      cloud: true, agents: {}, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
+      cloud: true, agents, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
       githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit: vi.fn(), getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
       checkRepositoryAccess: vi.fn(async () => undefined),
       modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" },
     },
   });
+  // The real source store over the broker's table, for the test that plays the route (the others play the answer).
+  const launch = { kinds: ["anthropic", "openai", "openrouter", "bedrock"] as const };
+  agents["modelRouting"] = { sources: new ModelSourceStore({ documentClient: h.db, tableName: "state", now: Date.now, chatgptSwitch: async () => true }), launch, forbiddenModels: async () => [] };
+  agents["modelSources"] = { launch };
   access.setMemberSpent(TEST_ORG, OMAR.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
   seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
@@ -95,6 +109,57 @@ async function setup() {
 }
 
 describe("the deep tier on the real broker", () => {
+  it("2026-11-03: a deep diagnosis runs on the route chooseDiagnosisRoute picks, never on the owner's ChatGPT plan or on a source listed ahead of the company's connected one: a Public order of personal-chatgpt, then its own Anthropic, then Rovara's metered source runs on the Anthropic source", async () => {
+    provider.real = true;
+    const t = await setup();
+    const SRC = "src_aaaaaaaaaaaaaaaaaaaa";
+    const SONNET = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
+    t.db.set({
+      ...modelSourcesKey(TEST_ORG), entityType: "MODEL_SOURCES", sources: [ModelSourceSchema.parse({ kind: "anthropic", sourceId: SRC, label: "Anthropic", models: [{ catalog: SONNET }] })],
+      order: ["personal-chatgpt", SRC, "rovara"], credentials: [SRC], removing: [], revision: 1,
+    });
+    const light = await t.lightDiagnosis();
+    const reply = await t.dev(OMAR, "POST", `/v1/app/diagnoses/${light}/deep`, { requestId: randomUUID() });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const request = t.db.get(diagnosisKey(TEST_ORG, String(reply.body.diagnosisId), "REQUEST")) as { taskId: string };
+    const run = await t.prepared(request.taskId);
+    const alias = sourceAlias(TEST_ORG, SRC, SONNET);
+    expect((run.own as unknown as { modelRoute: unknown }).modelRoute).toMatchObject({ sourceId: SRC, alias });
+    expect(run.invocation.payload).toMatchObject({ model: SONNET, modelRoute: { alias, api: "anthropic-messages" } });
+    expect(run.invocation.payload).not.toHaveProperty("chatgpt");
+    expect(JSON.stringify(run.invocation.payload)).not.toContain("personal-chatgpt");
+  });
+
+  it("the order personal-chatgpt, rovara, then its own Anthropic follows the project's order onto Rovara's METERED source (never the plan), and is billed to the person like any task (never a Rovara-paid key)", async () => {
+    provider.real = true;
+    const t = await setup();
+    const SRC = "src_aaaaaaaaaaaaaaaaaaaa";
+    t.db.set({
+      ...modelSourcesKey(TEST_ORG), entityType: "MODEL_SOURCES", sources: [ModelSourceSchema.parse({ kind: "anthropic", sourceId: SRC, label: "Anthropic", models: [{ catalog: { provider: "anthropic", modelId: "claude-sonnet-4-6" } }] })],
+      order: ["personal-chatgpt", "rovara", SRC], credentials: [SRC], removing: [], revision: 1,
+    });
+    const light = await t.lightDiagnosis();
+    const reply = await t.dev(OMAR, "POST", `/v1/app/diagnoses/${light}/deep`, { requestId: randomUUID() });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const request = t.db.get(diagnosisKey(TEST_ORG, String(reply.body.diagnosisId), "REQUEST")) as { taskId: string };
+    const task = t.taskOf(request.taskId);
+    expect(task.payer).toMatchObject({ kind: "member", developerId: OMAR.developerId });
+    const run = await t.prepared(request.taskId);
+    expect((run.own as unknown as { modelRoute: { sourceId: string } }).modelRoute.sourceId).toBe("rovara");
+    expect(JSON.stringify(run.invocation.payload)).not.toContain("personal-chatgpt");
+  });
+
+  it("2026-11-03: with no usable AI provider of the company's own the real route refuses the deep tier in the fixed words (403), and no task, workspace or diagnosis is made", async () => {
+    const t = await setup();
+    const light = await t.lightDiagnosis();
+    provider.usable = false;
+    const before = t.db.items.size;
+    const reply = await t.dev(OMAR, "POST", `/v1/app/diagnoses/${light}/deep`, { requestId: randomUUID() });
+    expect(reply.status).toBe(403);
+    expect(JSON.stringify(reply.body)).toContain("Diagnosis uses your company's AI provider. Connect one in Settings to turn it on.");
+    expect(t.db.items.size).toBe(before);
+  });
+
   it("shows the app the outdated setup check as an error it can diagnose, and starts the deep task as the person: a diagnosis purpose, no workflow, no setup draft pointer, the planning limit, the person as payer", async () => {
     const t = await setup();
     const light = await t.lightDiagnosis();
