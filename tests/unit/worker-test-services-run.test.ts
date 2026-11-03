@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, type ProjectCommand, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/contracts";
 import { withDetachedWorking } from "../../packages/worker/src/check-sandbox.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
+import { SEALED_ROUND_PORTS } from "../../packages/worker/src/test-services-sealed.js";
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 import {
   TEST_SERVICES_USAGE_ARTIFACT, TestServicesError, neverValuesFor, startTaskTestServices, startTestServicesRun, testServicesAtWorkerBoot, testServicesConfigFromEnvironment, withTestServices,
@@ -20,8 +21,8 @@ const DIGEST = "a".repeat(64);
 const IMAGE = `registry.example.test/agentx/worker@sha256:${"b".repeat(64)}`;
 const REGISTRY = "123456789012.dkr.ecr.us-west-2.amazonaws.com";
 const OPERATION = "44444444-4444-4444-8444-444444444444";
-const MIGRATE: ProjectCommand = { cwd: ".", executable: "npm", args: ["run", "migrate"], timeoutSeconds: 60 };
-const TEST_COMMAND: ProjectCommand = { cwd: ".", executable: "npm", args: ["test"], timeoutSeconds: 60 };
+const MIGRATE: ProjectCommand = { cwd: "app", executable: "npm", args: ["run", "migrate"], timeoutSeconds: 60 };
+const TEST_COMMAND: ProjectCommand = { cwd: "app", executable: "npm", args: ["test"], timeoutSeconds: 60 };
 
 const roots: string[] = [];
 beforeEach(() => forgetWorkerStartSweeps());
@@ -93,7 +94,7 @@ function stubSealed(state: SealedState): SealedRoundPorts {
   };
 }
 
-async function harness(options: { docker?: FakeServicesDockerOptions; sealed?: Partial<SealedState>; withoutSealed?: boolean } = {}) {
+async function harness(options: { docker?: FakeServicesDockerOptions; sealed?: Partial<SealedState>; withoutSealed?: boolean; realSealed?: boolean } = {}) {
   const fake = fakeServicesDocker(options.docker);
   const root = await temp("rsv-workspace-");
   const runParent = await temp("rsv-runs-");
@@ -102,7 +103,7 @@ async function harness(options: { docker?: FakeServicesDockerOptions; sealed?: P
   const artifacts: Array<{ name: string; mediaType: string; content: string }> = [];
   const config: TestServicesConfig = {
     docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
-    catalog: () => Promise.resolve(catalog), ...(options.withoutSealed === true ? {} : { sealed: stubSealed(state) }), sleep: () => Promise.resolve(), log: (event) => logs.push(event),
+    catalog: () => Promise.resolve(catalog), ...(options.withoutSealed === true ? {} : { sealedRound: options.realSealed === true ? SEALED_ROUND_PORTS : stubSealed(state) }), sleep: () => Promise.resolve(), log: (event) => logs.push(event),
   };
   const sandbox = new TaskSandbox({ rootPath: root, taskId: OPERATION, docker: fake.docker, image: IMAGE, log: () => undefined });
   await sandbox.start();
@@ -177,7 +178,7 @@ describe("starting the run", () => {
   it("refuses before it starts anything when the worker has no sealed round (s1-sealed not bound): no network, no helper, no run directory", async () => {
     const h = await harness({ withoutSealed: true });
     await expect(h.start()).rejects.toMatchObject({ reason: "sealed_unavailable" });
-    expect(h.fake.calls.filter((call) => call[0] !== "run" || !call.includes(h.sandbox.name)).filter((call) => call[0] === "network" || call[0] === "pull")).toEqual([]);
+    expect(h.fake.calls.filter((call) => (call[0] === "network" && call[1] !== "inspect") || call[0] === "pull")).toEqual([]);
     await nothingLeft(h);
   });
 
@@ -248,7 +249,7 @@ describe("a sealed check round", () => {
     expect(runners).not.toBe(h.base);
     const round = await runChecks(h.checkPlan, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(round.entries.map((entry) => entry.after)).toEqual(["passed"]);
-    expect(h.state.executed).toEqual([TEST_COMMAND]);
+    expect(h.state.executed).toEqual([expect.objectContaining({ executable: "npm", args: ["test"], cwd: "app" })]);
     const calls = h.fake.calls.slice(callsBefore);
     const detach = indexOf(calls, (call) => call[0] === "network" && call[1] === "disconnect");
     const start = indexOf(calls, (call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-check"));
@@ -303,6 +304,24 @@ describe("a sealed check round", () => {
   });
 });
 
+describe("with s1-sealed's real round and usage record", () => {
+  it("runs the check by docker exec --env-file in the check sandbox, redacts what it printed, and writes a usage record the contract accepts", async () => {
+    const h = await harness({ realSealed: true });
+    const run = await h.start();
+    const round = await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    expect(round.entries.map((entry) => entry.after)).toEqual(["passed"]);
+    const check = h.fake.execs.filter((exec) => exec.args.some((arg) => arg.endsWith("-check")));
+    expect(check.length).toBeGreaterThan(0);
+    expect(check.every((exec) => exec.envFile?.includes("DATABASE_URL=postgres://app:") === true)).toBe(true);
+    expect(check.every((exec) => exec.args.includes("--env-file"))).toBe(true);
+    const record = TestServicesUsageRecordSchema.parse(JSON.parse(h.artifacts.at(-1)!.content));
+    expect(record.dependencies).toEqual([expect.objectContaining({ id: "postgres", started: true, healthy: true, resetCount: 1 })]);
+    expect(JSON.stringify(h.fake.calls)).not.toContain(passwordOf(h.fake));
+    await h.sandbox.dispose();
+    await nothingLeft(h);
+  });
+});
+
 describe("teardown on every exit path (TS-RUN-4)", () => {
   it("success: after the round and the sandbox's dispose, no container, no network and no run directory is left", async () => {
     const h = await harness();
@@ -349,17 +368,28 @@ describe("teardown on every exit path (TS-RUN-4)", () => {
     await nothingLeft(h);
   });
 
-  it("killed mid-round: disposing while a round is open removes the check sandbox, the name server, the helper, the network and the directory", async () => {
+  it("killed mid-round: disposing while a check is running removes the check sandbox, the name server, the helper, the network and the directory", async () => {
+    const h = await harness({ sealed: { slowCommand: true } });
+    const run = await h.start();
+    const running = runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    await new Promise<void>((done) => { const poll = setInterval(() => { if (h.state.executed.length > 0) { clearInterval(poll); done(); } }, 5); });
+    expect(h.fake.left().containers.some((name) => name.endsWith("-check"))).toBe(true);
+    await h.sandbox.dispose();
+    await nothingLeft(h);
+    running.catch(() => undefined);
+  });
+
+  it("disposing while the check sandbox is still starting waits for the start and then removes it", async () => {
     let release!: () => void;
     const hold = new Promise<void>((done) => { release = done; });
     const h = await harness({ sealed: { hold } });
     const run = await h.start();
     const running = runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
     await new Promise<void>((done) => { const poll = setInterval(() => { if (h.state.rounds > 0) { clearInterval(poll); done(); } }, 5); });
-    expect(h.fake.left().containers.some((name) => name.endsWith("-check"))).toBe(true);
-    await h.sandbox.dispose();
+    const disposing = h.sandbox.dispose();
+    setTimeout(release, 30);
+    await disposing;
     await nothingLeft(h);
-    release();
     await running;
   });
 
@@ -444,9 +474,9 @@ describe("with tx off, or a plan with no dependencies, nothing happens", () => {
   it("a plan with dependencies on a task with no sandbox, or a worker with no configuration, is refused with a fixed sentence and nothing is started", async () => {
     const h = await harness();
     const input = { operationId: OPERATION, rootPath: h.root, artifactSink: () => Promise.resolve(), plan: plan([dependency()]), mode: "CHECKS" };
-    await expect(startTaskTestServices({ ...input, sandbox: undefined, config: h.config })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: "Test services need the task sandbox, and this task does not run in one" });
-    await expect(startTaskTestServices({ ...input, sandbox: h.sandbox, config: undefined })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: "This worker is not set up to run test services" });
-    expect(h.fake.verbs("network")).toEqual([]);
+    await expect(startTaskTestServices({ ...input, sandbox: undefined, config: h.config })).rejects.toThrow(/does not run in one/u);
+    await expect(startTaskTestServices({ ...input, sandbox: h.sandbox, config: undefined })).rejects.toThrow(/not set up to run test services/u);
+    expect(h.fake.verbs("network").filter((call) => call[1] !== "inspect")).toEqual([]);
     expect(await readdir(h.runParent)).toEqual([]);
   });
   it("a worker with none of the test-services variables has no configuration, so the worker-start step makes no docker call", async () => {

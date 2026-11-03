@@ -51,11 +51,13 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
       }
       if (verb === "network" && second === "ls") return answer(0, (options.listing ?? []).join("\n"));
       if (verb === "ps") return answer(0, (options.listing ?? []).join("\n"));
+      if (verb === "inspect" && args.includes("{{.State.Status}}")) return answer(0, "running\n");
       if (verb === "inspect") {
         const found = containers.get(args[args.length - 1]!);
         return found === undefined ? answer(1, "", "No such object") : answer(0, JSON.stringify(Object.fromEntries([...found.networks].map((name) => [name, {}]))));
       }
       if (verb === "container" && second === "inspect") return containers.has(args[args.length - 1]!) ? answer(0, "id") : answer(1, "", "No such container");
+      if (verb === "image" && second === "inspect" && args.includes("{{json .Config.Volumes}}")) return answer(0, "null\n");
       if (verb === "image" && second === "inspect") return answer(options.imagePresent === true ? 0 : 1);
       if (verb === "pull") { pulls.push(args[1]!); return answer(options.pullFails === true ? 1 : 0); }
       if (verb === "run" && args.includes("--detach")) {
@@ -75,7 +77,7 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
         const file = args.indexOf("--env-file");
         const recorded: RecordedExec = { args: [...args] };
         if (file >= 0) {
-          try { recorded.envFile = readFileSync(args[file + 1]!, "utf8"); } catch { recorded.envFile = undefined; }
+          try { recorded.envFile = readFileSync(args[file + 1]!, "utf8"); } catch { /* the file is already gone */ }
         }
         execs.push(recorded);
         return answer();

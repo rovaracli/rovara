@@ -31,7 +31,7 @@ import {
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
 import type { ArtifactSink } from "./artifacts.js";
 import {
-  checkSandboxPlan, detachWorkingSandbox, writeCheckSandboxFiles,
+  checkSandboxPlan, writeCheckSandboxFiles,
   type CheckSandboxNetwork, type CheckSandboxPlan,
 } from "./check-sandbox.js";
 import type { ContainerExec } from "./devcontainer.js";
@@ -48,6 +48,8 @@ import { freshHelpers, createResetHooks, resetForNextCheck, seedRun, type ResetD
 import {
   createDockerServiceRunner, type SandboxAttachment, type ServiceRunner, type ServiceSession,
 } from "./service-runner.js";
+import { SEALED_ROUND_PORTS } from "./test-services-sealed.js";
+import { countResets } from "./service-usage-record.js";
 import { loadPrepullList, prepullCatalogImages, type PrepullPorts } from "./service-prepull.js";
 import { setupWorkspaceKey } from "./setup-network.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
@@ -122,7 +124,7 @@ export interface UsageRecordSetup {
 }
 
 /**
- * s1-sealed's two exports, as this module needs them. Until that lane is merged the worker has none (`config.sealed` is undefined and a plan with dependencies is refused before anything starts); after the merge,
+ * s1-sealed's two exports, as this module needs them. Until that lane is merged the worker has none (`config.sealedRound` is undefined and a plan with dependencies is refused before anything starts); after the merge,
  * `test-services-sealed.ts` binds them: `withSealedCheckRound` (check-round-runners.ts) and `buildServiceUsageRecord` (service-usage-record.ts). Tests stub them.
  */
 export interface SealedRoundPorts {
@@ -144,7 +146,7 @@ export interface TestServicesConfig {
   runDirectoryParent: string;
   /** The worker's verified catalog (`loadSignedCatalog`). */
   catalog(): Promise<ServiceCatalog>;
-  sealed?: SealedRoundPorts;
+  sealedRound?: SealedRoundPorts;
   runner?: ServiceRunner;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -185,7 +187,7 @@ export async function loadCatalogFromDirectory(directory: string): Promise<Servi
  * ports come from `test-services-sealed.ts`. The probe image is the sandbox image (boot.sh sets it to the worker's own image).
  */
 export function testServicesConfigFromEnvironment(
-  environment: NodeJS.ProcessEnv = process.env, docker: DockerCli = createDockerCli(), sealed?: SealedRoundPorts,
+  environment: NodeJS.ProcessEnv = process.env, docker: DockerCli = createDockerCli(), roundPorts: SealedRoundPorts | undefined = SEALED_ROUND_PORTS,
 ): TestServicesConfig | undefined {
   const registry = environment[TEST_SERVICES_REGISTRY_ENVIRONMENT];
   const catalogEnv = environment[TEST_SERVICES_ENV_ENVIRONMENT];
@@ -197,7 +199,7 @@ export function testServicesConfigFromEnvironment(
   const mem = Number(environment[TEST_SERVICES_MAX_MEM_ENVIRONMENT] ?? DEFAULT_MAX_MEM_MIB);
   return {
     docker, registry, catalogEnv, edition, probeImage, runDirectoryParent, maxMemMiB: Number.isSafeInteger(mem) && mem > 0 ? mem : DEFAULT_MAX_MEM_MIB,
-    catalog: () => loadCatalogFromDirectory(catalogDirectory), ...(sealed === undefined ? {} : { sealed }),
+    catalog: () => loadCatalogFromDirectory(catalogDirectory), ...(roundPorts === undefined ? {} : { sealedRound: roundPorts }),
   };
 }
 
@@ -286,8 +288,8 @@ export function neverValuesFor(resolved: ReadonlyArray<Pick<Resolved, "request" 
 // ---- the working sandbox's place on the network
 
 /**
- * The working sandbox joins the run's network at .3 and leaves it at the end. `enterCheckRound` takes it off the network and proves it (check-sandbox.ts `detachWorkingSandbox`), which the sealed round's own
- * `withDetachedWorking` does again (idempotent).
+ * The working sandbox joins the run's network at .3 and leaves it at the end. the sealed round takes it off the network again for every official check round
+ * (`withDetachedWorking`, with proof), so `enterCheckRound` has nothing to do.
  */
 function workingSandboxAttachment(docker: DockerCli, sandboxName: string): SandboxAttachment {
   let joined: { network: string; ip: string } | undefined;
@@ -301,10 +303,8 @@ function workingSandboxAttachment(docker: DockerCli, sandboxName: string): Sandb
       if (joined === undefined) return;
       await docker.run(["network", "disconnect", "--force", joined.network, sandboxName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
     },
-    async enterCheckRound() {
-      if (joined === undefined) return;
-      await detachWorkingSandbox(docker, { network: { name: joined.network, ip: "" }, workingSandboxName: sandboxName, workingSandboxIp: joined.ip, sandboxName: `${joined.network}-check` });
-    },
+    // The sealed round detaches the working sandbox itself (withDetachedWorking, with proof) before `freshServices` runs, so there is nothing left to do here.
+    enterCheckRound() { return Promise.resolve(); },
   };
 }
 
@@ -377,7 +377,7 @@ function failureOf(error: unknown): TestServicesError {
  * removed before this throws a `TestServicesError`. On success the sandbox's `dispose()` tears the run down.
  */
 export async function startTestServicesRun(config: TestServicesConfig, input: StartTestServicesInput): Promise<TestServicesRun> {
-  const ports = config.sealed;
+  const ports = config.sealedRound;
   if (ports === undefined) throw new TestServicesError("sealed_unavailable");
   const log = config.log ?? defaultLog;
   const now = config.now ?? Date.now;
@@ -392,7 +392,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   const requests = resolved.map((item) => item.request);
   const failures = new Map<string, TestServicesStartFailure>();
   const ids = resolved.map((item) => item.plan.id);
-  const resets = new Map<string, number>();
+  let resets: ReadonlyMap<string, number> = new Map<string, number>();
   let session: ServiceSession | undefined;
   let counted: ServiceSession | undefined;
   let sealedPlan: CheckSandboxPlan | undefined;
@@ -401,7 +401,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   let startMs = 0;
   let active = true;
   let torndown: Promise<void> | undefined;
-  let round: { runners: CheckRunners; close(): Promise<void> } | undefined;
+  let round: { runners: CheckRunners | undefined; close(): Promise<void> } | undefined;
   let dnsStarted = false;
 
   const closeRound = async (): Promise<void> => {
@@ -455,15 +455,10 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     }
     startMs = Math.max(0, now() - startedAt);
     const live = session;
-    // `reset` is counted for the usage record; everything that resets goes through this session.
-    counted = {
-      ...live,
-      async reset(id, signal) {
-        const outcome = await live.reset(id, signal);
-        resets.set(id, (resets.get(id) ?? 0) + 1);
-        return outcome;
-      },
-    };
+    // `reset` is counted for the usage record; everything that resets goes through the counted session.
+    const countedSession = countResets(live);
+    counted = countedSession.session;
+    resets = countedSession.resets;
 
     // The sealed name server and the check sandbox's files (the sandbox itself starts only inside a round).
     const view = live.network;
@@ -519,13 +514,22 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     });
     // A rejection before the round was handed over is the start's failure; after it, `close` reports it.
     running.then(() => undefined, (error: unknown) => failStart(error));
-    const runners = await ready;
-    round = { runners, close: async () => { release(); await running; } };
-    return runners;
+    // Registered BEFORE the start finishes, so a teardown that arrives while the check sandbox is still starting waits for it and removes it.
+    const open: { runners: CheckRunners | undefined; close(): Promise<void> } = { runners: undefined, close: async () => { release(); await running; } };
+    round = open;
+    try {
+      open.runners = await ready;
+    } catch (error) {
+      if (round === open) round = undefined;
+      await running.catch(() => undefined);
+      throw error;
+    }
+    return open.runners;
   };
   const currentRound = (): CheckRunners => {
-    if (round === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed check round is not open, so no check was run");
-    return round.runners;
+    const runners = round?.runners;
+    if (runners === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed check round is not open, so no check was run");
+    return runners;
   };
   const roundSeeds = (runners: CheckRunners): SeedPorts => seedPorts((command, signal) => runners.runProjectCommand(command, signal));
   const resetDependencies = resolved.map((item) => item.resetDependency);
@@ -548,12 +552,12 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     ids,
     checkRunners() {
       return {
-        runProjectCommand: (command, signal) => currentRound().runProjectCommand(command, signal),
-        runAgentCommand: (replay, timeoutMs, signal) => currentRound().runAgentCommand(replay, timeoutMs, signal),
+        runProjectCommand: async (command, signal) => currentRound().runProjectCommand(command, signal),
+        runAgentCommand: async (replay, timeoutMs, signal) => currentRound().runAgentCommand(replay, timeoutMs, signal),
         async freshServices(signal) {
           const sealed = await openRound();
           try {
-            await freshHelpers(counted!, resetDependencies, roundSeeds(sealed), signal);
+            await freshHelpers(counted, resetDependencies, roundSeeds(sealed), signal);
           } catch (error) {
             for (const id of ids) failures.set(id, "reset_failed");
             throw error;
@@ -561,7 +565,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
         },
         async resetBetweenChecks(signal) {
           try {
-            await resetForNextCheck(counted!, resetDependencies, roundSeeds(currentRound()), signal);
+            await resetForNextCheck(counted, resetDependencies, roundSeeds(currentRound()), signal);
           } catch (error) {
             for (const id of ids) failures.set(id, "reset_failed");
             throw error;
