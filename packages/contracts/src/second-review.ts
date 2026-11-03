@@ -389,14 +389,15 @@ export function narrowedSecondReviewModels(input: { company?: readonly SecondRev
 }
 
 /**
- * Whether a second reviewer's report says its model could not serve this account, so the next try leaves that model out: a refused key, a model not found or not in the catalog, a 402, `MODEL_NOT_ALLOWED`, a
- * model the install does not serve. NOT `request-rejected` and NOT `unknown`: a request the provider refused includes a prompt over the model's context length (a long diff on a model with a small window), which
- * says nothing about whether the account can use the model.
+ * Whether a second reviewer's report says its model could not serve this account, so the next try leaves that model out: a refused key (this includes a model the account has not enabled, `key-rejected ModelNotEnabled`),
+ * a model not found or not in the catalog, a failure the worker could not classify (`unknown`: the model proxy's 403 for a model the account cannot use read as this before 2026-11-03, and moving to the next model costs
+ * nothing), a 402, `MODEL_NOT_ALLOWED`, a model the install does not serve. NOT `request-rejected`: a request the provider refused includes a prompt over the model's context length (a long diff on a model with a small
+ * window), which says nothing about whether the account can use the model.
  */
 export function secondReviewModelUnusable(report: { modelFailure?: string | undefined }): boolean {
   const failure = report.modelFailure;
   if (failure === undefined) return false;
-  return /\bthe model call failed: (?:key-rejected|model-not-found|not-in-catalog)\b/u.test(failure)
+  return /\bthe model call failed: (?:key-rejected|model-not-found|not-in-catalog|unknown)\b/u.test(failure)
     || /\bthe model call failed: [a-z-]+(?: [A-Za-z0-9_]+)? HTTP 402\b/u.test(failure)
     || /^MODEL_NOT_ALLOWED:/u.test(failure)
     || /\bis not available on this install\b/u.test(failure);

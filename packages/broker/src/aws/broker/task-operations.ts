@@ -36,7 +36,7 @@ import { hashJson, isConditional, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChec
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../../e2e/feature-plan-planning-context.js";
 import { offersApplicationE2EPlan } from "../../e2e/feature-plan-executable-kinds.js";
 import { evaluateApplicationPlanApproval, type ApplicationAccountsInput, type ApplicationRefusalScope } from "../../e2e/application-plan-approval.js";
-import { canonicalModelName, metaRepositoryOf } from "@agentx/contracts";
+import { DIAGNOSIS_NO_PROVIDER_MESSAGE, canonicalModelName, forbiddenModelMatcher, metaRepositoryOf } from "@agentx/contracts";
 import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
 import { checkE2EAgentRouteCurrent } from "../../e2e/model-route-registry.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
@@ -55,6 +55,7 @@ import { reviewerModelFor } from "../../rovara-code/reviewer-model.js";
 import { applyAgentStep, crossCompanyTargets, defaultWorkerModel, givesAgentTools, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../../agents/dispatch.js";
 import { servableModels } from "../../model-sources/routing.js";
 import { readGuardrails } from "../../agents/guardrails.js";
+import { chooseDiagnosisRoute, customerProviderRouting } from "../../model-sources/diagnosis-provider.js";
 import { json } from "../json-reply.js";
 import type { TransactItems } from "../developer-task-actions.js";
 import { planQualityContextOf } from "../../developer/plan-self-check.js";
@@ -371,13 +372,23 @@ export async function taskOperationParts(
   // Task 26: the order of the company's AI sources decides where the model comes from. The plan is kept only if no source listed before it serves its model; the
   // key the worker is later given is scoped to the route chosen here, and the route is recorded on the operation so the key can be checked again when asked for.
   const routing = routingOf(dependencies,true);
-  const routed = routing === undefined || input.workflowMode === "CHECKS" ? undefined : await routeStep(routing, {
+  // 2026-11-03: a deep diagnosis runs on the route `chooseDiagnosisRoute` picks, the very route the light tier and the "is it offered" check use, and on no other: never a person's ChatGPT plan, never a source the
+  // project's order lists ahead of the company's connected one without being billed to the company. The task is billed like any task (its payer is the person or the project, never Rovara). No such route: refused in the fixed words.
+  let diagnosisPin: ModelSelection | undefined;
+  if (task?.purpose === "diagnosis" && input.workflowMode !== "CHECKS") {
+    const forbidden = forbiddenModelMatcher((await readGuardrails(dependencies, orgId)).forbiddenModels);
+    const chosen = routing === undefined ? undefined : await chooseDiagnosisRoute(routing, orgId, workspace.projectName, forbidden, [applied?.model ?? resolvedModel.model]);
+    if (chosen === undefined) throw agentXError("MODEL_NOT_ALLOWED", DIAGNOSIS_NO_PROVIDER_MESSAGE);
+    diagnosisPin = { provider: chosen.model.provider, modelId: chosen.model.modelId };
+    chatgpt = undefined;
+  }
+  const routed = routing === undefined || input.workflowMode === "CHECKS" ? undefined : await routeStep(diagnosisPin === undefined ? routing : customerProviderRouting(routing) ?? routing, {
     orgId, project: workspace.projectName, agent: task?.agent?.name ?? ROVARA_CODE_NAME, step: applied?.stepName ?? stepNameOf(undefined, input.workflowMode),
-    model: applied?.model ?? resolvedModel.model,
-    expectedSourceId: applied?.modelDecision?.sourceId,
+    model: diagnosisPin ?? applied?.model ?? resolvedModel.model,
+    expectedSourceId: diagnosisPin === undefined ? applied?.modelDecision?.sourceId : undefined,
     ...(chatgpt === undefined ? {} : { plan: { developerId: chatgpt.developerId, model: chatgpt.model } }),
   });
-  const payloadModel: ModelSelection | undefined = applied?.model ?? resolvedModel.model ?? (routed?.route == null ? undefined : routed.requested);
+  const payloadModel: ModelSelection | undefined = diagnosisPin ?? applied?.model ?? resolvedModel.model ?? (routed?.route == null ? undefined : routed.requested);
   const leftThePlan = chatgpt !== undefined && routed?.keepChatgpt === false;
   if (leftThePlan) chatgpt = undefined;
   // SR-1 (switch `cr`, off: nothing here changes): a REVIEW that carries a second reviewer from another AI company, inside this same operation, or the fixed reason it could not.

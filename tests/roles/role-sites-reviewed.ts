@@ -12,6 +12,7 @@ export const REVIEWED_ROLE_SITES: readonly ReviewedRoleSite[] = [
   { file: "packages/broker/src/aws/broker/sweeps-and-readiness.ts", needle: '?.role ?? "member"', why: DEFAULTS },
   { file: "packages/broker/src/aws/broker/workflow-e2e-verification.ts", needle: '?.role ?? "member"', why: DEFAULTS },
   { file: "packages/broker/src/chains/routes.ts", needle: '?? "member"', why: DEFAULTS },
+  { file: "packages/broker/src/developer/system-owner.ts", needle: 'orgId, orgRole: "member" }', why: "The in-memory caller of a system-owned automatic run: it is no person and no session, so it is never an Auditor; its project access comes from `systemProjectAccess`, never from this role, and the plain member role is the least it can carry." },
   // ---- the Rovara roles that are not the Auditor's to hold
   { file: "packages/broker/src/aws/developer-routes/organization.ts", needle: 'caller.orgRole === "admin" && target.role !== "member"', why: "An admin may remove members only. An Auditor target is not a member, so an admin cannot remove one; only an owner can (stricter, not looser)." },
   { file: "packages/broker/src/org/member-removal/routes.ts", needle: 'caller.orgRole === "admin" && role !== "member"', why: "Member removal's rule for who may remove whom: an admin may remove members only, so an admin cannot remove an Auditor target, and an Auditor caller never gets here (requireMayRemove admits an owner or admin only, and the dispatcher's allow-list refuses the removal routes to an Auditor before them)." },

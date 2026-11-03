@@ -1,6 +1,7 @@
 import { AgentXError } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";
+import { ModelAccessRequestSchema } from "../../packages/broker/src/model-proxy/protocol.js";
 import { routeFetch } from "../support/developer-fakes.js";
 
 const BASE = "http://proxy.internal:4000";
@@ -58,64 +59,26 @@ describe("ModelProxyClient", () => {
     expect(seen[1]!.body).toEqual({ team_id: ORG, max_budget: 25, allowed_routes: ["llm_api_routes"], duration: "3600s", metadata: { orgId: ORG, purpose: "task", refId: "op-1" } });
   });
 
-  describe("DG-1 S1: a Rovara-paid key answers to Rovara's support team, never to the customer's org team", () => {
-    const SUPPORT = "rovara-support";
-    const input = { orgId: ORG, purpose: "turn" as const, refId: "turn-1", maxBudgetUsd: 0.25, ttlSeconds: 600, models: [CATALOG[0]!], rovaraPaid: true as const };
-    /** A fake proxy that holds the support team (or not) and a key it stores as it was asked. */
-    const supportProxy = (team: "missing" | "scoped" | "stale") => {
-      let models: string[] | undefined = team === "missing" ? undefined : team === "scoped" ? [...CATALOG] : [CATALOG[0]!];
+  describe("2026-11-03: Rovara pays for no key", () => {
+    it("a scoped diagnosis-style key answers to the org's own team, with its budget: the support team is never read or written, and the mint cannot ask for another", async () => {
       let stored: Record<string, unknown> | undefined;
-      return proxy(({ path, body, search }) => {
-        if (path === "/team/info") return search.includes(SUPPORT) && models !== undefined ? json({ team_info: { team_id: SUPPORT, models } }) : json({ error: { message: "Team doesn't exist" } }, 404);
-        if (path === "/team/new") { models = body!.models as string[]; return json({ team_id: SUPPORT }); }
-        if (path === "/team/update") { models = body!.models as string[]; return json({ team_id: SUPPORT }); }
-        if (path === "/key/generate") { stored = body; return json({ key: "sk-support-1" }); }
+      const { client, seen } = proxy(({ path, body }) => {
+        if (path === "/team/info") return json({ team_info: { models: CATALOG } });
+        if (path === "/key/generate") { stored = body; return json({ key: "sk-virtual-3" }); }
         if (path === "/key/info") return json({ info: { models: stored!.models, team_id: stored!.team_id, aliases: {}, allowed_routes: stored!.allowed_routes } });
         return undefined;
       });
-    };
-
-    it("mints under the support team with no user, the org kept only as a label for Rovara's own accounting; the org's team is never read or written", async () => {
-      const { client, seen } = supportProxy("scoped");
-      const minted = await client.mintKey(input);
-      expect(minted).toEqual({ key: "sk-support-1", expiresAt: NOW + 600_000 });
+      await client.mintKey({ orgId: ORG, purpose: "turn", refId: "t", maxBudgetUsd: 0.25, ttlSeconds: 60, models: [CATALOG[0]!] });
       const generate = seen.find((entry) => entry.path === "/key/generate")!;
-      expect(generate.body).toMatchObject({ team_id: SUPPORT, max_budget: 0.25, models: [CATALOG[0]], metadata: { orgId: ORG, purpose: "turn", refId: "turn-1", rovaraPaid: true } });
-      expect(generate.body).not.toHaveProperty("user_id");
-      for (const entry of seen) expect(`${entry.path}${entry.search}${JSON.stringify(entry.body ?? {})}`, entry.path).not.toContain(`team_id=${ORG}`);
-      expect(seen.some((entry) => entry.body?.["team_id"] === ORG)).toBe(false);
+      expect(generate.body).toMatchObject({ team_id: ORG, max_budget: 0.25, models: [CATALOG[0]], metadata: { orgId: ORG, purpose: "turn", refId: "t" } });
+      expect(JSON.stringify(generate.body)).not.toContain("rovaraPaid");
+      expect(seen.some((entry) => `${entry.path}${entry.search}${JSON.stringify(entry.body ?? {})}`.includes("rovara-support"))).toBe(false);
     });
 
-    it("creates the support team limited to the catalog when it is not there, and brings a stale one back to exactly the catalog; never an empty (every model) team", async () => {
-      for (const team of ["missing", "stale"] as const) {
-        const { client, seen } = supportProxy(team);
-        await client.mintKey(input);
-        const written = seen.find((entry) => entry.path === "/team/new" || entry.path === "/team/update")!;
-        expect(written.body, team).toMatchObject({ team_id: SUPPORT, models: CATALOG });
-        expect((written.body!.models as string[]).length).toBeGreaterThan(0);
-      }
-    });
-
-    it("refuses a model that is not in the Rovara AI catalog (the customer's own alias is the customer's to pay for), and a key that was stored with another team", async () => {
-      const { client, seen } = supportProxy("scoped");
-      expect((await failure(client.mintKey({ ...input, models: [`${ORG}.gpt`] }))).code).toBe("CONFIG_INVALID");
-      expect(seen.some((entry) => entry.path === "/key/generate")).toBe(false);
-      // A proxy that stores the key under another team: the key is revoked and not returned.
-      const drifting = proxy(({ path, body }) => {
-        if (path === "/team/info") return json({ team_info: { models: CATALOG } });
-        if (path === "/key/generate") return json({ key: "sk-support-2" });
-        if (path === "/key/info") return json({ info: { models: body?.models ?? [CATALOG[0]], team_id: ORG, aliases: {}, allowed_routes: ["/v1/chat/completions"] } });
-        if (path === "/key/delete") return json({});
-        return undefined;
-      });
-      expect((await failure(drifting.client.mintKey(input))).code).toBe("MODEL_PROXY_UNAVAILABLE");
-      expect(drifting.seen.some((entry) => entry.path === "/key/delete")).toBe(true);
-    });
-
-    it("an ordinary key is unchanged: still the org's team", async () => {
-      const { client, seen } = proxy(({ path }) => (path === "/team/info" ? json({ team_info: { models: CATALOG } }) : path === "/key/generate" ? json({ key: "sk-virtual-3" }) : undefined));
-      await client.mintKey({ orgId: ORG, purpose: "turn", refId: "t", maxBudgetUsd: 1, ttlSeconds: 60 });
-      expect(seen.find((entry) => entry.path === "/key/generate")!.body).toMatchObject({ team_id: ORG });
+    it("the model-access protocol has no way to ask for a Rovara-paid key: the field is refused", () => {
+      const args = { orgId: ORG, purpose: "turn", refId: "t", maxBudgetUsd: 0.25, ttlSeconds: 60, models: [CATALOG[0]] };
+      expect(ModelAccessRequestSchema.safeParse({ op: "mintKey", args }).success).toBe(true);
+      expect(ModelAccessRequestSchema.safeParse({ op: "mintKey", args: { ...args, rovaraPaid: true } }).success).toBe(false);
     });
   });
 

@@ -4,9 +4,9 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXError,
   agentXError,
+  forbiddenModelMatcher,
   isSystemOwnerId,
   MEMBER_GRANT_SK_PREFIX,
-  diagnosisRovaraPaidGlobalCents,
   memberGrantsPk,
   orgMemberKey,
   type AgentId,
@@ -16,6 +16,7 @@ import {
   workflowAnswer,
   type MergeTrackingItem,
 } from "@agentx/contracts";
+import { chooseDiagnosisRoute } from "../../model-sources/diagnosis-provider.js";
 import { latestRevision } from "../../org/project-settings.js";
 import { cutText } from "../developer-tasks/common.js";
 import { readProjectMeta, requireNewWorkAllowed } from "../../developer/project-roles.js";
@@ -137,8 +138,13 @@ export function diagnosisRouteDepsOf(deps: DeveloperRouteDependencies, caller: D
   const table = { documentClient: deps.documentClient, tableName: deps.tableName };
   return {
     ...table, now: deps.now, enabled: true, edition: deps.editionPolicy?.edition ?? "public", queue: deps.developer.slackRequestQueue,
-    // DG-3: the install-wide daily ceiling on what Rovara pays for light diagnoses (packed setting `fg`; unreadable or absent: the default).
-    rovaraPaidGlobalCents: diagnosisRovaraPaidGlobalCents(process.env["LIVE_FIX_ROVARA_PAID_DAILY_CENTS"]),
+    // 2026-11-03: a diagnosis runs on the company's own AI provider (Rovara pays for none); with no usable one it is not offered. Absent routing (no model proxy, no agents): not offered.
+    providerUsable: async (orgId, project) => {
+      const routing = deps.agents?.modelRouting;
+      if (routing === undefined) return false;
+      const forbidden = forbiddenModelMatcher(routing.forbiddenModels === undefined ? [] : await routing.forbiddenModels(orgId));
+      return await chooseDiagnosisRoute(routing, orgId, project, forbidden) !== undefined;
+    },
     authority: { ...table, access },
     audit: { ...table, ...(deps.audit === undefined ? {} : { audit: deps.audit }) },
     log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),

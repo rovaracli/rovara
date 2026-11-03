@@ -4,8 +4,8 @@
 // payloads (`modelCall`, `heartbeat`). This file turns each into one fixed sentence. A sentence is built only from allow-listed tokens and numbers: the failure class and signal
 // (the same allow-list a model check uses), the provider's request id, an attempt count, a delay and a duration. It never reads the provider's message, the model's thinking, the
 // final error text, any prompt or any other free text, so none of them can reach a person through this view. Anything it cannot read as one of these shapes is not shown.
-import { E2E_MODEL_FAILURE_CLASSES, E2E_MODEL_FAILURE_SIGNAL_PATTERN, MODEL_PROVIDERS, type DeveloperTaskEvent, type E2EModelFailureClass, type ModelProvider } from "@agentx/contracts";
-import { classifyProviderFailure } from "@agentx/model-runtime/provider-failure";
+import { E2E_MODEL_FAILURE_CLASSES, editionFromEnvironment, modelNotEnabledSentence, type Edition, E2E_MODEL_FAILURE_SIGNAL_PATTERN, MODEL_PROVIDERS, type DeveloperTaskEvent, type E2EModelFailureClass, type ModelProvider } from "@agentx/contracts";
+import { MODEL_NOT_ENABLED_SIGNAL, classifyProviderFailure } from "@agentx/model-runtime/provider-failure";
 
 type View = Pick<DeveloperTaskEvent, "kind" | "text">;
 
@@ -55,9 +55,15 @@ const delay = (ms: number): string => `${Math.round(ms / 100) / 10} s`;
 const attemptOf = (attempt: number | undefined, max: number | undefined): string | undefined =>
   attempt === undefined ? undefined : max === undefined ? `attempt ${attempt}` : `attempt ${attempt} of ${max}`;
 
-interface Failure { cls: E2EModelFailureClass; /** The provider said the account is out of credits (HTTP 402), whatever class it was filed under. */ outOfCredits?: boolean | undefined; /** A ChatGPT plan connection was refused: there is no key to check. */ chatgpt?: boolean | undefined; signal?: string | undefined; requestId?: string | undefined; attempt?: string | undefined; durationMs?: number | undefined }
+/** A model name as the worker's note carries it (`claude-opus-5-5`): one short token, nothing else is shown. */
+const MODEL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+const modelName = (value: unknown): string | undefined => (typeof value === "string" && MODEL_NAME_PATTERN.test(value) ? value : undefined);
 
-function failureText(failure: Failure): string {
+interface Failure { cls: E2EModelFailureClass; /** Set with the `ModelNotEnabled` signal: the model to enable. */ model?: string | undefined; /** The provider said the account is out of credits (HTTP 402), whatever class it was filed under. */ outOfCredits?: boolean | undefined; /** A ChatGPT plan connection was refused: there is no key to check. */ chatgpt?: boolean | undefined; signal?: string | undefined; requestId?: string | undefined; attempt?: string | undefined; durationMs?: number | undefined }
+
+function failureText(failure: Failure, edition: Edition | undefined): string {
+  // Owner decision 2026-11-03: a model the account has not enabled is said in its own words, with what to do (the call itself is not retried: Rovara uses another model).
+  if (failure.cls === "key-rejected" && failure.signal === MODEL_NOT_ENABLED_SIGNAL) return modelNotEnabledSentence(failure.model, edition);
   const text = failure.outOfCredits === true ? OUT_OF_CREDITS : failure.chatgpt === true && failure.cls === "key-rejected" ? CHATGPT_AGAIN : CLASS_TEXT[failure.cls];
   const { phrase, next } = text;
   const parts = [`${phrase}${failure.signal === undefined || failure.outOfCredits === true ? "" : ` (${failure.signal})`}`];
@@ -76,7 +82,7 @@ function classify(provider: ModelProvider | undefined, signal: string | undefine
 }
 
 /** Pi's assistant `message_end` that ended in an error or was aborted. Its diagnostics carry the provider's error type and request id; nothing else of it is read. */
-function messageEnd(payload: Record<string, unknown>): View | undefined {
+function messageEnd(payload: Record<string, unknown>, edition: Edition | undefined): View | undefined {
   const message = record(payload.message);
   if (message === undefined || message.role !== "assistant") return undefined;
   if (message.stopReason === "aborted") return { kind: "progress", text: "The model call was stopped." };
@@ -95,7 +101,7 @@ function messageEnd(payload: Record<string, unknown>): View | undefined {
   }
   const provider = providerOf(message.provider) ?? (message.provider === undefined && bedrock ? "amazon-bedrock" : undefined);
   const { cls, signal: known } = classify(provider, signal);
-  return { kind: "error", text: failureText({ cls, signal: known, requestId: id, durationMs: millis(message.durationMs, MAX_DURATION_MS) }) };
+  return { kind: "error", text: failureText({ cls, signal: known, requestId: id, durationMs: millis(message.durationMs, MAX_DURATION_MS) }, edition) };
 }
 
 /** Pi's `auto_retry_start`: attempt, maxAttempts and delayMs are numbers; its errorMessage is not read. */
@@ -117,7 +123,7 @@ function retryFinished(success: boolean, attempt: number | undefined): View {
 }
 
 /** The new worker's sanitized `modelCall` payload. Every field is re-checked here, so a worker (or an old row) cannot put text through it. */
-function modelCall(value: unknown): View | undefined {
+function modelCall(value: unknown, edition: Edition | undefined): View | undefined {
   const call = record(value);
   if (call === undefined) return undefined;
   const attempt = count(call.attempt);
@@ -130,7 +136,7 @@ function modelCall(value: unknown): View | undefined {
       const derived = classify(providerOf(call.provider), signalOf(call.signal));
       const cls = classOf(call.class) ?? derived.cls;
       const known = derived.cls === cls ? derived.signal : undefined;
-      return { kind: "error", text: failureText({ cls, signal: known, requestId: requestId(call.requestId), attempt: which, durationMs, outOfCredits: call.status === 402, chatgpt: call.chatgpt === true }) };
+      return { kind: "error", text: failureText({ cls, signal: known, model: modelName(call.model), requestId: requestId(call.requestId), attempt: which, durationMs, outOfCredits: call.status === 402, chatgpt: call.chatgpt === true }, edition) };
     }
     case "retrying":
       return retryStart(attempt, max, millis(call.delayMs, MAX_DELAY_MS));
@@ -168,13 +174,13 @@ export const isHeartbeat = (payload: unknown): boolean => record(payload) !== un
  * The fixed-text view of a `progress` event payload when it is a model failure, a retry or a wait; undefined when it is none of these, so the caller reads it as it always did.
  * A payload that has the sanitized `modelCall` or `heartbeat` key is read only through it, and null when it cannot be read: the free text of any sibling field is never used.
  */
-export function modelCallView(payload: unknown): View | null | undefined {
+export function modelCallView(payload: unknown, edition: Edition | undefined = editionFromEnvironment()): View | null | undefined {
   const event = record(payload);
   if (event === undefined) return undefined;
-  if ("modelCall" in event) return modelCall(event.modelCall) ?? null;
+  if ("modelCall" in event) return modelCall(event.modelCall, edition) ?? null;
   if ("heartbeat" in event) return heartbeat(event.heartbeat) ?? null;
   switch (event.type) {
-    case "message_end": return messageEnd(event);
+    case "message_end": return messageEnd(event, edition);
     case "auto_retry_start": return retryStart(count(event.attempt), count(event.maxAttempts), millis(event.delayMs, MAX_DELAY_MS));
     case "auto_retry_end": return retryEnd(event);
     default: return undefined;

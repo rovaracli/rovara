@@ -104,6 +104,22 @@ const cognitoEmailServiceLinkedRole = (partition: string, account: string): Poli
 });
 
 /**
+ * ECR's repository creation template service-linked role (0.5.1 staging upgrade failure, 2026-11-03). An AWS::ECR::RepositoryCreationTemplate makes ECR
+ * create AWSServiceRoleForECRTemplate on first use in an account, even when the template names a CustomRoleArn, and the caller must hold
+ * iam:CreateServiceLinkedRole (https://docs.aws.amazon.com/AmazonECR/latest/userguide/slr-rct.html: the role trusts ecr.amazonaws.com). Named exactly, apart from the
+ * wider SERVICE_LINKED_ROLE_SERVICES statement, like the Cognito one. Only the deploy (service) role needs it: no bounded role ever creates a repository creation template,
+ * so the default boundary does not carry it (the boundary is at its size limit).
+ */
+const ECR_TEMPLATE_SERVICE = "ecr.amazonaws.com";
+const ecrTemplateServiceLinkedRole = (partition: string, account: string): PolicyStatementJson => ({
+  Sid: "EcrTemplateServiceLinkedRole",
+  Effect: "Allow",
+  Action: ["iam:CreateServiceLinkedRole"],
+  Resource: `arn:${partition}:iam::${account}:role/aws-service-role/${ECR_TEMPLATE_SERVICE}/AWSServiceRoleForECRTemplate`,
+  Condition: { StringEquals: { "iam:AWSServiceName": ECR_TEMPLATE_SERVICE } },
+});
+
+/**
  * What `agentx signin cloud --email-from` reads from Amazon SES (SESv2 GetEmailIdentity and GetAccount): the sending domain is verified,
  * and whether the account is out of the sandbox. Reads only; no send. GetAccount supports no resource, so "*" with the region condition.
  */
@@ -483,6 +499,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
       Condition: { StringLike: { "iam:AWSServiceName": [...SERVICE_LINKED_ROLE_SERVICES] } },
     },
     cognitoEmailServiceLinkedRole(scope.partition, scope.account),
+    ecrTemplateServiceLinkedRole(scope.partition, scope.account),
     // FR-047: the control-plane stack's monthly budget, and only that one, never budgets:* on *.
     { Sid: "Budget", Effect: "Allow", Action: [...BUDGET_ACTIONS], Resource: `arn:${scope.partition}:budgets::${scope.account}:budget/agentx-${scope.env}-monthly` },
   ];

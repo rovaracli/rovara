@@ -383,12 +383,11 @@ describe("the /key/list audit", () => {
     expect(proxy.seen.filter((entry) => entry.path === "/key/block").every((entry) => /^[0-9a-f]{64}$/.test(String(entry.body!.key)))).toBe(true);
   });
 
-  it("DG-1 S1: a key of Rovara's support team holds to the catalog alone: its org label is not compared with the team, an alias or a model that is not in the catalog is blocked", async () => {
+  it("2026-11-03: Rovara pays for no key, so a key of the retired rovara-support team is blocked whatever it names (with or without an org label), and an org's own key is untouched", async () => {
     const proxy = litellm();
-    const good = scoped([CATALOG[0]!], { team_id: "rovara-support", metadata: { orgId: ORG, rovaraPaid: true } });
+    const good = scoped([CATALOG[0]!], { team_id: ORG, metadata: { orgId: ORG } });
     const bad = [
-      scoped([OWN], { team_id: "rovara-support", metadata: { orgId: ORG } }), scoped([], { team_id: "rovara-support" }), scoped(["*"], { team_id: "rovara-support" }),
-      scoped([CATALOG[0]!], { team_id: "rovara-support", aliases: { friendly: CATALOG[0]! } }), scoped([CATALOG[0]!], { team_id: "rovara-support", allowed_routes: ["llm_api_routes"] }),
+      scoped([CATALOG[0]!], { team_id: "rovara-support", metadata: { orgId: ORG, rovaraPaid: true } }), scoped([CATALOG[0]!], { team_id: "rovara-support" }), scoped([OWN], { team_id: "rovara-support", metadata: { orgId: ORG } }),
     ];
     proxy.keys.push(good, ...bad);
     expect(await client(proxy).auditKeys()).toEqual({ checked: 1 + bad.length, blocked: bad.length, truncated: false });

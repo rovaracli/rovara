@@ -1191,7 +1191,7 @@ describe("infrastructure", () => {
     const holders = broker.filter(([, policy]) => JSON.stringify(policy.Properties.PolicyDocument).includes("ses:SendEmail"));
     expect(holders).toHaveLength(1);
     expect(holders[0]![1].Condition).toBe("CloudSignInEmailFromSes");
-    const env = (Object.values(cloud.Resources).find((resource) => resource.Type === "AWS::Lambda::Function" && "Environment" in resource.Properties && JSON.stringify(resource.Properties.Environment).includes("GITHUB_APP_CREDENTIAL_REF"))!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    const env = (Object.entries(cloud.Resources).find(([id, resource]) => /^Broker[0-9A-F]{8}$/.test(id) && resource.Type === "AWS::Lambda::Function")![1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(Object.keys(env)).toContain("DEVELOPER_NOTICE_EMAIL_FROM");
   });
 

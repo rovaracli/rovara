@@ -74,6 +74,8 @@ export class CloudIdentity extends Construct {
     // parameters feed that function and nothing in the pool.
     this.githubClientId = new CfnParameter(stack, "GitHubClientId", {
       type: "String", default: "", maxLength: 256,
+      // Plain text only: the broker is given it in its packed settings (BrokerSettings, ENV-ROOM), joined unescaped. GitHub's client ids are letters, digits and a dot.
+      allowedPattern: "^[A-Za-z0-9._-]{0,64}$",
       description: "Client ID of the GitHub OAuth app for Rovara sign up and sign in with GitHub; leave empty to not offer it",
     });
     this.githubClientSecretArn = new CfnParameter(stack, "GitHubClientSecretArn", {

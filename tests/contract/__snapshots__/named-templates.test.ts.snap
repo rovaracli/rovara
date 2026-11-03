@@ -984,6 +984,34 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 },
                 {
                   "Action": [
+                    "iam:CreateServiceLinkedRole",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "iam:AWSServiceName": "ecr.amazonaws.com",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":iam::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":role/aws-service-role/ecr.amazonaws.com/AWSServiceRoleForECRTemplate",
+                      ],
+                    ],
+                  },
+                  "Sid": "EcrTemplateServiceLinkedRole",
+                },
+                {
+                  "Action": [
                     "budgets:ModifyBudget",
                     "budgets:ViewBudget",
                     "budgets:TagResource",
@@ -3108,10 +3136,12 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Type": "String",
     },
     "GitHubAppCredentialRef": {
+      "AllowedPattern": "^[A-Za-z0-9._:-]{0,64}$",
       "Default": "github-agentx-sdlc",
       "Type": "String",
     },
     "GitHubAppId": {
+      "AllowedPattern": "^[A-Za-z0-9._:-]{0,64}$",
       "Default": "",
       "Description": "GitHub App id; empty reads it from the private-key secret's appId",
       "Type": "String",
@@ -3155,13 +3185,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Default": "0",
       "Description": "1: Fix with agent is on (only after the chat service that carries the diagnosis route is deployed); 0: every diagnosis route answers not found (agentx config set liveFix.enabled 1)",
       "Type": "String",
-    },
-    "LiveFixRovaraPaidDailyCents": {
-      "Default": 10000,
-      "Description": "The most Rovara pays, in cents, for Fix with agent's light diagnoses across every company of this install in one UTC day (10000 = $100). 0 pauses them for the day. Each company is also limited to its own $15 a day; an alarm fires when the day reaches 80 percent of this ceiling (agentx config set liveFix.rovaraPaidDailyCents 10000)",
-      "MaxValue": 1000000,
-      "MinValue": 0,
-      "Type": "Number",
     },
     "LiveRedirectEnabled": {
       "AllowedValues": [
@@ -3828,13 +3851,17 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   {
                     "Ref": "LiveFixEnabled",
                   },
-                  ",fg=",
-                  {
-                    "Ref": "LiveFixRovaraPaidDailyCents",
-                  },
                   ",fx=",
                   {
                     "Ref": "AutofixEnabled",
+                  },
+                  ",gi=",
+                  {
+                    "Ref": "GitHubAppId",
+                  },
+                  ",gr=",
+                  {
+                    "Ref": "GitHubAppCredentialRef",
                   },
                   ",lg=",
                   {
@@ -3940,12 +3967,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "EC2_WORKER_SUBNETS": {
               "Ref": "Ec2WorkerSubnets",
             },
-            "GITHUB_APP_CREDENTIAL_REF": {
-              "Ref": "GitHubAppCredentialRef",
-            },
-            "GITHUB_APP_ID": {
-              "Ref": "GitHubAppId",
-            },
             "GITHUB_APP_PRIVATE_KEY_SECRET_ARN": {
               "Ref": "GitHubAppPrivateKeySecretArn",
             },
@@ -4046,22 +4067,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::Logs::MetricFilter",
     },
-    "BrokerLogsDiagnosisRovaraPaidGlobalPercentMetricFFA39FBE": {
-      "Properties": {
-        "FilterPattern": "{ $.event = "diagnosis.rovara_paid" }",
-        "LogGroupName": {
-          "Ref": "BrokerLogs003CD6FC",
-        },
-        "MetricTransformations": [
-          {
-            "MetricName": "DiagnosisRovaraPaidGlobalPercent",
-            "MetricNamespace": "AgentX/staging",
-            "MetricValue": "$.globalDayPercent",
-          },
-        ],
-      },
-      "Type": "AWS::Logs::MetricFilter",
-    },
     "BrokerLogsEvalBatchWatcherFailedMetricC5DFCB37": {
       "Properties": {
         "FilterPattern": "{ ($.event = "eval_batch_watch.*") && ($.level = "error") }",
@@ -4152,6 +4157,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Action": [
                 "xray:PutTraceSegments",
                 "xray:PutTelemetryRecords",
+                "bedrock:GetFoundationModelAvailability",
               ],
               "Effect": "Allow",
               "Resource": "*",
@@ -7630,32 +7636,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           },
         ],
         "Threshold": 1,
-        "TreatMissingData": "notBreaching",
-      },
-      "Type": "AWS::CloudWatch::Alarm",
-    },
-    "DiagnosisRovaraPaidGlobalAlarmCA974976": {
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "OperatorAlertsA2431256",
-          },
-        ],
-        "AlarmDescription": "Rovara-paid Fix with agent diagnoses have reached 80 percent of today's install-wide ceiling (LiveFixRovaraPaidDailyCents). At 100 percent every company is told it is paused for the day. Check the broker logs for diagnosis.rovara_paid lines to see which company is spending; raise the stack parameter only after looking.",
-        "AlarmName": "agentx-staging-DiagnosisRovaraPaidGlobal80",
-        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
-        "EvaluationPeriods": 1,
-        "MetricName": "DiagnosisRovaraPaidGlobalPercent",
-        "Namespace": "AgentX/staging",
-        "Period": 300,
-        "Statistic": "Maximum",
-        "Tags": [
-          {
-            "Key": "agentx:env",
-            "Value": "staging",
-          },
-        ],
-        "Threshold": 80,
         "TreatMissingData": "notBreaching",
       },
       "Type": "AWS::CloudWatch::Alarm",

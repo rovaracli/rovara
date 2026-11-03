@@ -3,7 +3,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
-import { brokerNamesIn } from "../support/broker-names-template.js";
+import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
 import { evaluate } from "../support/cfn-evaluate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -216,7 +216,10 @@ describe("cloud identity infrastructure", () => {
       expect(identity.DEVELOPER_GITHUB_CLIENT_ID).toEqual({ Ref: "GitHubClientId" });
       expect(identity.DEVELOPER_GITHUB_SECRET_ID).toEqual({ Ref: "GitHubClientSecretArn" });
       const broker = brokerEnvironment(template);
-      expect(broker.DEVELOPER_GITHUB_CLIENT_ID).toEqual({ Ref: "GitHubClientId" });
+      // The broker is given it in its packed settings (ENV-ROOM), not as a variable of its own; the parameter admits plain text only so it can be joined unescaped.
+      expect(broker.DEVELOPER_GITHUB_CLIENT_ID).toBeUndefined();
+      expect(brokerSettingsIn(broker).developerGithubClientId).toEqual({ Ref: "GitHubClientId" });
+      expect(json().Parameters.GitHubClientId).toMatchObject({ AllowedPattern: "^[A-Za-z0-9._-]{0,64}$" });
       expect(broker.DEVELOPER_GITHUB_SECRET_ID).toBeUndefined();
     });
 
