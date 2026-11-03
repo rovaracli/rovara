@@ -395,11 +395,12 @@ describe("a sealed check round", () => {
     expect(roundHelperRuns[0]![roundHelperRuns[0]!.indexOf("--network") + 1]).not.toBe(workingNetwork);
     expect(roundHelperRuns[0]).toContain("--pull=never");
     expect(roundHelperRuns[0]!.some((arg) => arg.endsWith(`@sha256:${DIGEST}`))).toBe(true);
-    // The working sandbox never joined the round's network (it was reattached by the round's end only, and removed from it at once).
+    // The working sandbox never joined the round's network, not even for a moment (the sealed round only checks it is on its working-phase network).
     const roundNetwork = roundHelperRuns[0]![roundHelperRuns[0]!.indexOf("--network") + 1]!;
     const joins = h.fake.calls.filter((call) => call[0] === "network" && call[1] === "connect" && call.includes(roundNetwork));
     const leaves = h.fake.calls.filter((call) => call[0] === "network" && call[1] === "disconnect" && call.includes(roundNetwork) && call.includes("--force"));
-    expect(leaves.length).toBeGreaterThanOrEqual(joins.length);
+    expect(joins).toEqual([]);
+    void leaves;
     // The round's variables carry another password; the seeds and the check ran in the check sandbox with it, and the working password is nowhere in a sealed exec.
     const sealedExecs = h.fake.execs.filter((exec) => exec.args.some((arg) => arg.endsWith("-check")));
     expect(sealedExecs.length).toBeGreaterThan(0);
@@ -423,18 +424,19 @@ describe("a sealed check round", () => {
     await run.dispose();
   });
 
-  it("the working sandbox leaves the round's network BEFORE the record is read: the round's helpers and name server never see it", async () => {
+  it("the working sandbox is never connected to a round's network, and the record is read from the round's helpers and name server without it", async () => {
     const h = await harness({ realSealed: true });
     const run = await h.start();
     await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
     const roundHelper = h.fake.calls.filter((call) => call[0] === "run" && call.includes("--detach") && /-h[0-9a-f]{10}$/u.test(call[call.indexOf("--name") + 1]!))[1]!;
     const roundNetwork = roundHelper[roundHelper.indexOf("--network") + 1]!;
-    const reattach = h.fake.calls.map((call, index) => ({ call, index })).filter(({ call }) => call[0] === "network" && call[1] === "connect" && call.includes(roundNetwork)).map(({ index }) => index);
-    const leave = h.fake.calls.findIndex((call, index) => call[0] === "network" && call[1] === "disconnect" && call.includes("--force") && call.includes(roundNetwork) && index > (reattach[0] ?? -1));
+    const connects = h.fake.calls.filter((call) => call[0] === "network" && call[1] === "connect");
+    // The only connect of the working sandbox in the whole run is to the working phase's own network.
+    expect(connects.filter((call) => call.includes(roundNetwork))).toEqual([]);
+    expect(connects.filter((call) => call.includes(h.sandbox.name))).toHaveLength(1);
+    expect(connects.find((call) => call.includes(h.sandbox.name))).not.toContain(roundNetwork);
     const readRecord = h.fake.calls.findIndex((call) => call[0] === "exec" && call.includes("cat") && call.some((arg) => arg.endsWith("-dns")));
-    expect(reattach).toHaveLength(1);
-    expect(leave).toBeGreaterThan(reattach[0]!);
-    expect(readRecord).toBeGreaterThan(leave);
+    expect(readRecord).toBeGreaterThan(-1);
     await run.dispose();
   });
 

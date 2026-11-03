@@ -19,6 +19,8 @@ const RUN = "22222222-2222-4222-8222-222222222222";
 const SLOT = 7;
 const NET = runNetworkName(RUN);
 const WORK = "agentx-task-t1-abcd1234";
+/** The working sandbox's own (working-phase) services network: it lives here during the whole task and never joins a round's network. */
+const WORKNET = runNetworkName("44444444-4444-4444-8444-444444444444");
 const PASSWORD = "Zq8Wv3Lm9Xc2Rt5";
 const MINUTE = 60_000;
 
@@ -69,6 +71,8 @@ interface FakeOptions {
   extraMembers?: Array<{ name: string; address: string }>;
   /** What `network inspect` says instead of the real membership (an unreadable answer). */
   inspectAnswer?: { exitCode: number; stdout: string };
+  /** The old single-network shape: the working sandbox starts on the round's network (only the detach tests that need a relay use it). */
+  workingStartsOnRound?: boolean;
   /** The extra members only appear once the check sandbox is up. */
   extraAfterStart?: boolean;
   /** A check sandbox that is on the network at the wrong address. */
@@ -78,7 +82,9 @@ interface FakeOptions {
 function fakeDocker(sandboxName: string, options: FakeOptions = {}) {
   const calls: string[][] = [];
   const execs: ExecSeen[] = [];
-  const state = { workingNetworks: [NET, "agentx-task"], sandboxUp: false };
+  const state = { workingNetworks: options.workingStartsOnRound === true ? [NET, "agentx-task"] : [WORKNET, "agentx-task"], sandboxUp: false };
+  /** The working sandbox's networks after every docker call: the proof that it was never on the round's network. */
+  const history: string[][] = [[...[WORKNET, "agentx-task"]]];
   const members = (): Record<string, { Name: string; IPv4Address: string }> => {
     const addresses = runNetworkAddresses(SLOT);
     const out: Record<string, { Name: string; IPv4Address: string }> = {
@@ -90,8 +96,7 @@ function fakeDocker(sandboxName: string, options: FakeOptions = {}) {
     for (const [index, extra] of (options.extraAfterStart === true && !state.sandboxUp ? [] : options.extraMembers ?? []).entries()) out[`x${String(index)}`] = { Name: extra.name, IPv4Address: `${extra.address}/24` };
     return out;
   };
-  const docker: DockerCli = {
-    run: async (args) => {
+  const handle = async (args: readonly string[]) => {
       calls.push([...args]);
       const [verb, second] = args;
       if (verb === "network" && second === "disconnect") { state.workingNetworks = state.workingNetworks.filter((name) => name !== args[2]); return { exitCode: 0, stdout: "", stderr: "" }; }
@@ -119,19 +124,19 @@ function fakeDocker(sandboxName: string, options: FakeOptions = {}) {
         return { exitCode: answer.exitCode, stdout: answer.stdout ?? "", stderr: answer.stderr ?? "" };
       }
       return { exitCode: 1, stdout: "", stderr: "unexpected" };
-    },
   };
-  return { docker, calls, execs, state };
+  const docker: DockerCli = { run: async (args) => { const result = await handle(args); history.push([...state.workingNetworks]); return result; } };
+  return { docker, calls, execs, state, history };
 }
 const verbs = (calls: string[][]) => calls.map((call) => (call[0] === "network" ? `network ${call[1]}` : call[0] === "container" ? "container inspect" : call[0]!));
 
 function roundInput(docker: DockerCli, p: CheckSandboxPlan, extra: Partial<Parameters<typeof withSealedCheckRound>[0]> = {}): Parameters<typeof withSealedCheckRound>[0] {
-  return { docker, plan: p, hasDevcontainer: false, rootPath, files, environment: environment(), redactor: createServiceRedactor([PASSWORD]), ...extra };
+  return { docker, plan: p, hasDevcontainer: false, workingPhaseNetwork: { name: WORKNET, ip: "172.30.9.3" }, rootPath, files, environment: environment(), redactor: createServiceRedactor([PASSWORD]), ...extra };
 }
 const command = (executable: string, args: string[] = [], env?: Record<string, string>) => ({ cwd: ".", executable, args, timeoutSeconds: 60, ...(env === undefined ? {} : { env }) });
 
 describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
-  it("detaches the working sandbox, starts the check sandbox, runs the checks in it, removes it, and attaches the working sandbox again", async () => {
+  it("starts the check sandbox, runs the checks in it and removes it; the working sandbox never joins the round's network", async () => {
     const p = plan();
     const { docker, calls, execs } = fakeDocker(p.sandboxName);
     const round = await runSealedCheckRound(roundInput(docker, p), planChecks([command("pytest", ["-q"])], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
@@ -142,8 +147,7 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     expect(calls.filter((call) => call[0] === "run")).toEqual([p.sandboxRunArgs]);
     expect(order.indexOf("run")).toBeLessThan(order.indexOf("exec"));
     expect(order.lastIndexOf("exec")).toBeLessThan(order.indexOf("rm"));
-    expect(order.indexOf("rm")).toBeLessThan(order.indexOf("network connect"));
-    expect(calls.filter((call) => call[0] === "network" && call[1] === "connect")).toEqual([["network", "connect", "--ip", p.workingSandboxIp, NET, WORK]]);
+    expect(calls.filter((call) => call[0] === "network" && call[1] === "connect")).toEqual([]);
     expect(execs).toHaveLength(1);
   });
 
@@ -163,17 +167,17 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     expect(execs[1]!.command.at(-1)).toBe("make test");
   });
 
-  it("the working sandbox is attached again, and the check sandbox gone, when the round throws", async () => {
+  it("the check sandbox is gone and the working sandbox is still off the round network when the round throws", async () => {
     const p = plan();
     const { docker, calls, state } = fakeDocker(p.sandboxName);
     await expect(withSealedCheckRound(roundInput(docker, p), () => Promise.reject(new Error("round failed")))).rejects.toThrow("round failed");
     expect(state.sandboxUp).toBe(false);
-    expect(state.workingNetworks).toContain(NET);
-    const order = verbs(calls);
-    expect(order.indexOf("rm")).toBeLessThan(order.indexOf("network connect"));
+    expect(state.workingNetworks).toContain(WORKNET);
+    expect(state.workingNetworks).not.toContain(NET);
+    expect(verbs(calls)).not.toContain("network connect");
   });
 
-  it("the working sandbox is attached again when the round is cancelled mid-check, and nothing runs after", async () => {
+  it("the working sandbox stays off the round network when the round is cancelled mid-check, and nothing runs after", async () => {
     const p = plan();
     const controller = new AbortController();
     const { docker, calls, state } = fakeDocker(p.sandboxName, { answer: () => { controller.abort(); return new Promise(() => undefined); } });
@@ -181,7 +185,7 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     expect(round.stopped).toBe(true);
     expect(round.entries.map((entry) => entry.after)).toEqual(["not_run", "not_run"]);
     expect(state.sandboxUp).toBe(false);
-    expect(state.workingNetworks).toContain(NET);
+    expect(state.workingNetworks).not.toContain(NET);
     expect(verbs(calls).filter((verb) => verb === "run")).toHaveLength(1);
   });
 
@@ -195,13 +199,13 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     expect(calls.filter((call) => call[0] === "run")).toEqual([]);
   });
 
-  it("does not run the round when the check sandbox cannot start, and still attaches the working sandbox", async () => {
+  it("does not run the round when the check sandbox cannot start, and the working sandbox never joined the round network", async () => {
     const p = plan();
     const { docker, state } = fakeDocker(p.sandboxName, { startExit: 125 });
     let ran = false;
     await expect(withSealedCheckRound(roundInput(docker, p), () => { ran = true; return Promise.resolve(); })).rejects.toThrow(/could not be started/u);
     expect(ran).toBe(false);
-    expect(state.workingNetworks).toContain(NET);
+    expect(state.workingNetworks).not.toContain(NET);
   });
 
   it("leaves the working sandbox detached, and throws, when the check sandbox cannot be removed", async () => {
@@ -218,8 +222,7 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     for (let index = 0; index < 2; index += 1) await runSealedCheckRound(input, planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
     expect(verbs(calls).filter((verb) => verb === "run")).toHaveLength(2);
     expect(verbs(calls).filter((verb) => verb === "rm")).toHaveLength(2);
-    const order = verbs(calls);
-    expect(order.indexOf("network connect")).toBeLessThan(order.indexOf("network disconnect", order.indexOf("network connect")));
+    expect(verbs(calls)).not.toContain("network connect");
   });
 
   it("puts the helpers back (freshServices) only after the working sandbox is gone and the check sandbox is up, before the first check", async () => {
@@ -264,11 +267,11 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
         let ran = false;
         await expect(withSealedCheckRound(roundInput(docker, p), () => { ran = true; return Promise.resolve(); }), `${extra.name} ${String(extraAfterStart)}`).rejects.toThrow(/does not expect/u);
         expect(ran).toBe(false);
-        // Before the start nothing was run; after it the sandbox is removed. Either way the working sandbox is attached again, last.
+        // Before the start nothing was run; after it the sandbox is removed. Either way the working sandbox is on its working-phase network and was never connected to the round's.
         expect(calls.filter((call) => call[0] === "run")).toHaveLength(extraAfterStart ? 1 : 0);
         expect(state.sandboxUp).toBe(false);
-        expect(state.workingNetworks).toContain(NET);
-        expect(verbs(calls).at(-1)).toBe("network connect");
+        expect(state.workingNetworks).toContain(WORKNET);
+        expect(verbs(calls)).not.toContain("network connect");
       }
     }
   });
@@ -289,6 +292,46 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     for (const answer of [{ exitCode: 1, stdout: "" }, { exitCode: 0, stdout: "not json" }, { exitCode: 0, stdout: "[]" }, { exitCode: 0, stdout: "null" }, { exitCode: 0, stdout: "{\"a\":{\"Name\":1}}" }]) {
       const { docker } = fakeDocker(p.sandboxName, { inspectAnswer: answer });
       await expect(assertSealedNetworkMembers(docker, p, "before_start"), JSON.stringify(answer)).rejects.toThrow();
+    }
+  });
+
+  it("the working sandbox is NEVER on a round network, at any moment of a round: success, failure, cancel, start failure", async () => {
+    const p = plan();
+    const scenarios: Array<[string, () => Promise<unknown>, ReturnType<typeof fakeDocker>]> = [];
+    const ok = fakeDocker(p.sandboxName);
+    scenarios.push(["success", () => runSealedCheckRound(roundInput(ok.docker, p), planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal }), ok]);
+    const failed = fakeDocker(p.sandboxName);
+    scenarios.push(["failure", () => withSealedCheckRound(roundInput(failed.docker, p), () => Promise.reject(new Error("x"))).catch(() => undefined), failed]);
+    const controller = new AbortController();
+    const cancelled = fakeDocker(p.sandboxName, { answer: () => { controller.abort(); return new Promise(() => undefined); } });
+    scenarios.push(["cancel", () => runSealedCheckRound(roundInput(cancelled.docker, p), planChecks([command("sleep", ["9"])], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: controller.signal }), cancelled]);
+    const noStart = fakeDocker(p.sandboxName, { startExit: 125 });
+    scenarios.push(["start failure", () => withSealedCheckRound(roundInput(noStart.docker, p), () => Promise.resolve()).catch(() => undefined), noStart]);
+    for (const [name, run, fake] of scenarios) {
+      await run();
+      expect(fake.history.length, name).toBeGreaterThan(2);
+      for (const networks of fake.history) expect(networks, name).not.toContain(NET);
+      expect(fake.calls.filter((call) => call[0] === "network" && call[1] === "connect" && call.includes(NET)), name).toEqual([]);
+      expect(fake.state.workingNetworks, name).toContain(WORKNET);
+    }
+  });
+
+  it("puts the working sandbox back on its working-phase network, at its address, only if it is missing there", async () => {
+    const p = plan();
+    const { docker, calls, state, history } = fakeDocker(p.sandboxName);
+    state.workingNetworks = ["agentx-task"];
+    await withSealedCheckRound(roundInput(docker, p), () => Promise.resolve());
+    expect(calls.filter((call) => call[0] === "network" && call[1] === "connect")).toEqual([["network", "connect", "--ip", "172.30.9.3", WORKNET, WORK]]);
+    for (const networks of history) expect(networks).not.toContain(NET);
+    expect(state.workingNetworks).toContain(WORKNET);
+  });
+
+  it("refuses, before any Docker call, a working-phase network that is the round's own or not a services network", async () => {
+    const p = plan();
+    for (const name of [NET, "bridge", "host", "agentx-task", "--privileged"]) {
+      const { docker, calls } = fakeDocker(p.sandboxName);
+      await expect(withSealedCheckRound(roundInput(docker, p, { workingPhaseNetwork: { name, ip: "172.30.9.3" } }), () => Promise.resolve()), name).rejects.toThrow(/never to a round's network/u);
+      expect(calls, name).toEqual([]);
     }
   });
 

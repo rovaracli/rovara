@@ -113,6 +113,8 @@ export interface SealedRoundSetup {
   docker: DockerCli;
   /** The project has a dev container: the round is refused. Always false here (a task with a dev container never starts services). */
   hasDevcontainer: boolean;
+  /** The working sandbox's working-phase network and its address: the sealed round checks it is there afterwards and NEVER connects it to the round's own network. */
+  workingPhaseNetwork: { name: string; ip: string };
   plan: CheckSandboxPlan;
   rootPath: string;
   files: HelperFiles;
@@ -559,7 +561,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     round = undefined;
     if (open === undefined) return;
     await step("sealed-round", () => open.sealedClose());
-    // `withDetachedWorking` puts the working sandbox back on the round's network when the round ends. It leaves at once, BEFORE the record is read: the round's helpers and name server never see it.
+    // The working sandbox is never connected to a round's network (the sealed round only checks it is on its working-phase network); this disconnect is a safety net that finds nothing to do.
     await step("working-sandbox", () => docker.run(["network", "disconnect", "--force", open.plan.network.name, input.sandbox.name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }));
     if (emit && active) {
       const record = await recordOf(open);
@@ -571,7 +573,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     await cleanupRound(open);
   };
   const cleanupRound = async (open: Pick<RoundState, "plan" | "session" | "files" | "dnsStarted">): Promise<void> => {
-    // `withDetachedWorking` puts the working sandbox back on the round's network when the round ends; it leaves before the network is removed.
+    // Safety net: the working sandbox is not on the round's network (the sealed round never connects it); if it somehow were, it leaves before the network is removed.
     await step("working-sandbox", () => docker.run(["network", "disconnect", "--force", open.plan.network.name, input.sandbox.name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }));
     if (open.dnsStarted) await step("name-server", () => docker.run(["rm", "--force", open.plan.dnsHelperName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }));
     await step("round-helpers", () => open.session.stop());
@@ -692,7 +694,9 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       check();
 
       // The sealed round: the working sandbox was never on this network; the check sandbox starts inside `withSealedCheckRound`.
-      const setup: SealedRoundSetup = { docker, hasDevcontainer: false, plan, rootPath: root, files: roundFiles, environment, redactor: roundRedactor };
+      // The working phase's network is where the working sandbox belongs; a round is only opened after that phase started.
+      if (workSession === undefined) throw new TestServicesError("setup_failed");
+      const setup: SealedRoundSetup = { docker, hasDevcontainer: false, workingPhaseNetwork: { name: workSession.network.name, ip: workSession.network.workingSandboxIp }, plan, rootPath: root, files: roundFiles, environment, redactor: roundRedactor };
       let release!: () => void;
       const closed = new Promise<void>((done) => { release = done; });
       let handOver!: (runners: CheckRunners) => void;

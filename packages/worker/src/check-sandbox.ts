@@ -554,12 +554,34 @@ export async function startCheckSandbox(docker: DockerCli, plan: CheckSandboxPla
   return started.stdout.trim();
 }
 
+/** The working sandbox's own network for the working phase (not a round's), and its address there. */
+export interface WorkingPhaseNetwork { name: string; ip: string }
+
+function assertWorkingPhaseNetwork(plan: Pick<CheckSandboxPlan, "network">, to: WorkingPhaseNetwork): void {
+  if (!SERVICES_NETWORK_NAME.test(to.name) || to.name === plan.network.name || to.name === "bridge" || to.name === "host" || to.name === "none" || !/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(to.ip)) {
+    throw agentXError("CONFIG_INVALID", "the working sandbox goes back to its working phase network, never to a round's network");
+  }
+}
+
+/** After a round: the working sandbox is on its working-phase network (it never left it, so normally this only looks). Connects it at its address when it is not. Never touches the round's network. */
+async function ensureOnWorkingPhaseNetwork(docker: DockerCli, plan: PlanForWorking, to: WorkingPhaseNetwork): Promise<void> {
+  assertWorkingPhaseNetwork(plan, to);
+  if (await networksOf(docker, plan.workingSandboxName).then((networks) => networks.includes(to.name), () => false)) return;
+  const connected = await docker.run(["network", "connect", "--ip", to.ip, to.name, plan.workingSandboxName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+  if (connected !== undefined && connected.exitCode === 0) return;
+  if (await networksOf(docker, plan.workingSandboxName).then((networks) => networks.includes(to.name), () => false)) return;
+  throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox could not be attached to its working phase network again");
+}
+
 /**
  * One check round: detaches the working sandbox, runs `round` (which starts the check sandbox with `start()` and does its work), then REMOVES the check sandbox and reattaches the working sandbox in a `finally`, whether
  * the round succeeded, failed or was cancelled. This is the only supported way for TS17 to use the sealed sandbox. If the check sandbox cannot be removed (it still exists after `docker rm --force`), the working sandbox
  * is NOT reattached (a relay beside a live check sandbox would break the seal) and the call throws. The round's own error wins over a clean-up error.
  */
-export async function withDetachedWorking<T>(docker: DockerCli, plan: CheckSandboxPlan, round: (start: () => Promise<string>) => Promise<T>): Promise<T> {
+export async function withDetachedWorking<T>(docker: DockerCli, plan: CheckSandboxPlan, round: (start: () => Promise<string>) => Promise<T>, options: { returnTo?: WorkingPhaseNetwork } = {}): Promise<T> {
+  // `returnTo` is the network the working sandbox belongs on once the round is over (its working-phase network). With it, the working sandbox is NEVER connected to this round's network, not even for a moment: the round's
+  // own network is only ever looked at. Without it (the single-network design of the first version) it is reattached to the round's network at .3, as before.
+  if (options.returnTo !== undefined) assertWorkingPhaseNetwork(plan, options.returnTo);
   const detached = await detachWorkingSandbox(docker, plan);
   let outcome: { value: T } | { error: unknown };
   try {
@@ -570,7 +592,8 @@ export async function withDetachedWorking<T>(docker: DockerCli, plan: CheckSandb
   let cleanup: unknown;
   try {
     await removeCheckSandbox(docker, plan);
-    await reattachWorkingSandbox(docker, plan);
+    if (options.returnTo === undefined) await reattachWorkingSandbox(docker, plan);
+    else await ensureOnWorkingPhaseNetwork(docker, plan, options.returnTo);
   } catch (error) {
     cleanup = error;
   }
