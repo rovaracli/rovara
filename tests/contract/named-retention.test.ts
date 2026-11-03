@@ -66,6 +66,9 @@ describe("retained resources in a named environment", () => {
       // The vault key: the key policy lets nobody ScheduleKeyDeletion, so a rollback could not delete it. It has no alias (a retained
       // alias would make every retry of a failed first deploy fail), so no KMS alias is retained.
       "agentx-staging-control-plane AuditLedgerAuditVaultKey AWS::KMS::Key",
+      // The saved environment images key (SH22) follows the same precedent: its key policy lets nobody but the deploy role schedule a deletion, so a rolled-back first create could not delete it.
+      // (infra/lib/saved-env-images.ts marks it with the keep-on-rollback metadata; no alias is made for it.)
+      "agentx-staging-control-plane SavedEnvImagesImagesKey AWS::KMS::Key",
       "agentx-staging-identity UserPool AWS::Cognito::UserPool",
       "agentx-staging-slack ActionLogs AWS::Logs::LogGroup",
       "agentx-staging-slack ActionLogsKey AWS::KMS::Key",
