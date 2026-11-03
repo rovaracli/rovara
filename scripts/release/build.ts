@@ -1,7 +1,7 @@
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ENVIRONMENT_PLACEHOLDER, STACK_PARTS, environmentStackName } from "@agentx/contracts";
+import { CATALOG_BUILD_FLAVOR, ENVIRONMENT_PLACEHOLDER, STACK_PARTS, environmentStackName } from "@agentx/contracts";
 import { CONTEXT_ENV, CONTEXT_OVERFLOW_LOCATION_ENV } from "aws-cdk-lib/cx-api";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";
@@ -169,6 +169,8 @@ export async function buildRelease(input: BuildReleaseInput): Promise<ReleaseMan
   const version = checkedVersion(input.version);
   const gitCommit = checkedGitCommit(input.gitCommit);
   checkedNoAmbientCdkContext();
+  // A public or Enterprise release is a RELEASE build: the staging-only catalog signing key (catalog-trust.ts) is honoured by a staging build alone.
+  if (CATALOG_BUILD_FLAVOR !== "release") throw new Error("a release is built from a release flavor (packages/contracts/src/catalog-build-flavor.ts); this tree is a staging build");
   await claimOutDir(input.out);
 
   await mkdir(RELEASE_SYNTH_ROOT, { recursive: true });

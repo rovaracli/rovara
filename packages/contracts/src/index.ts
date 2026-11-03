@@ -249,6 +249,8 @@ export * from "./test-services-shared.js";
 export * from "./test-env-dependency.js";
 export * from "./service-catalog.js";
 export * from "./service-catalog-images.js";
+export * from "./catalog-trust.js";
+export * from "./catalog-build-flavor.js";
 export * from "./service-catalog-verify.js";
 export * from "./test-account.js";
 export * from "./team-record-storage.js";
