@@ -153,7 +153,7 @@ describe("ConnectorSecretsRole (named environments)", () => {
   it("lets the broker assume the role with session tags and gives it no Secrets Manager permission on the org paths", () => {
     const statements = statementsOfRole(brokerRoleId);
     // Setup and test health SH22 adds the broker's assume of the saved environment image roles (its own statement, no session tags): this test is about the connector secrets role.
-    const assume = statements.filter((statement) => asList(statement.Action).includes("sts:AssumeRole") && statement.Sid !== "AssumeSavedEnvImageRoles");
+    const assume = statements.filter((statement) => asList(statement.Action).includes("sts:AssumeRole") && statement.Sid !== "AssumeSavedEnvImageRoles" && statement.Sid !== "AssumeTestAccountSecretsRole");
     expect(assume).toHaveLength(1);
     expect(asList(assume[0]!.Action).sort()).toEqual(["sts:AssumeRole", "sts:TagSession"]);
     expect(assume[0]).toMatchObject({ Effect: "Allow", Resource: { "Fn::GetAtt": [roleId, "Arn"] } });
@@ -196,7 +196,8 @@ describe("ConnectorSecretsRole (named environments)", () => {
       Effect: "Allow",
       Action: ["sts:AssumeRole", "sts:TagSession"],
       // Setup and test health SH22: and one wildcard for the saved environment image roles (the broker's own policy names the three exactly).
-      Resource: ["arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets", "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-img-*"],
+      // Test services TS26: and the TestAccountSecretsRole, whose name starts the same way (one wildcard ARN; see test-account-secrets-infrastructure.test.ts).
+      Resource: ["arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-img-*"],
     });
     // Owner decision A narrows it to the broker, the model proxy task role and the model access probe (ArnLike on the principal): see access-policies.test.ts for the exact JSON.
     expect(sts[1]!.Condition).toEqual({

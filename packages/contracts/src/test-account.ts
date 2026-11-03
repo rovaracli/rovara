@@ -325,6 +325,97 @@ export function testAccountApprovalDigest(record: TestAccountApprovable): string
   );
 }
 
+// ---- the run-time secret grant (6.2, 4.3): what the broker hands the worker for ONE sealed round
+
+/** How long a grant's session lasts: Secrets Manager's own minimum for an assumed session (15 minutes), enough for the start of one test command. */
+export const TEST_ACCOUNT_GRANT_SECONDS = 900;
+
+const GrantCredentialPart = z.string().min(1).max(4_096).regex(/^[\x21-\x7e]+$/u, "one token");
+
+/**
+ * What the broker sends the worker so the worker can read ONE test-account secret at run time: a session the broker minted for that one secret and the read of it (15 minutes), the secret's name and the
+ * JSON key inside it, and the variables the test reads it from. It holds session credentials, so it is never logged, journaled or put in a plan; it travels only in the invocation of a sealed round.
+ * The secret's value is not in it, and the broker never has the value.
+ */
+export const TestAccountSecretGrantSchema = z
+  .object({
+    orgId: OrgIdSchema,
+    accountId: TestAccountIdSchema,
+    family: FamilyIdSchema,
+    secretName: z.string().max(300),
+    key: z.string().regex(KEY_SEGMENT),
+    region: TestEnvRegionSchema,
+    envNames: z.array(EnvNameSchema).min(1).max(TEST_ACCOUNT_LIMITS.envNames),
+    credentials: z.object({ accessKeyId: GrantCredentialPart, secretAccessKey: GrantCredentialPart, sessionToken: GrantCredentialPart }).strict(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict()
+  .superRefine((grant, context) => {
+    const parts = parseTestAccountSecretRef(`{{resolve:secretsmanager:${grant.secretName}:SecretString:${grant.key}}}`);
+    if (parts === undefined || parts.orgId !== grant.orgId || parts.accountId !== grant.accountId) context.addIssue({ code: "custom", path: ["secretName"], message: "the grant names this account's own secret in its own org" });
+    if (new Set(grant.envNames).size !== grant.envNames.length) context.addIssue({ code: "custom", path: ["envNames"], message: "a variable is listed once" });
+    grant.envNames.forEach((name, index) => {
+      if (reservedDependencyEnvName(name)) context.addIssue({ code: "custom", path: ["envNames", index], message: "this variable is set by Rovara or the system" });
+    });
+  });
+export type TestAccountSecretGrant = z.infer<typeof TestAccountSecretGrantSchema>;
+
+/** The grant, or undefined. Never throws and never returns the reasons, so a credential in a malformed grant cannot reach a log through its parse error. */
+export function parseTestAccountSecretGrant(input: unknown): TestAccountSecretGrant | undefined {
+  const result = TestAccountSecretGrantSchema.safeParse(input);
+  return result.success ? result.data : undefined;
+}
+
+// ---- narrowing (DC-TS-2, design 6.4): which changes need fresh approvals
+
+const subsetOf = (smaller: readonly string[], larger: readonly string[]): boolean => smaller.every((value) => larger.includes(value));
+
+/**
+ * Whether `resource` is covered by `previous`: the same ARN, or an ARN under a named prefix that ends in `/*` (`bucket/*` covers `bucket/reports/*` and `bucket/a.csv`, but not `bucket` itself, another bucket
+ * with the same start, or a resource with a wildcard anywhere but a single trailing `/*`). Anything else is not provably smaller.
+ */
+function resourceCovered(previous: readonly string[], resource: string): boolean {
+  if (previous.includes(resource)) return true;
+  if (/[?]|\/\//u.test(resource)) return false;
+  const named = resource.endsWith("/*") ? resource.slice(0, -2) : resource;
+  if (named.includes("*")) return false;
+  return previous.some((each) => {
+    if (!each.endsWith("/*") || each.slice(0, -2).includes("*")) return false;
+    const prefix = each.slice(0, -1);
+    return resource.startsWith(prefix) && resource.length > prefix.length;
+  });
+}
+
+/**
+ * Whether going from `previous` to `next` is a widening. Only a change this function can PROVE is smaller is not one, and it must be smaller in every field at once: the same account, kind, family, secret
+ * reference and AWS role, no host, variable, action or resource that was not there, no project the account was not already open to, and no higher limit. Everything else (including a different credential
+ * and any change it cannot compare) is a widening. A pure narrowing applies at once and re-stamps the approvals with the new digest (`restampApprovals`); a widening needs fresh approvals. The label, status,
+ * approvals and dates are not part of an approval, so they are not compared.
+ */
+export function testAccountWidened(previous: TestAccountApprovable, next: TestAccountApprovable): boolean {
+  if (previous.id !== next.id || previous.orgId !== next.orgId || previous.kind !== next.kind || previous.family !== next.family) return true;
+  if ((previous.secretRef ?? null) !== (next.secretRef ?? null)) return true;
+  if (!subsetOf(next.hosts, previous.hosts) || !subsetOf(next.envNames, previous.envNames)) return true;
+  if (previous.projectIds !== "all" && (next.projectIds === "all" || !subsetOf(next.projectIds, previous.projectIds))) return true;
+  const was = previous.limits;
+  const now = next.limits;
+  if (now.maxRequestsPerRun > was.maxRequestsPerRun || now.maxRequestsPerDay > was.maxRequestsPerDay || now.maxConcurrentRounds > was.maxConcurrentRounds) return true;
+  if ((previous.aws === undefined) !== (next.aws === undefined)) return true;
+  if (previous.aws !== undefined && next.aws !== undefined) {
+    if (previous.aws.roleArn !== next.aws.roleArn || previous.aws.externalId !== next.aws.externalId || previous.aws.region !== next.aws.region) return true;
+    if (!subsetOf(next.aws.actions, previous.aws.actions)) return true;
+    if (!next.aws.resources.every((resource) => resourceCovered(previous.aws!.resources, resource))) return true;
+  }
+  return false;
+}
+
+/** Re-stamps the approvals that approved `previous` so they approve `next`, for a change `testAccountWidened` says is not a widening. Approvals of anything else are dropped. Throws on a widening. */
+export function restampApprovals(previous: TestAccountApprovable & { approvals: readonly TestAccountApproval[] }, next: TestAccountApprovable): TestAccountApproval[] {
+  if (testAccountWidened(previous, next)) throw new RangeError("only a narrowing is re-stamped");
+  const digest = testAccountApprovalDigest(next);
+  return testAccountQualifyingApprovals(previous).map((approval) => ({ ...approval, approvedDigest: digest }));
+}
+
 /**
  * The approvals that approved exactly this record. With `now`, an approval dated after it does not count (a future date is no approval yet, and a date that is not a date never counts), so nothing
  * that is computed from approvals (the people, the expiry window) can lean on one that has not happened.

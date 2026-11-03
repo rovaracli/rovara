@@ -316,6 +316,17 @@ export const AUDIT_ACTIONS = [
   "setup_recipe.scope_changed",
   // TE-4: a maintainer went back to the last proved setup after a saved change failed its check. Revisions only: never a command.
   "project.setup_restored",
+  // Customer test accounts (test services TS26, switch `ta`): ids, digests, counts and fixed words only. A host, label or role never goes in a fact (they are in `details`), and a secret's value is never known to the broker.
+  "test_account.added",
+  "test_account.approved",
+  "test_account.narrowed",
+  "test_account.widened",
+  "test_account.reenable_requested",
+  "test_account.rotated",
+  "test_account.suspended",
+  "test_account.expired",
+  "test_account.deleted",
+  "test_account.used",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -349,6 +360,7 @@ export const AUDIT_TARGET_KINDS = [
   "record_source",
   "mcp_server",
   "diagnosis",
+  "test_account",
 ] as const;
 
 export const AuditTargetKindSchema = z.enum(AUDIT_TARGET_KINDS);
@@ -601,6 +613,19 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "setup_recipe.scope_changed": ["recipeId", "revision", "bodyDigest", "authority"],
   // `revision` is the new revision, `fromRevision` the one that failed its check, `provenRevision` the revision the restored setup was proved at.
   "project.setup_restored": ["revision", "fromRevision", "provenRevision"],
+  // Customer test accounts. `kind` is the account kind, `digest` the sha256 of what was approved (`testAccountApprovalDigest`), `fromDigest` the one before a change, `hostCount` and `projectScope` (`all` or `list`) its reach.
+  // `approvalMode` is `second_person` or `sole_owner_exception`; `approvals` how many people's approvals count; `expiresInDays` the days from the approval to the expiry. `cause` is a fixed word (`manual`, `expired`, `widened`).
+  // `used` is the daily roll-up of one project: `day` (YYYY-MM-DD), `rounds` and `requests`.
+  "test_account.added": ["kind", "digest", "hostCount", "projectScope"],
+  "test_account.approved": ["digest", "approvalMode", "approvals", "expiresInDays"],
+  "test_account.narrowed": ["digest", "fromDigest"],
+  "test_account.widened": ["digest", "fromDigest"],
+  "test_account.reenable_requested": ["digest", "fromStatus"],
+  "test_account.rotated": ["digest"],
+  "test_account.suspended": ["cause"],
+  "test_account.expired": ["digest"],
+  "test_account.deleted": ["kind", "cause"],
+  "test_account.used": ["day", "rounds", "requests"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

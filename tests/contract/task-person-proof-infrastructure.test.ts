@@ -340,18 +340,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-02, merge of feat/cr-settings (cee08fdcb) into cloud/next: the named and foreign digests were retaken after ONE intended addition, checked by synthesizing the parent remainders at 3488a7a48 and with the merge and
     // diffing them (nothing else differs): `SECOND_REVIEW_ENABLED` (Ref SecondReviewEnabled), a plain variable on the OutboxPublisher function. The legacy digests did not move (named environments only).
     // 2026-11-02, merge of cloud/next fde551404 into feat/saved-env-build: the four named and foreign digests were retaken for cloud/next's SecondReviewEnabled variable and the saved environment images together. Legacy did not move.
+    // 2026-11-02, TS26 (test accounts, lane ts-accounts): the named and foreign digests were retaken after ONE intended IAM addition to the named control plane (legacy did not move): the TestAccountSecretsRole (fixed name
+    // agentx-<env>-connector-secrets-test-accounts, trust and permissions in infra/lib/test-account-secrets-policy.ts), the broker's AssumeTestAccountSecretsRole statement, and the access stack's boundary and deploy-role
+    // lookups naming it (the boundary through the one `connector-secrets*` ARN, so it did not grow).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "91137fb21d371db9072a27e664164d322540b4a4d6fb1d859666bee35a4965dd",
-        withoutRoute: "a851a74ff7daec9325285f7108477e4ce144c3af285b9c7c102158f8c45325ca",
+        withRoute: "7ce201b8057988a42d8c846d929c94900d354f1cd84197a655a7f89b545752f4",
+        withoutRoute: "ba9e9305fbd4e2edd3eee0e7a07771e39c9b44795bd36d8555a18d29ebfebb31",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "77dae9bfb7465567aa293a692d57cefd1069e3ac5122136428250595082d462b",
-        withoutRoute: "e8ce2f951acfbcd5e3658e17530a3bdd66bbd663c969da6f47b955441506d192",
+        withRoute: "4b2af2feeca92a6c068e7f4b688db37bb9fc09d9bd75521d1e2a52ec5715c91f",
+        withoutRoute: "e8597c6fff073612801e242d197a3eb42f5c39e037035e5580fc7ed079b8f488",
       },
       {
         label: "legacy",

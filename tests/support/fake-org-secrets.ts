@@ -63,10 +63,14 @@ interface StoredSecret {
 interface Session {
   tags: Tags;
   expiresAt: number;
+  /** The session policy the AssumeRole call passed: it can only narrow what the role allows (an explicit Deny in it wins, and an Allow in it is needed as well). */
+  sessionPolicy?: PolicyStatementJson[];
 }
 
 export interface FakeOrgSecretsOptions {
   env?: string;
+  /** The role the fake serves (default: the connector secrets role). A test of another role passes its ARN, policy and trust. */
+  roleArn?: string;
   now?: () => number;
   /** Replaces the permissions policy, to prove a missing allow is felt (default: the synthesized one). */
   policy?: PolicyStatementJson[];
@@ -135,6 +139,9 @@ function conditionHolds(condition: Record<string, Record<string, string | string
         case "Bool":
           holds = actual !== undefined && actual.some((value) => value === expected[0]);
           break;
+        case "StringNotEquals":
+          holds = actual === undefined || !actual.some((value) => expected.includes(value));
+          break;
         case "ForAllValues:StringEquals":
           holds = actual === undefined || actual.every((value) => expected.includes(value));
           break;
@@ -177,7 +184,7 @@ const tagList = (tags: ReadonlyArray<{ Key?: string | undefined; Value?: string 
 
 export class FakeOrgSecrets {
   readonly env: string;
-  readonly roleArn = FAKE_CONNECTOR_ROLE_ARN;
+  readonly roleArn: string;
   readonly calls: FakeCall[] = [];
   readonly secrets = new Map<string, StoredSecret>();
   private readonly sessions = new Map<string, Session>();
@@ -188,6 +195,7 @@ export class FakeOrgSecrets {
 
   constructor(options: FakeOrgSecretsOptions = {}) {
     this.env = options.env ?? "staging";
+    this.roleArn = options.roleArn ?? FAKE_CONNECTOR_ROLE_ARN;
     this.now = options.now ?? Date.now;
     this.policy = options.policy ?? connectorSecretsPolicyStatements({ secretArnPrefix: ARN_PREFIX, env: this.env });
     this.trust = options.trust ?? (connectorSecretsTrustPolicy(FAKE_BROKER_ROLE_ARN).Statement);
@@ -210,7 +218,8 @@ export class FakeOrgSecrets {
       if ((input.DurationSeconds ?? 3600) > 3600) throw new AwsError("ValidationError", "duration too long");
       const id = `ASIAFAKE${String(++this.counter).padStart(8, "0")}`;
       const expiresAt = this.now() + (input.DurationSeconds ?? 3600) * 1000;
-      this.sessions.set(id, { tags: tags ?? {}, expiresAt });
+      const sessionPolicy = input.Policy === undefined ? undefined : (JSON.parse(input.Policy) as { Statement: PolicyStatementJson[] }).Statement;
+      this.sessions.set(id, { tags: tags ?? {}, expiresAt, ...(sessionPolicy === undefined ? {} : { sessionPolicy }) });
       return { Credentials: { AccessKeyId: id, SecretAccessKey: `secret-${id}`, SessionToken: `token-${id}`, Expiration: new Date(expiresAt) } };
     },
   };
@@ -256,8 +265,12 @@ export class FakeOrgSecrets {
 
   private authorize(session: Session, action: string, name: string, requestTags: Tags | undefined, resourceTags: Tags | undefined, extra: Context = {}): void {
     const context: Context = { ...extra, ...tagContext(requestTags), "aws:PrincipalTag/rovara:org": session.tags["rovara:org"] === undefined ? undefined : [session.tags["rovara:org"]] };
+    // Every session tag is a principal tag (the purpose tag of the test-account role is one).
+    for (const [key, value] of Object.entries(session.tags)) context[`aws:PrincipalTag/${key}`] = [value];
     for (const [key, value] of Object.entries(resourceTags ?? {})) context[`aws:ResourceTag/${key}`] = [value];
-    if (evaluate(this.policy, `secretsmanager:${action}`, this.arnOf(name), context) !== "allow") {
+    const resource = this.arnOf(name);
+    const action_ = `secretsmanager:${action}`;
+    if (evaluate(this.policy, action_, resource, context) !== "allow" || (session.sessionPolicy !== undefined && evaluate(session.sessionPolicy, action_, resource, context) !== "allow")) {
       throw new AwsError("AccessDeniedException", `User is not authorized to perform secretsmanager:${action}`);
     }
   }

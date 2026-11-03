@@ -201,6 +201,8 @@ describe("the event catalog", () => {
       "setup_recipe.proposed", "setup_recipe.created", "setup_recipe.approved", "setup_recipe.revoked", "setup_recipe.scope_changed",
       // TE-4: going back to the last proved setup
       "project.setup_restored",
+      // customer test accounts (TS26)
+      "test_account.added", "test_account.approved", "test_account.narrowed", "test_account.widened", "test_account.reenable_requested", "test_account.rotated", "test_account.suspended", "test_account.expired", "test_account.deleted", "test_account.used",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -210,7 +212,7 @@ describe("the event catalog", () => {
       "approval", "spend_request", "task", "pull_request", "org", "invite", "member", "project", "agent", "chain", "session", "trigger",
       "connection", "connector", "guardrails", "repository", "domain", "github_installation", "budget", "audit",
       "spend_policy", "model_source",
-      "process", "lesson", "record_source", "mcp_server", "diagnosis",
+      "process", "lesson", "record_source", "mcp_server", "diagnosis", "test_account",
     ]);
   });
 

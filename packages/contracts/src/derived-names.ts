@@ -21,7 +21,7 @@ import {
   environmentProjectSetupRuntimeCatalogId,
   environmentSettingsPrefix,
 } from "./environments.js";
-import { brokerRoleName, chainScheduleQueueName, chainScheduleRoleName, connectorSecretsRoleName } from "./access-policies.js";
+import { brokerRoleName, chainScheduleQueueName, chainScheduleRoleName, connectorSecretsRoleName, testAccountSecretsRoleName } from "./access-policies.js";
 
 /** The audit ledger's intake queue (FIFO, one appender per org). The queue is created with this name, and the broker builds its URL from it. */
 export function auditIntakeQueueName(env: string): string {
@@ -77,6 +77,8 @@ export const DERIVED_BROKER_VARIABLES: readonly DerivedBrokerVariable[] = [
   { variable: "BROKER_ROLE_ARN", kind: "roleArn", roleName: brokerRoleName, cloudOnly: true },
   // The one role the broker assumes for an org's connection secrets.
   { variable: "CONNECTOR_SECRETS_ROLE_ARN", kind: "roleArn", roleName: connectorSecretsRoleName },
+  // Test services TS26: the role the broker assumes for a customer test account's secret. Derived like the connector role; nothing reads it while `ta` is off.
+  { variable: "TEST_ACCOUNT_SECRETS_ROLE_ARN", kind: "roleArn", roleName: testAccountSecretsRoleName },
   // Team record: set in the process (not in Lambda's configuration) for every named environment; the record does nothing unless TEAM_RECORD_ENABLED is "1".
   { variable: "TEAM_RECORD_TABLE_NAME", kind: "text", value: teamRecordTableName },
   { variable: "TEAM_RECORD_VECTOR_BUCKETS", kind: "text", value: teamRecordVectorBucketName },
