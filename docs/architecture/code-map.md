@@ -369,6 +369,7 @@ No single test lists every broker read.
 | `identity-lambda.ts` | (No header comment.) Exports `errorName`, `SLACK_UNAVAILABLE`, `channelMembersThroughLambda`. |
 | `install.ts` | Enterprise foundations E2: GET /v1/app/install. |
 | `intake.ts` | Meta repo lane F (F1): the broker's wiring of the intake routes (`rovara-code`-style: one module, so the router needs two lines). |
+| `jira-org-admin.ts` | The Jira organization admin key (DV-1, owner decision 2026-11-02): `/v1/app/org/jira-org-admin`, the one place a company owner or admin sets or clears the READ-ONLY Atlassian organization admin API key and the Atlassi... |
 | `known-failing-marks.ts` | Setup and test health KF-1: `/v1/app/projects/{name}/known-failing`, the tests a maintainer marked as already failing, and Undo. |
 | `known-failing-policy.ts` | Setup and test health SH17 (owner decision F4): `/v1/app/org/known-failing-policy`, the company setting "always two people" for marking tests as already failing. |
 | `lessons.ts` | Learning v2 L3b wiring: the lessons routes and the loaded-knowledge routes on the developer routes. |
