@@ -97,7 +97,7 @@ describe("names and addresses", () => {
     ];
     for (const [label, address] of probes) expect(isForbiddenAddress(address), `${label}: ${address}`).toBe(true);
     // The neighbours of those ranges are public addresses and stay reachable.
-    for (const address of ["2001:1::1", "2001:4860:4860::8888", "2003::1", "2001:db9::1", "fe00::1", "ec00::1", "fbff::1", "64:ff9a::1", "101::1", "100:0:0:1::1", "1::1"]) {
+    for (const address of ["2001:1::1", "2001:4860:4860::8888", "2003::1", "2001:db9::1", "fe00::1", "ec00::1", "fbff::1", "64:ff9a::1", "101::1", "100:0:0:1::1", "1::1", "::ff00:808:808", "::fffe:808:808", "::ff:808:808"]) {
       expect(isForbiddenAddress(address), address).toBe(false);
     }
     for (const notAnAddress of ["", "not-an-address", "1.2.3", "::g", ":::", "1:2:3:4:5:6:7:8:9", "::ffff:999.1.1.1"]) expect(isForbiddenAddress(notAnAddress), notAnAddress).toBe(true);

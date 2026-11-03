@@ -120,9 +120,12 @@ describe("the session", () => {
     // A record that holds another company's id, a customer-chosen id or another account's id is refused, however it got there.
     for (const externalId of [`rovara-${OTHER}-orders-dev`, "ext-0123456789", `rovara-${ORG}-orders-files`, "rovara-org_", ""]) {
       const tampered = aws();
-      const record = { ...account(), aws: awsBlock({ externalId }) } as unknown as TestAccount;
-      const error = await refusalOf(open(tampered.port, { account: record }));
-      expect(["external_id", "not_usable"], externalId).toContain(error.code);
+      // Stamped with the id it holds (so the approvals still cover the record): only the id itself is wrong.
+      const stampedWithIt = account({ aws: awsBlock({ externalId }) });
+      expect((await refusalOf(open(tampered.port, { account: stampedWithIt }))).code, externalId).toBe("external_id");
+      // The same record with its stamp left behind is not usable either.
+      const stale = { ...account(), aws: awsBlock({ externalId }) } as unknown as TestAccount;
+      expect(["external_id", "not_usable"], externalId).toContain((await refusalOf(open(tampered.port, { account: stale }))).code);
       expect(tampered.calls, externalId).toHaveLength(0);
     }
     // The record that really is in the store, only its external id changed after the approval stamped it: the stamp no longer matches, and the id would not either.
