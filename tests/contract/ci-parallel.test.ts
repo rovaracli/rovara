@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
@@ -29,9 +29,27 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
     expect(test.steps.some((step) => step.run === "npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}")).toBe(true);
   });
 
-  it("keeps checks, tests, the release check and the Linux runtime check in jobs of their own, none waiting on another", async () => {
+  it("keeps checks, lint, tests, the release check and the Linux runtime check in jobs of their own", async () => {
     const { jobs } = await workflow();
-    for (const name of ["checks", "test", "release", "linux-runtime"]) expect(jobs[name]!.needs, name).toBe("scope");
+    expect(jobs.checks!.needs).toBe("scope");
+    for (const name of ["lint", "test", "release", "linux-runtime", "mcp-runner-linux", "web-e2e"]) expect(jobs[name], name).toBeDefined();
+  });
+
+  // Owner decision "CI cost" (2026-11-02): lint and type checks first, the expensive jobs only if they pass. `checks` is the type check alone (a few minutes), so the shards are not held back
+  // by the 16-minute lint; the lint waits for `checks` too and then runs beside the shards.
+  it("starts the lint, the test shards, the release check, the Linux runtime check, the MCP runner check and the browser tests only after the type checks pass", async () => {
+    const { jobs } = await workflow();
+    for (const name of ["lint", "test", "release", "linux-runtime", "mcp-runner-linux", "web-e2e"]) expect(jobs[name]!.needs, name).toEqual(["scope", "checks"]);
+  });
+
+  it("keeps the full-repository lint out of the job that gates the others, and the type checks in it", async () => {
+    const { jobs } = await workflow();
+    const run = (name: string) => jobs[name]!.steps.map((step) => step.run ?? "");
+    expect(run("checks")).toEqual(expect.arrayContaining(["npm run typecheck", "npm run typecheck:all"]));
+    expect(run("checks")).not.toContain("npm run lint");
+    // The lint programs read the declarations that tsc -b leaves, so its job builds them itself, before it lints.
+    expect(run("lint").indexOf("npm run typecheck")).toBeGreaterThan(run("lint").indexOf("npm ci"));
+    expect(run("lint").indexOf("npm run lint")).toBeGreaterThan(run("lint").indexOf("npm run typecheck"));
   });
 
   it("frees runner disk before the test shards and the Linux runtime check install anything, and shows the free space before and after", async () => {
@@ -182,10 +200,18 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
     }
   });
 
-  it("supersedes a pull request's run in progress when it is pushed again, and never cancels a manual run", async () => {
+  // Owner decision "CI cost" (2026-11-02): a newer run on the same ref cancels the one in progress, a manual run included.
+  it("cancels a run in progress when a newer run starts on the same ref", async () => {
     const { concurrency } = await workflow();
-    expect(concurrency?.group).toContain("github.ref");
-    expect(concurrency?.["cancel-in-progress"]).toBe("${{ github.event_name == 'pull_request' }}");
+    expect(concurrency?.group).toBe("ci-${{ github.ref }}");
+    expect(concurrency?.["cancel-in-progress"]).toBe(true);
+  });
+
+  it("is a workflow no other workflow waits for, so cancelling its runs strands nothing", () => {
+    for (const name of readdirSync(".github/workflows").filter((file) => /\.ya?ml$/.test(file))) {
+      const text = readFileSync(`.github/workflows/${name}`, "utf8");
+      expect(text, name).not.toMatch(/workflow_run:|uses:\s*\.\/\.github\/workflows\/ci\.yml/);
+    }
   });
 
   it("reports one check called local that waits for every other job, so it cannot go green while one is missing", async () => {
