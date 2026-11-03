@@ -24,6 +24,8 @@ import type { DockerCli } from "./swebench/containers.js";
 import { createCheckRunners, mintSealedCheckOptions, runChecks, type CheckPlan, type CheckRound, type CheckRunners } from "./verification/checks.js";
 
 const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u;
+/** A variable name a shell and `docker exec --env` both read as a name (POSIX): a command's own `env` may hold no other (no `=`, no space, no `-`). */
+const POSIX_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const NETWORK_CALL_TIMEOUT_MS = 60_000;
 /** The exec inputs `withSealedCheckRound` made (TS-SEAL-3). Module-private: `sealedContainerExec` refuses any other. */
 const ROUND_EXEC_INPUTS = new WeakSet<object>();
@@ -53,7 +55,10 @@ export function sealedContainerExec(input: SealedExecInput): ContainerExec {
   return async (command, options) => {
     if (!input.live()) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed check sandbox is not running");
     counter += 1;
-    const own = Object.entries(options.env ?? {}).filter(([name]) => !owned.has(name));
+    const entries = Object.entries(options.env ?? {});
+    // Checked before the channel's names are taken out, so a bad name is refused, not hidden behind one that is dropped.
+    for (const [name, value] of entries) if (!POSIX_ENV_NAME.test(name) || typeof value !== "string" || value.includes("\0")) throw agentXError("CONFIG_INVALID", "a command's variable has a name or a value the sealed exec does not pass");
+    const own = entries.filter(([name]) => !owned.has(name));
     return withServiceEnvFile(input.files, `chk-${prefix}-${String(counter)}`, input.environment, (envFileArgs) => input.docker.run([
       "exec",
       ...envFileArgs,

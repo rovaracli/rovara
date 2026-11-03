@@ -359,6 +359,19 @@ describe("the sealed exec: the run's variables are a file, last, and never on th
     expect(seen.envFile!.text).toContain("DATABASE_URL=postgres://app:");
   });
 
+  it("refuses a command's variable whose name is not a POSIX name, so an `=` or a flag cannot be smuggled into the exec", async () => {
+    const p = plan();
+    for (const name of ["A=B", "--privileged", "A B", "1ABC", "", "A-B", "É", "A\nB"]) {
+      const { docker, execs } = fakeDocker(p.sandboxName);
+      const round = await runSealedCheckRound(roundInput(docker, p), planChecks([command("pytest", [], { [name]: "x" })], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
+      expect(round.entries[0], JSON.stringify(name)).toMatchObject({ after: "failed" });
+      expect(execs, JSON.stringify(name)).toEqual([]);
+    }
+    const { docker, execs } = fakeDocker(p.sandboxName);
+    await runSealedCheckRound(roundInput(docker, p), planChecks([command("pytest", [], { _OK_1: "x", lower_ok: "y" })], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
+    expect(execs[0]!.envFlags).toEqual(expect.arrayContaining(["_OK_1=x", "lower_ok=y"]));
+  });
+
   it("does not copy the worker's own environment into the agent's replay", async () => {
     const p = plan();
     const { docker, execs } = fakeDocker(p.sandboxName);
