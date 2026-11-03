@@ -49,11 +49,17 @@ const REFUSAL_OF_SKIP: Partial<Record<SkipReason, DependencyPlanRefusal>> = {
 };
 
 /**
- * Slice 1: a worker pulls (as root, at boot) only the images in the pre-pull list baked into its image, and that list holds the DEFAULT entry of each family (`catalogPrepullList`). A pinned entry that is not in it (postgres@15,
- * postgres@17) would pass approval and then always fail on the worker, so it is "not available yet" at approval and at plan time. Follow-up: pre-pull every pinned local entry, then drop this check.
+ * A worker pulls (as root, at boot) only the images in the pre-pull list baked into its image, and that list holds EVERY pinned, non-retired local or emulated entry plus the pinned defaults and always-used helpers
+ * (`catalogPrepullList`), so a pinned non-default entry (postgres@15, postgres@17) is startable once the catalog pins it. An entry that is NOT in the list (not pinned, retired, or a kind the list leaves out) would pass
+ * approval and then always fail on the worker, so it stays "not available yet" at approval and at plan time.
  */
 export function isPrepulledEntry(catalog: VerifiedCatalog, catalogId: string): boolean {
-  return catalogPrepullList(catalog).images.some((image) => image.id === catalogId);
+  // A list that cannot be made (more images than a worker pre-pulls) is "not pre-pulled", never a thrown error at approval: the worker would not have pulled it either.
+  try {
+    return catalogPrepullList(catalog).images.some((image) => image.id === catalogId);
+  } catch {
+    return false;
+  }
 }
 
 const majorOf = (entry: CatalogEntry): string => entry.version.split(".")[0] ?? entry.version;
