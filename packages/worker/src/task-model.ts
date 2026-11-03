@@ -131,3 +131,13 @@ export function taskMissingKeyAuthorizer(payload:{modelPolicy?:TaskModelPolicyBi
   return authorizedTaskRuntime(reply,baseProxy,environment);
  };
 }
+
+/**
+ * DR5: the model and session adapter of one design reviewer (or the merge step). Called the way the broker checked it: through its own proxy route when it has one, and with the proxy this reviewer's key slot
+ * reaches (`proxy`: the base proxy with this slot's key source). A routed model on a worker with no model proxy cannot be reached and throws; the reviewer then gives no result.
+ */
+export function designReviewRuntime(candidate: { model: ModelSelection; modelRoute?: InvocationModelRoute | undefined }, proxy: ModelProxyOptions | undefined, environment: NodeJS.ProcessEnv = process.env): { model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter } {
+  if (candidate.modelRoute === undefined) return { model: resolveTaskModel(candidate.model, environment), ...(proxy === undefined ? {} : { piAdapter: createProxyPiSessionAdapter(proxy) }) };
+  if (proxy === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "this design reviewer names a model route, but this worker has no model proxy to send it through");
+  return { model: routedTaskModel(candidate.modelRoute, candidate.model, environment), piAdapter: createProxyPiSessionAdapter({ ...proxy, route: candidate.modelRoute }) };
+}

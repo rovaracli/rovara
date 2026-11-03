@@ -23,6 +23,7 @@ import {
   TEST_ENV_COVERAGE_PATH_FEATURE,
   TEST_ENV_DETECT_FEATURE,
   SECOND_REVIEWER_FEATURE,
+  DESIGN_REVIEW_WORKER_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
   PREPARE_SAVED_ENV_FEATURE,
@@ -459,6 +460,10 @@ async function forWorkerFeatures(
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.
   if (invocation.kind === "task" && (invocation.payload.workflowMode === "SPEC_WRITE" || invocation.payload.specWrite !== undefined) && !features.includes("task.specWrite.v1")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // DR5: a design review is never sent to a worker that does not list it (it would run one plan check with the planner's workspace); the binding is never dropped.
+  if (invocation.kind === "task" && invocation.payload.designReview !== undefined && !features.includes(DESIGN_REVIEW_WORKER_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (invocation.kind === "task" && invocation.payload.workflowReviewSpec !== undefined && !features.includes("task.workflowReviewSpec.v1")) {
