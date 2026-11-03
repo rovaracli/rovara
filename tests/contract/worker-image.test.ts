@@ -200,7 +200,7 @@ describe("the worker image ships the detector thread", () => {
     const { rootDir, outDir } = tsconfig.compilerOptions;
     const emitted = `${outDir}/${"src/env-detect/detect-thread.ts".slice(`${rootDir}/`.length).replace(/\.ts$/u, ".js")}`;
     expect(emitted).toBe("dist/env-detect/detect-thread.js");
-    expect(readFileSync("scripts/check-worker-dist.ts", "utf8")).toContain(`packages/worker/${emitted}`);
+    expect(readFileSync("scripts/worker-dist-files.ts", "utf8")).toContain(`packages/worker/${emitted}`);
     const base = JSON.parse(readFileSync("tsconfig.base.json", "utf8")) as { compilerOptions: { module?: string } };
     expect(base.compilerOptions.module ?? "").toMatch(/^(?:node16|nodenext|esnext|es20\d\d)$/iu);
   });
