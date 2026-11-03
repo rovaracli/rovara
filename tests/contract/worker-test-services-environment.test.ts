@@ -67,11 +67,19 @@ describe("the worker's test services settings", () => {
 describe("root pulls the catalog images by digest before the worker starts (H2)", () => {
   const REPO_DIGEST = "c".repeat(64);
   const prepull = (images: Array<{ repository: string; digest: string }>) => JSON.stringify({ schemaVersion: 1, catalogRevision: 1, images: images.map((image, index) => ({ id: `thing${String(index)}@1`, ...image, platforms: ["linux/arm64"] })) }, null, 2);
-  const run = (list: string | undefined, options: { pullExit?: number; loginExit?: number; present?: boolean } = {}) => {
+  const run = (list: string | undefined, options: { pullExit?: number; loginExit?: number; present?: boolean; pullScript?: string; realTimeout?: boolean; env?: Record<string, string> } = {}) => {
     const directory = mkdtempSync(join(tmpdir(), "tsl-pull-"));
     if (list !== undefined) writeFileSync(join(directory, "prepull.json"), list);
+    // The fake timeout records its arguments; with `realTimeout` it also kills the command after the duration (exit 124, as the real one does).
+    const timeoutScript = [
+      `echo "timeout $*" >> "${directory}/calls"`,
+      'while [[ "$1" == --* ]]; do shift; done',
+      ...(options.realTimeout === true
+        ? ['d=${1%s}; shift', '"$@" & p=$!', '( sleep "$d"; kill $p 2>/dev/null ) >/dev/null 2>&1 & k=$!', 'wait $p; rc=$?; kill $k 2>/dev/null; if [ $rc -ge 128 ]; then exit 124; fi; exit $rc']
+        : ['shift', 'exec "$@"']),
+    ].join("\n");
     const path = tools(directory, {
-      timeout: 'while [[ "$1" == --* ]]; do shift; done; shift; exec "$@"',
+      timeout: timeoutScript,
       aws: `echo "aws $@" >> "${directory}/calls"; echo token`,
       docker: [
         `echo "docker $@" >> "${directory}/calls"`,
@@ -79,15 +87,15 @@ describe("root pulls the catalog images by digest before the worker starts (H2)"
         `  run) [ -f "${directory}/prepull.json" ] && cat "${directory}/prepull.json" || exit 1 ;;`,
         `  login) cat >/dev/null; exit ${String(options.loginExit ?? 0)} ;;`,
         `  image) exit ${options.present === true ? "0" : "1"} ;;`,
-        `  pull) exit ${String(options.pullExit ?? 0)} ;;`,
+        `  pull) ${options.pullScript ?? `exit ${String(options.pullExit ?? 0)}`} ;;`,
         '  logout) ;;',
         'esac',
       ].join("\n"),
     });
     const program = `log() { echo "$*" >> "${directory}/log"; }\n${fn("pull_catalog_images")}\npull_catalog_images us-west-2`;
-    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker", TMPDIR: directory } });
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker", TMPDIR: directory, ...options.env } });
     const read = (name: string): string => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
-    return { status: ran.status, calls: read("calls"), log: read("log") };
+    return { status: ran.status, calls: read("calls"), log: read("log"), directory, read };
   };
 
   it("logs in to the registry and pulls each pinned digest of the worker image's list, by digest, from the environment's catalog repository", () => {
@@ -126,6 +134,84 @@ describe("root pulls the catalog images by digest before the worker starts (H2)"
       expect(r.log, JSON.stringify(options)).toContain("CATALOG PRE-PULL FAILED");
       expect(r.calls, JSON.stringify(options)).toContain("docker logout 944937319445.dkr.ecr.us-west-2.amazonaws.com");
     }
+  });
+});
+
+describe("the boot pulls are bounded per image and run in parallel (slice-1 follow-up b)", () => {
+  const digests = (count: number): Array<{ repository: string; digest: string }> => Array.from({ length: count }, (_, index) => ({ repository: `svc/thing${String(index)}`, digest: index.toString(16).padStart(64, "d") }));
+  const list = (count: number): string => JSON.stringify({ schemaVersion: 1, catalogRevision: 1, images: digests(count).map((image, index) => ({ id: `thing${String(index)}@1`, ...image, platforms: ["linux/arm64"] })) }, null, 2);
+  // Builds the same fake host as the block above, with a count of pulls running at once.
+  function drive(images: number, options: { pullScript: string; realTimeout?: boolean; env?: Record<string, string> }) {
+    const directory = mkdtempSync(join(tmpdir(), "tsl-par-"));
+    writeFileSync(join(directory, "prepull.json"), list(images));
+    const timeoutScript = [
+      `echo "timeout $*" >> "${directory}/calls"`,
+      'while [[ "$1" == --* ]]; do shift; done',
+      ...(options.realTimeout === true
+        ? ['d=${1%s}; shift', '"$@" & p=$!', '( sleep "$d"; kill $p 2>/dev/null ) >/dev/null 2>&1 & k=$!', 'wait $p; rc=$?; kill $k 2>/dev/null; if [ $rc -ge 128 ]; then exit 124; fi; exit $rc']
+        : ['shift', 'exec "$@"']),
+    ].join("\n");
+    const path = tools(directory, {
+      timeout: timeoutScript,
+      aws: 'echo token',
+      docker: [
+        'case "$1" in',
+        `  run) cat "${directory}/prepull.json" ;;`,
+        '  login) cat >/dev/null ;;',
+        '  image) exit 1 ;;',
+        `  pull) echo "pull $2" >> "${directory}/pulls"; ${options.pullScript} ;;`,
+        '  logout) echo logout >> "' + directory + '/calls" ;;',
+        'esac',
+      ].join("\n"),
+    });
+    const program = `log() { echo "$*" >> "${directory}/log"; }\n${fn("pull_catalog_images")}\npull_catalog_images us-west-2`;
+    const started = Date.now();
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker", TMPDIR: directory, ...options.env } });
+    const read = (name: string): string => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
+    return { status: ran.status, calls: read("calls"), log: read("log"), pulls: read("pulls").split("\n").filter((line) => line !== ""), seconds: (Date.now() - started) / 1000, read };
+  }
+  it("gives every pull its own time limit (180 s by default, killed 10 s later) instead of one long wait per image", () => {
+    const r = drive(3, { pullScript: "exit 0" });
+    expect(r.status).toBe(0);
+    expect(r.calls.match(/timeout --foreground --kill-after=10s 180s docker pull /gu)).toHaveLength(3);
+    expect(r.calls).not.toContain("600s");
+    expect(stage2).not.toContain("600s docker pull");
+  });
+  it("pulls several images at once, never more than four", () => {
+    // The harness makes its own directory, so the slow pull writes to a path the test passes through the environment.
+    const directory = mkdtempSync(join(tmpdir(), "tsl-par-conc-"));
+    const r = drive(7, { pullScript: `d="$TSL_CONC"; mkdir -p "$d/active"; touch "$d/active/$$"; ls "$d/active" | wc -l >> "$d/concurrency"; sleep 1; rm -f "$d/active/$$"`, env: { TSL_CONC: directory } });
+    expect(r.status).toBe(0);
+    expect(r.pulls).toHaveLength(7);
+    const seen = readFileSync(join(directory, "concurrency"), "utf8").split("\n").filter((line) => line !== "").map(Number);
+    expect(Math.max(...seen)).toBeGreaterThan(1);
+    expect(Math.max(...seen)).toBeLessThanOrEqual(4);
+    // 7 one-second pulls, 4 at a time: about two seconds, not seven.
+    expect(r.seconds).toBeLessThan(6);
+  });
+  it("a hung pull is killed at its own limit and fails the pre-pull; the others are not held behind it, and no new pull starts once one has failed", () => {
+    // Image 0 hangs (a long sleep); the limit is 2 s. The other images pull at once.
+    const hungDigest = digests(5)[0]!.digest;
+    const r = drive(5, { pullScript: `case "$2" in *${hungDigest}) exec sleep 60 ;; *) exit 0 ;; esac`, realTimeout: true, env: { CATALOG_PULL_TIMEOUT_S: "2" } });
+    expect(r.status).toBe(1);
+    expect(r.log).toContain("CATALOG PRE-PULL FAILED");
+    expect(r.log).toContain(hungDigest);
+    expect(r.seconds).toBeLessThan(12);
+    expect(r.calls).toContain("logout");
+    expect(r.pulls.length).toBeLessThanOrEqual(5);
+    expect(r.pulls.filter((line) => line.includes(hungDigest))).toHaveLength(1);
+  });
+  it("one at a time (parallel 1): the first failure stops the rest from starting", () => {
+    const r = drive(4, { pullScript: "exit 1", env: { CATALOG_PULL_PARALLEL: "1" } });
+    expect(r.status).toBe(1);
+    expect(r.pulls).toHaveLength(1);
+    expect(r.log).toContain("CATALOG PRE-PULL FAILED");
+  });
+  it("counts every image it pulled in the boot facts and still logs out", () => {
+    const r = drive(6, { pullScript: "exit 0" });
+    expect(r.status).toBe(0);
+    expect(r.log).toContain("pulled 6 catalog image(s) by digest");
+    expect(r.calls).toContain("logout");
   });
 });
 
