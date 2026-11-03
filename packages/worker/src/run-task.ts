@@ -548,7 +548,9 @@ async function runTask(
       // The baseline run of a scanner on the original code (P4) takes time from the same budget the test proof below has.
       const evidenceStarted = Date.now();
       if (invocation.payload.evidenceCapture === true && !stop.signal.aborted) {
-        await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted, selection: testEnv?.selection, coveragePaths: invocation.payload.testEnvironment?.checks.map((check) => check.coveragePath),
+        // Test services: the rounds' usage record rides in the raw file (the broker labels it; nothing of it was reaching the evidence). Read before the services stop.
+        const servicesRecord = await testServices?.usageRecord().catch(() => undefined);
+        await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted, selection: testEnv?.selection, ...(servicesRecord === undefined ? {} : { testServices: servicesRecord }), coveragePaths: invocation.payload.testEnvironment?.checks.map((check) => check.coveragePath),
           baseline: { runners, signal: stop.signal, budgetMs: roundBudgetMs - roundSpentMs, ...(dependencies.testProofOriginalCode === undefined ? {} : { originalCode: dependencies.testProofOriginalCode }) } });
       }
       const evidenceSpentMs = Date.now() - evidenceStarted;

@@ -8,7 +8,9 @@ import { mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { ProjectDefinitionSchema, TaskDependencyPlanSchema, type ServiceCatalog, type WorkerInvocation } from "@agentx/contracts";
+import { EVIDENCE_RAW_ARTIFACT, EvidencePackSchema, EvidenceRawSchema, ProjectDefinitionSchema, TaskDependencyPlanSchema, type CheckEntry, type ServiceCatalog, type WorkerInvocation } from "@agentx/contracts";
+import { buildEvidencePack } from "../../packages/broker/src/rovara-code/evidence-pack.js";
+import { evidenceLines } from "../../packages/broker/src/rovara-code/evidence-lines.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareWorkspace } from "../../packages/worker/src/prepare.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
@@ -58,11 +60,11 @@ const dependencyPlan = () => TaskDependencyPlanSchema.parse({
   seeds: [{ command: { cwd: "repo/sample", executable: "npm", args: ["run", "migrate"], timeoutSeconds: 60 } }], reset: "fresh_per_round",
 });
 
-function checksInvocation(withDependencies: boolean): Extract<WorkerInvocation, { kind: "task" }> {
+function checksInvocation(withDependencies: boolean, evidenceCapture = false): Extract<WorkerInvocation, { kind: "task" }> {
   return {
     protocolVersion: 1, kind: "task", operationId: OPERATION, workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
     payload: {
-      conversationId: randomUUID(), prompt: "Run the checks.", workflowMode: "CHECKS", readiness: READINESS,
+      conversationId: randomUUID(), prompt: "Run the checks.", workflowMode: "CHECKS", readiness: READINESS, ...(evidenceCapture ? { evidenceCapture: true } : {}),
       testEnvironment: {
         revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }],
         ...(withDependencies ? { dependencies: [dependencyPlan()] } : {}),
@@ -78,7 +80,7 @@ function normalised(value: unknown, root: string): unknown {
   return JSON.parse(JSON.stringify(value).split(root).join("<root>").replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gu, "<uuid>").replace(/agentx-task-<uuid>-[0-9a-f]{8}\b/gu, "<sandbox>").replace(/agentx\.workspace=[0-9a-f]{16}/gu, "agentx.workspace=<ws>").replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/gu, "<time>").replace(/\b[0-9a-f]{40}\b/gu, "<sha>").replace(/"durationMs":\d+/gu, "\"durationMs\":0")) as unknown;
 }
 
-async function checksRun(options: { withDependencies: boolean; artifactSink?: (artifact: { name: string }) => Promise<void>; testServices?: TestServicesConfig; fake?: ReturnType<typeof fakeServicesDocker> }) {
+async function checksRun(options: { withDependencies: boolean; evidenceCapture?: boolean; artifactSink?: (artifact: { name: string }) => Promise<void>; testServices?: TestServicesConfig; fake?: ReturnType<typeof fakeServicesDocker> }) {
   vi.stubEnv("AGENTX_RUNTIME", "ec2");
   vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "container");
   vi.stubEnv("AGENTX_TASK_SHELL", "");
@@ -95,7 +97,7 @@ async function checksRun(options: { withDependencies: boolean; artifactSink?: (a
     stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve(), sweepWorkspaceContainers: () => Promise.resolve({ removed: 0 }), log: () => undefined },
     ...(options.testServices === undefined ? {} : { testServices: options.testServices }),
   };
-  const result = await runTaskInvocation(checksInvocation(options.withDependencies), dependencies as never).then((value) => ({ value }), (error: unknown) => ({ error }));
+  const result = await runTaskInvocation(checksInvocation(options.withDependencies, options.evidenceCapture === true), dependencies as never).then((value) => ({ value }), (error: unknown) => ({ error }));
   return { root, fake, events, artifacts, result };
 }
 
@@ -511,6 +513,31 @@ describe("a CHECKS run with a plan that has dependencies", () => {
     expect(fake.left().containers).toEqual([]);
     expect(fake.left().networks).toEqual([]);
     expect(await readdir(base.runDirectoryParent)).toEqual([]);
+  });
+
+  it("the usage record of the rounds lands in the evidence raw file the run saves, and from there in the pack and the PR line (H1)", async () => {
+    const fake = fakeServicesDocker({ imagePresent: true });
+    const base = await config();
+    const h = await checksRun({ withDependencies: true, evidenceCapture: true, fake, testServices: withDocker(base, fake) });
+    expect("value" in h.result, JSON.stringify("error" in h.result ? String((h.result.error as Error).message) : "")).toBe(true);
+    const saved = h.artifacts.filter((artifact) => artifact.name === EVIDENCE_RAW_ARTIFACT);
+    expect(saved).toHaveLength(1);
+    const raw = EvidenceRawSchema.parse(JSON.parse(saved[0]!.content!));
+    expect(raw.testServices?.dependencies).toEqual([expect.objectContaining({ id: "postgres", started: true, healthy: true })]);
+    // The broker builds the pack from THIS file with its own pinned list: the dependency is shown as real and the PR says so.
+    const checks: CheckEntry[] = [];
+    const built = buildEvidencePack({
+      candidateDigest: raw.candidateDigest, rawText: saved[0]!.content, checks, environment: { tier: "sandbox", envRevision: 1, services: [], data: "synthetic", accounts: [] },
+      storedArtifacts: new Map(), dependencies: [{ id: "postgres", name: "Postgres", backing: "local" }],
+    });
+    expect(EvidencePackSchema.safeParse(built.pack).success).toBe(true);
+    expect(built.pack?.environment.dependencies).toEqual([expect.objectContaining({ name: "Postgres", label: "real" })]);
+    expect(evidenceLines({ pack: built.pack, mode: "summary" }, raw.candidateDigest, 0).lines).toContain("Integration tests ran against: Postgres (real).");
+  });
+
+  it("without dependencies the raw file is what it always was: no testServices key (golden)", async () => {
+    const h = await checksRun({ withDependencies: false, evidenceCapture: true });
+    for (const artifact of h.artifacts.filter((entry) => entry.name === EVIDENCE_RAW_ARTIFACT)) expect(artifact.content).not.toContain("testServices");
   });
 
   it("a task that throws after the services started (a sink fails) still tears everything down", async () => {
