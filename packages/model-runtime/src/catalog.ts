@@ -5,6 +5,12 @@ import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { BEDROCK_REGION_PREFIXES, canonicalModelName, type ModelIdentifier } from "@agentx/contracts";
 
+/**
+ * The provider name a routed model is registered under. Here, not in index.ts: the package root loads the whole coding-agent runtime (which reads `import.meta.url` when it loads and cannot be bundled into a
+ * CommonJS Lambda), so the control plane imports this from `@agentx/model-runtime/catalog`.
+ */
+export const ROUTE_PROVIDER = "rovara-route";
+
 let catalogs: Map<string, ReadonlyMap<string, Model<Api>>> | undefined;
 
 /** A Bedrock cross-region inference profile names its model with a geography prefix the catalog omits. */
