@@ -398,3 +398,256 @@ function answerTo(query: DnsPacket, reply: Buffer, maxBytes: number = MAX_MESSAG
   const parsed = parseDnsPacket(reply, maxBytes);
   return parsed !== undefined && parsed.response && parsed.id === query.id && parsed.name === query.name && parsed.type === query.type ? parsed : undefined;
 }
+// ===== SEALED MODE (TS16): appended after the setup mode; the setup mode above this line is frozen (tests/unit/setup-dns-watch-setup-mode-frozen.test.ts) =====
+// The sealed check sandbox's name server (test services, TS16; design test-services.md 4.0.2 and 4.0.3, owner Q3). DEPLOYMENT CODE: nothing here has been run against Docker (this build starts no Docker); the Linux
+// checks TS-L1 to TS-L3 and TS-L6 (and the sealed-sandbox checks listed in check-sandbox.ts) MUST pass on linux-runtime or a staging worker before the `tx` switch is turned on. Nothing calls this yet.
+//
+// It runs in the DNS helper container at .2 of a run's services network, and is the ONLY name server the sealed check sandbox (.4) and the working sandbox (.3) are told about (check-sandbox.ts writes a run-owned
+// /etc/resolv.conf that names it alone). What it does, and what it cannot do:
+//   - a STATIC table answers: the run's dependency names and the sinkhole's name, each to the address the run plan gave it. The table is fixed when the object is made. It never comes from repository text at run time;
+//   - EVERY OTHER name is answered with the SINKHOLE's address (an A record), so a call to an undeclared host goes to the sinkhole (the fake server image in record-only mode) and nowhere else. The name is counted here
+//     (`unknownNames()`), and the sinkhole records the call itself (name, port, count). An AAAA or HTTPS question gets an empty NOERROR answer, so a client falls back to the A record;
+//   - it has NO UPSTREAM: no option names one, it opens no socket but its own two listeners (UDP and TCP), and it cannot forward a question, so an unknown name can never resolve to an address outside the run;
+//   - it serves ONLY the addresses it was made with (the run's .4 alone: the working sandbox at .3 is off the services network for the check round, check-sandbox.ts): a packet or a TCP connection from anywhere else gets
+//     no answer and is not counted. The list is fixed at construction (there is no setter). The source address is the packet's own, and a program on the same bridge can forge it without any capability: a socket with
+//     `IP_FREEBIND` may bind, and send from, an address that is not its own (review L1). So a neighbour (a fake service helper at .16 and up) can make the helper COUNT an unknown name as if .4 had asked it. That is blind
+//     record pollution only: the answer goes to the real owner of the forged address, never back to the sender, and no name is ever resolved to anything outside the run. TS-L3 (h) checks it on Linux;
+//   - every address it hands out must be a private IPv4 address (the run's own range), so even a wrong plan cannot point a name at a public address;
+//   - it holds a bounded record: at most `SEALED_UNKNOWN_NAMES_MAX` distinct unknown names, each cut to `SEALED_RECORD_NAME_MAX` characters, each with a query count. (An unknown name can carry a secret, lower-cased, as a
+//     label of the name a program tried to reach: whoever shows the record to a person must redact it case-insensitively, or show the registrable domain and a count only. DEFERRED-CHECKS, TS17/TS23.)
+export const SEALED_DNS_TTL_SECONDS = 5;
+/** The most names a sealed table may hold (32 helpers with a few aliases each, the sinkhole, the proxy). */
+export const SEALED_DNS_TABLE_MAX = 256;
+/** The most distinct unknown names a sealed helper keeps; more are counted in `droppedNames()`. */
+export const SEALED_UNKNOWN_NAMES_MAX = 200;
+/** The most characters of an unknown name kept in the record. A longer name is cut to this (the lookup itself is answered in full). */
+export const SEALED_RECORD_NAME_MAX = 64;
+const SEALED_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+/** The labels of an unknown name that may be kept in the record: letters, digits, hyphen, underscore. Anything else is counted but its text is never kept. */
+const SEALED_RECORD_LABEL = /^[a-z0-9_-]{1,63}$/u;
+const SEALED_FLAG_RESPONSE_AUTHORITATIVE_RECURSION = 0x8000 | 0x0400 | 0x0080;
+/** Questions one TCP connection may ask before it is closed. */
+const SEALED_TCP_QUERIES_PER_CONNECTION = 64;
+const DNS_CLASS_IN = 1;
+const TYPE_A = 1;
+
+/** True for a plain table name: one or more lower-case LDH labels, at most 253 characters, no empty label. */
+export function isSealedDnsName(name: string): boolean {
+  return name.length >= 1 && name.length <= 253 && name.split(".").every((label) => SEALED_LABEL.test(label));
+}
+
+function privateIpv4(address: string): boolean {
+  return isIP(address) === 4 && !unspecifiedOrMulticast(address) && isPrivateAddress(address);
+}
+
+export interface SealedDnsOptions {
+  /** The address to listen on, UDP and TCP: the helper's own address (.2 of the run's network). Same rule as the setup watch: one explicit private address. */
+  listenAddress: string;
+  /** For tests and a developer's machine only: a loopback listen address. */
+  allowLoopback?: boolean;
+  /** Default 53. 0 picks a free port (tests). */
+  port?: number;
+  /** The static table: name (lower-case) to a private IPv4 address. */
+  names: Readonly<Record<string, string>>;
+  /** The sinkhole's address (private IPv4): what every name outside the table resolves to. */
+  sinkholeAddress: string;
+  /** The only callers served: the run's sandbox addresses (.3 and .4). One to sixteen explicit IP addresses, fixed for the life of the object. */
+  allowedSources: readonly string[];
+  /** Distinct unknown names kept. Default `SEALED_UNKNOWN_NAMES_MAX`. */
+  maxUnknownNames?: number;
+}
+
+export interface SealedUnknownName {
+  name: string;
+  /** Address lookups (A, AAAA, HTTPS) of this name since the helper started. */
+  queries: number;
+}
+
+/** The index just past the one question of a packet `parseDnsPacket` accepted (no compression pointer, so the question is a plain name followed by the type and the class). */
+function questionEnd(packet: Buffer): number {
+  let at = HEADER_BYTES;
+  while (packet[at] !== 0) at += packet[at]! + 1;
+  return at + 1 + 4;
+}
+
+/** The reply to `raw`: the same id and question, the given rcode, and one A record when `address` is given. Built from the query's own question bytes, so the case of the name is echoed as it was asked. */
+function sealedReply(raw: Buffer, query: DnsPacket, rcode: number, address?: string): Buffer {
+  const header = Buffer.alloc(HEADER_BYTES);
+  header.writeUInt16BE(query.id, 0);
+  header.writeUInt16BE(SEALED_FLAG_RESPONSE_AUTHORITATIVE_RECURSION | (raw.readUInt16BE(2) & 0x0100) | rcode, 2);
+  header.writeUInt16BE(1, 4);
+  header.writeUInt16BE(address === undefined ? 0 : 1, 6);
+  const question = raw.subarray(HEADER_BYTES, questionEnd(raw));
+  if (address === undefined) return Buffer.concat([header, question]);
+  const ttl = Buffer.alloc(4);
+  ttl.writeUInt32BE(SEALED_DNS_TTL_SECONDS, 0);
+  return Buffer.concat([header, question, Buffer.from([0xc0, 0x0c, 0, TYPE_A, 0, DNS_CLASS_IN]), ttl, Buffer.from([0, 4, ...address.split(".").map(Number)])]);
+}
+
+/**
+ * One run's sealed name server. `start()` binds, `unknownNames()` is what the run asked for that the table did not hold (the evidence's "unexpected call" names), and `stop()` closes the two listeners.
+ * It answers from memory only; there is nothing it can forward to.
+ */
+export class SealedDnsHelper {
+  private readonly table: ReadonlyMap<string, string>;
+  private readonly sinkhole: string;
+  private readonly sources: ReadonlySet<string>;
+  private readonly listenAddress: string;
+  private readonly wantedPort: number;
+  private readonly maxUnknown: number;
+  private readonly unknown = new Map<string, number>();
+  private droppedNamesCount = 0;
+  private unrecordedCount = 0;
+  private udp: UdpSocket | undefined;
+  private tcp: Server | undefined;
+  private readonly tcpSockets = new Set<TcpSocket>();
+  private stopped = false;
+
+  constructor(options: SealedDnsOptions) {
+    if (isIP(options.listenAddress) === 0) throw agentXError("CONFIG_INVALID", "the sealed DNS helper listens on an IP address");
+    const loopback = options.allowLoopback === true && (options.listenAddress === "127.0.0.1" || options.listenAddress === "::1");
+    if (!loopback && (unspecifiedOrMulticast(options.listenAddress) || !isPrivateAddress(options.listenAddress))) {
+      throw agentXError("CONFIG_INVALID", "the sealed DNS helper listens on one explicit private IP address, never an unspecified, multicast, loopback or public one");
+    }
+    if (!privateIpv4(options.sinkholeAddress)) throw agentXError("CONFIG_INVALID", "the sealed DNS helper's sinkhole is a private IPv4 address");
+    const entries = Object.entries(options.names);
+    if (entries.length > SEALED_DNS_TABLE_MAX) throw agentXError("CONFIG_INVALID", "the sealed DNS table is too long");
+    for (const [name, address] of entries) {
+      if (!isSealedDnsName(name)) throw agentXError("CONFIG_INVALID", "the sealed DNS table holds a name that is not a plain lower-case host name");
+      if (!privateIpv4(address)) throw agentXError("CONFIG_INVALID", "the sealed DNS table maps names to private IPv4 addresses only");
+    }
+    const sources = options.allowedSources;
+    if (sources.length === 0 || sources.length > 16 || sources.some((source) => isIP(source) === 0 || unspecifiedOrMulticast(source))) {
+      throw agentXError("CONFIG_INVALID", "the sealed DNS helper serves one to sixteen explicit IP addresses");
+    }
+    this.table = new Map(entries);
+    this.sinkhole = options.sinkholeAddress;
+    this.sources = new Set(sources);
+    this.listenAddress = options.listenAddress;
+    this.wantedPort = options.port ?? 53;
+    this.maxUnknown = options.maxUnknownNames ?? SEALED_UNKNOWN_NAMES_MAX;
+  }
+
+  /** Binds UDP and TCP on the same port and returns it. A port taken in between (only when asking for a free one) is tried again, a few times. */
+  async start(): Promise<{ address: string; port: number }> {
+    if (this.stopped) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed DNS helper was already stopped");
+    if (this.udp !== undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed DNS helper already started");
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.bind(this.wantedPort);
+      } catch (error) {
+        await this.closeSockets();
+        if (this.wantedPort !== 0 || attempt >= START_ATTEMPTS || (error as { code?: unknown }).code !== "EADDRINUSE") throw error;
+      }
+    }
+  }
+
+  private async bind(wanted: number): Promise<{ address: string; port: number }> {
+    const udp = createSocket(isIP(this.listenAddress) === 6 ? "udp6" : "udp4");
+    this.udp = udp;
+    udp.on("message", (message, remote) => this.onUdp(message, remote.address, remote.port));
+    udp.on("error", () => undefined);
+    await new Promise<void>((resolve, reject) => { udp.once("error", reject); udp.bind(wanted, this.listenAddress, () => { udp.off("error", reject); resolve(); }); });
+    const port = udp.address().port;
+    const tcp = createServer((socket) => this.onTcpConnection(socket));
+    this.tcp = tcp;
+    tcp.maxConnections = MAX_TCP_CONNECTIONS;
+    tcp.on("error", () => undefined);
+    await new Promise<void>((resolve, reject) => { tcp.once("error", reject); tcp.listen(port, this.listenAddress, () => { tcp.off("error", reject); resolve(); }); });
+    return { address: this.listenAddress, port };
+  }
+
+  /** Every unknown name the run looked up, in the order first seen, with its query count. At most `maxUnknownNames`. */
+  unknownNames(): SealedUnknownName[] {
+    return [...this.unknown].map(([name, queries]) => ({ name, queries }));
+  }
+
+  /** Unknown names not kept because the record already holds `maxUnknownNames` of them. */
+  droppedNames(): number {
+    return this.droppedNamesCount;
+  }
+
+  /** Address lookups of unknown names whose text was not a plain name, so only this count was kept. */
+  unrecordedQueries(): number {
+    return this.unrecordedCount;
+  }
+
+  async stop(): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+    await this.closeSockets();
+  }
+
+  private async closeSockets(): Promise<void> {
+    const udp = this.udp;
+    const tcp = this.tcp;
+    this.udp = undefined;
+    this.tcp = undefined;
+    for (const socket of this.tcpSockets) socket.destroy();
+    this.tcpSockets.clear();
+    await Promise.all([
+      udp === undefined ? undefined : new Promise<void>((resolve) => { try { udp.close(() => resolve()); } catch { resolve(); } }),
+      tcp === undefined ? undefined : new Promise<void>((resolve) => { if (!tcp.listening) resolve(); else tcp.close(() => resolve()); }),
+    ]);
+  }
+
+  private served(address: string | undefined): boolean {
+    return address !== undefined && this.sources.has(address);
+  }
+
+  /** The reply to one packet, or undefined to drop it: it must be one standard query. */
+  private answer(packet: Buffer): Buffer | undefined {
+    const query = parseDnsPacket(packet);
+    if (query === undefined || query.response || query.opcode !== 0) return undefined;
+    if (packet.readUInt16BE(questionEnd(packet) - 2) !== DNS_CLASS_IN) return sealedReply(packet, query, RCODE_REFUSED);
+    const known = query.dottedLabel ? undefined : this.table.get(query.name);
+    if (known !== undefined) return sealedReply(packet, query, 0, query.type === TYPE_A ? known : undefined);
+    // Not in the table: every address lookup is counted, and an A question is sent to the sinkhole. Any other question gets an empty answer.
+    if (ADDRESS_LOOKUP_TYPES.has(query.type)) this.count(query);
+    return sealedReply(packet, query, 0, query.type === TYPE_A ? this.sinkhole : undefined);
+  }
+
+  private count(query: DnsPacket): void {
+    const plain = !query.dottedLabel && query.name.length <= 253 && query.name.split(".").every((label) => SEALED_RECORD_LABEL.test(label));
+    if (!plain) {
+      this.unrecordedCount += 1;
+      return;
+    }
+    const kept = query.name.slice(0, SEALED_RECORD_NAME_MAX);
+    const seen = this.unknown.get(kept);
+    if (seen !== undefined) this.unknown.set(kept, seen + 1);
+    else if (this.unknown.size >= this.maxUnknown) this.droppedNamesCount += 1;
+    else this.unknown.set(kept, 1);
+  }
+
+  private onUdp(message: Buffer, address: string, port: number): void {
+    if (this.stopped || !this.served(address)) return;
+    const reply = this.answer(message);
+    if (reply !== undefined) this.udp?.send(reply, port, address, () => undefined);
+  }
+
+  private onTcpConnection(socket: TcpSocket): void {
+    if (this.stopped || !this.served(socket.remoteAddress)) { socket.destroy(); return; }
+    this.tcpSockets.add(socket);
+    socket.setTimeout(TCP_IDLE_MS, () => socket.destroy());
+    socket.on("error", () => socket.destroy());
+    socket.on("close", () => this.tcpSockets.delete(socket));
+    let buffered = Buffer.alloc(0);
+    let queries = 0;
+    socket.on("data", (chunk) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      while (buffered.length >= 2) {
+        const length = buffered.readUInt16BE(0);
+        if (length === 0 || length > MAX_MESSAGE_BYTES) { socket.destroy(); return; }
+        if (buffered.length < 2 + length) return;
+        const message = buffered.subarray(2, 2 + length);
+        buffered = buffered.subarray(2 + length);
+        // A resolver asks a handful of questions on a connection (a retry over TCP); a client that sends a flood on one is closed.
+        queries += 1;
+        if (queries > SEALED_TCP_QUERIES_PER_CONNECTION) { socket.destroy(); return; }
+        const reply = this.answer(message);
+        if (reply !== undefined && !socket.destroyed) socket.write(Buffer.concat([Buffer.from([reply.length >> 8, reply.length & 0xff]), reply]));
+      }
+    });
+  }
+}
