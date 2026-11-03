@@ -8,7 +8,7 @@
 // agentx-staging-connector-secrets"), and so is the rollback's delete. So each fixed-name role needs its exact
 // path-less ARN named, for the read and delete actions only, in the deploy role and in the boundary it carries.
 import { Stack } from "aws-cdk-lib";
-import { brokerRoleName, chainScheduleRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName, savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName } from "@agentx/contracts";
+import { brokerRoleName, chainScheduleRoleName, connectorSecretsRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName, savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, testAccountSecretsRoleName } from "@agentx/contracts";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
@@ -119,7 +119,7 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
     // scheduler's invoke role, which the broker passes to the scheduler by an ARN built from the environment; each needs the path-less grant of the lookup statement.
     expect(fixedNameRoles().map((role) => role.name).sort()).toEqual(
       [
-        `agentx-${env}-connector-secrets`, brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
+        `agentx-${env}-connector-secrets`, testAccountSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
         // Setup and test health SH22: the roles the broker assumes for saved environment images.
         savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env),
         ...(env === "agentxlivetest123" ? [`${env}-task-person-proof`] : []),
@@ -143,7 +143,8 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
     // The boundary names the connector secrets role, and the broker builds its ARN from the environment alone: all three agree.
     const arn = `arn:aws:iam::${ACCOUNT}:role${path}agentx-${env}-connector-secrets`;
     const boundaryStatement = defaultBoundaryStatements(scope()).find((statement) => statement.Sid === "ConnectorSecretsRole");
-    expect(boundaryStatement?.Resource).toEqual([arn, `arn:aws:iam::${ACCOUNT}:role${path}agentx-${env}-img-*`]);
+    // Test services TS26: the TestAccountSecretsRole's name starts with the connector role's, and one wildcard ARN names both.
+    expect(boundaryStatement?.Resource).toEqual([`${arn}*`, `arn:aws:iam::${ACCOUNT}:role${path}agentx-${env}-img-*`]);
     const built: MutableEnvironment = { AGENTX_ENV: env, AGENTX_NAMES: "{}", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: ACCOUNT };
     hydrateBrokerEnvironment(built);
     expect(built.CONNECTOR_SECRETS_ROLE_ARN).toBe(arn);
@@ -186,7 +187,10 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
           expect(allowed(statements, action, pathless), `${label} refuses ${action} on ${pathless}`).toBe(false);
         }
         // Only that exact role, and the real path still works.
-        expect(allowed(statements, "iam:GetRole", `arn:aws:iam::${ACCOUNT}:role/${name}-other`), `${label} refuses a similar name`).toBe(false);
+        // The boundary (a ceiling only, with no room for one ARN per role) names the connector and test account secrets roles with one `connector-secrets*` ARN, so it does not refuse a name that starts the same way;
+        // the deploy role, which is what allows the lookups, still does.
+        const sharedPrefix = label === "boundary" && name.startsWith(connectorSecretsRoleName(env));
+        expect(allowed(statements, "iam:GetRole", `arn:aws:iam::${ACCOUNT}:role/${name}-other`), `${label} refuses a similar name`).toBe(sharedPrefix);
         expect(allowed(statements, "iam:GetRole", `arn:aws:iam::${ACCOUNT}:role/agentx-${env}-operator`), `${label} refuses the access stack's roles`).toBe(false);
         expect(allowed(statements, "iam:CreateRole", `arn:aws:iam::${ACCOUNT}:role${path}${name}`), `${label} creates it under its path`).toBe(true);
       }

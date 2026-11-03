@@ -51,7 +51,7 @@ describe("the broker's grant to assume a customer's CloudWatch role", () => {
 
   it("adds no other sts action to the broker, and keeps the ConnectorSecretsRole's assume as it was", () => {
     const sts = brokerPolicies(cloud).flatMap((policy) => policy.statements).filter((statement) => [statement.Action].flat().some((action) => action.startsWith("sts:")));
-    expect(sts.map((statement) => statement.Sid).sort()).toEqual(["AssumeConnectorSecretsRole", "AssumeCustomerCloudWatchRoles", "AssumeSavedEnvImageRoles"]);
+    expect(sts.map((statement) => statement.Sid).sort()).toEqual(["AssumeConnectorSecretsRole", "AssumeCustomerCloudWatchRoles", "AssumeSavedEnvImageRoles", "AssumeTestAccountSecretsRole"]);
     expect(sts.find((statement) => statement.Sid === "AssumeConnectorSecretsRole")!.Action).toEqual(["sts:AssumeRole", "sts:TagSession"]);
   });
 

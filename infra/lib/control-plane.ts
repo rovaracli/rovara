@@ -1,5 +1,6 @@
 import { WebApp } from "./web-app.js";
 import { connectorSecretsPolicyStatements, connectorSecretsTrustPolicy } from "./connector-secrets-policy.js";
+import { testAccountSecretsPolicyStatements, testAccountSecretsTrustPolicy } from "./test-account-secrets-policy.js";
 import { checkedBrokerEnvironment } from "./private-mcp.js";
 import { grantProviderKeySecrets } from "./model-keys.js";
 import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
@@ -45,7 +46,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { BROKER_SETTINGS, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { BROKER_SETTINGS, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
@@ -324,6 +325,26 @@ export class ControlPlaneStack extends Stack {
         sid: "AssumeConnectorSecretsRole",
         actions: ["sts:AssumeRole", "sts:TagSession"],
         resources: [connectorSecretsRole.attrArn],
+      }));
+      // Test services TS26 (design 6.2): a customer test account's secret (agentx/<env>/org-test-accounts/<org>/...) is kept and read only through THIS role, in a session the broker tags with the org and a
+      // purpose. The broker's own session (`store`) can write and never read a value; the session it mints for a sealed round's worker (`resolve`) reads one secret and writes nothing. The broker role
+      // may assume it and holds no Secrets Manager permission on the path. The role exists whether or not the `ta` switch is on; no code assumes it while `ta` is off.
+      const testAccountSecretsRole = new iam.CfnRole(this, "TestAccountSecretsRole", {
+        roleName: testAccountSecretsRoleName(naming.env),
+        description: "AgentX customer test account secrets: assumed by the broker with rovara:org and rovara:purpose session tags, reaches only that org's test account secrets",
+        assumeRolePolicyDocument: testAccountSecretsTrustPolicy(broker.role!.roleArn),
+        policies: [{
+          policyName: "OrgTestAccountSecrets",
+          policyDocument: {
+            Version: "2012-10-17",
+            Statement: testAccountSecretsPolicyStatements({ secretArnPrefix: `arn:${Aws.PARTITION}:secretsmanager:${Aws.REGION}:${Aws.ACCOUNT_ID}:secret:`, env: naming.env }),
+          },
+        }],
+      });
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "AssumeTestAccountSecretsRole",
+        actions: ["sts:AssumeRole", "sts:TagSession"],
+        resources: [testAccountSecretsRole.attrArn],
       }));
       // The role's ARN is not passed: the broker builds it from the environment, the region and the account, as the role's fixed name and path
       // are derived from the environment too (connectorSecretsRoleName, environmentRolePath).
