@@ -5,14 +5,16 @@
 # WHAT IT DOES. READ-ONLY on the worker: it reads iptables, sysctls, interfaces, Docker's inventory and the worker's own settings files, and it changes none of them. The ONE thing it starts is what SU-1 describes:
 # two throwaway setup-run networks (a /24 each, bridge rvbs<slot> with the same flags the worker uses, slots chosen from 230-250 that nothing holds), a DNS-watch helper on each (the worker's own image and the same
 # flags as `helperRunArgs` in packages/worker/src/setup-network.ts) and short-lived probe containers on them (the worker image, node only, no capability, read-only, no mounts). Everything it starts carries the label
-# agentx.su1-check=<run id> (never the worker's own agentx.setup-run labels, so the worker's leftover sweep neither removes nor counts them) and is removed on exit, also on an error or an interrupt. It writes no
-# file and sends nothing outside the host except the probes' DNS queries and TCP/TLS attempts. It uses no AWS access at all, and no secret: the one value it reads from /etc/agentx/worker.env is the sandbox image name.
+# agentx.su1-check=<run id> (never the worker's own agentx.setup-run labels, so the worker's leftover sweep neither removes nor counts them) and is removed on exit, also on an error or an interrupt; at its start it also
+# removes anything still carrying the bare label key agentx.su1-check, which an earlier run killed before its cleanup left behind. The script itself writes no file; the delivery commands built by
+# setup-agent-su1-report.ts --ssm-params put it into a root-only directory made with mktemp under /var/tmp and remove that directory when it ends. It sends nothing outside the host except the probes' DNS queries and
+# TCP/TLS attempts. It uses no AWS access at all, and no secret: the one value it reads from /etc/agentx/worker.env is the sandbox image name.
 #
 # OUTPUT. One line per check, then a summary:
 #   SU1 <n> PASS|FAIL <check_name> | <one line of evidence>
 #   SU1 SUMMARY pass=<p> fail=<f> total=11 ...
 # Exit status 0 only if all 11 are PASS. Checks 9 and 10 need a real model-driven setup run, which this read-only script does not start; they print FAIL here and are judged by setup-agent-su1-report.ts from the
-# answer of a run the operator starts in the app (see below). Parse a transcript with: npx tsx scripts/staging-checks/setup-agent-su1-report.ts --output <file> [--evidence9 <file>] [--evidence10 <file>].
+# answer of a run the operator starts in the app (see below). Parse a transcript with: npx tsx scripts/staging-checks/setup-agent-su1-report.ts --output <file> [--evidence9 <file>] [--evidence10 <file> --stale-marker <marker>] [--turn-cents <n>].
 #
 # HOW AN OPERATOR RUNS IT ON A STAGING WORKER THROUGH SSM. Every AWS command goes through the staging guard (account 944937319445, us-west-2) and nothing else; run from the repository root on the Mac, on an
 # IDLE worker (check 7 compares the verifier bridges' counters, so no verifier run may be live on it):
@@ -23,8 +25,10 @@
 #   2. build the command parameters (the script, base64 in short pieces, then the run) and send them (AWS-RunShellScript runs as root):
 #        npx tsx scripts/staging-checks/setup-agent-su1-report.ts --ssm-params > "$TMPDIR/su1-params.json"
 #        $STAGING aws ssm send-command --instance-ids <instance-id> --document-name AWS-RunShellScript --comment su1-linux-checks --timeout-seconds 900 --parameters file://"$TMPDIR/su1-params.json" --query Command.CommandId --output text
-#      (to repeat check 2 after a Docker restart or a reboot, add --expect-docker-user-sha <sha printed by the first run> with `--ssm-params --script-args '--expect-docker-user-sha <sha>'`;
-#       to run check 8 after the worker was killed and restarted, use `--script-args '--expect-no-leftovers'`; the operator does the restart or the kill itself, with a separate send-command, never this script.)
+#      (to repeat check 2 after a Docker restart or a host restart, use `--ssm-params --script-args '--expect-docker-user-sha <sha printed by the first run>'`. For the full check 8: first run the script once while
+#       a setup run is live in the app on two workspaces; its check 8 line lists each setup network with its workspace label and slot. Kill the worker's container for ONE of them (a separate send-command by the
+#       operator, never this script), let the worker restart, then run with `--script-args '--expect-no-leftovers-for <killed workspace label> --expect-survivor <the other run's network name> --expect-slot-free <killed slot>'`:
+#       the killed run's helper and network must be gone, the other run's helper must still run, and the killed slot must be free and is then taken by this script's own first throwaway run, which shows it is reused.)
 #   3. read the answer (the output is kept under 24,000 characters, the most SSM returns):
 #        $STAGING aws ssm get-command-invocation --command-id <command-id> --instance-id <instance-id> --query '[Status,StandardOutputContent]' --output text > "$TMPDIR/su1-out.txt"
 #   4. the report (prints one PASS or FAIL per check 1-11 and exits non-zero unless all pass):
@@ -32,8 +36,11 @@
 # CHECKS 9 AND 10 (the operator starts a throwaway setup run in the app on a staging project whose model is routed through the model proxy, then reads the answer with its own staging API token; the token is never
 # pasted into a command or a file): 9 - set the project's setup budget to 50 cents (Setup limits), start the run, steer it to run a command with a large output (for example `yes | head -c 5000000`) and let it hit the
 # budget; save `GET /v1/app/projects/<name>/setup-agent` as evidence9.json and pass --evidence9 (the run must end budget_used, with a counted spend above 0 and at most one turn over: --turn-cents, default 50).
-# 10 - in the same or another run, have the run write an untracked kalmius/project.json (a person's command: `mkdir -p kalmius && echo '{}' > kalmius/project.json`), let it finish with a proposal, save the answer as
-# evidence10.json and pass --evidence10 evidence10.json --stale-file-created. Both read the answer only; nothing else of that run is touched.
+# 10 - in the same or another run, have the run write an untracked kalmius/project.json in the importer's real format (packages/worker/src/setup-scan.ts importProjectFile), with commands that carry a marker only
+# this file holds. As a person's command in the run (REPO is the project's repository name, as the setup screen shows it):
+#       M=su1-stale-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n'); echo "$M"; mkdir -p kalmius && printf '{\n "setup": {"REPO": ["echo %s"]},\n "tests": {"REPO": ["echo %s-test"]}\n}\n' "$M" "$M" > kalmius/project.json
+# (the echoed marker is the one to pass); let the run finish with a proposal, save the answer as evidence10.json and pass --evidence10 evidence10.json --stale-marker <the marker>. The judge fails if the proposal
+# holds the marker or the path anywhere. Both checks read the answer only; nothing else of that run is touched.
 #
 # NOT COVERED (it cannot be done read-only): the "without Docker isolation chains" variant of check 4 (the rule that lets only port 53 of 172.29.0.0/16 through is checked present and ordered in check 2, and
 # the second run's helper is probed with the chains in place), a REFUSED answer from the real DNS firewall (check 5 compares NXDOMAIN, which the helper relays the same way), the reboot and the Docker restart in
@@ -42,14 +49,22 @@ set -u
 export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 EXPECT_SHA=""
-EXPECT_NO_LEFTOVERS=0
+EXPECT_LEFT_WS=""
+EXPECT_SURVIVOR=""
+EXPECT_SLOT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --expect-docker-user-sha) EXPECT_SHA="${2:-}"; shift 2 ;;
-    --expect-no-leftovers) EXPECT_NO_LEFTOVERS=1; shift ;;
+    --expect-no-leftovers-for) EXPECT_LEFT_WS="${2:-}"; shift 2 ;;
+    --expect-survivor) EXPECT_SURVIVOR="${2:-}"; shift 2 ;;
+    --expect-slot-free) EXPECT_SLOT="${2:-}"; shift 2 ;;
     *) printf 'SU1 ERROR unknown argument %s\n' "$1"; exit 2 ;;
   esac
 done
+[[ -z "$EXPECT_SHA" || "$EXPECT_SHA" =~ ^[a-f0-9]{64}$ ]] || { printf 'SU1 ERROR --expect-docker-user-sha wants 64 hex digits\n'; exit 2; }
+[[ -z "$EXPECT_LEFT_WS" || "$EXPECT_LEFT_WS" =~ ^[A-Za-z0-9_.:/-]{1,128}$ ]] || { printf 'SU1 ERROR --expect-no-leftovers-for wants a workspace label\n'; exit 2; }
+[[ -z "$EXPECT_SURVIVOR" || "$EXPECT_SURVIVOR" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || { printf 'SU1 ERROR --expect-survivor wants a network name\n'; exit 2; }
+[[ -z "$EXPECT_SLOT" || "$EXPECT_SLOT" =~ ^([1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-3])$ ]] || { printf 'SU1 ERROR --expect-slot-free wants a slot from 1 to 253\n'; exit 2; }
 
 PASS=0; FAIL=0
 emit() { # emit <n> <PASS|FAIL> <name> <detail>
@@ -111,6 +126,10 @@ an_of() { printf '%s\n' "$1" | sed -n "s/^$2 answer rcode=[0-9]* an=\([0-9]*\).*
 # the labels among $2... whose status in probe output $1 is "open" or "answer" (something got through)
 got_through() { local out=$1 l s bad=""; shift; for l in "$@"; do s=$(field "$out" "$l"); if [[ -z "$s" ]]; then bad="$bad $l=no-result"; elif [[ "$s" == open || "$s" == answer || "$s" == handshake ]]; then bad="$bad $l=$s"; fi; done; printf '%s' "${bad# }"; }
 statuses() { local out=$1 l; shift; for l in "$@"; do printf '%s=%s ' "$l" "$(field "$out" "$l")"; done; }
+# the labels among $2... whose status in probe output $1 is anything but "timeout": a DROP wall answers nothing, so a refusal, an answer or a missing line all mean something else is in the way
+not_timeout() { local out=$1 l s bad=""; shift; for l in "$@"; do s=$(field "$out" "$l"); [[ "$s" == timeout ]] || bad="$bad $l=${s:-no-result}"; done; printf '%s' "${bad# }"; }
+# the first line number, in the rules text $2 (iptables -S of chain $1), of a rule of that chain that holds every token of $3 (separated by |): iptables writes the options of a rule in its own order
+rule_at() { printf '%s\n' "$2" | awk -v chain="$1" -v toks="$3" 'BEGIN{n=split(toks,t,"|")} index($0,"-A " chain " ")==1{ok=1; for(i=1;i<=n;i++) if(index($0,t[i])==0){ok=0;break} if(ok){print NR; exit}}'; }
 pkts() { iptables -L DOCKER-USER -n -v -x 2>/dev/null | grep -E -m1 -- "$1" | awk '{print $1}'; }   # packet counter of the first rule matching the pattern
 
 # ---- host facts
@@ -131,6 +150,10 @@ if [[ $READY -ne 1 ]]; then
   exit 1
 fi
 
+# ---- anything an earlier run of this script left (it was killed before its cleanup ran): everything with the bare label key, whatever the run id
+OLD=$(dk ps -a -q --filter 'label=agentx.su1-check' 2>/dev/null); [[ -z "$OLD" ]] || dk rm -f $OLD >/dev/null 2>&1
+OLD=$(dk network ls -q --filter 'label=agentx.su1-check' 2>/dev/null); [[ -z "$OLD" ]] || dk network rm $OLD >/dev/null 2>&1
+
 # ---- check 1: br_netfilter / bridge-nf-call-iptables, recorded with the real Docker on this host
 BNF=$(cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo unreadable)
 MOD=$(lsmod 2>/dev/null | awk '$1=="br_netfilter"{print "loaded"}'); MOD=${MOD:-not-loaded}
@@ -142,8 +165,13 @@ fi
 
 # ---- the throwaway runs: two networks, a helper on each
 used_subnets=$({ dk network ls -q 2>/dev/null | xargs -r "$DOCKER" network inspect --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null; ip -4 route 2>/dev/null | awk '{print $1}'; } | tr ' ' '\n')
-SLOT_A=""; SLOT_B=""
+SLOT_A=""; SLOT_B=""; SLOT_HELD=""
+# check 8 after a kill and a restart: the killed run's slot must be free again, and the first throwaway run takes exactly that slot to show it is reused
+if [[ -n "$EXPECT_SLOT" ]]; then
+  if printf '%s\n' "$used_subnets" | grep -q -F "172.29.$EXPECT_SLOT.0/24" || [[ -e /sys/class/net/rvbs$EXPECT_SLOT ]]; then SLOT_HELD="slot $EXPECT_SLOT is still held (a network or its bridge remains)"; else SLOT_A=$EXPECT_SLOT; fi
+fi
 for s in $(seq 250 -1 230); do
+  [[ "$s" != "$SLOT_A" ]] || continue
   if ! printf '%s\n' "$used_subnets" | grep -q -F "172.29.$s.0/24" && [[ ! -e /sys/class/net/rvbs$s ]]; then
     if [[ -z "$SLOT_A" ]]; then SLOT_A=$s; elif [[ -z "$SLOT_B" ]]; then SLOT_B=$s; break; fi
   fi
@@ -213,8 +241,7 @@ if [[ $SETUP_OK -ne 1 ]]; then
   emit 2 FAIL docker_user_order "$SETUP_WHY"
 else
   RULES=$(iptables -S DOCKER-USER 2>/dev/null)
-  # The first rule line of DOCKER-USER that holds every token (tokens are separated by |), because iptables -S writes the options of a rule in its own order.
-  at() { printf '%s\n' "$RULES" | awk -v toks="$1" 'BEGIN{n=split(toks,t,"|")} /^-A DOCKER-USER /{ok=1; for(i=1;i<=n;i++) if(index($0,t[i])==0){ok=0;break} if(ok){print NR; exit}}'; }
+  at() { rule_at DOCKER-USER "$RULES" "$1"; }
   I_IMDS=$(at '-d 169.254.169.254/32|-j ')
   I_CT=$(at '-i rvbs+|-o rvbs+|--ctstate|ESTABLISHED|-j RETURN')
   I_PU=$(at '-i rvbs+|-o rvbs+|physdev|-d 172.29.0.0/16|-p udp|--dport 53|-j RETURN')
@@ -224,8 +251,10 @@ else
   I_R16=$(at '-d 172.16.0.0/12|-j DROP')
   I_R10=$(at '-d 10.0.0.0/8|-j DROP')
   I_VPC=$(at '-i rvb+|--dport 53|-j RETURN')
+  INPUT_RULES=$(iptables -S INPUT 2>/dev/null)
+  I_INPUT=$(rule_at INPUT "$INPUT_RULES" '-i rvb+|-j DROP')
   MISSING=""
-  for pair in "I_IMDS:metadata-reject" "I_CT:conntrack-return" "I_PU:physdev-udp53-return" "I_PT:physdev-tcp53-return" "I_XU:rvbs-udp53-drop" "I_XT:rvbs-tcp53-drop" "I_R16:range-172.16-drop" "I_R10:range-10-drop"; do
+  for pair in "I_IMDS:metadata-reject" "I_CT:conntrack-return" "I_PU:physdev-udp53-return" "I_PT:physdev-tcp53-return" "I_XU:rvbs-udp53-drop" "I_XT:rvbs-tcp53-drop" "I_R16:range-172.16-drop" "I_R10:range-10-drop" "I_INPUT:input-rvb-drop"; do
     var=${pair%%:*}; [[ -n "${!var}" ]] || MISSING="$MISSING ${pair#*:}"
   done
   ORDER=""
@@ -238,7 +267,7 @@ else
   FWD=$(iptables -S FORWARD 2>/dev/null | grep -n -E -- '-j (DOCKER-USER|DOCKER-ISOLATION-STAGE-1|DOCKER)$' | sed 's/^\([0-9]*\):.* -j /\1 /' | tr '\n' ' ')
   FWD_OK=""
   case "$FWD" in *"DOCKER-USER"*"DOCKER-ISOLATION-STAGE-1"*) ;; *) FWD_OK="FORWARD jumps are not DOCKER-USER before DOCKER-ISOLATION-STAGE-1 ($FWD)" ;; esac
-  SHA=$(printf '%s\n%s\n' "$RULES" "$FWD" | sha256sum | cut -c1-64)
+  SHA=$(printf '%s\n%s\n%s\n' "$RULES" "$FWD" "$(printf '%s\n' "$INPUT_RULES" | grep -F -- '-i rvb+')" | sha256sum | cut -c1-64)
   SHA_NOTE=""
   if [[ -n "$EXPECT_SHA" && "$EXPECT_SHA" != "$SHA" ]]; then SHA_NOTE="DOCKER-USER digest $SHA differs from the expected $EXPECT_SHA"; fi
   DETAIL=""; [[ -z "$MISSING" ]] || DETAIL="missing rules:$MISSING"; [[ -z "$ORDER" ]] || DETAIL="$DETAIL order:$ORDER"; [[ -z "$FWD_OK" ]] || DETAIL="$DETAIL $FWD_OK"; [[ -z "$SHA_NOTE" ]] || DETAIL="$DETAIL $SHA_NOTE"
@@ -257,14 +286,18 @@ fi
 
 # ---- check 4: what the sandbox must NOT reach
 if [[ $SETUP_OK -ne 1 ]]; then emit 4 FAIL sandbox_walls "$SETUP_WHY"; else
-  LABELS=(gw_udp53 gw_22 gw_53 gw_80 gw_443 gw_2375 gw_8080 helper_22 helper_80 helper_5353 helper_8080 other_helper_udp53 other_helper_tcp53 other_helper_conn53 imds_80)
+  # Every wall but the metadata address is a DROP, which answers nothing: anything but a timeout means the packet met something else. The metadata address is a REJECT: it only must not be open.
+  LABELS=(gw_udp53 gw_22 gw_53 gw_80 gw_443 gw_2375 gw_8080 helper_22 helper_80 helper_5353 helper_8080 other_helper_udp53 other_helper_tcp53 other_helper_conn53)
   for l in $(printf '%s\n' "$OUT1" | awk '$1 ~ /^(hostip|vpc|resolver)[0-9]+_/{print $1}'); do LABELS+=("$l"); done
-  F=$(got_through "$OUT1" "${LABELS[@]}")
+  F=$(not_timeout "$OUT1" "${LABELS[@]}")
+  G=$(got_through "$OUT1" imds_80)
+  [[ -z "$G" ]] || F="$F $G"
+  F=${F# }
   C=""
   if [[ -n "$BEFORE_IMDS" && -n "${AFTER_IMDS:-}" && "$AFTER_IMDS" -le "$BEFORE_IMDS" ]] 2>/dev/null; then C="$C metadata-rule-counter-did-not-move"; fi
   if [[ "$PRIMARY" == 10.* ]]; then if [[ -z "$BEFORE_10" || -z "${AFTER_10:-}" || "$AFTER_10" -le "$BEFORE_10" ]] 2>/dev/null; then C="$C range-10-drop-counter-did-not-move"; fi; fi
-  [[ -z "$F" ]] || F="got through: $F"
-  verdict 4 sandbox_walls "${F}${C}" "gateway (any of 7 probes), the host's addresses, the VPC and its resolvers, $B.2:53 of a second run, the helper off port 53 and 169.254.169.254 all failed; ${#LABELS[@]} probes; counters moved"
+  [[ -z "$F" ]] || F="not dropped (timeout expected): $F"
+  verdict 4 sandbox_walls "${F}${C}" "gateway (any of 7 probes), the host's addresses, the VPC and its resolvers, $B.2:53 of a second run and the helper off port 53 all timed out (dropped); 169.254.169.254 not open; $((${#LABELS[@]} + 1)) probes; counters moved"
 fi
 
 # ---- check 5: a public name resolves, a blocked (NXDOMAIN) name is recorded, and the answer reaches the sandbox unchanged
@@ -305,22 +338,43 @@ if [[ $SETUP_OK -ne 1 ]]; then emit 7 FAIL bridges "$SETUP_WHY"; else
   verdict 7 bridges "${F# }" "bridges rvbs$SLOT_A and rvbs$SLOT_B exist (named as boot.sh walls rvb*); $NV verifier bridge(s) compared, counters unchanged$([[ "$NV" == 0 ]] && echo ' (none present: run again while a verifier run is live on another worker to compare)')"
 fi
 
-# ---- check 8: no leftover setup helpers or networks (read-only: after a kill and a restart, run with --expect-no-leftovers)
+# ---- check 8: no orphaned setup helper or network; after a kill and a restart (the operator does both): the killed run's objects are gone, its slot is free and was reused here, another workspace's run survives
 {
   F=""
-  CONTAINERS=$(dk ps -a --filter 'label=agentx.setup-run' --format '{{.Names}} {{.Label "agentx.setup-run"}}' 2>/dev/null)
-  NETWORKS=$(dk network ls --filter 'label=agentx.setup-run' --format '{{.Name}} {{.Label "agentx.setup-run"}}' 2>/dev/null)
+  CONTAINERS=$(dk ps -a --filter 'label=agentx.setup-run' --format '{{.Names}}' 2>/dev/null)
+  NETWORKS=$(dk network ls --filter 'label=agentx.setup-run' --format '{{.Name}}' 2>/dev/null)
+  NETLIST=""
+  for n in $NETWORKS; do
+    ws=$(dk network inspect -f '{{index .Labels "agentx.setup-workspace"}}' "$n" 2>/dev/null)
+    slot=$(dk network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$n" 2>/dev/null | sed -n 's/^172\.29\.\([0-9]*\)\.0\/24$/\1/p')
+    NETLIST="$NETLIST $n(workspace=${ws:-none},slot=${slot:-none})"
+  done
   # a helper whose network is gone, a network with no helper: the sweep at a worker's start removes both
-  while read -r name _; do [[ -n "$name" ]] || continue; net=${name%-dns}; printf '%s\n' "$NETWORKS" | awk '{print $1}' | grep -q -x -F "$net" || F="$F helper-without-network:$name"; done <<<"$CONTAINERS"
-  while read -r name _; do [[ -n "$name" ]] || continue; printf '%s\n' "$CONTAINERS" | awk '{print $1}' | grep -q -x -F "$name-dns" || F="$F network-without-helper:$name"; done <<<"$NETWORKS"
+  for name in $CONTAINERS; do printf '%s\n' "$NETWORKS" | grep -q -x -F "${name%-dns}" || F="$F helper-without-network:$name"; done
+  for name in $NETWORKS; do printf '%s\n' "$CONTAINERS" | grep -q -x -F "$name-dns" || F="$F network-without-helper:$name"; done
   N_C=$(printf '%s\n' "$CONTAINERS" | grep -c . || true); N_N=$(printf '%s\n' "$NETWORKS" | grep -c . || true)
-  if [[ $EXPECT_NO_LEFTOVERS -eq 1 && $((N_C + N_N)) -gt 0 ]]; then F="$F expected none after the restart, found $N_C helper(s) and $N_N network(s)"; fi
-  verdict 8 leftover_sweep "${F# }" "$N_C setup helper(s) and $N_N setup network(s) of the worker, none orphaned$([[ $EXPECT_NO_LEFTOVERS -eq 1 ]] && echo ' and none left after the restart' || echo ' (kill the worker mid-run, restart it, then rerun with --expect-no-leftovers for the full check)')"
+  AFTER=""
+  if [[ -n "$EXPECT_LEFT_WS" ]]; then
+    AFTER="$AFTER killed run's workspace $EXPECT_LEFT_WS has nothing left;"
+    LEFT=$(dk ps -a -q --filter "label=agentx.setup-workspace=$EXPECT_LEFT_WS" 2>/dev/null; dk network ls -q --filter "label=agentx.setup-workspace=$EXPECT_LEFT_WS" 2>/dev/null)
+    [[ -z "$LEFT" ]] || F="$F objects of the killed run's workspace $EXPECT_LEFT_WS remain ($(printf '%s' "$LEFT" | tr '\n' ' '))"
+  fi
+  if [[ -n "$EXPECT_SURVIVOR" ]]; then
+    AFTER="$AFTER the run on $EXPECT_SURVIVOR survived;"
+    printf '%s\n' "$NETWORKS" | grep -q -x -F "$EXPECT_SURVIVOR" || F="$F the surviving run's network $EXPECT_SURVIVOR is gone"
+    [[ "$(dk inspect -f '{{.State.Running}}' "$EXPECT_SURVIVOR-dns" 2>/dev/null)" == true ]] || F="$F the surviving run's helper $EXPECT_SURVIVOR-dns is not running"
+  fi
+  if [[ -n "$EXPECT_SLOT" ]]; then
+    AFTER="$AFTER slot $EXPECT_SLOT is free and a new run took it;"
+    [[ -z "$SLOT_HELD" ]] || F="$F $SLOT_HELD"
+    [[ $SETUP_OK -eq 1 && "$SLOT_A" == "$EXPECT_SLOT" ]] || F="$F slot $EXPECT_SLOT could not be reused by a new run (${SETUP_WHY:-not used})"
+  fi
+  verdict 8 leftover_sweep "${F# }" "$N_C setup helper(s) and $N_N setup network(s) of the worker, none orphaned:${NETLIST:- none};${AFTER:- for the full check kill the worker mid-run, restart it, then rerun with --expect-no-leftovers-for LABEL --expect-survivor NETWORK --expect-slot-free N, taking LABEL, NETWORK and N from this line before the kill}"
 }
 
 # ---- checks 9 and 10 need a live model-driven setup run, which this read-only script does not start
 emit 9 FAIL budget_with_zero_cost_proxy "not judged here: needs a live setup run on a proxy-routed model; judged by setup-agent-su1-report.ts with --evidence9 and the answer of that run"
-emit 10 FAIL stale_untracked_project_json "not judged here: needs a live setup run that wrote an untracked kalmius/project.json; judged by setup-agent-su1-report.ts with --evidence10, the answer of that run, and --stale-file-created"
+emit 10 FAIL stale_untracked_project_json "not judged here: needs a live setup run that wrote an untracked kalmius/project.json; judged by setup-agent-su1-report.ts with --evidence10, the answer of that run, and --stale-marker"
 
 # ---- check 11: direct egress to a public IP that is not an allowed website (the DNS watcher does not enforce it)
 if [[ $SETUP_OK -ne 1 ]]; then emit 11 FAIL public_ip_egress "$SETUP_WHY"; else

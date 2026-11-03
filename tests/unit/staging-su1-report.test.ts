@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
-  SSM_CHUNK_CHARS, SU1_CHECKS, allPass, finalRows, formatReport, judgeBudgetRun, judgeStaleFile, parseSu1Output, ssmCommands,
+  SSM_CHUNK_CHARS, SU1_CHECKS, allPass, finalRows, formatReport, judgeBudgetRun, judgeStaleFile, main, parseSu1Output, ssmCommands,
 } from "../../scripts/staging-checks/setup-agent-su1-report.js";
 
 const SCRIPT = "scripts/staging-checks/setup-agent-su1.sh";
@@ -90,42 +90,52 @@ describe("checks 9 and 10 are judged from a live run's answer", () => {
     expect(judgeBudgetRun("nope").status).toBe("FAIL");
     expect(judgeBudgetRun(null).status).toBe("FAIL");
   });
+  it("9: a turn cost that is not a positive whole number judges nothing", () => {
+    for (const bad of [0, -5, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) expect(judgeBudgetRun(run(), bad).detail, String(bad)).toContain("positive whole number");
+  });
+  it("the command line refuses --turn-cents that is not a positive whole number, before it reads anything", () => {
+    for (const bad of ["0", "-3", "1.5", "abc", "", "1e3", "99999999"]) expect(main(["--output", "/nonexistent", "--turn-cents", bad]), bad).toBe(2);
+  });
 
   const answer = (proposal: unknown, status = "ready") => ({ status, proposal });
-  it("10: PASS when the stale file was written and the proposal never names it", () => {
-    expect(judgeStaleFile(answer({ setup: [{ id: "a", from: [{ path: "package.json" }] }] }), true).status).toBe("PASS");
-    expect(judgeStaleFile(answer({ setup: [] }, "failed"), true).status).toBe("PASS");
+  const MARKER = "su1-stale-0123456789ab";
+  it("10: PASS when the proposal holds neither the stale file's marker nor its path", () => {
+    expect(judgeStaleFile(answer({ setup: [{ id: "a", from: [{ path: "package.json" }] }] }), MARKER).status).toBe("PASS");
+    expect(judgeStaleFile(answer({ setup: [] }, "failed"), MARKER).status).toBe("PASS");
   });
-  it("10: FAIL when the proposal names the file in any form, when there is no proposal, or when nobody says the file was written", () => {
-    expect(judgeStaleFile(answer({ knowledge: [{ from: [{ path: "kalmius/project.json" }] }] }), true).detail).toContain("names kalmius/project.json");
-    expect(judgeStaleFile(answer({ notes: "see KALMIUS/Project.json" }), true).status).toBe("FAIL");
-    expect(judgeStaleFile(answer(undefined), true).detail).toContain("no proposal");
-    expect(judgeStaleFile(answer({ setup: [] }), false).detail).toContain("--stale-file-created");
-    expect(judgeStaleFile(answer({ setup: [] }, "running"), true).status).toBe("FAIL");
+  it("10: FAIL when the proposal holds the marker (the file's commands reached it) or the path, in any form, or there is no proposal", () => {
+    expect(judgeStaleFile(answer({ setup: [{ repo: "web", commands: [`echo ${MARKER}`] }] }), MARKER).detail).toContain("holds the stale file's marker");
+    expect(judgeStaleFile(answer({ notes: `ran ${MARKER}-test` }), MARKER).status).toBe("FAIL");
+    expect(judgeStaleFile(answer({ knowledge: [{ from: [{ path: "kalmius/project.json" }] }] }), MARKER).detail).toContain("names kalmius/project.json");
+    expect(judgeStaleFile(answer({ notes: "see KALMIUS/Project.json" }), MARKER).status).toBe("FAIL");
+    expect(judgeStaleFile(answer(undefined), MARKER).detail).toContain("no proposal");
+    expect(judgeStaleFile(answer({ setup: [] }, "running"), MARKER).status).toBe("FAIL");
+  });
+  it("10: FAIL without a usable marker (so the judge cannot pass a run that never saw the file)", () => {
+    for (const bad of [undefined, "", "su1-stale-", "su1-stale-xyz", "stale-0123456789ab", "su1-stale-0123456789abc", "echo hi"]) expect(judgeStaleFile(answer({ setup: [] }), bad).detail, String(bad)).toContain("--stale-marker");
   });
 
   it("the evidence replaces the script's own FAIL for 9 and 10 only", () => {
     const parsed = parseSu1Output(transcript({ 9: "FAIL", 10: "FAIL" }));
     expect(allPass(finalRows(parsed))).toBe(false);
-    const rows = finalRows(parsed, { evidence9: run(), evidence10: answer({ setup: [] }), staleFileCreated: true });
+    const rows = finalRows(parsed, { evidence9: run(), evidence10: answer({ setup: [] }), staleMarker: "su1-stale-0123456789ab" });
     expect(allPass(rows)).toBe(true);
     // The other checks are not touched by evidence.
-    expect(allPass(finalRows(parseSu1Output(transcript({ 5: "FAIL", 9: "FAIL", 10: "FAIL" })), { evidence9: run(), evidence10: answer({ setup: [] }), staleFileCreated: true }))).toBe(false);
+    expect(allPass(finalRows(parseSu1Output(transcript({ 5: "FAIL", 9: "FAIL", 10: "FAIL" })), { evidence9: run(), evidence10: answer({ setup: [] }), staleMarker: "su1-stale-0123456789ab" }))).toBe(false);
   });
 });
 
 describe("the SSM parameters", () => {
-  it("deliver the script whole, in short pieces, run it as given and remove it afterwards", () => {
-    const commands = ssmCommands(text, "--expect-no-leftovers");
+  it("deliver the script whole, in short pieces, into a mktemp directory, run it as given and remove the directory afterwards", () => {
+    const commands = ssmCommands(text, "--expect-slot-free 240");
     const pieces = commands.filter((command) => command.startsWith("printf '%s' '"));
     expect(pieces.length).toBeGreaterThan(1);
     for (const piece of pieces) expect(piece.length).toBeLessThanOrEqual(SSM_CHUNK_CHARS + 60);
-    const joined = pieces.map((piece) => /^printf '%s' '([A-Za-z0-9+/=]*)' >> /u.exec(piece)![1]!).join("");
+    const joined = pieces.map((piece) => /^printf '%s' '([A-Za-z0-9+/=]*)' >> "\$d\/s\.b64"$/u.exec(piece)![1]!).join("");
     expect(Buffer.from(joined, "base64").toString("utf8")).toBe(text);
-    expect(commands[0]).toContain("umask 077");
-    const last = commands.at(-1)!;
-    expect(last).toContain("bash /var/tmp/.su1-script.sh --expect-no-leftovers");
-    expect(last).toMatch(/rm -f \/var\/tmp\/\.su1-script\.b64 \/var\/tmp\/\.su1-script\.sh; exit \$rc$/u);
+    expect(commands[0]).toBe('umask 077; d=$(mktemp -d /var/tmp/su1.XXXXXX) || exit 1; : > "$d/s.b64"');
+    expect(commands.join("\n")).not.toMatch(/\.su1-script|\/var\/tmp\/[^\s"]*\.(?:sh|b64)/u);
+    expect(commands.at(-1)).toBe('base64 -d "$d/s.b64" > "$d/s.sh" && bash "$d/s.sh" --expect-slot-free 240; rc=$?; rm -rf "$d"; exit $rc');
   });
   it("refuse a script argument that a shell would read as more than a flag", () => {
     for (const bad of ["; reboot", "$(id)", "`id`", "--x | sh", "a'b", "a\nb"]) expect(() => ssmCommands("echo", bad), bad).toThrow(/not allowed/u);
@@ -182,6 +192,68 @@ describe("the script's text", () => {
     expect(text).toContain("us-west-2");
     expect(text).not.toMatch(/us-east-1/u);
     expect(text).toContain("DEFERRED-CHECKS.md");
+  });
+});
+
+// ---- the script's own judging helpers, run alone in bash (never the script): they decide what check 2 and check 4 call a wall
+
+const functionsOf = (...names: string[]): string => names.map((name) => text.split("\n").find((row) => row.startsWith(`${name}() `))!).join("\n");
+const PROBE_OUT = ["gw_22 timeout", "gw_80 ECONNREFUSED", "helper_80 timeout", "other_helper_udp53 answer rcode=0 an=1", "imds_80 ECONNREFUSED", "hostip1_22 open"].join("\n");
+
+describe("what counts as a wall (checks 2 and 4)", () => {
+  it("a DROP wall must answer nothing: a timeout passes, and a refusal, an answer, an open port or a missing line is reported", () => {
+    const call = (labels: string) => execFileSync("bash", ["-c", `${functionsOf("field", "not_timeout")}\nOUT=$1\nnot_timeout "$OUT" ${labels}`, "x", PROBE_OUT], { encoding: "utf8" }).trim();
+    expect(call("gw_22 helper_80")).toBe("");
+    expect(call("gw_80")).toBe("gw_80=ECONNREFUSED");
+    expect(call("gw_22 other_helper_udp53 hostip1_22 gw_443")).toBe("other_helper_udp53=answer hostip1_22=open gw_443=no-result");
+  });
+  it("the metadata REJECT only must not be open: a refusal passes, open and a missing line do not", () => {
+    const call = (labels: string) => execFileSync("bash", ["-c", `${functionsOf("field", "got_through")}\nOUT=$1\ngot_through "$OUT" ${labels}`, "x", PROBE_OUT], { encoding: "utf8" }).trim();
+    expect(call("imds_80")).toBe("");
+    expect(call("hostip1_22")).toBe("hostip1_22=open");
+    expect(call("nothing_here")).toBe("nothing_here=no-result");
+  });
+  it("a rule is found by its tokens in any order, only in its own chain, and rvbs+ is not rvb+", () => {
+    const rules = ["-P INPUT ACCEPT", "-A INPUT -i lo -j ACCEPT", "-A INPUT -i rvbs+ -j DROP", "-A INPUT -i rvb+ -j DROP", "-A DOCKER-USER -d 169.254.169.254/32 -j REJECT --reject-with icmp-port-unreachable",
+      "-A DOCKER-USER -d 172.29.0.0/16 -i rvbs+ -o rvbs+ -p udp -m physdev --physdev-is-bridged -m udp --dport 53 -j RETURN"].join("\n");
+    const at = (chain: string, tokens: string) => execFileSync("bash", ["-c", `${functionsOf("rule_at")}\nrule_at "$1" "$2" "$3"`, "x", chain, rules, tokens], { encoding: "utf8" }).trim();
+    expect(at("INPUT", "-i rvb+|-j DROP")).toBe("4");
+    expect(at("INPUT", "-i rvbs+|-j DROP")).toBe("3");
+    expect(at("INPUT", "-i rvb0+|-j DROP")).toBe("");
+    expect(at("DOCKER-USER", "-i rvb+|-j DROP")).toBe("");
+    expect(at("DOCKER-USER", "-i rvbs+|-o rvbs+|physdev|-d 172.29.0.0/16|-p udp|--dport 53|-j RETURN")).toBe("6");
+    expect(at("DOCKER-USER", "-d 169.254.169.254/32|-j ")).toBe("5");
+  });
+});
+
+describe("the script's checks, read as text", () => {
+  it("check 4 holds every DROP wall to a timeout and only the metadata address to not-open", () => {
+    expect(text).toMatch(/F=\$\(not_timeout "\$OUT1" "\$\{LABELS\[@\]\}"\)/u);
+    expect(text).toMatch(/G=\$\(got_through "\$OUT1" imds_80\)/u);
+    const labels = /LABELS=\(([^)]*)\)/u.exec(text)![1]!;
+    expect(labels).not.toContain("imds_80");
+    for (const wanted of ["gw_udp53", "gw_22", "gw_53", "helper_22", "helper_5353", "other_helper_udp53", "other_helper_tcp53", "other_helper_conn53"]) expect(labels).toContain(wanted);
+  });
+  it("check 2 also asks for the INPUT drop of the rvb+ bridges", () => {
+    expect(text).toContain("rule_at INPUT \"$INPUT_RULES\" '-i rvb+|-j DROP'");
+    expect(text).toContain('"I_INPUT:input-rvb-drop"');
+  });
+  it("check 8 takes the killed workspace, the surviving network and the slot, validates them, and reuses the slot", () => {
+    for (const flag of ["--expect-no-leftovers-for", "--expect-survivor", "--expect-slot-free"]) expect(text, flag).toContain(`${flag})`);
+    expect(text).not.toContain("--expect-no-leftovers)");
+    expect(text).toContain('SLOT_A=$EXPECT_SLOT');
+    expect(text).toMatch(/label=agentx\.setup-workspace=\$EXPECT_LEFT_WS/u);
+    expect(text).toMatch(/\$EXPECT_SURVIVOR-dns/u);
+    expect(text).toMatch(/\^\(\[1-9\]\|\[1-9\]\[0-9\]\|1\[0-9\]\[0-9\]\|2\[0-4\]\[0-9\]\|25\[0-3\]\)\$/u);
+  });
+  it("starts by removing what earlier killed runs left under the bare label key, and its header says what it writes", () => {
+    expect(text).toContain("dk ps -a -q --filter 'label=agentx.su1-check'");
+    expect(text).toContain("dk network ls -q --filter 'label=agentx.su1-check'");
+    expect(text.indexOf("label=agentx.su1-check'")).toBeLessThan(text.indexOf("# ---- check 1"));
+    expect(text).not.toMatch(/It writes no\s*#?\s*file/u);
+    expect(text).toContain("mktemp");
+    expect(text).toContain("--stale-marker");
+    expect(text).not.toContain("--stale-file-created");
   });
 });
 
