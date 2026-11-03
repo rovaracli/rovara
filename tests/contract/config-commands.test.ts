@@ -45,7 +45,11 @@ describe("agentx config list and get", () => {
     expect(rows.find((row) => row.key === "liveRedirect.enabled")).toMatchObject({ value: "0", where: "stack parameter LiveRedirectEnabled on agentx-staging-control-plane" });
     // The saved project images switch (SH22-SH26, `sv`), off by default.
     expect(rows.find((row) => row.key === "savedEnv.enabled")).toMatchObject({ value: "0", where: "stack parameter SavedEnvEnabled on agentx-staging-control-plane" });
-    expect(rows).toHaveLength(34);
+    // The three test-services switches (TS37, `tx`, `ta`, `pj`), all off by default.
+    for (const [key, parameter] of [["testServices.enabled", "TestServicesEnabled"], ["testAccounts.enabled", "TestAccountsEnabled"], ["projectImages.enabled", "ProjectImagesEnabled"]] as const) {
+      expect(rows.find((row) => row.key === key)).toMatchObject({ value: "0", where: `stack parameter ${parameter} on agentx-staging-control-plane` });
+    }
+    expect(rows).toHaveLength(37);
   });
 
   it("never shows the alert address itself, only that it is set", async () => {

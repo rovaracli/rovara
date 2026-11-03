@@ -42,6 +42,17 @@ const inRange = (octets: readonly number[], base: readonly number[], prefix: num
   const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
   return ((toNumber(octets) & mask) >>> 0) === ((toNumber(base) & mask) >>> 0);
 };
+/**
+ * Ranges the worker's Docker uses for its own networks (worker/ec2/boot.sh: the setup run's networks are 172.29.0.0/16, test services' run networks 172.30.0.0/16). An approved range that lies inside one of them would clash with a worker's own Docker networks, so it is refused at synth.
+ * (A wider range such as 172.16.0.0/12 that merely contains them is still accepted: the sandboxes' walls already drop the private ranges.)
+ */
+export const WORKER_DOCKER_RESERVED_RANGES: ReadonlyArray<readonly [string, readonly number[], number]> = [["172.29.0.0/16", [172, 29, 0, 0], 16], ["172.30.0.0/16", [172, 30, 0, 0], 16]];
+
+/** The reserved range the CIDR (octets and prefix) lies inside, or undefined. */
+export function workerDockerRangeOf(octets: readonly number[], prefix: number): string | undefined {
+  return WORKER_DOCKER_RESERVED_RANGES.find(([, base, bits]) => prefix >= bits && inRange(octets, base, bits))?.[0];
+}
+
 /** Private address space (RFC 1918) and the shared 100.64.0.0/10 range some networks use inside. */
 const PRIVATE_RANGES: ReadonlyArray<readonly [readonly number[], number]> = [[[10, 0, 0, 0], 8], [[172, 16, 0, 0], 12], [[192, 168, 0, 0], 16], [[100, 64, 0, 0], 10]];
 
@@ -71,6 +82,8 @@ export function parseEnterpriseEgressCidrs(value: unknown, options: { allowPubli
     const octets = match === null ? [] : [match[1]!, match[2]!, match[3]!, match[4]!].map(Number);
     const prefix = match === null ? Number.NaN : Number(match[5]);
     if (match === null || octets.some((octet) => octet > 255) || prefix > 32) throw new Error(`${ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY} entry ${JSON.stringify(entry)} is not an IPv4 CIDR such as 10.20.0.0/16`);
+    const reserved = workerDockerRangeOf(octets, prefix);
+    if (reserved !== undefined) throw new Error(`${ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY} entry ${JSON.stringify(entry)} lies inside ${reserved}, which the workers' Docker uses for its own networks; list ranges outside 172.29.0.0/16 and 172.30.0.0/16`);
     if (prefix < MIN_ENTERPRISE_EGRESS_PREFIX) throw new Error(`${ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY} entry ${JSON.stringify(entry)} is wider than a /${MIN_ENTERPRISE_EGRESS_PREFIX}; list the specific ranges`);
     // A range must be private unless the install is told, in so many words, that a public one is meant (say, an API Gateway front door).
     if (options.allowPublicRanges !== true && !PRIVATE_RANGES.some(([base, bits]) => prefix >= bits && inRange(octets, base, bits))) {

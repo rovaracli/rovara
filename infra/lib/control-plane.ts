@@ -1301,6 +1301,10 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("testEnvironment", signInParameters.testEnvironmentEnabled.valueAsString);
       // Setup agent (sh-setup-wire): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("setupAgent", signInParameters.setupAgentEnabled.valueAsString);
+      // Test services (TS37): three switches, packed settings. Off ("0") unless the operator sets the parameter to "1".
+      brokerSettings.add("testServices", signInParameters.testServicesEnabled.valueAsString);
+      brokerSettings.add("testAccounts", signInParameters.testAccountsEnabled.valueAsString);
+      brokerSettings.add("projectImages", signInParameters.projectImagesEnabled.valueAsString);
       // Lessons reach the agent: its own switch, apart from the Team record's. A packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("learnedLessons", signInParameters.learnedLessonsEnabled.valueAsString);
       // Second review by a different AI company (setup-test-health SH34): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".

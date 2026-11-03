@@ -79,6 +79,9 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     // The legacy script up to the first moved function, less the four declarations that moved with them, is the start of boot.sh unchanged.
     const prefix = MOVED_DECLARATIONS.reduce((text, declaration) => text.replace(declaration, ""), legacy.slice(0, legacy.indexOf(firstMoved)));
     expect(prefix.length).toBeLessThan(legacy.indexOf(firstMoved));
+    // The test-services pieces (Docker's address pools, the rvi-to-rvi wall) are NOT in user data: they live in stage 2, to keep boot.sh under the user data limit.
+    expect(stage1).not.toContain("default-address-pools");
+    expect(stage1).not.toContain("--physdev-is-bridged");
     expect(stage1.startsWith(prefix)).toBe(true);
     for (const declaration of MOVED_DECLARATIONS) {
       expect(stage1, declaration).not.toContain(declaration);
@@ -103,7 +106,10 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     const legacyMainHead = legacy.slice(legacy.indexOf("\nmain() {"), legacy.indexOf(afterPull) + afterPull.length);
     expect(stage1).toContain(legacyMainHead);
     const stage2Main = /^stage2_main\(\) \{\n([\s\S]*?)^\}$/m.exec(stage2)?.[1] ?? "";
-    expect(stage2Main).toBe(`  local region=$1 instance_id=$2\n  BOOT_STEP="download the worker image"\n${legacyTail}`);
+    // The one addition: in a named environment, after the worker environment is written and before the worker unit, Docker's address pools and the rvi-to-rvi wall (design test-services.md 4.0.1).
+    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n  fi\n';
+    expect(legacyTail).toContain('  write_worker_environment "$region"\n');
+    expect(stage2Main).toBe(`  local region=$1 instance_id=$2\n  BOOT_STEP="download the worker image"\n${legacyTail.replace('  write_worker_environment "$region"\n', addition)}`);
   });
 
   it("run the container wall before any container can start: stage 1 sets Docker up (and walls containers off) before it pulls, creates or runs anything", () => {
@@ -124,7 +130,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(sourced.status, sourced.stderr).toBe(0);
     expect(sourced.stderr).toBe("");
     const defined = sourced.stdout.split("\n").filter(Boolean).map((line) => line.replace(/^declare -f /, "")).sort();
-    expect(defined).toEqual([...MOVED_FUNCTIONS, "stage2_main"].sort());
+    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "wall_between_run_networks", "stage2_main"].sort());
     expect(stage2).not.toMatch(/^main "\$@"/m);
   });
 });
@@ -186,6 +192,12 @@ exec shasum -a 256 "$@"
 `,
   systemctl: `#!/bin/bash
 echo "systemctl $*" >>"$LOG"
+`,
+  // The wall (stage 2) asks iptables whether its rule is there (no) and then inserts it.
+  iptables: `#!/bin/bash
+echo "iptables $*" >>"$LOG"
+[ "$1" = "-C" ] && exit 1
+exit 0
 `,
   // Runs the transient unit's command in the background, as systemd would, so the failure responder can be asked for /ping.
   "systemd-run": `#!/bin/bash
@@ -273,6 +285,9 @@ async function boot(options: { served: (directory: string) => string; expected?:
     .replaceAll("/usr/local/libexec", `${directory}/libexec`)
     .replaceAll("readonly WORKER_PORT=8080", `readonly WORKER_PORT=${port}`);
   mkdirSync(join(directory, "etc", "systemd"), { recursive: true });
+  // Stage 1 stands in for the container firewall unit in this harness, so the script stage 2 runs again after a Docker restart is a stub that says so.
+  mkdirSync(join(directory, "libexec"), { recursive: true });
+  writeFileSync(join(directory, "libexec", "rovara-container-firewall"), `echo "rovara-container-firewall" >>"$LOG"\n`);
   const served = options.served(directory);
   const image = join(directory, "image-stage2.sh");
   writeFileSync(image, served);
@@ -311,6 +326,7 @@ wall_off_containers() { echo "wall_off_containers" >>"$LOG"; }
 
 /** The real stage 2, with the paths a root boot writes to moved under the run's directory in the same way boot.sh's are. */
 const placedStage2 = (directory: string) => stage2
+  .replaceAll("/etc/docker", `${directory}/etc/docker`)
   .replaceAll("/etc/agentx", `${directory}/etc/agentx`)
   .replaceAll("/etc/systemd/system", `${directory}/etc/systemd`)
   .replaceAll("/usr/local/libexec", `${directory}/libexec`);
@@ -348,6 +364,13 @@ describe("stage 1 runs stage 2 from the worker image", () => {
     expect(at("docker rm cid-1")).toBeLessThan(at("docker pull node@sha256:"));
     expect(at("docker pull node@sha256:")).toBeLessThan(at("systemctl daemon-reload"));
     expect(at("systemctl daemon-reload")).toBeLessThan(at("systemctl enable --now agentx-worker.service"));
+    // And in a named environment, before the worker unit is even written: daemon.json gets Docker's address pools, Docker restarts on them, the container firewall script runs again (Docker rebuilt its chains), then the rvi-to-rvi wall goes in.
+    const restart = run.calls.findLastIndex((call) => call === "systemctl restart docker.service");
+    expect(restart).toBeGreaterThan(at("docker pull node@sha256:"));
+    expect(restart).toBeLessThan(run.calls.indexOf("rovara-container-firewall"));
+    expect(run.calls.indexOf("rovara-container-firewall")).toBeLessThan(run.calls.findIndex((call) => call.startsWith("iptables -I DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP")));
+    expect(run.calls.findIndex((call) => call.startsWith("iptables -I DOCKER-USER -i rvi+ -o rvi+"))).toBeLessThan(at("systemctl daemon-reload"));
+    expect(readFileSync(join(run.directory, "etc", "docker", "daemon.json"), "utf8")).toContain('"default-address-pools"');
     expect(readFileSync(join(run.directory, "etc", "agentx", "worker.env"), "utf8")).toContain(`AGENTX_SANDBOX_IMAGE=${IMAGE}\n`);
     expect(existsSync(join(run.directory, "etc", "systemd", "agentx-worker.service"))).toBe(true);
     expect(run.stderr).toContain("agentx-boot: worker started");
