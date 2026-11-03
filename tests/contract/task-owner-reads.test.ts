@@ -186,6 +186,10 @@ const ROWS: readonly Row[] = [
   // Design review: the principal's storage path for a design document the broker stores (the planner's template design, a revised design). It carries no authority.
   ["design-review/resolve-run.ts", "designResolveOutcome", "principal", ".ownerKey"],
   ["design-review/template-store.ts", "storeDesignTemplate", "principal", ".ownerKey"],
+  // DR7 slice C: "the requester" of a design (the person who asked for the task, a fixed fact of the record) as the approval rules compare it: the requester may not be the second person on a high-risk design. A taker is not the requester.
+  ["aws/developer-routes/design-review.ts", "approvePortsOf>context", "history", ".developerId"],
+  ["aws/developer-routes/design-review.ts", "spendContextOf", "history", ".developerId"],
+  ["aws/developer-routes/design-review.ts", "answersPortsOf>context", "history", ".developerId"],
   // Mainline #408 (plan self-check and grounding): the object prefix of the plan the planner answered and of the task's stored plan document, and the task's principal for the grounding step's workspace: the task's principal, never changes
   ["aws/broker/e2e-rounds.ts", "runGroundingStep", "principal", ".ownerKey"],
   ["aws/task-plan-document.ts", "readTaskPlanDocument", "principal", ".ownerKey"],
