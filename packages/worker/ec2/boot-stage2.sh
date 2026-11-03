@@ -95,7 +95,11 @@ write_test_services_environment() {
 # What the last pull_catalog_images did, for the boot facts the worker reports (CloudWatch): none | ok | failed, how many digests, and whether the registry login was removed.
 PREPULL_RESULT=none; PREPULL_COUNT=0; PREPULL_LOGGED_OUT=false
 pull_catalog_images() {
-  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 failed="" pairs=() reference results file index=0 timeout_s=${CATALOG_PULL_TIMEOUT_S:-180} parallel=${CATALOG_PULL_PARALLEL:-4}
+  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 failed="" pairs=() reference results file index=0
+  local timeout_s=180 parallel=4
+  # Overrides count only as plain positive whole numbers; anything else (0, empty, text) is the default.
+  [[ "${CATALOG_PULL_TIMEOUT_S:-}" =~ ^[1-9][0-9]*$ ]] && timeout_s=$CATALOG_PULL_TIMEOUT_S
+  [[ "${CATALOG_PULL_PARALLEL:-}" =~ ^[1-9][0-9]*$ ]] && parallel=$CATALOG_PULL_PARALLEL
   [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 0
   [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 0
   environment=${BASH_REMATCH[1]}

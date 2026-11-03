@@ -100,7 +100,7 @@ export const ImageStatementSchema = z
      * A Rovara-built image (the emulator) has Java libraries compiled into its native binary, which an image scan cannot see; its build also scans the dependency list. The SHA-256 of that scan result (kept in the evidence
      * folder) and its finding counts. Absent for every image that has none, so those statements and their signatures are exactly what they were.
      */
-    javaScan: z.object({ sha256: Sha256Schema, criticalOpen: z.literal(0), highOpen: z.number().int().min(0).max(100_000) }).strict().optional(),
+    javaScan: z.object({ sha256: Sha256Schema, /** The SHA-256 of the CycloneDX dependency list the scan was bound to (every finding names a component of it). */ sbomSha256: Sha256Schema, criticalOpen: z.literal(0), highOpen: z.number().int().min(0).max(100_000) }).strict().optional(),
   })
   .strict()
   .superRefine((statement, context) => {
@@ -116,7 +116,7 @@ export type ImageStatement = z.infer<typeof ImageStatementSchema>;
 export function imageStatementMessage(statement: ImageStatement): Buffer {
   const checked = ImageStatementSchema.parse(statement);
   const children = [...checked.children].sort(byPlatform).map((child) => `${child.platform}\n${child.digest}\n${child.sbomRef}\n${child.scannedAt}\n`).join("");
-  const javaScan = checked.javaScan === undefined ? "" : `javaScan\n${checked.javaScan.sha256}\n${String(checked.javaScan.highOpen)}\n`;
+  const javaScan = checked.javaScan === undefined ? "" : `javaScan\n${checked.javaScan.sha256}\n${checked.javaScan.sbomSha256}\n${String(checked.javaScan.highOpen)}\n`;
   return Buffer.from(`${IMAGE_DOMAIN}${checked.id}\n${checked.repository}\n${checked.digest}\n${checked.sbomRef}\n${checked.scannedAt}\n${String(checked.children.length)}\n${children}${javaScan}`, "utf8");
 }
 

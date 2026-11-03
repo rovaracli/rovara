@@ -189,6 +189,24 @@ describe("the boot pulls are bounded per image and run in parallel (slice-1 foll
     // 7 one-second pulls, 4 at a time: about two seconds, not seven.
     expect(r.seconds).toBeLessThan(6);
   });
+  it("takes CATALOG_PULL_PARALLEL and CATALOG_PULL_TIMEOUT_S only as positive whole numbers: 0, text, a sign or a decimal fall back to 4 and 180 s", () => {
+    for (const bad of ["0", "x", "", "-1", "1.5", "04x", " 2"]) {
+      const r = drive(5, { pullScript: "exit 0", env: { CATALOG_PULL_PARALLEL: bad, CATALOG_PULL_TIMEOUT_S: bad } });
+      expect(r.status, JSON.stringify(bad)).toBe(0);
+      expect(r.pulls, JSON.stringify(bad)).toHaveLength(5);
+      expect(r.calls.match(/timeout --foreground --kill-after=10s 180s docker pull /gu), JSON.stringify(bad)).toHaveLength(5);
+    }
+    // A good value is used: 3 s limit.
+    expect(drive(2, { pullScript: "exit 0", env: { CATALOG_PULL_TIMEOUT_S: "3" } }).calls).toContain("3s docker pull ");
+  });
+  it("with an invalid parallel setting pulls up to 4 at once, not 0 (which would never start) and not all", () => {
+    const directory = mkdtempSync(join(tmpdir(), "tsl-par-bad-"));
+    const r = drive(7, { pullScript: `d="$TSL_CONC"; mkdir -p "$d/active"; touch "$d/active/$$"; ls "$d/active" | wc -l >> "$d/concurrency"; sleep 1; rm -f "$d/active/$$"`, env: { TSL_CONC: directory, CATALOG_PULL_PARALLEL: "0" } });
+    expect(r.status).toBe(0);
+    const seen = readFileSync(join(directory, "concurrency"), "utf8").split("\n").filter((line) => line !== "").map(Number);
+    expect(Math.max(...seen)).toBeGreaterThan(1);
+    expect(Math.max(...seen)).toBeLessThanOrEqual(4);
+  });
   it("a hung pull is killed at its own limit and fails the pre-pull; the others are not held behind it, and no new pull starts once one has failed", () => {
     // Image 0 hangs (a long sleep); the limit is 2 s. The other images pull at once.
     const hungDigest = digests(5)[0]!.digest;

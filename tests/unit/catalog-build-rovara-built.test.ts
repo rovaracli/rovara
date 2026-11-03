@@ -42,10 +42,14 @@ interface LayoutOptions {
   skipBlob?: (what: string) => boolean;
   corruptBlob?: (what: string) => boolean;
   topMediaType?: string;
+  /** An extra index entry that is not a platform. */
+  extraIndexEntry?: Record<string, unknown>;
+  /** The CycloneDX list: default one component; "missing"; or the text of a file. */
+  javaSbom?: "missing" | { text: string };
   /** What the artifact's scan-java-arm64.json holds: a grype result with these severities (default one medium), or "missing", or the text of a file that is not a result. */
   javaScan?: { severities: string[] } | "missing" | { text: string };
 }
-interface MadeLayout { root: string; layout: string; digestFile: string; javaScanFile: string; digest: string; indexBytes: Buffer; children: Array<{ platform: string; digest: string }> }
+interface MadeLayout { root: string; layout: string; digestFile: string; javaScanFile: string; javaSbomFile: string; digest: string; indexBytes: Buffer; children: Array<{ platform: string; digest: string }> }
 /** Writes what the workflow's `image-result` artifact holds: oci/ (oci-layout, index.json, blobs/sha256/...) and index.digest. */
 async function makeLayout(options: LayoutOptions = {}): Promise<MadeLayout> {
   const root = await temporary();
@@ -65,7 +69,8 @@ async function makeLayout(options: LayoutOptions = {}): Promise<MadeLayout> {
     items.push({ mediaType: OCI_MANIFEST, digest: `sha256:${digest}`, size: manifest.byteLength, platform: { os, architecture } });
     children.push({ platform, digest });
   }
-  if (options.attestation === true) items.push({ mediaType: OCI_MANIFEST, digest: `sha256:${sha("attestation, never in the layout")}`, size: 10, platform: { os: "unknown", architecture: "unknown" } });
+  if (options.attestation === true) items.push({ mediaType: OCI_MANIFEST, digest: `sha256:${sha("attestation, never in the layout")}`, size: 10, platform: { os: "unknown", architecture: "unknown" }, annotations: { "vnd.docker.reference.type": "attestation-manifest" } });
+  if (options.extraIndexEntry !== undefined) items.push(options.extraIndexEntry);
   const indexBytes = Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: OCI_INDEX, manifests: items }));
   const digest = hex(indexBytes);
   await put(digest, indexBytes, "index");
@@ -76,21 +81,25 @@ async function makeLayout(options: LayoutOptions = {}): Promise<MadeLayout> {
   const digestFile = join(root, "index.digest");
   await writeFile(digestFile, options.digestText === undefined ? `sha256:${digest}\n` : options.digestText(digest));
   const javaScanFile = join(root, "scan-java-arm64.json");
+  const javaSbomFile = join(root, "sbom-arm64", "java-dependencies.cdx.json");
+  await mkdir(join(root, "sbom-arm64"), { recursive: true });
+  const sbom = options.javaSbom ?? { text: JSON.stringify({ bomFormat: "CycloneDX", specVersion: "1.6", components: [{ group: "io.quarkus", name: "quarkus-core", version: "3.1.0", purl: "pkg:maven/io.quarkus/quarkus-core@3.1.0" }, { name: "jackson-core", group: "com.fasterxml.jackson.core", version: "2.17.0", components: [{ name: "nested", version: "1.0" }] }] }) };
+  if (sbom !== "missing") await writeFile(javaSbomFile, sbom.text);
   const java = options.javaScan ?? { severities: ["Medium"] };
-  if (java !== "missing") await writeFile(javaScanFile, "text" in java ? java.text : JSON.stringify({ matches: java.severities.map((severity) => ({ vulnerability: { id: "CVE-2026-0001", severity } })), descriptor: { name: "grype" } }));
-  return { root, layout, digestFile, javaScanFile, digest, indexBytes, children };
+  if (java !== "missing") await writeFile(javaScanFile, "text" in java ? java.text : JSON.stringify({ matches: java.severities.map((severity) => ({ vulnerability: { id: "CVE-2026-0001", severity }, artifact: { name: "io.quarkus:quarkus-core", version: "3.1.0", purl: "pkg:maven/io.quarkus/quarkus-core@3.1.0" } })), descriptor: { name: "grype", version: "0.90.0" } }));
+  return { root, layout, digestFile, javaScanFile, javaSbomFile, digest, indexBytes, children };
 }
-const sourceOf = (made: MadeLayout): SourcesFile => ({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile } } });
+const sourceOf = (made: MadeLayout): SourcesFile => ({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile, javaSbom: made.javaSbomFile } } });
 
 describe("the sources file", () => {
   it("still takes a registry digest reference, and takes a Rovara-built source with exactly four keys (the layout, the digest file and the Java dependency scan)", () => {
     const registry = { schemaVersion: 1, sources: { "postgres@16": `registry.example.com/library/postgres@sha256:${sha("p")}` } };
     expect(SourcesFileSchema.safeParse(registry).success).toBe(true);
-    expect(SourcesFileSchema.safeParse({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json" } } }).success).toBe(true);
+    expect(SourcesFileSchema.safeParse({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json", javaSbom: "sbom-arm64/java-dependencies.cdx.json" } } }).success).toBe(true);
   });
   it("refuses a built source with another kind, an extra key, a missing key, or a path skopeo would read as a reference or that holds a line break", () => {
-    const base = { kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json" };
-    for (const bad of [{ ...base, kind: "other" }, { ...base, extra: 1 }, { kind: "rovara-built", layout: "oci", digestFile: "index.digest" }, { ...base, layout: "oci:latest" }, { ...base, layout: "" }, { ...base, digestFile: "a\nb" }, { ...base, layout: "a".repeat(1025) }]) {
+    const base = { kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json", javaSbom: "sbom-arm64/java-dependencies.cdx.json" };
+    for (const bad of [{ ...base, kind: "other" }, { ...base, extra: 1 }, { kind: "rovara-built", layout: "oci", digestFile: "index.digest" }, { ...base, layout: "oci:latest" }, { ...base, layout: "" }, { ...base, digestFile: "a\nb" }, { ...base, layout: "a".repeat(1025) }, { kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json" }]) {
       expect(BuiltSourceSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
     }
   });
@@ -99,16 +108,16 @@ describe("the sources file", () => {
 describe("reading and verifying a layout (readBuiltSource)", () => {
   it("returns the digest, the platforms with their own manifest digests (an attestation manifest is not a platform) and the absolute layout path", async () => {
     const made = await makeLayout({ platforms: ["linux/arm64", "linux/amd64"], attestation: true });
-    const result = await readBuiltSource({ baseDir: "/nowhere" })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile });
+    const result = await readBuiltSource({ baseDir: "/nowhere" })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile, javaSbom: made.javaSbomFile });
     expect(result).toMatchObject({ digest: made.digest, children: made.children, layoutPath: made.layout });
   });
   it("reads relative paths from the base directory (the sources file's)", async () => {
     const made = await makeLayout();
-    const result = await readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json" });
+    const result = await readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json", javaSbom: "sbom-arm64/java-dependencies.cdx.json" });
     expect(result.layoutPath).toBe(made.layout);
     expect(result.digest).toBe(made.digest);
   });
-  const read = (made: MadeLayout) => readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile });
+  const read = (made: MadeLayout) => readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile, javaSbom: made.javaSbomFile });
 
   it("refuses a digest file that is not one sha256 digest", async () => {
     for (const text of ["", "latest\n", "sha256:abc\n", `sha256:${"A".repeat(64)}\n`, `sha256:${"a".repeat(64)}\nsha256:${"b".repeat(64)}\n`]) {
@@ -135,7 +144,7 @@ describe("reading and verifying a layout (readBuiltSource)", () => {
     await rm(join(made.layout, "oci-layout"));
     await expect(read(made)).rejects.toThrow(/oci-layout is missing/u);
     const other = await makeLayout();
-    await expect(readBuiltSource({ baseDir: other.root })({ kind: "rovara-built", layout: other.layout, digestFile: join(other.root, "absent"), javaScan: other.javaScanFile })).rejects.toThrow(/digest file is missing/u);
+    await expect(readBuiltSource({ baseDir: other.root })({ kind: "rovara-built", layout: other.layout, digestFile: join(other.root, "absent"), javaScan: other.javaScanFile, javaSbom: other.javaSbomFile })).rejects.toThrow(/digest file is missing/u);
   });
 });
 
@@ -202,7 +211,7 @@ describe("pinning the emulator from a Rovara-built layout (fakes)", () => {
   it("refuses a Rovara-built source for an entry that is not the emulator, before any read or push", async () => {
     const made = await makeLayout();
     const { ports, calls } = fakePorts({}, made);
-    const sources: SourcesFile = { schemaVersion: 1, sources: { "postgres@16": { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile } } };
+    const sources: SourcesFile = { schemaVersion: 1, sources: { "postgres@16": { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile, javaSbom: made.javaSbomFile } } };
     expect(await refusalsOf(buildBuilt(ports, sources, ["postgres@16"]))).toEqual([{ id: "postgres@16", code: "built_source_not_allowed" }]);
     expect(calls.read).toBe(0);
     expect(calls.mirror).toEqual([]);
@@ -244,7 +253,7 @@ describe("the real ports together (real layout on disk, fake skopeo)", () => {
   it("copies the layout from disk with every platform and the digest kept, then reads it back by digest and pins it", async () => {
     const made = await makeLayout();
     const { port, log } = skopeo(made);
-    const output = await buildBuilt(realPorts(made, port), { schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json" } } });
+    const output = await buildBuilt(realPorts(made, port), { schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json", javaSbom: "sbom-arm64/java-dependencies.cdx.json" } } });
     expect(log[0]).toEqual({ file: "skopeo", args: ["copy", "--all", "--preserve-digests", "--dest-authfile", "/auth/config.json", `oci:${made.layout}`, `docker://${REGISTRY}/rovara-catalog/staging/svc/local-aws:${made.digest.slice(0, 32)}`] });
     expect(log[1]!.args).toEqual(["inspect", "--raw", "--authfile", "/auth/config.json", `docker://${REGISTRY}/rovara-catalog/staging/svc/local-aws@sha256:${made.digest}`]);
     expect(JSON.stringify(log)).not.toContain("docker://registry");
@@ -260,7 +269,7 @@ describe("the real ports together (real layout on disk, fake skopeo)", () => {
 });
 
 describe("the scan of the Java libraries inside the native binary (the image scan cannot see them)", () => {
-  const read = (made: MadeLayout) => readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile });
+  const read = (made: MadeLayout) => readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile, javaSbom: made.javaSbomFile });
 
   it("counts the artifact's findings by severity and keeps the file's SHA-256 and bytes", async () => {
     const made = await makeLayout({ javaScan: { severities: ["High", "high", "Medium", "Low", "Negligible", "Unknown"] } });
@@ -270,7 +279,7 @@ describe("the scan of the Java libraries inside the native binary (the image sca
   });
   it("counts a critical finding, and a finding whose severity it cannot read, as critical", async () => {
     expect((await read(await makeLayout({ javaScan: { severities: ["Critical"] } }))).javaScan.criticalOpen).toBe(1);
-    expect((await read(await makeLayout({ javaScan: { text: JSON.stringify({ matches: [{ vulnerability: {} }, {}, null, { vulnerability: { severity: "Catastrophic" } }] }) } }))).javaScan.criticalOpen).toBe(4);
+    expect((await read(await makeLayout({ javaScan: { text: JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: {}, artifact: { name: "nested", version: "1.0" } }, { artifact: { name: "nested", version: "1.0" } }, { vulnerability: { severity: "Catastrophic" }, artifact: { name: "nested", version: "1.0" } }] }) } }))).javaScan.criticalOpen).toBe(3);
   });
   it("pass: a clean scan (no matches at all) pins, records the highs, and puts the file's hash and counts in the signed statement and the file in the evidence", async () => {
     const made = await makeLayout({ javaScan: { severities: ["High", "High", "Low"] } });
@@ -279,12 +288,14 @@ describe("the scan of the Java libraries inside the native binary (the image sca
     const javaBytes = output.evidence.find((item) => item.path === "evidence/local-aws-r1/java-scan.json")?.bytes;
     expect(javaBytes).toBeDefined();
     const signed = JSON.parse(output.evidence.find((item) => item.path === "evidence/local-aws-r1/statement.json")!.bytes.toString("utf8")) as SignedImageStatement;
-    expect(signed.statement.javaScan).toEqual({ sha256: sha256HexOf(javaBytes!), criticalOpen: 0, highOpen: 2 });
+    expect(signed.statement.javaScan).toEqual({ sha256: sha256HexOf(javaBytes!), sbomSha256: sha256HexOf(await readFile(made.javaSbomFile)), criticalOpen: 0, highOpen: 2 });
+    expect(output.evidence.some((item) => item.path === "evidence/local-aws-r1/java-sbom.json")).toBe(true);
     // The signature covers it: a statement with the hash changed no longer verifies.
     const trusted = [(ports.signer as { publicKeyPem: string }).publicKeyPem];
     expect(verifyImageStatement({ signed, trustedKeys: trusted }).ok).toBe(true);
     expect(verifyImageStatement({ signed: { ...signed, statement: { ...signed.statement, javaScan: { ...signed.statement.javaScan!, sha256: sha("other") } } }, trustedKeys: trusted }).ok).toBe(false);
     expect(verifyImageStatement({ signed: { ...signed, statement: { ...signed.statement, javaScan: { ...signed.statement.javaScan!, highOpen: 0 } } }, trustedKeys: trusted }).ok).toBe(false);
+    expect(verifyImageStatement({ signed: { ...signed, statement: { ...signed.statement, javaScan: { ...signed.statement.javaScan!, sbomSha256: sha("other list") } } }, trustedKeys: trusted }).ok).toBe(false);
     // The entry's highs are the image's (the fake scan reports 0) plus the Java libraries' 2.
     const pinned = ServiceCatalogSchema.parse(JSON.parse(output.catalogBytes.toString("utf8")));
     expect(pinned.entries.find((entry) => entry.id === ID)?.scan?.highOpen).toBe(2);
@@ -303,7 +314,7 @@ describe("the scan of the Java libraries inside the native binary (the image sca
     await expect(read(made)).rejects.toThrow(/Java dependency scan file is missing/u);
   });
   it("a malformed scan file refuses: not JSON, JSON that is not an object with a matches list, a matches value that is not a list", async () => {
-    for (const text of ["", "not json", "null", "[]", "{}", JSON.stringify({ matches: "none" }), JSON.stringify({ matches: null })]) {
+    for (const text of ["", "not json", "null", "[]", "{}", JSON.stringify({ matches: "none", descriptor: { name: "grype" } }), JSON.stringify({ matches: null, descriptor: { name: "grype" } })]) {
       const made = await makeLayout({ javaScan: { text } });
       const { ports, calls } = fakePorts({}, made);
       expect(await refusalsOf(buildBuilt(ports, sourceOf(made))), JSON.stringify(text)).toEqual([{ id: ID, code: "built_source_invalid" }]);
@@ -326,5 +337,58 @@ describe("writing a Rovara-built build", () => {
     const out = await temporary();
     await writeCatalogBuild(output, { catalogDir: join(out, "catalog"), prepullFile: join(out, "prepull.json") });
     expect(sha256HexOf(await readFile(join(out, "catalog/evidence/local-aws-r1/java-scan.json")))).toBe(sha256HexOf(await readFile(made.javaScanFile)));
+  });
+});
+
+describe("binding the Java scan to the image's dependency list", () => {
+  const read = (made: MadeLayout) => readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile, javaSbom: made.javaSbomFile });
+  const refused = async (options: LayoutOptions, message: RegExp, label: string): Promise<void> => {
+    const made = await makeLayout(options);
+    const { ports, calls } = fakePorts({}, made);
+    expect(await refusalsOf(buildBuilt(ports, sourceOf(made))), label).toEqual([{ id: ID, code: "built_source_invalid" }]);
+    expect(calls.mirror, label).toEqual([]);
+    await expect(read(made), label).rejects.toThrow(message);
+  };
+
+  it("refuses a generic result: {\"matches\":[]} and any file whose descriptor is not grype's", async () => {
+    await refused({ javaScan: { text: JSON.stringify({ matches: [] }) } }, /not a grype result/u, "generic empty");
+    await refused({ javaScan: { text: JSON.stringify({ matches: [], descriptor: { name: "trivy" } }) } }, /not a grype result/u, "other tool");
+  });
+  it("accepts a clean grype result for the list (no findings is the common case)", async () => {
+    const result = await read(await makeLayout({ javaScan: { text: JSON.stringify({ matches: [], descriptor: { name: "grype", version: "0.90.0" } }) } }));
+    expect(result.javaScan).toMatchObject({ criticalOpen: 0, highOpen: 0 });
+  });
+  it("refuses a finding that names a package that is not in the CycloneDX list that came with the artifact (a scan of another list)", async () => {
+    const other = JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: { severity: "Low" }, artifact: { name: "log4j-core", version: "2.14.0", purl: "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.0" } }] });
+    await refused({ javaScan: { text: other } }, /not in the CycloneDX list/u, "other package");
+    // The right name with another version is another package.
+    const version = JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: { severity: "Low" }, artifact: { name: "io.quarkus:quarkus-core", version: "9.9.9" } }] });
+    await refused({ javaScan: { text: version } }, /not in the CycloneDX list/u, "other version");
+  });
+  it("finds a package by purl, by name and version, by group:name and in nested components", async () => {
+    const finding = (artifact: Record<string, unknown>) => JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: { severity: "High" }, artifact }] });
+    for (const artifact of [{ purl: "pkg:maven/io.quarkus/quarkus-core@3.1.0" }, { name: "jackson-core", version: "2.17.0" }, { name: "com.fasterxml.jackson.core:jackson-core", version: "2.17.0" }, { name: "nested", version: "1.0" }]) {
+      expect((await read(await makeLayout({ javaScan: { text: finding(artifact) } }))).javaScan.highOpen, JSON.stringify(artifact)).toBe(1);
+    }
+  });
+  it("refuses a missing, malformed, empty or non-CycloneDX dependency list", async () => {
+    await refused({ javaSbom: "missing" }, /dependency list \(CycloneDX\) file is missing/u, "missing");
+    await refused({ javaSbom: { text: "nope" } }, /not JSON/u, "not json");
+    await refused({ javaSbom: { text: JSON.stringify({ bomFormat: "SPDX", components: [] }) } }, /not a CycloneDX/u, "wrong format");
+    await refused({ javaSbom: { text: JSON.stringify({ bomFormat: "CycloneDX", components: [] }) } }, /no components/u, "empty list");
+  });
+  it("only BuildKit's attestation manifests are skipped in the index: any other entry without a real platform is refused", async () => {
+    await refused({ extraIndexEntry: { mediaType: OCI_MANIFEST, digest: `sha256:${sha("x")}`, size: 1 } }, /neither a platform nor a known attestation/u, "no platform");
+    await refused({ extraIndexEntry: { mediaType: OCI_MANIFEST, digest: `sha256:${sha("x")}`, size: 1, platform: { os: "unknown", architecture: "unknown" } } }, /neither a platform nor a known attestation/u, "unknown without annotation");
+    await refused({ extraIndexEntry: { mediaType: OCI_MANIFEST, digest: `sha256:${sha("x")}`, size: 1, platform: { os: "unknown", architecture: "unknown" }, annotations: { "vnd.docker.reference.type": "something-else" } } }, /neither a platform nor a known attestation/u, "other annotation");
+    const ok = await read(await makeLayout({ attestation: true }));
+    expect(ok.children).toHaveLength(1);
+  });
+  it("refuses a resolved layout path that holds a colon, even when the written path has none (the base directory brings it)", async () => {
+    const made = await makeLayout();
+    const colon = join(made.root, "with:colon");
+    await mkdir(colon, { recursive: true });
+    await expect(readBuiltSource({ baseDir: colon })({ kind: "rovara-built", layout: "oci", digestFile: made.digestFile, javaScan: made.javaScanFile, javaSbom: made.javaSbomFile })).rejects.toThrow(/resolved\) holds ':'/u);
+    await expect(readBuiltSource({ baseDir: colon })({ kind: "rovara-built", layout: join(made.root, "oci"), digestFile: made.digestFile, javaScan: made.javaScanFile, javaSbom: made.javaSbomFile })).resolves.toBeDefined();
   });
 });
