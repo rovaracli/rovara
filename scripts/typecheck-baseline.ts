@@ -272,8 +272,15 @@ export interface Options {
   list: boolean;
 }
 
-export function parseArguments(argv: readonly string[], cpus = availableParallelism()): Options | string {
-  const options: Options = { mode: "check", changed: false, base: "HEAD", only: [], jobs: Math.max(1, Math.min(4, Math.floor(cpus / 2))), stats: false, list: false };
+/** ROVARA_TYPECHECK_JOBS caps the default when set (a shared machine's heavy.sh sets it, so one strict check does not take four cores); --jobs still wins. */
+export function defaultJobs(cpus: number, cap = process.env.ROVARA_TYPECHECK_JOBS): number {
+  const jobs = Math.max(1, Math.min(4, Math.floor(cpus / 2)));
+  const limit = cap === undefined || cap === "" ? Number.NaN : Number(cap);
+  return Number.isInteger(limit) && limit >= 1 ? Math.min(jobs, limit) : jobs;
+}
+
+export function parseArguments(argv: readonly string[], cpus = availableParallelism(), cap = process.env.ROVARA_TYPECHECK_JOBS): Options | string {
+  const options: Options = { mode: "check", changed: false, base: "HEAD", only: [], jobs: defaultJobs(cpus, cap), stats: false, list: false };
   const [mode, ...rest] = argv;
   if (mode !== "check" && mode !== "update") return usage();
   options.mode = mode;
