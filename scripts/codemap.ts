@@ -75,10 +75,11 @@ export function extractBlocks(markdown: string): CodemapBlock[] {
 export function definesSymbol(source: string, symbol: string): boolean {
   const text = lf(source);
   const declaration = new RegExp(
-    `^(?:export\\s+)?(?:default\\s+)?(?:declare\\s+)?(?:abstract\\s+)?(?:async\\s+)?(?:function\\*?|const|let|var|class|interface|type|enum)\\s+${escapeName(symbol)}\\b`,
+    `^(?:export\\s+)?(?:default\\s+)?(?:declare\\s+)?(?:abstract\\s+)?(?:async\\s+)?(?:const\\s+enum|function\\*?|const|let|var|class|interface|type|enum|namespace|module)\\s+${escapeName(symbol)}(?![\\w$])`,
     "m",
   );
   if (declaration.test(text)) return true;
+  if (new RegExp(`^export\\s+\\*\\s+as\\s+${escapeName(symbol)}(?![\\w$])`, "m").test(text)) return true;
   for (const match of text.matchAll(/^export\s+(?:type\s+)?\{([^}]*)\}/gm)) {
     const exported = match[1]!.split(",").map((entry) => entry.trim().replace(/^type\s+/, "").split(/\s+as\s+/).pop()!.trim());
     if (exported.includes(symbol)) return true;
@@ -86,7 +87,13 @@ export function definesSymbol(source: string, symbol: string): boolean {
   return false;
 }
 
-/** The first sentence of the file's leading comment, or "" when it has none. */
+/** For a file with no header comment: its first three exports, in source order (they rarely change). */
+function exportsFallback(source: string): string {
+  const names = [...lf(source).matchAll(/^export (?:async )?(?:function\*?|const|class|type|interface|enum) (\w+)/gm)].slice(0, 3).map((match) => `\`${match[1]!}\``);
+  return names.length === 0 ? "" : `(No header comment.) Exports ${names.join(", ")}.`;
+}
+
+/** The first sentence of the file's leading comment; for a file without one, its first exports. */
 export function describeFile(source: string): string {
   const head = lf(source).slice(0, 4000);
   let comment: string;
@@ -106,7 +113,7 @@ export function describeFile(source: string): string {
     comment = lines.join(" ");
   }
   comment = comment.replace(/\s+/g, " ").trim();
-  if (comment === "" || NOT_A_DESCRIPTION.test(comment)) return "";
+  if (comment === "" || NOT_A_DESCRIPTION.test(comment)) return exportsFallback(source);
   comment = comment.replace(SPLIT_PREFIX, "");
   const sentence = /^(.+?[.!?])(?:\s|$)/.exec(comment)?.[1] ?? comment;
   const text = sentence.length > 220 ? `${sentence.slice(0, 217).trimEnd()}...` : sentence;

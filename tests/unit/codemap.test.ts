@@ -82,6 +82,10 @@ describe("the map checker", () => {
     expect(definesSymbol('import { type run } from "./a.js";', "run")).toBe(false);
     expect(definesSymbol("function outer() {\n  const run = 1;\n}", "run")).toBe(false);
     expect(definesSymbol("const runner = run();", "run")).toBe(false);
+    expect(definesSymbol("export const enum Mode { A }", "Mode")).toBe(true);
+    expect(definesSymbol("export namespace Tools {}", "Tools")).toBe(true);
+    expect(definesSymbol("export * as helpers from './h.js';", "helpers")).toBe(true);
+    expect(definesSymbol("export const a$ = 1;", "a")).toBe(false);
   });
 
   it("fails on a missing file, a wrongly cased path, a removed name and a table row whose file is gone", () => {
@@ -105,7 +109,7 @@ describe("the map checker", () => {
     expect(existsExactly(root, "packages/a/src/X.ts")).toBe(false);
   });
 
-  it("regenerates a table from each file's header comment, and leaves the cell empty without one", () => {
+  it("regenerates a table from each file's header comment, or its first exports without one", () => {
     const root = repository({
       "packages/a/src/x.ts": "// Part of the broker (split out of ../broker.ts): runs the thing. More detail.\nexport function run() {}\n",
       "packages/a/src/y.ts": "/**\n * Stops the thing | safely.\n */\nexport const stop = 1;\n",
@@ -119,10 +123,10 @@ describe("the map checker", () => {
         "<!-- codemap:files packages/a/src -->",
         "| File | What it owns |",
         "|---|---|",
-        "| `w.ts` |  |",
+        "| `w.ts` | (No header comment.) Exports `w`. |",
         "| `x.ts` | runs the thing. |",
         "| `y.ts` | Stops the thing \\| safely. |",
-        "| `z.ts` |  |",
+        "| `z.ts` | (No header comment.) Exports `one`. |",
         "<!-- /codemap:files -->",
       ].join("\n"),
     );

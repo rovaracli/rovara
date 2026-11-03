@@ -11,8 +11,8 @@ const to look for in that file. There are no line numbers: they move on every me
 update the map in the same change. The "What each file owns" tables are generated from each file's header comment.
 A new file that is not listed yet only gives a warning. Run `node scripts/codemap.ts --write` when you delete or
 rename a file in those folders (the check tells you); otherwise leave the tables to whoever merges, so lanes don't
-conflict on them. A description can lag behind its file, and an empty cell means the file has no header comment yet:
-add one.
+conflict on them. A description can lag behind its file. A file with no header comment shows its first exports
+instead: give it a one-line header comment when you next edit it.
 
 ## The request path
 
@@ -204,8 +204,8 @@ inventory test. If the Auditor role must reach the route, add it to
 1. Add `packages/contracts/src/<name>.ts`.
 2. Node-side code imports the barrel: export it from `packages/contracts/src/index.ts`.
 3. If the browser needs it, export it from `packages/contracts/src/web.ts` and add it to
-   `packages/contracts/web-safe-files.json` (sorted). It must not import `node:*`. A browser-only file (the `app-*`
-   files) goes in `web.ts` only, not the barrel.
+   `packages/contracts/web-safe-files.json` (sorted). It must not import `node:*`. A file only the browser uses may skip
+   `index.ts` (`packages/contracts/src/app-second-review.ts` does); most files are in both.
 
 Tests: `tests/contract/contracts-web-entry.test.ts` (the browser file list must match exactly),
 `tests/contract/contracts-barrel-duplicate-exports.test.ts`, and `tests/contract/task-owner-reads.test.ts` if anything
@@ -311,48 +311,48 @@ No single test lists every broker read.
 <!-- codemap:files packages/broker/src/aws/developer-tasks -->
 | File | What it owns |
 |---|---|
-| `access-resume.ts` |  |
-| `access.ts` |  |
-| `cancel.ts` |  |
-| `close.ts` |  |
-| `common.ts` |  |
-| `continue.ts` |  |
-| `decide.ts` |  |
+| `access-resume.ts` | (No header comment.) Exports `resumeParkedTaskDispatch`. |
+| `access.ts` | (No header comment.) Exports `refuse`, `loadOwnedTask`, `AuthorizedTask`. |
+| `cancel.ts` | (No header comment.) Exports `TaskActor`, `cancelTaskFor`, `retryTaskWorkflowFor`. |
+| `close.ts` | (No header comment.) Exports `openPullRequest`, `finishTaskClose`, `workflowTaskFinished`. |
+| `common.ts` | (No header comment.) Exports `creatorGuard`, `TASK_ID`, `iso`. |
+| `continue.ts` | (No header comment.) Exports `continueTask`, `heldPreparationOptions`, `heldSavedEnvPin`. |
+| `decide.ts` | (No header comment.) Exports `recordPublishedCandidateOutcomes`, `decideTaskWorkflow`. |
 | `error-ref.ts` | Live interaction F1: the ErrorRef a task view carries, so the app can offer "Fix with agent" for an error it shows. |
 | `evidence-port.ts` | Proof and evidence (wire-proof): what the task routes need to show a task's evidence: the pack kept for the task's current code (rovara-code/evidence-keep.ts), as the pull request shows it (counts, a link) and as the... |
 | `evidence-risk-input.ts` | Proof and evidence P4: the evidence's part of a pull request's risk, read where the risk is judged (publication, a pushed fix, a description rewrite). |
-| `feedback-capture.ts` |  |
-| `feedback-review.ts` |  |
+| `feedback-capture.ts` | (No header comment.) Exports `startTaskWorkflowFeedbackReviewFromWebhook`, `FEEDBACK_REVIEW_RETRY_BUSY`, `FEEDBACK_REVIEW_RETRY_CHANGED`. |
+| `feedback-review.ts` | (No header comment.) Exports `getWorkflowFeedbackReview`, `FEEDBACK_CHANGED_SINCE_CARD`, `submitWorkflowFeedbackDecision`. |
 | `health-notice.ts` | Setup and test health SH28 (owner decision 7): "Setup needs repair" does not pause a task start. |
 | `learning-events.ts` | Learning v2 wiring (WA-2): what the task actions tell the learning lane. |
-| `publication-context.ts` |  |
-| `publication.ts` |  |
-| `pull-request-body.ts` |  |
+| `publication-context.ts` | (No header comment.) Exports `e2ePublicationContext`. |
+| `publication.ts` | (No header comment.) Exports `currentWorkflowPublicationAuthorityForTask`, `currentWorkflowPublicationModeForTask`, `startTaskWorkflowPublicationFromSystem`. |
+| `pull-request-body.ts` | (No header comment.) Exports `workflowPullRequestBody`, `workflowPullRequestStatusLines`, `proofContextOfTask`. |
 | `redirect-carry.ts` | Stop & redirect, the Retry that keeps the instruction (LR-2). |
 | `redirect-frame.ts` | Stop & redirect: the two small things a restart and a Retry that keeps the instruction both need, apart from the restarts so the retry paths can use them without a cycle (LR-2). |
 | `redirect-restart.ts` | Stop & redirect, phase 2: the task module's side of the restart (agent-sessions/redirect-continue.ts decides WHETHER to restart; these start the run). |
-| `release.ts` |  |
+| `release.ts` | (No header comment.) Exports `FinishedTaskRelease`, `ReleaseDeps`, `recordFinishedRunCost`. |
 | `second-review-ack.ts` | Second review (SR-1, switch `cr`): the task owner acknowledges that an `on` second review did not run, so the merge may go ahead. |
-| `share.ts` |  |
+| `share.ts` | (No header comment.) Exports `safeDecode`, `ShareAdmin`, `ShareModeDependencies`. |
 | `spec-replan.ts` | Wire lane D (MD-1): "Re-plan" on a changed spec. |
 | `spec-wiring.ts` | Meta repo lane D (K1): the task side of the spec. |
-| `start.ts` |  |
-| `task-answer-context.ts` |  |
-| `task-index.ts` |  |
-| `task-page.ts` |  |
-| `task-people.ts` |  |
-| `task-reads.ts` |  |
-| `task-view.ts` |  |
-| `task-window.ts` |  |
+| `start.ts` | (No header comment.) Exports `limitError`, `chargeFailure`, `shareFor`. |
+| `task-answer-context.ts` | (No header comment.) Exports `workflowTaskAnswerContext`, `taskCommentSection`, `taskOwnsThread`. |
+| `task-index.ts` | (No header comment.) Exports `runResultOf`, `ownerIndexRowOf`, `syncIndex`. |
+| `task-page.ts` | (No header comment.) Exports `taskPageStage`, `publicationAttempts`, `taskPageStep`. |
+| `task-people.ts` | (No header comment.) Exports `taskPeopleEffectsDependencies`, `getTaskPeople`, `getTaskPeopleCapabilities`. |
+| `task-reads.ts` | (No header comment.) Exports `readTask`, `getTaskPlan`, `listTasks`. |
+| `task-view.ts` | (No header comment.) Exports `candidateChangedFiles`, `unpublishedOf`, `WorkspaceReads`. |
+| `task-window.ts` | (No header comment.) Exports `actionableWorkspace`, `busyOrClosing`, `extraItemsCancelled`. |
 | `testing-view.ts` | Setup and test health SH18/SH19: the Testing view of a task, read for the pull request's `## Testing` section, its rewrite after a pushed fix, and the task page. |
-| `thread-notes.ts` |  |
-| `types.ts` |  |
-| `workflow-coding.ts` |  |
-| `workflow-inputs.ts` |  |
-| `workflow-retry.ts` |  |
-| `workflow-review.ts` |  |
+| `thread-notes.ts` | (No header comment.) Exports `planWhyEntries`, `personLabel`, `recordWorkflowThreadNote`. |
+| `types.ts` | (No header comment.) Exports `DeveloperTaskRouteDependencies`. |
+| `workflow-coding.ts` | (No header comment.) Exports `queueWorkflowCoding`, `resumeAfterRunLimitApproval`, `planCheckRetryKey`. |
+| `workflow-inputs.ts` | (No header comment.) Exports `retiredClaimIdList`, `planUnreadablePrompt`, `previousMarkdownBlock`. |
+| `workflow-retry.ts` | (No header comment.) Exports `startTaskWorkflowPlanRevisionFromSystem`, `retryTaskWorkflow`. |
+| `workflow-review.ts` | (No header comment.) Exports `startTaskWorkflowReview`, `queueWorkflowReview`, `startTaskWorkflowReviewFromSystem`. |
 | `workflow-revise.ts` | Live steer: the owner's "Revise the plan with this change" (agent-sessions/live-steer-revise.ts holds the press); the task helpers it needs are handed in here and nothing else is decided here. |
-| `workflow-starts.ts` |  |
+| `workflow-starts.ts` | (No header comment.) Exports `queueWorkflowUnderstand`, `startTaskWorkflowUnderstandFromSystem`, `startTaskWorkflowPlanFromSystem`. |
 <!-- /codemap:files -->
 
 ### `packages/broker/src/aws/developer-routes/`
@@ -361,23 +361,23 @@ No single test lists every broker read.
 | File | What it owns |
 |---|---|
 | `audit-export-fresh.ts` | Enterprise foundations I2/I1 (controller default, pending the owner's answer): starting an audit export needs a sign-in made within the last few minutes (the rule of the other high-risk actions, `isFreshSignIn`). |
-| `authentication.ts` |  |
-| `common.ts` |  |
+| `authentication.ts` | (No header comment.) Exports `DeveloperTokenClaims`, `developerClaims`, `getSignIn`. |
+| `common.ts` | (No header comment.) Exports `PROJECT_NOT_FOUND_IN_APP`, `signInStoreOf`, `bodyError`. |
 | `company-domains.ts` | Company domain verification (owner decision 2026-11-02): the owner-only "Company domains" routes. |
 | `decisions.ts` | Decision cards (wire-proof, setup wizard E4): what the card routes (`decisions/routes.ts`) need for one caller, built from the developer route dependencies. |
-| `dependencies.ts` |  |
-| `identity-lambda.ts` |  |
+| `dependencies.ts` | (No header comment.) Exports `setupDraftDepsOf`, `diagnosisRouteDepsOf`, `agentRunStarterOf`. |
+| `identity-lambda.ts` | (No header comment.) Exports `errorName`, `SLACK_UNAVAILABLE`, `channelMembersThroughLambda`. |
 | `install.ts` | Enterprise foundations E2: GET /v1/app/install. |
 | `intake.ts` | Meta repo lane F (F1): the broker's wiring of the intake routes (`rovara-code`-style: one module, so the router needs two lines). |
 | `known-failing-marks.ts` | Setup and test health KF-1: `/v1/app/projects/{name}/known-failing`, the tests a maintainer marked as already failing, and Undo. |
 | `known-failing-policy.ts` | Setup and test health SH17 (owner decision F4): `/v1/app/org/known-failing-policy`, the company setting "always two people" for marking tests as already failing. |
 | `lessons.ts` | Learning v2 L3b wiring: the lessons routes and the loaded-knowledge routes on the developer routes. |
-| `organization.ts` |  |
-| `project-access.ts` |  |
-| `project-archive-setup.ts` |  |
-| `project-list.ts` |  |
-| `project-members.ts` |  |
-| `project-settings.ts` |  |
+| `organization.ts` | (No header comment.) Exports `createProject`, `getAppNavigation`, `getAppMe`. |
+| `project-access.ts` | (No header comment.) Exports `checkProjectAccess`, `listWorkspaces`. |
+| `project-archive-setup.ts` | (No header comment.) Exports `archiveDepsOf`, `egressDepsOf`, `getAppProject`. |
+| `project-list.ts` | (No header comment.) Exports `queryAll`, `REVISION_READS_AT_ONCE`, `mapLimit`. |
+| `project-members.ts` | (No header comment.) Exports `projectRoleForRoute`, `getProjectMembers`, `putProjectMember`. |
+| `project-settings.ts` | (No header comment.) Exports `listGithubRepositories`, `putProjectSettings`, `projectMetaConfigRoute`. |
 | `saved-env-image.ts` | Saved project images (SV wiring, switch `sv`): the project's Environment panel as routes. |
 | `second-review.ts` | Second review by another AI company (SR-1, switch `cr`): `/v1/app/org/second-review`, the picker's preview and the company's choice. |
 | `settings-proof-hook.ts` | TE-4: the broker tells the settings proof when a project's setup check has reported (terminal-result.ts), so a held API change is written or dropped, and a failed save's message is sent, without waiting for someone to... |
@@ -391,5 +391,5 @@ No single test lists every broker read.
 | `test-environment.ts` | Test environment (wire-testenv, setup wizard E4): the setup routes. |
 | `test-health.ts` | Setup and test health SH28: `/v1/app/projects/{name}/test-health`, behind the `nh` switch (and the test environment): with either off the path is not found, as any unknown path. |
 | `tracker-people.ts` | Tracker people (lane team-record-links): `/v1/app/org/tracker-people`, the page where a company admin maps the Linear and Jira people the automatic linker could not match to a member of the company. |
-| `types.ts` |  |
+| `types.ts` | (No header comment.) Exports `CLOSE_STOP_BUDGET_MS`, `DeveloperApiConfiguration`, `DeveloperRouteDependencies`. |
 <!-- /codemap:files -->
