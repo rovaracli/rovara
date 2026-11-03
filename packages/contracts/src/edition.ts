@@ -191,6 +191,23 @@ export function resolveEdition(input: { configured: string | undefined; cloud: b
   return input.cloud === true ? "public" : "enterprise";
 }
 
+/** The install's edition from its process environment (ROVARA_EDITION, set on every function at deploy time); undefined when it is not set or not an edition (an EC2 worker has none). */
+export function editionFromEnvironment(env: { ROVARA_EDITION?: string | undefined } = process.env): Edition | undefined {
+  const parsed = EditionSchema.safeParse(env.ROVARA_EDITION);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * What the owner is told when a model call was refused because the account behind the route has not enabled the model. The route runs on the customer's own AWS account in Enterprise (they can enable the model
+ * in the Bedrock console), and on Rovara's account in Public, i.e. Rovara Cloud (nothing for the customer to enable). An edition that is not known says neither.
+ */
+export function modelNotEnabledSentence(model: string | undefined, edition: Edition | undefined): string {
+  const name = model ?? "This model";
+  if (edition === "enterprise") return `${name} isn't enabled for your AWS account. Enable it in the Bedrock console, or Rovara will use another model.`;
+  if (edition === "public") return `${name} isn't available on Rovara's AI right now; Rovara will use another model.`;
+  return `${name} isn't available on the AWS account behind this model route; Rovara will use another model.`;
+}
+
 export const ENTERPRISE_ONLY_MESSAGE = "This feature is part of the Enterprise edition.";
 export const NOT_IN_THIS_EDITION_MESSAGE = "This feature is not available in this edition.";
 export const NOT_AVAILABLE_YET_MESSAGE = "This feature is not available yet.";

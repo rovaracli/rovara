@@ -35,12 +35,14 @@ export async function readStageModelEvidence(deps:StageEvidenceDependencies&Part
    }
   } catch {throw agentXError("RUNTIME_UNAVAILABLE","The model connection could not be read.");}
  }
+ // Owner decision 2026-11-03: Rovara's own catalog models this account cannot call are marked, so a default choice prefers other candidates (the resolver). Unreadable marks nothing.
+ const cannotUse:ReadonlySet<string>=await deps.routing.usableModels?.unusable().catch(()=>new Set<string>())??new Set<string>();
  const candidates:VerifiedStageCandidate[]=[];
  for(const model of input.models) {
   if(catalogModel(model)===undefined) continue;
   for(const sourceId of order) {
    if(sourceId==="rovara" && model.provider==="amazon-bedrock" && rovara.has(model.modelId)) {
-    candidates.push({model,sourceId,enabled:true,inEffectiveOrder:true,evidence:{orgId:input.orgId,sourcesRevision,kind:"rovara_catalog"}});break;
+    candidates.push({model,sourceId,enabled:true,inEffectiveOrder:true,...(cannotUse.has(canonicalModelName(model))?{accountCannotUse:true as const}:{}),evidence:{orgId:input.orgId,sourcesRevision,kind:"rovara_catalog"}});break;
    }
    if(sourceId==="personal-chatgpt" && input.noPersonalPlan?.has(`${model.provider}\0${model.modelId}`)!==true && modelCompany(model)==="openai" && connectionRevision!==undefined && chatgptModels.some(modelId=>canonicalModelName({provider:"openai",modelId})===canonicalModelName(model))) {
     candidates.push({model,sourceId,enabled:true,inEffectiveOrder:true,evidence:{orgId:input.orgId,sourcesRevision,kind:"chatgpt_connection",payerDeveloperId:input.payerDeveloperId!,connectionRevision}});break;

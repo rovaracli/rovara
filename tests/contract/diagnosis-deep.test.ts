@@ -90,6 +90,18 @@ describe("asking for the deep tier", () => {
     expect(started.calls).toHaveLength(0);
   });
 
+  it("2026-11-03: with no usable AI provider of the company's own the deep tier is not offered either: the fixed sentence, no task started, nothing written or spent", async () => {
+    const w = diagnosisWorld();
+    const light = await readyLight(w);
+    w.diagnosis.providerUsable = async () => false;
+    const before = snapshot(w);
+    const error = await deep(w, light).then(() => undefined, (caught: unknown) => caught as { code: string; message: string });
+    expect(error).toMatchObject({ code: "MODEL_NOT_ALLOWED" });
+    expect(error?.message).toContain("Diagnosis uses your company's AI provider. Connect one in Settings to turn it on.");
+    expect(started.calls).toHaveLength(0);
+    expect(snapshot(w)).toBe(before);
+  });
+
   it("a deep diagnosis is given a setup draft's hour before it reads as failed, not the light tier's quarter of an hour", async () => {
     const w = diagnosisWorld();
     const light = await readyLight(w);

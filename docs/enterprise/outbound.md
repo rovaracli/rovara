@@ -43,7 +43,7 @@ Enterprise: Names that appear in IAM trust and resource policies. Nothing connec
 
 - Service principals named in IAM trust and resource policies and in the CDK stacks.
   `apigateway.amazonaws.com`, `cloudformation.amazonaws.com`, `codebuild.amazonaws.com`, `delivery.logs.amazonaws.com`, `ec2.amazonaws.com`, `ecs-tasks.amazonaws.com`, `ecs.amazonaws.com`, `elasticloadbalancing.amazonaws.com`, `email.cognito-idp.amazonaws.com`, `events.amazonaws.com`, `indexing.s3vectors.amazonaws.com`, `lambda.amazonaws.com`, `maintenance.s3tables.amazonaws.com`, `rds.amazonaws.com`, `route53resolver.amazonaws.com`, `s3.amazonaws.com`, `s3tables.amazonaws.com`, `s3vectors.amazonaws.com`, `scheduler.amazonaws.com`, `states.amazonaws.com`, `vpc-flow-logs.amazonaws.com`
-- The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call). (only in `infra/lib/saved-env-images.ts`)
+- The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call); and, as the iam:AWSServiceName condition on the deploy role's one service-linked-role statement for ECR's creation-template role (a policy value, not a call). (only in `infra/lib/saved-env-images.ts`, `packages/contracts/src/access-policies.ts`)
   `ecr.amazonaws.com`
 - The CodeArtifact service name in the sts:AWSServiceName condition that scopes the broker role's registry token policy (a policy value, not a call). (only in `infra/lib/registry-access.ts`)
   `codeartifact.amazonaws.com`

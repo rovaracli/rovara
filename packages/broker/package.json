@@ -18,6 +18,7 @@
     "@agentx/verifier": "0.1.0",
     "@aws-crypto/sha256-js": "5.2.0",
     "@aws-sdk/client-athena": "3.1134.0",
+    "@aws-sdk/client-bedrock": "3.1134.0",
     "@aws-sdk/client-cloudformation": "3.1134.0",
     "@aws-sdk/client-cloudwatch": "3.1134.0",
     "@aws-sdk/client-cloudwatch-logs": "3.1134.0",

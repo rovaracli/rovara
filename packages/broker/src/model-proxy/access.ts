@@ -58,11 +58,6 @@ export interface MintKeyInput {
   /** The aliases the key may call: the org's own source aliases and Rovara AI catalog ids, never a wildcard or another org's alias. Absent keeps the older, unscoped key. */
   models?: readonly string[] | undefined;
   tags?: MintTags | undefined;
-  /**
-   * DG-1 S1: Rovara pays for this key (a Public light diagnosis). It answers to Rovara's own support team, never to the org's team, so its spend is not counted against the customer's monthly budget.
-   * Only a key with `models`, every one of them in the Rovara AI catalog, may be minted this way. `orgId` stays on the key as a label (metadata) for Rovara's own accounting.
-   */
-  rovaraPaid?: true | undefined;
 }
 
 export interface MintedKey {

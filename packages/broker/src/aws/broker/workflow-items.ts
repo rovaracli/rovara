@@ -57,6 +57,7 @@ import { PLAN_GROUNDING_HOLD_PK, isNonCandidateRound, sweepGroundingHolds } from
 import { workflowCandidateSourceExportSchema } from "./evidence-and-setup.js";
 import { readFeedbackBundlesForCritic } from "./feedback-and-codebuild.js";
 import { ROVARA_CODE_NAME } from "./model-access.js";
+import { learnModelNotEnabled } from "../../model-sources/learn-not-enabled.js";
 import { planCritiqueOutcome, planRunEstimate, spendLimitKind, storePlanAnswer, type PlannerReplies } from "./plan-answers.js";
 import { requirePullRequest } from "./records.js";
 import { githubScopeOf } from "./scope-helpers.js";
@@ -475,6 +476,8 @@ export async function completedWorkflowItems(
   e2eCancelTarget?: OperationRecord,
 ): Promise<TransactItems> {
   if (pointer === undefined) return [];
+  // Owner decision 2026-11-03: a model the account has not enabled is learned from the call that was refused, so no later default choice offers it for a while.
+  await learnModelNotEnabled(dependencies.usableModels, operation, terminalStatus, terminalError, result);
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
   // Plan 6 Task 10: a setup draft's result is its draft (or the reason there is none), written with the result.
   if (task?.purpose === "setup_draft") {

@@ -95,7 +95,6 @@ function parentRemainderDigest(template: TemplateJson): string {
   delete remainder.Parameters?.LiveAskEnabled;
   // Live interaction F2 to F4: the Fix with agent switch, a parameter and a packed setting, no part of the proof-only addition.
   delete remainder.Parameters?.LiveFixEnabled;
-  delete remainder.Parameters?.LiveFixRovaraPaidDailyCents;
   // Proof and evidence, and decision cards (wire-proof): two switches, parameters and packed settings, no part of the proof-only addition.
   delete remainder.Parameters?.ProofEvidenceEnabled;
   delete remainder.Parameters?.DecisionCardsEnabled;
@@ -121,8 +120,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
   const resources = remainder.Resources ?? {};
   for (const id of Object.keys(resources)) if (id.startsWith("TaskPersonProof")) delete resources[id];
-  // DG-3: the install-wide Rovara-paid diagnosis ceiling's metric filter and 80 percent alarm (named environments only) are no part of the proof-only addition; taken out so the pinned digests below still hold.
-  for (const id of Object.keys(resources)) if (id.startsWith("DiagnosisRovaraPaidGlobalAlarm") || id.startsWith("BrokerLogsDiagnosisRovaraPaidGlobalPercentMetric")) delete resources[id];
+  // (2026-11-03: the Rovara-paid diagnosis ceiling's parameter, packed setting, metric filter and alarm were removed; nothing of them is left to take out here, and the pinned digests below did not move.)
   // Plan 3 Task 30's spend settlement schedule is no part of the proof-only addition either.
   const spendSchedules = Object.keys(resources).filter((id) => id.startsWith("SpendSettlementSchedule"));
   // Named environments have the one schedule (spend-ledger.test.ts asserts it) and the legacy template has none; nothing else may hide under the prefix.
@@ -151,7 +149,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "liveFixRovaraPaidCents", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
@@ -355,18 +353,22 @@ describe("the named TEST proof-only installation gate", () => {
     // template, from the values the digest test itself reports (nothing hand-computed). The legacy digests did not move.
     // 2026-11-03, merge of the test-services chain (ts-fakes to ts-repack, with ts-images' service catalog image repositories and their key) onto saved-env-wire and ts-run-network: the four named and foreign digests were
     // retaken from the values the digest test itself reports for the merged template (nothing hand-computed); the named-templates snapshot merged cleanly and matches. The legacy digests did not move.
+    // 2026-11-03, integration tip fixes (ENV-ROOM): the four named and foreign digests were retaken once more, from the values the digest test itself reports. The broker's GITHUB_APP_CREDENTIAL_REF, GITHUB_APP_ID and WEB_FEATURES
+    // variables and (cloud) DEVELOPER_GITHUB_CLIENT_ID moved into AGENTX_SETTINGS to win back its 400 bytes of room, and those parameters gained a plain-text AllowedPattern in a named environment. The legacy digests did not move.
+    // 2026-11-03, usable models: the four named and foreign digests were retaken after ONE intended addition (the legacy digests did not move; named environments only): the broker's role gained
+    // bedrock:GetFoundationModelAvailability on Resource "*" (merged into the statement that already allows xray:PutTraceSegments and xray:PutTelemetryRecords), which the named-templates snapshot shows too.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "96bc2587d0666cf58ee6faf48ef03a1532f4b88793de80c13b853872bd625331",
-        withoutRoute: "51e7db6606bc27f201af03792ec0cfc0bb5f333f57237b4855fb679b435dd89e",
+        withRoute: "e131a9d6dfed325c39a4460dd2cdfe7db09d604f2442ba921145355466bd1830",
+        withoutRoute: "52531e70ec95de77751cc98e146459c687654931b91ef04760721cffbfd789cf",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "46f3a3d8d7aff0bde2d2047632a4ffdbea3cd7fcee9ba275470bff01a65c8e43",
-        withoutRoute: "ffb453a599a199cd2c663c2e2dff3f8946a7337b83e360863fe29d759fd92c74",
+        withRoute: "bb84c5797c2f92cf15c1688b9573027cfe63b895c5774308bca4ae928a6e7134",
+        withoutRoute: "236ca02ab904a4b8dd3314a9cd2498cd03c2e34c8172ac00db0afb22fd2663c9",
       },
       {
         label: "legacy",

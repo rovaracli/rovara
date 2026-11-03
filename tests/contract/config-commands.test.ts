@@ -49,6 +49,8 @@ describe("agentx config list and get", () => {
     for (const [key, parameter] of [["testServices.enabled", "TestServicesEnabled"], ["testAccounts.enabled", "TestAccountsEnabled"], ["projectImages.enabled", "ProjectImagesEnabled"]] as const) {
       expect(rows.find((row) => row.key === key)).toMatchObject({ value: "0", where: `stack parameter ${parameter} on agentx-staging-control-plane` });
     }
+    // 2026-11-03: the install-wide ceiling on Rovara-paid diagnoses (liveFix.rovaraPaidDailyCents) is gone: the company pays for a diagnosis, so there is no key for it.
+    expect(rows.find((row) => row.key === "liveFix.rovaraPaidDailyCents")).toBeUndefined();
     expect(rows).toHaveLength(37);
   });
 

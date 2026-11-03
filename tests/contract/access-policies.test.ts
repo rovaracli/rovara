@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
+  BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
 import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/contracts";
 
@@ -14,6 +14,7 @@ const scope: PolicyScope = {
 // managed-policy management.
 const ROLE_SCOPED_POLICY_ACTIONS = ["iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:AttachRolePolicy"];
 const COGNITO_EMAIL_SLR = "arn:aws:iam::123456789012:role/aws-service-role/email.cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdpEmailService";
+const ECR_TEMPLATE_SLR = "arn:aws:iam::123456789012:role/aws-service-role/ecr.amazonaws.com/AWSServiceRoleForECRTemplate";
 const actions = (statements: ReturnType<typeof serviceRoleStatements>) => statements.flatMap((s) => s.Action);
 
 describe("service role policy", () => {
@@ -36,6 +37,8 @@ describe("service role policy", () => {
         expect(resources).toEqual(["arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary"]);
       } else if (statement.Sid === "CognitoEmailServiceLinkedRole") {
         expect(resources).toEqual([COGNITO_EMAIL_SLR]);
+      } else if (statement.Sid === "EcrTemplateServiceLinkedRole") {
+        expect(resources).toEqual([ECR_TEMPLATE_SLR]);
       } else if (statement.Sid === "ServiceLinkedRoles") {
         expect(resources).toEqual(["arn:aws:iam::123456789012:role/aws-service-role/*"]);
         expect(statement.Condition?.StringLike?.["iam:AWSServiceName"]).toBeDefined();
@@ -105,6 +108,27 @@ describe("service role policy", () => {
     });
     // The wider statement keeps its four services and does not grow.
     expect(serviceRoleStatements(scope).find((s) => s.Sid === "ServiceLinkedRoles")!.Condition).toEqual({ StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"] } });
+  });
+
+  it("may create the ECR repository creation template service-linked role and only that one, by its exact ARN and service name (0.5.1 staging upgrade failure, 2026-11-03)", () => {
+    // An AWS::ECR::RepositoryCreationTemplate makes ECR create AWSServiceRoleForECRTemplate on first use in an account (even with a CustomRoleArn), and the caller needs
+    // iam:CreateServiceLinkedRole (https://docs.aws.amazon.com/AmazonECR/latest/userguide/slr-rct.html). Without it the control-plane stack rolled back with
+    // "not authorized to perform: iam:CreateServiceLinkedRole on resource: ...role/aws-service-role/ecr.amazonaws.com/AWSServiceRoleForECRTemplate".
+    const statements = serviceRoleStatements(scope);
+    expect(statements.find((s) => s.Sid === "EcrTemplateServiceLinkedRole")).toEqual({
+      Sid: "EcrTemplateServiceLinkedRole", Effect: "Allow", Action: ["iam:CreateServiceLinkedRole"], Resource: ECR_TEMPLATE_SLR,
+      Condition: { StringEquals: { "iam:AWSServiceName": "ecr.amazonaws.com" } },
+    });
+    // Every statement that can create a service-linked role is a known one; none opens ecr.amazonaws.com wider than the exact role, and the wider statement does not grow.
+    const creators = statements.filter((s) => s.Effect === "Allow" && s.Action.some((a) => a === "iam:CreateServiceLinkedRole" || a === "iam:*" || a === "iam:Create*"));
+    expect(creators.map((s) => s.Sid).sort()).toEqual(["CognitoEmailServiceLinkedRole", "EcrTemplateServiceLinkedRole", "ServiceLinkedRoles"]);
+    expect(statements.find((s) => s.Sid === "ServiceLinkedRoles")!.Condition).toEqual({ StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"] } });
+    expect(SERVICE_LINKED_ROLE_SERVICES).not.toContain("ecr.amazonaws.com");
+    // The service role is not bounded (no PermissionsBoundary), so the default boundary, which is at its size limit, does not carry the grant.
+    expect(defaultBoundaryStatements(scope).some((s) => s.Sid === "EcrTemplateServiceLinkedRole")).toBe(false);
+    // Partition and account follow the scope.
+    const govCloud = serviceRoleStatements({ ...scope, partition: "aws-us-gov", account: "210987654321" }).find((s) => s.Sid === "EcrTemplateServiceLinkedRole")!;
+    expect(govCloud.Resource).toBe("arn:aws-us-gov:iam::210987654321:role/aws-service-role/ecr.amazonaws.com/AWSServiceRoleForECRTemplate");
   });
 
   it("never grants iam:* or wildcard IAM user, group or policy management (managed policies only as agentx-*, ruling M2)", () => {

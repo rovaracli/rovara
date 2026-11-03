@@ -1,6 +1,6 @@
 // Live interaction F2: the broker's service routes for the chat service (`/v1/service/diagnoses/*`) and who pays. The routes answer the orchestrator role only, name the diagnosis (never a Slack thread),
-// take nothing from the request about who asks or what they pay, and are NOT_FOUND while the switch is off. WHO PAYS is decided from the edition: Public light is paid by Rovara (a small fixed key for
-// Rovara's own AI, counted against none of the customer's budgets); Enterprise runs on the customer's own account and limits; nothing in a request can ask for Rovara's payment.
+// take nothing from the request about who asks or what they pay, and are NOT_FOUND while the switch is off. The COMPANY pays for every diagnosis, in either edition (2026-11-03, replacing the
+// Rovara-paid design): the key is asked for in the requester's name on the company's own AI provider; nothing in a request can ask for another payer.
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DIAGNOSIS_LIGHT_BUDGET_USD, DiagnosisModelAccessRequestSchema, SLACK_ROUTE_DIAGNOSIS, diagnosisRouteAttributes, isDiagnosisRoute } from "../../packages/contracts/src/index.js";
@@ -8,7 +8,8 @@ import { DIAGNOSIS_LIGHT_BUDGET_USD, DiagnosisModelAccessRequestSchema, SLACK_RO
 const mint = vi.hoisted(() => vi.fn((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); }));
 vi.mock("../../packages/broker/src/aws/broker/model-access.js", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), mintChatTurnKey: mint }));
 
-import { handleDiagnosisServiceRoute, installDiagnosisService, rovaraPaysForLight } from "../../packages/broker/src/aws/broker/diagnosis-service.js";
+import * as diagnosisService from "../../packages/broker/src/aws/broker/diagnosis-service.js";
+import { handleDiagnosisServiceRoute, installDiagnosisService } from "../../packages/broker/src/aws/broker/diagnosis-service.js";
 import { startLightDiagnosis } from "../../packages/broker/src/diagnosis/light.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
 import { ARJUN, ORG_A, PRIYA, diagnosisWorld, type DiagnosisWorld } from "../support/diagnosis-world.js";
@@ -29,34 +30,37 @@ function service(w: DiagnosisWorld, edition: "enterprise" | "public") {
 beforeEach(() => { mint.mockClear(); });
 
 describe("who pays for a light diagnosis", () => {
-  it("Public: Rovara pays. The key is asked for as Rovara's support, with no member to bill, and the request cannot say otherwise", async () => {
-    const w = diagnosisWorld({ edition: "public" });
-    const status = await startLightDiagnosis(w.diagnosis, w.caller(PRIYA), { requestId: randomUUID(), errorRef: w.ref() });
-    const t = service(w, "public");
-    const reply = await handleDiagnosisServiceRoute(t.dependencies, t.dependencies.diagnosisService, t.request("/diagnoses/model-access", { orgId: ORG_A, diagnosisId: status.diagnosisId, turnId: "Ev1234567890" }), "/v1/diagnoses/model-access");
-    expect(reply?.statusCode).toBe(200);
-    expect(mint).toHaveBeenCalledTimes(1);
-    const args = mint.mock.calls[0]!;
-    expect(args[1]).toBe(ORG_A);
-    expect(args[2]).toBe("web");
-    expect(args[3]).toBeUndefined();
-    expect(args[6]).toEqual({ rovaraPays: { claimKey: expect.any(Function) as unknown } });
-    // A request cannot ask for a payer, a budget or a person: the body is strict.
-    for (const extra of [{ rovaraPays: true }, { payer: "rovara" }, { developerId: ARJUN }, { maxBudgetUsd: 1000 }]) {
-      expect(DiagnosisModelAccessRequestSchema.safeParse({ orgId: ORG_A, diagnosisId: status.diagnosisId, turnId: "Ev1", ...extra }).success).toBe(false);
-      await expect(handleDiagnosisServiceRoute(t.dependencies, t.dependencies.diagnosisService, t.request("/diagnoses/model-access", { orgId: ORG_A, diagnosisId: status.diagnosisId, turnId: "Ev1234567890", ...extra }), "/v1/diagnoses/model-access")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    }
-    expect(mint).toHaveBeenCalledTimes(1);
-  });
+  for (const edition of ["public", "enterprise"] as const) {
+    it(`${edition}: the company pays. The key is asked for in the requester's name, as a diagnosis, and the request cannot say otherwise`, async () => {
+      const w = diagnosisWorld({ edition });
+      const status = await startLightDiagnosis(w.diagnosis, w.caller(PRIYA), { requestId: randomUUID(), errorRef: w.ref() });
+      const t = service(w, edition);
+      const reply = await handleDiagnosisServiceRoute(t.dependencies, t.dependencies.diagnosisService, t.request("/diagnoses/model-access", { orgId: ORG_A, diagnosisId: status.diagnosisId, turnId: "Ev1234567890" }), "/v1/diagnoses/model-access");
+      expect(reply?.statusCode).toBe(200);
+      expect(mint).toHaveBeenCalledTimes(1);
+      const args = mint.mock.calls[0]!;
+      expect(args[1]).toBe(ORG_A);
+      expect(args[2]).toBe("web");
+      expect(args[3]).toMatchObject({ kind: "developer", developerId: PRIYA });
+      // The options carry the diagnosis claim and nothing that asks for Rovara's payment.
+      expect(args[6]).toEqual({ diagnosis: { claimKey: expect.any(Function) as unknown } });
+      // A request cannot ask for a payer, a budget or a person: the body is strict.
+      for (const extra of [{ rovaraPays: true }, { payer: "rovara" }, { developerId: ARJUN }, { maxBudgetUsd: 1000 }]) {
+        expect(DiagnosisModelAccessRequestSchema.safeParse({ orgId: ORG_A, diagnosisId: status.diagnosisId, turnId: "Ev1", ...extra }).success).toBe(false);
+        await expect(handleDiagnosisServiceRoute(t.dependencies, t.dependencies.diagnosisService, t.request("/diagnoses/model-access", { orgId: ORG_A, diagnosisId: status.diagnosisId, turnId: "Ev1234567890", ...extra }), "/v1/diagnoses/model-access")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      }
+      expect(mint).toHaveBeenCalledTimes(1);
+    });
+  }
 
-  it("DG-3: a diagnosis takes ONE Rovara-paid key: a second model-access call for it (a retry, a redelivery) is refused by the claim the route hands the mint, and another diagnosis is not affected", async () => {
+  it("DG-3: a diagnosis takes ONE key: a second model-access call for it (a retry, a redelivery) is refused by the claim the route hands the mint, and another diagnosis is not affected", async () => {
     const w = diagnosisWorld({ edition: "public" });
     const first = await startLightDiagnosis(w.diagnosis, w.caller(PRIYA), { requestId: randomUUID(), errorRef: w.ref() });
     const t = service(w, "public");
     // The mint is played as the real one plays it: it asks the claim first and mints nothing when it is refused.
     mint.mockImplementation(async (...args: unknown[]) => {
-      const options = args[6] as { rovaraPays?: { claimKey(): Promise<boolean> } };
-      if (options.rovaraPays !== undefined && !(await options.rovaraPays.claimKey())) throw new Error("already claimed");
+      const options = args[6] as { diagnosis?: { claimKey(): Promise<boolean> } };
+      if (options.diagnosis !== undefined && !(await options.diagnosis.claimKey())) throw new Error("already claimed");
       return { baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 };
     });
     try {
@@ -73,19 +77,8 @@ describe("who pays for a light diagnosis", () => {
     }
   });
 
-  it("Enterprise: the customer's own account and limits. The key is asked for in the requester's name, with no Rovara payment", async () => {
-    const w = diagnosisWorld({ edition: "enterprise" });
-    const status = await startLightDiagnosis(w.diagnosis, w.caller(ARJUN), { requestId: randomUUID(), errorRef: w.ref() });
-    const t = service(w, "enterprise");
-    await handleDiagnosisServiceRoute(t.dependencies, t.dependencies.diagnosisService, t.request("/diagnoses/model-access", { orgId: ORG_A, diagnosisId: status.diagnosisId, turnId: "Ev1234567890" }), "/v1/diagnoses/model-access");
-    const args = mint.mock.calls[0]!;
-    expect(args[3]).toMatchObject({ kind: "developer", developerId: ARJUN });
-    expect(args[6]).toEqual({});
-  });
-
-  it("the choice is the edition's alone", () => {
-    expect(rovaraPaysForLight("public")).toBe(true);
-    expect(rovaraPaysForLight("enterprise")).toBe(false);
+  it("nothing in the module decides that Rovara pays: no edition test, no Rovara-pays option", () => {
+    expect(Object.keys(diagnosisService)).not.toContain("rovaraPaysForLight");
     expect(DIAGNOSIS_LIGHT_BUDGET_USD).toBeLessThanOrEqual(0.5);
   });
 

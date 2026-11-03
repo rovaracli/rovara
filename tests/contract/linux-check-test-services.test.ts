@@ -87,7 +87,9 @@ describe("scripts/linux-check-test-services.sh", () => {
     for (let n = 1; n <= 8; n += 1) expect(r.byId(`L${String(n)}.live`), `L${String(n)}.live`).toMatch(/^TSL \S+ PENDING /u);
     for (const id of ["L1.live-other-run", "L1.internal-drops"]) expect(r.byId(id), id).toMatch(/^TSL \S+ PENDING /u);
     expect(r.byId("L1.live-other-run")).toContain("another-runs-helper-unreachable");
-    expect(r.lines.at(-1)).toMatch(/^TSL SUMMARY pass=11 fail=0 pending=10$/u);
+    // 10 earlier pending parts plus the eight TS-L3 reviewer-list probes (TS16 review round, ee09d8994).
+    for (const id of ["L3.embedded-resolver", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing"]) expect(r.byId(id), id).toMatch(/^TSL \S+ PENDING /u);
+    expect(r.lines.at(-1)).toMatch(/^TSL SUMMARY pass=11 fail=0 pending=18$/u);
     expect(r.status).toBe(3);
   });
 

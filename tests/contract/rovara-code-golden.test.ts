@@ -131,14 +131,19 @@ function expectedModelPolicy(node: Record<string, unknown>) {
   expect(TaskModelPolicyBindingSchema.parse(node.modelPolicy)).toEqual(expected);
   return expected;
 }
+/** Change 7 (review defaults): a review operation that could only reach the builder's own company's models records `reviewNoOtherCompany: true`; listed by value where it appears. */
+function reviewNoOtherCompanyChanges(record: unknown): Array<{ path: string; expected: unknown; change: 7 }> {
+  return nodePaths(record, node => node.reviewNoOtherCompany === true).map(path => ({ path: path === "" ? "reviewNoOtherCompany" : `${path}.reviewNoOtherCompany`, expected: true, change: 7 as const }));
+}
 function modelPolicyChanges(record: unknown): Array<{ path: string; expected: unknown; change: 7 }> {
   const tasks = (record as { taskItems: Array<Record<string, unknown>> }).taskItems;
   const taskId = tasks.find(item => item.sk === "META")?.taskId;
   expect(taskId).toEqual(expect.any(String));
   return [
+    ...reviewNoOtherCompanyChanges(record),
     ...nodePaths(record, node => "modelPolicy" in node).map(path => ({ path: `${path}.modelPolicy`, expected: expectedModelPolicy(valueAt(record, path) as Record<string, unknown>), change: 7 as const })),
     ...nodePaths(record, node => "modelTaskId" in node).map(path => ({ path: `${path}.modelTaskId`, expected: taskId, change: 7 as const })),
-    ...nodePaths(record, node => node.entityType === "OPERATION" && "modelPolicy" in node).map(path => ({ path: `${path}.model`, expected: { provider: "amazon-bedrock", modelId: (valueAt(record, path) as Record<string, unknown>).workflowMode === "REVIEW" ? "us.anthropic.claude-fable-5-1" : ROVARA_DEFAULT }, change: 7 as const })),
+    ...nodePaths(record, node => node.entityType === "OPERATION" && "modelPolicy" in node).map(path => ({ path: `${path}.model`, expected: { provider: "amazon-bedrock", modelId: (valueAt(record, path) as Record<string, unknown>).workflowMode === "REVIEW" ? "us.anthropic.claude-opus-5-5" : ROVARA_DEFAULT }, change: 7 as const })),
   ];
 }
 
@@ -146,7 +151,7 @@ function modelPolicyChanges(record: unknown): Array<{ path: string; expected: un
 function ordinaryStageChanges(scenario:GoldenScenario,record:unknown):Array<{path:string;expected:unknown;change:7}> {
  const recipe=builtinRecipe("rovara-code",builtinDefaultPin("rovara-code")),digest=recipeDigest(recipe);
  const thread=scenario==="slack-thread-operation"||scenario==="chatgpt-task",actor=thread?developerIdForSlackUser("U0123456789"):"d".repeat(64);
- const model=scenario==="chatgpt-task"?{provider:"openai",modelId:"gpt-6.1-sol"}:{provider:"amazon-bedrock",modelId:scenario==="review"?"us.anthropic.claude-fable-5-1":ROVARA_DEFAULT};
+ const model=scenario==="chatgpt-task"?{provider:"openai",modelId:"gpt-6.1-sol"}:{provider:"amazon-bedrock",modelId:scenario==="review"?"us.anthropic.claude-opus-5-5":ROVARA_DEFAULT};
  const policyNodes=nodePaths(record,node=>"modelPolicy" in node);
  if(scenario!=="checks"&&scenario!=="orchestrator-turn")expect(policyNodes.length,"each model-using scenario retains C53 governance").toBeGreaterThan(0);
  const changes=policyNodes.flatMap(path=>{
@@ -154,13 +159,13 @@ function ordinaryStageChanges(scenario:GoldenScenario,record:unknown):Array<{pat
   const fields:Array<{path:string;expected:unknown;change:7}>=[{path:`${path}.modelPolicy`,expected:expectedModelPolicy(node),change:7 as const},{path:`${path}.model`,expected:model,change:7 as const}];
   if(node.entityType==="OPERATION") {
    const mode=typeof node.workflowMode==="string"?node.workflowMode:"IMPLEMENT";
-   fields.push({path:`${path}.modelTurnPin`,expected:{version:1,...(mode===undefined?{}:{workflowMode:mode}),actorDeveloperId:actor,payerDeveloperId:actor,agentId:"rovara-code",recipe,digest,...(thread?{slackUserId:"U0123456789",threadChannel:{teamId:SLACK_TEAM,channelId:SLACK_CHANNEL}}:{}),pin:{version:1,orgId:TEST_ORG,project:"payments",registeredAt:"2026-10-20T00:00:00.000Z",processAgentId:"rovara-code",recipeDigest:digest,policy:{version:1,revision:0,rankingVersion:"g3-v1",stepOverrides:{}},sourcesRevision:0,frozenInputs:{projectRevision:1,projectChoices:{},recipeDefaults:{},clearedFallbacks:[],...(thread?{projectModels:GOLDEN_THREAD_MODELS}:{})}}},change:7});
+   fields.push({path:`${path}.modelTurnPin`,expected:{version:1,...(mode===undefined?{}:{workflowMode:mode}),actorDeveloperId:actor,payerDeveloperId:actor,agentId:"rovara-code",recipe,digest,...(thread?{slackUserId:"U0123456789",threadChannel:{teamId:SLACK_TEAM,channelId:SLACK_CHANNEL}}:{}),pin:{version:1,orgId:TEST_ORG,project:"payments",registeredAt:"2026-10-20T00:00:00.000Z",processAgentId:"rovara-code",recipeDigest:digest,policy:{version:1,revision:0,rankingVersion:"g3-v1",stepOverrides:{}},sourcesRevision:0,frozenInputs:{projectRevision:1,projectChoices:{},recipeDefaults:{},clearedFallbacks:[],reviewDefault:"different_company",...(thread?{projectModels:GOLDEN_THREAD_MODELS}:{})}}},change:7});
    if(scenario!=="task-no-workflow-no-proxy"&&scenario!=="chatgpt-task")fields.push({path:`${path}.modelRoute`,expected:{sourceId:"rovara",alias:model.modelId,model},change:7});
   }
   return fields;
  });
  if(scenario==="chatgpt-task")for(const path of nodePaths(record,node=>node.entityType==="OPERATION"&&"modelPolicy" in node))changes.push({path:`${path}.modelRoute`,expected:null,change:7});
- return changes;
+ return [...changes, ...reviewNoOtherCompanyChanges(record)];
 }
 
 /**
@@ -342,8 +347,8 @@ describe("Rovara Code with agents switched on", () => {
       const sessionId = (kept[meta] as { sessionId?: string }).sessionId;
       expect(sessionId, `${scenario}'s task names its session`).toMatch(/^ses_[0-9a-z]{20}$/);
       const recorded = { ...record, taskItems: kept };
-      // The default reviewer must differ from the Sonnet builder; the existing owner capability order selects Fable.
-      const stageModel = scenario === "review" ? "us.anthropic.claude-fable-5-1" : ROVARA_DEFAULT;
+      // The default reviewer must differ from the Sonnet builder. Fable, Opus, GPT-5 and Gemini Pro are one frontier tier (review defaults, 2878c376e); inside it the cheaper list price wins, so this pool selects Opus.
+      const stageModel = scenario === "review" ? "us.anthropic.claude-opus-5-5" : ROVARA_DEFAULT;
       expectGolden(scenario, recorded, [
         ...modelFreeChecksChanges(scenario, recorded),
         ...runLimitChanges(scenario, recorded),

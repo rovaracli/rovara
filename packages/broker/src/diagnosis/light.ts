@@ -7,7 +7,7 @@
 // The switch (`fd`, LIVE_FIX_ENABLED) is OFF by default: every route then answers NOT_FOUND exactly as if it did not exist.
 import { createHash } from "node:crypto";
 import {
-  DIAGNOSIS_REFUSALS, DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS, DIAGNOSIS_ROVARA_PAID_ORG_LIMITS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
+  DIAGNOSIS_REFUSALS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
   DiagnosisRecordSchema, agentXError, diagnosisRouteAttributes, errorRefKey,
   type DiagnosisRecord, type DiagnosisStatus, type DiagnosisTier, type DiagnosisTurnResult, type OrgId,
 } from "@agentx/contracts";
@@ -23,7 +23,7 @@ import { proposalCounts, sanitizeDiagnosis } from "./sanitize.js";
 export const DEEP_DIAGNOSIS_FAILED_MESSAGE = "Couldn't read the code to diagnose this. The first diagnosis stays." as const;
 import {
   REQUEST_STALE_MS, admitDiagnosis, claimProposedAudit, diagnosisEventId, diagnosisIdFor, freeOpenPlace, openDiagnosisFor, readDiagnosisRecord, readDiagnosisRequest, readDiagnosisRequester, settleDiagnosis,
-  type DiagnosisOrgCap, type DiagnosisRequest,
+  type DiagnosisRequest,
 } from "./store.js";
 
 type Edition = "enterprise" | "public";
@@ -46,10 +46,11 @@ export interface DiagnosisDependencies extends DiagnosisCoreDependencies {
   /** The chat service's request queue. Absent: the install cannot run a light diagnosis, and the route says so. */
   queue: SlackRequestQueue | undefined;
   context: DiagnosisContextPorts;
-  /** DG-1 S1: the organization's daily ceiling on the light diagnoses Rovara pays for (Public). Absent: `DIAGNOSIS_ROVARA_PAID_ORG_LIMITS`. */
-  rovaraPaidLimits?: DiagnosisOrgCap | undefined;
-  /** DG-3: the install-wide daily ceiling, in cents, on the light diagnoses Rovara pays for across all organizations (the packed setting `fg`). Absent: `DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS`. */
-  rovaraPaidGlobalCents?: number | undefined;
+  /**
+   * 2026-11-03: whether the company has a usable AI provider of its own for this project (the one a diagnosis runs on and is paid with; Rovara pays for none). Absent or false: the diagnosis is not offered
+   * and the person reads `DIAGNOSIS_REFUSALS.noProvider`. Throws when the company's sources can't be read: then the ordinary "Couldn't diagnose this now."
+   */
+  providerUsable?: ((orgId: OrgId, project: string) => Promise<boolean>) | undefined;
 }
 
 export type DiagnosisCaller = { orgId: OrgId; developerId: string };
@@ -121,6 +122,17 @@ export async function diagnosisStatusFor(deps: DiagnosisCoreDependencies, caller
 // ---- starting
 
 /**
+ * 2026-11-03: a diagnosis runs on the company's own AI provider and the company pays for it. With no usable provider for the project it is not offered, in one fixed sentence (MODEL_NOT_ALLOWED), before
+ * anything is spent, queued or built. Fails closed: no way to ask (`providerUsable` absent) reads as no provider, and an unreadable answer as "Couldn't diagnose this now."
+ */
+export async function requireProvider(deps: Pick<DiagnosisDependencies, "providerUsable">, orgId: OrgId, project: string): Promise<void> {
+  let usable: boolean;
+  try { usable = deps.providerUsable === undefined ? false : await deps.providerUsable(orgId, project); }
+  catch { throw unavailable(); }
+  if (!usable) throw agentXError("MODEL_NOT_ALLOWED", DIAGNOSIS_REFUSALS.noProvider);
+}
+
+/**
  * `POST /v1/app/diagnoses`: a person asks for a light diagnosis of the error the app showed. Checks, in this order: the switch; the body; that the kind is one the broker can read again; the
  * person's right now; that the error is still the one shown; the open diagnosis of the same error (answered, nothing spent); the rates; then queues. A repeat of the same request is the same
  * diagnosis.
@@ -145,13 +157,13 @@ export async function startLightDiagnosis(deps: DiagnosisDependencies, caller: D
     if (existing !== undefined) return statusOf(deps, caller.orgId, existing);
   }
 
+  await requireProvider(deps, caller.orgId, subject.project);
   const facts = await currentFacts(deps.context, caller, errorRef, subject);
   if (facts === undefined) throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.notCurrent);
   const diagnosisId = diagnosisIdFor(caller.orgId, caller.developerId, body.data.requestId, tier);
   const rendered = renderDiagnosisContext(facts, nonceFor(deps.context.tagKey, diagnosisId));
   const admitted = await admitDiagnosis(deps, {
     orgId: caller.orgId, developerId: caller.developerId, requestId: body.data.requestId, tier, errorRef: facts.errorRef, project: subject.project, context: rendered.text,
-    ...(deps.edition === "public" /* the edition where Rovara pays for the turn (`rovaraPaysForLight`) */ ? { rovaraPaid: deps.rovaraPaidLimits ?? DIAGNOSIS_ROVARA_PAID_ORG_LIMITS, rovaraPaidGlobalCentsPerDay: deps.rovaraPaidGlobalCents ?? DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS } : {}),
   });
   const request = await readDiagnosisRequest(deps, caller.orgId, admitted.diagnosisId);
   if (request === undefined) throw unavailable();
