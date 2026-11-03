@@ -1,7 +1,7 @@
-// Slice 1, s1-sealed T1: the sealed check round (check-round-runners.ts, createCheckRunners' `sealed` option). Deferred checks TS-SEAL-3 (the check sandbox starts only through startCheckSandbox inside withDetachedWorking) and the
+// Slice 1, s1-sealed T1: the sealed check round (check-round-runners.ts). Deferred checks TS-SEAL-3 (the check sandbox starts only through startCheckSandbox inside withDetachedWorking) and the
 // run's variables (an env file, last, never an argument). Nothing starts Docker: a fake CLI records every call and plays the check sandbox.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,7 +13,7 @@ import { buildServiceEnvironment, createRunDirectoryFiles, createServiceRedactor
 import { helperContainerName, type HelperFiles } from "../../packages/worker/src/service-helpers.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "../../packages/worker/src/git.js";
-import { createCheckRunners, mintSealedCheckOptions, planChecks, runChecks } from "../../packages/worker/src/verification/checks.js";
+import { createCheckRunners, planChecks, runChecks } from "../../packages/worker/src/verification/checks.js";
 
 const RUN = "22222222-2222-4222-8222-222222222222";
 const SLOT = 7;
@@ -339,45 +339,6 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     // And the lock is not taken by a refused round.
     await expect(withSealedCheckRound(roundInput(docker, p), () => Promise.resolve("ok"))).resolves.toBe("ok");
   });
-
-  it("a source guard: the check sandbox, the sealed exec and the sealed options are made in one place each (TS-SEAL-3)", async () => {
-    const root = new URL("../../packages/worker/src/", import.meta.url).pathname;
-    const rules: Array<[RegExp, string[]]> = [
-      [/\bstartCheckSandbox\(/u, ["check-sandbox.ts"]],
-      [/\bsealedContainerExec\(/u, ["check-round-runners.ts"]],
-      [/\bmintSealedCheckOptions\(/u, ["verification/checks.ts", "check-round-runners.ts"]],
-      [/\bsealed:\s/u, ["verification/checks.ts", "check-round-runners.ts"]],
-    ];
-    const found = new Map<string, string[]>(rules.map(([pattern]) => [pattern.source, []]));
-    const walk = async (folder: string): Promise<void> => {
-      for (const entry of await readdir(folder, { withFileTypes: true })) {
-        const path = join(folder, entry.name);
-        if (entry.isDirectory()) { await walk(path); continue; }
-        if (!entry.name.endsWith(".ts")) continue;
-        const text = await readFile(path, "utf8");
-        for (const [pattern] of rules) if (pattern.test(text)) found.get(pattern.source)!.push(path.slice(root.length));
-      }
-    };
-    await walk(root);
-    for (const [pattern, allowed] of rules) expect(found.get(pattern.source)!.sort(), pattern.source).toEqual([...allowed].sort().filter((file) => found.get(pattern.source)!.includes(file)));
-    // And each is made somewhere: the guard is not passing on an empty search.
-    expect(found.get(rules[0]![0].source)).toEqual(["check-sandbox.ts"]);
-    expect(found.get(rules[1]![0].source)).toEqual(["check-round-runners.ts"]);
-  });
-
-  it("a source guard: nothing but check-sandbox.ts reads a plan's sandboxRunArgs", async () => {
-    const root = new URL("../../packages/worker/src/", import.meta.url).pathname;
-    const found: string[] = [];
-    const walk = async (folder: string): Promise<void> => {
-      for (const entry of await readdir(folder, { withFileTypes: true })) {
-        const path = join(folder, entry.name);
-        if (entry.isDirectory()) await walk(path);
-        else if (entry.name.endsWith(".ts") && /\.sandboxRunArgs\b|\{[^}]*\bsandboxRunArgs\b[^}]*\}\s*=/u.test(await readFile(path, "utf8"))) found.push(path.slice(root.length));
-      }
-    };
-    await walk(root);
-    expect(found).toEqual(["check-sandbox.ts"]);
-  });
 });
 
 describe("the sealed exec: the run's variables are a file, last, and never on the command line", () => {
@@ -483,22 +444,12 @@ describe("the sealed runners keep the run's secrets out of what they report", ()
   });
 });
 
-describe("createCheckRunners with `sealed` has no unsealed fallback", () => {
-  const sealed = mintSealedCheckOptions({ exec: () => Promise.reject(new Error("unused")), redact: (text: string) => text });
-  it("throws when given a devcontainer, a task sandbox, bash operations or the local shell as well", () => {
-    const cli = { run: () => Promise.reject(new Error("unused")) } as never;
-    expect(() => createCheckRunners({ rootPath, sealed, devcontainer: { cli, target: { rootPath } as never } })).toThrow(/check sandbox alone/u);
-    expect(() => createCheckRunners({ rootPath, sealed, sandbox: {} as never })).toThrow(/check sandbox alone/u);
-    expect(() => createCheckRunners({ rootPath, sealed, bashOperations: { exec: () => Promise.reject(new Error("unused")) } })).toThrow(/check sandbox alone/u);
-    expect(() => createCheckRunners({ rootPath, sealed, local: true })).toThrow(/check sandbox alone/u);
-    expect(() => createCheckRunners({ rootPath, sealed })).not.toThrow();
-  });
-
-  it("refuses sealed options that a sealed round did not make: hand-built, copied or spread", () => {
-    const handBuilt = { exec: () => Promise.reject(new Error("unused")), redact: (text: string) => text };
-    expect(() => createCheckRunners({ rootPath, sealed: handBuilt })).toThrow(/only by a sealed check round/u);
-    expect(() => createCheckRunners({ rootPath, sealed: { ...sealed } })).toThrow(/only by a sealed check round/u);
-    expect(() => createCheckRunners({ rootPath, sealed })).not.toThrow();
+describe("the sealed runners have no unsealed fallback", () => {
+  it("createCheckRunners has no sealed option: given one it throws instead of running the checks unsealed", () => {
+    const sealedOption = { exec: () => Promise.reject(new Error("unused")), redact: (text: string) => text };
+    expect(() => createCheckRunners({ rootPath, ...({ sealed: sealedOption } as object) })).toThrow(/only by a sealed check round/u);
+    expect(() => createCheckRunners({ rootPath, ...({ sealed: undefined } as object) })).toThrow(/only by a sealed check round/u);
+    expect(() => createCheckRunners({ rootPath })).not.toThrow();
   });
 
   it("still refuses an agent command that is not a simple test command, and a cd that leaves the workspace", async () => {

@@ -2,7 +2,7 @@
 // commands when it has some, else the simple test commands the agent ran, each with its own timeout, within one
 // round's budget, and stopped at once by the round's signal.
 import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   checkOutputTail,
   classifyCheck,
@@ -16,11 +16,11 @@ import {
 } from "@agentx/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { MAX_COMMAND_OUTPUT_BYTES, redactedTail, tailCollector } from "../collected-process.js";
-import { containerBashOperations, devcontainerBashOperations, runContainerCommand, runDevcontainerCommand, type ContainerExec, type DevcontainerCli, type DevcontainerTarget } from "../devcontainer.js";
+import { devcontainerBashOperations, runDevcontainerCommand, type DevcontainerCli, type DevcontainerTarget } from "../devcontainer.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "../git.js";
 import { runProjectCommand } from "../prepare.js";
 import { SANDBOX_TARGET, executionFor } from "../execution-target.js";
-import { SANDBOX_PYTHON_USER_BASE_DIRECTORY, SANDBOX_UNSET_ENVIRONMENT, localBashOperations, type TaskSandbox } from "../task-sandbox.js";
+import { localBashOperations, type TaskSandbox } from "../task-sandbox.js";
 import { projectBefore, type CheckHistory } from "./check-history.js";
 import type { CommandRecorder, RecordedCommand } from "./recorder.js";
 
@@ -313,30 +313,6 @@ function cut(text: string, limit: number): string {
   return text.length <= limit ? text : text.slice(0, limit);
 }
 
-/**
- * Test services (TS17, TS-SEAL-3): the official checks of a round run in the SEALED check sandbox (check-sandbox.ts), by `docker exec --env-file` with the run's connection variables, and nowhere else. The seam is
- * built by `withSealedCheckRound` (check-round-runners.ts) only while the check sandbox is up inside `withDetachedWorking`; a runner built with it never falls back to the working sandbox, a devcontainer or the host.
- */
-export interface SealedCheckOptions {
-  /** `docker exec` into the live sealed check sandbox, with the run's env file on every exec. Rejects once the round is over. */
-  exec: ContainerExec;
-  /** The run's secret values and the general credential rule, applied to everything a check printed before it is kept (service-env.ts `createServiceRedactor`). */
-  redact(text: string): string;
-}
-
-/** The sealed options `withSealedCheckRound` made (TS-SEAL-3): only these are accepted by `createCheckRunners`. Module-private, as check-sandbox.ts keeps its detach proofs. */
-const MINTED_SEALED_OPTIONS = new WeakSet<object>();
-
-/**
- * Makes the one kind of `SealedCheckOptions` `createCheckRunners` accepts. ONLY `withSealedCheckRound` (check-round-runners.ts) calls this, while the check sandbox is up inside `withDetachedWorking`; a source guard in
- * the tests fails on any other caller. A hand-built `{ exec, redact }` is refused, so no check can be pointed at a sandbox that was started some other way.
- */
-export function mintSealedCheckOptions(options: SealedCheckOptions): SealedCheckOptions {
-  const minted = Object.freeze({ exec: options.exec, redact: (text: string) => options.redact(text) });
-  MINTED_SEALED_OPTIONS.add(minted);
-  return minted;
-}
-
 export interface CheckRunnerOptions {
   /** The workspace root: the agent's shell starts here, and a replayed `cd` may not leave it. */
   rootPath: string;
@@ -355,22 +331,12 @@ export interface CheckRunnerOptions {
   sandbox?: TaskSandbox;
   /** The caller was told to use the local shell (taskShell: local); otherwise AGENTX_TASK_SHELL=local must say so. */
   local?: boolean;
-  /**
-   * Test services: run every check in the sealed check sandbox (see `SealedCheckOptions`). It excludes `devcontainer`, `bashOperations`, `sandbox` and `local`: a runner given both throws, so a check can never run
-   * somewhere that is not sealed because two options were passed.
-   */
-  sealed?: SealedCheckOptions;
 }
 
 /** The real runners: readiness as preparation runs it, and agent commands as the agent's own shell runs them. */
 export function createCheckRunners(options: CheckRunnerOptions): CheckRunners {
-  if (options.sealed !== undefined) {
-    if (!MINTED_SEALED_OPTIONS.has(options.sealed)) throw new Error("sealed checks are made only by a sealed check round");
-    if (options.devcontainer !== undefined || options.sandbox !== undefined || options.bashOperations !== undefined || options.local === true) {
-      throw new Error("sealed checks run in the check sandbox alone: no devcontainer, task sandbox, shell or local option may be given with them");
-    }
-    return createSealedCheckRunners(options.rootPath, options.sealed);
-  }
+  // Sealed checks (test services) are made only by a sealed check round (check-round-runners.ts), which owns the sealed sandbox's exec. A `sealed` option here would be ignored and run the checks unsealed, so it is refused.
+  if (Object.hasOwn(options, "sealed")) throw new Error("sealed checks are made only by a sealed check round");
   const devcontainer = options.devcontainer;
   // Ruling K: a devcontainer session's replays run in the devcontainer, never on the host.
   const sandboxCommands = options.sandbox === undefined ? undefined : executionFor(SANDBOX_TARGET, { sandbox: options.sandbox });
@@ -425,60 +391,10 @@ export function createCheckRunners(options: CheckRunnerOptions): CheckRunners {
 }
 
 /**
- * The runners of a sealed round: the same commands as the working sandbox runs (`runContainerCommand` and `containerBashOperations`, with the same NODE_ENV and Python user site settings), through the sealed seam.
- * The agent's replay gets the AgentX git identity only: the worker's own environment is not copied into the sealed sandbox, and the run's variables come from the seam's env file, which wins over any `env` of the command.
- */
-function createSealedCheckRunners(rootPath: string, sealed: SealedCheckOptions): CheckRunners {
-  const base = join(resolve(rootPath), SANDBOX_PYTHON_USER_BASE_DIRECTORY);
-  const commandOptions = { unsetEnvironment: SANDBOX_UNSET_ENVIRONMENT, defaultEnvironment: { PYTHONUSERBASE: base }, pathPrefix: [join(base, "bin")] };
-  const operations = containerBashOperations(sealed.exec, commandOptions);
-  const canonicalRoot = realpath(resolve(rootPath));
-  canonicalRoot.catch(() => undefined);
-  return {
-    async runProjectCommand(command, signal) {
-      if (signal.aborted) throw new Error("aborted");
-      const root = await canonicalRoot;
-      try {
-        const result = await runContainerCommand(sealed.exec, root, command, signal, commandOptions);
-        if (signal.aborted) throw new Error("aborted");
-        return { exitCode: result.exitCode, timedOut: result.timedOut === true, stdout: sealed.redact(result.stdout), stderr: sealed.redact(result.stderr) };
-      } catch (error) {
-        throw redactedError(withoutRootError(error, root), (text) => sealed.redact(text));
-      }
-    },
-
-    async runAgentCommand(replay, timeoutMs, signal) {
-      if (signal.aborted) throw new Error("aborted");
-      if (matchTestCommand(replay) !== replay) throw new CheckNotRunError("AgentX replays only a simple test command, and this is not one.");
-      const root = await canonicalRoot;
-      const cd = /^cd (\S+) && (.+)$/s.exec(replay);
-      const command = cd === null ? replay : cd[2]!;
-      const cwd = cd === null ? root : await containedDirectory(root, cd[1]!, true);
-      const output = tailCollector();
-      try {
-        const { exitCode } = await operations.exec(command, cwd, { onData: (data) => output.add(data), signal, timeout: timeoutMs / 1_000, env: { ...AGENTX_GIT_IDENTITY_ENVIRONMENT } });
-        return { exitCode, timedOut: false, output: sealed.redact(output.text()) };
-      } catch (error) {
-        if (signal.aborted) throw new Error("aborted", { cause: error });
-        if (error instanceof Error && error.message.startsWith("timeout:")) return { exitCode: null, timedOut: true, output: sealed.redact(output.text()) };
-        throw redactedError(withoutRootError(error, root), (text) => sealed.redact(text));
-      }
-    },
-  };
-}
-
-/** An error with its message redacted (a failed exec's message may quote what the sandbox printed); a CheckNotRunError and a non-error pass as they are. */
-function redactedError(error: unknown, redact: (text: string) => string): unknown {
-  if (!(error instanceof Error) || error instanceof CheckNotRunError) return error;
-  const message = redact(error.message);
-  return message === error.message ? error : new Error(message);
-}
-
-/**
  * The directory a replayed `cd` names, resolved with realpath, so a symlink cannot lead out of the workspace (Ruling D).
  * The command then runs there directly rather than through the shell's own `cd`, which would follow the link again.
  */
-async function containedDirectory(root: string, path: string, inContainer: boolean): Promise<string> {
+export async function containedDirectory(root: string, path: string, inContainer: boolean): Promise<string> {
   let target: string;
   try {
     target = await realpath(resolve(root, path));
@@ -504,7 +420,7 @@ function withoutRoot(text: string, root: string): string {
   return text.split(root).join("<workspace>");
 }
 
-function withoutRootError(error: unknown, root: string): unknown {
+export function withoutRootError(error: unknown, root: string): unknown {
   if (!(error instanceof Error) || error instanceof CheckNotRunError || !error.message.includes(root)) return error;
   return new Error(withoutRoot(error.message, root), { cause: error });
 }
