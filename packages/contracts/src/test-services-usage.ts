@@ -47,6 +47,36 @@ export const TestServicesDependencyUsageSchema = z
   });
 export type TestServicesDependencyUsage = z.infer<typeof TestServicesDependencyUsageSchema>;
 
+/** An AWS service key as the emulator's ledger names it (`s3`, `sqs`, `dynamodb`): a short fixed-looking word. */
+export const AwsServiceKeySchema = z.string().regex(/^[a-z][a-z0-9-]{1,39}$/u);
+/** An AWS operation name (`PutObject`, `SendMessage`): an upper camel case word. A path, a method or any other text the program chose is not one. */
+export const AwsOperationNameSchema = z.string().regex(/^[A-Z][A-Za-z0-9]{2,63}$/u).refine((name) => !looksLikeSecretValue(name) && !looksLikeSecretValue(name.toUpperCase()), { message: "an operation name, not a secret" });
+export const TEST_SERVICES_AWS_USAGE_LIMITS = { services: 24, unsupportedOperations: 30 } as const;
+
+/**
+ * Slice 2: what Rovara local AWS's request ledger said about a run (`GET /_rovara/ledger/summary`): calls per AWS service, and the operations the emulator does not offer. Present only when an emulator ran. Counts follow the
+ * record's bucketing rule (`bucketCount`: 1, 2 to 5, 6 to 20, 21 or more, each shown as its lower bound), and a name is shown only when it is a service key or an operation name the program could not have used to carry a
+ * value (the worker's `reduceAwsUsage`); every other call is counted in `otherCalls` and `otherUnsupported` and named nowhere. Never fed back to the agent or a model.
+ */
+export const TestServicesAwsUsageSchema = z
+  .object({
+    /** `unreadable`: the ledger could not be read (fail closed: the lists below are empty then and say nothing, not "no calls"). */
+    ledger: z.enum(["read", "unreadable"]),
+    services: z.array(z.object({ service: AwsServiceKeySchema, calls: z.number().int().min(1).max(TEST_SERVICES_USAGE_LIMITS.count), unsupported: Count }).strict()).max(TEST_SERVICES_AWS_USAGE_LIMITS.services),
+    unsupportedOperations: z.array(z.object({ service: AwsServiceKeySchema, operation: AwsOperationNameSchema, count: z.number().int().min(1).max(TEST_SERVICES_USAGE_LIMITS.count) }).strict()).max(TEST_SERVICES_AWS_USAGE_LIMITS.unsupportedOperations),
+    /** Calls to a service that is not shown (an unknown key, or past the list). */
+    otherCalls: Count,
+    /** Unsupported calls whose service or operation is not shown. */
+    otherUnsupported: Count,
+  })
+  .strict()
+  .superRefine((usage, context) => {
+    if (usage.ledger === "unreadable" && (usage.services.length > 0 || usage.unsupportedOperations.length > 0 || usage.otherCalls > 0 || usage.otherUnsupported > 0)) context.addIssue({ code: "custom", path: ["ledger"], message: "an unreadable ledger says nothing" });
+    if (new Set(usage.services.map((entry) => entry.service)).size !== usage.services.length) context.addIssue({ code: "custom", path: ["services"], message: "a service is listed once" });
+    if (new Set(usage.unsupportedOperations.map((entry) => `${entry.service}\0${entry.operation}`)).size !== usage.unsupportedOperations.length) context.addIssue({ code: "custom", path: ["unsupportedOperations"], message: "an operation is listed once" });
+  });
+export type TestServicesAwsUsage = z.infer<typeof TestServicesAwsUsageSchema>;
+
 export const TestServicesUsageRecordSchema = z
   .object({
     schemaVersion: z.literal(TEST_SERVICES_USAGE_SCHEMA_VERSION),
@@ -60,6 +90,8 @@ export const TestServicesUsageRecordSchema = z
         otherCount: Count,
       })
       .strict(),
+    /** Slice 2: the emulator's ledger as a record of facts (see `TestServicesAwsUsageSchema`). Absent when no emulator ran, so a record without one is slice 1's record byte for byte. */
+    aws: TestServicesAwsUsageSchema.optional(),
   })
   .strict()
   .superRefine((record, context) => {

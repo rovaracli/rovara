@@ -174,11 +174,21 @@ export function buildServiceEnvironment(input: ServiceEnvInput): ServiceEnvironm
 }
 
 /**
- * Every secret value of a run's helpers, for the redactor: each helper's password (for Rovara local AWS, its presign secret) and its control token. Pass the result to `createServiceRedactor` and to
+ * Every secret value of a run's helpers, for the redactor: each helper's password (for Rovara local AWS, its presign secret), its control token and its SQS receipt-handle secret. Pass the result to `createServiceRedactor` and to
  * `ServiceEnvInput.neverValues`; never to `buildServiceEnvironment` as a variable.
  */
-export function helperSecretValues(helpers: ReadonlyArray<{ credentials?: { password?: string; controlToken?: string } }>): string[] {
-  return helpers.flatMap((helper) => [helper.credentials?.password, helper.credentials?.controlToken]).filter((value): value is string => value !== undefined && value !== "");
+export function helperSecretValues(helpers: ReadonlyArray<{ credentials?: { password?: string; controlToken?: string; sqsReceiptSecret?: string } }>): string[] {
+  return helpers.flatMap((helper) => [helper.credentials?.password, helper.credentials?.controlToken, helper.credentials?.sqsReceiptSecret]).filter((value): value is string => value !== undefined && value !== "");
+}
+
+/**
+ * The AWS services of a run that Rovara local AWS does NOT serve: every service the endpoint table knows except the emulated ones. Hand it to `ServiceEnvAws.unbackedServices` so each of them points at the sinkhole (a call to a
+ * service nobody backed fails loudly instead of reaching real AWS). Refuses an emulated id the table does not know.
+ */
+export function unbackedAwsServices(emulated: readonly string[]): string[] {
+  const known = Object.keys(AWS_SDK_ENDPOINT_NAMES);
+  if (emulated.some((service) => !Object.hasOwn(AWS_SDK_ENDPOINT_NAMES, service))) refuse();
+  return known.filter((service) => !emulated.includes(service));
 }
 
 /**

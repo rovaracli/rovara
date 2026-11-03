@@ -14,6 +14,7 @@ import {
   CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, SeedRefSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
   TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, catalogIdName, testEnvStartedCount,
 } from "./test-env-dependency.js";
+import { TaskAwsResourcesSchema } from "./test-services-aws-resources.js";
 import { reservedDependencyEnvName } from "./test-services-shared.js";
 import { TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECTION_METHODS, TEST_ENV_SELECT_PLACEHOLDER, TestEnvValueSourceSchema, TestEnvironmentBodySchema, type TestEnvironmentBody } from "./test-environment.js";
 
@@ -140,11 +141,14 @@ export const TaskDependencyPlanSchema = z
     connect: z.array(z.object({ name: EnvNameSchema, template: ConnectTemplateSchema }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.connectEnv),
     seeds: z.array(SeedRefSchema).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
     reset: z.enum(TEST_ENV_DEPENDENCY_RESETS),
+    /** Slice 2: the AWS resources (tables with key schema, buckets, queues) Rovara local AWS is seeded with when it starts. Absent for every dependency but the emulator, and for a plan without test services. */
+    awsResources: TaskAwsResourcesSchema.optional(),
   })
   .strict()
   .superRefine((plan, context) => {
     const problem = (path: (string | number)[], message: string) => context.addIssue({ code: "custom", path, message });
     if ((TEST_ENV_HELPER_CATALOG_NAMES as readonly string[]).includes(catalogIdName(plan.catalogId))) problem(["catalogId"], "a local dependency is real software from the catalog, not one of Rovara's helpers");
+    if (plan.awsResources !== undefined && !plan.family.startsWith("aws:")) problem(["awsResources"], "only an AWS dependency is seeded with AWS resources");
     if (new Set(plan.aliases).size !== plan.aliases.length) problem(["aliases"], "an alias is listed once");
     plan.aliases.forEach((alias, index) => {
       if ((TEST_ENV_RESERVED_ALIASES as readonly string[]).includes(alias)) problem(["aliases", index], "this name belongs to a Rovara helper");
