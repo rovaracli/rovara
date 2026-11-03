@@ -13,6 +13,7 @@ import { TEST_ORG } from "../support/orgs.js";
 
 afterEach(() => { delete process.env.TEST_ENVIRONMENT_ENABLED; });
 
+type Pins = Array<{ repository: string; commit: string }> | null;
 const RUN_TASK = "11111111-1111-4111-8111-111111111111";
 const HEAD = "c".repeat(40); // what the bench's code host answers as the default-branch head
 const OLDER = "e".repeat(40);
@@ -125,7 +126,7 @@ describe("a setup run's proposal is proved only by a check at the run's commits"
     const t = await setupWizardBench({ autoCandidate: false });
     await withSwitch("1", async () => {
       const digest = await fromRun(t, OLDER);
-      for (const pins of [[{ repository: "web", commit: HEAD }], null] as const) {
+      for (const pins of [[{ repository: "web", commit: HEAD }], null] satisfies Array<Pins>) {
         t.candidatePassed(digest, { pins });
         const refused = await prove(t, digest);
         expect(refused.status, JSON.stringify(pins)).toBe(400);
@@ -156,7 +157,7 @@ describe("a setup run's proposal is proved only by a check at the run's commits"
     await withSwitch("1", async () => {
       const digest = await fromRun(t, OLDER);
       t.db.set({ ...(t.db.get(`DEVTASK#${RUN_TASK}`, "META") as Record<string, unknown>), project: "other" });
-      for (const pins of [null, [{ repository: "web", commit: HEAD }], [{ repository: "web", commit: OLDER }]] as const) {
+      for (const pins of [null, [{ repository: "web", commit: HEAD }], [{ repository: "web", commit: OLDER }]] satisfies Array<Pins>) {
         t.candidatePassed(digest, { pins, run: false });
         expect((await prove(t, digest)).status, JSON.stringify(pins)).toBe(400);
       }
