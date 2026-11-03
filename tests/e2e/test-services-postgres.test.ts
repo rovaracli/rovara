@@ -111,7 +111,8 @@ describe("1. the proposal: the detectors, the chooser and the approve card", () 
     expect(proposed[0]!.backing).toMatchObject({ kind: "local", catalogId: "postgres@16" });
     const [line] = dependencyCardLines(proposed);
     expect(line).toContain("Postgres");
-    expect(line).toContain("Found by Rovara's reading of the code.");
+    // The source line names the file and line the detector read it from.
+    expect(line).toContain(`Found in ${PROJECT}/docker-compose.yml`);
   });
 
   it("approving makes a revision whose digest is the proposal's, and any other backing is refused as not available yet", async () => {
@@ -277,13 +278,21 @@ describe("4. teardown on every way out", () => {
     await nothingLeft(bench);
   });
 
-  it("after a start that fails (the helper does not run): the task fails in fixed words and nothing is left", async () => {
+  it("after a start that fails (the helper does not run): a coding run fails in fixed words, a CHECKS run's round is not run and its record says why; nothing is left", async () => {
     const { draft } = await detectedDraft();
     const broker = await approvedProject(draft);
     const plan = (await testEnvPlanFor(broker.deps, { orgId: ORG, project: PROJECT, taskId: TASK, readiness: broker.readiness }, ON))!;
-    const bench = await workerBench({ docker: { failRun: "helper" } });
-    await expect(bench.start(plan, "CHECKS")).rejects.toThrow(/test services|could not be started|did not start|could not/iu);
-    await nothingLeft(bench);
+    const coding = await workerBench({ docker: { failRun: "helper" } });
+    await expect(coding.start(plan, "IMPLEMENT")).rejects.toThrow(/test services|could not be started|did not start|could not/iu);
+    await nothingLeft(coding);
+    // A CHECKS run starts services only inside its sealed rounds: the run starts, the round cannot, no check runs, and the record names the failure in fixed words.
+    const checks = await workerBench({ docker: { failRun: "helper" } });
+    const started = (await checks.start(plan, "CHECKS"))!;
+    const round = await runChecks(CHECK_PLAN(broker.readiness), withTestServices(started, BASE_RUNNERS), { budgetMs: 60_000, signal: new AbortController().signal });
+    expect(round.entries.map((entry) => entry.after)).toEqual(broker.readiness.map(() => "not_run"));
+    expect((await started.usageRecord())?.dependencies).toEqual([expect.objectContaining({ id: "postgres", started: false, healthy: false, failure: "start_failed" })]);
+    await started.dispose();
+    await nothingLeft(checks);
   });
 
   it("after a cancel in the middle of an official check: the round stops, the check sandbox and everything else are removed", async () => {
@@ -308,8 +317,9 @@ describe("4. teardown on every way out", () => {
     const plan = (await testEnvPlanFor(broker.deps, { orgId: ORG, project: PROJECT, taskId: TASK, readiness: broker.readiness }, ON))!;
     const listing: string[] = [];
     const bench = await workerBench({ docker: { listing } });
-    await run(bench, plan, broker.readiness);
-    // The worker is killed here: nothing is disposed. The run's objects are still there.
+    // A coding run holds its working-phase helper and network for the whole task; the worker is killed in the middle of it, so nothing is disposed.
+    const implement = (await testEnvImplementPlanFor(broker.deps, { orgId: ORG, project: PROJECT, taskId: TASK }, ON))!;
+    await bench.start(implement, "IMPLEMENT");
     const workspace = await setupWorkspaceKey(bench.root);
     const leftover = [...bench.fake.left().containers.filter((name) => name.startsWith("rovara-svc-")), ...bench.fake.left().networks];
     expect(leftover.length).toBeGreaterThan(0);
