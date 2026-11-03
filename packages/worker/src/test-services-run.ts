@@ -531,7 +531,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   const trackedStart = (input2: Parameters<ServiceRunner["start"]>[0]): Promise<ServiceSession> => {
     const pending = runner.start(input2);
     pendingStarts.add(pending);
-    pending.then(() => undefined, () => undefined).finally(() => { pendingStarts.delete(pending); });
+    void pending.then(() => undefined, () => undefined).finally(() => { pendingStarts.delete(pending); });
     return pending;
   };
   const registry = `${config.registry}/${CATALOG_REGISTRY_ROOT}/${config.catalogEnv}`;
