@@ -151,7 +151,7 @@ export async function runSavedEnvRebuild(deps: SavedEnvRebuildDependencies): Pro
       });
       const builderImage = environment["AGENTX_SAVED_ENV_BUILDER_IMAGE"];
       const input: SavedEnvBuildInput = {
-        repository: job.repository, environment: job.environment, approved: job.approved, repositories, detectorGlobs: job.detectorGlobs, secretNames: job.secretNames, baseImageDigest: job.baseImageDigest,
+        repository: job.repository, environment: job.environment, approved: job.approved, expectedKey: job.expectedKey, repositories, detectorGlobs: job.detectorGlobs, secretNames: job.secretNames, baseImageDigest: job.baseImageDigest,
         notFrom: others, forbiddenValues: forbiddenValuesOf(deps, leaseToken), signal: deps.signal ?? new AbortController().signal, proveDeadlineMs: SAVED_ENV_PROVE_DEADLINE_MS,
         ...(builderImage === undefined || builderImage === "" ? {} : { builderImage }),
       };

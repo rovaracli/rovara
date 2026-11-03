@@ -124,7 +124,7 @@ const state = createWorkerServerState(
             rootPath, controlPlaneUrl, invocation, manifest, docker: createDockerCli(),
             // The workspace root is shared by everything on this machine: any other running operation means the build would not be in a workspace of its own.
             otherOperations: async () => (anotherOperationActive(state, invocation.operationId) ? [{ id: "another-operation", rootPath }] : []),
-            cloneCredentialValues: cloneCredentials.values,
+            cloneCredentialValues: () => cloneCredentials.values(),
           });
         }
         return {

@@ -6,25 +6,23 @@
 //   - otherwise the marker is looked at again in ten minutes.
 // A workspace whose compute cannot be deleted just now (it is starting or stopping) is looked at again; nothing here throws into the sweep.
 import { UpdateCommand, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_DISPATCH_DUE_INDEX, WorkspaceInstanceSchema, workspaceRecordFields } from "@agentx/contracts";
+import { WORKFLOW_DISPATCH_DUE_INDEX, WorkspaceInstanceSchema, workspaceRecordFields } from "@agentx/contracts";
 import { endBuildJob } from "../../test-env/saved-env.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
 import { TERMINAL, operationKey } from "../cancellation.js";
 import { workspaceKey } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
-import { SAVED_ENV_BUILD_LOOK_MS, SAVED_ENV_BUILD_PARTITION, savedEnvBuildDueKey } from "./saved-env-rebuild.js";
+import { CLOSE_BUILD_WORKSPACE_EXPRESSION, SAVED_ENV_BUILD_LOOK_MS, SAVED_ENV_BUILD_PARTITION, closedWorkspaceExpiry, savedEnvBuildDueKey, startMarkerKey } from "../../test-env/saved-env-markers.js";
 import { deleteWorkspaceCompute } from "./thread-workspaces.js";
 
 /** The most markers one pass settles. */
 export const SAVED_ENV_SWEEP_LIMIT = 10;
 /** A build older than this is over whatever its operation says. */
 export const SAVED_ENV_BUILD_MAX_AGE_MS = 24 * 3_600_000;
-/** A closed build workspace's record is kept this long (seconds), then the table's expiry removes it. */
-export const SAVED_ENV_WORKSPACE_TTL_SECONDS = 30 * 86_400;
 
 type Row = Record<string, unknown>;
 const log = (event: string, extra: Record<string, unknown> = {}): void => { console.log(JSON.stringify({ component: "broker", event, ...extra })); };
-const markerKey = (jobId: string): { pk: string; sk: string } => ({ pk: `SAVED_ENV_BUILD_START#${jobId}`, sk: "START" });
+const markerKey = startMarkerKey;
 
 export async function sweepSavedEnvBuilds(dependencies: AwsBrokerDependencies, limit: number = SAVED_ENV_SWEEP_LIMIT, env: NodeJS.ProcessEnv = process.env): Promise<unknown> {
   const deps = dependencies.savedEnvDeps;
@@ -100,9 +98,9 @@ export async function retireBuildWorkspace(dependencies: AwsBrokerDependencies, 
     }
     const at = new Date(nowMs).toISOString();
     await send(new UpdateCommand({
-      TableName: dependencies.tableName, Key: workspaceKey(workspaceId), UpdateExpression: `SET #status = :closed, closedAt = :at, updatedAt = :at, ${INDEX_EXPIRY_ATTRIBUTE} = :expires REMOVE activeOperationId`,
+      TableName: dependencies.tableName, Key: workspaceKey(workspaceId), UpdateExpression: CLOSE_BUILD_WORKSPACE_EXPRESSION,
       ConditionExpression: "attribute_exists(pk)", ExpressionAttributeNames: { "#status": "status" },
-      ExpressionAttributeValues: { ":closed": "CLOSED", ":at": at, ":expires": Math.floor(nowMs / 1_000) + SAVED_ENV_WORKSPACE_TTL_SECONDS },
+      ExpressionAttributeValues: { ":closed": "CLOSED", ":at": at, ":expires": closedWorkspaceExpiry(nowMs) },
     }));
   }
   // An operation that never reported (the worker was lost) is ended: nothing will report for it now.

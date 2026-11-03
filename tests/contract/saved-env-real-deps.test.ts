@@ -1,9 +1,10 @@
 // Saved project images (SV wiring): the registry's real bindings. Built only while sv is on and the install can run the registry; the approved environment, its Prove report and the default branch heads come from the
 // broker's own stores and code host; the key and the build inputs come from readers the install gives, and without them the registry queues nothing.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { orgPk } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, orgPk, testEnvDigest } from "@agentx/contracts";
 import { brokerDependencies } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
-import { realSavedEnvDeps, savedEnvConfigOf, savedEnvDefaultHeads } from "../../packages/broker/src/aws/broker/saved-env-real.js";
+import { expectedEnvironmentKey } from "../../packages/broker/src/test-env/saved-env-key.js";
+import { realSavedEnvDeps, savedEnvConfigOf, savedEnvDefaultHeads, savedEnvSecretNames } from "../../packages/broker/src/aws/broker/saved-env-real.js";
 import type { SavedEnvAwsClients } from "../../packages/broker/src/aws/broker/saved-env-aws.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { NAME, setupWizardBench } from "../support/setup-wizard-testenv.js";
@@ -105,11 +106,79 @@ describe("the bindings", () => {
     expect(await deps.defaultHeads(TEST_ORG, NAME)).toBeUndefined();
   });
 
-  it("has no environment key unless the install gives a reader, and uses the reader's answer when it does", async () => {
-    const none = await bound();
-    expect(await none.deps.currentKey(TEST_ORG, NAME)).toBeUndefined();
-    const keyed = await bound({ savedEnvKey: async (orgId: string, project: string) => `${"k".repeat(60)}${orgId.length > 0 && project.length > 0 ? "abcd" : ""}` });
-    expect(await keyed.deps.currentKey(TEST_ORG, NAME)).toBe(`${"k".repeat(60)}abcd`);
+  const HEAD = "c".repeat(40);
+  const heads = new Map([["web", HEAD]]);
+  const github = (entries: Array<{ path: string; mode: string; type: string; sha: string }>, truncated = false) => ({
+    reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit: vi.fn(async () => undefined),
+    getDefaultBranchHead: vi.fn(async () => HEAD), listTreeAtCommit: vi.fn(async () => ({ truncated, entries })),
+  });
+  const LISTING = [{ path: "package.json", mode: "100644", type: "blob", sha: "1".repeat(40) }, { path: "src", mode: "040000", type: "tree", sha: "2".repeat(40) }];
+  const DIGEST = `sha256:${"b".repeat(64)}`;
+
+  it("works the environment key out from the code host's listing of the heads it is given, the approved environment and the base image the install says", async () => {
+    const withBase = (listing = LISTING, truncated = false) => bound({ githubPullRequests: github(listing, truncated), savedEnvBaseImageDigest: async () => DIGEST });
+    const first = await withBase();
+    await first.t.approveFirst();
+    const key = await first.deps.currentKey(TEST_ORG, NAME, heads);
+    expect(key).toMatch(/^[a-f0-9]{64}$/u);
+    // the same inputs, the same key; the listing is read for the commit it is given
+    expect(await first.deps.currentKey(TEST_ORG, NAME, heads)).toBe(key);
+    expect(first.dependencies.githubPullRequests.listTreeAtCommit).toHaveBeenCalledWith("https://github.com/acme/web.git", HEAD, expect.anything());
+    // another lockfile, another key
+    const changed = await withBase([{ ...LISTING[0]!, sha: "3".repeat(40) }, LISTING[1]!]);
+    await changed.t.approveFirst();
+    expect(await changed.deps.currentKey(TEST_ORG, NAME, heads)).not.toBe(key);
+    // a listing that was cut, no heads, or no approved environment is no key
+    const cut = await withBase(LISTING, true);
+    await cut.t.approveFirst();
+    expect(await cut.deps.currentKey(TEST_ORG, NAME, heads)).toBeUndefined();
+    expect(await first.deps.currentKey(TEST_ORG, NAME, undefined)).toBeUndefined();
+    const unapproved = await withBase();
+    expect(await unapproved.deps.currentKey(TEST_ORG, NAME, heads)).toBeUndefined();
+  });
+
+  it("has no environment key without a base image digest from the install, or with one that is not a digest, and from a host that cannot list", async () => {
+    const none = await bound({ githubPullRequests: github(LISTING) });
+    await none.t.approveFirst();
+    expect(await none.deps.currentKey(TEST_ORG, NAME, heads)).toBeUndefined();
+    const bad = await bound({ githubPullRequests: github(LISTING), savedEnvBaseImageDigest: async () => "latest" });
+    await bad.t.approveFirst();
+    expect(await bad.deps.currentKey(TEST_ORG, NAME, heads)).toBeUndefined();
+    const { listTreeAtCommit: _gone, ...withoutListing } = github(LISTING);
+    void _gone;
+    const unable = await bound({ githubPullRequests: withoutListing, savedEnvBaseImageDigest: async () => DIGEST });
+    await unable.t.approveFirst();
+    expect(await unable.deps.currentKey(TEST_ORG, NAME, heads)).toBeUndefined();
+  });
+
+  it("puts the approved environment's secret names and detector globs into the key, exactly as the key function takes them", async () => {
+    const hooked = await bound({ githubPullRequests: github(LISTING), savedEnvBaseImageDigest: async () => DIGEST });
+    await hooked.t.approveFirst();
+    // the approved revision's record, with an account that reads a secret and detector globs of its own
+    const [record] = hooked.t.db.find((item) => item.environment !== undefined && item.approvedAt !== undefined && typeof item.digest === "string");
+    const edited = TestEnvironmentBodySchema.parse({
+      ...(record!.environment as Record<string, unknown>),
+      accounts: [{ profileId: "p1", provisioner: "http_hook", createUrl: "https://accounts.example.com/create", deleteUrl: "https://accounts.example.com/delete", tokenSecretName: "HOOK_TOKEN" }],
+      selection: { method: "full", alwaysRun: [], fullSuiteOn: ["package.json", "extra/**"] },
+    });
+    hooked.t.db.set({ ...record!, environment: edited, digest: testEnvDigest(edited) });
+    const key = await hooked.deps.currentKey(TEST_ORG, NAME, heads);
+    const same = await expectedEnvironmentKey(
+      { listTree: async () => ({ truncated: false, entries: LISTING }), readText: async () => undefined },
+      { repositories: [{ name: "web", url: "https://github.com/acme/web.git" }], commits: heads, detectorGlobs: ["package.json", "extra/**"], testEnvRevision: 1, secretNames: ["HOOK_TOKEN"], baseImageDigest: DIGEST },
+    );
+    expect(key).toBe(same);
+    const otherSecret = await expectedEnvironmentKey(
+      { listTree: async () => ({ truncated: false, entries: LISTING }), readText: async () => undefined },
+      { repositories: [{ name: "web", url: "https://github.com/acme/web.git" }], commits: heads, detectorGlobs: ["package.json", "extra/**"], testEnvRevision: 1, secretNames: [], baseImageDigest: DIGEST },
+    );
+    expect(key).not.toBe(otherSecret);
+  });
+
+  it("names the secrets an approved environment reads, and nothing else", () => {
+    const account = (provisioner: string, extra: Record<string, unknown> = {}) => ({ profileId: "p", provisioner, ...extra });
+    const environment = { accounts: [account("http_hook", { tokenSecretName: "HOOK_TOKEN" }), account("http_hook", { tokenSecretName: "HOOK_TOKEN" }), account("cognito_test_pool", { userPoolId: "x" })] } as never;
+    expect(savedEnvSecretNames(environment)).toEqual(["HOOK_TOKEN"]);
   });
 
   it("writes through the DynamoDB store in the company's partition, and takes the defaults for the company settings", async () => {
@@ -121,20 +190,22 @@ describe("the bindings", () => {
     expect(deps.session.config).toEqual({ enabled: true, env: "staging", scope: { partition: "aws", region: "us-west-2", account: "111122223333" }, kmsKeyArn: KEY_ARN });
   });
 
-  it("starts a queued job through the broker's start, and a job that cannot be started (no build inputs) is ended", async () => {
-    const { t, deps } = await bound();
-    await t.approveFirst();
-    vi.spyOn(console, "log").mockImplementation(() => undefined);
+  it("queues a job only when the key can be worked out, and starts it with the inputs the key was worked out from", async () => {
     const { checkRebuild } = await import("../../packages/broker/src/test-env/saved-env.js");
-    // no reader for the key: nothing is queued
-    expect(await checkRebuild(deps, { orgId: TEST_ORG, projectId: NAME }, "poll")).toMatchObject({ ok: true, queued: false, why: "no_key" });
-    const withKey = await bound({ savedEnvKey: async () => "c".repeat(64) });
-    await withKey.t.approveFirst();
-    const queued = await checkRebuild(withKey.deps, { orgId: TEST_ORG, projectId: NAME }, "poll");
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    // no base image from the install: nothing is queued
+    const none = await bound({ githubPullRequests: github(LISTING) });
+    await none.t.approveFirst();
+    expect(await checkRebuild(none.deps, { orgId: TEST_ORG, projectId: NAME }, "poll")).toMatchObject({ ok: true, queued: false, why: "no_key" });
+    // with it: queued, started as a pinned preparation carrying the key, and the key is the one the worker is told to expect
+    const ready = await bound({ githubPullRequests: github(LISTING), savedEnvBaseImageDigest: async () => DIGEST });
+    await ready.t.approveFirst();
+    const queued = await checkRebuild(ready.deps, { orgId: TEST_ORG, projectId: NAME }, "poll");
     expect(queued).toMatchObject({ ok: true, queued: true });
-    // no build inputs from the install: the start refuses and the job is ended with its word
-    const row = await withKey.deps.store.get(TEST_ORG, NAME);
-    expect(row).toMatchObject({ health: "needs_repair", lastFailure: "no_build_inputs" });
-    expect(row?.job).toBeUndefined();
+    const operation = ready.t.db.find((item) => item.entityType === "OPERATION" && item.savedEnvJobId !== undefined)[0] as { id: string; workspaceId: string };
+    const invocation = (ready.t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operation.id)[0] as { invocation: { payload: { savedEnvBuild: Record<string, unknown>; pins: unknown } } }).invocation;
+    const row = await ready.deps.store.get(TEST_ORG, NAME);
+    expect(invocation.payload.savedEnvBuild).toMatchObject({ expectedKey: row?.job?.expectedKey, baseImageDigest: DIGEST, secretNames: [], detectorGlobs: [".github/**"] });
+    expect(invocation.payload.pins).toEqual([{ repository: "web", commit: HEAD }]);
   });
 });

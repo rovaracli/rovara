@@ -32,6 +32,8 @@ export const PrepareSavedEnvBuildSchema = z.object({
   environment: TestEnvironmentBodySchema,
   /** The commit of each repository (by repository name) the build is for. */
   commits: z.record(z.string().min(1).max(200), Commit).refine((commits) => Object.keys(commits).length >= 1 && Object.keys(commits).length <= 16, "one to sixteen repositories"),
+  /** The environment key the broker worked out for `commits` (the code host's tree listing, the secret names and the base image): the worker works its own out from the clone and stops on a difference. */
+  expectedKey: z.string().regex(/^[a-f0-9]{64}$/u),
   /** `Detection.fullSuiteOn` values for the environment key. */
   detectorGlobs: z.array(z.string().min(1).max(256)).max(200).default([]),
   secretNames: z.array(SavedEnvSecretNameSchema).max(200).default([]),

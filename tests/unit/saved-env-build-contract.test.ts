@@ -11,7 +11,7 @@ const environment = TestEnvironmentBodySchema.parse({
 });
 const build = (over: Record<string, unknown> = {}) => ({
   jobId: "job-1", reason: "no_image", approved: { revision: 1, digest: testEnvDigest(environment) }, repository: savedEnvRepositoryName({ env: "test", orgId: "org-1", projectId: "p" }), environment,
-  commits: { svc: "d".repeat(40) }, baseImageDigest: `sha256:${"b".repeat(64)}`, ...over,
+  commits: { svc: "d".repeat(40) }, expectedKey: "c".repeat(64), baseImageDigest: `sha256:${"b".repeat(64)}`, ...over,
 });
 
 describe("the prepare payload's savedEnvBuild", () => {
@@ -24,7 +24,7 @@ describe("the prepare payload's savedEnvBuild", () => {
   });
 
   it("refuses what the worker could not build: a repository that is not a saved image repository, a commit that is not a sha, an empty or oversized job, a secret that is not a name, an unknown field", () => {
-    for (const bad of [{ repository: "rovara-env/other" }, { commits: { svc: "main" } }, { commits: {} }, { commits: Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`r${String(index)}`, "d".repeat(40)])) }, { secretNames: ["has space"] }, { baseImageDigest: "latest" }, { reason: "whenever" }, { leaseToken: "short" }, { extra: 1 }]) {
+    for (const bad of [{ repository: "rovara-env/other" }, { commits: { svc: "main" } }, { commits: {} }, { commits: Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`r${String(index)}`, "d".repeat(40)])) }, { secretNames: ["has space"] }, { baseImageDigest: "latest" }, { expectedKey: "short" }, { expectedKey: undefined }, { reason: "whenever" }, { leaseToken: "short" }, { extra: 1 }]) {
       expect(PrepareSavedEnvBuildSchema.safeParse(build(bad)).success, JSON.stringify(bad)).toBe(false);
     }
   });

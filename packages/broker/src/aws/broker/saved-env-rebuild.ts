@@ -9,10 +9,11 @@
 // Fails closed: no approver, a moved approved environment, a repository the job has no commit for, or no build inputs (the base image and secret names, from the install) start nothing, and the job's lease runs out.
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_DISPATCH_DUE_INDEX, WorkspaceInstanceSchema, savedEnvRepositoryName, testEnvDigest, workerProjectDefinition, type OrgId, type PrepareSavedEnvBuild, type WorkerInvocation } from "@agentx/contracts";
+import { WorkspaceInstanceSchema, savedEnvRepositoryName, testEnvDigest, workerProjectDefinition, type OrgId, type PrepareSavedEnvBuild, type WorkerInvocation } from "@agentx/contracts";
 import { readApprovedBy, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import type { SavedEnvDeps } from "../../test-env/saved-env.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
+import { startMarkerItem } from "../../test-env/saved-env-markers.js";
 import { issueCapability, operationOrg, operationRecord, outboxRecord } from "../cancellation.js";
 import { hashJson } from "../broker-shared.js";
 import { issueRepositoryGrant, workspaceKey, workspaceRuntime } from "./admin-and-helpers.js";
@@ -27,14 +28,6 @@ export type StartRebuildResult =
   | { started: true; workspaceId: string; operationId: string }
   | { started: false; why: "disabled" | "nothing_queued" | "no_project" | "approved_moved" | "no_owner" | "commits_mismatch" | "no_build_inputs" | "already_started" };
 
-const startMarkerKey = (jobId: string): { pk: string; sk: string } => ({ pk: `SAVED_ENV_BUILD_START#${jobId}`, sk: "START" });
-/** The partition of the sparse due index that lists the build workspaces whose end has not been settled (saved-env-sweep.ts). */
-export const SAVED_ENV_BUILD_PARTITION = "SAVED_ENV_BUILD";
-/** The first look at a started build, and the gap between looks. */
-export const SAVED_ENV_BUILD_LOOK_MS = 10 * 60_000;
-/** A start marker is kept this long (seconds), then the table's expiry removes it. */
-export const SAVED_ENV_BUILD_MARKER_TTL_SECONDS = 30 * 86_400;
-export const savedEnvBuildDueKey = (atMs: number, jobId: string): string => `${String(Math.max(0, Math.trunc(atMs))).padStart(15, "0")}#${jobId}`;
 
 /**
  * WHO a rebuild runs as. Today: the person who approved the environment revision, if they are still an active member of the company (a person who left, or lost their place, owns no automatic work; the start is
@@ -95,7 +88,7 @@ export async function startSavedEnvRebuild(
   operation.preparePins = pins;
   const savedEnvBuild: PrepareSavedEnvBuild = {
     jobId: job.jobId, reason: job.reason, approved: job.approved, repository: savedEnvRepositoryName({ env: deps.session.config.env, orgId: ids.orgId, projectId: ids.projectId }),
-    environment: approved.environment, commits: job.commits, detectorGlobs: [...build.detectorGlobs], secretNames: [...build.secretNames], baseImageDigest: build.baseImageDigest,
+    expectedKey: job.expectedKey, environment: approved.environment, commits: job.commits, detectorGlobs: [...build.detectorGlobs], secretNames: [...build.secretNames], baseImageDigest: build.baseImageDigest,
   };
   const invocation: WorkerInvocation = {
     protocolVersion: 1, kind: "prepare", operationId, workspaceId, fence: workspace.fence, projectRevision: project.definition.revision, callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence, { savedEnvBuild: true }),
@@ -104,11 +97,7 @@ export async function startSavedEnvRebuild(
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
       // The marker: one start per job, the ids the sweep needs to settle the end, a time to look again (the sparse index), and an expiry.
-      { Put: { TableName: dependencies.tableName, Item: {
-        ...startMarkerKey(job.jobId), entityType: "SAVED_ENV_BUILD_START", orgId, projectId: ids.projectId, jobId: job.jobId, workspaceId, operationId, createdAt: now,
-        [WORKFLOW_DISPATCH_DUE_INDEX.partitionKey]: SAVED_ENV_BUILD_PARTITION, [WORKFLOW_DISPATCH_DUE_INDEX.sortKey]: savedEnvBuildDueKey(deps.now() + SAVED_ENV_BUILD_LOOK_MS, job.jobId),
-        [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(deps.now() / 1_000) + SAVED_ENV_BUILD_MARKER_TTL_SECONDS,
-      }, ConditionExpression: "attribute_not_exists(pk)" } },
+      { Put: { TableName: dependencies.tableName, Item: startMarkerItem({ orgId, projectId: ids.projectId, jobId: job.jobId, workspaceId, operationId, createdAt: now, nowMs: deps.now() }), ConditionExpression: "attribute_not_exists(pk)" } },
       // The workspace is written WITHOUT the project index attributes (`workspaceItem` adds them): it is in no list of workspaces, the project's or a person's.
       { Put: { TableName: dependencies.tableName, Item: { ...workspaceKey(workspace.id), entityType: "WORKSPACE", ...workspace }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: operation, ConditionExpression: "attribute_not_exists(pk)" } },

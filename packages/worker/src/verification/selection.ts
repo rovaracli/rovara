@@ -59,30 +59,9 @@ export type SelectionResult =
 /** A test id's file: the part before `::`. */
 export const testFileOf = (id: string): string => id.split("::", 1)[0] ?? id;
 
-/** A glob as the environment writes them: `**` crosses directories, `*` and `?` stay in one, `{a,b}` alternates, `[...]` is a class. Anchored to the whole path. */
-export function globRegExp(glob: string): RegExp {
-  let out = "";
-  let braces = 0;
-  for (let index = 0; index < glob.length; index += 1) {
-    const char = glob[index] as string;
-    if (char === "*") {
-      if (glob[index + 1] === "*") {
-        const slash = glob[index + 2] === "/";
-        out += slash ? "(?:[^/]+/)*" : ".*";
-        index += slash ? 2 : 1;
-      } else out += "[^/]*";
-    } else if (char === "?") out += "[^/]";
-    else if (char === "{") { out += "(?:"; braces += 1; }
-    else if (char === "}" && braces > 0) { out += ")"; braces -= 1; }
-    else if (char === "," && braces > 0) out += "|";
-    else if (char === "[") {
-      const close = glob.indexOf("]", index + 2);
-      if (close === -1) out += "\\[";
-      else { out += `[${glob.slice(index + 1, close).replace(/\\/gu, "\\\\").replace(/^!/u, "^")}]`; index = close; }
-    } else out += char.replace(/[.+^$()|\\\]]/gu, "\\$&");
-  }
-  return new RegExp(`^${out}$`, "u");
-}
+/** A glob as the environment writes them (the one implementation is in the contracts, shared with the saved environment key). */
+import { globRegExp } from "@agentx/contracts";
+export { globRegExp };
 
 /**
  * What always runs the whole suite, whatever the approved environment lists (a floor an empty `fullSuiteOn` cannot remove): a test configuration or helper at the root of any test tree, dependency lockfiles and

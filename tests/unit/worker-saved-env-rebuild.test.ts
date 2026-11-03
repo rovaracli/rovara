@@ -8,6 +8,7 @@ import type { DockerCli } from "../../packages/worker/src/swebench/containers.js
 
 afterEach(() => { vi.restoreAllMocks(); });
 const COMMIT = "d".repeat(40);
+const KEY = "c".repeat(64);
 const LEASE = ["lease", "x".repeat(30)].join("-");
 const GRANT = ["grant", "g".repeat(30)].join("-");
 const CAPABILITY = ["cap", "c".repeat(40)].join("-");
@@ -19,7 +20,7 @@ const environment = TestEnvironmentBodySchema.parse({
   services: [], data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [], prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, capture: { screenshots: "failed", video: false, traces: false },
 });
 const job = (over: Record<string, unknown> = {}) => PrepareSavedEnvBuildSchema.parse({
-  jobId: "job-1", leaseToken: LEASE, reason: "no_image", approved: { revision: 1, digest: testEnvDigest(environment) }, repository: REPOSITORY, environment, commits: { svc: COMMIT },
+  jobId: "job-1", leaseToken: LEASE, reason: "no_image", approved: { revision: 1, digest: testEnvDigest(environment) }, repository: REPOSITORY, environment, commits: { svc: COMMIT }, expectedKey: KEY,
   detectorGlobs: ["**/x"], secretNames: ["NPM_TOKEN"], baseImageDigest: `sha256:${"b".repeat(64)}`, ...over,
 });
 const invocation = (build: ReturnType<typeof job> | null = job()): Extract<WorkerInvocation, { kind: "prepare" }> => ({
@@ -59,7 +60,7 @@ describe("the job", () => {
     const input = calls.input!;
     expect(input).toMatchObject({
       repository: REPOSITORY, approved: { revision: 1, digest: testEnvDigest(environment) }, repositories: [{ repositoryId: "svc", directory: "svc", defaultBranch: "main", commit: COMMIT }],
-      detectorGlobs: ["**/x"], secretNames: ["NPM_TOKEN"], baseImageDigest: `sha256:${"b".repeat(64)}`, notFrom: [{ id: "another-operation", rootPath: "/mnt/workspace" }],
+      expectedKey: KEY, detectorGlobs: ["**/x"], secretNames: ["NPM_TOKEN"], baseImageDigest: `sha256:${"b".repeat(64)}`, notFrom: [{ id: "another-operation", rootPath: "/mnt/workspace" }],
     });
     expect(input.environment).toEqual(environment);
     // the forbidden values: the grant, the capability, the lease, the clone credential and the credential-shaped variables
@@ -173,7 +174,7 @@ describe("forbidden values", () => {
     await remembered.provider({ name: "svc" } as never);
     expect(remembered.values()).toEqual(["token-for-svc-0123"]);
     // the build: it reads what was remembered and never calls the provider again
-    const { deps, calls } = bench({ cloneCredentialValues: remembered.values });
+    const { deps, calls } = bench({ cloneCredentialValues: () => remembered.values() });
     await runSavedEnvRebuild(deps);
     expect(fetched).toHaveBeenCalledTimes(2);
     expect(calls.input!.forbiddenValues).toContain("token-for-svc-0123");

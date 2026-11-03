@@ -229,19 +229,19 @@ describe("the dispatcher's lease", () => {
 
   it("hands the token to the operation it was made for, again to the same operation, and to no other", async () => {
     const { lease, record, store, orgId } = await leased();
-    const mine = { ...record, operationId: "op-1" } as Ec2OutboxRecord;
+    const mine = { ...record, operationId: "op-1" };
     expect(await lease(mine, "job-1")).toBe("T".repeat(40));
     expect((await store.get(orgId, NAME))?.job).toMatchObject({ dispatchedOperationId: "op-1" });
     expect(await lease(mine, "job-1")).toBe("T".repeat(40));
-    expect(await lease({ ...record, operationId: "op-2" } as Ec2OutboxRecord, "job-1")).toBeUndefined();
+    expect(await lease({ ...record, operationId: "op-2" }, "job-1")).toBeUndefined();
   });
 
   it("does not take the lease for another job, and gives nothing while the switch is off", async () => {
     const { lease, record, store, orgId, db } = await leased();
-    expect(await lease({ ...record, operationId: "op-1" } as Ec2OutboxRecord, "another-job")).toBeUndefined();
+    expect(await lease({ ...record, operationId: "op-1" }, "another-job")).toBeUndefined();
     expect((await store.get(orgId, NAME))?.job?.dispatchedAt).toBeUndefined();
     const off = createSavedEnvBuildLease({ documentClient: db as never, tableName: "state", env: {} });
-    expect(await off({ ...record, operationId: "op-1" } as Ec2OutboxRecord, "job-1")).toBeUndefined();
+    expect(await off({ ...record, operationId: "op-1" }, "job-1")).toBeUndefined();
     expect((await store.get(orgId, NAME))?.job?.dispatchedAt).toBeUndefined();
   });
 
@@ -258,7 +258,7 @@ describe("the dispatcher's lease", () => {
       return answer;
     } };
     const lease = createSavedEnvBuildLease({ documentClient: racing as never, tableName: "state", env: { SAVED_ENV_ENABLED: "1" } });
-    expect(await lease({ ...record, operationId: "op-1" } as Ec2OutboxRecord, "job-1")).toBeUndefined();
+    expect(await lease({ ...record, operationId: "op-1" }, "job-1")).toBeUndefined();
     void orgId;
   });
 
@@ -269,7 +269,7 @@ describe("the dispatcher's lease", () => {
     try {
       const lease = createSavedEnvBuildLease({ documentClient: db as never, env: { SAVED_ENV_ENABLED: "1" } });
       process.env["STATE_TABLE_NAME"] = "state";
-      expect(await lease({ ...record, operationId: "op-1" } as Ec2OutboxRecord, "job-1")).toBe("T".repeat(40));
+      expect(await lease({ ...record, operationId: "op-1" }, "job-1")).toBe("T".repeat(40));
     } finally { if (before === undefined) delete process.env["STATE_TABLE_NAME"]; else process.env["STATE_TABLE_NAME"] = before; }
     void orgId;
   });
@@ -409,11 +409,11 @@ describe("with the switch off the broker is as it was", () => {
       expect(reply.statusCode, route).toBe(unknown.statusCode);
       expect(reply.body, route).toBe(unknown.body);
     }
-    const swept = await t.handler({ source: "agentx.session-sweep" } as never);
+    const swept = await t.handler({ source: "agentx.session-sweep" });
     const answer = JSON.parse((swept as { body?: string }).body ?? JSON.stringify(swept)) as Record<string, unknown>;
     expect(Object.keys(answer).filter((key) => key.startsWith("savedEnv"))).toEqual([]);
     process.env.SAVED_ENV_ENABLED = "1";
-    const on = await t.handler({ source: "agentx.session-sweep" } as never);
+    const on = await t.handler({ source: "agentx.session-sweep" });
     const onAnswer = JSON.parse((on as { body?: string }).body ?? JSON.stringify(on)) as Record<string, unknown>;
     expect(Object.keys(onAnswer)).toEqual(expect.arrayContaining(["savedEnv", "savedEnvBuilds"]));
   });
@@ -546,14 +546,14 @@ describe("settling the end of a build", () => {
   it("skips a marker that was settled but is still listed by the index, and deletes no compute twice for a workspace that is already closed", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
     const s = await started();
-    s.t.db.set({ ...s.marker(), retiredAt: new Date().toISOString() } as never);
+    s.t.db.set({ ...s.marker(), retiredAt: new Date().toISOString() });
     s.later(TEN);
     expect(await s.sweep()).toEqual({ settled: 0, waiting: 0, failed: 0 });
     expect(s.t.deleteEc2Session).not.toHaveBeenCalled();
     // a workspace closed by an earlier pass whose marker was not updated: settled without another delete
     const closed = await started();
     await closed.t.finish(closed.begun.workspaceId, closed.begun.operationId, "FAILED", { error: "x" });
-    closed.t.db.set({ ...closed.workspace(), status: "CLOSED", closedAt: new Date().toISOString() } as never);
+    closed.t.db.set({ ...closed.workspace(), status: "CLOSED", closedAt: new Date().toISOString() });
     closed.t.deleteEc2Session?.mockClear();
     closed.later(TEN);
     expect(await closed.sweep()).toEqual({ settled: 1, waiting: 0, failed: 0 });

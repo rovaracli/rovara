@@ -1389,6 +1389,31 @@ export class GitHubAppCredentialProvider {
   }
 
   /**
+   * The whole tree of a commit, one listing (`git/trees?recursive=1`), as the entries GitHub gives: path, mode, type and the git object id. Saved project images work the environment key out from it, so a file's
+   * content is never read: its blob id names it. `truncated` is GitHub's own flag (the listing is cut at 100,000 entries or 7 MB); a caller that needs the whole tree must treat it as no answer.
+   * Throws for a commit that is not a full sha or a listing GitHub cannot give.
+   */
+  async listTreeAtCommit(repositoryUrl: string, commitSha: string, scope: GitHubTokenScope, options?: { timeoutMs?: number }): Promise<{ truncated: boolean; entries: Array<{ path: string; mode: string; type: string; sha: string }> }> {
+    if (!/^[a-f0-9]{40}$/u.test(commitSha)) throw agentXError("CONFIG_INVALID", "commit identity is invalid");
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.readTokenFor(repository, scope);
+    const response = await this.fetchImplementation(
+      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/git/trees/${commitSha}?recursive=1`,
+      { headers: githubHeaders(token), signal: AbortSignal.timeout(options?.timeoutMs ?? 30_000), redirect: "error" },
+    );
+    if (!response.ok) { await response.body?.cancel(); throw agentXError("RUNTIME_UNAVAILABLE", `GitHub tree listing failed with HTTP ${response.status}`); }
+    const body: unknown = await response.json();
+    if (typeof body !== "object" || body === null || !Array.isArray((body as { tree?: unknown }).tree) || typeof (body as { truncated?: unknown }).truncated !== "boolean") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid tree listing");
+    const entries: Array<{ path: string; mode: string; type: string; sha: string }> = [];
+    for (const raw of (body as { tree: unknown[] }).tree) {
+      const entry = raw as { path?: unknown; mode?: unknown; type?: unknown; sha?: unknown };
+      if (typeof entry.path !== "string" || typeof entry.mode !== "string" || typeof entry.type !== "string" || typeof entry.sha !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(entry.sha)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid tree entry");
+      entries.push({ path: entry.path, mode: entry.mode, type: entry.type, sha: entry.sha });
+    }
+    return { truncated: (body as { truncated: boolean }).truncated, entries };
+  }
+
+  /**
    * A file's text as GitHub holds it at a commit; undefined when the file is not there.
    * With `untilLine` the body is read as a stream and the read stops after that many newline-ended lines (the text through that line is returned);
    * a file that ends sooner comes back whole. Throws when GitHub cannot answer or 20 MB arrive before the wanted line (or without one).

@@ -173,8 +173,8 @@ export interface SavedEnvDeps {
   registry: RegistryPort;
   /** The project's newest approved test environment, or undefined (bind to `readApprovedTestEnvironment`). */
   approved(orgId: string, projectId: string): Promise<ApprovedPin | undefined>;
-  /** The environment key of the project's default branches NOW (SH3 + SH21, worked out where the code is read), or undefined when it cannot be worked out (then no decision is made). */
-  currentKey(orgId: string, projectId: string): Promise<string | undefined>;
+  /** The environment key of the project's default branches at `heads` (SH3 + SH21; the heads are read once, by `checkRebuild`, so the key and the job are for the SAME commits), or undefined when it cannot be worked out (then no decision is made). */
+  currentKey(orgId: string, projectId: string, heads: ReadonlyMap<string, string> | undefined): Promise<string | undefined>;
   /** The head commit of each repository's default branch, by repository name, or undefined when the code host cannot answer. Read when a job is queued, not when it is recorded. */
   defaultHeads(orgId: string, projectId: string): Promise<ReadonlyMap<string, string> | undefined>;
   /** `savedEnv.keep` of the company (1 to 10). */
@@ -274,14 +274,15 @@ export async function checkRebuild(deps: SavedEnvDeps, ids: { orgId: string; pro
   const idleDays = (await deps.lightAfterIdleDays?.(ids.orgId, ids.projectId)) ?? SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT;
   if (base.resetRequested !== true && base.images.length === 0 && lightSetup(base, now, idleDays) && trigger !== "push" && trigger !== "task") return stay("idle");
   if (base.resetRequested !== true && base.lastFailureAt !== undefined && now - Date.parse(base.lastFailureAt) < SAVED_ENV_FAILURE_BACKOFF_MS) return stay("backoff");
-  const currentKey = await deps.currentKey(ids.orgId, ids.projectId).catch(() => undefined);
+  // The heads are read first and the key is worked out AT them, so the key and the job are for the same commits whatever moves meanwhile.
+  const heads = await deps.defaultHeads(ids.orgId, ids.projectId).catch(() => undefined);
+  const currentKey = await deps.currentKey(ids.orgId, ids.projectId, heads).catch(() => undefined);
   const reason = rebuildReason({ now, image: base.images[0], approved, currentKey, resetRequested: base.resetRequested === true });
   if (reason === undefined) return stay("no_change");
   // Without the key of the code the build is for, a result could not be held to it: nothing is queued (a reset too), and the next check tries again.
   if (currentKey === undefined) return stay("no_key");
   if (lightSetup(base, now, idleDays) && reason !== "reset" && trigger !== "push") return stay("idle");
   // The commits the build is FOR. Without them there is nothing to hold the result against.
-  const heads = await deps.defaultHeads(ids.orgId, ids.projectId).catch(() => undefined);
   if (heads === undefined || heads.size === 0) return stay("no_heads");
   const job: RebuildJob = {
     jobId: token(deps).slice(0, 24), leaseToken: token(deps), reason, approved, commits: Object.fromEntries(heads), expectedKey: currentKey,
