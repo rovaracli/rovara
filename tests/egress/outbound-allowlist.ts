@@ -123,7 +123,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["*.amazonaws.com", "monitoring.amazonaws.com", "amazonaws.com", "amazonaws.com.cn"],
   },
   {
-    category: "aws-endpoint", why: "The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list; and, as the CloudTrail event source an alert rule matches (a pattern, not a call), in the operator-assumption alert.", files: ["infra/lib/vpc-endpoints.ts", "infra/lib/operator-access.ts"],
+    category: "aws-endpoint", why: "The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list; and, as the CloudTrail event source an alert rule matches (a pattern, not a call), in the operator-assumption alert; and, as the audience a GitHub Actions token must carry, in the release bundle-signing role's trust policy (a condition value, not a call; 2026-11-03: 0.5.2 batch).", files: ["infra/lib/vpc-endpoints.ts", "infra/lib/operator-access.ts", "infra/lib/bundle-signing.ts"],
     hosts: ["sts.amazonaws.com"],
   },
   {
@@ -160,6 +160,10 @@ export const HOST_RULES: readonly HostRule[] = [
   {
     category: "deploy-supply-chain", why: "Node for the CloudShell install, and the release pipeline's tools.", files: ["infra/lib/release-pipeline.ts", "packages/cli/src/node-version.ts", ...DEFAULT_ALLOW],
     hosts: ["nodejs.org", "awscli.amazonaws.com"],
+  },
+  {
+    category: "deploy-supply-chain", why: "GitHub Actions' OIDC issuer, named as the federated provider in the release bundle-signing role's trust policy (an issuer name in a condition key, not a call; 2026-11-03: 0.5.2 batch).", files: ["infra/lib/bundle-signing.ts"],
+    hosts: ["token.actions.githubusercontent.com"],
   },
   {
     category: "deploy-supply-chain", why: "The upstream registry of the image pull-through cache rule.", files: ["infra/lib/access.ts"],
