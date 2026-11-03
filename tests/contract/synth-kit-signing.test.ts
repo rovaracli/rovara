@@ -3,7 +3,7 @@
 // the checkout as it is only when it is a clean commit with no ignored file that changes what is built and no build output older than its source (build.ts:374).
 import { execFileSync } from "node:child_process";
 import { existsSync, utimesSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SynthKitManifestSchema, sha256OfBytes } from "@agentx/contracts";
@@ -132,6 +132,66 @@ describe("the signing step runs the kit's checks again, on the copy it signs", (
   it("verifyKitForSigning refuses a checkout that is not the release's commit before it runs anything", async () => {
     const state: SourceState = { head: () => "c".repeat(40), dirtyFiles: () => [] };
     await expect(verifyKitForSigning({ kitRoot: await kitDir(), releaseDir, release: { gitCommit: "d".repeat(40) } as never, source: state })).rejects.toThrow(/working tree is at/);
+  });
+});
+
+describe("SK-4: the kit is measured once more, from its bytes, immediately before the signature", () => {
+  /** A signer that records that it was reached, so a refusal can be shown to come before it. */
+  const countingSigner = () => { const key = newTestKey(); let signed = 0; return { signer: { publicKeyPem: key.publicKeyPem, sign: async (message: Buffer) => { signed += 1; return key.signer.sign(message); } }, count: () => signed }; };
+
+  it("a file of the copy changed while the kit check ran is refused, and the signer is never called", async () => {
+    const counter2 = countingSigner();
+    const out = join(root, "out-late-edit");
+    await expect(sign(await kitDir(), {
+      out, signer: counter2.signer,
+      kitCheck: async ({ kitRoot }) => { await writeFile(join(kitRoot, "synth.mjs"), "export {};\n// swapped while the checks ran\n"); },
+    })).rejects.toThrow(/synth\.mjs is not (?:what kit\.json lists|the one the bundle manifest lists)/);
+    expect(counter2.count()).toBe(0);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("a file changed during the (slow) image exports, after the kit check passed, is refused too, and the signer is never called", async () => {
+    const counter2 = countingSigner();
+    const out = join(root, "out-edit-during-export");
+    await expect(sign(await kitDir(), {
+      out, signer: counter2.signer,
+      exportImage: async (sourceRef, destFile) => { await fakeExporter(sourceRef, destFile); await writeFile(join(out, "synth-kit", "synth.mjs"), "export {};\n// swapped during export\n"); },
+    })).rejects.toThrow(/refusing to sign/);
+    expect(counter2.count()).toBe(0);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("a kit.json rewritten in the copy (hashes recomputed to match an edited module) is refused: it is no longer the manifest's kit.json", async () => {
+    const counter2 = countingSigner();
+    await expect(sign(await kitDir(), {
+      signer: counter2.signer,
+      kitCheck: async ({ kitRoot }) => {
+        await writeFile(join(kitRoot, "synth.mjs"), "export {};\n// edited\n");
+        const kit = JSON.parse(await readFile(join(kitRoot, "kit.json"), "utf8")) as { files: Record<string, string> };
+        kit.files["synth.mjs"] = sha256OfBytes(await readFile(join(kitRoot, "synth.mjs")));
+        await writeFile(join(kitRoot, "kit.json"), JSON.stringify(kit));
+      },
+    })).rejects.toThrow(/kit\.json is not the one the bundle manifest lists|refusing to sign/);
+    expect(counter2.count()).toBe(0);
+  });
+
+  it("a file added to, or removed from, the copy after the check is refused", async () => {
+    const counter2 = countingSigner();
+    await expect(sign(await kitDir(), { signer: counter2.signer, kitCheck: async ({ kitRoot }) => { await writeFile(join(kitRoot, "extra.mjs"), "x"); } })).rejects.toThrow(/does not list \(extra\.mjs\)/);
+    await expect(sign(await kitDir(), { signer: counter2.signer, kitCheck: async ({ kitRoot }) => { await rm(join(kitRoot, "synth.mjs")); } })).rejects.toThrow(/missing a file kit\.json lists \(synth\.mjs\)/);
+    expect(counter2.count()).toBe(0);
+  });
+
+  it("a link put in the copy after the check is refused", async () => {
+    const counter2 = countingSigner();
+    await expect(sign(await kitDir(), { signer: counter2.signer, kitCheck: async ({ kitRoot }) => { await rm(join(kitRoot, "synth.mjs")); await symlink("/etc/hosts", join(kitRoot, "synth.mjs")); } })).rejects.toThrow(/link or a special file/);
+    expect(counter2.count()).toBe(0);
+  });
+
+  it("an untouched kit is signed, and the signer is reached exactly once (positive control)", async () => {
+    const counter2 = countingSigner();
+    await sign(await kitDir(), { signer: counter2.signer });
+    expect(counter2.count()).toBe(1);
   });
 });
 

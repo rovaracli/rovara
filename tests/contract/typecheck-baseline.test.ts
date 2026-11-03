@@ -410,13 +410,18 @@ describe("merging several programs", () => {
 
 describe("command-line options", () => {
   it("defaults to every program with a job count from the CPU count", () => {
-    expect(parseArguments(["check"], 8)).toEqual({ mode: "check", changed: false, base: "HEAD", only: [], jobs: 4, stats: false, list: false });
-    expect(parseArguments(["check"], 4)).toMatchObject({ jobs: 2 });
-    expect(parseArguments(["check"], 1)).toMatchObject({ jobs: 1 });
+    expect(parseArguments(["check"], 8, "")).toEqual({ mode: "check", changed: false, base: "HEAD", only: [], jobs: 4, stats: false, list: false });
+    expect(parseArguments(["check"], 4, "")).toMatchObject({ jobs: 2 });
+    expect(parseArguments(["check"], 1, "")).toMatchObject({ jobs: 1 });
+    // A shared machine caps the default through ROVARA_TYPECHECK_JOBS; a bad value is ignored and --jobs still wins.
+    expect(parseArguments(["check"], 8, "2")).toMatchObject({ jobs: 2 });
+    expect(parseArguments(["check"], 2, "4")).toMatchObject({ jobs: 1 });
+    for (const bad of ["", "0", "-1", "two", "1.5"]) expect(parseArguments(["check"], 8, bad), bad).toMatchObject({ jobs: 4 });
+    expect(parseArguments(["check", "--jobs", "3"], 8, "1")).toMatchObject({ jobs: 3 });
   });
 
   it("reads --changed with --base, --only, --jobs, --stats and --list", () => {
-    expect(parseArguments(["check", "--changed", "--base", "origin/main", "--only", "a,b", "--only", "c", "--jobs", "3", "--stats", "--list"], 8))
+    expect(parseArguments(["check", "--changed", "--base", "origin/main", "--only", "a,b", "--only", "c", "--jobs", "3", "--stats", "--list"], 8, ""))
       .toEqual({ mode: "check", changed: true, base: "origin/main", only: ["a", "b", "c"], jobs: 3, stats: true, list: true });
   });
 

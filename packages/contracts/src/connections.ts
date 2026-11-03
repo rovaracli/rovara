@@ -51,8 +51,11 @@ const SecretText = ConnectionSecretText;
  */
 const AtlassianEmail = z.string().max(254).regex(/^[^\s:@]+@[^\s:@]+\.[^\s:@]+$/, "must be the Atlassian account email, such as name@company.com");
 
+/** The read-only Atlassian organization admin API key: printable characters, no space, write-only like every secret. */
+export const AtlassianOrgAdminKey = SecretText;
+
 /** The id of an Atlassian organization (admin.atlassian.com), as it appears in the admin API's path. */
-const AtlassianOrgId = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/, "must be the Atlassian organization id");
+export const AtlassianOrgId = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/, "must be the Atlassian organization id");
 
 /**
  * What a secret holds, by connection type: a Linear API key, a Jira account email and API token, an MCP bearer token, and (Plan 4) a Sentry

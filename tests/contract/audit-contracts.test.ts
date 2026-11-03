@@ -163,6 +163,7 @@ describe("the event catalog", () => {
   "session.linked",
   "session.unlinked",
   "connection.saved",
+  "connection.jira_org_admin_changed",
   "connection.removed",
   "project_connector.changed",
   "guardrails.changed",

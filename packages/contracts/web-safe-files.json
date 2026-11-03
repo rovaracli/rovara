@@ -43,6 +43,7 @@
   "packages/contracts/src/how-we-work.ts",
   "packages/contracts/src/intake.ts",
   "packages/contracts/src/invite-creation.ts",
+  "packages/contracts/src/jira-org-admin-web.ts",
   "packages/contracts/src/knowledge-skills.ts",
   "packages/contracts/src/learned-context.ts",
   "packages/contracts/src/lesson-citation.ts",

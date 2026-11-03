@@ -6,6 +6,7 @@ import { afterProjectBootstrap } from "../support/transaction-audit.js";
 // (DeveloperSignInStore); a GitHub installation connected, bound from a request, disconnected, and changed by GitHub (the
 // installation webhook); a staff decision on an allowed website; a person added to or removed from a project.
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { setImmediate as nextMacrotask, setTimeout as realDelay } from "node:timers/promises";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   AUDIT_FLUSH_DEADLINE_MS,
@@ -83,11 +84,18 @@ const writes = (transaction: Tx, pk: string, sk?: string) => transaction.some((i
   return key !== undefined && key.pk === pk && (sk === undefined || key.sk === sk);
 });
 
-/** Runs a call to its end under fake timers: the flush's deadline timer is set only once the route has reached it, so time moves until the call is done. */
+/**
+ * Runs a call to its end under fake timers: the flush's deadline timer is set only once the route has reached it, so time moves until the call is done.
+ * The call also waits on real work (a first import, a slow disk), which takes as long as the machine is busy, so this keeps going until the call is done
+ * (a fixed number of steps ended early on a loaded machine and left the deadline timer never moved: the test hung to its time limit). The real yield between steps (not faked) lets that work run.
+ */
 async function settle<T>(call: Promise<T>): Promise<T> {
   let finished = false;
   void call.then(() => { finished = true; }, () => { finished = true; });
-  for (let step = 0; step < 100 && !finished; step += 1) await vi.advanceTimersByTimeAsync(AUDIT_FLUSH_DEADLINE_MS);
+  while (!finished) {
+    await vi.advanceTimersByTimeAsync(AUDIT_FLUSH_DEADLINE_MS);
+    if (!finished) await nextMacrotask();
+  }
   return call;
 }
 
@@ -1337,6 +1345,12 @@ describe("a refusal keeps its meaning when the transaction carries an audit item
 });
 
 describe("answers as today when the intake queue never answers (the remaining sites)", () => {
+  it("settle keeps moving the fake clock while the call still waits on slow real work", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const slow = (async () => { await realDelay(300); await new Promise((resolve) => setTimeout(resolve, AUDIT_FLUSH_DEADLINE_MS)); return "done"; })();
+    expect(await settle(slow)).toBe("done");
+  });
+
   it("a removal and a leave", async () => {
     const capture = hangingAuditDeps();
     const h = await orgBroker(capture);

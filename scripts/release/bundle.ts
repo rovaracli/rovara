@@ -14,7 +14,6 @@ import {
   BUNDLE_SIGNATURE_FILE,
   BundleImageName,
   BundleManifestSchema,
-  BundleSignatureSchema,
   SynthKitManifestSchema,
   type SynthKitManifest,
   ImageDigest,
@@ -22,21 +21,18 @@ import {
   type ReleaseManifest,
   parseBundlePublicKey,
   sha256OfBytes,
-  verifyBundleSignature,
   type BundleManifest,
 } from "@agentx/contracts";
 import { createHash } from "node:crypto";
 import { LITELLM_SOURCE_IMAGE, imageDigestOf } from "../../infra/lib/bundle-images.js";
 import { assertReleaseFlavorImage, skopeoLabelReader, type ImageLabelReader } from "./image-flavor.js";
 import { ociArchiveDigests } from "./oci-archive.js";
+import { reverifyKitBeforeSigning } from "./bundle-verify.js";
+import { kmsBundleSigner, signManifestBytes, type BundleSigner } from "./bundle-signer.js";
+
+export { kmsBundleSigner, type BundleSigner, type KmsLike } from "./bundle-signer.js";
 
 const execFileAsync = promisify(execFile);
-
-/** Signs bundle.json. `publicKeyPem` is the PUBLIC half the pipeline publishes and installers pin; the private half never leaves the signer (KMS). */
-export interface BundleSigner {
-  readonly publicKeyPem: string;
-  sign(message: Buffer): Promise<Buffer>;
-}
 
 /** Writes the image named by `sourceRef` (a digest reference, every platform) to `destFile` as an OCI archive. */
 export type ImageExporter = (sourceRef: string, destFile: string) => Promise<void>;
@@ -53,7 +49,11 @@ export interface BuildBundleInput {
   out: string;
   images: readonly BundleImageInput[];
   exportImage: ImageExporter;
-  signer: BundleSigner;
+  /**
+   * Signs bundle.json in this process. Absent: the bundle is PREPARED only (bundle.json written, no signature): the release workflow's signing job, which builds nothing, checks it again and signs it
+   * (sign-bundle.ts). `release:bundle` in the build job never holds a signing permission.
+   */
+  signer?: BundleSigner;
   /**
    * The release's own pinned CDK app (task N3b): a directory with kit.json and the module it names, copied into the bundle under synth-kit/ and listed, hashed and signed with everything
    * else. An Enterprise install's templates are built from it at approval. Without it the bundle can be approved by a Public install only.
@@ -160,7 +160,7 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
   const out = resolve(input.out);
 
   // Everything that can be refused is refused before the output directory is touched.
-  const { keyId } = parseBundlePublicKey(input.signer.publicKeyPem);
+  if (input.signer !== undefined) parseBundlePublicKey(input.signer.publicKeyPem);
   const names = new Set<string>();
   for (const image of input.images) {
     if (!BundleImageName.safeParse(image.name).success) throw new Error(`image name ${JSON.stringify(image.name)} is not a valid bundle image name`);
@@ -235,40 +235,18 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
   }
 
   files.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  // SK-4: the kit in the output folder is measured once more, from its bytes, immediately before the signature; a signing key is never used on a kit that differs from kit.json.
+  if (input.synthKitDir !== undefined) await reverifyKitBeforeSigning({ kitRoot: join(out, "synth-kit"), releaseJsonSha256: releaseJsonHash.sha256, release, manifestFiles: files });
   const manifest = BundleManifestSchema.parse({ schemaVersion: 1, format: "rovara-release-bundle", version: release.version, gitCommit: release.gitCommit, files, images } satisfies BundleManifest);
   const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   const bundleSha256 = sha256OfBytes(manifestBytes);
-  const signature = BundleSignatureSchema.parse({
-    schemaVersion: 1, algorithm: "ecdsa-p256-sha256", keyId, bundleSha256, signature: (await input.signer.sign(manifestBytes)).toString("base64"),
-  });
-  // The signer is checked against its own published key before anything is written, so a mismatched key reference cannot produce a bundle nobody can verify.
-  const own = verifyBundleSignature({ manifestBytes, signature, trustedKeys: [input.signer.publicKeyPem] });
-  if (!own.ok) throw new Error(`the signer's signature does not verify against its own public key: ${own.reason}`);
   await writeFile(join(out, BUNDLE_MANIFEST_FILE), manifestBytes);
-  await writeFile(join(out, BUNDLE_SIGNATURE_FILE), `${JSON.stringify(signature, null, 2)}\n`, "utf8");
+  if (input.signer !== undefined) {
+    // The signer is checked against its own published key before the signature is written, so a mismatched key reference cannot produce a bundle nobody can verify.
+    const signature = await signManifestBytes(input.signer, manifestBytes);
+    await writeFile(join(out, BUNDLE_SIGNATURE_FILE), `${JSON.stringify(signature, null, 2)}\n`, "utf8");
+  }
   return { manifest, bundleSha256 };
-}
-
-/** The release pipeline's signer: an AWS KMS asymmetric key (ECC_NIST_P256, ECDSA_SHA_256) named by id or ARN. The caller injects the KMS client. */
-export interface KmsLike {
-  send(command: unknown): Promise<unknown>;
-}
-export async function kmsBundleSigner(input: { client: KmsLike; keyId: string; commands: { GetPublicKeyCommand: new (input: { KeyId: string }) => unknown; SignCommand: new (input: { KeyId: string; Message: Uint8Array; MessageType: "DIGEST"; SigningAlgorithm: "ECDSA_SHA_256" }) => unknown } }): Promise<BundleSigner> {
-  const { client, keyId, commands } = input;
-  const publicKey = (await client.send(new commands.GetPublicKeyCommand({ KeyId: keyId }))) as { PublicKey?: Uint8Array };
-  if (publicKey.PublicKey === undefined) throw new Error("KMS returned no public key for the signing key");
-  const der = Buffer.from(publicKey.PublicKey);
-  const publicKeyPem = `-----BEGIN PUBLIC KEY-----\n${(der.toString("base64").match(/.{1,64}/g) ?? []).join("\n")}\n-----END PUBLIC KEY-----\n`;
-  parseBundlePublicKey(publicKeyPem);
-  return {
-    publicKeyPem,
-    async sign(message) {
-      // The digest is signed, not the message: bundle.json can exceed KMS's 4,096-byte raw message limit, and ECDSA over the SHA-256 digest verifies as ECDSA-SHA256 over the message.
-      const response = (await client.send(new commands.SignCommand({ KeyId: keyId, Message: createHash("sha256").update(message).digest(), MessageType: "DIGEST", SigningAlgorithm: "ECDSA_SHA_256" }))) as { Signature?: Uint8Array };
-      if (response.Signature === undefined) throw new Error("KMS returned no signature");
-      return Buffer.from(response.Signature);
-    },
-  };
 }
 
 /** skopeo copies every platform of the image, so the archive keeps the digest the templates pin. */
@@ -277,7 +255,7 @@ export const skopeoImageExporter: ImageExporter = async (sourceRef, destFile) =>
 };
 
 function usage(): string {
-  return "Usage: tsx scripts/release/bundle.ts --release <dir> --out <dir> --kms-key <key id or ARN> --image <name>=<repo@sha256:...> [--image ...] [--synth-kit <dir>] [--notes <file>]\n(The litellm image is required. --synth-kit takes the folder `release:kit` made from this release: without it the bundle can be approved by a Public install only. AWS calls go through the pipeline's own credentials; this script never reads a private key.)\n";
+  return "Usage: tsx scripts/release/bundle.ts --release <dir> --out <dir> (--kms-key <key id or ARN> | --unsigned) --image <name>=<repo@sha256:...> [--image ...] [--synth-kit <dir>] [--notes <file>]\n(The litellm image is required. --synth-kit takes the folder `release:kit` made from this release: without it the bundle can be approved by a Public install only. --unsigned writes bundle.json and no signature: the release workflow's signing job checks the folder again and signs it. AWS calls go through the pipeline's own credentials; this script never reads a private key.)\n";
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -292,15 +270,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const [kmsKey] = values("--kms-key");
       const [notesFile] = values("--notes");
       const [synthKit] = values("--synth-kit");
-      if (!release || !out || !kmsKey) throw new Error("--release, --out and --kms-key are required");
+      const unsigned = argv.includes("--unsigned");
+      if (!release || !out) throw new Error("--release and --out are required");
+      if (unsigned === (kmsKey !== undefined)) throw new Error("give exactly one of --kms-key (sign here) or --unsigned (prepare the bundle for the signing job, which checks it again and signs it)");
       const images = values("--image").map((value) => {
         const [name, ...rest] = value.split("=");
         return { name: name ?? "", sourceRef: rest.join("=") };
       });
-      const { KMSClient, GetPublicKeyCommand, SignCommand } = await import("@aws-sdk/client-kms");
-      const signer = await kmsBundleSigner({ client: new KMSClient({}), keyId: kmsKey, commands: { GetPublicKeyCommand, SignCommand } });
+      let signer: BundleSigner | undefined;
+      if (kmsKey !== undefined) {
+        const { KMSClient, GetPublicKeyCommand, SignCommand } = await import("@aws-sdk/client-kms");
+        signer = await kmsBundleSigner({ client: new KMSClient({}), keyId: kmsKey, commands: { GetPublicKeyCommand, SignCommand } });
+      }
       const result = await buildBundle({
-        releaseDir: release, out: resolve(out), images, exportImage: skopeoImageExporter, signer,
+        releaseDir: release, out: resolve(out), images, exportImage: skopeoImageExporter, ...(signer === undefined ? {} : { signer }),
         ...(synthKit === undefined ? {} : { synthKitDir: resolve(synthKit) }),
         ...(notesFile === undefined ? {} : { notes: await readFile(notesFile, "utf8") }),
       });
