@@ -450,9 +450,9 @@ describe("hostile and malformed facts (M1, L1, L2)", () => {
   it("an unknown maintainer choice is unavailable, never an error", () => {
     for (const bogus of ["bogus", "__proto__", "constructor", "toString", "hasOwnProperty", "", " local", "LOCAL", 5, {}, [], null, true]) {
       const choice = chooseBacking(pay({ fixtures: [fixture(sha("3"))], dependency: { maintainerChoice: bogus as never } }));
-      expect(choice.backing, String(bogus)).toMatchObject({ kind: "fake", fixtureSetRef: sha("3") });
-      expect(choice.reason, String(bogus)).toBe("best_available");
-      expect(choice.skipped[0], String(bogus)).toEqual({ step: "maintainer", reason: "maintainer_choice_unavailable", words: SKIP_REASON_WORDS.maintainer_choice_unavailable });
+      expect(choice.backing, JSON.stringify(bogus)).toMatchObject({ kind: "fake", fixtureSetRef: sha("3") });
+      expect(choice.reason, JSON.stringify(bogus)).toBe("best_available");
+      expect(choice.skipped[0], JSON.stringify(bogus)).toEqual({ step: "maintainer", reason: "maintainer_choice_unavailable", words: SKIP_REASON_WORDS.maintainer_choice_unavailable });
     }
     // A choice that is not set at all is not a bad choice.
     expect(chooseBacking(pay({ fixtures: [fixture(sha("3"))] })).skipped.some((each) => each.step === "maintainer")).toBe(false);
@@ -482,7 +482,10 @@ describe("hostile and malformed facts (M1, L1, L2)", () => {
     expect(chooseBacking(input({ dependency: { family: "__proto__", kind: "constructor" } })).backing.kind).toBe("none");
   });
   it("a box counts as allowed only when it is exactly true, in every step", () => {
-    const loose = (over: Record<string, unknown>) => ({ ...DEFAULT_ALLOWED_BACKINGS, ...over }) as unknown as AllowedBackings;
+    const loose = (over: Record<string, unknown>): AllowedBackings => {
+      const merged: unknown = { ...DEFAULT_ALLOWED_BACKINGS, ...over };
+      return merged as AllowedBackings;
+    };
     const images = [{ imageId: "my-dynamo", family: "aws:dynamodb" }];
     expect(steps(chooseBacking(input({ allowed: loose({ real: "yes" }) })))[0]).toBe("local:not_allowed");
     expect(steps(chooseBacking(dynamo({ projectImages: images, allowed: loose({ projectImages: "yes" }) })))).toContain("project_image:not_allowed");
