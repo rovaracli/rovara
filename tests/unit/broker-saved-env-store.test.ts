@@ -125,6 +125,37 @@ describe("the row", () => {
   });
 });
 
+describe("the poll", () => {
+  const LATER = new Date(NOW + 60_000).toISOString();
+  const EARLIER = new Date(NOW - 60_000).toISOString();
+
+  it("lists live, enabled projects whose poll time has come, oldest first, and no other", async () => {
+    const { store } = bench();
+    await store.commit(state({ projectId: "late", nextPollAt: LATER }), null, entry("activity", { projectId: "late" }));
+    await store.commit(state({ projectId: "due-b", nextPollAt: new Date(NOW - 1000).toISOString() }), null, entry("activity", { projectId: "due-b" }));
+    await store.commit(state({ projectId: "due-a", nextPollAt: EARLIER }), null, entry("activity", { projectId: "due-a" }));
+    await store.commit(state({ projectId: "never" }), null, entry("activity", { projectId: "never" }));
+    await store.commit(state({ projectId: "archived", nextPollAt: EARLIER, archived: true }), null, entry("project_archived", { projectId: "archived" }));
+    await store.commit(state({ projectId: "off", nextPollAt: EARLIER, enabled: false }), null, entry("setting_changed", { projectId: "off", enabled: false }));
+    await store.commit(state({ projectId: "gone", nextPollAt: EARLIER, deleted: true, deletedAt: AT }), null, entry("project_deleted", { projectId: "gone" }));
+    expect(await store.pollDue(10)).toEqual([{ orgId: ORG, projectId: "due-a" }, { orgId: ORG, projectId: "due-b" }]);
+    expect(await store.pollDue(1)).toEqual([{ orgId: ORG, projectId: "due-a" }]);
+  });
+
+  it("checks the row itself, not the eventually consistent index", async () => {
+    const { db, store } = bench();
+    await store.commit(state({ nextPollAt: EARLIER }), null, entry("activity"));
+    const live = db.get(orgPk(ORG), "SAVED_ENV#web") as Record<string, unknown>;
+    // the index still lists the row, but it was turned off, archived, or its time moved on
+    for (const change of [{ enabled: false }, { archived: true }, { nextPollAt: LATER }, { deleted: true }]) {
+      db.set({ ...live, ...change });
+      expect(await store.pollDue(10), JSON.stringify(change)).toEqual([]);
+    }
+    db.set(live as never);
+    expect(await store.pollDue(10)).toEqual([{ orgId: ORG, projectId: "web" }]);
+  });
+});
+
 describe("deleted projects", () => {
   const deleted = (changes: Partial<SavedEnvState> = {}): SavedEnvState => state({ deleted: true, deletedAt: AT, ...changes });
 

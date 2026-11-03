@@ -27,6 +27,8 @@ export interface SavedEnvTable {
 
 /** The partition of the sparse due index that lists deleted projects whose registry deletion is not final. */
 export const SAVED_ENV_PURGE_PARTITION = "SAVED_ENV_PURGE";
+/** The partition of the same sparse index that lists live projects by the time the periodic poll next looks at them. */
+export const SAVED_ENV_POLL_PARTITION = "SAVED_ENV_POLL";
 /** The most deleted projects one sweep reads (the nightly runs it daily; a remainder is swept the next night). */
 export const SAVED_ENV_PURGE_PAGE = 200;
 
@@ -50,7 +52,7 @@ const StateSchema = z.object({
   orgId: OrgIdSchema, projectId: z.string().min(1).max(200), version: z.number().int().min(1), enabled: z.boolean(), images: z.array(ImageSchema).max(20), job: JobSchema.optional(),
   resetRequested: z.boolean().optional(), archived: z.boolean().optional(), deleted: z.boolean().optional(), deletedAt: Iso.optional(), registryPurgedAt: Iso.optional(), lastResetAt: Iso.optional(),
   lastResetRequestId: z.string().max(100).optional(), lastPushAt: Iso.optional(), lastTaskAt: Iso.optional(), lastRebuildReason: z.enum(["no_image", "key_changed", "max_age", "stale", "reset"]).optional(),
-  lastFailureAt: Iso.optional(), lastFailure: z.string().max(60).optional(), health: z.enum(["never_proved", "healthy", "needs_repair"]),
+  lastFailureAt: Iso.optional(), lastFailure: z.string().max(60).optional(), nextPollAt: Iso.optional(), health: z.enum(["never_proved", "healthy", "needs_repair"]),
 }).strict();
 
 /** The stored attributes that are not part of the state (keys, entity type, the due index) are dropped. Undefined for a row that does not read back. */
@@ -69,12 +71,19 @@ function purgeFinal(state: Pick<SavedEnvState, "deletedAt" | "registryPurgedAt">
   return !(Date.parse(state.registryPurgedAt) < deletedAt + leaseMs);
 }
 
-/** The due attributes of a row: only a deleted row whose purge is not final has them. First due at the delete, then again at `deletedAt` plus a lease. */
+/**
+ * The due attributes of a row, for the one sparse index: a deleted row whose purge is not final is due for the sweep (first at the delete, then again at `deletedAt` plus a lease); a live, enabled, unarchived row
+ * with a `nextPollAt` is due for the poll at that time. Nothing else has them.
+ */
 function dueAttributes(state: SavedEnvState): Row {
-  if (state.deleted !== true || purgeFinal(state, SAVED_ENV_JOB_LEASE_MS)) return {};
-  const deletedAt = Date.parse(state.deletedAt ?? "") || 0;
-  const at = state.registryPurgedAt === undefined ? deletedAt : deletedAt + SAVED_ENV_JOB_LEASE_MS;
-  return { [WORKFLOW_DISPATCH_DUE_INDEX.partitionKey]: SAVED_ENV_PURGE_PARTITION, [WORKFLOW_DISPATCH_DUE_INDEX.sortKey]: `${dueKey(at)}#${state.orgId}#${state.projectId}` };
+  const key = (partition: string, at: number): Row => ({ [WORKFLOW_DISPATCH_DUE_INDEX.partitionKey]: partition, [WORKFLOW_DISPATCH_DUE_INDEX.sortKey]: `${dueKey(at)}#${state.orgId}#${state.projectId}` });
+  if (state.deleted === true) {
+    if (purgeFinal(state, SAVED_ENV_JOB_LEASE_MS)) return {};
+    const deletedAt = Date.parse(state.deletedAt ?? "") || 0;
+    return key(SAVED_ENV_PURGE_PARTITION, state.registryPurgedAt === undefined ? deletedAt : deletedAt + SAVED_ENV_JOB_LEASE_MS);
+  }
+  if (state.archived === true || !state.enabled || state.nextPollAt === undefined) return {};
+  return key(SAVED_ENV_POLL_PARTITION, Date.parse(state.nextPollAt));
 }
 
 /** The ledger event of one entry, or undefined for `activity` (the row's times only). The actor is the person for a Reset, the system otherwise; the facts are fixed words, a digest and a count. */
@@ -134,6 +143,23 @@ export function dynamoSavedEnvStore(table: SavedEnvTable): SavedEnvStore {
       if (items.length === 0) throw auditUnavailable();
       await table.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
       await flushAuditEvents({ audit: table.audit }, [event]);
+    },
+
+    async pollDue(limit) {
+      const now = (table.now ?? Date.now)();
+      const result = await table.documentClient.send(new QueryCommand({
+        TableName: table.tableName, IndexName: WORKFLOW_DISPATCH_DUE_INDEX.name,
+        KeyConditionExpression: `${WORKFLOW_DISPATCH_DUE_INDEX.partitionKey} = :pk AND ${WORKFLOW_DISPATCH_DUE_INDEX.sortKey} BETWEEN :from AND :due`,
+        ExpressionAttributeValues: { ":pk": SAVED_ENV_POLL_PARTITION, ":from": "0", ":due": `${dueKey(now)}~` }, Limit: Math.max(1, Math.min(limit, SAVED_ENV_PURGE_PAGE)),
+      })) as { Items?: Row[] };
+      const out: Array<{ orgId: string; projectId: string }> = [];
+      for (const raw of result.Items ?? []) {
+        if (typeof raw.orgId !== "string" || typeof raw.projectId !== "string" || !OrgIdSchema.safeParse(raw.orgId).success) continue;
+        // The index is eventually consistent: the row itself says whether it is live and its time has come.
+        const fresh = stateOf(await read(raw.orgId, raw.projectId));
+        if (fresh !== undefined && fresh.deleted !== true && fresh.archived !== true && fresh.enabled && fresh.nextPollAt !== undefined && Date.parse(fresh.nextPollAt) <= now) out.push({ orgId: fresh.orgId, projectId: fresh.projectId });
+      }
+      return out;
     },
 
     async deletedNeedingPurge(leaseMs) {

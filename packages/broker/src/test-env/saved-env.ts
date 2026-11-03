@@ -53,6 +53,8 @@ const RECORD_GRACE_MS = 10 * 60_000;
 export const SAVED_ENV_JOB_LEASE_MS = 3 * 3_600_000;
 /** After a failed build the project waits this long before the next automatic rebuild (a reset ignores it). */
 export const SAVED_ENV_FAILURE_BACKOFF_MS = 30 * 60_000;
+/** How often the periodic poll looks at a project. */
+export const SAVED_ENV_POLL_MS = 30 * 60_000;
 
 export const REBUILD_REASONS = ["no_image", "key_changed", "max_age", "stale", "reset"] as const;
 export type RebuildReason = (typeof REBUILD_REASONS)[number];
@@ -115,6 +117,8 @@ export interface SavedEnvState {
   lastRebuildReason?: RebuildReason | undefined;
   lastFailureAt?: string | undefined;
   lastFailure?: string | undefined;
+  /** When the periodic poll next looks at this project (`runPoll`). Set whenever the row is written, so every row with a live project is polled at least this often. */
+  nextPollAt?: string | undefined;
   health: SavedEnvHealth;
 }
 
@@ -141,6 +145,8 @@ export interface SavedEnvStore {
   audit(entry: SavedEnvAuditEntry): Promise<void>;
   /** The deleted projects whose registry deletion is not final: no `registryPurgedAt`, or one earlier than `deletedAt` plus `leaseMs` (for `sweepDeleted`). */
   deletedNeedingPurge(leaseMs: number): Promise<Array<{ orgId: string; projectId: string }>>;
+  /** At most `limit` live, enabled projects whose `nextPollAt` has passed (for `runPoll`), oldest first. */
+  pollDue(limit: number): Promise<Array<{ orgId: string; projectId: string }>>;
 }
 
 export interface RegistryImage { digest: string; tags: string[]; pushedAt: string }
@@ -171,6 +177,11 @@ export interface SavedEnvDeps {
   lightAfterIdleDays?(orgId: string, projectId: string): Promise<number>;
   now(): number;
   random?(): string;
+  /**
+   * Called after a rebuild job was queued (by any trigger: a push, a task, the nightly, the poll, a Reset, a stale mark), to start it. Best effort: a throw is swallowed (the job's lease runs out and the next
+   * check takes the project over). Absent: the job waits for whoever starts it.
+   */
+  onQueued?(ids: { orgId: string; projectId: string }, job: Pick<RebuildJob, "jobId" | "reason" | "approved" | "commits">): Promise<void>;
 }
 
 /** What the writes of the registry need: the store, the clock and whether the install's switch is on. The dispatcher's lease (which has no sessions or registry) is made from this alone. */
@@ -243,7 +254,7 @@ export async function checkRebuild(deps: SavedEnvDeps, ids: { orgId: string; pro
   const prior = await deps.store.get(ids.orgId, ids.projectId);
   const base = prior ?? blank(ids.orgId, ids.projectId);
   const now = deps.now();
-  const touched: SavedEnvState = { ...base, ...(trigger === "push" ? { lastPushAt: iso(now) } : {}), ...(trigger === "task" ? { lastTaskAt: iso(now) } : {}) };
+  const touched: SavedEnvState = { ...base, ...(trigger === "push" ? { lastPushAt: iso(now) } : {}), ...(trigger === "task" ? { lastTaskAt: iso(now) } : {}), nextPollAt: iso(now + SAVED_ENV_POLL_MS) };
   const stay = async (why: Extract<CheckResult, { queued: false; ok: true }>["why"]): Promise<CheckResult> => {
     // Activity is recorded even when nothing is queued (the idle test reads it); a lost race is not an error here.
     if (trigger === "push" || trigger === "task") await commit(deps, prior, touched, audit(deps, base, "activity", { reason: trigger })).catch(() => undefined);
@@ -271,7 +282,56 @@ export async function checkRebuild(deps: SavedEnvDeps, ids: { orgId: string; pro
     createdAt: iso(now), leaseUntil: iso(now + SAVED_ENV_JOB_LEASE_MS),
   };
   const written = await commit(deps, prior, { ...touched, job, resetRequested: false, lastRebuildReason: reason }, audit(deps, base, "rebuild_queued", { reason }));
-  return written === undefined ? { ok: false, reason: "stale_write" } : { ok: true, queued: true, job: { jobId: job.jobId, reason, approved, commits: job.commits } };
+  if (written === undefined) return { ok: false, reason: "stale_write" };
+  const queued = { jobId: job.jobId, reason, approved, commits: job.commits };
+  // Whatever trigger queued it, the job is started the same way. A start that throws leaves the job to run out its lease; nothing here fails because of it.
+  await deps.onQueued?.(ids, queued).catch(() => undefined);
+  return { ok: true, queued: true, job: queued };
+}
+
+/**
+ * A queued job that could not be started for a reason that will not mend itself (no approver, no build inputs, a moved approval): it is ended now with a fixed word, so the project does not wait out a whole lease
+ * for a job nobody is building, and the failure backoff applies. Only the job that is the project's current one, and only while nobody was given its lease.
+ */
+export async function abandonQueuedJob(deps: SavedEnvStoreDeps, ids: { orgId: string; projectId: string }, jobId: string, reason: string): Promise<{ ok: boolean }> {
+  if (disabled(deps) !== undefined) return { ok: false };
+  const state = await deps.store.get(ids.orgId, ids.projectId);
+  const job = state?.job;
+  if (state === undefined || job === undefined || job.jobId !== jobId || job.dispatchedAt !== undefined) return { ok: false };
+  const word = reason.replace(/[^a-z_]/gu, "").slice(0, 40);
+  const written = await commit(deps, state, { ...state, job: undefined, health: "needs_repair", lastFailureAt: iso(deps.now()), lastFailure: word }, audit(deps, state, "build_failed", { reason: word }));
+  return { ok: written !== undefined };
+}
+
+/**
+ * The periodic poll: every project whose time has come is checked as `poll` does (which queues a rebuild when one is due, and so starts it through `onQueued`). A project's next time is set by every write of its row;
+ * one that stays quiet has its time moved on here. At most `limit` projects a pass; a project that fails is left for the next pass (its time is not moved).
+ */
+export async function runPoll(deps: SavedEnvDeps, limit: number): Promise<{ ok: true; checked: number; failed: number } | { ok: false; reason: "disabled" | "unavailable" }> {
+  const off = disabled(deps);
+  if (off !== undefined) return off;
+  let due: Array<{ orgId: string; projectId: string }>;
+  try { due = await deps.store.pollDue(limit); } catch { return { ok: false, reason: "unavailable" }; }
+  let checked = 0;
+  let failed = 0;
+  for (const ids of due) {
+    try {
+      const result = await checkRebuild(deps, ids, "poll");
+      if (!result.ok) { failed += 1; continue; }
+      // A quiet project (nothing queued, so nothing written) has its time moved on; a queued one already got a new time with the job.
+      if (!result.queued) await moveNextPoll(deps, ids);
+      checked += 1;
+    } catch { failed += 1; }
+  }
+  return { ok: true, checked, failed };
+}
+
+async function moveNextPoll(deps: SavedEnvStoreDeps, ids: { orgId: string; projectId: string }): Promise<void> {
+  for (let attempt = 0; attempt < COMMIT_RETRIES; attempt += 1) {
+    const state = await deps.store.get(ids.orgId, ids.projectId);
+    if (state === undefined) return;
+    if ((await commit(deps, state, { ...state, nextPollAt: iso(deps.now() + SAVED_ENV_POLL_MS) }, audit(deps, state, "activity", { reason: "poll" })).catch(() => undefined)) !== undefined) return;
+  }
 }
 
 /** A second Reset within this long of the last one writes nothing: a rebuild builds and pushes a whole image. */

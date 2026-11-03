@@ -79,6 +79,7 @@ import { cancelWorkspaceTask, stopWorkspace } from "./acceptance.js";
 import { exchangeRegistryCredential } from "./registry-credentials.js";
 import { exchangeSavedEnvLogin } from "./saved-env-login.js";
 import { handleSavedEnvLease } from "./saved-env-lease.js";
+import { runSavedEnvPoll, savedEnvBeforeNightly, savedEnvOnQueued, savedEnvPushQueue } from "./saved-env-triggers.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
 import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
 import { handleCallback } from "./callbacks.js";
@@ -265,6 +266,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       try { outcome.redirects = await sweepRedirects(dependencies, process.env, redirectSweepBudgetMs(Date.now() - startedAt)); }
       catch (error) { console.log(JSON.stringify({ component: "broker", event: "redirect.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.redirects = "failed"; }
       outcome.asks = await runAskMaintenance(dependencies, Date.now());
+      // Saved project images: the periodic poll (a few due projects a pass; off, nothing is read).
+      outcome.savedEnv = await runSavedEnvPoll(dependencies);
       return json(outcome, "session-sweep");
     }
     // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
@@ -318,6 +321,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     }
     // Test environment (wire-testenv): the scheduler's nightly fire for a project. Answers "off" and reads nothing where the switch is off; no run can be started yet, so it never charges a budget or claims a slot.
     if (isTestEnvNightlyEvent(event)) {
+      // Saved project images: the project's images are checked before its night is started, and the deleted projects' registries are swept (never holds the night up).
+      await savedEnvBeforeNightly(dependencies, event);
       return json(await fireTestEnvNightly({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, event, nightlyRunsOf(dependencies, tasks, agents)), "test-env-nightly");
     }
     // Team record (wire-team-record): the scheduler's hourly and nightly jobs, and a Slack event the ingress verified and forwarded. Both answer "off" and do nothing where the record's switch is off.
@@ -664,6 +669,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
                 }),
                 // Meta repo lane A: a push to a project's meta repository queues its config file as a pending change.
                 queueMetaConfigImport: metaConfigQueueFor(dependencies),
+                // Saved project images: a push to a project's default branch tells the registry (only while `sv` is on and the registry is installed).
+                ...optional("queueSavedEnvPush", savedEnvPushQueue(dependencies) === undefined ? undefined : (push: { orgId: OrgId; project: string }) => savedEnvPushQueue(dependencies)!(push)),
               }, trigger),
             }),
             // Plan 2, Task 14: an approved request to a GitHub admin arrives as `installation.created` naming the requester.

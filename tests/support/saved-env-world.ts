@@ -26,8 +26,8 @@ export interface WorldOptions {
 
 export function savedEnvWorld(over: WorldOptions = {}) {
   const ids = over.ids ?? { orgId: "org-1", projectId: "proj-1" };
-  const store = memorySavedEnvStore();
   const clock = { now: over.now ?? T0 };
+  const store = memorySavedEnvStore(() => clock.now);
   const config: SavedEnvSessionConfig = { enabled: over.enabled ?? true, env: "test", scope: { partition: "aws", region: "us-west-2", account: "111122223333" }, kmsKeyArn: KMS };
   const assumed: Array<{ roleArn: string; policy: string }> = [];
   const state = { approved: "approved" in over ? over.approved : APPROVED, key: "key" in over ? over.key : KEY, heads: "heads" in over ? over.heads : new Map([["svc", COMMIT]]) as Map<string, string> | undefined };
