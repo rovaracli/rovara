@@ -28,7 +28,7 @@ function Citations({ label, lines }: { label: string; lines: readonly CitationLi
 function Finding({ finding }: { finding: FindingLine }) {
  const resolution = finding.resolution;
  return <li className="rv-design-finding" data-severity={finding.severity}>
-  <p><strong>{finding.severityWords}</strong>{finding.raisedAgain ? " (raised again)" : ""}{finding.addedByRovara ? " (added by Rovara, no model)" : ""}: <VisibleText text={finding.text} /></p>
+  <p><strong>{finding.severityWords}</strong>{finding.raisedAgain ? " (raised again)" : ""}{finding.addedByRovara ? " (added by Rovara, no model)" : ""}{finding.sourceOnly === undefined ? "" : ` (${finding.sourceOnly})`}: <VisibleText text={finding.text} /></p>
   {finding.reviewers.length > 0 && <p className="rv-muted">Raised by <VisibleText text={finding.reviewers.join(", ")} /></p>}
   <Citations label="Cited" lines={finding.citations} />
   {finding.raw.length > 1 && <details><summary>The reviewers' own words ({finding.raw.length})</summary><ul>{finding.raw.map((entry, index) => <li key={index}><VisibleText text={entry.role + " (" + entry.severity + "): " + entry.text} /></li>)}</ul></details>}

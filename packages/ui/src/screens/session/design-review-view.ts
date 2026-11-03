@@ -3,7 +3,7 @@
 // control character shows as [U+XXXX]; markdown, HTML and links in it stay literal. The only link on the tab is `codeLink`, built from the encoded `codeCitationLinkPath` and a base the broker's own
 // record of the task's repositories gave (never from model text).
 import {
-  CODE_CITATION_UNCHECKED, DESIGN_SECTIONS, FILES_READ_LABEL, codeCitationInPacket, codeCitationLinkPath, designFindingRaisedBefore, designReasonPhrase, designReviewDisagreements, inputProofSentence, resolutionOf,
+  CODE_CITATION_UNCHECKED, DESIGN_SECTIONS, DESIGN_SOURCE_ONLY_LABEL, designFindingIsSourceOnly, FILES_READ_LABEL, codeCitationInPacket, codeCitationLinkPath, designFindingRaisedBefore, designReasonPhrase, designReviewDisagreements, inputProofSentence, resolutionOf,
   type CitablePacketItem, type DesignCitation, type DesignDisagreementKind, type DesignFinding, type DesignQuestion, type DesignReason, type DesignReviewRound, type DesignReviewTier, type DesignReviewView,
   type FindingResolution, type ReviewerRole, type ReviewerRun,
   DesignActionsViewSchema, WorkflowDesignReviewSchema, type DesignActionsView,
@@ -93,6 +93,8 @@ export function reviewerLine(run: ReviewerRun): ReviewerLine {
 export interface ResolutionLine { action: FindingResolution["action"]; words: string; note: string; evidence: CitationLine[]; settled: boolean; question?: string | undefined }
 export interface FindingLine {
   id: string; severity: DesignFinding["severity"]; severityWords: string; section: string; text: string; citations: CitationLine[]; reviewers: string[]; addedByRovara: boolean; raisedAgain: boolean;
+  /** "source-only" when the finding cites source items alone and neither the design nor the code (3.12 item 5); it is labelled and still counts as open. */
+  sourceOnly: string | undefined;
   /** The reviewers' own words behind a merged finding, when the merge step grouped several. */
   raw: Array<{ role: string; severity: string; text: string }>;
   resolution?: ResolutionLine | undefined;
@@ -116,7 +118,7 @@ function findingLine(review: DesignReviewView, round: DesignReviewRound, finding
   return {
     id: finding.id, severity: finding.severity, severityWords: SEVERITY_WORDS[finding.severity], section: finding.section, text: finding.text,
     citations: finding.citations.map((citation) => citationLine(citation, own, codeLinkBase)),
-    reviewers: finding.fromReviewers.map((role) => ROLE_WORDS[role]), addedByRovara: finding.origin === "rovara",
+    reviewers: finding.fromReviewers.map((role) => ROLE_WORDS[role]), addedByRovara: finding.origin === "rovara", sourceOnly: designFindingIsSourceOnly(finding) ? DESIGN_SOURCE_ONLY_LABEL : undefined,
     raisedAgain: designFindingRaisedBefore(review, round.round, finding) !== undefined,
     raw: (finding.rawFindings ?? []).map((entry) => ({ role: ROLE_WORDS[entry.role], severity: SEVERITY_WORDS[entry.severity], text: entry.text })),
     resolution: resolution === undefined ? undefined : {

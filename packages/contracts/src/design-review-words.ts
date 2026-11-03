@@ -66,3 +66,13 @@ export const DesignActionsViewSchema = z.object({
   hint: z.boolean().optional(),
 }).strict();
 export type DesignActionsView = z.infer<typeof DesignActionsViewSchema>;
+
+/**
+ * A finding whose every citation is a source item (a tracker issue, an MCP item) and that cites neither the design nor the code (3.12 item 5). It is still counted as open; the card and the Design tab only LABEL it
+ * "source-only", so the person knows it rests on outside text alone. The same test as `findingRestsOnSourceAlone` (design-review-block.ts), here so the browser reads it too; a finding with no citation at all is not source-only.
+ */
+export const designFindingIsSourceOnly = (finding: { citations: readonly { kind: string }[] }): boolean =>
+  finding.citations.length > 0 && finding.citations.every((citation) => citation.kind === "source");
+
+/** The label a source-only blocker carries. */
+export const DESIGN_SOURCE_ONLY_LABEL = "source-only";

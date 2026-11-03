@@ -71,9 +71,8 @@ it("a person's reason is cleaned to one plain line before it is sent: control an
   expect(cleanApproveReason(`${BIDI}${ZERO_WIDTH}${CONTROLS}  `)).toBeUndefined();
 });
 
-// GAP FOUND BY DR13: 3.12 item 5 says a blocker that rests on a source alone "is shown as 'source-only'". `findingRestsOnSourceAlone` (contracts) is not called anywhere, so the Design tab shows it like any other blocker.
-// Marked `fails` so the suite is green until the label is built; when it is, remove `.fails`. The broker's card has the same gap (tests/unit/design-review-poisoning.test.ts).
-it.fails("GAP: the Design tab labels a blocker that cites only a source as source-only", () => {
+// 3.12 item 5: a blocker that cites only a source is labelled "source-only" (it still counts as open). DR13 found this unbuilt; DR7 slice C built the label.
+it("the Design tab labels a blocker that cites only a source as source-only", () => {
   const base = designReviewFixture();
   const round = base.rounds[0]!;
   const rawFindings = [{ rawId: "critic-1", role: "critic" as const, severity: "blocker" as const, text: "The ticket says refunds are in scope." }];

@@ -642,9 +642,8 @@ describe("3.12 item 5: a blocker that rests on a source alone is labelled, and i
     expect(findingRestsOnSourceAlone(withDesign)).toBe(false);
   });
 
-  // GAP FOUND BY DR13 (report): findingRestsOnSourceAlone exists in contracts but nothing calls it. 3.12 item 5 says a source-only blocker "is shown as 'source-only'"; the approve card's Open blockers
-  // group and the Design tab show it like any other blocker. These two are the red tests for that, marked `fails` so the suite stays green until the label is built; when it is, remove `.fails`.
-  it.fails("GAP: the approve_design card's Open blockers line labels a source-only blocker as source-only", () => {
+  // 3.12 item 5: the label. DR13 found it unbuilt (its test was `it.fails`); DR7 slice C built it.
+  it("the approve_design card's Open blockers line labels a source-only blocker as source-only", () => {
     const item = itemFor(reviewWith([sourceOnly, withDesign]));
     const lines = detailsOfItem(item, cardOfItem(item)!.card).find((group) => group.title === "Open blockers")!.lines;
     expect(lines.find((line) => line.includes("refunds are in scope"))).toMatch(/source[- ]only/iu);

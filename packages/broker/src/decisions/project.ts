@@ -8,7 +8,7 @@
 //   - a Full-path requirements and design pair is ONE card with two tabs that still records two approvals (owner Q1).
 // Anything an item says in words (a title, a question, a path) is flattened to plain text and cut; fixed words come from this file.
 import {
-  DECISION_REJECT_REASONS, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
+  DECISION_REJECT_REASONS, DESIGN_SOURCE_ONLY_LABEL, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
   type CardAction, type DecisionCard, type DecisionKind, type DecisionDetailGroup, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip,
 } from "@agentx/contracts";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks, type TierInputs, type TierResult } from "./risk-tier.js";
@@ -391,7 +391,7 @@ export function detailsOfItem(item: DecisionItem, card: DecisionCard, tab?: Deci
   if (item.kind === "merge") groups.push({ title: "Why the pull request has this risk", lines: listed(item.prReasons) });
   // The design review's findings the approver must weigh (DR9): blockers that are still open (approving needs a reason) and the places the planner and a reviewer disagree.
   if (item.kind === "approve_design" && item.review !== undefined) {
-    if (item.review.blockers.length > 0) groups.push({ title: "Open blockers", lines: listed(item.review.blockers.map((finding) => `${finding.section}: ${finding.text}`)) });
+    if (item.review.blockers.length > 0) groups.push({ title: "Open blockers", lines: listed(item.review.blockers.map((finding) => `${finding.section}: ${finding.sourceOnly === true ? `(${DESIGN_SOURCE_ONLY_LABEL}) ` : ""}${finding.text}`)) });
     if (item.review.disagreements.length > 0) groups.push({ title: "Disagreements", lines: listed(item.review.disagreements.map((finding) => `${finding.section}: ${finding.text}`)) });
   }
   for (const group of item.details ?? []) groups.push({ title: plainLine(group.title, 60), lines: listed(group.lines) });
