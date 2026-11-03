@@ -51,6 +51,7 @@ import { specEndEnvironmentOf } from "./spec-wiring.js";
 import { MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES, type AwsBrokerDependencies, type PullRequestRecord } from "./definitions.js";
 import { knowledgeCommitToStore, taskPreparedUpdate } from "../../meta-repo/prepare-meta.js";
 import { withDesignReviewMode } from "../../design-review/understand-mode.js";
+import { designResolveOutcome, designResolveRunning } from "../../design-review/resolve-run.js";
 import { requireRecordProject } from "./dependency-wiring.js";
 import { keepEvidenceAfterChecks } from "./evidence-wiring.js";
 import { readUnderstandingArtifact, runWorkflowDispatch } from "./dispatch.js";
@@ -633,6 +634,8 @@ export async function completedWorkflowItems(
   // Plan self-check: the answer was not shown (unreadable once, or its own checks found a problem); the planner is asked again by itself, once per document version.
   let planSelfCheck: PlanSelfCheckState | undefined;
   let planRevision: { prompt: string } | undefined;
+  /** Design review: the Delete items that release a recorded round's packets, committed with the round (empty with design review off). */
+  const designRelease: unknown[] = [];
   // T7c: the plan is held back for its check on the current app: the task keeps it (and a dispatch row for the check) instead of submitting it.
   let planHold: PlanGroundingHold | undefined;
   // A stored plan that cites code: the job that reads that code later, committed with the plan.
@@ -1112,7 +1115,7 @@ export async function completedWorkflowItems(
           ? answerWorkflowIntent(current, { expectedRevision: current.revision, assessment: assessed, artifact: understood.artifact, now })
           : recordIntentAssessment(current, { expectedRevision: current.revision, assessment: assessed, now });
         // Design review (switch `dr`, off: nothing here changes): a ready task may get its design reviewed; the mode is resolved from the effective setting and FULL is forced when it is on.
-        if (assessed.kind === "ready") next = await withDesignReviewMode(dependencies, { orgId: requireOrgId(task.orgId), project: task.project, workflow: next, assessment: assessed, now });
+        if (assessed.kind === "ready" && task.orgId !== undefined) next = await withDesignReviewMode(dependencies, { orgId: task.orgId, project: task.project, workflow: next, assessment: assessed, now });
         if (next.outcome === "ANSWERED") {
           answeredItems = [...answeredMilestoneItems({ tableName: dependencies.tableName }, { taskId: task.taskId, orgId: requireOrgId(task.orgId), ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }) }, next, now),
             finishedReleaseMarkItem(dependencies.tableName, task.taskId, now)];
@@ -1148,9 +1151,12 @@ export async function completedWorkflowItems(
   } else if (operation.workflowMode === "PLAN_CRITIQUE") {
     // Plan 6 Task 8: a plan check's result counts only while the task waits for exactly that check; a late one changes nothing.
     if (task.workflow.stage !== "PLAN_CRITIQUE") return [];
-    next = await planCritiqueOutcome(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, operation, terminalStatus, terminalError, now);
+    next = await planCritiqueOutcome(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, operation, terminalStatus, terminalError, now, designRelease);
   } else if (task.workflow.stage !== "PLAN") {
     return [];
+  } else if (designResolveRunning(task.workflow)) {
+    // Design review (switch `dr`, off: no task has one): the planner's answer to the reviewers' findings. It never reaches the plan's storage or `skipPlanRevision`, which refuse a design.
+    next = await designResolveOutcome(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, operation, terminalStatus, terminalError, now);
   } else if (terminalStatus === "SUCCEEDED") {
     const artifacts = (await queryAllItems(dependencies, `WORKSPACE#${operation.workspaceId}`, "ARTIFACT#"))
       .filter((item) => item.operationId === operation.id && item.name === "plan.md")
@@ -1293,7 +1299,7 @@ export async function completedWorkflowItems(
       }),
       ...(e2eCancelAdmission === undefined ? {} : { ":e2eRequired": true, ":e2eRoundId": e2eCancelAdmission.roundId,
         ":e2eCandidateDigest": e2eCancelAdmission.candidateDigest }) },
-  } }, ...dispatch, ...understandWatchdog, ...questionsMilestone, ...answeredItems, ...fixExitItems, ...liveSteerChangeItems(dependencies.tableName, task.taskId, next, terminalError, now),
+  } }, ...dispatch, ...(designRelease as typeof dispatch), ...understandWatchdog, ...questionsMilestone, ...answeredItems, ...fixExitItems, ...liveSteerChangeItems(dependencies.tableName, task.taskId, next, terminalError, now),
   ...(evidenceJob === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: planEvidenceJobItem({ taskId: task.taskId, ...evidenceJob, now: Date.parse(now) }), ConditionExpression: "attribute_not_exists(pk)" } }]),
   ...(recordedReplies === undefined ? [] : [{ Put: recordedReplies }])];
 }

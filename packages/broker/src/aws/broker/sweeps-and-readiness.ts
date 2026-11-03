@@ -284,7 +284,7 @@ async function endUnstartedBranchSync(dependencies: AwsBrokerDependencies, item:
  * Plan 6 Task 8: the plan check can't be started (its start was given up, or no model Rovara could recommend is usable): its dispatch row goes and the plan goes to the person at PLAN_REVIEW, shown
  * as not checked. One transaction, conditional on the row and on the task still waiting for exactly this check; a task that moved on, or a row someone else took, is left alone.
  */
-export async function closeUncheckedPlanCheck(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
+export async function closeUncheckedPlanCheck(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord, reason?: "no_model_source"): Promise<void> {
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
   const workflow = task?.workflow;
   const deleteRow = { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } };
@@ -293,7 +293,7 @@ export async function closeUncheckedPlanCheck(dependencies: AwsBrokerDependencie
     return;
   }
   const now = new Date().toISOString();
-  const next = closeUnstartedCheck(workflow, now);
+  const next = closeUnstartedCheck(workflow, now, reason);
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow, { Update: {
       TableName: dependencies.tableName, Key: taskKey(item.taskId),

@@ -3066,6 +3066,22 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "1: decision cards are on (the card routes and the Slack card press); 0: no card route exists and a Slack card press is answered as gone (agentx config set decisionCards.enabled 1)",
       "Type": "String",
     },
+    "DesignReviewEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: fresh-context reviewers check the design of a Full task before a person approves it, but only for the projects named in DesignReviewProjects (with that empty, no project); 0: no task has a design review (agentx config set designReview.enabled 1)",
+      "Type": "String",
+    },
+    "DesignReviewProjects": {
+      "AllowedPattern": "^$|^[a-z][a-z0-9-]{0,62}(:[a-z][a-z0-9-]{0,62})*$",
+      "Default": "",
+      "Description": "The projects the design review runs for when DesignReviewEnabled is 1: project names joined by a colon (payments:web), 64 characters at most; empty runs it for none (agentx config set designReview.projects payments)",
+      "MaxLength": 64,
+      "Type": "String",
+    },
     "DeveloperOidcClientId": {
       "Default": "",
       "Description": "Client ID of the company OIDC app for developer sign-in",
@@ -3842,6 +3858,14 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",dk=",
                   {
                     "Ref": "DecisionCardsEnabled",
+                  },
+                  ",dp=",
+                  {
+                    "Ref": "DesignReviewProjects",
+                  },
+                  ",dr=",
+                  {
+                    "Ref": "DesignReviewEnabled",
                   },
                   ",ev=",
                   {

@@ -4,6 +4,9 @@ import {
   DESIGN_REVIEW_ROUNDS_MAX, DesignReviewBindingSchema, WorkflowSnapshotSchema, agentXError, closePlanCritique, createWorkflowSnapshot, decideWorkflow, enableDesignReview, startDesignReview, submitDesignReview, submitWorkflowArtifact,
   type ModelSelection, type OrgId, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
+import { designAnswersCommitItems, designAnswersHandler } from "../../packages/broker/src/design-review/answers.js";
+import { DESIGN_REVIEW_DEFAULT_SETTING } from "@agentx/contracts";
+import { markEffective } from "../../packages/broker/src/design-review/effective-setting.js";
 import { designReviewCapability } from "../../packages/broker/src/design-review/capability.js";
 import { closeEndedCheck, closeUnstartedCheck, resumeBlockedCheck } from "../../packages/broker/src/design-review/check-ends.js";
 import { designReviewEnabled } from "../../packages/broker/src/design-review/switch.js";
@@ -119,7 +122,9 @@ describe("the plan check's other ends, for a plan check and for a design review"
   it("a design review that cannot start is not run for want of a model, and the plan check's move (which refuses it) is not made", () => {
     const review = designSubmitted();
     expect(() => closePlanCritique(review, { expectedRevision: review.revision, status: "done", now: LATER })).toThrow();
-    expect(closeUnstartedCheck(review, LATER)).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "not_run", notRunReason: "no_model_source" } });
+    // B-m6: a start given up says so (it did not run); only a caller that knows no model can serve it says "no model source".
+    expect(closeUnstartedCheck(review, LATER)).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "not_run", notRunReason: "worker_failed" } });
+    expect(closeUnstartedCheck(review, LATER, "no_model_source")).toMatchObject({ designReview: { status: "not_run", notRunReason: "no_model_source" } });
   });
 
   it("a design review whose run was lost or stopped is not run, charges each key it asked for its whole budget, and the stored packets go", async () => {
@@ -177,6 +182,53 @@ describe("the planner's answer to a round's findings", () => {
     const next = applyPlannerResolve({ workflow: planning(), answer: block({ resolutions: [{ findingId: "1", action: "asked", note: "A team rule.", questionId: "q1" }, fixed("2")], questions }), pins, now: LATER });
     expect(next).toMatchObject({ stage: "PLAN", state: "WAITING", designReview: { status: "waiting_answers" } });
     expect(next.designReview!.rounds[0]!.resolutions).toEqual([]);
+  });
+
+  describe("the question card's answer handler", () => {
+    const questions = [{ id: "q1", unclear: "Which limit?", evidence: [{ kind: "design", section: "§3" }], options: [{ id: "a", label: "Three", consequence: "Most clear." }, { id: "b", label: "Five", consequence: "Slower." }], recommended: "a", why: "Fewer." }];
+    const waiting = (): WorkflowSnapshot => applyPlannerResolve({ workflow: planning(), answer: block({ resolutions: [{ findingId: "1", action: "asked", note: "A team rule.", questionId: "q1" }, fixed("2")], questions }), pins: { demo: "e".repeat(40) }, now: LATER });
+    const P = { priya: "b".repeat(64), arjun: "c".repeat(64), max: "e".repeat(64), own: "f".repeat(64), stranger: "d".repeat(64) } as const;
+    const people = { complete: true, membershipVersion: 1, ownerIds: [P.own], eligibleIds: [P.own, P.max], lastEligibleLossAtMs: null } as never;
+    const rig = (over: { workflow?: WorkflowSnapshot; notApproverIds?: string[]; members?: string[] } = {}) => {
+      const commits: unknown[] = [];
+      const handler = designAnswersHandler({
+        context: async () => ({ taskId: TASK_ID, requesterId: P.priya, workflow: over.workflow ?? waiting(), setting: markEffective(DESIGN_REVIEW_DEFAULT_SETTING), edition: undefined,
+          directory: { people, projectMemberIds: over.members ?? [P.own, P.max, P.priya, P.arjun], notApproverIds: over.notApproverIds ?? [] } }),
+        commit: async (_caller, write) => { commits.push(write); return "done"; }, now: () => Date.parse(LATER),
+      });
+      return { handler, commits };
+    };
+    const ask = (handler: ReturnType<typeof rig>["handler"], who: string, answers: unknown[] = [{ questionId: "q1", optionId: "a" }]) => handler({ developerId: who }, { taskId: TASK_ID, requestId: "r-1", answers });
+
+    it("lets the requester answer, and commits the answers for the planner to run again; nobody else, no Auditor and no outsider can", async () => {
+      const ok = rig();
+      await expect(ask(ok.handler, P.priya)).resolves.toEqual({ kind: "done" });
+      expect(ok.commits).toHaveLength(1);
+      for (const who of [P.arjun, P.max, P.stranger]) {
+        const other = rig();
+        await expect(ask(other.handler, who), who).rejects.toThrow();
+        expect(other.commits, who).toEqual([]);
+      }
+      const auditor = rig({ notApproverIds: [P.priya] });
+      await expect(ask(auditor.handler, P.priya)).rejects.toThrow();
+    });
+
+    it("is gone, not refused, for a task that is not waiting for answers; and a bad answer is the request's fault, committed to nothing", async () => {
+      const notWaiting = rig({ workflow: planning() });
+      await expect(ask(notWaiting.handler, P.priya)).rejects.toThrow("no longer waiting");
+      const bad = rig();
+      await expect(ask(bad.handler, P.priya, [{ questionId: "q1", optionId: "zzz" }])).rejects.toThrow();
+      await expect(ask(bad.handler, P.priya, [])).rejects.toThrow();
+      expect(bad.commits).toEqual([]);
+    });
+
+    it("builds the answer and the planner's next run as one transaction: the contract move and a CRITIC_REPLAN row at the NEW revision", () => {
+      const before = waiting();
+      const commit = designAnswersCommitItems({ tableName: "state", taskId: TASK_ID, workflow: before, answers: [{ questionId: "q1", optionId: "a" }], actorId: P.priya, now: NOW });
+      expect(commit.workflow).toMatchObject({ stage: "PLAN", state: "READY", designReview: { status: "resolving" } });
+      expect(commit.items).toHaveLength(2);
+      expect(commit.items[1]).toMatchObject({ Put: { Item: { kind: "CRITIC_REPLAN", workflowRevision: commit.workflow.revision, taskId: TASK_ID } } });
+    });
   });
 
   it("checks a contest's evidence against what the round's reviewers were given: a source that was in the packet counts, one that was not is dropped and a contest left with only sources is refused (the design goes as reviewed)", () => {
@@ -260,7 +312,7 @@ describe("the preparation of a round", () => {
     expect(p.spies.mcp.mock.calls).toHaveLength(1);
     expect(p.db.find((item) => item.entityType === "DESIGN_REVIEW_ALLOCATION")).toHaveLength(1);
     expect(p.db.find((item) => item.entityType === "DESIGN_REVIEW_PACKET" && String(item.sk).endsWith("#HEAD")).map((item) => item.keySlot).sort()).toEqual(["r1-codebase", "r1-comprehension", "r1-critic"]);
-    expect(prepared.estimateUsd).toBeGreaterThan(0);
+    expect(prepared.estimateUsd!).toBeGreaterThan(0);
     expect(slotOf(2, "zoom_out")).toBe("r2-zoom_out");
   });
 
@@ -289,13 +341,44 @@ describe("the preparation of a round", () => {
     for (const p of [over, unpriced]) expect(p.db.find(() => true)).toEqual([]);
   });
 
+  it("B-m7: an estimate over the cap on the size of the design and the requirements alone holds BEFORE any source is read, so a hold wastes no read and logs no fetch under an operation that never exists", async () => {
+    const p = ports();
+    expect(await stopOf(prepareDesignReviewRound(inputs(p.value, { capUsd: 0.5, design: `${DESIGN_WITH_SOURCES}\n${"x".repeat(200_000)}\n` }), resolved))).toMatchObject({ kind: "hold" });
+    expect(p.sourceReaders).not.toHaveBeenCalled();
+    expect(p.spies.repo).not.toHaveBeenCalled();
+    expect(p.spies.mcp).not.toHaveBeenCalled();
+    // Positive control: with room, the same inputs do read their sources.
+    const ok = ports();
+    await prepareDesignReviewRound(inputs(ok.value), resolved);
+    expect(ok.spies.repo).toHaveBeenCalled();
+  });
+
+  it("B-m2: the task's own run limit is a gate of its own: room for less than a round is not run for the TASK's limit, though the review cap has room, and nothing is stored; enough room runs", async () => {
+    for (const room of [0, 0.0001]) {
+      const p = ports({ taskRoomUsd: async () => room });
+      expect(await stopOf(prepareDesignReviewRound(inputs(p.value), resolved)), String(room)).toEqual({ kind: "not_run", reason: "task_limit" });
+      expect(p.db.find((item) => item.entityType === "DESIGN_REVIEW_PACKET" || item.entityType === "DESIGN_REVIEW_ALLOCATION")).toEqual([]);
+    }
+    await expect(prepareDesignReviewRound(inputs(ports({ taskRoomUsd: async () => 5 }).value), resolved)).resolves.toBeDefined();
+  });
+
+  it("an unpriced run a person approved goes on past \"cost unavailable\"; the same inputs without the approval hold; an estimate over the cap is never lifted by an approval", async () => {
+    const unpriced = () => ports({ price: () => undefined });
+    expect(await stopOf(prepareDesignReviewRound(inputs(unpriced().value), resolved))).toEqual({ kind: "hold", estimateUsd: undefined });
+    const prepared = await prepareDesignReviewRound({ ...inputs(unpriced().value), costApprovedBy: "person-1" }, resolved);
+    expect(prepared.estimateUsd).toBeUndefined();
+    expect(prepared.binding.reviewers).toHaveLength(3);
+    const over = ports();
+    expect(await stopOf(prepareDesignReviewRound({ ...inputs(over.value, { capUsd: 0.5, design: `${DESIGN_WITH_SOURCES}\n${"x".repeat(200_000)}\n` }), costApprovedBy: "person-1" }, resolved))).toMatchObject({ kind: "hold" });
+  });
+
   it("prices the REAL packet: a bigger packet costs more, and round 2 prices one round, not two", async () => {
     const small = await prepareDesignReviewRound(inputs(ports().value, { design: "# Design\n## 3. Proposed design\nR1.\n" }), resolved);
     const big = await prepareDesignReviewRound(inputs(ports().value, { design: `# Design\n## 3. Proposed design\nR1.\n${"x".repeat(200_000)}\n` }), resolved);
-    expect(big.estimateUsd).toBeGreaterThan(small.estimateUsd);
+    expect(big.estimateUsd!).toBeGreaterThan(small.estimateUsd!);
     // Round 2: the review has one round recorded; the estimate is for the one round still to run.
     const round2 = await prepareDesignReviewRound(inputs(ports().value, { design: "# Design\n## 3. Proposed design\nR1.\n", workflow: roundTwoWorkflow() }), resolved);
-    expect(round2.estimateUsd).toBeLessThan(small.estimateUsd);
+    expect(round2.estimateUsd!).toBeLessThan(small.estimateUsd!);
     expect(round2.binding.round).toBe(2);
     expect(round2.binding.reviewers.map((entry) => entry.keySlot)).toEqual(["r2-comprehension", "r2-critic", "r2-codebase"]);
     expect(DESIGN_REVIEW_ROUNDS_MAX).toBe(2);
@@ -311,9 +394,9 @@ describe("the preparation of a round", () => {
     return resolved2;
   }
 
-  it("the budgets are held under what the task has left: a task with no room for the round stops the review at the cap, and nothing is stored", async () => {
+  it("the budgets are held under what the task has left: a task with no room for the round is not run for the TASK's limit (not the review cap), and nothing is stored", async () => {
     const p = ports({ taskRoomUsd: async () => 0 });
-    expect(await stopOf(prepareDesignReviewRound(inputs(p.value), resolved))).toEqual({ kind: "at_cap" });
+    expect(await stopOf(prepareDesignReviewRound(inputs(p.value), resolved))).toEqual({ kind: "not_run", reason: "task_limit" });
     expect(p.db.find((item) => item.entityType === "DESIGN_REVIEW_PACKET")).toEqual([]);
   });
 

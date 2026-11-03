@@ -23,6 +23,7 @@ import {
 } from "@agentx/contracts";
 import { PLAN_REVISION_REQUEST, planCriticBlock, planCritiquePrompt } from "../../rovara-code/critic.js";
 import { startDesignReviewRound } from "../../design-review/round-start.js";
+import { designResolveDue, startDesignResolveRun } from "../../design-review/resolve-run.js";
 import { personOwnerOf } from "../../developer/system-owner.js";
 import { aiToolTurn, developerTaskIdentity, effectiveTaskOwner, partyOfTask, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, isConditional, workflowDispatchItem } from "../broker-shared.js";
@@ -178,16 +179,17 @@ const PLAN_CHECK_REQUEST_MAX_CHARS = 4_000;
 export async function startTaskWorkflowPlanCritiqueFromSystem(
   deps: DeveloperTaskRouteDependencies,
   taskId: string,
-  expected: { workflowRevision: number },
+  /** `costApprovedBy`: a design review at its cost hold, whose unpriced run a person approved (the dispatch row carries it). */
+  expected: { workflowRevision: number; costApprovedBy?: string },
   actor?: DeveloperCaller,
 ): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   const workflow = task?.workflow;
   const step = workflow?.program?.steps.find((candidate) => candidate.kind === "plan_critic");
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || step === undefined
-    || workflow.revision !== expected.workflowRevision || workflow.stage !== "PLAN_CRITIQUE" || workflow.state !== "READY") return "STALE";
+    || workflow.revision !== expected.workflowRevision || workflow.stage !== "PLAN_CRITIQUE" || (workflow.state !== "READY" && !(expected.costApprovedBy !== undefined && workflowIsDesignReviewing(workflow) && workflow.state === "WAITING"))) return "STALE";
   // Design review (switch `dr`, off: no task has a `designReview`, so this never runs): the design form of this stage is started by its own module.
-  if (workflowIsDesignReviewing(workflow)) return startDesignReviewRound(deps, { task, workflow, stepId: step.id, conversationId: planCheckConversationId, ...(actor === undefined ? {} : { actor }) });
+  if (workflowIsDesignReviewing(workflow)) return startDesignReviewRound(deps, { task, workflow, stepId: step.id, conversationId: planCheckConversationId, ...(actor === undefined ? {} : { actor }), ...(expected.costApprovedBy === undefined ? {} : { costApprovedBy: expected.costApprovedBy }) });
   await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
@@ -239,6 +241,8 @@ export async function startTaskWorkflowCriticRevisionFromSystem(
 ): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   const workflow = task?.workflow;
+  // Design review (switch `dr`, off: no task has a `designReview`): the planner's resolve run answers the reviewers' findings; the plan check's revision below is for a plan.
+  if (task !== undefined && task.closedAt === undefined && workflow !== undefined && workflow.revision === expected.workflowRevision && designResolveDue(workflow)) return startDesignResolveRun(deps, { task, workflow, ...(actor === undefined ? {} : { actor }) });
   const points = workflow?.critique?.critiques.at(-1)?.points;
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || points === undefined || !points.some((point) => point.severity === "blocking")
     || workflow.revision !== expected.workflowRevision || workflow.stage !== "PLAN" || workflow.state !== "READY") return "STALE";

@@ -28,6 +28,8 @@ export const NOT_RUN_WORDS: Readonly<Record<NonNullable<DesignReviewView["notRun
   inputs_unverified: "Design review did not count: Rovara could not verify what the reviewers were given.",
   rearm_limit: "Design review did not run again: the design was sent back more often than the limit allows. Raise the cost limit or pick a lower tier to review it again.",
   skipped: "Design review was skipped by a person.",
+  cancelled: "Design review did not finish: the run was stopped.",
+  task_limit: "Design review did not run: the task's own run limit has too little room left for it. This is the task's limit, not the design review cost limit.",
 };
 const VERIFY_FAILURE_WORDS: Readonly<Record<NonNullable<ReviewerRun["verifyFailure"]>, string>> = {
   packet_digest_mismatch: "what the reviewer read did not match the packet Rovara built",

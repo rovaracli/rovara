@@ -65,6 +65,7 @@ import { SETUP_DRAFT_PREAMBLE } from "../../rovara-code/setup-draft.js";
 import { setupAgentWireOf } from "../../rovara-code/setup-agent.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { designReviewCapability } from "../../design-review/capability.js";
+import { designTemplateInstructions } from "../../design-review/template.js";
 import type { DesignReviewDispatch } from "../../design-review/round-ports.js";
 import { recordedOffersOf, setupRecipeOffersFor } from "../../org/setup-recipe-dispatch.js";
 import { testEnvPlanFor } from "../../test-env/task-plan.js";
@@ -367,7 +368,8 @@ export async function taskOperationParts(
   // uses a person's ChatGPT plan: the run is the agent's work (it may be started by an event or paid for by a project), not the person's own coding turn.
   let chatgpt = applied?.dropChatgpt === true || input.agentRun !== undefined || input.designReview !== undefined ? undefined : planSelection;
   // Governed personal plans execute the exact verified resolver tuple, never the connection's preferred model.
-  if(applied?.modelDecision?.sourceId==="personal-chatgpt") {
+  // A design review never runs on a person's ChatGPT plan (B-m5): the plan stays undefined, and the round is not run for want of a route with an alias.
+  if(input.designReview===undefined&&applied?.modelDecision?.sourceId==="personal-chatgpt") {
     if((turnPolicy===undefined&&task?.payer?.kind!=="member")||applied.model===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's verified personal model is unavailable.");
     chatgpt={developerId:turnPolicy?.frozen.payerDeveloperId??(task!.payer as {developerId:string}).developerId,model:applied.model};
   }
@@ -482,7 +484,9 @@ export async function taskOperationParts(
   // The prompt below carries the plan quality guidance; delivery clears this for a worker that cannot read the members it names (see createPlanQualityNegotiationRecorder).
   if (input.workflowMode === "PLAN" && codingPlan) operation.planQualityAsked = true;
   const requiredParts = codingPlan && input.workflowMode === "PLAN" && input.legacyTask !== true && await codingPlanRequiresParts(dependencies, workspace.id);
-  const documentInstructions = planDocumentInstructions({ kind: planKind, path: input.workflowPhase === undefined ? "QUICK" : "FULL", anchors: true, planQuality: true,
+  // Design review (off: no task has a `designReview`, so this is false): the DESIGN phase writes the fixed Rovara template (design-review/template.ts), as Markdown, not as structured claims.
+  const designTemplate = input.workflowMode === "PLAN" && input.workflowPhase === "DESIGN" && task?.workflow?.designReview !== undefined;
+  const documentInstructions = designTemplate ? designTemplateInstructions({ resolving: input.planRevision === true }) : planDocumentInstructions({ kind: planKind, path: input.workflowPhase === undefined ? "QUICK" : "FULL", anchors: true, planQuality: true,
     // Rovara Code version 2 only: a plan may say that no code change is needed (version 1's prompt, and so its recorded behaviour, is unchanged).
     ...(task?.workflow?.definitionVersion === "1.1.0" ? { noChangeOption: true } : {}),
     ...(requiredParts ? { requiredParts: true } : {}),
@@ -582,7 +586,7 @@ export async function taskOperationParts(
       // The worker reads a planning answer as this kind of document (a Quick plan has no phase and is a coding plan).
       ...(input.workflowMode === "PLAN" && input.workflowPhase !== undefined ? { workflowPhase: input.workflowPhase } : {}),
       // Every planning step asks for a structured plan, so the worker checks the answer and asks once more when it is unreadable.
-      ...(input.workflowMode === "PLAN" ? { planFormat: "structured" as const } : {}),
+      ...(input.workflowMode === "PLAN" && !designTemplate ? { planFormat: "structured" as const } : {}),
       // The prompt asks for the v2 application intent exactly when the context offers executable kinds; the worker is asked to parse it only then.
       ...(input.workflowMode === "PLAN" && offersApplicationE2EPlan(e2ePlanningContext) ? { workflowE2EPlanVersion: 2 as const } : {}),
       ...(input.workflowFeedbackReview === undefined ? {} : { workflowFeedbackReview: input.workflowFeedbackReview }),

@@ -405,6 +405,8 @@ export interface WorkflowDispatchRecord {
   indexExpiresAt: number;
   /** AUTOFIX only (DISPATCHEXHAUST): how the block this row is for came about when no finished run wrote it. Rows from before carry none. */
   autofixCause?: string;
+  /** CRITIQUE of a design review only: who approved an unpriced run at the cost hold (`design-review/spend-follow.ts`). The row is at the hold's revision, so the approval is bound to the hold the person saw. */
+  costApprovedBy?: string;
   /** AUTOFIX only (DISPATCHEXHAUST): the look must not happen before this time, the delay of the one automatic retry of an infrastructure fault. */
   autofixNotBefore?: string;
 }

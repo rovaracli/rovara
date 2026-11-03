@@ -13,6 +13,19 @@ const HEADING = /^\s{0,3}#{1,6}\s+(.*)$/u;
 // "§3 Proposed design", "3. Proposed design", "3 - Proposed design". A subsection heading ("3.1 Interfaces", "§3.2") is not a new section.
 const SECTION_HEADING = /^(?:§\s*)?([1-8])(?![0-9]|\.[0-9])(?:[\s.:)\-–—]|$)/u;
 
+/** The numbers (1 to 8) of the section headings the design has outside code fences. A subsection heading ("### 3.1 Interfaces") does not count. */
+export function designSectionNumbers(design: string): Set<number> {
+  const found = new Set<number>();
+  let fenced = false;
+  for (const line of design.split(/\r?\n/u)) {
+    if (/^\s{0,3}(```|~~~)/u.test(line)) { fenced = !fenced; continue; }
+    const heading = fenced ? null : HEADING.exec(line);
+    const section = heading === null ? null : SECTION_HEADING.exec(heading[1]!.replace(/^\*+\s*/u, ""));
+    if (section !== null) found.add(Number(section[1]));
+  }
+  return found;
+}
+
 /** The text of the design's §3, from its heading to the next section heading. Undefined when there is no §3. Subsections ("### 3.1 ...") are part of it. */
 export function designSectionThree(design: string): string | undefined {
   const lines = design.split(/\r?\n/u);

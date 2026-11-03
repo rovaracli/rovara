@@ -11,7 +11,7 @@
 // round changes nothing.
 import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, blockWorkflow, closeDesignReview, retryDesignReview,
-  type OperationStatus, type WorkflowSnapshot,
+  WorkflowSnapshotSchema, addDesignUsd, type OperationStatus, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { queryAllItems } from "../aws/admin-reads.js";
 import type { OperationRecord } from "../aws/cancellation.js";
@@ -38,6 +38,8 @@ async function mayTryNextModel(dependencies: AwsBrokerDependencies, task: Develo
 export async function designReviewOutcome(
   dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }, operation: OperationRecord, terminalStatus: OperationStatus, terminalError: string | undefined, now: string,
   ports: RoundRecordPorts = roundRecordPortsOf(dependencies),
+  /** B-M2: collects the Delete items that remove the round's packets, for the commit that records the round. */
+  release?: unknown[],
 ): Promise<WorkflowSnapshot> {
   const workflow = task.workflow;
   const review = workflow.designReview;
@@ -55,15 +57,20 @@ export async function designReviewOutcome(
       const released = await releaseDesignReviewRound(ports, operation);
       return closeDesignReview(workflow, { expectedRevision, outcome: "not_run", notRunReason: "inputs_unverified", addedSpendUsd: released.spentUsd, now });
     }
-    return recordDesignReviewRound(ports, { workflow, operation, design: { text: design.markdown, sha256: designArtifact.sha256 }, requirementsText: requirements?.markdown ?? "", now });
+    return recordDesignReviewRound(ports, { workflow, operation, design: { text: design.markdown, sha256: designArtifact.sha256 }, requirementsText: requirements?.markdown ?? "", ...(release === undefined ? {} : { release }), now });
   }
 
   // The operation ended without a result to read: what its keys cost is added to the review's total either way (a lost run still spent it), and the round is released.
   const { spentUsd } = await releaseDesignReviewRound(ports, operation);
   if (terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE) return closeDesignReview(workflow, { expectedRevision, outcome: "stopped_at_cap", addedSpendUsd: spentUsd, now });
-  if (terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true) return blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified, now);
-  if (terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true) return blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.leftoverProcesses, now);
+  // B-m3: a blocked round keeps what its keys cost (the block would otherwise drop it, and a Retry would have to guess it again).
+  const blockedWith = (reason: string): WorkflowSnapshot => {
+    const blocked = blockWorkflow(workflow, reason, now);
+    return blocked.designReview === undefined ? blocked : WorkflowSnapshotSchema.parse({ ...blocked, designReview: { ...blocked.designReview, spentUsd: addDesignUsd(blocked.designReview.spentUsd, spentUsd) } });
+  };
+  if (terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true) return blockedWith(WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified);
+  if (terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true) return blockedWith(WORKFLOW_BLOCK_REASONS.leftoverProcesses);
   // The account could not use the model: the same round again on the next-ranked one, bounded; with none left the review did not run.
   if (terminalStatus === "FAILED" && criticModelUnusable(terminalError) && await mayTryNextModel(dependencies, task, operation)) return retryDesignReview(workflow, { expectedRevision, addedSpendUsd: spentUsd, now });
-  return closeDesignReview(workflow, { expectedRevision, outcome: "not_run", notRunReason: criticModelUnusable(terminalError) ? "no_model_source" : "worker_failed", addedSpendUsd: spentUsd, now });
+  return closeDesignReview(workflow, { expectedRevision, outcome: "not_run", notRunReason: criticModelUnusable(terminalError) ? "no_model_source" : terminalStatus === "CANCELLED" ? "cancelled" : "worker_failed", addedSpendUsd: spentUsd, now });
 }

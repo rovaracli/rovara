@@ -86,6 +86,7 @@ import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2ERepla
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
 import { installLearningTaskEnd } from "./learning-wiring.js";
+import { designReviewPortsOf } from "../../design-review/wiring.js";
 import { applyTeamRecordRemoval, drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordRemovalEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
 import { installLessons, recordAndLessonRouteDependencies } from "./lessons-wiring.js";
 import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
@@ -176,6 +177,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           }),
           // DG-1 S2: "Apply this change" checks a proposed dev container file against the default branch's head (wiring: the three GitHub reads, one line).
           ...diagnosisDefaultBranchFileRoute(dependencies),
+          // Design review: the round's ports for the owner's Retry (a pure object; nothing is read until a round starts).
+          designReview: designReviewPortsOf(dependencies),
           // Closing an org clears its connections whether or not the agent routes are set up (Task 12b).
           ...(orgConnections === undefined ? {} : { orgConnections }),
           ...repositoriesGateRoute(dependencies),
