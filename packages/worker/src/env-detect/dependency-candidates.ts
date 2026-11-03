@@ -24,7 +24,10 @@ export function kindOfFamily(family: string): TestEnvDependencyKind {
 
 /** An environment variable name that is safe to carry: upper-case, at most 64 characters, and not shaped like a key. */
 export function safeEnvName(name: unknown): string | undefined {
-  return typeof name === "string" && /^[A-Z][A-Z0-9_]{0,63}$/u.test(name) && !looksLikeSecretValue(name) ? name : undefined;
+  if (typeof name !== "string" || !/^[A-Z][A-Z0-9_]{1,63}$/u.test(name) || looksLikeSecretValue(name)) return undefined;
+  // Real variable names have words joined by `_`. A long name without one, mixing letters and digits (or very long), looks like a token pasted as a key.
+  if (!name.includes("_") && ((name.length >= 16 && /[0-9]/u.test(name) && /[A-Z]/u.test(name)) || name.length >= 24)) return undefined;
+  return name;
 }
 
 /** A compose service or similar name as a family-safe slug (lower-case, letters, digits and hyphens), or undefined. */

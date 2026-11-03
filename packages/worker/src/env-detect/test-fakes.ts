@@ -65,13 +65,18 @@ function pythonFakes(path: string, text: string): Hit[] {
     if (family !== undefined) found.push(fake(family, path, text, match.index));
   }
   for (const [pattern, family] of MOCK_LIBRARIES) { const match = pattern.exec(text); if (match !== null) found.push(fake(family, path, text, match.index)); }
-  for (const match of text.matchAll(/\b(?:responses\.add|requests_mock\.[a-z]+|httpx_mock\.add_response)\(\s*(?:responses\.[A-Z]+\s*,\s*)?["']https?:\/\/([A-Za-z0-9.-]+)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
+  for (const match of text.matchAll(/\b(?:responses\.add|requests_mock\.[a-z]+|httpx_mock\.add_response)\(\s*(?:responses\.[A-Z]+\s*,\s*)?["']https?:\/\/([^/\s"'`?#)]*)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
   return found;
 }
 
-function httpFake(host: string, path: string, text: string, index: number): Hit | undefined {
-  const lower = host.toLowerCase();
-  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/u.test(lower) || /^\d+(?:\.\d+)*$/u.test(lower) || lower.length > 200) return undefined;
+/**
+ * An interceptor's host as a family. The text after the scheme is read up to the first `/`, `?`, `#`, quote or space; if it holds an `@` it is user information (a user name, a password, a token), so the whole
+ * match is dropped and nothing of it is kept. Only a plain host name of at least two labels, with an optional port, is accepted.
+ */
+function httpFake(authority: string, path: string, text: string, index: number): Hit | undefined {
+  if (authority.includes("@") || authority.length > 260) return undefined;
+  const lower = authority.replace(/:\d{1,5}$/u, "").toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u.test(lower) || /^\d+(?:\.\d+)*$/u.test(lower) || lower.length > 200) return undefined;
   return fake(`http:${lower}`, path, text, index);
 }
 
@@ -89,8 +94,8 @@ function nodeFakes(path: string, text: string): Hit[] {
     if (family !== undefined) found.push(fake(family, path, text, match.index));
   }
   for (const [pattern, family] of MOCK_LIBRARIES) { const match = pattern.exec(text); if (match !== null) found.push(fake(family, path, text, match.index)); }
-  for (const match of text.matchAll(/\bnock\(\s*["'`]https?:\/\/([A-Za-z0-9.-]+)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
-  for (const match of text.matchAll(/\b(?:http|rest|graphql)\.(?:get|post|put|patch|delete)\(\s*["'`]https?:\/\/([A-Za-z0-9.-]+)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
+  for (const match of text.matchAll(/\bnock\(\s*["'`]https?:\/\/([^/\s"'`?#)]*)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
+  for (const match of text.matchAll(/\b(?:http|rest|graphql)\.(?:get|post|put|patch|delete)\(\s*["'`]https?:\/\/([^/\s"'`?#)]*)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
   return found;
 }
 

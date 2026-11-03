@@ -5,7 +5,7 @@
 // run with `go run` at the version go.mod pins. Coverage is a Go cover profile written by the proposed `-coverprofile` flag; the reader for it is in verification/changed-coverage.ts.
 // No per-test selection is proposed: `go test` takes packages, the selection template (`{tests}`) is filled with test ids that are files, and a file argument makes `go test` build only those files, not the package.
 import { awsClientCandidate, candidate, isOwnedElsewhere, mergeCandidates, normalizeAwsService, scanDrivers, type DriverRule } from "./dependency-candidates.js";
-import { type DependencyCandidate, type Detection, type DetectedSource, type Detector, type DetectorContext, type RepositoryReader, findLine, lineOf } from "./types.js";
+import { type DependencyCandidate, type Detection, type DetectedSource, type Detector, type DetectorContext, type RepositoryReader, findLine } from "./types.js";
 import type { GoModuleRoot } from "../verification/changed-coverage.js";
 
 const TIMEOUT = { test: 1_800, lint: 600, setup: 900 } as const;
@@ -236,10 +236,13 @@ export async function goManifestCandidates(repo: RepositoryReader): Promise<Depe
   for (const path of repo.paths.filter((candidatePath) => /(?:^|\/)go\.mod$/u.test(candidatePath)).slice(0, 20)) {
     const text = await repo.read(path);
     if (text === undefined) continue;
-    for (const match of text.matchAll(/^[ \t]*(?:require[ \t]+)?([A-Za-z0-9._~/-]+\.[A-Za-z0-9._~/-]+)[ \t]+v[0-9][^\s]*/gmu)) {
+    // One line at a time, each cut at 300 characters, with a pattern whose parts cannot overlap: a hostile go.mod costs time in proportion to its size.
+    text.split("\n").slice(0, 5_000).forEach((raw, index) => {
+      const match = /^[ \t]*(?:require[ \t]+)?([A-Za-z0-9._~/-]{3,200})[ \t]+v[0-9]/u.exec(raw.slice(0, 300));
+      if (match === null || !match[1]!.includes(".")) return;
       const family = goModuleFamily(match[1]!);
-      if (family !== undefined) found.push(candidate(family, "mentioned", { path, line: lineOf(text, match.index) }, { seenBy: ["driver"] }));
-    }
+      if (family !== undefined) found.push(candidate(family, "mentioned", { path, line: index + 1 }, { seenBy: ["driver"] }));
+    });
   }
   return mergeCandidates(found);
 }

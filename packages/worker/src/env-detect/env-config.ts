@@ -109,7 +109,7 @@ function readDotenv(path: string, text: string, out: DependencyCandidate[]): voi
   const copyable = COPYABLE_ENV.test(path);
   const lines = text.split("\n").slice(0, MAX_LINES);
   lines.forEach((raw, index) => {
-    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/u.exec(raw);
+    const match = /^[ \t]*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/u.exec(raw);
     if (match === null) return;
     const name = safeEnvName(match[1]);
     if (name === undefined) return;
@@ -141,11 +141,11 @@ function readSettings(path: string, text: string, out: DependencyCandidate[]): v
     [/django\.db\.backends\.mysql/u, "mysql"],
     [/django_redis|django\.core\.cache\.backends\.redis/u, "redis"],
     [/django\.core\.cache\.backends\.(?:memcached|pymemcache)/u, "memcached"],
-    [/^\s*spring\.(?:data\.)?redis\.[a-z.-]+\s*[=:]/mu, "redis"],
-    [/^\s*spring\.rabbitmq\.[a-z.-]+\s*[=:]/mu, "rabbitmq"],
-    [/^\s*spring\.kafka\.[a-z.-]+\s*[=:]/mu, "kafka"],
-    [/^\s*spring\.data\.mongodb\.[a-z.-]+\s*[=:]/mu, "mongodb"],
-    [/^\s*spring\.elasticsearch\.[a-z.-]+\s*[=:]/mu, "elasticsearch"],
+    [/^[ \t]*spring\.(?:data\.)?redis\.[a-z.-]+\s*[=:]/mu, "redis"],
+    [/^[ \t]*spring\.rabbitmq\.[a-z.-]+\s*[=:]/mu, "rabbitmq"],
+    [/^[ \t]*spring\.kafka\.[a-z.-]+\s*[=:]/mu, "kafka"],
+    [/^[ \t]*spring\.data\.mongodb\.[a-z.-]+\s*[=:]/mu, "mongodb"],
+    [/^[ \t]*spring\.elasticsearch\.[a-z.-]+\s*[=:]/mu, "elasticsearch"],
   ];
   for (const [pattern, family] of keyed) {
     const match = pattern.exec(text);
@@ -153,7 +153,7 @@ function readSettings(path: string, text: string, out: DependencyCandidate[]): v
   }
   if (/(?:^|\/)application[^/]*\.ya?ml$/u.test(path)) {
     // Spring settings in YAML are nested: `spring:` then `redis:` / `rabbitmq:` / `kafka:` / `data: mongodb:` below it.
-    for (const [pattern, family] of [[/^\s{2,4}redis:\s*$/mu, "redis"], [/^\s{2,4}rabbitmq:\s*$/mu, "rabbitmq"], [/^\s{2,4}kafka:\s*$/mu, "kafka"], [/^\s{2,6}mongodb:\s*$/mu, "mongodb"], [/^\s{2,4}elasticsearch:\s*$/mu, "elasticsearch"]] as const) {
+    for (const [pattern, family] of [[/^[ \t]{2,4}redis:[ \t]*$/mu, "redis"], [/^[ \t]{2,4}rabbitmq:[ \t]*$/mu, "rabbitmq"], [/^[ \t]{2,4}kafka:[ \t]*$/mu, "kafka"], [/^[ \t]{2,6}mongodb:[ \t]*$/mu, "mongodb"], [/^[ \t]{2,4}elasticsearch:[ \t]*$/mu, "elasticsearch"]] as const) {
       const match = /^spring:/mu.test(text) ? pattern.exec(text) : null;
       if (match !== null) add(out, family, path, lineOf(text, match.index), {});
     }

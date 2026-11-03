@@ -116,6 +116,8 @@ export interface RepositoryReader {
   paths: readonly string[];
   /** True when the path list was cut at the limit: absence of a file from `paths` then proves nothing. */
   truncated?: boolean;
+  /** True once the shared byte budget cut a file (a detector's absence of findings then proves nothing about the files it could not read). */
+  budgetExhausted?(): boolean;
   /** The file's text, or undefined when it is missing, binary, unreadable or over the read limits. Never throws. */
   read(path: string): Promise<string | undefined>;
 }

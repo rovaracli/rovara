@@ -217,7 +217,7 @@ async function detectGradle(context: DetectorContext, hasTests: boolean): Promis
   const executable = hasWrapper ? "./gradlew" : "gradle";
   const run = (tasks: string[], timeoutSeconds: number) => cmd(cwd, executable, ["--console=plain", ...tasks], timeoutSeconds);
   const buildPath = buildName ?? settingsName ?? "build.gradle";
-  const topLine = findLine(build, /^\s*(?:plugins\s*\{|apply\s+plugin)/mu) ?? 1;
+  const topLine = findLine(build, /^[ \t]*(?:plugins\s*\{|apply\s+plugin)/mu) ?? 1;
   const topAt: DetectedSource = { path: buildPath, line: topLine };
 
   const modules: string[] = [];
@@ -356,20 +356,20 @@ export async function javaManifestCandidates(repo: DetectorContext["repo"]): Pro
 }
 
 export const JAVA_DRIVERS: readonly DriverRule[] = [
-  { family: "postgres", uses: /^\s*import\s+org\.postgresql\./mu, call: /DriverManager\.getConnection\s*\(|\.setUrl\s*\(|\.jdbcUrl\s*\(|\.setServerNames?\s*\(/u },
-  { family: "mysql", uses: /^\s*import\s+com\.mysql\./mu, call: /DriverManager\.getConnection\s*\(|\.setUrl\s*\(|\.jdbcUrl\s*\(/u },
-  { family: "redis", uses: /^\s*import\s+(?:redis\.clients\.jedis|io\.lettuce|org\.redisson)\./mu, call: /new\s+Jedis(?:Pool)?\s*\(|RedisClient\.create\s*\(|\.setAddress\s*\(/u },
-  { family: "mongodb", uses: /^\s*import\s+com\.mongodb\./mu, call: /MongoClients\.create\s*\(|new\s+MongoClient\s*\(|new\s+ConnectionString\s*\(/u },
-  { family: "kafka", uses: /^\s*import\s+org\.apache\.kafka\./mu, call: /\.put\s*\(\s*["']bootstrap\.servers["']|BOOTSTRAP_SERVERS_CONFIG\s*,/u },
-  { family: "rabbitmq", uses: /^\s*import\s+com\.rabbitmq\./mu, call: /\.setHost\s*\(|\.setUri\s*\(/u },
-  { family: "elasticsearch", uses: /^\s*import\s+(?:org\.elasticsearch|co\.elastic)\./mu, call: /RestClient\.builder\s*\(|new\s+HttpHost\s*\(/u },
+  { family: "postgres", uses: /^[ \t]*import\s+org\.postgresql\./mu, call: /DriverManager\.getConnection\s*\(|\.setUrl\s*\(|\.jdbcUrl\s*\(|\.setServerNames?\s*\(/u },
+  { family: "mysql", uses: /^[ \t]*import\s+com\.mysql\./mu, call: /DriverManager\.getConnection\s*\(|\.setUrl\s*\(|\.jdbcUrl\s*\(/u },
+  { family: "redis", uses: /^[ \t]*import\s+(?:redis\.clients\.jedis|io\.lettuce|org\.redisson)\./mu, call: /new\s+Jedis(?:Pool)?\s*\(|RedisClient\.create\s*\(|\.setAddress\s*\(/u },
+  { family: "mongodb", uses: /^[ \t]*import\s+com\.mongodb\./mu, call: /MongoClients\.create\s*\(|new\s+MongoClient\s*\(|new\s+ConnectionString\s*\(/u },
+  { family: "kafka", uses: /^[ \t]*import\s+org\.apache\.kafka\./mu, call: /\.put\s*\(\s*["']bootstrap\.servers["']|BOOTSTRAP_SERVERS_CONFIG\s*,/u },
+  { family: "rabbitmq", uses: /^[ \t]*import\s+com\.rabbitmq\./mu, call: /\.setHost\s*\(|\.setUri\s*\(/u },
+  { family: "elasticsearch", uses: /^[ \t]*import\s+(?:org\.elasticsearch|co\.elastic)\./mu, call: /RestClient\.builder\s*\(|new\s+HttpHost\s*\(/u },
 ];
 
 /** AWS SDK clients (v2 `S3Client.builder()`, v1 imports) and drivers a Java or Kotlin file uses (test services D5). An `endpointOverride` / endpoint configuration written as a string is flagged. */
 export function javaCodeCandidates(path: string, text: string): DependencyCandidate[] {
   const found = scanDrivers(path, text, JAVA_DRIVERS);
   const builders = [...text.matchAll(/\b([A-Za-z0-9]+?)(?:Async)?Client\.builder\s*\(\s*\)([\s\S]{0,800}?)\.build\s*\(/gu)].map((match) => ({ name: match[1]!.toLowerCase(), explicit: /endpointOverride\s*\(\s*URI\.create\s*\(\s*"|EndpointConfiguration\s*\(\s*"/u.test(match[2]!) }));
-  for (const match of text.matchAll(/^\s*import\s+(?:software\.amazon\.awssdk\.services|com\.amazonaws\.services)\.([a-z0-9]+)\./gmu)) {
+  for (const match of text.matchAll(/^[ \t]*import\s+(?:software\.amazon\.awssdk\.services|com\.amazonaws\.services)\.([a-z0-9]+)\./gmu)) {
     const id = normalizeAwsService(match[1]!);
     const explicit = id !== undefined && builders.some((builder) => builder.explicit && builder.name === id.replace(/-/gu, ""));
     const item = awsClientCandidate(path, text, match.index, match[1]!, explicit);

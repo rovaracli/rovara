@@ -3,6 +3,7 @@
 // expect them find them. The existing `iac.ts` only says which kind of IaC the repository uses; this file reads what is in it.
 // Reads only: a template is data, never deployed, and no Terraform or CDK command is run. YAML is read under `safe-yaml.ts`'s limits. A name is kept only when it is written as a plain identifier (letters, digits,
 // `.`, `_`, `-`); anything built from a function or a variable falls back to the template's own id for the resource. The key schema is attribute NAMES and the types S, N or B.
+import { looksLikeSecretValue } from "@agentx/contracts";
 import { callArguments, candidate, DEPENDENCY_SKIP_DIRS, mergeCandidates, MAX_RESOURCES } from "./dependency-candidates.js";
 import { ownEntries, ownGet, pairOf, parseSafeYaml, YAML_REFUSAL_WORDS } from "./safe-yaml.js";
 import { lineOf, type DependencyCandidate, type DependencyKeyAttribute, type DependencyResource, type Detector, type RepositoryReader } from "./types.js";
@@ -11,7 +12,8 @@ import { isMap, isScalar } from "yaml";
 export const IAC_RESOURCES_MAX_FILES = 80;
 const FAMILY_OF_KIND: Record<DependencyResource["kind"], string> = { table: "aws:dynamodb", bucket: "aws:s3", queue: "aws:sqs", topic: "aws:sns" };
 const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/u;
-const plainName = (value: unknown): string | undefined => (typeof value === "string" && PLAIN_NAME.test(value) ? value : undefined);
+/** A name written as a plain identifier and not shaped like a key (a table or bucket name is carried by design, so it must never be a secret by accident). */
+const plainName = (value: unknown): string | undefined => (typeof value === "string" && PLAIN_NAME.test(value) && !looksLikeSecretValue(value) ? value : undefined);
 const attributeType = (value: unknown): "S" | "N" | "B" | undefined => {
   const text = typeof value === "string" ? value.toUpperCase() : "";
   return text === "S" || text === "STRING" ? "S" : text === "N" || text === "NUMBER" ? "N" : text === "B" || text === "BINARY" ? "B" : undefined;
@@ -36,7 +38,9 @@ function cfnResource(logicalId: string, value: unknown): DependencyResource | un
   const kind = typeof type === "string" && Object.hasOwn(CFN_KINDS, type) ? CFN_KINDS[type] : undefined;
   if (kind === undefined) return undefined;
   const properties = ownGet(value, "Properties");
-  const resource: DependencyResource = { kind, name: plainName(ownGet(properties, CFN_NAME_PROPERTY[kind])) ?? plainName(logicalId) ?? logicalId.slice(0, 64) };
+  const name = plainName(ownGet(properties, CFN_NAME_PROPERTY[kind])) ?? plainName(logicalId.slice(0, 64));
+  if (name === undefined) return undefined;
+  const resource: DependencyResource = { kind, name };
   if (kind === "table") {
     if (type === "AWS::Serverless::SimpleTable") {
       const key = attribute(ownGet(ownGet(properties, "PrimaryKey"), "Name"), ownGet(ownGet(properties, "PrimaryKey"), "Type"));
@@ -124,7 +128,9 @@ function readTerraform(path: string, text: string, out: DependencyCandidate[]): 
       if (name !== undefined) types.set(name, tfString(inner, "type") ?? "S");
       top = top.replace(inner, "");
     }
-    const resource: DependencyResource = { kind, name: plainName(tfString(top, TF_NAME_ATTRIBUTE[kind])) ?? match[2]! };
+    const name = plainName(tfString(top, TF_NAME_ATTRIBUTE[kind])) ?? plainName(match[2]);
+    if (name === undefined) continue;
+    const resource: DependencyResource = { kind, name };
     if (kind === "table") {
       const partition = tfString(top, "hash_key");
       const sort = tfString(top, "range_key");
@@ -162,7 +168,9 @@ function readCdk(path: string, text: string, out: DependencyCandidate[]): void {
     const args = callArguments(text, open, 2_000);
     const [camel, snake] = CDK_NAME_PROPERTY[kind];
     const named = new RegExp(`\\b(?:${camel}\\s*:|${snake}\\s*=)\\s*["'\`]([^"'\`$]+)["'\`]`, "u").exec(args)?.[1];
-    const resource: DependencyResource = { kind, name: plainName(named) ?? plainName(match[2]) ?? match[2]!.slice(0, 64) };
+    const name = plainName(named) ?? plainName(match[2]?.slice(0, 64));
+    if (name === undefined) continue;
+    const resource: DependencyResource = { kind, name };
     if (kind === "table") {
       const partitionKey = cdkKey(args, "partitionKey", "partition_key");
       const sortKey = cdkKey(args, "sortKey", "sort_key");

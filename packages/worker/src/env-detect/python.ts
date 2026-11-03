@@ -41,7 +41,7 @@ const detectPythonBuild: Detector = async (context) => {
     if (line !== undefined) { pytestAt = { path: config.path, line }; break; }
   }
   if (pytestAt === undefined && requirements !== undefined) {
-    const line = findLine(requirements.text, /^\s*pytest(?:[<>=!~\s[]|$)/mu);
+    const line = findLine(requirements.text, /^[ \t]*pytest(?:[<>=!~\s[]|$)/mu);
     if (line !== undefined) pytestAt = { path: requirements.path, line };
   }
   if (pytestAt === undefined && repo.paths.some((path) => /(?:^|\/)test_[^/]+\.py$/u.test(path))) pytestAt = undefined;
@@ -102,7 +102,7 @@ export async function pythonManifestCandidates(repo: DetectorContext["repo"]): P
     let inArray = false;
     text.split("\n").slice(0, 2_000).forEach((raw, index) => {
       const line = raw.trim();
-      if (line.startsWith("#") || line === "") return;
+      if (line.startsWith("#") || line === "" || line.length > 1_000) return;
       const header = /^\[([^\]]+)\]/u.exec(line);
       if (!plain && header !== null) { section = header[1]!.toLowerCase(); inArray = false; return; }
       let active = plain;
@@ -113,7 +113,7 @@ export async function pythonManifestCandidates(repo: DetectorContext["repo"]): P
         if (inArray && /\]\s*(?:#.*)?$/u.test(line)) inArray = false;
       }
       if (!active || (plain && /^-/u.test(line))) return;
-      for (const token of line.matchAll(/(?:^|["'\s,])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[([^\]]*)\])?(?=[\s<>=!~;,"'\]#]|$)/gu)) {
+      for (const token of line.matchAll(/(?:^|["'\s,])([A-Za-z0-9][A-Za-z0-9._-]{0,100})(?:\[([^\]\s]{0,200})\])?(?=[\s<>=!~;,"'\]#]|$)/gu)) {
         const name = pyName(token[1]!);
         const evidence = { path, line: index + 1 };
         const family = PY_PACKAGES[name];
@@ -130,7 +130,7 @@ export async function pythonManifestCandidates(repo: DetectorContext["repo"]): P
   return mergeCandidates(found);
 }
 
-const IMPORT = (names: string): RegExp => new RegExp(`^\\s*(?:import|from)\\s+(?:${names})\\b`, "mu");
+const IMPORT = (names: string): RegExp => new RegExp(`^[ \\t]*(?:import|from)\\s+(?:${names})\\b`, "mu");
 export const PY_DRIVERS: readonly DriverRule[] = [
   { family: "postgres", uses: IMPORT("psycopg2|psycopg|asyncpg|pg8000"), call: /\b(?:psycopg2|psycopg|asyncpg|pg8000)\.(?:connect|create_pool|create_connection)\s*\(/u },
   { family: "mysql", uses: IMPORT("pymysql|MySQLdb|mysql\\.connector|aiomysql|asyncmy"), call: /\b(?:pymysql|MySQLdb|aiomysql|asyncmy|mysql\.connector)\.(?:connect|create_pool)\s*\(/u },

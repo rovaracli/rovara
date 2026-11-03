@@ -43,16 +43,19 @@ export function boundedReader(paths: readonly string[], load: (path: string) => 
   const kept = paths.filter((path) => path.length > 0 && path.length <= 512 && !path.startsWith("/") && !path.split("/").includes("..") && !path.includes("\\")).slice(0, ENV_DETECT_MAX_PATHS);
   const allowed = new Set(kept);
   let total = 0;
+  let exhausted = false;
   const cache = new Map<string, string | undefined>();
   return {
     reader: {
       paths: kept,
       truncated: paths.length > ENV_DETECT_MAX_PATHS,
+      budgetExhausted: () => exhausted,
       async read(path) {
         if (!allowed.has(path)) return undefined;
         if (cache.has(path)) return cache.get(path);
         let text: string | undefined;
         try { text = await load(path); } catch { text = undefined; }
+        if (text !== undefined && Buffer.byteLength(text) <= ENV_DETECT_MAX_FILE_BYTES && total + Buffer.byteLength(text) > ENV_DETECT_MAX_TOTAL_BYTES) exhausted = true;
         if (text !== undefined && (Buffer.byteLength(text) > ENV_DETECT_MAX_FILE_BYTES || total + Buffer.byteLength(text) > ENV_DETECT_MAX_TOTAL_BYTES)) text = undefined;
         if (text !== undefined) total += Buffer.byteLength(text);
         cache.set(path, text);
@@ -117,6 +120,7 @@ export async function runDetectors(reader: RepositoryReader, cwd: string): Promi
   merged.services = dedupe(merged.services, (item) => `${item.value.kind}:${item.value.target}`);
   // Dependency candidates (test services D1-D7): present only when a detector found one, so a repository with none gives today's detection byte for byte.
   if (candidates.length > 0) merged.dependencies = mergeCandidates(candidates);
+  if (reader.budgetExhausted?.() === true) merged.notes.push("Some files were not read: the read budget ran out.");
   if (cutChecks) merged.notes.push(`More than ${String(ENV_DETECT_MAX_CHECKS)} checks were found; the first ${String(ENV_DETECT_MAX_CHECKS)} are proposed.`);
   if (merged.setupCommands.length > ENV_DETECT_MAX_SETUP_COMMANDS) { merged.setupCommands = merged.setupCommands.slice(0, ENV_DETECT_MAX_SETUP_COMMANDS); merged.notes.push(`More than ${String(ENV_DETECT_MAX_SETUP_COMMANDS)} setup commands were found; the first ${String(ENV_DETECT_MAX_SETUP_COMMANDS)} are proposed.`); }
   if (merged.fullSuiteOn.length > ENV_DETECT_MAX_FULL_SUITE_GLOBS) { merged.fullSuiteOn = merged.fullSuiteOn.slice(0, ENV_DETECT_MAX_FULL_SUITE_GLOBS); merged.notes.push(`More than ${String(ENV_DETECT_MAX_FULL_SUITE_GLOBS)} full-suite paths were found; the first ${String(ENV_DETECT_MAX_FULL_SUITE_GLOBS)} are proposed.`); }
