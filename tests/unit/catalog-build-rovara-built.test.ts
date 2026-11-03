@@ -2,11 +2,11 @@
 // verifies the layout on disk, pushes it by its digest, requires the registry to serve the same digest, and only then takes the SBOM, the scan and the signature. Everything runs against fakes and temporary folders: no process
 // is started, no registry or credential is touched.
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ServiceCatalogSchema, sha256HexOf } from "@agentx/contracts";
+import { ServiceCatalogSchema, sha256HexOf, verifyImageStatement, type SignedImageStatement } from "@agentx/contracts";
 import {
   BuiltSourceSchema,
   CatalogBuildError,
@@ -14,6 +14,7 @@ import {
   buildPinnedCatalog,
   readBuiltSource,
   skopeoMirrorPort,
+  writeCatalogBuild,
   type BuiltLayout,
   type CatalogBuildPorts,
   type CommandPort,
@@ -41,8 +42,10 @@ interface LayoutOptions {
   skipBlob?: (what: string) => boolean;
   corruptBlob?: (what: string) => boolean;
   topMediaType?: string;
+  /** What the artifact's scan-java-arm64.json holds: a grype result with these severities (default one medium), or "missing", or the text of a file that is not a result. */
+  javaScan?: { severities: string[] } | "missing" | { text: string };
 }
-interface MadeLayout { root: string; layout: string; digestFile: string; digest: string; indexBytes: Buffer; children: Array<{ platform: string; digest: string }> }
+interface MadeLayout { root: string; layout: string; digestFile: string; javaScanFile: string; digest: string; indexBytes: Buffer; children: Array<{ platform: string; digest: string }> }
 /** Writes what the workflow's `image-result` artifact holds: oci/ (oci-layout, index.json, blobs/sha256/...) and index.digest. */
 async function makeLayout(options: LayoutOptions = {}): Promise<MadeLayout> {
   const root = await temporary();
@@ -72,19 +75,22 @@ async function makeLayout(options: LayoutOptions = {}): Promise<MadeLayout> {
   await writeFile(join(layout, "index.json"), JSON.stringify({ schemaVersion: 2, manifests: top }));
   const digestFile = join(root, "index.digest");
   await writeFile(digestFile, options.digestText === undefined ? `sha256:${digest}\n` : options.digestText(digest));
-  return { root, layout, digestFile, digest, indexBytes, children };
+  const javaScanFile = join(root, "scan-java-arm64.json");
+  const java = options.javaScan ?? { severities: ["Medium"] };
+  if (java !== "missing") await writeFile(javaScanFile, "text" in java ? java.text : JSON.stringify({ matches: java.severities.map((severity) => ({ vulnerability: { id: "CVE-2026-0001", severity } })), descriptor: { name: "grype" } }));
+  return { root, layout, digestFile, javaScanFile, digest, indexBytes, children };
 }
-const sourceOf = (made: MadeLayout): SourcesFile => ({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile } } });
+const sourceOf = (made: MadeLayout): SourcesFile => ({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile } } });
 
 describe("the sources file", () => {
-  it("still takes a registry digest reference, and takes a Rovara-built source with exactly three keys", () => {
+  it("still takes a registry digest reference, and takes a Rovara-built source with exactly four keys (the layout, the digest file and the Java dependency scan)", () => {
     const registry = { schemaVersion: 1, sources: { "postgres@16": `registry.example.com/library/postgres@sha256:${sha("p")}` } };
     expect(SourcesFileSchema.safeParse(registry).success).toBe(true);
-    expect(SourcesFileSchema.safeParse({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: "oci", digestFile: "index.digest" } } }).success).toBe(true);
+    expect(SourcesFileSchema.safeParse({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json" } } }).success).toBe(true);
   });
   it("refuses a built source with another kind, an extra key, a missing key, or a path skopeo would read as a reference or that holds a line break", () => {
-    const base = { kind: "rovara-built", layout: "oci", digestFile: "index.digest" };
-    for (const bad of [{ ...base, kind: "other" }, { ...base, extra: 1 }, { kind: "rovara-built", layout: "oci" }, { ...base, layout: "oci:latest" }, { ...base, layout: "" }, { ...base, digestFile: "a\nb" }, { ...base, layout: "a".repeat(1025) }]) {
+    const base = { kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json" };
+    for (const bad of [{ ...base, kind: "other" }, { ...base, extra: 1 }, { kind: "rovara-built", layout: "oci", digestFile: "index.digest" }, { ...base, layout: "oci:latest" }, { ...base, layout: "" }, { ...base, digestFile: "a\nb" }, { ...base, layout: "a".repeat(1025) }]) {
       expect(BuiltSourceSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
     }
   });
@@ -93,16 +99,16 @@ describe("the sources file", () => {
 describe("reading and verifying a layout (readBuiltSource)", () => {
   it("returns the digest, the platforms with their own manifest digests (an attestation manifest is not a platform) and the absolute layout path", async () => {
     const made = await makeLayout({ platforms: ["linux/arm64", "linux/amd64"], attestation: true });
-    const result = await readBuiltSource({ baseDir: "/nowhere" })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile });
-    expect(result).toEqual({ digest: made.digest, children: made.children, layoutPath: made.layout });
+    const result = await readBuiltSource({ baseDir: "/nowhere" })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile });
+    expect(result).toMatchObject({ digest: made.digest, children: made.children, layoutPath: made.layout });
   });
   it("reads relative paths from the base directory (the sources file's)", async () => {
     const made = await makeLayout();
-    const result = await readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: "oci", digestFile: "index.digest" });
+    const result = await readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json" });
     expect(result.layoutPath).toBe(made.layout);
     expect(result.digest).toBe(made.digest);
   });
-  const read = (made: MadeLayout) => readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile });
+  const read = (made: MadeLayout) => readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile });
 
   it("refuses a digest file that is not one sha256 digest", async () => {
     for (const text of ["", "latest\n", "sha256:abc\n", `sha256:${"A".repeat(64)}\n`, `sha256:${"a".repeat(64)}\nsha256:${"b".repeat(64)}\n`]) {
@@ -129,7 +135,7 @@ describe("reading and verifying a layout (readBuiltSource)", () => {
     await rm(join(made.layout, "oci-layout"));
     await expect(read(made)).rejects.toThrow(/oci-layout is missing/u);
     const other = await makeLayout();
-    await expect(readBuiltSource({ baseDir: other.root })({ kind: "rovara-built", layout: other.layout, digestFile: join(other.root, "absent") })).rejects.toThrow(/digest file is missing/u);
+    await expect(readBuiltSource({ baseDir: other.root })({ kind: "rovara-built", layout: other.layout, digestFile: join(other.root, "absent"), javaScan: other.javaScanFile })).rejects.toThrow(/digest file is missing/u);
   });
 });
 
@@ -196,7 +202,7 @@ describe("pinning the emulator from a Rovara-built layout (fakes)", () => {
   it("refuses a Rovara-built source for an entry that is not the emulator, before any read or push", async () => {
     const made = await makeLayout();
     const { ports, calls } = fakePorts({}, made);
-    const sources: SourcesFile = { schemaVersion: 1, sources: { "postgres@16": { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile } } };
+    const sources: SourcesFile = { schemaVersion: 1, sources: { "postgres@16": { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile } } };
     expect(await refusalsOf(buildBuilt(ports, sources, ["postgres@16"]))).toEqual([{ id: "postgres@16", code: "built_source_not_allowed" }]);
     expect(calls.read).toBe(0);
     expect(calls.mirror).toEqual([]);
@@ -238,7 +244,7 @@ describe("the real ports together (real layout on disk, fake skopeo)", () => {
   it("copies the layout from disk with every platform and the digest kept, then reads it back by digest and pins it", async () => {
     const made = await makeLayout();
     const { port, log } = skopeo(made);
-    const output = await buildBuilt(realPorts(made, port), { schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: "oci", digestFile: "index.digest" } } });
+    const output = await buildBuilt(realPorts(made, port), { schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: "oci", digestFile: "index.digest", javaScan: "scan-java-arm64.json" } } });
     expect(log[0]).toEqual({ file: "skopeo", args: ["copy", "--all", "--preserve-digests", "--dest-authfile", "/auth/config.json", `oci:${made.layout}`, `docker://${REGISTRY}/rovara-catalog/staging/svc/local-aws:${made.digest.slice(0, 32)}`] });
     expect(log[1]!.args).toEqual(["inspect", "--raw", "--authfile", "/auth/config.json", `docker://${REGISTRY}/rovara-catalog/staging/svc/local-aws@sha256:${made.digest}`]);
     expect(JSON.stringify(log)).not.toContain("docker://registry");
@@ -250,5 +256,75 @@ describe("the real ports together (real layout on disk, fake skopeo)", () => {
     expect(sha256HexOf(swapped)).not.toBe(made.digest);
     const { port } = skopeo(made, swapped);
     expect(await refusalsOf(buildBuilt(realPorts(made, port), sourceOf(made)))).toEqual([{ id: ID, code: "digest_mismatch" }]);
+  });
+});
+
+describe("the scan of the Java libraries inside the native binary (the image scan cannot see them)", () => {
+  const read = (made: MadeLayout) => readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile });
+
+  it("counts the artifact's findings by severity and keeps the file's SHA-256 and bytes", async () => {
+    const made = await makeLayout({ javaScan: { severities: ["High", "high", "Medium", "Low", "Negligible", "Unknown"] } });
+    const result = await read(made);
+    expect(result.javaScan).toMatchObject({ criticalOpen: 0, highOpen: 2 });
+    expect(result.javaScan.sha256).toBe(sha256HexOf(result.javaScan.bytes));
+  });
+  it("counts a critical finding, and a finding whose severity it cannot read, as critical", async () => {
+    expect((await read(await makeLayout({ javaScan: { severities: ["Critical"] } }))).javaScan.criticalOpen).toBe(1);
+    expect((await read(await makeLayout({ javaScan: { text: JSON.stringify({ matches: [{ vulnerability: {} }, {}, null, { vulnerability: { severity: "Catastrophic" } }] }) } }))).javaScan.criticalOpen).toBe(4);
+  });
+  it("pass: a clean scan (no matches at all) pins, records the highs, and puts the file's hash and counts in the signed statement and the file in the evidence", async () => {
+    const made = await makeLayout({ javaScan: { severities: ["High", "High", "Low"] } });
+    const { ports } = fakePorts({}, made);
+    const output = await buildBuilt(ports, sourceOf(made));
+    const javaBytes = output.evidence.find((item) => item.path === "evidence/local-aws-r1/java-scan.json")?.bytes;
+    expect(javaBytes).toBeDefined();
+    const signed = JSON.parse(output.evidence.find((item) => item.path === "evidence/local-aws-r1/statement.json")!.bytes.toString("utf8")) as SignedImageStatement;
+    expect(signed.statement.javaScan).toEqual({ sha256: sha256HexOf(javaBytes!), criticalOpen: 0, highOpen: 2 });
+    // The signature covers it: a statement with the hash changed no longer verifies.
+    const trusted = [(ports.signer as { publicKeyPem: string }).publicKeyPem];
+    expect(verifyImageStatement({ signed, trustedKeys: trusted }).ok).toBe(true);
+    expect(verifyImageStatement({ signed: { ...signed, statement: { ...signed.statement, javaScan: { ...signed.statement.javaScan!, sha256: sha("other") } } }, trustedKeys: trusted }).ok).toBe(false);
+    expect(verifyImageStatement({ signed: { ...signed, statement: { ...signed.statement, javaScan: { ...signed.statement.javaScan!, highOpen: 0 } } }, trustedKeys: trusted }).ok).toBe(false);
+    // The entry's highs are the image's (the fake scan reports 0) plus the Java libraries' 2.
+    const pinned = ServiceCatalogSchema.parse(JSON.parse(output.catalogBytes.toString("utf8")));
+    expect(pinned.entries.find((entry) => entry.id === ID)?.scan?.highOpen).toBe(2);
+  });
+  it("a critical finding refuses the pin BEFORE anything is pushed", async () => {
+    const made = await makeLayout({ javaScan: { severities: ["High", "Critical"] } });
+    const { ports, calls } = fakePorts({}, made);
+    expect(await refusalsOf(buildBuilt(ports, sourceOf(made)))).toEqual([{ id: ID, code: "scan_critical" }]);
+    expect(calls.mirror).toEqual([]);
+  });
+  it("a missing scan file refuses (no scan is not a clean scan), before any push", async () => {
+    const made = await makeLayout({ javaScan: "missing" });
+    const { ports, calls } = fakePorts({}, made);
+    expect(await refusalsOf(buildBuilt(ports, sourceOf(made)))).toEqual([{ id: ID, code: "built_source_invalid" }]);
+    expect(calls.mirror).toEqual([]);
+    await expect(read(made)).rejects.toThrow(/Java dependency scan file is missing/u);
+  });
+  it("a malformed scan file refuses: not JSON, JSON that is not an object with a matches list, a matches value that is not a list", async () => {
+    for (const text of ["", "not json", "null", "[]", "{}", JSON.stringify({ matches: "none" }), JSON.stringify({ matches: null })]) {
+      const made = await makeLayout({ javaScan: { text } });
+      const { ports, calls } = fakePorts({}, made);
+      expect(await refusalsOf(buildBuilt(ports, sourceOf(made))), JSON.stringify(text)).toEqual([{ id: ID, code: "built_source_invalid" }]);
+      expect(calls.mirror, JSON.stringify(text)).toEqual([]);
+    }
+  });
+  it("a statement for an image with no Java scan (every registry source) is exactly what it was: no javaScan field", async () => {
+    const { ports } = fakePorts({}, { children: [{ platform: "linux/arm64", digest: sha("child") }] } as MadeLayout);
+    const output = await buildBuilt(ports, { schemaVersion: 1, sources: { [ID]: `registry.example.com/rovara/local-aws@sha256:${sha("registry image")}` } });
+    const statement = JSON.parse(output.evidence.find((item) => item.path.endsWith("statement.json"))!.bytes.toString("utf8")) as SignedImageStatement;
+    expect(statement.statement).not.toHaveProperty("javaScan");
+    expect(output.evidence.some((item) => item.path.endsWith("java-scan.json"))).toBe(false);
+  });
+});
+
+describe("writing a Rovara-built build", () => {
+  it("writes the Java scan beside the statement in the entry's evidence folder, byte for byte", async () => {
+    const made = await makeLayout({ javaScan: { severities: ["Low"] } });
+    const output = await buildBuilt(fakePorts({}, made).ports, sourceOf(made));
+    const out = await temporary();
+    await writeCatalogBuild(output, { catalogDir: join(out, "catalog"), prepullFile: join(out, "prepull.json") });
+    expect(sha256HexOf(await readFile(join(out, "catalog/evidence/local-aws-r1/java-scan.json")))).toBe(sha256HexOf(await readFile(made.javaScanFile)));
   });
 });
