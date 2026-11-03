@@ -156,17 +156,17 @@ async function workerBench(options: { docker?: FakeServicesDockerOptions; slowCh
   const docker = options.slowChecks === true
     ? { ...fake.docker, run: (args: readonly string[], runOptions?: { signal?: AbortSignal }) => (args[0] === "exec" && args.some((arg) => arg.endsWith("-check"))
       ? new Promise<never>((_, reject) => { runOptions?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); })
-      : fake.docker.run(args, runOptions as never)) }
+      : fake.docker.run(args, runOptions)) }
     : fake.docker;
   const root = await temp("tsp-work-");
   await mkdir(join(root, PROJECT), { recursive: true });
   const runParent = await temp("tsp-runs-");
   const artifacts: Array<{ name: string; mediaType: string; content: string }> = [];
   const config: TestServicesConfig = {
-    docker: docker as TestServicesConfig["docker"], registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
+    docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
     catalog: () => Promise.resolve(pinnedCatalog()), sealedRound: SEALED_ROUND_PORTS, sleep: () => Promise.resolve(), log: () => undefined,
   };
-  const sandbox = new TaskSandbox({ rootPath: root, taskId: OPERATION, docker: docker as TestServicesConfig["docker"], image: IMAGE, log: () => undefined });
+  const sandbox = new TaskSandbox({ rootPath: root, taskId: OPERATION, docker, image: IMAGE, log: () => undefined });
   await sandbox.start();
   const start = (plan: TestEnvTaskPlan | undefined, mode: "IMPLEMENT" | "CHECKS", cancellation?: Parameters<typeof startTaskTestServices>[0]["cancellation"]) => startTaskTestServices({
     plan, mode, sandbox, devcontainer: false, nightly: false, operationId: OPERATION, rootPath: root, repositoryPaths: [join(root, PROJECT)], config,
@@ -314,7 +314,6 @@ describe("4. teardown on every way out", () => {
   it("after a killed worker: the next worker's start removes what carries the run-network labels of this workspace, and only that", async () => {
     const { draft } = await detectedDraft();
     const broker = await approvedProject(draft);
-    const plan = (await testEnvPlanFor(broker.deps, { orgId: ORG, project: PROJECT, taskId: TASK, readiness: broker.readiness }, ON))!;
     const listing: string[] = [];
     const bench = await workerBench({ docker: { listing } });
     // A coding run holds its working-phase helper and network for the whole task; the worker is killed in the middle of it, so nothing is disposed.
