@@ -12,9 +12,9 @@ import { closeScope } from "./item-head.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
 import { changeScopePrincipals, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
-import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { bySource, byScope, childScopes, deleteItem, listScopeWork, putScopeWork, scopePage, type PlaceCursor, type ScopeWork } from "./store.js";
-import type { Item } from "../agents/table-writes.js";
+import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 
 /** A request older than this many seconds is a backlog (design: hot rows are deleted within 1 hour). */
 export const DELETE_BACKLOG_SECONDS = 3_600;
@@ -125,7 +125,8 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
         continue;
       }
       const { hideCursor: _done, ...rest } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
-      entry = { ...rest, hideDone: true };
+      // A text-only request has hidden every row it will delete: the rest of the place (its structured rows) is readable again.
+      entry = { ...rest, hideDone: true, ...(entry.textOnly === true ? { hidePending: false } : {}) };
       await putScopeWork(deps.table, orgId, entry);
     }
     if (entry.scope !== undefined && (entry.childPending === true || entry.childCursor !== undefined)) {
@@ -178,7 +179,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     const accessGone = scopeDeleted && purged.blocked === 0 && !found.truncated ? (await purgeAccessOfScope(deps.table, orgId, entry.scope as string, remaining.maxItems)) && unitsGone : unitsGone;
     if (nextWalk !== undefined && purged.blocked === 0) {
       // Not at the end of the place yet: go on from here next time.
-      await putScopeWork(deps.table, orgId, { ...entry, hidePending: true, hidden: entry.hidden + purged.rows, walkCursor: nextWalk });
+      await putScopeWork(deps.table, orgId, { ...entry, hidden: entry.hidden + purged.rows, walkCursor: nextWalk });
       summary.stillHidden += 1;
     } else if (purged.blocked === 0 && !found.truncated && accessGone && !headsLeft) {
       await deps.audit?.(auditRecordTombstoned({ orgId, requestId: entry.requestId, at: new Date(now()).toISOString(), scopeOrSource: entry.scope ?? entry.system, cause: entry.cause ?? "source_deleted", count: purged.rows + purged.facts })).catch(() => undefined);
@@ -186,7 +187,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
       summary.finished += 1;
     } else {
       // Not finished: keep the request, and the scope stays hidden until it is. The next run continues.
-      await putScopeWork(deps.table, orgId, { ...entry, hidePending: entry.scope !== undefined ? true : entry.hidePending, hidden: entry.hidden + purged.rows });
+      await putScopeWork(deps.table, orgId, { ...entry, hidePending: entry.scope !== undefined && entry.textOnly !== true ? true : entry.hidePending, hidden: entry.hidden + purged.rows });
       summary.stillHidden += 1;
     }
   }
@@ -202,15 +203,31 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
  */
 async function deleteItemHeads(deps: DeleteWorkerDependencies, orgId: OrgId, scope: string, items: readonly Item[], maxItems: number): Promise<boolean> {
   const keys = new Map<string, { pk: string; sk: string }>();
+  // A head found through a row belongs to the item, which may have moved to another place since (a newer version lives there): it goes only if it names no place or this one.
+  const rowHeads = new Map<string, { pk: string; sk: string }>();
   for (const item of items) {
     if (item.entityType !== "TEAM_RECORD_EVENT") continue;
     const source = item.sourceRef as { system?: unknown; id?: unknown } | undefined;
-    if (typeof source?.system === "string" && typeof source.id === "string") { const key = recordItemHeadKey(orgId, source.system, source.id); keys.set(`${key.pk}|${key.sk}`, key); }
+    if (typeof source?.system === "string" && typeof source.id === "string") { const key = recordItemHeadKey(orgId, source.system, source.id); rowHeads.set(`${key.pk}|${key.sk}`, key); }
   }
   const page = await scopePage(deps.table, orgId, scope, maxItems, { heads: true });
   for (const item of page.items) if (item.entityType === "TEAM_RECORD_ITEM_HEAD" && typeof item.pk === "string" && typeof item.sk === "string") keys.set(`${item.pk}|${item.sk}`, { pk: item.pk, sk: item.sk });
   for (const key of keys.values()) await deleteItem(deps.table, key);
+  for (const [id, key] of rowHeads) if (!keys.has(id)) await deleteHeadInPlace(deps, key, scope);
   return page.cursor !== undefined;
+}
+
+async function deleteHeadInPlace(deps: DeleteWorkerDependencies, key: { pk: string; sk: string }, scope: string): Promise<void> {
+  const aliases = new Aliases();
+  try {
+    await deps.table.documentClient.send(new DeleteCommand({
+      TableName: deps.table.tableName, Key: key,
+      ConditionExpression: `attribute_not_exists(${aliases.name("scope")}) OR ${aliases.name("scope")} = ${aliases.value(scope)} OR begins_with(${aliases.name("scope")}, ${aliases.value(`${scope}/`)})`,
+      ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
+    }));
+  } catch (error) {
+    if (errorName(error) !== "ConditionalCheckFailedException") throw error; // the item lives in another place now: its head stays
+  }
 }
 
 async function queueNamedSources(deps: DeleteWorkerDependencies, orgId: OrgId, entry: ScopeWork): Promise<void> {

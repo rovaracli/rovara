@@ -36,7 +36,8 @@ import type { RecordQueryDependencies } from "./query.js";
 import type { RecordRouteReply, RecordRouteRequest } from "./routes.js";
 import { rovaraScope } from "./sources/rovara.js";
 import {
-  SOURCE_CHANGES_MAX, claimDrop, claimPut, listSourceChanges, proposalDelete, proposalPut, readScopeClaim, readSourceChange, readSourceRequest, readSourceRow, requestPut,
+  SOURCE_CHANGES_MAX, claimDrop, claimPut, listSourceChanges, proposalDelete, proposalPut, readRevisionFloor, readScopeClaim, readSourceChange, readSourceRequest, readSourceRow, requestPut,
+  revisionFloorCheck, revisionFloorPut,
 } from "./source-store.js";
 import { listScopeWork, listSourceConfigs, putScopeWork, scopeWorkItem, sourceRowItem, type ScopeWork } from "./store.js";
 
@@ -91,9 +92,11 @@ const WORDS = {
   eligibility: "Rovara could not check who may approve this. Try again.",
   audit: "This change needs the audit ledger.",
   full: "Too many changes are waiting. Decide some of them first.",
-  removing: "That source is still being removed. Try again in a little while.",
   unavailable: "The sources can't be changed right now.",
 } as const;
+/** An add is refused while the deletion of the same place is still queued: answered with its own code (route-local, like the two above). */
+class RemovalRunning extends Error {}
+const removalRunningReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This place is still being cleared. Try again in an hour." } });
 const invalid = (message: string = WORDS.invalid) => agentXError("CONFIG_INVALID", message);
 const stale = (message: string = WORDS.stale) => agentXError("CHANGE_STALE", message);
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", WORDS.unavailable);
@@ -145,12 +148,17 @@ export async function handleSourceWrite(deps: RecordQueryDependencies, request: 
   if (!parsed.success) throw invalid();
   const run: Run = { deps, sources, ctx, orgId: request.caller.orgId, project, me: request.caller.developerId, now: deps.now ?? Date.now };
   const body = parsed.data;
-  switch (body.action) {
-    case "add": return saveAdd(run, body);
-    case "change": return saveChange(run, body);
-    case "approve": return approveChange(run, body.changeId);
-    case "reject": return rejectChange(run, body.changeId);
-    case "remove": return saveRemove(run, body);
+  try {
+    switch (body.action) {
+      case "add": return await saveAdd(run, body);
+      case "change": return await saveChange(run, body);
+      case "approve": return await approveChange(run, body.changeId);
+      case "reject": return await rejectChange(run, body.changeId);
+      case "remove": return await saveRemove(run, body);
+    }
+  } catch (error) {
+    if (error instanceof RemovalRunning) return removalRunningReply();
+    throw error;
   }
 }
 
@@ -257,6 +265,9 @@ async function saveAdd(run: Run, body: Extract<SourceWriteBody, { action: "add" 
   await refuseWhileRemoving(run, body.scope);
   const holder = await readScopeClaim(table, run.orgId, body.source, body.scope);
   if (holder !== undefined && holder !== run.project) throw invalid(WORDS.taken);
+  // A place whose row was removed counts on from the revision it reached, so nothing made against the old row can fit the new one.
+  const floor = await readRevisionFloor(table, run.orgId, run.project, body.source, body.scope);
+  const revision = (floor?.revision ?? 0) + 1;
 
   const row: Omit<SourceConfig, "revision" | "updatedAt"> = {
     workspaceId: run.orgId, project: run.project, source: body.source, scope: body.scope, enabled: body.enabled, retention: body.retention, exclude: body.exclude ?? [],
@@ -265,13 +276,14 @@ async function saveAdd(run: Run, body: Extract<SourceWriteBody, { action: "add" 
   const reasons = orderedReasons([...scopeReasons(run.sources.edition, undefined), ...(needsSecond ? (["retention_raise"] as const) : [])]);
   if (reasons.length > 0) return propose(run, { kind: "add", row, reasons, againstRevision: null, requestId: body.requestId, hash });
 
-  const reply: Reply = { status: 200, body: { status: "saved", revision: 1 } };
+  const reply: Reply = { status: 200, body: { status: "saved", revision } };
   const at = nowIso(run);
-  const stored = SourceConfigSchema.parse({ ...row, revision: 1, updatedAt: at });
+  const stored = SourceConfigSchema.parse({ ...row, revision, updatedAt: at });
   const events = [auditRecordSourceAdded({ orgId: run.orgId, actorId: run.me, at, occurrence: randomUUID(), project: run.project, source: body.source, scope: body.scope, retention: body.retention, restricted: false })];
   const items: TransactItem[] = [
     { Put: { TableName: table.tableName, Item: sourceRowItem(stored), ConditionExpression: NOT_EXISTS } },
     claimPut(table, run.orgId, run.project, body.source, body.scope, at),
+    revisionFloorCheck(table, run.orgId, run.project, body.source, body.scope, floor),
     { Delete: { TableName: table.tableName, Key: recordScopeMarkerKey(run.orgId, body.scope) } }, // saving a row for a closed place opens it again
     requestItem(run, body.requestId, hash, reply),
     ...auditItems(run, events, false),
@@ -343,11 +355,11 @@ const QUEUE_READ = 500;
 async function refuseWhileRemoving(run: Run, scope: string): Promise<void> {
   let queue: Awaited<ReturnType<typeof listScopeWork>>;
   try { queue = await listScopeWork(run.deps.table, run.orgId, QUEUE_READ); } catch { throw unavailable(); }
-  if (queue.length >= QUEUE_READ) throw stale(WORDS.removing);
+  if (queue.length >= QUEUE_READ) throw new RemovalRunning();
   const above = new Set(scopeAndAncestors(scope));
   const busy = queue.some((work) => work.type === "tombstone" && work.textOnly !== true && work.scope !== undefined && (work.cause === "excluded" || work.cause === "source_deleted")
     && (above.has(work.scope) || work.scope.startsWith(`${scope}/`)));
-  if (busy) throw stale(WORDS.removing);
+  if (busy) throw new RemovalRunning();
 }
 
 /**
@@ -379,6 +391,7 @@ async function saveRemove(run: Run, body: Extract<SourceWriteBody, { action: "re
   const items: TransactItem[] = [
     rowDelete(run, current, was),
     claimDrop(table, run.orgId, run.project, body.source, body.scope),
+    revisionFloorPut(table, run.orgId, run.project, body.source, body.scope, was, at),
     ...waiting.map((change) => proposalDelete(table, run.orgId, run.project, change.id)),
     { Put: { TableName: table.tableName, Item: scopeWorkItem(run.orgId, work) } },
     requestItem(run, body.requestId, hash, reply),
@@ -466,6 +479,9 @@ async function approveChange(run: Run, changeId: string): Promise<Reply> {
   const { source, scope } = proposal;
   const current = await readSourceRow(table, run.orgId, run.project, source, scope);
   if (proposal.kind === "add" ? current !== undefined : current === undefined || (current.revision ?? 0) !== proposal.againstRevision) throw stale();
+  // A change made before the row it names was written (a row removed and added again) is never applied to the new one.
+  const floor = proposal.kind === "add" ? await readRevisionFloor(table, run.orgId, run.project, source, scope) : undefined;
+  if (current !== undefined ? Date.parse(proposal.createdAt) < Date.parse(current.updatedAt) : floor !== undefined && Date.parse(proposal.createdAt) < Date.parse(floor.removedAt)) throw stale();
   // The people who can approve are the ones the change was made for.
   if (digestOf(await rosterOf(run)) !== proposal.membershipDigest) throw stale(WORDS.members);
   if (proposal.kind === "add") {
@@ -493,11 +509,12 @@ async function approveChange(run: Run, changeId: string): Promise<Reply> {
       : [auditRecordSourceChanged({ orgId: run.orgId, actorId: run.me, at, occurrence: `${proposal.id}:applied`, project: run.project, source, scope, fromRetention: current!.retention, toRetention: row.retention, enabled: row.enabled })]),
   ];
   const approval = { approvalId: proposal.id, by: run.me, at };
-  const revision = proposal.kind === "add" ? 1 : proposal.againstRevision! + 1;
+  const revision = proposal.kind === "add" ? (floor?.revision ?? 0) + 1 : proposal.againstRevision! + 1;
   const apply: TransactItem[] = proposal.kind === "add"
     ? [
       { Put: { TableName: table.tableName, Item: sourceRowItem(SourceConfigSchema.parse({ ...row, revision, updatedAt: at, approval })), ConditionExpression: NOT_EXISTS } },
       claimPut(table, run.orgId, run.project, source, scope, at),
+      revisionFloorCheck(table, run.orgId, run.project, source, scope, floor),
       { Delete: { TableName: table.tableName, Key: recordScopeMarkerKey(run.orgId, scope) } },
     ]
     : [rowUpdate(run, current!, {

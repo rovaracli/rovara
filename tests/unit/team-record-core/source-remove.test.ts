@@ -8,6 +8,7 @@ import { handleRecordRoute } from "../../../packages/broker/src/team-record/rout
 import type { SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
 import { readApproverRoster } from "../../../packages/broker/src/org/second-person-evidence.js";
 import { secondPersonFromRecords } from "../../../packages/broker/src/org/test-environment.js";
+import { eraseProject } from "../../../packages/broker/src/team-record/erase.js";
 import { DEFAULT_DELETE_BUDGET, runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { hiddenByPending } from "../../../packages/broker/src/team-record/acl.js";
 import { advanceItemHead, isScopeClosed } from "../../../packages/broker/src/team-record/item-head.js";
@@ -449,7 +450,8 @@ describe("ingest after a removal", () => {
     await worker(h);
     expect(idsOf(h.w)).toEqual([]);
     expect(marker(h)).toBeDefined();
-    expect(await post(h, WHO.owner, add())).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+    // The revision counts on from the removed row's (1), so nothing made against that row can fit this one.
+    expect(await post(h, WHO.owner, add())).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
     expect(marker(h)).toBeUndefined();
     expect(await h.w.sink.put(githubDraft({ sourceRef: { system: "github.com", id: "c-new", version: "1" }, links: [], retention: "C" }))).toEqual({ status: "stored" });
     // An old item is not brought back by the removal; it is recorded afresh only if the source sends it again.
@@ -463,12 +465,92 @@ describe("ingest after a removal", () => {
     await seeded(h);
     await post(h, WHO.owner, remove(1));
     const again = await post(h, WHO.owner, add());
-    expect(again).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
+    expect(again).toEqual({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This place is still being cleared. Try again in an hour." } });
     expect(JSON.stringify(again.body)).not.toContain("repo/9");
     expect(sourceRows(h)).toHaveLength(0);
     expect(marker(h)).toBeDefined();
     await worker(h);
     expect(await post(h, WHO.owner, add())).toMatchObject({ status: 200 });
+  });
+});
+
+describe("a waiting change never outlives its row", () => {
+  const approve = (h: Harness, changeId: string) => post(h, WHO.admin, { action: "approve", changeId });
+
+  it("a change waiting when the row is removed goes with it; after the worker and a new add, approving it is CHANGE_STALE and the new row is untouched", async () => {
+    const h = harness();
+    await seeded(h);
+    const waiting = await post(h, WHO.owner, change(1, { retention: "D" }));
+    expect(waiting.status).toBe(202);
+    await post(h, WHO.owner, remove(1));
+    expect(proposals(h)).toHaveLength(0);
+    await worker(h);
+    expect(await post(h, WHO.owner, add())).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(await approve(h, waiting.body.changeId as string)).toMatchObject({ status: 404, body: { code: "NOT_FOUND" } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "C", revision: 2 });
+  });
+
+  it("a change that slipped in between remove's read and its commit is stale for the new row (revisions count on across a removal)", async () => {
+    const h = harness();
+    await seeded(h);
+    const send = h.w.db.send.bind(h.w.db);
+    let late: string | undefined;
+    let inside = false;
+    h.w.db.send = async (command: Command) => {
+      const seen: unknown = command;
+      if (seen instanceof TransactWriteCommand && !inside) {
+        inside = true;
+        const proposed = await post(h, WHO.owner, change(1, { retention: "D" })); // lands first, after remove has listed the waiting changes
+        late = proposed.body.changeId as string;
+      }
+      return send(command);
+    };
+    expect(await post(h, WHO.owner, remove(1))).toEqual({ status: 200, body: { status: "removed" } });
+    h.w.db.send = send;
+    expect(late).toBeDefined();
+    expect(proposals(h)).toHaveLength(1); // the orphan
+    await worker(h);
+    expect(await post(h, WHO.owner, add())).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(await approve(h, late!)).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "C", revision: 2 });
+  });
+
+  it("a change made before the current row was written is refused even when its revision fits", async () => {
+    const h = harness();
+    await seeded(h);
+    const waiting = await post(h, WHO.owner, change(1, { retention: "D" }));
+    const [stored] = proposals(h);
+    const earlier = (iso: unknown) => new Date(Date.parse(iso as string) - 3_600_000).toISOString(); // a change lives exactly seven days
+    h.w.db.set({ ...stored!, createdAt: earlier(stored!.createdAt), expiresAt: earlier(stored!.expiresAt) });
+    h.w.clock.ms += 1_000; // the row is rewritten later than the change was made, with the same revision number
+    h.w.db.set({ ...sourceRows(h)[0]!, updatedAt: new Date(h.w.clock.ms).toISOString() });
+    expect(await approve(h, waiting.body.changeId as string)).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "C", revision: 1 });
+  });
+
+  it("an add that waited before the place was removed is refused afterwards", async () => {
+    const h = harness();
+    h.repos.set(`${ORG_A}/web`, [9, 11]);
+    expect((await post(h, WHO.owner, add({ scope: "github:repo/11", retention: "D" }))).status).toBe(202);
+    const [stored] = proposals(h);
+    // The same place gets a row, then loses it (a marker is left); the old add must not come back.
+    h.w.clock.ms += 1_000;
+    expect(await post(h, WHO.owner, add({ scope: "github:repo/11" }))).toMatchObject({ status: 200 });
+    expect(await post(h, WHO.owner, remove(1, { scope: "github:repo/11" }))).toMatchObject({ status: 200 });
+    await worker(h);
+    h.w.db.set(stored!); // it was still waiting
+    expect(await approve(h, stored!.id as string)).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
+    expect(sourceRows(h)).toHaveLength(0);
+  });
+
+  it("the revision marker is removed with the project", async () => {
+    const h = harness();
+    await seeded(h);
+    await post(h, WHO.owner, remove(1));
+    expect(h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_REVISION")).toHaveLength(1);
+    await worker(h);
+    await eraseProject(deleteDeps(h.w).deps, ORG_A, "web", "project_archived", "archive-1");
+    expect(h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_REVISION")).toHaveLength(0);
   });
 });
 
@@ -527,6 +609,24 @@ describe("TR-E5: item heads go with a deleted place", () => {
     await worker(h);
     expect(heads(h)).toHaveLength(0);
     expect(idsOf(h.w)).toEqual([]);
+  });
+
+  it("an item whose newer version lives in another place keeps its head when the old place is deleted", async () => {
+    const h = harness();
+    await seeded(h, ["c-1", "mover"]);
+    h.repos.set(`${ORG_A}/web`, [9, 11]);
+    await post(h, WHO.owner, add({ scope: "github:repo/11" }));
+    // The item moved (a transferred issue): its newer version is a row of the other place; the old row still sits in the first.
+    const moved = githubDraft({ sourceRef: { system: "github.com", id: "mover", version: "2", versionAt: "2026-10-31T10:00:00.000Z" }, links: [], retention: "C", audience: { kind: "project" }, scope: "github:repo/11" } as never);
+    expect(await h.w.sink.put(moved)).toEqual({ status: "stored" });
+    expect(h.w.db.get(recordItemHeadKey(ORG_A, "github.com", "mover"))).toMatchObject({ scope: "github:repo/11", version: "2" });
+    // The cleanup of the replaced version has not run yet, so the old row is still in the first place when it is deleted.
+    for (const work of queue(h).filter((item) => item.type === "replaced")) h.w.db.delete({ pk: work.pk as string, sk: work.sk as string });
+    expect(events(h).filter((row) => (row.sourceRef as { id: string }).id === "mover" && row.scope === GITHUB_SCOPE)).toHaveLength(1);
+    await post(h, WHO.owner, remove(1));
+    await worker(h);
+    expect(h.w.db.get(recordItemHeadKey(ORG_A, "github.com", "c-1"))).toBeUndefined();
+    expect(h.w.db.get(recordItemHeadKey(ORG_A, "github.com", "mover"))).toMatchObject({ scope: "github:repo/11", version: "2" });
   });
 
   it("a head of an item whose row is replaced by a newer version stays (only a deleted place clears heads)", async () => {
@@ -592,6 +692,40 @@ describe("the Rovara row", () => {
     await worker(h);
     expect(events(h).map((row) => (row.sourceRef as { id: string }).id)).toEqual(["m-1"]);
     expect((await pendingHidesOf(h.w.table, ORG_A)).scopes.size).toBe(0);
+  });
+
+  it("with the inline hide done, a purge that takes several runs never hides the structured rows", async () => {
+    const h = harness();
+    await post(h, WHO.owner, add({ source: "rovara", scope: RS, retention: "C" }));
+    for (const id of ["m-1", "m-2", "m-3", "m-4"]) await h.w.sink.put(structured(id));
+    for (const id of ["a-1", "a-2", "a-3"]) await h.w.sink.put(note(id));
+    await post(h, WHO.owner, remove(1, { source: "rovara", scope: RS }));
+    expect(queue(h)[0]).toMatchObject({ hidePending: false, hideDone: true });
+    let runs = 0;
+    while (queue(h).length > 0 && runs < 40) {
+      expect((await pendingHidesOf(h.w.table, ORG_A)).scopes.has(RS), `before run ${runs}`).toBe(false);
+      await worker(h, { ...DEFAULT_DELETE_BUDGET, maxItems: 2 });
+      runs += 1;
+      if (queue(h).length > 0) expect(queue(h)[0]).toMatchObject({ hidePending: false });
+    }
+    expect(runs).toBeGreaterThanOrEqual(2); // the purge really spanned runs
+    expect(events(h).map((row) => (row.sourceRef as { id: string }).id).sort()).toEqual(["m-1", "m-2", "m-3", "m-4"]);
+  });
+
+  it("when the worker had to do the hiding, the structured rows are readable again as soon as it has hidden the text rows", async () => {
+    const h = harness();
+    await post(h, WHO.owner, add({ source: "rovara", scope: RS, retention: "C" }));
+    for (const id of ["m-1", "m-2"]) await h.w.sink.put(structured(id));
+    for (const id of ["a-1", "a-2", "a-3"]) await h.w.sink.put(note(id));
+    const send = h.w.db.send.bind(h.w.db);
+    h.w.db.send = async (command: Command) => { if (isTombstoneWrite(command)) throw new Error("down"); return send(command); };
+    await post(h, WHO.owner, remove(1, { source: "rovara", scope: RS }));
+    h.w.db.send = send;
+    expect(queue(h)[0]).toMatchObject({ hidePending: true });
+    let runs = 0;
+    while (queue(h).length > 0 && runs < 40 && !queue(h)[0]!.hideDone) { await worker(h, { ...DEFAULT_DELETE_BUDGET, maxItems: 2 }); runs += 1; }
+    expect(queue(h)[0]).toMatchObject({ hideDone: true, hidePending: false });
+    expect((await pendingHidesOf(h.w.table, ORG_A)).scopes.has(RS)).toBe(false);
   });
 
   it("a fact made from a text row goes; a fact made only from structured rows stays; the place's access record is not purged", async () => {

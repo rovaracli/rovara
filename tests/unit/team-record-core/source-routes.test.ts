@@ -494,8 +494,9 @@ describe("approving a waiting change", () => {
     const h = harness();
     const changeId = await waiting(h);
     const send = h.w.db.send.bind(h.w.db);
-    h.w.db.send = async (command: never) => {
-      if (command instanceof TransactWriteCommand) h.w.db.set({ ...h.w.db.get(orgMetaKey(ORG_A)), approvalMembershipVersion: 9 });
+    h.w.db.send = async (command: Parameters<FakeDynamoDb["send"]>[0]) => {
+      const seen: unknown = command;
+      if (seen instanceof TransactWriteCommand) h.w.db.set({ ...h.w.db.get(orgMetaKey(ORG_A)), approvalMembershipVersion: 9 });
       return send(command);
     };
     expect(await approve(h, WHO.maint, changeId)).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
@@ -682,11 +683,11 @@ describe("erasure and archive reach the new items", () => {
     h.w.db.set({ ...keep, row: { ...(keep.row as object), addedBy: DEV, exclude: ["U123", "U999"] } });
     const d = deleteDeps(h.w);
     const result = await erasePerson(d.deps, ORG_A, { developerId: DEV, projects: ["web"] }, "erase-src-1");
-    expect(result.steps.config).toBe(true);
+    expect(result.steps?.config).toBe(true);
     expect(proposals(h).map((item) => item.id)).toEqual([other.body.changeId]);
     expect(proposals(h)[0]!.row).toMatchObject({ addedBy: "0".repeat(64), exclude: ["U123", "U999"] });
     const withIds = await erasePerson(d.deps, ORG_A, { developerId: DEV, projects: ["web"], identities: [{ system: "slack", sourceId: "U123" }] }, "erase-src-2");
-    expect(withIds.steps.config).toBe(true);
+    expect(withIds.steps?.config).toBe(true);
     expect(proposals(h)[0]!.row).toMatchObject({ exclude: ["U999"] });
     expect(sourceRows(h)).toHaveLength(1);
     expect(JSON.stringify([...proposals(h), ...sourceRows(h), ...requests(h), ...claims(h)])).not.toContain(DEV);
@@ -763,13 +764,13 @@ describe("fix round 1", () => {
     expect((await post(h, WHO.owner, change(1, { exclude: ["U123", "U999"] }))).status).toBe(200); // revision 2
     const d = deleteDeps(h.w);
     const erased = await erasePerson(d.deps, ORG_A, { developerId: "5".repeat(64), projects: ["web"], identities: [{ system: "slack", sourceId: "U123" }] }, "erase-fence-1");
-    expect(erased.steps.config).toBe(true);
+    expect(erased.steps?.config).toBe(true);
     expect(sourceRows(h)[0]).toMatchObject({ exclude: ["U999"], revision: 3 });
     expect(await post(h, WHO.owner, change(2, { exclude: ["U123", "U999"] }))).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
     expect(sourceRows(h)[0]).toMatchObject({ exclude: ["U999"], revision: 3 });
     // The adder's id is scrubbed under the same fence.
     const erasedAdder = await erasePerson(d.deps, ORG_A, { developerId: OWNER, projects: ["web"] }, "erase-fence-2");
-    expect(erasedAdder.steps.config).toBe(true);
+    expect(erasedAdder.steps?.config).toBe(true);
     expect(sourceRows(h)[0]).toMatchObject({ addedBy: "0".repeat(64), revision: 4 });
     expect(await post(h, WHO.admin, change(3, { enabled: false }))).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
   });
@@ -780,7 +781,7 @@ describe("fix round 1", () => {
     await post(h, WHO.owner, change(1, { exclude: ["U123"] }));
     const send = h.w.db.send.bind(h.w.db);
     let raced = false;
-    h.w.db.send = async (command: never) => {
+    h.w.db.send = async (command: Parameters<FakeDynamoDb["send"]>[0]) => {
       // An editor adds a second id just before the scrub's first write lands.
       if (!raced && (command as { constructor: { name: string } }).constructor.name === "UpdateCommand") {
         raced = true;

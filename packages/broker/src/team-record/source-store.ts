@@ -3,6 +3,8 @@
 //                              both hold one place (the claim's condition is "absent, or this project's");
 //   SRCCHG#<id>                in the PROJECT partition: a less-safe change waiting for a second person (seven days; the table's TTL removes it after that);
 //   SRCREQ#<hash>              in the PROJECT partition: the outcome of one write request, so a repeat of it answers the same and writes nothing (a day).
+//   SRCREV#<system>#<hash>     in the PROJECT partition: the highest revision a removed source row reached and when it was removed, so a row added for the place again counts on from there
+//                              and a waiting change made against the old row can never fit the new one (hash and number only; no expiry).
 // A proposal holds person ids (`proposedBy`, `row.addedBy`, source ids in `row.exclude`): `scrubSourceChanges` is the erase step for them. Project archive and company close remove all three
 // kinds (`erase.ts`): the claim of a source row is dropped with the row (`dropScopeClaim`), the others are in the project's partition.
 import { createHash } from "node:crypto";
@@ -18,6 +20,7 @@ import type { TeamRecordTable } from "./types.js";
 export const SOURCE_CHANGE_SK_PREFIX = "SRCCHG#";
 export const SOURCE_SCOPE_SK_PREFIX = "SRCSCOPE#";
 export const SOURCE_REQUEST_SK_PREFIX = "SRCREQ#";
+export const SOURCE_REVISION_SK_PREFIX = "SRCREV#";
 /** How long a request item answers a repeat. */
 export const SOURCE_REQUEST_TTL_SECONDS = 86_400;
 /** Waiting changes one project may hold at once (the view lists at most this many). */
@@ -30,6 +33,8 @@ export const sourceRequestKey = (orgId: OrgId, project: string, developerId: str
   pk: teamRecordPk(orgId, project), sk: `${SOURCE_REQUEST_SK_PREFIX}${createHash("sha256").update(`${developerId}\0${requestId}`).digest("hex")}`,
 });
 
+export const sourceRevisionKey = (orgId: OrgId, project: string, system: string, scope: string) => ({ pk: teamRecordPk(orgId, project), sk: `${SOURCE_REVISION_SK_PREFIX}${system}#${teamRecordSourceHash(system, scope)}` });
+
 async function getItem(table: TeamRecordTable, key: { pk: string; sk: string }): Promise<Item | undefined> {
   return (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item }).Item;
 }
@@ -41,6 +46,31 @@ export async function readSourceRow(table: TeamRecordTable, orgId: OrgId, projec
   const config = sourceConfigFromItem(item);
   if (config === undefined) throw new Error("the source row is not readable");
   return config;
+}
+
+/** What a removed row of this place left: its last revision and when it went. Undefined when no row of the place was ever removed. */
+export async function readRevisionFloor(table: TeamRecordTable, orgId: OrgId, project: string, system: string, scope: string): Promise<{ revision: number; removedAt: string } | undefined> {
+  const item = await getItem(table, sourceRevisionKey(orgId, project, system, scope));
+  if (item === undefined) return undefined;
+  if (typeof item.revision !== "number" || typeof item.removedAt !== "string") throw new Error("the revision marker is not readable");
+  return { revision: item.revision, removedAt: item.removedAt };
+}
+
+/** Written with the removal of a row (the row was at `revision`, which is never lower than the marker it replaces: an add counts on from the marker). */
+export function revisionFloorPut(table: TeamRecordTable, orgId: OrgId, project: string, system: string, scope: string, revision: number, removedAt: string) {
+  return { Put: { TableName: table.tableName, Item: { ...sourceRevisionKey(orgId, project, system, scope), entityType: "TEAM_RECORD_SOURCE_REVISION", revision, removedAt } } };
+}
+
+/** The condition that the marker is still what an add read (absent, or at this revision). */
+export function revisionFloorCheck(table: TeamRecordTable, orgId: OrgId, project: string, system: string, scope: string, floor: { revision: number } | undefined) {
+  const aliases = new Aliases();
+  return {
+    ConditionCheck: {
+      TableName: table.tableName, Key: sourceRevisionKey(orgId, project, system, scope),
+      ...(floor === undefined ? { ConditionExpression: NOT_EXISTS }
+        : { ConditionExpression: `attribute_exists(pk) AND ${aliases.name("revision")} = ${aliases.value(floor.revision)}`, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values }),
+    },
+  };
 }
 
 /** The project that holds a place, or undefined when none does. */
