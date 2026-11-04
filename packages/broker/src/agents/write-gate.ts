@@ -36,7 +36,7 @@ import { latestRevision } from "../org/project-settings.js";
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import {
   approvalIdFromSeed, approvalTaskEventKey, createWriteApprovalRecord, getAnyApproval, registerApproverRule, registerWriteApprovalDriver, requireRegisteredApprovers,
-  runApprovalDecision, runOfApproval, shownText,
+  runApprovalDecision, runOfApproval, shownPersonName, shownText,
   type ApprovalDependencies, type ApproverSpec, type Execution, type WriteApprovalRecord,
 } from "./approvals.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
@@ -282,14 +282,14 @@ function gateOf(deps: ApprovalDependencies): WriteGateRuntime {
 export async function answerForHeldCall(deps: ApprovalDependencies, orgId: OrgId, approvalId: string): Promise<{ kind: "wait"; text: string } | { kind: "result"; result: NonNullable<WriteApprovalRecord["result"]> } | { kind: "decided"; text: string } | undefined> {
   const record = OrgIdSchema.safeParse(orgId).success && ApprovalIdSchema.safeParse(approvalId).success ? await getAnyApproval(deps, orgId, approvalId) : undefined;
   if (record?.kind !== "write") return undefined;
-  if (record.status === "PENDING" || record.status === "EXECUTING") return { kind: "wait", text: waitingForApprovalAnswer(shownText(record.owner.name, 80)).text };
+  if (record.status === "PENDING" || record.status === "EXECUTING") return { kind: "wait", text: waitingForApprovalAnswer(shownPersonName(record.owner, 80)).text };
   if (record.status === "APPROVED_DONE" && record.result !== undefined) return { kind: "result", result: record.result };
   return { kind: "decided", text: ALREADY_DECIDED_TEXT };
 }
 
 function answerForExisting(record: WriteApprovalRecord): WriteDecision {
   return record.status === "PENDING" || record.status === "EXECUTING"
-    ? { outcome: "wait", approvalId: record.approvalId, answer: waitingForApprovalAnswer(shownText(record.owner.name, 80)) }
+    ? { outcome: "wait", approvalId: record.approvalId, answer: waitingForApprovalAnswer(shownPersonName(record.owner, 80)) }
     : { outcome: "refuse", reason: ALREADY_DECIDED_TEXT };
 }
 
@@ -340,7 +340,7 @@ export async function decideWrite(deps: ApprovalDependencies, input: DecideWrite
 
   const now = deps.now();
   const createdAt = new Date(now).toISOString();
-  const ownerName = shownText(run.owner.name, 80);
+  const ownerName = shownPersonName(run.owner, 80);
   const repository = scopeRepositoryName(latest.definition, connector, call.scope);
   const summary = describeAction(tool.presentedName, call.arguments);
   const record: WriteApprovalRecord = {

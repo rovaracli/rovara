@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import {
+  BROKER_NAMES,
+  BROKER_NAMES_VARIABLE,
+  BROKER_SETTINGS,
+  BROKER_SETTINGS_VARIABLE,
   Ec2RuntimeBindingSchema,
   agentXError,
   type LegacyDeploymentMode,
@@ -169,8 +173,17 @@ function parseEc2RuntimeBinding(input: Record<string, unknown>): Ec2RuntimeBindi
 
 export function requiredEnvironment(name: string): string {
   const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
+  if (!value) throw new Error(`${name} is required${packedHint(name)}`);
   return value;
+}
+
+/** On the broker Lambda most names are not variables of their own: they arrive packed and broker-environment-init.ts puts them back. Says where, so a missing one is not hunted in the wrong place. */
+function packedHint(name: string): string {
+  const named = Object.values(BROKER_NAMES).find((spec) => spec.variable === name);
+  if (named !== undefined) return ` (on the broker it arrives packed in ${BROKER_NAMES_VARIABLE}, code ${named.code})`;
+  const setting = Object.values(BROKER_SETTINGS).find((spec) => spec.variable === name);
+  if (setting !== undefined) return ` (on the broker it arrives packed in ${BROKER_SETTINGS_VARIABLE}, code ${setting.code})`;
+  return "";
 }
 
 function claimValues(value: unknown): string[] {

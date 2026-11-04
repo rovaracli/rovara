@@ -77,6 +77,7 @@ import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolv
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from "./run-version-gate.js";
 import type { ApprovalDependencies } from "./approvals.js";
+import { log as logEvent } from "./approvals-store.js";
 import { validateRecipeForOrg, readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
 import { newOriginMemo, originView, withOriginView } from "../agent-sessions/origin.js";
@@ -239,7 +240,18 @@ const withDisabled = <T extends object>(body: T, disabled: ReadonlyArray<unknown
 
 /** The triggers a change turned off because they no longer qualify, for the answer. The change itself has been made. */
 async function recheck(deps: AgentRouteDependencies, orgId: OrgId, agentId: AgentId): Promise<Awaited<ReturnType<NonNullable<AgentRouteDependencies["triggerHooks"]>["recheckTriggersForTarget"]>>> {
-  return await deps.triggerHooks?.recheckTriggersForTarget(orgId, { kind: "agent", agentId }) ?? [];
+  // The change was committed before this runs (L5): a failure is logged and the answer is the change that was made, without the list. A trigger left on is looked at again when it starts a run.
+  try {
+    return await deps.triggerHooks?.recheckTriggersForTarget(orgId, { kind: "agent", agentId }) ?? [];
+  } catch (error) {
+    logRecheckFailed(deps, { kind: "agent", id: agentId }, error);
+    return [];
+  }
+}
+
+/** A trigger re-check that failed after its change was committed (L5), through the route dependencies' logger (the event the trigger code logs for one trigger, with the target's kind and id; only the error's name). */
+export function logRecheckFailed(deps: Pick<ApprovalDependencies, "log">, target: { kind: "agent" | "chain"; id: string }, error: unknown): void {
+  logEvent(deps, "trigger_recheck.failed", { targetKind: target.kind, targetId: target.id, error: error instanceof Error ? error.name : "unknown" });
 }
 
 /** `requireAgentAccess` for reading an agent: a built-in the company turned off is not found by a member, as it is missing from their list; owners and admins still see it. */

@@ -4,7 +4,7 @@
 //   C106: archive carries the actor fence and the manage snapshot that unarchive already had.
 // Each race test changes the world at the moment the broker's own transaction is sent, so a check made earlier cannot see it.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { agentKey, chainKey, developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey } from "@agentx/contracts";
 import { ADA, BEN, CARL, DEB, TRIAGE, ORG_B, person, setup, type World } from "../support/spend-world.js";
@@ -86,19 +86,54 @@ function lose(t: World, loss: ActorLoss, who: Developer = DEB) {
 
 for (const kind of ["agent", "chain"] as const) {
   describe(`C106: ${kind} archive is fenced like unarchive`, () => {
-    for (const archived of [false, true]) {
-      for (const loss of ACTOR_LOSSES) {
-        it(`${archived ? "an already archived" : "an active"} ${kind} refuses an archive by someone who lost access (${loss}) at its actual transaction`, async () => {
-          const f = await fixture(kind, { archived });
-          const before = f.state();
-          const race = f.raceOnce(() => lose(f.t, loss));
-          const reply = await f.t.api(DEB, "POST", f.path + "/archive", { requestId: randomUUID() });
-          expect(race.raced).toBe(true);
-          expect(reply.status, JSON.stringify(reply.body)).toBe(403);
-          expect(f.state()).toEqual(before);
-        });
-      }
+    for (const loss of ACTOR_LOSSES) {
+      it(`an active ${kind} refuses an archive by someone who lost access (${loss}) at its actual transaction`, async () => {
+        const f = await fixture(kind);
+        const before = f.state();
+        const race = f.raceOnce(() => lose(f.t, loss));
+        const reply = await f.t.api(DEB, "POST", f.path + "/archive", { requestId: randomUUID() });
+        expect(race.raced).toBe(true);
+        expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+        expect(f.state()).toEqual(before);
+      });
     }
+
+    // F4: the access is lost in the race window of an archive of something already archived: there is no transaction to race, so the answer is the same 200 and nothing is written.
+    for (const loss of ACTOR_LOSSES) {
+      it(`an already archived ${kind} answers 200 and writes nothing when the archiving person loses access (${loss}) between the route and the store`, async () => {
+        const f = await fixture(kind, { archived: true });
+        const before = f.state();
+        const send = f.t.db.send.bind(f.t.db);
+        let written = 0, lost = false;
+        f.t.db.send = async command => {
+          // The first read of the resource after the route's own is the store's; the access is lost just before it.
+          if (command instanceof TransactWriteCommand) written += 1;
+          const reply = await send(command);
+          if (!lost && (command as { input?: { Key?: { pk?: string; sk?: string } } }).input?.Key?.pk === f.key.pk && (command as { input?: { Key?: { sk?: string } } }).input?.Key?.sk === f.key.sk) { lost = true; lose(f.t, loss); }
+          return reply;
+        };
+        const reply = await f.t.api(DEB, "POST", f.path + "/archive", { requestId: randomUUID() });
+        expect(lost).toBe(true);
+        expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+        expect(written).toBe(0);
+        expect(f.state()).toEqual(before);
+      });
+    }
+
+    // L6: an archive of something already archived changes nothing, so it writes nothing: no update, no receipt, no event, and no transaction to refuse.
+    it(`an archive of an already archived ${kind} writes nothing at all, with or without a request`, async () => {
+      const f = await fixture(kind, { archived: true });
+      const before = f.state();
+      const sent: string[] = [];
+      const send = f.t.db.send.bind(f.t.db);
+      f.t.db.send = async command => { if (command instanceof TransactWriteCommand) sent.push("transaction"); return send(command); };
+      const reply = await f.t.api(DEB, "POST", f.path + "/archive", { requestId: randomUUID() });
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      const archived = await f.store.archive(TEST_ORG, f.id, DEB.developerId, undefined, { actor: fixtureActor(f.t.db, TEST_ORG, DEB.developerId) });
+      expect(archived.status).toBe("archived");
+      expect(sent).toEqual([]);
+      expect(f.state()).toEqual(before);
+    });
 
     it(`archives for an allowed actor, and emits its event once`, async () => {
       const f = await fixture(kind);
@@ -212,6 +247,36 @@ for (const kind of ["agent", "chain"] as const) {
       const actor = fixtureActor(f.t.db, TEST_ORG, ADA.developerId);
       await expect(f.store.setAccountable(TEST_ORG, f.id as never, { developerId: OUTSIDER.developerId }, ADA.developerId, undefined, { actor })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
       expect(f.state()).toEqual(before);
+    });
+
+    // L1: an actor who names themselves is held to the role the route checked them as (the actor's own checks pin it), not to the role read again by the store.
+    // Deb is an admin when the route checks her, a plain member by the time the store reads: her own refusal (403) answers, and not the destination's (400).
+    it("answers an actor who names themselves and lost their admin role between the route and the store's read with the actor's refusal", async () => {
+      for (const target of ["accountable", "owner"] as const) {
+        const f = await fixture(kind);
+        const actor = fixtureActor(f.t.db, TEST_ORG, DEB.developerId);
+        expect(actor.role).toBe("admin");
+        lose(f.t, "member_role");
+        const before = f.state();
+        const named = target === "accountable"
+          ? f.store.setAccountable(TEST_ORG, f.id, { developerId: DEB.developerId }, DEB.developerId, undefined, { actor })
+          : f.store.setOwner(TEST_ORG, f.id, { kind: "member", developerId: DEB.developerId }, DEB.developerId, undefined, undefined, { actor });
+        await expect(named, target).rejects.toMatchObject({ code: "FORBIDDEN" });
+        expect(f.state(), target).toEqual(before);
+      }
+    });
+
+    it("waits for an org admin (202) when the new owner's agent budgets would pass their cap, and changes nothing", async () => {
+      const f = await fixture(kind);
+      // Eve already holds $95 of the $100 a person may own; this one is $10.
+      await f.t.budgeted(50, EVE);
+      await f.t.budgeted(45, EVE);
+      const before = f.state();
+      const waiting = await f.t.api(ADA, "PUT", f.path + "/owner", { owner: { kind: "member", developerId: EVE.developerId } });
+      expect(waiting.status, JSON.stringify(waiting.body)).toBe(202);
+      expect(waiting.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+      expect(f.t.db.get(f.key)?.owner).toEqual({ kind: "project", project: "payments" });
+      expect(f.events()).toEqual(before.events);
     });
 
     it("moves the owner to a current member", async () => {
@@ -370,5 +435,92 @@ describe("an agent's owner change re-checks its triggers under the new owner", (
     expect(moved.status, JSON.stringify(moved.body)).toBe(200);
     expect((moved.body["disabledTriggers"] as Array<{ triggerId: string }>).map(entry => entry.triggerId)).toEqual([trigger.triggerId]);
     expect((await v.triggers.get(ORG_A, trigger.triggerId))?.enabled).toBe(false);
+  });
+});
+
+// ---- Cross-org, with a real resource on each side
+
+for (const kind of ["agent", "chain"] as const) {
+  describe(`${kind}: a person of another org cannot reach it, and cannot be named on it`, () => {
+    /** Orla is an admin of ORG_B only; Ben and Ada belong to the install's org. */
+    async function twoOrgs() {
+      const t = await setup({ decide: true, orgResolver: async session => (session.developerId === OUTSIDER.developerId ? ORG_B : TEST_ORG) });
+      t.db.set({ pk: `SESSION#${OUTSIDER.sessionId}`, sk: "META", sessionId: OUTSIDER.sessionId, developerId: OUTSIDER.developerId, amr: OUTSIDER.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
+      t.db.set({ pk: `DEVELOPER#${OUTSIDER.developerId}`, sk: "META", developerId: OUTSIDER.developerId, provider: OUTSIDER.provider, displayName: OUTSIDER.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+      await t.orgOf(OUTSIDER);
+      seedMembership(t.db, OUTSIDER.developerId, { orgId: ORG_B, role: "admin" });
+      return t;
+    }
+    const calls = (outsider: string): Array<[string, string, Record<string, unknown>]> => [
+      ["POST", "/archive", {}], ["POST", "/unarchive", {}],
+      ["PUT", "/owner", { owner: { kind: "member", developerId: outsider } }],
+      ["PUT", "/owner", { owner: { kind: "project", project: "payments" }, accountable: { developerId: outsider } }],
+      ["PUT", "/accountable", { accountable: { developerId: outsider } }],
+      ["PUT", "/budget", { monthlyUsd: 1 }],
+    ];
+    const rows = (t: World) => t.db.find(() => true).length;
+    const metaOf = (t: World, id: string, org: typeof TEST_ORG) => JSON.stringify(t.db.get(kind === "agent" ? agentKey(org, id, "META") : chainKey(org, id, "META")));
+
+    it("refuses an admin of the other org on a real resource, and writes nothing", async () => {
+      const t = await twoOrgs();
+      let id: string;
+      if (kind === "agent") id = await t.agentOf(TRIAGE, { by: BEN, owner: { kind: "project", project: "payments" }, accountable: BEN });
+      else {
+        const created = await t.api(BEN, "POST", "/v1/app/chains", { name: `Mine ${randomUUID().slice(0, 8)}`, owner: { kind: "project", project: "payments" }, accountable: { developerId: BEN.developerId } });
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
+        id = (created.body.chain as { chainId: string }).chainId;
+      }
+      const before = metaOf(t, id, TEST_ORG), count = rows(t);
+      for (const [method, suffix, body] of calls(OUTSIDER.developerId)) {
+        const reply = await t.api(OUTSIDER, method, pathOf(kind, id) + suffix, body);
+        expect([403, 404], `${method} ${suffix}: ${JSON.stringify(reply.body)}`).toContain(reply.status);
+      }
+      // An admin of this org cannot name that person as an owner or accountable maintainer either.
+      for (const [method, suffix, body] of calls(OUTSIDER.developerId).slice(2, 5)) {
+        const reply = await t.api(ADA, method, pathOf(kind, id) + suffix, body);
+        expect([400, 403, 404], `${method} ${suffix}: ${JSON.stringify(reply.body)}`).toContain(reply.status);
+      }
+      expect(metaOf(t, id, TEST_ORG)).toBe(before);
+      expect(rows(t)).toBe(count);
+    });
+
+    it("answers an admin of this org who asks about the other org's real resource with not found, and leaves it as it was", async () => {
+      const t = await twoOrgs();
+      const created = await t.api(OUTSIDER, "POST", kind === "agent" ? "/v1/app/agents" : "/v1/app/chains", kind === "agent"
+        ? { name: `Theirs ${randomUUID().slice(0, 8)}`, overlay: TRIAGE }
+        : { name: `Theirs ${randomUUID().slice(0, 8)}` });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      const id = kind === "agent" ? (created.body.agent as { agentId: string }).agentId : (created.body.chain as { chainId: string }).chainId;
+      expect(t.db.get(kind === "agent" ? agentKey(ORG_B, id as never, "META") : chainKey(ORG_B, id as never, "META"))).toBeDefined();
+      const before = metaOf(t, id, ORG_B), count = rows(t);
+      for (const [method, suffix, body] of calls(BEN.developerId)) {
+        const reply = await t.api(ADA, method, pathOf(kind, id) + suffix, body);
+        expect(reply.status, `${method} ${suffix}: ${JSON.stringify(reply.body)}`).toBe(404);
+      }
+      expect(metaOf(t, id, ORG_B)).toBe(before);
+      expect(rows(t)).toBe(count);
+    });
+  });
+}
+
+describe("an agent's trigger check that fails after the change was made (L5)", () => {
+  it("answers the change that was made, not a 500, and logs a fixed event through the route dependencies' logger, without the error's text", async () => {
+    const v = setupTriggerWorld();
+    const agent = await v.triggerAgent("Triage bot", [{ kind: "person" }, { kind: "event" as const, source: "github" as const, type: "issues.opened" }], { budgetUsd: 20 });
+    for (const who of [DANA, MAX]) fixtureActor(v.db, ORG_A, who);
+    vi.spyOn(v.routeDeps.triggerHooks!, "recheckTriggersForTarget").mockRejectedValue(Object.assign(new Error("secret detail the log must not carry"), { name: "ThrottlingException" }));
+    const logged: Array<{ event: string; detail: Record<string, unknown> }> = [];
+    v.routeDeps.log = (event, detail) => { logged.push({ event, detail }); };
+    try {
+      const moved = await v.agentCall(DANA, "PUT", `/v1/app/agents/${agent.agentId}/owner`, { owner: { kind: "member", developerId: MAX } });
+      expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+      expect(moved.body["disabledTriggers"]).toBeUndefined();
+      expect((await v.routeDeps.store.get(ORG_A, agent.agentId))?.owner).toEqual({ kind: "member", developerId: MAX });
+      const failed = logged.filter(entry => entry.event === "trigger_recheck.failed");
+      expect(failed).toEqual([{ event: "trigger_recheck.failed", detail: { targetKind: "agent", targetId: agent.agentId, error: "ThrottlingException" } }]);
+      expect(JSON.stringify(logged)).not.toContain("secret detail");
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

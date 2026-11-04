@@ -71,6 +71,9 @@ const SSH_URL_BEFORE = /(?:ssh|sftp|rsync|git|svn)(?:\+\w+)*:\/\/$/iu;
 const SSH_BEFORE = /(?:^|[\s;&|(])(?:ssh|scp|sftp|rsync|mosh)(?:[ \t]+-\S+(?:[ \t]+[^\s-]\S*)?)*[ \t]+$/iu;
 /** The ways an at sign is spelled that NFKC folds to "@" (fullwidth, small). */
 const AT_SPELLINGS = /[@\uFF20\uFE6B]/u;
+/** The ways an at sign is written out in a link or a page: percent-encoded (`%40`, and `%2540` once more), or an HTML reference (`&#64;`, `&#x40;`, `&commat;`). */
+const ENCODED_AT = /%(?:25)?40|&#0*64;|&#x0*40;|&commat;/iu;
+const ENCODED_AT_HERE = /(?:%(?:25)?40|&#0*64;|&#x0*40;|&commat;)/iuy;
 
 /**
  * The text with every email address replaced by `EMAIL_HIDDEN`, for free text that reaches other people (a session card, a Slack message, a pull request, a decision card).
@@ -79,14 +82,28 @@ const AT_SPELLINGS = /[@\uFF20\uFE6B]/u;
  * found by reading each character in its compatibility form; only the address itself is replaced, and every other character stays as it was.
  */
 export function hideEmailAddresses(text: string): string {
-  if (typeof text !== "string" || !AT_SPELLINGS.test(text)) return text;
+  if (typeof text !== "string" || !(AT_SPELLINGS.test(text) || ENCODED_AT.test(text))) return text;
   // The text in compatibility form, with where each folded character came from, so the address (and nothing else) can be replaced in the original.
+  // An at sign written out (`%40`, `&#64;`) is read as "@" here, so the same rule finds it: the address in `?email=maya%40example.test` is hidden, and a scope in `/%40scope%2Fpkg` is not an address.
   let folded = "";
   const starts: number[] = [];
   const ends: number[] = [];
   let index = 0;
-  for (const character of text) {
+  while (index < text.length) {
+    ENCODED_AT_HERE.lastIndex = index;
+    const written = ENCODED_AT_HERE.exec(text);
+    if (written !== null) {
+      folded += "@";
+      starts.push(index);
+      ends.push(index + written[0].length);
+      index += written[0].length;
+      continue;
+    }
+    const character = String.fromCodePoint(text.codePointAt(index)!);
     const next = index + character.length;
+    // A zero-width or other format character is invisible, so it is no part of what a person reads as an address: a pull request text makes a mention inert with one after the at sign
+    // (`user@\u200Dexample.test`), and one placed inside the domain would otherwise split the address. The folded text leaves them out; the replaced span still covers them.
+    if (/^\p{Cf}$/u.test(character)) { index = next; continue; }
     for (const piece of character.normalize("NFKC")) {
       for (let unit = 0; unit < piece.length; unit += 1) { starts.push(index); ends.push(next); }
       folded += piece;

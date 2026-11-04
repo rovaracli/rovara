@@ -515,7 +515,8 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
     const chain = await this.require(orgId, chainId);
     const sourceGuard = (a: Aliases) => `${budgetGuard(chain)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(chain.updatedAt)}`}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`;
     if (chain.status === status) {
-      if (status === "active" || actorChecks.length > 0) {
+      // An archive of something already archived changes nothing, so it writes nothing (L6): the arguments were checked above, and there is no share to take out.
+      if (status === "active") {
         const actorStart = 1;
         await this.commit(...withOverride([
           this.update(chainKey(orgId, chainId, "META"), { set: { status }, when: sourceGuard }),

@@ -84,6 +84,60 @@ describe("hideEmailAddresses", () => {
   });
 });
 
+// S3-L5: the encoded spellings of the at sign (percent-encoded, once or twice, and the HTML references) are the same address, in a link's query or a rendered body.
+describe("hideEmailAddresses: an at sign spelled %40 or &#64;", () => {
+  const at = String.fromCharCode(64);
+  it("hides an address whose at sign is percent-encoded or an HTML reference, and changes nothing else around it", () => {
+    const cases: Array<[string, string]> = [
+      [`https://example.test/u?email=maya%40example.test&x=1`, `https://example.test/u?email=${EMAIL_HIDDEN}&x=1`],
+      [`maya%40example.test`, EMAIL_HIDDEN], [`maya%2540example.test`, EMAIL_HIDDEN], [`maya%2540EXAMPLE.TEST`, EMAIL_HIDDEN],
+      [`write to maya&#64;example.test.`, `write to ${EMAIL_HIDDEN}.`], [`maya&#x40;example.test`, EMAIL_HIDDEN], [`maya&#X40;example.test`, EMAIL_HIDDEN], [`maya&#064;example.test`, EMAIL_HIDDEN], [`maya&commat;example.test`, EMAIL_HIDDEN],
+      [`a%40b.test and c${at}d.test`, `${EMAIL_HIDDEN} and ${EMAIL_HIDDEN}`],
+      [`<a href="mailto:maya%40example.test">maya&#64;example.test</a>`, `<a href="mailto:${EMAIL_HIDDEN}">${EMAIL_HIDDEN}</a>`],
+    ];
+    for (const [text, expected] of cases) expect(hideEmailAddresses(text), text).toBe(expected);
+  });
+
+  it("leaves encoded at signs that are not addresses alone (scopes, versions, mentions, percent signs)", () => {
+    const samples = [
+      "https://registry.npmjs.org/%40scope%2Fpkg", "https://registry.npmjs.org/%40scope/pkg/-/pkg-1.2.3.tgz", "npm i react%4018.3.1", "image%40sha256:abc123", "HEAD%40{1}",
+      "mention &#64;octocat and &#64;team.", "a &commat; sign", "100%40 off", "5%40", "pkg%40git+https://example.test/pkg.git", "git clone git%40github.com:org/repo.git",
+      "ssh://git%40github.com/org/repo.git", `${at}scope/pkg&#64;1.2.3`, "%4", "%2540", "&#64", "&#6;4",
+    ];
+    for (const text of samples) expect(hideEmailAddresses(text), text).toBe(text);
+  });
+});
+
+// A pull request text makes an at sign inert with a zero-width joiner after it (`user@\u200Dexample.test`); GitHub shows that as an address, so it is one.
+describe("hideEmailAddresses: an address made inert for GitHub", () => {
+  const at = String.fromCharCode(64), zwj = "\u200D";
+  it("hides an address whose at sign is followed by a zero-width character, and all of it", () => {
+    expect(hideEmailAddresses(`notes/omar.diaz${at}${zwj}example.test.md (+3 -1)`)).toBe(`notes/${EMAIL_HIDDEN} (+3 -1)`);
+    expect(hideEmailAddresses(`write to maya${at}${zwj}${zwj}example.test.`)).toBe(`write to ${EMAIL_HIDDEN}.`);
+    expect(hideEmailAddresses(`maya${at}\u2060example.test and x${at}${zwj}y.test`)).toBe(`${EMAIL_HIDDEN} and ${EMAIL_HIDDEN}`);
+  });
+
+  // F1: a format character anywhere in the address (the domain too) is part of its spelling.
+  it("hides an address with a zero-width character inside its domain, and all of it", () => {
+    expect(hideEmailAddresses(`user${at}exa${zwj}mple.test`)).toBe(EMAIL_HIDDEN);
+    expect(hideEmailAddresses(`user${at}example${zwj}.test`)).toBe(EMAIL_HIDDEN);
+    expect(hideEmailAddresses(`user${at}example.te${zwj}st`)).toBe(EMAIL_HIDDEN);
+    expect(hideEmailAddresses(`user${zwj}${at}example.test, u${at}\u00ADexample.test and x${at}y${zwj}.z${zwj}z.test.`)).toBe(`${EMAIL_HIDDEN}, ${EMAIL_HIDDEN} and ${EMAIL_HIDDEN}.`);
+  });
+
+  it("leaves text with format characters that is not an address alone", () => {
+    for (const text of [`react${at}18.${zwj}3.1`, `git${at}github${zwj}.com:org/repo.git`, `a${zwj}${at}${zwj}b`, `image${at}sha${zwj}256:abc123`, `emoji \u{1F468}${zwj}\u{1F469} and ${at}octo${zwj}cat`, `x ${at}${zwj} y.test`]) {
+      expect(hideEmailAddresses(text), text).toBe(text);
+    }
+  });
+
+  it("leaves the inert forms of things that are not addresses alone", () => {
+    for (const text of [`${at}${zwj}octocat and ${at}${zwj}scope/pkg`, `npm i react${at}${zwj}18.3.1`, `git clone git${at}${zwj}github.com:org/repo.git`, `see https://${zwj}example.test/${at}${zwj}maya/posts.html`, `a${at}${zwj}b`]) {
+      expect(hideEmailAddresses(text), text).toBe(text);
+    }
+  });
+});
+
 describe("shownText (write-gate, decision and Home words)", () => {
   it("hides an address in what an agent or a vendor supplied", () => {
     const shown = shownText(`Email ${OMAR} the report`, 300);

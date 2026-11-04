@@ -740,7 +740,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const agent = await this.require(orgId, agentId);
     const sourceGuard = (a: Aliases) => `${budgetGuard(agent)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${agent.maxPerRunUsd === undefined ? `attribute_not_exists(${a.name("maxPerRunUsd")})` : `${a.name("maxPerRunUsd")} = ${a.value(agent.maxPerRunUsd)}`}`}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`;
     if (agent.status === status) {
-      if (status === "active" || actorChecks.length > 0) {
+      // An archive of something already archived changes nothing, so it writes nothing (L6): the arguments were checked above, and there is no share to take out.
+      if (status === "active") {
         const actorStart = 1;
         await this.commit(...withOverride([
           this.update(agentKey(orgId, agentId, "META"), { set: { status }, when: sourceGuard }),
