@@ -6,6 +6,7 @@ import {
   type DesignReason, type IntentAssessment, type SkipVerdict, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { plainLine } from "../decisions/text.js";
+import { inertLine } from "../rovara-code/inert-text.js";
 import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, isEffectiveSetting, type EffectiveDesignReviewSetting } from "./effective-setting.js";
 
 export type DesignDecidedBy = "auto" | "always" | "person" | "person_skip" | "never";
@@ -105,7 +106,9 @@ const reasonText = (reasons: readonly DesignReason[]): string => reasons.map((re
 export function designClassificationLine(decision: DesignModeDecision): string | undefined {
   if (!decision.decided) return undefined;
   const reasons = reasonText(decision.reasons);
-  const reading = decision.note === undefined ? "" : ` Note from Rovara: ${decision.note}`;
+  // The note is model text read from the request, and the line is posted in Slack and Linear threads: it is made inert first (no mention, link, image or tag survives; `&` and `<` are entities, and `>` too), so
+  // `<!channel>`, `<https://x|label>` and `<@U1>` are words, never a notification or a link (ON-2).
+  const reading = decision.note === undefined ? "" : ` Note from Rovara: ${inertLine(decision.note, 300).replaceAll(">", "&gt;")}`;
   if (decision.on) {
     const quickNote = decision.quickOverridden ? " You asked for quick, so this task runs the full path to make room for the design." : "";
     switch (decision.decidedBy) {
