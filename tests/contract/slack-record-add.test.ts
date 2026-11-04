@@ -427,7 +427,7 @@ describe("the switch gates the handed-off press at both Lambda doors", () => {
   const press = (): HandedOffLearnPress => ({
     source: "agentx.slack-interactivity", action: "team-record-slack-add-press", responseUrl: RESPONSE_URL,
     press: { teamId: team, userId: maya, channelId: channel, token: "tok-0000", project: "web", retention: "C", interactionId: "1.2.3" },
-  } as HandedOffLearnPress);
+  });
 
   function wire(recordOn: boolean) {
     process.env.STATE_TABLE_NAME = "state"; process.env.SLACK_THREADS_TABLE_NAME = "threads";
@@ -452,12 +452,12 @@ describe("the switch gates the handed-off press at both Lambda doors", () => {
   it("the interactivity Lambda: with the switch on the press is run (the broker is asked, the response URL answered); with it off nothing is", async () => {
     const on = wire(true);
     const { createAwsSlackInteractivityHandler } = await import("../../packages/broker/src/aws/slack-interactivity.js");
-    expect(await createAwsSlackInteractivityHandler()(press() as never)).toMatchObject({ statusCode: 200, body: JSON.stringify({ outcome: "final" }) });
+    expect(await createAwsSlackInteractivityHandler()(press())).toMatchObject({ statusCode: 200, body: JSON.stringify({ outcome: "final" }) });
     expect(on.invoked).toHaveLength(1);
     expect(on.posted.some((url) => url.startsWith("https://hooks.slack.com/"))).toBe(true);
     vi.restoreAllMocks();
     const off = wire(false);
-    const answer = await settled(() => createAwsSlackInteractivityHandler()(press() as never));
+    const answer = await settled(() => createAwsSlackInteractivityHandler()(press()));
     expect(JSON.stringify(answer)).not.toContain("outcome");
     expect(off.invoked).toEqual([]);
     expect(off.posted).toEqual([]);
@@ -467,12 +467,12 @@ describe("the switch gates the handed-off press at both Lambda doors", () => {
     const on = wire(true);
     vi.resetModules();
     const onEntry = (await import("../../packages/broker/src/aws/slack-ingress.js")).handler;
-    expect(await onEntry(press() as never)).toMatchObject({ statusCode: 200, body: JSON.stringify({ outcome: "final" }) });
+    expect(await onEntry(press())).toMatchObject({ statusCode: 200, body: JSON.stringify({ outcome: "final" }) });
     expect(on.invoked).toHaveLength(1);
     vi.restoreAllMocks(); vi.resetModules();
     const off = wire(false);
     const offEntry = (await import("../../packages/broker/src/aws/slack-ingress.js")).handler;
-    const answer = await settled(() => offEntry(press() as never));
+    const answer = await settled(() => offEntry(press()));
     expect(JSON.stringify(answer)).not.toContain("outcome");
     expect(off.invoked).toEqual([]);
     expect(off.posted).toEqual([]);
