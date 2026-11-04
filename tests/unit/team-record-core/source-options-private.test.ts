@@ -315,6 +315,33 @@ describe("your private channels: pages, the cap and the limits", () => {
     expect((await options(h, WHO.maint, { ...PRIVATE, cursor })).status).toBe(200);
   });
 
+  it("a private session belongs to the person who opened it: another editor's use of the cursor is refused, Slack is not asked and the owner's budget is not spent", async () => {
+    const h = harness();
+    h.byUser.set(U1, many(10));
+    h.byUser.set(U2, many(10));
+    const first = await options(h, WHO.maint, PRIVATE);
+    const cursor = first.body.next as string;
+    const before = h.calls.length;
+    for (let call = 0; call < 12; call += 1) {
+      h.w.clock.ms += 6_000;
+      expect(await options(h, WHO.maint2, { ...PRIVATE, cursor }), String(call)).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    }
+    expect(h.calls).toHaveLength(before);
+    // The owner still has every one of the 10 pages.
+    let served = 1;
+    for (let call = 0; call < 14; call += 1) { h.w.clock.ms += 6_000; if ((await options(h, WHO.maint, { ...PRIVATE, cursor })).status === 200) served += 1; }
+    expect(served).toBe(10);
+  });
+
+  it("what the session keeps of the person is a salted hash, never the developer id", async () => {
+    const h = harness();
+    h.byUser.set(U1, many(10));
+    await options(h, WHO.maint, PRIVATE);
+    const [item] = h.w.db.find((entry) => entry.entityType === "TEAM_RECORD_SOURCE_OPTIONS");
+    expect(item!.person).toMatch(/^[0-9a-f]{64}$/u);
+    expect(JSON.stringify(item)).not.toContain(MAINT);
+  });
+
   it("a session holds no person, no Slack user id, no name: only ids of the session, the kind, the project and a count", async () => {
     const h = harness();
     h.byUser.set(U1, many(10));

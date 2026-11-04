@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from "react";
-import { parseSlackPlaceInput, type SourcePickerKind } from "@agentx/contracts/web";
+import { slackPlaceFieldText, type SourcePickerKind } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { useSourceOptions, type SourceOptionsPage } from "../../../api/record-source-options.js";
 import { Button } from "../../../design/Button.js";
@@ -15,12 +15,6 @@ const WORDS: Readonly<Record<Exclude<SourcePickerKind, "slack-private">, { pick:
 const SHOWN_MAX = 100;
 const REASON: Readonly<Record<string, string>> = { added: T.SRC_OPT_ADDED, taken: T.SRC_OPT_TAKEN, slack_connect: T.SRC_OPT_CONNECT, clearing: T.SRC_OPT_CLEARING };
 type Option = SourceOptionsPage["options"][number];
-
-/** A pasted Slack link or ID becomes the ID the server will use (an app link keeps its workspace); anything else is left as typed. The server reads it again. */
-function filledPlace(text: string): string {
- const parsed = parseSlackPlaceInput(text);
- return parsed === undefined || parsed.form === "scope" ? text : parsed.form === "client" ? "slack:" + parsed.teamId! + "/" + parsed.channelId : parsed.channelId;
-}
 
 /** The radio rows of a list. An option that is not available (already a source, used elsewhere, Slack Connect, clearing) is disabled with its reason; the bot-not-in-channel hint only where `hint` is on. */
 function OptionRows({ options, group, value, onChange, unavailable, hint }: { options: readonly Option[]; group: string; value: string; onChange: (scope: string) => void; unavailable: (scope: string) => boolean; hint: boolean }) {
@@ -82,7 +76,7 @@ export function PlacePicker({ project, kind, value, onChange, unavailable }: { p
  return <div className="rv-lessons-edit">
   {failure !== undefined && <p className="rv-muted">{failure}</p>}
   {typedField
-   ? <TextField label={words.typed} hint={words.hint} value={value} maxLength={300} autoComplete="off" onChange={event => { onChange(kind === "slack" ? filledPlace(event.target.value) : event.target.value); }} />
+   ? <TextField label={words.typed} hint={words.hint} value={value} maxLength={300} autoComplete="off" onChange={event => { onChange(kind === "slack" ? slackPlaceFieldText(event.target.value) : event.target.value); }} />
    : <fieldset className="rv-lessons-picker"><legend>{words.pick}</legend>
      {loading ? <p role="status" className="rv-muted">{T.SRC_LIST_LOADING}</p> : <>
       <TextField label={words.find} value={search} autoComplete="off" onChange={event => { setSearch(event.target.value); }} />

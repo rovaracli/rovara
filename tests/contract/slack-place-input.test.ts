@@ -1,7 +1,7 @@
 // What the Slack "place" field accepts (source-row lane, task 11, B): a bare channel ID, a Slack channel link (`https://<workspace>.slack.com/archives/<ID>` or `https://app.slack.com/client/<TEAM>/<ID>`),
 // or the full `slack:<team>/<channel>` place. One pure function in the contracts, used by the screen (to fill the ID) and again by the server (which never trusts the screen).
 import { describe, expect, it } from "vitest";
-import { SOURCE_PICKER_KINDS, SourceOptionsQuerySchema, SourceOptionsViewSchema, parseSlackPlaceInput } from "@agentx/contracts";
+import { SOURCE_PICKER_KINDS, SourceOptionsQuerySchema, SourceOptionsViewSchema, parseSlackPlaceInput, slackPlaceFieldText } from "@agentx/contracts";
 import * as web from "@agentx/contracts/web";
 
 const UUID = "11111111-1111-4111-8111-111111111111";
@@ -46,6 +46,20 @@ describe("parseSlackPlaceInput", () => {
   it("the web entry carries the same function (the screen uses it, and so does the server)", () => {
     expect(web.parseSlackPlaceInput).toBe(parseSlackPlaceInput);
   });
+});
+
+describe("slackPlaceFieldText: what the screen puts in the field (the server reads the same forms)", () => {
+  it("an ID or workspace link becomes the bare ID; an app link of a workspace (T...) keeps its team; an Enterprise (E...) app link becomes the bare ID too, because only the server knows the install's workspace", () => {
+    expect(slackPlaceFieldText(" C0123ABCD ")).toBe("C0123ABCD");
+    expect(slackPlaceFieldText("https://acme.slack.com/archives/G0123ABCD/p1700000000123456")).toBe("G0123ABCD");
+    expect(slackPlaceFieldText("https://app.slack.com/client/T0AAAAAAA/C0123ABCD")).toBe("slack:T0AAAAAAA/C0123ABCD");
+    expect(slackPlaceFieldText("https://app.slack.com/client/E0ENTERPR/C0123ABCD")).toBe("C0123ABCD");
+  });
+  it("the full place and anything else stay as typed", () => {
+    for (const text of ["slack:T1/C9", "slack:E0ENTERPR/C0123ABCD", " slack:T0AAAAAAA/C0123ABCD ", "general", "https://example.com/archives/C0123ABCD", ""]) expect(slackPlaceFieldText(text), text).toBe(text);
+  });
+  it("the web entry carries it", () => { expect(web.slackPlaceFieldText).toBeTypeOf("function");
+    expect(web.slackPlaceFieldText).toBe(slackPlaceFieldText); });
 });
 
 describe("the private picker kind", () => {

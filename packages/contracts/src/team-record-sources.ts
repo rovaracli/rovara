@@ -172,3 +172,14 @@ export function parseSlackPlaceInput(input: string): SlackPlaceInput | undefined
   if (!SLACK_HOST.test(url.hostname) || parts[1] !== "archives" || !SLACK_CHANNEL_ID.test(parts[2] ?? "")) return undefined;
   return { form: "archives", channelId: parts[2]! };
 }
+
+/**
+ * What the Add form puts in the Slack field for what was pasted: an ID or workspace link becomes the bare ID, an app link of a workspace (`T...`) keeps its team (`slack:<team>/<ID>`, so the server can say it is another workspace), and an
+ * app link with an Enterprise id (`E...`) becomes the bare ID too (only the server knows the install's workspace, and it gives a bare ID that one). Anything else, the full place included, stays as typed. The server reads the field again
+ * with `parseSlackPlaceInput`; both sides use these same forms.
+ */
+export function slackPlaceFieldText(text: string): string {
+  const parsed = parseSlackPlaceInput(text);
+  if (parsed === undefined || parsed.form === "scope") return text;
+  return parsed.form === "client" && parsed.teamId!.startsWith("T") ? `slack:${parsed.teamId!}/${parsed.channelId}` : parsed.channelId;
+}

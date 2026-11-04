@@ -14,7 +14,7 @@
 // taken before the tool is asked and never given back, so a failing read cannot repeat past it); the tool's own cursor is checked before anything is spent. Every failure is a fixed code: Slack down or unreadable, an app
 // that cannot be read, no reader wired, all 503 `RUNTIME_UNAVAILABLE` (the screen then offers the typed field); a bot without the listing scopes is 503 `SLACK_SCOPE_MISSING`. No text from Slack or a tool
 // is ever in an error; names appear only in the options, cut to 200 characters, and the screen shows them as plain text.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, SourceOptionsQuerySchema, SourceOptionsViewSchema, agentXError, teamRecordPk, type OrgId, type SourceOption, type SourcePickerKind } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, errorName } from "../agents/table-writes.js";
@@ -46,6 +46,8 @@ const SLACK_USER_ID = /^[UW][A-Z0-9]{2,31}$/u;
 export const LINKED_IDS_MAX = 5;
 /** Private page reads a company may make a minute: its own bucket (`users.conversations` is a different Slack method from `conversations.list`), and no more than the public one. */
 export const PRIVATE_LIST_PER_MINUTE = 12;
+/** What a private session keeps of the person who opened it: a hash of the company and the developer id (never the id), so another editor's cursor cannot spend this person's pages. Other kinds' sessions keep no person. */
+const personOf = (orgId: OrgId, developerId: string): string => createHash("sha256").update(`source-options|${orgId}|${developerId}`).digest("hex");
 const sourceOfKind = (kind: SourcePickerKind): "slack" | "linear" | "jira" => (kind === "slack-private" ? "slack" : kind);
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "The list can't be read right now.");
 const scopeMissing = (): RecordRouteReply => ({ status: 503, body: { code: "SLACK_SCOPE_MISSING", message: "Rovara can't list channels. Ask an admin to reinstall the Slack app." } });
@@ -72,7 +74,7 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
 
   // The server's own count of pages read in this session (a later page adds one, and is refused at the bound), or, for a first page, the person's rate.
   let pages = 1;
-  if (session !== undefined) pages = await takePage(deps, orgId, project, kind, session);
+  if (session !== undefined) pages = await takePage(deps, orgId, project, kind, session, kind === "slack-private" ? personOf(orgId, request.caller.developerId) : undefined);
   else await ration(deps, orgId, `person:${request.caller.developerId}`, "source-options", LISTINGS_PER_PERSON_PER_MINUTE);
 
   // A page counts only once it was read: a read that fails or is refused (Slack down, the company's budget) gives its page back.
@@ -97,7 +99,7 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
   let next: string | undefined;
   let truncated = false;
   if (found.next !== undefined) {
-    if (session === undefined) { session = await openSession(deps, orgId, project, kind); pages = 1; }
+    if (session === undefined) { session = await openSession(deps, orgId, project, kind, kind === "slack-private" ? personOf(orgId, request.caller.developerId) : undefined); pages = 1; }
     if (pages >= OPTION_PAGES_MAX) truncated = true; else next = `${session}.${found.next}`;
   }
   const scopes = found.options.map((option) => option.scope);
@@ -221,12 +223,12 @@ const sessionKey = (orgId: OrgId, session: string) => ({ pk: teamRecordPk(orgId)
 const nowSeconds = (deps: RecordQueryDependencies): number => Math.floor((deps.now ?? Date.now)() / 1000);
 
 /** The session of a listing that has more pages: this company's partition, this project and kind, the pages read so far (one). Holds no person and no text. */
-async function openSession(deps: RecordQueryDependencies, orgId: OrgId, project: string, kind: SourcePickerKind): Promise<string> {
+async function openSession(deps: RecordQueryDependencies, orgId: OrgId, project: string, kind: SourcePickerKind, person?: string): Promise<string> {
   const session = randomUUID();
   try {
     await deps.table.documentClient.send(new PutCommand({
       TableName: deps.table.tableName,
-      Item: { ...sessionKey(orgId, session), entityType: "TEAM_RECORD_SOURCE_OPTIONS", kind, project, pages: 1, [INDEX_EXPIRY_ATTRIBUTE]: nowSeconds(deps) + OPTION_SESSION_SECONDS },
+      Item: { ...sessionKey(orgId, session), entityType: "TEAM_RECORD_SOURCE_OPTIONS", kind, project, ...(person === undefined ? {} : { person }), pages: 1, [INDEX_EXPIRY_ATTRIBUTE]: nowSeconds(deps) + OPTION_SESSION_SECONDS },
       ConditionExpression: NOT_EXISTS,
     }));
   } catch { throw unavailable(); }
@@ -234,14 +236,14 @@ async function openSession(deps: RecordQueryDependencies, orgId: OrgId, project:
 }
 
 /** One more page of the session, or a refusal: the session must exist in THIS company's partition, be unexpired, belong to this project and kind, and have read fewer than 10 pages. Returns the count now. */
-async function takePage(deps: RecordQueryDependencies, orgId: OrgId, project: string, kind: SourcePickerKind, session: string): Promise<number> {
+async function takePage(deps: RecordQueryDependencies, orgId: OrgId, project: string, kind: SourcePickerKind, session: string, person?: string): Promise<number> {
   const aliases = new Aliases();
   const [pages, kindName, projectName, expires] = [aliases.name("pages"), aliases.name("kind"), aliases.name("project"), aliases.name(INDEX_EXPIRY_ATTRIBUTE)];
   try {
     const result = await deps.table.documentClient.send(new UpdateCommand({
       TableName: deps.table.tableName, Key: sessionKey(orgId, session),
       UpdateExpression: `ADD ${pages} ${aliases.value(1)}`,
-      ConditionExpression: `attribute_exists(pk) AND ${kindName} = ${aliases.value(kind)} AND ${projectName} = ${aliases.value(project)} AND ${pages} < ${aliases.value(OPTION_PAGES_MAX)} AND ${expires} > ${aliases.value(nowSeconds(deps))}`,
+      ConditionExpression: `attribute_exists(pk) AND ${kindName} = ${aliases.value(kind)} AND ${projectName} = ${aliases.value(project)} AND ${pages} < ${aliases.value(OPTION_PAGES_MAX)}${person === undefined ? "" : ` AND ${aliases.name("person")} = ${aliases.value(person)}`} AND ${expires} > ${aliases.value(nowSeconds(deps))}`,
       ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values, ReturnValues: "ALL_NEW",
     })) as { Attributes?: { pages?: unknown } };
     const count = result.Attributes?.pages;

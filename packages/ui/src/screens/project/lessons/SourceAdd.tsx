@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { parseSlackPlaceInput } from "@agentx/contracts/web";
 import { useQueryClient } from "@tanstack/react-query";
 import { sourceOptionsRoot } from "../../../api/record-source-options.js";
 import { sourcesAdminKey, type SourcesAdminViewData } from "../../../api/record-sources.js";
@@ -21,7 +22,9 @@ const withAncestors = (scope: string): string[] => { const out = [scope];for (le
 /** The clearing row the place matches, or undefined: the place, or one above or below it, of a removed source whose data is still being cleared. It is what the server refuses (`refuseWhileRemoving`), so the form never disagrees with it. */
 const clearingMatch = (view: SourcesAdminViewData, source: string, scope: string) => {
  const above = new Set(withAncestors(scope));
- return (view.clearing ?? []).find(place => place.source === source && (above.has(place.scope) || place.scope.startsWith(scope + "/")));
+ // A Slack channel is known by its ID (they are unique, and the view holds only this company's rows): a pasted bare ID, a link or a place of any team matches the clearing row that ends in the same ID.
+ const channel = source === "slack" ? parseSlackPlaceInput(scope)?.channelId : undefined;
+ return (view.clearing ?? []).find(place => place.source === source && (above.has(place.scope) || place.scope.startsWith(scope + "/") || (channel !== undefined && place.scope.endsWith("/" + channel))));
 };
 const isClearing = (view: SourcesAdminViewData, source: string, scope: string): boolean => clearingMatch(view, source, scope) !== undefined;
 

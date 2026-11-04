@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { SourceOptionsViewSchema } from "@agentx/contracts/web";
-import { flat } from "./support/sources-fixture.js";
+import { adminView, flat } from "./support/sources-fixture.js";
 import { ok } from "./support/lessons-fixture.js";
 import { openSources } from "./support/sources-render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
@@ -194,6 +194,16 @@ describe("B: a pasted link or ID fills the ID", () => {
     expect(field.value).toBe(filled);
   });
 
+  it("an Enterprise app link (E...) fills the bare ID, not a place the server would call another workspace; the ID is what is sent", async () => {
+    const { f, form, field } = await typed();
+    fireEvent.change(field, { target: { value: "https://app.slack.com/client/E0ENTERPR/C0123ABCD" } });
+    expect(field.value).toBe("C0123ABCD");
+    pick("How long Rovara keeps it", "B", form);
+    fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
+    await waitFor(() => { expect(f.posts).toHaveLength(1); });
+    expect(f.posts[0]).toMatchObject({ source: "slack", scope: "C0123ABCD" });
+  });
+
   it("anything else is left as typed (a channel name, another site, the full place): the server decides", async () => {
     const { field } = await typed();
     for (const text of ["general", "#general", "https://example.com/archives/C0123ABCD", "slack:T1/C9", "https://acme.slack.com/team/U0123ABCD"]) {
@@ -247,5 +257,36 @@ describe("C: invite Rovara first", () => {
     pick("How long Rovara keeps it", "B", form);
     fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
     expect(await screen.findByText(WRONG_WORKSPACE)).toBeTruthy();
+  });
+});
+
+describe("a place that was just removed is recognised by its channel ID, however it was written", () => {
+  const CLEARING = [{ source: "slack", scope: "slack:T0TEAM01/C0GONE001", since: "2026-10-30T10:00:00.000Z" }];
+  const REMOVAL = "This source was just removed and its stored data is still being deleted. You can add it again in about an hour.";
+  it.each([
+    ["a bare ID", "C0GONE001"],
+    ["a workspace link", "https://acme.slack.com/archives/C0GONE001"],
+    ["an Enterprise app link", "https://app.slack.com/client/E0ENTERPR/C0GONE001"],
+    ["an app link of the workspace", "https://app.slack.com/client/T0TEAM01/C0GONE001"],
+    ["the full place of another team", "slack:T0OTHER99/C0GONE001"],
+  ])("%s: the same removal line shows and Add stays off", async (_name, text) => {
+    const { f, form } = await open({ view: adminView({ clearing: CLEARING }) });
+    pick("What to add", "slack");
+    fireEvent.click(await within(form).findByRole("button", { name: "Enter an ID or link instead" }));
+    fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: text } });
+    expect(await within(form).findByText(REMOVAL)).toBeTruthy();
+    pick("How long Rovara keeps it", "B", form);
+    expect(within(form).getByRole<HTMLButtonElement>("button", { name: "Add source" }).disabled).toBe(true);
+    expect(f.posts).toEqual([]);
+  });
+
+  it("another channel is not held back (positive control), and a Linear place is not matched by the ID rule", async () => {
+    const { form } = await open({ view: adminView({ clearing: CLEARING }) });
+    pick("What to add", "slack");
+    fireEvent.click(await within(form).findByRole("button", { name: "Enter an ID or link instead" }));
+    fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "C0OTHER001" } });
+    expect(within(form).queryByText(REMOVAL)).toBeNull();
+    pick("How long Rovara keeps it", "B", form);
+    expect(within(form).getByRole<HTMLButtonElement>("button", { name: "Add source" }).disabled).toBe(false);
   });
 });
