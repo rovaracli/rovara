@@ -1,12 +1,12 @@
-// TR-W1 `ParentLookupPort`: whether a ticket (the parent of a comment) is already recorded under a scope, and whether it was recorded as open. It reads the record's own rows by source
-// (an index read, no network call), so a webhook delivery pays no connected-app request and the answer is exactly what the record holds. A lookup that fails, an unknown parent, a
-// parent in another place and a parent with any restricted row all mean "no" (the port's callers fail closed: a Linear comment is skipped, a Jira comment is restricted).
+// TR-W1 `ParentLookupPort`: whether a ticket (the parent of a comment) is already recorded under a scope (Linear comments are kept only then). It reads the record's own rows by source
+// (an index read, no network call), so a webhook delivery pays no connected-app request and the answer is exactly what the record holds. A lookup that fails, an unknown parent and a
+// parent in another place all mean "no" (the port's callers fail closed: a Linear comment is skipped). Whether a parent is OPEN is not answered here, see below.
 import { OrgIdSchema } from "@agentx/contracts";
 import { bySource } from "../store.js";
 import type { TeamRecordTable } from "../types.js";
 import type { ParentLookupPort } from "./tickets.js";
 
-/** Rows of one ticket that are read. A ticket with more is not answered "open" (truncated reads fail closed). */
+/** Rows of one ticket that are read. A truncated read answers "not recorded" (fail closed). */
 const PARENT_ROWS_MAX = 200;
 
 export function createRecordParentLookup(table: TeamRecordTable): ParentLookupPort {
@@ -22,10 +22,7 @@ export function createRecordParentLookup(table: TeamRecordTable): ParentLookupPo
     async isRecorded(input) {
       return ((await rowsOf(input)) ?? []).length > 0;
     },
-    // Open only when every live row of the ticket says it was not restricted: a ticket that ever carried a security level stays restricted for its comments.
-    async isOpen(input) {
-      const rows = (await rowsOf(input)) ?? [];
-      return rows.length > 0 && rows.every((row) => row.structured?.restricted === false);
-    },
+    // There is deliberately no `isOpen`: the record knows only the restrictions it STORED. A security level set by someone whose change was refused, excluded or lost would leave an open row behind,
+    // and a Jira comment on that issue would then be taken as open. Without `isOpen` every Jira comment is restricted (maintainers only), as it was before this port existed.
   };
 }
