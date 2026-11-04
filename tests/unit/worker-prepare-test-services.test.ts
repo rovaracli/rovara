@@ -147,6 +147,20 @@ describe("a candidate check that carries a dependency plan", () => {
     expect(injected.fake.verbs("network").filter((call) => call[1] === "create")).toEqual([]);
   });
 
+  it("a worker whose boot withheld test services (NOT_PULLED=all, the IPv6 wall failed) refuses the preparation with the fixed sentence and a failed-start record, and starts no service", async () => {
+    const h = await harness({ config: false });
+    for (const [name, value] of Object.entries({ AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: "123456789012.dkr.ecr.us-west-2.amazonaws.com", AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: h.runParent, AGENTX_TEST_SERVICES_NOT_PULLED: "all" })) vi.stubEnv(name, value);
+    try {
+      await expect(h.prepare()).rejects.toThrow("This worker is not set up to run test services");
+      expect(h.records[0]!.dependencies[0]).toMatchObject({ started: false, failure: "start_failed" });
+      expect(h.fake.verbs("network").filter((call) => call[1] === "create")).toEqual([]);
+      expect(h.fake.verbs("run").filter((call) => call.includes("--detach"))).toEqual([]);
+      expect(await readdir(h.runParent)).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("a dev container is refused before anything is made", async () => {
     const h = await harness();
     const before = h.fake.calls.length;

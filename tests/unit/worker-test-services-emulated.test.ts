@@ -477,6 +477,14 @@ describe("the /ping feature", () => {
     }
     expect([...(notPulledRepositories({ AGENTX_TEST_SERVICES_NOT_PULLED: "svc/a,svc/b" }) as Set<string>)]).toEqual(["svc/a", "svc/b"]);
   });
+  it("the withhold boot-stage2.sh writes when the IPv6 wall fails (AGENTX_TEST_SERVICES_NOT_PULLED=all, the last such line in worker.env) yields no task.testServices.* feature, with a complete configuration that otherwise offers both", async () => {
+    const shipped = await files(listed, true);
+    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.aws.v1"]);
+    const withheld = testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "all" }, shipped);
+    expect(withheld).toEqual([]);
+    expect(withheld.filter((feature) => feature.startsWith("task.testServices"))).toEqual([]);
+    expect(emulatorImagePrepulled(shipped, { AGENTX_TEST_SERVICES_NOT_PULLED: "all" })).toBe(false);
+  });
   it("reads the shipped files once, not on every /ping (the answer is cached for the life of the process)", async () => {
     const shipped = await files(listed, true);
     expect(emulatorImagePrepulled(shipped)).toBe(true);

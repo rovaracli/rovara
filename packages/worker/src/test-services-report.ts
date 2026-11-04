@@ -33,6 +33,8 @@ export interface BootFacts {
   metadataBlocked: boolean;
   runWalls: boolean;
   ipv6Drops: boolean;
+  /** Only when `ipv6Drops` is false: why (boot-stage2.sh `IPV6_WALL_REASON`). The worker then runs without test services (AGENTX_TEST_SERVICES_NOT_PULLED=all). */
+  ipv6DropsReason?: "ip6tables-unusable" | "rule-not-added";
   /** `none`: the image pins nothing to pull; `ok`: every pinned digest is on the host; `partial`: some digests are on the host and the rest are named in AGENTX_TEST_SERVICES_NOT_PULLED (not offered; the done-check still wants `ok`); `failed`: the login failed or no digest arrived. */
   prepull: "none" | "ok" | "partial" | "failed";
   prepulled: number;
@@ -67,13 +69,16 @@ export function parseBootFacts(text: string | undefined): BootFacts | "absent" |
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return "unreadable";
   const facts = parsed as Record<string, unknown>;
   const keys = Object.keys(facts);
-  if (keys.length !== FACT_KEYS.length || !FACT_KEYS.every((key) => keys.includes(key))) return "unreadable";
+  const reason = facts["ipv6DropsReason"];
+  const hasReason = keys.includes("ipv6DropsReason");
+  if (keys.length !== FACT_KEYS.length + (hasReason ? 1 : 0) || !FACT_KEYS.every((key) => keys.includes(key))) return "unreadable";
+  if (hasReason && (facts["ipv6Drops"] !== false || (reason !== "ip6tables-unusable" && reason !== "rule-not-added"))) return "unreadable";
   const bool = (value: unknown): value is boolean => typeof value === "boolean";
   if (!bool(facts["metadataBlocked"]) || !bool(facts["runWalls"]) || !bool(facts["ipv6Drops"]) || !bool(facts["loggedOut"])) return "unreadable";
   if (facts["prepull"] !== "none" && facts["prepull"] !== "ok" && facts["prepull"] !== "partial" && facts["prepull"] !== "failed") return "unreadable";
   if (typeof facts["prepulled"] !== "number" || !Number.isInteger(facts["prepulled"]) || facts["prepulled"] < 0 || facts["prepulled"] > 64) return "unreadable";
   if (typeof facts["dockerVersion"] !== "string" || !/^[0-9]{1,3}(?:\.[0-9]{1,3}){0,3}(?:-[a-z0-9.]{1,12})?$/u.test(facts["dockerVersion"])) return "unreadable";
-  return { metadataBlocked: facts["metadataBlocked"], runWalls: facts["runWalls"], ipv6Drops: facts["ipv6Drops"], prepull: facts["prepull"], prepulled: facts["prepulled"], loggedOut: facts["loggedOut"], dockerVersion: facts["dockerVersion"] };
+  return { metadataBlocked: facts["metadataBlocked"], runWalls: facts["runWalls"], ipv6Drops: facts["ipv6Drops"], ...(reason === "ip6tables-unusable" || reason === "rule-not-added" ? { ipv6DropsReason: reason } : {}), prepull: facts["prepull"], prepulled: facts["prepulled"], loggedOut: facts["loggedOut"], dockerVersion: facts["dockerVersion"] };
 }
 
 const REPORT_KEYS: ReadonlySet<string> = new Set(["phase", "outcome", "leftoverContainers", "leftoverNetworks", "runDirEmpty", "runDirTmpfs", "workingSandboxPaused", "sweptContainers", "sweptNetworks", "bootFacts"]);
