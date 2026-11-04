@@ -38,6 +38,8 @@ export interface DeleteRunSummary extends PurgeResult {
   oldestAgeSeconds: number;
   /** Second passes of completed erasures: how many ran and how many became final. */
   erasureSweeps?: { ran: number; final: number };
+  /** TR-E2b: 1 when the second-pass step itself failed this run (the next run tries it again); 0 otherwise. The hourly job's details carry it. */
+  sweepFailed: number;
 }
 
 /** The index items a request names: the rows and derivation links of its source items or scope. `truncated` means the budget cut the list. */
@@ -60,9 +62,14 @@ async function itemsOf(deps: DeleteWorkerDependencies, orgId: OrgId, work: Scope
 export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: OrgId, budget: DeleteBudget = DEFAULT_DELETE_BUDGET): Promise<DeleteRunSummary> {
   const now = deps.now ?? Date.now;
   const started = now();
-  const summary: DeleteRunSummary = { ...emptyPurge(), requests: 0, finished: 0, stillHidden: 0, backlog: false, oldestAgeSeconds: 0 };
+  const summary: DeleteRunSummary = { ...emptyPurge(), requests: 0, finished: 0, stillHidden: 0, backlog: false, oldestAgeSeconds: 0, sweepFailed: 0 };
   // The second pass of erasures that reported complete (due ones only): an erase is final only after it.
-  summary.erasureSweeps = await runErasureSweeps(deps, orgId, now()).catch(() => ({ ran: 0, final: 0 }));
+  // A failure here must not stop the rest of the run, and must not pass unseen: a fixed-code log and a count (the sweep items stay, so the next run tries again).
+  try { summary.erasureSweeps = await runErasureSweeps(deps, orgId, now()); } catch {
+    summary.erasureSweeps = { ran: 0, final: 0 };
+    summary.sweepFailed = 1;
+    deps.log?.("record.erase_sweep_failed", { count: 1 });
+  }
   const work = await listScopeWork(deps.table, orgId, budget.maxRequests);
   const work0 = { table: deps.table, now };
   for (let entry of work) {
