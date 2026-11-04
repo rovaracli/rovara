@@ -909,7 +909,7 @@ it("C53 commits first-operation fallback history and digest-only audit with the 
  await run.finishPrepare();
  const operation=t.operations(run.workspaceId).find(item=>item.workflowMode==="PLAN");
  expect(operation?.model).toEqual(fallbackModel);
- expect(run.meta().modelFallbacks).toEqual([{stage:"plan",used:`${fallbackModel.provider}/${fallbackModel.modelId}`,wanted:`${SONNET.provider}/${SONNET.modelId}`,reasonCode:"CONFIGURED_FALLBACK"}]);
+ expect(run.meta().modelFallbacks).toEqual([{stage:"plan",used:`${fallbackModel.provider}/${fallbackModel.modelId}`,wanted:null,reasonCode:"CONFIGURED_FALLBACK"}]); // QA-06 (0.5.4): the same model on another source names no wanted model
  const events=t.audit.recordedBy("model.fallback_used");expect(events).toHaveLength(1);expect(JSON.stringify(events[0]?.facts)).not.toContain("claude");
  const ledger=new FakeDynamoDb(),keyId="arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555",kms=new FakeKms(keyId),clock=Date.now();
  const documentClient=ledger as unknown as DynamoDBDocumentClient,keyring=new AuditKeyring({documentClient,keysTable:"keys",kms:kms.client,keyId,now:()=>clock});

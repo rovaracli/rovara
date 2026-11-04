@@ -279,6 +279,20 @@ esac
 const directories: string[] = [];
 const responders: string[] = [];
 
+/** Host tools that change or read the real firewall or kernel: never reachable from a boot in this suite (the harness fakes iptables and ip6tables in its bin directory). */
+const HOST_ONLY_SBIN = /^(?:ip6?tables|xtables|nft|ebtables|arptables|sysctl|modprobe|insmod|rmmod)(?:[-.].*)?$/u;
+/** A directory of links to what /usr/sbin and /sbin hold, minus HOST_ONLY_SBIN. */
+function hostSbin(directory: string): string {
+  const sbin = join(directory, "sbin");
+  mkdirSync(sbin);
+  for (const system of ["/usr/sbin", "/sbin"]) {
+    let names: string[];
+    try { names = readdirSync(system); } catch { names = []; }
+    for (const name of names) if (!HOST_ONLY_SBIN.test(name) && !existsSync(join(sbin, name))) symlinkSync(join(system, name), join(sbin, name));
+  }
+  return sbin;
+}
+
 /**
  * The failure responders (boot.sh's `python3 -c ... BootFailed ...` server) that a run in one of `dirs` left alive. A responder is recognised
  * by the BootFailed body in its command line and by the run's own failure-file path, its last argument, so only a server this suite started
@@ -373,16 +387,9 @@ async function boot(options: { served: (directory: string) => string; expected?:
     if (name === "ip6tables" && ip6tables === "missing") continue;
     writeFileSync(join(bin, name), body); chmodSync(join(bin, name), 0o755);
   }
-  // "missing": the system's sbin directories are on PATH only through links to what they hold, minus any ip6tables (a Linux runner has a real one there).
-  const sbin = join(directory, "sbin");
-  mkdirSync(sbin);
-  if (ip6tables === "missing") {
-    for (const system of ["/usr/sbin", "/sbin"]) {
-      let names: string[];
-      try { names = readdirSync(system); } catch { names = []; }
-      for (const name of names) if (!name.startsWith("ip6tables") && !existsSync(join(sbin, name))) symlinkSync(join(system, name), join(sbin, name));
-    }
-  }
+  // The system's sbin directories are on PATH (macOS keeps chown there) only through links to what they hold, minus every host firewall and kernel tool (a Linux runner has a real
+  // ip6tables, iptables, nft, sysctl and modprobe there): the fakes in bin are the only ones a boot can find, and "missing" is missing on Linux too.
+  const sbin = hostSbin(directory);
   // The host's IPv6 state, as boot-stage2.sh's ipv6_active reads it (placedStage2 points its /proc/ here).
   const ipv6 = options.ipv6 ?? true;
   for (const scope of ["all", "default"]) {
@@ -430,7 +437,7 @@ wall_off_containers() { echo "wall_off_containers" >>"$LOG"; echo "DOCKER-USER -
   const ran = spawnSync("bash", [script], {
     encoding: "utf8",
     env: {
-      PATH: ip6tables === "missing" ? `${bin}:/usr/bin:/bin:${sbin}` : `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG: log, IPT_STATE: join(directory, "iptables.state"), IP6T_STATE: join(directory, "ip6tables.state"),
+      PATH: `${bin}:/usr/bin:/bin:${sbin}`, LOG: log, IPT_STATE: join(directory, "iptables.state"), IP6T_STATE: join(directory, "ip6tables.state"),
       ...(ip6tables === "unusable" ? { IP6T_UNUSABLE: "1" } : {}),
       ...(options.flushOnRestart ? { FLUSH_ON_RESTART: "1" } : {}), ...(options.firewallRestores === false ? { FW_RESTORES: "0" } : {}), ...(options.firewallRule ? { FW_RULE: options.firewallRule } : {}), IMAGE_STAGE2: image, RESPONDER_PID: pid, AGENTX_TEST_LOG: log,
       ...(options.cpFails ? { CP_FAILS: "1" } : {}),
@@ -620,6 +627,16 @@ describe("stage 1 runs stage 2 from the worker image", () => {
 
   // TS-SEAL-2 on a host with IPv6 on (an AL2023 worker): the INPUT drops go in through ip6tables, or the boot stops. Only a host with no IPv6 at all may boot without them.
   const ip6Rules = (run: Run) => readFileSync(join(run.directory, "ip6tables.state"), "utf8").split("\n").filter(Boolean);
+  it("the boot's PATH, minus the harness's own fakes, finds no host firewall or kernel tool (a Linux runner has real ones in /usr/sbin), so every case runs the same on macOS and Linux", () => {
+    const directory = mkdtempSync(join(tmpdir(), "boot-stage2-path-"));
+    directories.push(directory);
+    const path = `/usr/bin:/bin:${hostSbin(directory)}`;
+    const found = (tool: string) => spawnSync("/bin/bash", ["-c", `command -v ${tool}`], { env: { PATH: path }, encoding: "utf8" }).stdout.trim();
+    for (const tool of ["ip6tables", "iptables", "ip6tables-nft", "iptables-legacy", "nft", "sysctl", "modprobe"]) expect(found(tool), `${tool} is reachable from the boot's PATH`).toBe("");
+    // the positive control: the lookup works, and chown (in /usr/sbin on macOS) is still there
+    expect(found("chown")).not.toBe("");
+    expect(found("cat")).not.toBe("");
+  });
   it("with IPv6 on and a usable ip6tables, drops rvb+ and rvi+ into the host over IPv6 before the worker unit is written", async () => {
     const run = await boot({ served: placedStage2 });
     expect(run.failure, run.stderr).toBeUndefined();
