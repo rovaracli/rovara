@@ -17,7 +17,7 @@ import { riskTierOf, type DecisionLocks } from "../decisions/risk-tier.js";
 import type { DecisionStore } from "../decisions/store.js";
 import { secondPersonMembershipCondition } from "../org/second-person-approval.js";
 import { openBlockerWords } from "./proof-line.js";
-import { decideDesignApproval, type DesignApprovalRefusal, type DesignApprovalTier, type DesignApproverDirectory } from "./approval.js";
+import { approverUnavailableWords, decideDesignApproval, type DesignApprovalRefusal, type DesignApprovalTier, type DesignApproverDirectory } from "./approval.js";
 import type { EffectiveDesignReviewSetting } from "./effective-setting.js";
 
 type DesignItem = Extract<DecisionItem, { kind: "approve_design" }>;
@@ -81,11 +81,9 @@ export function designApprovalProofLine(openBlockers: number, reason: string | u
   return openBlockerWords(openBlockers, reason);
 }
 
-const REFUSAL_OUTCOME: Record<Exclude<DesignApprovalRefusal, "reason_required" | "fresh_sign_in_required">, PerformOutcome> = {
+const REFUSAL_OUTCOME: Record<Exclude<DesignApprovalRefusal, "reason_required" | "fresh_sign_in_required" | "group_not_available" | "no_high_risk_approver">, PerformOutcome> = {
   not_eligible: { kind: "refused", reason: "forbidden" },
   requester_cannot_approve_high: { kind: "refused", reason: "second_person_required" },
-  group_not_available: { kind: "refused", reason: "not_ready" },
-  no_high_risk_approver: { kind: "refused", reason: "not_ready" },
   eligibility_unavailable: { kind: "refused", reason: "not_ready" },
 };
 
@@ -126,6 +124,8 @@ export function designApproveHandler<C extends DecisionCaller>(ports: DesignAppr
           const confirmUrl = ports.confirmUrl(caller, item);
           return confirmUrl === undefined ? { kind: "refused", reason: "forbidden" } : { kind: "needs_confirmation", confirmUrl };
         }
+        // A group or missing approver is said plainly (ON-12): nobody can approve this design until a maintainer names people.
+        if (decision.code === "group_not_available" || decision.code === "no_high_risk_approver") throw agentXError("CONFIG_INVALID", approverUnavailableWords(decision.code, context.setting));
         return REFUSAL_OUTCOME[decision.code];
       }
       const written = await ports.commit(caller, {

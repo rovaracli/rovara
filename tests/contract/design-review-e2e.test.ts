@@ -3,7 +3,7 @@
 // `design-review.json`; the broker verifies, assembles, records the round with the proxy-measured spend and releases the keys; the planner's side is applied by `applyPlannerResolve`; round 2 runs on the revised design; the
 // design ends on the person's card. Also: a voided reviewer, a slot asked twice, a round that stops at the cap, a hold for cost, no proxy, and the OFF switch.
 import { createHash, randomUUID } from "node:crypto";
-import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE, DesignReviewBindingSchema, PacketDeliverySchema, WORKFLOW_BLOCK_REASONS, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WorkflowSnapshotSchema, createWorkflowSnapshot, decideWorkflow, enableDesignReview, packetDigestOf, submitWorkflowArtifact,
@@ -18,7 +18,9 @@ import { readSlotPacket } from "../../packages/broker/src/design-review/packet-s
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { parkDesignReview } from "../../packages/contracts/src/index.js";
-import { MAYA, OMAR, seedMembership, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
+import { DEV_ISSUER, MAYA, OMAR, seedMembership, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
+import { designWaitArmOf } from "../../packages/broker/src/design-review/wait-rows.js";
+import { designWaitSweepDepsOf } from "../../packages/broker/src/design-review/wait-wiring.js";
 import { browserRequests } from "../support/browser-session.js";
 import { designApprovalKey } from "../../packages/broker/src/aws/developer-tasks/design-decision.js";
 import { proofDesignContextOf } from "../../packages/broker/src/aws/developer-tasks/design-proof.js";
@@ -39,6 +41,9 @@ vi.mock("@agentx/model-runtime/catalog", async (importOriginal) => {
   return { ...actual, listPricesPerMillion: (model: Parameters<typeof actual.listPricesPerMillion>[0]) => (catalog.unpriced ? undefined : actual.listPricesPerMillion(model)) };
 });
 
+/** A third person of the company (a maintainer or a plain contributor, as a test seeds them). */
+const PRIYA_ID: Developer = { developerId: "c".repeat(64), name: "Priya Rao", provider: "oidc", sessionId: "s-priya" };
+const SLACK_THREAD = { teamId: "T0BSHLLUGBD", channelId: "C0123456789", threadTs: "1695500000.000041" };
 const PROXY_URL = "http://internal-proxy.example.test:4000";
 const NOW = "2026-11-03T12:00:00.000Z";
 const LATER = "2026-11-03T12:05:00.000Z";
@@ -64,7 +69,7 @@ const resolveBlock = (value: unknown): string => `\n\n\`\`\`rovara-design-resolv
 type World = Awaited<ReturnType<typeof world>>;
 
 /** A v2 task whose design was just submitted for review: PLAN_CRITIQUE/READY, review "estimating", the documents stored and digest-checked. */
-async function world(options: { modelAccess?: boolean; budgetUsd?: number; capUsd?: number; tier?: "light" | "standard" | "thorough"; start?: boolean; requirements?: string; design?: string; draft?: string } = {}) {
+async function world(options: { slack?: boolean; modelAccess?: boolean; budgetUsd?: number; capUsd?: number; tier?: "light" | "standard" | "thorough"; start?: boolean; requirements?: string; design?: string; draft?: string } = {}) {
   const access = fakeModelAccess();
   const harness = await createSingleAnswerPlanBroker({
     brokerExtra: { agents: {}, cloud: true, ...(options.modelAccess === false ? {} : { modelAccess: { access, proxyUrl: PROXY_URL } }) },
@@ -73,8 +78,11 @@ async function world(options: { modelAccess?: boolean; budgetUsd?: number; capUs
   access.setOrgSpent(TEST_ORG, 0);
   await new AgentStore({ documentClient: harness.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
   harness.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
-  const started = await harness.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Retry timed-out payments" }, path: "QUICK" });
-  const taskId = String((started.body.task as { taskId: string }).taskId);
+  // `slack`: the task is started from a Slack thread, so a Slack press on its card reaches the same transition as every other door.
+  const started = options.slack === true
+    ? await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread: SLACK_THREAD, userId: MAYA.slackUserId, instructions: "Retry timed-out payments", workflowPath: "QUICK", requestId: randomUUID() })
+    : await harness.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Retry timed-out payments" }, path: "QUICK" });
+  const taskId = options.slack === true ? String((JSON.parse((started as { body: string }).body) as { taskId: string }).taskId) : String(((started as { body: { task: { taskId: string } } }).body.task).taskId);
   const workspaceId = (harness.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId;
   const active = () => String((harness.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId?: string }).activeOperationId ?? "");
   await harness.finish(workspaceId, active(), "SUCCEEDED", { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } });
@@ -917,9 +925,9 @@ describe("slice C: the design review's routes", () => {
   const web = (w: World) => browserRequests(w);
   const designWith = (touches: string[]) => templateDesign("### 3.1 Retry\nR1: retry a timed-out payment once. R2: use the payment id as the idempotency key.", { touches });
   /** A review that ends on the person's card with the planner's blocker still open (its contest rested on a source alone, which the broker does not accept). */
-  async function openBlockerCard(options: { touches?: string[]; capUsd?: number } = {}) {
+  async function openBlockerCard(options: { touches?: string[]; capUsd?: number; slack?: boolean } = {}) {
     const design = designWith(options.touches ?? ["new_api"]);
-    const w = await world({ design, ...(options.capUsd === undefined ? {} : { capUsd: options.capUsd }) });
+    const w = await world({ design, ...(options.slack === true ? { slack: true } : {}), ...(options.capUsd === undefined ? {} : { capUsd: options.capUsd }) });
     if (options.capUsd !== undefined) return w;
     await runWorker(w, String(w.operations()[0]!.id), { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 });
     const findingId = review(w).rounds[0]!.findings[0]!.id;
@@ -1081,8 +1089,17 @@ describe("slice C: the design review's routes", () => {
     process.env.DESIGN_REVIEW_PROJECTS = "other-project";
     expect((await harness.dev(MAYA, "POST", `/v1/app/tasks/${taskId}/design-review/first`, { requestId: randomUUID() })).status, "the project does not run design review").toBe(404);
     process.env.DESIGN_REVIEW_PROJECTS = "payments";
-    const done = await harness.dev(MAYA, "POST", `/v1/app/tasks/${taskId}/design-review/first`, { requestId: randomUUID() });
+    // ON-11: a contributor who did not ask for the task is not the one to move it to the Full path.
+    seedMembership(harness.db, OMAR.developerId, { orgId: TEST_ORG, role: "member" });
+    harness.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "contributor" });
+    expect((await harness.dev(OMAR, "POST", `/v1/app/tasks/${taskId}/design-review/first`, { requestId: randomUUID() })).status).toBe(403);
+    expect((harness.db.get(`DEVTASK#${taskId}`, "META") as { workflow: WorkflowSnapshot }).workflow.designReview).toBeUndefined();
+    const pressId = randomUUID();
+    const done = await harness.dev(MAYA, "POST", `/v1/app/tasks/${taskId}/design-review/first`, { requestId: pressId });
     expect(done.status, JSON.stringify(done.body)).toBe(200);
+    // The same tap again is the first answer, and moves nothing.
+    expect((await harness.dev(MAYA, "POST", `/v1/app/tasks/${taskId}/design-review/first`, { requestId: pressId })).status).toBe(200);
+    expect(harness.db.get(`DEVTASK#${taskId}`, `DESIGN_FIRST#${pressId}`)).toMatchObject({ actorId: MAYA.developerId });
     const after = (harness.db.get(`DEVTASK#${taskId}`, "META") as { workflow: WorkflowSnapshot }).workflow;
     expect(after).toMatchObject({ path: "FULL", stage: "PLAN", state: "READY", designReview: { decidedBy: "person", startedBy: { actorId: MAYA.developerId }, status: "estimating" } });
     expect(harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "PLAN" && item.workflowRevision === after.revision)).toHaveLength(1);
@@ -1099,4 +1116,280 @@ describe("slice C: the design review's routes", () => {
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY", designReview: { status: "estimating" } });
     expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIQUE")).toHaveLength(1);
   });
+
+  // ---- the final fix round (DR-REVIEW-final.md, ON-1 to ON-13)
+
+  /** A person's list as their browser reads it (for a company member the harness has no token for). */
+  const cardOfPage = async (w: World, who: Developer, kind: string) => {
+    const list = await web(w)(who, "GET", "/v1/app/decisions");
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    return ((list.body.cards ?? []) as Array<{ id: string; kind: string }>).find((card) => card.kind === kind);
+  };
+  const designDigestOf = (w: World): string => w.task().workflow.artifacts.filter((artifact) => artifact.type === "design").at(-1)!.sha256;
+  const plainApprove = (w: World) => ({ requestId: randomUUID(), expectedRevision: w.task().workflow.revision, decision: "APPROVE", reason: "ok", artifactDigest: designDigestOf(w) });
+  const reviewCookie = (w: World, who: Developer): string => {
+    const id = randomUUID();
+    w.db.set({ pk: `SESSION#${id}`, sk: "META", sessionId: id, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 600, reviewExpiresAt: Math.floor(Date.now() / 1000) + 600 });
+    return id;
+  };
+  /** The task page's own decision door (`/review/{id}/task/api/decision`), as the page's script posts it. */
+  const pageDecision = async (w: World, who: Developer, body: unknown) => {
+    await w.orgOf(who);
+    const response = await w.handler({
+      version: "2.0", routeKey: "ANY /review/{proxy+}", rawPath: `/review/${w.taskId}/task/api/decision`, rawQueryString: "",
+      headers: { host: new URL(DEV_ISSUER).host, cookie: `__Host-agentx_review_session=${reviewCookie(w, who)}; __Host-agentx_review_csrf=${"c".repeat(43)}`, origin: new URL(DEV_ISSUER).origin, "x-agentx-csrf": "c".repeat(43), "content-type": "application/json" },
+      body: JSON.stringify(body), requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+    } as never);
+    return { status: response.statusCode, body: response.body };
+  };
+
+  it("ON-1: a plain Approve of a design under review is refused on the AI tool's door and on the task page, and nothing is decided or recorded", async () => {
+    const w = await openBlockerCard();
+    seedPeople(w, [[MAYA, "member", "contributor"]]);
+    const before = w.task().workflow;
+    // The AI tool's door (the MCP tool posts here).
+    const tool = await w.dev(MAYA, "POST", `/v1/dev/tasks/${w.taskId}/workflow/decision`, plainApprove(w));
+    expect(tool.status).toBe(400);
+    expect(JSON.stringify(tool.body)).toContain("design approval card");
+    const page = await pageDecision(w, MAYA, { requestId: randomUUID(), expectedRevision: before.revision, artifactDigest: designDigestOf(w), decision: "APPROVE", answers: [], includedCommentIds: [] });
+    expect(page.status).toBeGreaterThanOrEqual(400);
+    expect(page.body).toContain("design approval card");
+    expect(w.task().workflow).toEqual(before);
+    expect(w.db.find((item) => String(item.sk).startsWith("DESIGN_APPROVAL#"))).toEqual([]);
+    // Sending the design back is unchanged (the guard is for an approval only).
+    expect((await w.dev(MAYA, "POST", `/v1/dev/tasks/${w.taskId}/workflow/decision`, { ...plainApprove(w), decision: "REQUEST_CHANGES", reason: "Tighten the retry bound." })).status).toBe(200);
+  });
+
+  it("ON-1: a Slack press of Approve on a design under review is refused the same way", async () => {
+    const w = await openBlockerCard({ slack: true });
+    const before = w.task().workflow;
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => { logged.push(String(line)); });
+    try {
+      await w.handler({ source: "agentx.slack-ingress", action: "workflow-decision", taskId: w.taskId, userId: MAYA.slackUserId, thread: SLACK_THREAD, requestId: randomUUID(), expectedRevision: before.revision, artifactDigest: designDigestOf(w), decision: "APPROVE", reason: "Approved in Slack.", selectedOptionalCheckIds: [] });
+    } finally { spy.mockRestore(); }
+    // Slack posts the refusal's words to the thread (the handler answers 200 either way): the log carries what was said.
+    expect(logged.find((line) => line.includes("slack.workflow_decision_refused"))).toContain("design approval card");
+    expect(w.task().workflow).toEqual(before);
+    expect(w.db.find((item) => String(item.sk).startsWith("DESIGN_APPROVAL#"))).toEqual([]);
+  });
+
+  it("ON-1 positive control: the same design is approved from its card, with the friction (a medium card needs its evidence opened)", async () => {
+    const w = await openBlockerCard();
+    seedPeople(w, [[MAYA, "member", "contributor"]]);
+    const shown = await cardOf(w, MAYA, "approve_design");
+    const approve = shown!.card.actions.find((action) => action.kind === "approve")!;
+    await w.dev(MAYA, "POST", `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest });
+    expect((await w.dev(MAYA, "POST", approve.href, { requestId: randomUUID(), shownDigest: shown!.digest, reason: "Accepted: the bound is in config." })).status).toBe(200);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN", reviewPhase: "IMPLEMENTATION_PLAN" });
+  });
+
+  it("ON-4 and ON-5: a maintainer sees the card of a task they did not ask for, approves it, and the decision, the record and the audit name THEM, not the owner; the owner's seat is the owner's own", async () => {
+    const w = await openBlockerCard();
+    await web(w)(PRIYA_ID, "GET", "/v1/app/decisions");
+    seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"], [PRIYA_ID, "member", "contributor"]]);
+    // ON-5: the maintainer's list has the card; a plain contributor's (not the requester, not an approver) does not.
+    const shown = await cardOf(w, OMAR, "approve_design");
+    expect(shown, "the maintainer finds the card").toBeDefined();
+    expect(await cardOfPage(w, PRIYA_ID, "approve_design"), "a contributor who did not ask for it has no card").toBeUndefined();
+    const approve = shown!.card.actions.find((action) => action.kind === "approve")!;
+    await w.dev(OMAR, "POST", `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest });
+    const done = await w.dev(OMAR, "POST", approve.href, { requestId: randomUUID(), shownDigest: shown!.digest, reason: "Reviewed the blocker; the bound is in config." });
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    const decision = w.task().workflow.decisions.at(-1)!;
+    expect(decision).toMatchObject({ decision: "APPROVE", actorId: OMAR.developerId, actorRole: "PROJECT_ADMIN" });
+    expect(decision.actorId).not.toBe(w.owner);
+    const record = w.db.get(...Object.values(designApprovalKey(w.taskId, sha256(designWith(["new_api"])))) as [string, string]) as { approverId: string; mode: string };
+    expect(record).toMatchObject({ approverId: OMAR.developerId, mode: "maintainer" });
+  });
+
+  it("ON-4: the approval is committed in the owner's seat built from the OWNER's record: an owner who can no longer be seated leaves it stale, however strong the approver's own role is", async () => {
+    const w = await openBlockerCard();
+    seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+    const shown = await cardOf(w, OMAR, "approve_design");
+    const approve = shown!.card.actions.find((action) => action.kind === "approve")!;
+    await w.dev(OMAR, "POST", `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest });
+    // The owner's sign-in is revoked after the card was drawn.
+    w.db.set({ ...(w.db.get(`DEVELOPER#${MAYA.developerId}`, "META") as Record<string, unknown>), revoked: true });
+    const before = w.task().workflow;
+    const refused = await w.dev(OMAR, "POST", approve.href, { requestId: randomUUID(), shownDigest: shown!.digest, reason: "Reviewed the blocker." });
+    expect(refused.status).toBe(409);
+    expect(w.task().workflow).toEqual(before);
+  });
+
+  it("ON-5: the cost card and the question card are listed for the people who may act on them, and not for others", async () => {
+    const cost = await openBlockerCard({ capUsd: 0.5 });
+    await web(cost)(PRIYA_ID, "GET", "/v1/app/decisions");
+    seedPeople(cost, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"], [PRIYA_ID, "member", "viewer"]]);
+    expect(await cardOf(cost, OMAR, "approve_spend"), "a maintainer can lower the tier or raise the limit").toBeDefined();
+    // A viewer can make none of the choices, so the card is not theirs (the page list works: the same person's list is read through the browser).
+    expect(await cardOfPage(cost, PRIYA_ID, "approve_spend"), "a viewer").toBeUndefined();
+    expect(await cardOf(cost, MAYA, "approve_spend"), "the requester").toBeDefined();
+    const ask = await askQuestions(["auth"]);
+    expect(await cardOf(ask, OMAR, "answer_question"), "the design approver answers a question about auth").toBeDefined();
+    const plain = await askQuestions(["new_api"]);
+    expect(await cardOf(plain, OMAR, "answer_question"), "a maintainer is not asked about a design that is not high risk").toBeUndefined();
+    expect(await cardOf(plain, MAYA, "answer_question")).toBeDefined();
+  });
+
+  /** The question card's state as `ask` builds it (the "who may answer" test's helper), with an extra member who has no part in it. */
+  async function askQuestions(touches: string[]) {
+    const design = designWith(touches);
+    const w = await world({ design });
+    await runWorker(w, String(w.operations()[0]!.id), { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 });
+    const findingId = review(w).rounds[0]!.findings[0]!.id;
+    const questions = [{ id: "q1", unclear: "How many retries are allowed?", evidence: [{ kind: "design", section: "§3" }], options: [{ id: "a", label: "Three", consequence: "Most timeouts clear." }, { id: "b", label: "Five", consequence: "Customers wait." }], recommended: "a", why: "Three is enough." }];
+    const plannerId = String(w.plannerOps()[0]!.id);
+    await w.artifact(w.workspaceId, plannerId, "plan.md", `${design}${resolveBlock({ resolutions: [{ findingId, action: "asked", note: "Depends on a team rule.", questionId: "q1" }], questions })}`);
+    await w.finish(w.workspaceId, plannerId, "SUCCEEDED");
+    seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+    return w;
+  }
+
+  it("ON-6: the answer is fenced with the membership generation the audience was read at: a membership change in between cancels it", async () => {
+    const w = await askQuestions(["auth"]);
+    const answers = [{ questionId: "q1", optionId: "a" }];
+    // The membership counter moves after the audience was read and before the transaction runs.
+    w.db.injectFault({ command: "TransactWriteCommand", match: () => { w.db.set({ ...(w.db.get(orgMetaKey(TEST_ORG)) as Record<string, unknown>), approvalMembershipVersion: 4 }); return false; }, error: { name: "NeverThrown" } });
+    const raced = await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/answers`, { requestId: randomUUID(), answers });
+    expect(raced.status).toBe(409);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "WAITING", designReview: { status: "waiting_answers" } });
+    // Positive control: with the generation unchanged the same answer goes through.
+    const done = await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/answers`, { requestId: randomUUID(), answers });
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+  });
+
+  it("ON-13: a repeat of an answer, a resume or an approval that worked answers as the first did (not 404); the same request ID from another person is refused", async () => {
+    const w = await askQuestions(["auth"]);
+    const answers = [{ questionId: "q1", optionId: "a" }];
+    const requestId = randomUUID();
+    const first = await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/answers`, { requestId, answers });
+    expect(first.status).toBe(200);
+    const again = await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/answers`, { requestId, answers });
+    expect(again.status).toBe(200);
+    expect(again.body).toMatchObject({ kind: "done" });
+    expect((await w.dev(MAYA, "POST", `/v1/app/tasks/${w.taskId}/design-review/answers`, { requestId, answers })).status, "another person cannot reuse the ID").toBe(400);
+    expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIC_REPLAN")).toHaveLength(1);
+    // Resume.
+    const parked = await askQuestions(["auth"]);
+    parked.db.set({ ...parked.task(), workflow: parkDesignReview(parked.task().workflow, { expectedRevision: parked.task().workflow.revision, now: "2026-10-28T12:00:00.000Z" }) });
+    const resumeId = randomUUID();
+    expect((await parked.dev(MAYA, "POST", `/v1/app/tasks/${parked.taskId}/design-review/resume`, { requestId: resumeId })).status).toBe(200);
+    expect((await parked.dev(MAYA, "POST", `/v1/app/tasks/${parked.taskId}/design-review/resume`, { requestId: resumeId })).status).toBe(200);
+    // The high-risk confirmation page.
+    const high = await openBlockerCard({ touches: ["auth"] });
+    seedPeople(high, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+    const page = web(high);
+    const digest = (await page(OMAR, "GET", `/v1/app/tasks/${high.taskId}/design-review/approve`)).body.digest as string;
+    const approveId = randomUUID();
+    const press = () => page(OMAR, "POST", `/v1/app/tasks/${high.taskId}/design-review/approve`, { requestId: approveId, shownDigest: digest, reason: "Reviewed the open blocker with the team." });
+    expect((await press()).status).toBe(200);
+    const replayed = await press();
+    expect(replayed.status, JSON.stringify(replayed.body)).toBe(200);
+    expect(replayed.body).toMatchObject({ outcome: "approved" });
+    expect(high.task().workflow.decisions.filter((decision) => decision.decision === "APPROVE" && decision.reason === "Approved the reviewed design.")).toHaveLength(1);
+  });
+
+  it("ON-3: Skip at the cost hold applies the spend card's friction: the evidence of a medium card first, then it is done once, with the request and the fence recorded", async () => {
+    catalog.unpriced = true;
+    const w = await world({ capUsd: 25 });
+    seedPeople(w, [[MAYA, "member", "contributor"]]);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING", designReview: { status: "waiting_cost" } });
+    const shown = await cardOf(w, MAYA, "approve_spend");
+    expect(shown!.card.risk, "an unpriced run is tiered by the room under the cap (ON-9)").toBe("medium");
+    const skipBody = { requestId: randomUUID() };
+    const before = w.task().workflow;
+    // Without the evidence opened, the route refuses (it used to skip at once).
+    expect((await w.dev(MAYA, "POST", `/v1/app/tasks/${w.taskId}/design-review/skip`, skipBody)).status).toBe(409);
+    expect(w.task().workflow).toEqual(before);
+    await w.dev(MAYA, "POST", `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest });
+    const done = await w.dev(MAYA, "POST", `/v1/app/tasks/${w.taskId}/design-review/skip`, skipBody);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", designReview: { decidedBy: "person_skip", skippedBy: { actorId: MAYA.developerId } } });
+    expect(w.db.get(`DEVTASK#${w.taskId}`, `DESIGN_SPEND#${skipBody.requestId}`)).toMatchObject({ choice: "skip", actorId: MAYA.developerId });
+    // A repeat is the same answer.
+    expect((await w.dev(MAYA, "POST", `/v1/app/tasks/${w.taskId}/design-review/skip`, skipBody)).status).toBe(200);
+  });
+
+  it("ON-3: Skip before the design is written, for a high-risk design, needs a browser session and a fresh sign-in; the move carries the fence and a request record", async () => {
+    const w = await world({ design: designWith(["auth"]), start: false, capUsd: 10 });
+    // A world held before its first round: the review is estimating at PLAN/READY, with a high-risk area.
+    seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+    const base = w.task().workflow;
+    // Put the review where Skip applies before any design exists: PLAN/READY with no design document.
+    w.db.set({ ...w.task(), workflow: WorkflowSnapshotSchema.parse({ ...base, stage: "PLAN", state: "READY", reviewPhase: "DESIGN", artifacts: base.artifacts.filter((artifact) => artifact.type !== "design"), designReview: { ...base.designReview!, status: "estimating", reasons: ["auth"] } }) });
+    const requestId = randomUUID();
+    const url = `/v1/app/tasks/${w.taskId}/design-review/skip`;
+    expect((await w.dev(OMAR, "POST", url, { requestId })).status, "a token never skips a high-risk review").toBe(403);
+    const page = web(w);
+    expect((await page(OMAR, "POST", url, { requestId }, 20 * 60_000)).status, "no fresh sign-in").toBe(403);
+    expect(w.task().workflow.designReview!.decidedBy).not.toBe("person_skip");
+    const done = await page(OMAR, "POST", url, { requestId }, 0);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(w.task().workflow).toMatchObject({ designReview: { decidedBy: "person_skip", skippedBy: { actorId: OMAR.developerId } } });
+    expect(w.db.get(`DEVTASK#${w.taskId}`, `DESIGN_SKIP#${requestId}`)).toMatchObject({ actorId: OMAR.developerId });
+    expect((await page(OMAR, "POST", url, { requestId }, 0)).status, "a repeat is the same answer").toBe(200);
+  });
+
+  it("ON-11: Design first and Retry are the requester's or a maintainer's, not any member's; a double tap is the same answer", async () => {
+    const w = await world({ capUsd: 5 });
+    await runWorker(w, String(w.operations()[0]!.id), {}, { failure: { error: "the run failed" } });
+    await web(w)(PRIYA_ID, "GET", "/v1/app/decisions");
+    seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "contributor"], [PRIYA_ID, "member", "maintainer"]]);
+    const url = `/v1/app/tasks/${w.taskId}/design-review/retry`;
+    expect((await w.dev(OMAR, "POST", url, { requestId: randomUUID() })).status, "a contributor who did not ask for the task").toBe(403);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", designReview: { status: "not_run" } });
+    const requestId = randomUUID();
+    const page = web(w);
+    expect((await page(PRIYA_ID, "POST", url, { requestId })).status, "a maintainer may").toBe(200);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY", designReview: { status: "estimating" } });
+    expect((await page(PRIYA_ID, "POST", url, { requestId })).status, "the same tap again").toBe(200);
+    expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIQUE")).toHaveLength(1);
+    expect(w.db.get(`DEVTASK#${w.taskId}`, `DESIGN_RETRY#${requestId}`)).toMatchObject({ actorId: PRIYA_ID.developerId });
+  });
+
+  it("ON-7: with `dr` at 0 the recovery sweep still ends a cost hold as not run (switched_off), a parked one too", async () => {
+    for (const parked of [false, true]) {
+      const w = await world({ capUsd: 0.5 });
+      expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING", designReview: { status: "waiting_cost" } });
+      if (parked) w.db.set({ ...w.task(), workflow: parkDesignReview(w.task().workflow, { expectedRevision: w.task().workflow.revision, now: new Date(Date.now() + 8 * 24 * 3_600_000).toISOString() }) });
+      const update = designWaitArmOf({ tableName: "state", taskId: w.taskId, orgId: TEST_ORG, workflow: w.task().workflow, nowMs: Date.now() })!;
+      await w.db.send(new UpdateCommand(update as never));
+      vi.setSystemTime(Date.now() + 40 * 24 * 3_600_000);
+      vi.stubEnv("DESIGN_REVIEW_ENABLED", "0");
+      await w.sweep();
+      expect(w.task().workflow, parked ? "parked" : "not parked").toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "not_run", notRunReason: "switched_off" } });
+      vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
+      vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z"));
+    }
+  });
+
+  it("ON-8: a park releases only the rounds recorded when the task was read: a round that began after the read keeps its live keys", async () => {
+    const w = await world();
+    const operationId = String(w.operations()[0]!.id);
+    const key = await rawGet(w.handler, "/v1/internal/model-access?slot=r1-critic", capabilityOf(w, operationId));
+    expect(key.status, key.body).toBe(200);
+    const deps = designWaitSweepDepsOf({ documentClient: w.db, tableName: "state", modelAccess: { access: w.access, proxyUrl: PROXY_URL } } as never);
+    w.access.blockKey.mockClear();
+    // The task was read with no round recorded (round 1 began after): nothing of round 1 is closed.
+    await deps.releaseKeys(w.task() as never, 0);
+    expect(w.access.blockKey).not.toHaveBeenCalled();
+    // Positive control: with the round recorded at the read, its keys are closed.
+    await deps.releaseKeys(w.task() as never, 1);
+    expect(w.access.blockKey).toHaveBeenCalled();
+  });
+
+  it("ON-10: the planner's keys together stay inside the review's room: a key minted again is given the room less what the earlier key measured", async () => {
+    const { w, resolveId } = await roundOneSpending({ comprehension: 0.3, critic: 0.4, codebase: 0.2, merge: 0.1 });
+    // The cap is 10 and the reviewers cost 1.0: the room is 9.
+    const first = await plannerKey(w, resolveId, 4);
+    expect(first.status, first.body).toBe(200);
+    expect(w.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBeCloseTo(9, 6);
+    const second = await plannerKey(w, resolveId, 0);
+    expect(second.status, second.body).toBe(200);
+    expect(w.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBeCloseTo(5, 6);
+    // The earlier key was closed before the new one was given.
+    expect(w.access.blockKey).toHaveBeenCalled();
+  });
+
 });

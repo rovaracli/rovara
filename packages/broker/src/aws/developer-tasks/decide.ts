@@ -85,6 +85,7 @@ import { captureSendBackQuietly } from "../../learning/capture-decision.js";
 import { outcomeDepsOf, recordPlanOutcome, recordPublicationOutcomes, settleSuperseded } from "../../rovara-code/outcome-hooks.js";
 import { readTestProofForCandidate } from "../../developer/test-proof-lines.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
+import { designReviewEnabled } from "../../design-review/switch.js";
 
 /**
  * The task a caller may decide, through the one access rule (resolveTaskAccess and the role table). Anyone whose role may
@@ -147,6 +148,9 @@ export async function recordPublishedCandidateOutcomes(deps: DeveloperTaskRouteD
   }
 }
 
+/** What a plain Approve of a design under review is told (ON-1). */
+export const DESIGN_CARD_ONLY_MESSAGE = "This design is approved from its design approval card in the Rovara app, not from here.";
+
 /**
  * The one transition for a plan decision, from Slack, MCP and the task page alike. A page decision (`via: "PAGE"`) carries
  * the owner's answer to every decision and the comments they chose to send; Slack and MCP send neither, so an approval
@@ -158,7 +162,7 @@ export async function recordPublishedCandidateOutcomes(deps: DeveloperTaskRouteD
 export async function decideTaskWorkflow(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown,
   /** `changeText`: Stop & redirect on a plan that waits for approval (LR-2): the owner's whole instruction (up to the redirect limit), for the planner's prompt. The decision keeps `reason`, held to its own 500 characters. */
-  options: { via?: "PAGE"; note?: string; changeText?: string; /** Design review (DR7 slice C): the items an approved design adds to its own transaction (approval record, membership fence, audit). Only `design-decision.ts` passes it. */ designApproval?: { items: TransactItems } } = {},
+  options: { via?: "PAGE"; note?: string; changeText?: string; /** Design review (DR7 slice C): the items an approved design adds to its own transaction (approval record, membership fence, audit). Only `design-decision.ts` passes it. */ designApproval?: { items: TransactItems; /** The person who really pressed Approve. When it is not the owner whose seat the commit uses, the decision is recorded under THIS person, as a project approver's (`PROJECT_ADMIN`), never as the owner's. */ approverId: string } } = {},
 ): Promise<{ task: DeveloperTaskView }> {
   const request = parse(WorkflowDecisionRequestSchema, value, deps, "workflow-decision");
   // What the planner is told as the requested changes: the decision's reason, or the whole instruction when a redirect brought one.
@@ -167,8 +171,16 @@ export async function decideTaskWorkflow(
   const { task } = access;
   if (task.workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
   const workflow = task.workflow;
+  // Design review (ON-1): while the stage is on, a design under review is approved ONLY through its decision card (`design-decision.ts`, which passes `designApproval`): that is where the approver's tier, sign-in, browser session,
+  // reason for open blockers, membership fence and approval record are checked. Every other way in (this route, the task page, Slack, an AI tool) is refused for an APPROVE at the design. Sending changes back and rejecting are unchanged.
+  if (request.decision === "APPROVE" && options.designApproval === undefined && workflow.designReview !== undefined && workflow.reviewPhase === "DESIGN" && designReviewEnabled()) {
+    throw agentXError("CONFIG_INVALID", DESIGN_CARD_ONLY_MESSAGE);
+  }
   const prior = workflow.decisions.find((decision) => decision.requestId === request.requestId);
-  const actor = { actorId: access.actorId, role: "TASK_OWNER" as const };
+  // The decision names whoever really approved. A design approved by a maintainer or the design approver is committed in the owner's seat (the engine knows one decider) but recorded as theirs, with the project approver's role.
+  const approverId = options.designApproval?.approverId;
+  const decidedByOther = approverId !== undefined && approverId !== caller.developerId;
+  const actor = decidedByOther ? { actorId: approverId, role: "PROJECT_ADMIN" as const } : { actorId: access.actorId, role: "TASK_OWNER" as const };
   const decideOptions = { now: iso(deps), allowedSkipStages: [] as WorkflowStage[], ...(options.via === undefined ? {} : { via: options.via }) };
   const refused = (current: WorkflowSnapshot) => {
     // Only the owner decides, so whoever is refused here is the owner: a task started in Slack keeps no name for them, but
@@ -190,7 +202,7 @@ export async function decideTaskWorkflow(
   let noChangeNeeded: NonNullable<Parameters<typeof decideWorkflow>[3]["noChangeNeeded"]> | undefined;
   const transition = (decisionRequest: WorkflowDecisionRequest, decisions?: ReadonlyArray<{ id: string; optionIds: string[]; recommended: string }>, workBreakdownDigest?: string) => {
     try {
-      return decideWorkflow(workflow, decisionRequest, actor, { ...decideOptions, authority: access.authority, ...(decisions === undefined ? {} : { decisions }), ...(workBreakdownDigest === undefined ? {} : { workBreakdownDigest }), ...(noChangeNeeded === undefined ? {} : { noChangeNeeded }) });
+      return decideWorkflow(workflow, decisionRequest, actor, { ...decideOptions, ...(decidedByOther ? {} : { authority: access.authority }), ...(decisions === undefined ? {} : { decisions }), ...(workBreakdownDigest === undefined ? {} : { workBreakdownDigest }), ...(noChangeNeeded === undefined ? {} : { noChangeNeeded }) });
     } catch (error) {
       if (error instanceof WorkflowTransitionError) throw agentXError("CONFIG_INVALID", error.message);
       throw error;

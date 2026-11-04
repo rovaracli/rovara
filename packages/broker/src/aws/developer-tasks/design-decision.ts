@@ -5,7 +5,7 @@
 //   - the `task.design_sole_owner_exception` audit event, when the approval was the sole-owner exception.
 // The commit is conditional on the design digest the person was shown: the latest design must be exactly that document, and the decision names it. A task that moved, a design that changed or a fence that no longer
 // holds is "stale". The workflow engine knows one decider, the task's owner; an approver who is not the owner (a maintainer, the high-risk approver) is authorised by the handler's own checks and decides for the owner's
-// seat, and the record and the audit name the person who really pressed.
+// seat, but the decision the engine records, the approval record and the audit all name the person who really pressed (ON-4), and the owner's seat is built from the OWNER's own record, never from the approver's role or session.
 import { agentXError, auditEventId, orgMetaKey, type AuditEventInput } from "@agentx/contracts";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPending } from "../../audit/outbox.js";
@@ -61,7 +61,7 @@ export function designApprovalItems(
 }
 
 /**
- * Commits an approved design. `deps` are the task dependencies for the TASK OWNER's seat (the engine's only decider); `approver` is the person who pressed. "stale": the task is not waiting on this design any more, the design
+ * Commits an approved design. `deps` are the task dependencies for the TASK OWNER's seat (the engine's only decider), built from the owner's own record; `approver` is the person who pressed. "stale": the task is not waiting on this design any more, the design
  * is not the one shown, or the fence no longer holds.
  */
 export async function commitDesignApproval(
@@ -80,7 +80,7 @@ export async function commitDesignApproval(
   try {
     await decideTaskWorkflow(deps, ownerCaller, task.taskId, {
       requestId: write.requestId, expectedRevision: workflow.revision, decision: "APPROVE", reason: DESIGN_APPROVAL_DECISION_REASON, artifactDigest: digest,
-    }, { designApproval: { items: extra.items } });
+    }, { designApproval: { items: extra.items, approverId: approver.developerId } });
   } catch (error) {
     const code = (error as { code?: string }).code;
     if (code === "IDEMPOTENCY_CONFLICT" || code === "CHANGE_STALE" || code === "TASK_NOT_FOUND") return "stale";

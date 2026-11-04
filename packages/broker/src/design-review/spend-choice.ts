@@ -17,10 +17,10 @@ import { projectDecisionCards, type DecisionItem } from "../decisions/project.js
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks } from "../decisions/risk-tier.js";
 import type { DecisionStore } from "../decisions/store.js";
 import { secondPersonMembershipCondition } from "../org/second-person-approval.js";
-import { maySkipDesignReview, type DesignApproverDirectory, type SkipRefusal } from "./approval.js";
+import { approverUnavailableWords, maySkipDesignReview, type DesignApproverDirectory, type SkipRefusal } from "./approval.js";
 import type { EffectiveDesignReviewSetting } from "./effective-setting.js";
 import { gateDesignReviewCost, type DesignReviewCapGate, type DesignReviewEstimate, type DesignSpendChoice } from "./estimate.js";
-import { designSpendCardItem } from "./spend-card.js";
+import { designSpendAmountUsd, designSpendCardItem } from "./spend-card.js";
 
 export type DesignSpendChoiceName = DesignSpendChoice["choice"];
 
@@ -46,6 +46,8 @@ export interface DesignSpendContext {
   edition: EditionPolicy | undefined;
   /** The person signed in freshly for this decision (the session), needed only when the card is high. */
   freshSignIn: boolean;
+  /** The request came from a live browser session (never a token), which a high card also needs (ON-9). */
+  browserSession?: boolean | undefined;
   /** The version of the task record this gate was worked out from. The commit is conditional on it. */
   revision: string;
   card: { subjectId: string; project: string; title: string; createdAt: string; openPath: string; contentVersion: string };
@@ -76,7 +78,8 @@ export interface DesignSpendPorts<C extends DecisionCaller> {
   commit(caller: C, write: DesignSpendWrite): Promise<"done" | "stale">;
 }
 
-export interface DesignSpendRequest { taskId: string; choice: DesignSpendChoiceName; requestId: string; shownDigest: string }
+/** `shownDigest` absent: the caller has no card in hand (the task view's Skip). The digest is then not compared, but the card as the server draws it NOW is the one whose evidence and sign-in friction apply. */
+export interface DesignSpendRequest { taskId: string; choice: DesignSpendChoiceName; requestId: string; shownDigest?: string | undefined }
 export type DesignSpendResult = { kind: "done"; choice: DesignSpendChoiceName; replay: boolean; applied?: DesignSpendApplied };
 
 const same = (left: string, right: string): boolean => left.normalize("NFC").trim().toLowerCase() === right.normalize("NFC").trim().toLowerCase();
@@ -93,7 +96,7 @@ export function designSpendGateFor(context: DesignSpendContext, callerId: string
 export function designSpendItemFor(context: DesignSpendContext, gate: Extract<DesignReviewCapGate, { kind: "ask" }>): DecisionItem {
   const inputs = createHash("sha256").update(canonicalJson({ tier: context.tier, cap: context.taskCapUsd, spent: context.spentUsd, ceiling: context.capCeilingUsd ?? null, gate, revision: context.revision })).digest("hex").slice(0, 16);
   const head = context.card.contentVersion.length > 70 ? createHash("sha256").update(context.card.contentVersion).digest("hex").slice(0, 32) : context.card.contentVersion;
-  return designSpendCardItem({ taskId: context.taskId, ...context.card, contentVersion: `${head}:${inputs}`, gate, capUsd: context.taskCapUsd });
+  return designSpendCardItem({ taskId: context.taskId, ...context.card, contentVersion: `${head}:${inputs}`, gate, capUsd: context.taskCapUsd, spentUsd: context.spentUsd });
 }
 
 export type SpendAuthority = { ok: true } | { ok: false; code: "requester_only" | "maintainer_only" | "not_a_member" | "above_ceiling" };
@@ -123,14 +126,15 @@ const CHOICE_REFUSALS: Record<Exclude<SpendAuthority, { ok: true }>["code"], str
   not_a_member: "You can't decide this.",
   above_ceiling: "Your company doesn't allow a limit this high.",
 };
-const SKIP_REFUSALS: Record<SkipRefusal, string> = {
+export const SKIP_REFUSALS: Record<Exclude<SkipRefusal, "group_not_available" | "no_high_risk_approver">, string> = {
   skip_not_allowed: "This project doesn't allow skipping design review.",
   not_a_member: "You can't decide this.",
   high_risk_approver_only: "Only the design approver can skip a high-risk design review.",
   eligibility_unavailable: "Who may skip can't be worked out right now.",
-  group_not_available: "Who may skip can't be worked out right now.",
-  no_high_risk_approver: "Who may skip can't be worked out right now.",
 };
+/** The words for a refused skip, whatever the refusal: a group or missing approver is said plainly (ON-12). */
+export const skipRefusalWords = (code: SkipRefusal, setting: Pick<EffectiveDesignReviewSetting, "highRiskApprover">): string =>
+  code === "group_not_available" || code === "no_high_risk_approver" ? approverUnavailableWords(code, setting) : SKIP_REFUSALS[code];
 
 export function designSpendChoiceHandler<C extends DecisionCaller>(ports: DesignSpendPorts<C>): (caller: C, request: DesignSpendRequest) => Promise<DesignSpendResult> {
   return async (caller, request) => {
@@ -149,7 +153,7 @@ export function designSpendChoiceHandler<C extends DecisionCaller>(ports: Design
     const item = designSpendItemFor(context, gate);
     const offered = gate.choices.find((choice) => choice.choice === request.choice);
     if (offered === undefined) {
-      if (request.choice === "skip" && !skip.ok) throw agentXError("FORBIDDEN", SKIP_REFUSALS[skip.code]);
+      if (request.choice === "skip" && !skip.ok) throw agentXError("FORBIDDEN", skipRefusalWords(skip.code, context.setting));
       throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);
     }
     // The card as this person was shown it: its digest, risk and friction come from the record, and what they were shown must be what the server shows now.
@@ -158,8 +162,10 @@ export function designSpendChoiceHandler<C extends DecisionCaller>(ports: Design
     const card = projection.cards[0];
     const digest = projection.digests[cardId];
     if (card === undefined || digest === undefined) throw agentXError("NOT_FOUND", DECISION_FULL_PAGE_MESSAGE);
-    if (request.shownDigest !== digest) throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);
-    const risk = riskTierOf("approve_spend", { spend: { amountUsd: gate.estimateUsd ?? 0 } }, locks).risk;
+    if (request.shownDigest !== undefined && request.shownDigest !== digest) throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);
+    const risk = riskTierOf("approve_spend", { spend: { amountUsd: designSpendAmountUsd(gate, context.taskCapUsd, context.spentUsd) } }, locks).risk;
+    // High: a fresh sign-in AND a browser session. A token (an AI tool) never decides a high card, as the decisions route refuses high entirely (ON-9).
+    if (risk === "high" && context.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
     if (risk === "high" && !context.freshSignIn) throw agentXError("FORBIDDEN", "Sign in again to decide this.");
     if (risk === "medium" || card.friction.expandEvidenceFirst) {
       const opened = await ports.store.evidenceOpenedAt({ ...who, cardId }, digest);
@@ -169,7 +175,7 @@ export function designSpendChoiceHandler<C extends DecisionCaller>(ports: Design
     let applied: DesignSpendApplied;
     switch (offered.choice) {
       case "skip":
-        if (!skip.ok) throw agentXError("FORBIDDEN", SKIP_REFUSALS[skip.code]);
+        if (!skip.ok) throw agentXError("FORBIDDEN", skipRefusalWords(skip.code, context.setting));
         applied = { choice: "skip" };
         break;
       case "lower_tier":

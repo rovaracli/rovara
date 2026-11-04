@@ -57,6 +57,13 @@ export function highRiskApprovers(setting: Pick<DesignReviewSetting, "highRiskAp
   return ids.length === 0 ? { ok: false, code: "no_high_risk_approver" } : { ok: true, ids };
 }
 
+/** What a person is told when nobody can approve or skip a high-risk design in the project (ON-12): a group approver (groups have no member store yet) or no approver at all. Fixed words; the group is never named. */
+export const DESIGN_APPROVER_GROUP_WORDS = "This project's design approver is a group, and groups can't approve yet. A project maintainer can name people in How we work.";
+export const DESIGN_APPROVER_NONE_WORDS = "No one is set up to approve a high-risk design in this project. A project maintainer can name an approver in How we work.";
+export function approverUnavailableWords(code: "group_not_available" | "no_high_risk_approver", setting: Pick<DesignReviewSetting, "highRiskApprover">): string {
+  return code === "group_not_available" || setting.highRiskApprover.kind === "group" ? DESIGN_APPROVER_GROUP_WORDS : DESIGN_APPROVER_NONE_WORDS;
+}
+
 /** A blocker's one-line reason: one plain line of 1 to 200 characters, or undefined. Used as the Proof line's words, so it is cut and cleaned here, not later. */
 export const BLOCKER_REASON_MAX = 200;
 export function blockerReasonLine(raw: string | undefined): string | undefined {

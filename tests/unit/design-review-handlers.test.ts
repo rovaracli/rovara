@@ -10,7 +10,7 @@ import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store
 import type { PerformOutcome } from "../../packages/broker/src/decisions/routes.js";
 import { openBlockerWords } from "../../packages/broker/src/design-review/proof-line.js";
 import { DESIGN_REASON_NOT_ALLOWED_MESSAGE, DESIGN_REASON_REQUIRED_MESSAGE, designApprovalProofLine, designApproveHandler, type DesignApprovalContext, type DesignApprovalWrite, type DesignApproveInput } from "../../packages/broker/src/design-review/approve-handler.js";
-import type { DesignApproverDirectory } from "../../packages/broker/src/design-review/approval.js";
+import { DESIGN_APPROVER_GROUP_WORDS, DESIGN_APPROVER_NONE_WORDS, type DesignApproverDirectory } from "../../packages/broker/src/design-review/approval.js";
 import { designApproveItem, designContentVersion } from "../../packages/broker/src/design-review/card-source.js";
 import { markEffective } from "../../packages/broker/src/design-review/effective-setting.js";
 import { estimateDesignReviewUsd, type DesignReviewEstimate } from "../../packages/broker/src/design-review/estimate.js";
@@ -100,6 +100,16 @@ describe("the design approval handler (H1)", () => {
     expect(stale).toMatchObject({ kind: "refused", reason: "stale" });
     expect(r.writes).toEqual([]);
     expect(await rig().press("priya", item, { reason, open: true })).toEqual({ kind: "done" });
+  });
+
+  it("ON-12: a high-risk design whose approver is a group (no member store yet) is refused in plain words, and nothing is committed; with no approver at all it says so", async () => {
+    const high = itemOf(facts({ touches: ["data_model"] }));
+    const group = rig({ setting: markEffective({ ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "group", groupId: "g1" } }) });
+    expect(await failure(group.press("own", high))).toEqual({ code: "CONFIG_INVALID", message: DESIGN_APPROVER_GROUP_WORDS });
+    const nobody = rig({ setting: markEffective({ ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "people", memberIds: ["gone"] } }) });
+    expect(await failure(nobody.press("own", high))).toEqual({ code: "CONFIG_INVALID", message: DESIGN_APPROVER_NONE_WORDS });
+    expect(group.writes).toEqual([]);
+    expect(nobody.writes).toEqual([]);
   });
 
   it("who may approve: the requester or a maintainer; a member who did not ask, an outsider and an Auditor are refused and nothing is committed", async () => {
@@ -203,7 +213,7 @@ describe("the spend choice handler (M7)", () => {
   function contextOf(change: Partial<DesignSpendContext> = {}): DesignSpendContext {
     return {
       taskId: TASK, requesterId: "priya", tier: "standard", setting: markEffective(DESIGN_REVIEW_DEFAULT_SETTING), taskCapUsd: 10, spentUsd: 0, estimate: priced(40), lowerTier: { tier: "light", estimate: priced(6, "light") },
-      reasons: ["new_api"], touches: [], directory: directory(), edition: editionPolicy("enterprise"), freshSignIn: true, revision: "rev-1",
+      reasons: ["new_api"], touches: [], directory: directory(), edition: editionPolicy("enterprise"), freshSignIn: true, browserSession: true, revision: "rev-1",
       card: { subjectId: "dr-spend-1", project: "payments", title: "Partner ranking", createdAt: "2026-11-03T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, contentVersion: "v1" }, ...change,
     };
   }
@@ -303,6 +313,30 @@ describe("the spend choice handler (M7)", () => {
     expect(high.writes).toEqual([]);
     const fresh = rig({ estimate: priced(250), lowerTier: { tier: "light", estimate: priced(6, "light") }, freshSignIn: true });
     expect(await fresh.choose("priya", "lower_tier", { open: true })).toMatchObject({ kind: "done" });
+    // ... and a browser: a token (an AI tool) never decides a high card, as the decisions route refuses high entirely (ON-9).
+    const token = rig({ estimate: priced(250), lowerTier: { tier: "light", estimate: priced(6, "light") }, freshSignIn: true, browserSession: false });
+    expect(await failure(token.choose("priya", "lower_tier", { open: true }))).toEqual({ code: "FORBIDDEN", message: "Decide this in the Rovara app." });
+    expect(token.writes).toEqual([]);
+  });
+
+  it("ON-12: skipping a high-risk design review when the approver is a group says so plainly", async () => {
+    const r = rig({ reasons: ["money"], setting: markEffective({ ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "group", groupId: "g1" } }) });
+    expect(await failure(r.choose("own", "skip"))).toEqual({ code: "FORBIDDEN", message: DESIGN_APPROVER_GROUP_WORDS });
+  });
+
+  it("ON-9: running unpriced is tiered by the room left under the cap, not as free: medium needs the evidence opened, and the card says so", async () => {
+    const noPrice = { taskCapUsd: 40, spentUsd: 5, estimate: unpriced, lowerTier: undefined };
+    const r = rig(noPrice);
+    const { gate } = designSpendGateFor(r.state.context, "priya");
+    if (gate.kind !== "ask") throw new Error("expected an ask");
+    const card = projectDecisionCards([designSpendItemFor(r.state.context, gate)], { pairFullCards: false }).cards[0]!;
+    expect(card.risk).toBe("medium");
+    expect(await failure(r.choose("priya", "run_unpriced", { open: false }))).toMatchObject({ code: "CHANGE_STALE" });
+    expect(r.writes).toEqual([]);
+    expect(await r.choose("priya", "run_unpriced", { open: true })).toMatchObject({ kind: "done", applied: { choice: "run_unpriced" } });
+    // Within the low amount of room it is a low card and needs none.
+    const small = rig({ taskCapUsd: 8, spentUsd: 0, estimate: unpriced, lowerTier: undefined });
+    expect(await small.choose("priya", "run_unpriced", { open: false })).toMatchObject({ kind: "done" });
   });
 
   it("a choice the gate does not offer is refused: a gate that no longer asks, and a lower tier that does not fit", async () => {

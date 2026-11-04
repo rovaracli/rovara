@@ -133,6 +133,26 @@ describe("the intake and the first card", () => {
     expect(designFirstRequestOf("payments", "Design first: add a retry", { ...on, DESIGN_REVIEW_ENABLED: "0" })).toEqual({ designFirst: false, rest: "Design first: add a retry" });
   });
 
+  it("ON-2: the model's note on the classification line is made inert for Slack and Linear threads: no @channel, no link, no mention, no tag", () => {
+    const review = (note: string) => ({ stage: "PLAN_REVIEW", state: "WAITING", reviewPhase: "REQUIREMENTS", decisions: [], designReview: { decidedBy: "auto", reasons: ["auth"], status: "estimating", tier: "standard", spentUsd: 0, rounds: [], note } }) as never;
+    // The reviewer's probe payloads: the first is the one that went through raw.
+    for (const note of [
+      "see <!channel> <https://evil.example|click> & <@U12345>", "<!here> <!subteam^S123> please", "[click me](https://evil.example/x) ![img](https://evil.example/p.png)", "<script>alert(1)</script> @everyone @here mail <mailto:a@b.example>",
+      "https://evil.example/phish www.evil.example #123 GH-77 Fixes ENG-1", "a > b < c &amp; &lt;!channel&gt;",
+    ]) {
+      const line = designClassificationNoteOf(review(note))!;
+      expect(line, note).toContain("Note from Rovara:");
+      expect(line, note).not.toMatch(/<|>/u);
+      expect(line, note).not.toMatch(/<!|<@|<https?:|\]\(|!\[/u);
+      expect(line, note).not.toMatch(/@\w/u);
+      // A scheme is broken up (a joiner or a space after the slashes), so no autolink forms.
+      expect(line, note).not.toMatch(/https?:\/\/[^\s\u200d]/u);
+      expect(line, note).not.toMatch(/\bwww\.[a-z]/iu);
+    }
+    // The words around the note are unchanged for a plain note.
+    expect(designClassificationNoteOf(review("A bug fix in one module."))).toContain("Note from Rovara: A bug fix in one module.");
+  });
+
   it("says why the design is reviewed on the first card of a reviewed task, and nothing for a task with no review or on a later card", () => {
     const review = { decidedBy: "person", reasons: ["auth"], status: "estimating", tier: "standard", spentUsd: 0, rounds: [] };
     const first = { stage: "PLAN_REVIEW", state: "WAITING", reviewPhase: "REQUIREMENTS", decisions: [], designReview: review } as never;

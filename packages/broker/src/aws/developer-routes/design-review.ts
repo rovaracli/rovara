@@ -8,13 +8,13 @@
 //   POST /v1/app/tasks/{id}/design-review/resume           {requestId}                       picks up a PARKED review from its card, `designResumeHandler`
 //   POST /v1/app/tasks/{id}/design-review/approve          {requestId, shownDigest, reason?} the confirmation page of a HIGH-risk design: a browser session, the same `designApproveHandler` as the card
 // A task with no `designReview` answers as a missing task answers, so with the feature off none of these exists.
-import { QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  ModelSelectionSchema, WorkflowTransitionError, agentXError, enableDesignReview, retryDesignReviewNotRun, DESIGN_ACTIONS_NAME_MAX, plainOneLine, type DesignActionsView, type DesignReason, type ModelIdentifier, type OrgId, type WorkflowSnapshot,
+  ModelSelectionSchema, WORKSPACE_PROJECT_INDEX, WorkflowTransitionError, isHighRiskDesign, workspaceProjectIndexValue, agentXError, enableDesignReview, retryDesignReviewNotRun, DESIGN_ACTIONS_NAME_MAX, plainOneLine, type DesignActionsView, type DesignReason, type ModelIdentifier, type OrgId, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { StatusReply } from "../status-reply.js";
-import { effectiveTaskOwner, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { effectiveTaskOwner, taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { listProjectMembers } from "../../org/project-members.js";
 import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { DECISION_REFUSALS, type DecisionCaller } from "../../decisions/routes.js";
@@ -23,12 +23,12 @@ import { dynamoDecisionStore } from "../../decisions/store.js";
 import { designResumeCommitItems, designResumeHandler, type DesignResumePorts } from "../../design-review/wait-resume.js";
 import { secondPersonMembershipCondition } from "../../org/second-person-approval.js";
 import { designAnswersCommitItems, designAnswersHandler, type DesignAnswersPorts } from "../../design-review/answers.js";
-import { highRiskApprovers, maySkipDesignReview, type SkipRefusal } from "../../design-review/approval.js";
+import { decideDesignApproval, designQuestionAudience, highRiskApprovers, maySkipDesignReview } from "../../design-review/approval.js";
 import { designApproveHandler, type DesignApprovePorts } from "../../design-review/approve-handler.js";
 import { designApproveItem, designCardFactsOf, designQuestionsItem } from "../../design-review/card-source.js";
 import { readDesignMeta } from "@agentx/contracts";
 import { readEffectiveDesignReview } from "../../design-review/setting.js";
-import { designSpendChoiceHandler, designSpendGateFor, designSpendItemFor, type DesignSpendChoiceName, type DesignSpendContext, type DesignSpendPorts } from "../../design-review/spend-choice.js";
+import { designSpendChoiceHandler, mayChooseDesignSpend, skipRefusalWords, designSpendGateFor, designSpendItemFor, type DesignSpendChoiceName, type DesignSpendContext, type DesignSpendPorts } from "../../design-review/spend-choice.js";
 import { designSpendCommitItems } from "../../design-review/spend-follow.js";
 import { spendEstimatesOf } from "../../design-review/spend-estimates.js";
 import { designReviewEnabledFor } from "../../design-review/switch.js";
@@ -38,12 +38,12 @@ import { commitDesignApproval, membershipFenceItem } from "../developer-tasks/de
 import { TASK_ID, get } from "../developer-tasks/common.js";
 import type { DeveloperTaskRouteDependencies } from "../developer-tasks/types.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
-import { developerTaskRouteDependencies } from "./dependencies.js";
+import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencies.js";
 import { jsonBody } from "./organization.js";
 import { signInStoreOf } from "./common.js";
 import { isInfraPath } from "../../decisions/risk-tier.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
-import { projectMembersDepsOf } from "./project-list.js";
+import { projectMembersDepsOf, visibleProjectRoles } from "./project-list.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
 export const DESIGN_REVIEW_ROUTE = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/design-review\/(first|skip|answers|retry|resume|approve|spend\/(?:lower-tier|raise-cap|run-unpriced|skip))$/u;
@@ -137,8 +137,11 @@ function approvePortsOf(env: Env): DesignApprovePorts<DeveloperCaller> {
     async commit(caller, write) {
       const loaded = write.taskId === undefined ? undefined : await loadDesignTask(env, write.taskId);
       if (loaded === undefined) return "stale";
+      // The owner's seat is the OWNER's own (their sign-in record and membership, read now), never the approver's role or session under the owner's id (ON-4). An owner who can no longer be seated (removed, revoked) leaves the
+      // approval stale: nothing is committed on a guess. The decision and the record name the person who really pressed.
       const owner = effectiveTaskOwner(loaded.task);
-      const ownerCaller: DeveloperCaller = { ...caller, developerId: owner.developerId, name: owner.name };
+      const ownerCaller = await agentRunStarterOf(env.deps)?.callerFor(caller.orgId, owner.developerId);
+      if (ownerCaller === undefined) return "stale";
       return commitDesignApproval(developerTaskRouteDependencies(env.deps, ownerCaller), ownerCaller, { developerId: caller.developerId, name: caller.name }, write);
     },
   };
@@ -172,7 +175,7 @@ async function spendContextOf(env: Env, caller: DecisionCaller, loaded: Loaded):
   return {
     taskId: task.taskId, requesterId: task.developerId, tier: review.tier, setting: facts.setting, taskCapUsd: review.capUsd ?? facts.setting.capUsdPerTask, spentUsd: review.spentUsd,
     capCeilingUsd: await ports.capCeilingUsd(caller.orgId), estimate: estimates.estimate, lowerTier: estimates.lowerTier, reasons: review.reasons, touches: facts.touches, directory: facts.directory, edition: facts.edition,
-    freshSignIn: await freshSignInOf(env.facts, env.caller), revision: String(workflow.revision),
+    freshSignIn: await freshSignInOf(env.facts, env.caller), browserSession: env.caller.browserSession === true, revision: String(workflow.revision),
     card: { subjectId: task.taskId, project: task.project, title: task.title, createdAt: workflow.updatedAt ?? nowIso(env), openPath: await sessionPathOf(env, task), contentVersion: `hold-${String(workflow.revision)}` },
   };
 }
@@ -242,11 +245,14 @@ function resumePortsOf(env: Env): DesignResumePorts<DeveloperCaller> {
 // ---- the question card
 
 function answersPortsOf(env: Env): DesignAnswersPorts<DeveloperCaller> {
+  // The membership generation the audience was read at: the commit is fenced with it, so a membership change in between cancels the answer (ON-6, as Resume and the spend choices are).
+  let membershipVersion = 0;
   return {
     async context(caller, taskId) {
       const loaded = await loadDesignTask(env, taskId);
       if (loaded === undefined) return undefined;
       const facts = await factsOf(env, loaded);
+      membershipVersion = facts.directory.people.membershipVersion;
       return { taskId, requesterId: loaded.task.developerId, workflow: loaded.workflow, setting: facts.setting, touches: facts.touches, directory: facts.directory, edition: facts.edition };
     },
     now: () => env.deps.now(),
@@ -256,7 +262,8 @@ function answersPortsOf(env: Env): DesignAnswersPorts<DeveloperCaller> {
       if (commit === undefined) return "stale";
       const marker = { pk: `DEVTASK#${write.taskId}`, sk: `DESIGN_ANSWERS#${write.requestId}` };
       try {
-        await env.task.actions.transact([...commit.items, { Put: { TableName: env.deps.tableName, Item: { ...marker, entityType: "DESIGN_ANSWERS", actorId: write.actorId, at: now }, ConditionExpression: "attribute_not_exists(pk)" } }] as never);
+        await env.task.actions.transact([...commit.items, membershipFenceItem(env.deps.tableName, caller.orgId, secondPersonMembershipCondition(membershipVersion)),
+          { Put: { TableName: env.deps.tableName, Item: { ...marker, entityType: "DESIGN_ANSWERS", actorId: write.actorId, at: now }, ConditionExpression: "attribute_not_exists(pk)" } }] as never);
       } catch (error) {
         if (!isConditional(error) && (error as { name?: string }).name !== "TransactionCanceledException") throw error;
         return (await get(env.task, marker)) !== undefined ? "done" : "stale";
@@ -269,51 +276,118 @@ function answersPortsOf(env: Env): DesignAnswersPorts<DeveloperCaller> {
 // ---- the decision cards: what the caller's own tasks put on the list
 
 const ROWS_MAX = 50;
+/** The newest workspaces of a project whose tasks are looked at for cards of people who did not ask for the task (a design waiting on its approver is recent). */
+const PROJECT_TASKS_MAX = 25;
 
-/** The design review's cards for the caller's own tasks: the design to approve, the cost question (built for THIS person: only the choices they may make) and the questions to answer. Empty while no task carries a design review. */
-export async function designReviewItemsFor(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<DecisionItem[]> {
-  const env = envOf(deps, caller);
+const sameId = (left: string, right: string): boolean => left.normalize("NFC").trim().toLowerCase() === right.normalize("NFC").trim().toLowerCase();
+
+/** The caller's own tasks (they asked for them, or took them over): ids, newest first. */
+async function ownTaskIds(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<string[]> {
   const response = await deps.documentClient.send(new QueryCommand({
     TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": `DEVELOPER#${caller.developerId}`, ":prefix": "TASK#" }, ScanIndexForward: false, Limit: ROWS_MAX, ConsistentRead: true,
   })) as { Items?: Array<{ taskId?: string; orgId?: string; status?: string }> };
+  return (response.Items ?? []).filter((row) => row.orgId === caller.orgId && row.status !== "CLOSED" && typeof row.taskId === "string").map((row) => row.taskId!);
+}
+
+/**
+ * The recent tasks of the projects the design review runs for and the caller belongs to, so a maintainer or the design approver finds the cards of tasks they did not ask for (ON-5). A bounded read: the newest workspaces
+ * of each such project, then each one's task. Nothing here decides who may act: every card is then filtered by the same rules the handlers apply.
+ */
+async function projectTaskIds(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<string[]> {
+  const roles = await visibleProjectRoles(deps, caller);
+  const found: string[] = [];
+  for (const project of [...roles.keys()].sort()) {
+    if (!designReviewEnabledFor(project)) continue;
+    const workspaces = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, IndexName: WORKSPACE_PROJECT_INDEX.name, KeyConditionExpression: "#project = :project", ExpressionAttributeNames: { "#project": WORKSPACE_PROJECT_INDEX.partitionKey },
+      ExpressionAttributeValues: { ":project": workspaceProjectIndexValue(caller.orgId, project) }, ScanIndexForward: false, Limit: PROJECT_TASKS_MAX,
+    })) as { Items?: Array<{ id?: unknown }> };
+    for (const workspace of workspaces.Items ?? []) {
+      if (typeof workspace.id !== "string") continue;
+      const pointer = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskPointerKey(workspace.id), ConsistentRead: true }))) as { Item?: { taskId?: unknown } };
+      if (typeof pointer.Item?.taskId === "string") found.push(pointer.Item.taskId);
+    }
+  }
+  return found;
+}
+
+/**
+ * The design review's cards for one task, for THIS caller: the design to approve (to the requester, who is told what is needed, and to everyone who may approve it), the cost question (built for this person: only the choices
+ * they may make; to the requester and to anyone who can make one) and the questions to answer (to the people the audience rules name). The eligibility is the handlers' own, so a card is never shown to someone its press would
+ * refuse as "not for you".
+ */
+async function cardsForTask(env: Env, caller: DeveloperCaller, loaded: Loaded): Promise<DecisionItem[]> {
+  const { workflow, task } = loaded;
+  const review = workflow.designReview!;
+  const requester = sameId(task.developerId, caller.developerId) || tryEffectiveTaskOwner(task)?.developerId === caller.developerId;
+  if (waitingOnDesign(workflow)) {
+    const facts = await factsOf(env, loaded);
+    const item = await approveItemOf(env, loaded, facts.touches);
+    if (item === undefined || item.kind !== "approve_design") return [];
+    if (!requester) {
+      const tier = projectDecisionCards([item], { locks: {}, pairFullCards: false }).cards[0]?.risk;
+      if (tier === undefined) return [];
+      // Eligible exactly as `designApproveHandler` works it out (a sign-in and a reason are the press's to ask for, not the list's).
+      const verdict = decideDesignApproval({
+        tier, requesterId: task.developerId, approverId: caller.developerId, nowMs: env.deps.now(), setting: facts.setting, edition: facts.edition, directory: facts.directory,
+        freshSignIn: true, openBlockers: item.review?.blockers.length ?? 0, blockerReason: "x",
+      });
+      if (!verdict.ok) return [];
+    }
+    return [item];
+  }
+  if (review.status === "waiting_cost") {
+    const context = await spendContextOf(env, caller, loaded);
+    if (context === undefined) return [];
+    const { gate, skip } = designSpendGateFor(context, caller.developerId);
+    if (gate.kind !== "ask") return [];
+    if (!requester) {
+      const mayChoose = gate.choices.some((choice) => choice.choice === "skip" ? skip.ok : mayChooseDesignSpend({
+        choice: choice.choice, callerId: caller.developerId, requesterId: context.requesterId, newCapUsd: choice.choice === "raise_cap" ? choice.newCapUsd : undefined, ceilingUsd: context.capCeilingUsd, directory: context.directory,
+      }).ok);
+      if (!mayChoose) return [];
+    }
+    return [designSpendItemFor(context, gate)];
+  }
+  if (review.status === "waiting_answers" && workflow.stage === "PLAN" && workflow.state === "WAITING") {
+    const round = review.rounds.at(-1);
+    const facts = await factsOf(env, loaded);
+    // Only a person who may answer sees the card (the handler checks again on the press).
+    if (round?.questions === undefined || !facts.directory.people.complete) return [];
+    const audience = designQuestionAudience({ requesterId: task.developerId, aboutHighRisk: isHighRiskDesign([...review.reasons, ...facts.touches]), setting: facts.setting, directory: facts.directory, edition: facts.edition });
+    if (!requester && !audience.some((id) => sameId(id, caller.developerId))) return [];
+    const item = designQuestionsItem({
+      subjectId: task.taskId, taskId: task.taskId, project: task.project, title: task.title, createdAt: review.waiting?.since ?? workflow.updatedAt ?? nowIso(env), openPath: await sessionPathOf(env, task),
+      contentVersion: `q-${String(workflow.revision)}`, designTitle: task.title, questions: round.questions,
+      packetItems: round.reviewers.flatMap((run) => run.packet.map((entry) => ({ kind: entry.kind, ref: entry.ref, commitOrFetchedAt: entry.commitOrFetchedAt, digest: entry.digest }))),
+    });
+    return item === undefined ? [] : [item];
+  }
+  return [];
+}
+
+/**
+ * The design review's cards for the caller: those of their own tasks, and those of the other tasks they may act on as an approver or a maintainer (ON-5). Each card is checked with the rules its handler uses. Empty while no task
+ * carries a design review.
+ */
+export async function designReviewItemsFor(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<DecisionItem[]> {
+  const env = envOf(deps, caller);
   const found: DecisionItem[] = [];
-  for (const row of response.Items ?? []) {
-    if (row.orgId !== caller.orgId || row.status === "CLOSED" || typeof row.taskId !== "string") continue;
+  const seen = new Set<string>();
+  const ids = [...await ownTaskIds(deps, caller), ...await projectTaskIds(deps, caller).catch(() => [] as string[])];
+  for (const taskId of ids) {
+    if (seen.has(taskId)) continue;
+    seen.add(taskId);
     try {
-      const loaded = await loadDesignTask(env, row.taskId);
-      if (loaded === undefined || tryEffectiveTaskOwner(loaded.task)?.developerId !== caller.developerId) continue;
-      const { workflow } = loaded;
-      const review = workflow.designReview!;
-      if (waitingOnDesign(workflow)) {
-        const item = await approveItemOf(env, loaded, (await factsOf(env, loaded)).touches);
-        if (item !== undefined) found.push(item);
-      } else if (review.status === "waiting_cost") {
-        const context = await spendContextOf(env, caller, loaded);
-        if (context === undefined) continue;
-        const { gate } = designSpendGateFor(context, caller.developerId);
-        if (gate.kind === "ask") found.push(designSpendItemFor(context, gate));
-      } else if (review.status === "waiting_answers" && workflow.stage === "PLAN" && workflow.state === "WAITING") {
-        const round = review.rounds.at(-1);
-        const facts = await factsOf(env, loaded);
-        const item = round?.questions === undefined ? undefined : designQuestionsItem({
-          subjectId: loaded.task.taskId, taskId: loaded.task.taskId, project: loaded.task.project, title: loaded.task.title, createdAt: review.waiting?.since ?? workflow.updatedAt ?? nowIso(env), openPath: await sessionPathOf(env, loaded.task),
-          contentVersion: `q-${String(workflow.revision)}`, designTitle: loaded.task.title, questions: round.questions,
-          packetItems: round.reviewers.flatMap((run) => run.packet.map((entry) => ({ kind: entry.kind, ref: entry.ref, commitOrFetchedAt: entry.commitOrFetchedAt, digest: entry.digest }))),
-        });
-        // Only a person who may answer sees the card (the handler checks again on the press).
-        if (item !== undefined && facts.directory.people.complete) found.push(item);
-      }
+      const loaded = await loadDesignTask(env, taskId);
+      if (loaded === undefined) continue;
+      found.push(...await cardsForTask(env, caller, loaded));
     } catch { /* a task that cannot be read is not a card */ }
   }
   return found;
 }
 
 // ---- Design first, Skip, Retry
-
-const SKIP_WORDS: Record<SkipRefusal, string> = {
-  skip_not_allowed: "This project doesn't allow skipping design review.", not_a_member: "You can't decide this.", high_risk_approver_only: "Only the design approver can skip a high-risk design review.",
-  eligibility_unavailable: "Who may skip can't be worked out right now.", group_not_available: "Who may skip can't be worked out right now.", no_high_risk_approver: "Who may skip can't be worked out right now.",
-};
 
 const memberOf = (directory: { projectMemberIds: readonly string[]; notApproverIds: readonly string[]; people: { eligibleIds: readonly string[] } }, id: string): boolean => {
   const lower = id.toLowerCase();
@@ -327,33 +401,70 @@ const reasonsOf = (workflow: WorkflowSnapshot): DesignReason[] => {
   return assessment !== undefined && assessment.kind === "ready" ? [...(assessment.design?.reasons ?? [])] : [];
 };
 
-async function transactWorkflow(env: Env, loaded: Loaded, next: WorkflowSnapshot, extra: unknown[], expect: { stage: string; states: readonly string[] }): Promise<void> {
+/** A request's record (kept by the transaction that did the work) when it is there: a repeat finds it and is the same request. */
+type Marker = { pk: string; sk: string };
+const markerOf = (taskId: string, kind: string, requestId: string): Marker => ({ pk: `DEVTASK#${taskId}`, sk: `${kind}#${requestId}` });
+const REQUEST_REUSED = "requestId: this request ID was already used for a different request";
+
+/**
+ * A repeat of a request that already did its work (ON-13): the same person with the same request ID gets the first answer (before the state is read, which has moved on); another person with that ID is refused.
+ * Undefined when the request is new.
+ */
+async function replayOf(env: Env, marker: Marker): Promise<"done" | undefined> {
+  const earlier = await get<{ actorId?: string }>(env.task, marker);
+  if (earlier === undefined) return undefined;
+  if (earlier.actorId !== env.caller.developerId) throw agentXError("CONFIG_INVALID", REQUEST_REUSED);
+  return "done";
+}
+
+async function transactWorkflow(env: Env, loaded: Loaded, next: WorkflowSnapshot, extra: unknown[], expect: { stage: string; states: readonly string[] }, request?: { marker: Marker; entityType: string; fence: ReturnType<typeof secondPersonMembershipCondition> }): Promise<void> {
   const { task, workflow } = loaded;
   const now = nowIso(env);
   const states = expect.states.map((_, index) => `workflow.#state = :s${String(index)}`);
+  // The request's own record and the membership fence ride in the SAME transaction: a repeat finds the record, and a membership change since the people were read cancels the move.
+  const own = request === undefined ? [] : [
+    membershipFenceItem(env.deps.tableName, env.caller.orgId, request.fence),
+    { Put: { TableName: env.deps.tableName, Item: { ...request.marker, entityType: request.entityType, actorId: env.caller.developerId, at: now }, ConditionExpression: "attribute_not_exists(pk)" } },
+  ];
   try {
     await env.task.actions.transact([{ Update: {
       TableName: env.deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
       ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND (${states.join(" OR ")}) AND attribute_not_exists(closedAt)`,
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
       ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.revision, ":stage": expect.stage, ...Object.fromEntries(expect.states.map((state, index) => [`:s${String(index)}`, state])) },
-    } }, ...extra] as never);
+    } }, ...extra, ...own] as never);
   } catch (error) {
-    if (isConditional(error) || (error as { name?: string }).name === "TransactionCanceledException") throw agentXError("CHANGE_STALE", "This changed since you loaded it. Reload to see the current version.");
+    if (isConditional(error) || (error as { name?: string }).name === "TransactionCanceledException") {
+      // The transaction may have been the first of two taps of the same request: then the request is done.
+      if (request !== undefined && await replayOf(env, request.marker).catch(() => undefined) === "done") return;
+      throw agentXError("CHANGE_STALE", "This changed since you loaded it. Reload to see the current version.");
+    }
     throw error;
   }
 }
 
-async function designFirst(env: Env, taskId: string): Promise<{ outcome: "done" }> {
+/**
+ * Design first and Retry start paid work on a task, so they are the requester's or a project maintainer's (ON-11), not any member's. A member who is neither is told so; a person outside the project gets "no longer waiting".
+ */
+function mayDirectWork(directory: Parameters<typeof memberOf>[0], task: DeveloperTaskRecord, callerId: string): boolean {
+  const requester = sameId(task.developerId, callerId) || tryEffectiveTaskOwner(task)?.developerId === callerId;
+  return requester || directory.people.eligibleIds.some((id) => sameId(id, callerId));
+}
+const REQUESTER_OR_MAINTAINER = "Only the person who asked for this task, or a project maintainer, can do this.";
+
+async function designFirst(env: Env, taskId: string, requestId: string): Promise<{ outcome: "done" }> {
   if (!TASK_ID.test(taskId)) throw agentXError("NOT_FOUND", GONE);
   const task = await get<DeveloperTaskRecord>(env.task, taskKey(taskId));
   if (task === undefined || task.orgId !== env.caller.orgId || task.closedAt !== undefined || task.workflow === undefined || !designReviewEnabledFor(task.project)) throw agentXError("NOT_FOUND", GONE);
   const loaded: Loaded = { task, workflow: task.workflow };
   const { workflow } = loaded;
+  const marker = markerOf(taskId, "DESIGN_FIRST", requestId);
   const effective = await readEffectiveDesignReview(env.facts, env.caller.orgId, task.project);
   const directory = await readDesignDirectory(env.facts, env.caller.orgId, task.project);
   if (!memberOf(directory, env.caller.developerId)) throw agentXError("NOT_FOUND", GONE);
-  // A repeat of the same press: design first is already on, asked by this person.
+  // A repeat of the same press: the first answer, before the state (which has moved on) is looked at.
+  if (await replayOf(env, marker) === "done") return { outcome: "done" };
+  if (!mayDirectWork(directory, task, env.caller.developerId)) throw agentXError("FORBIDDEN", REQUESTER_OR_MAINTAINER);
   if (workflow.designReview?.decidedBy === "person" && workflow.designReview.startedBy?.actorId === env.caller.developerId) return { outcome: "done" };
   if (workflow.designReview !== undefined) throw agentXError("CONFIG_INVALID", "Design review is already on for this task.");
   const now = nowIso(env);
@@ -366,38 +477,67 @@ async function designFirst(env: Env, taskId: string): Promise<{ outcome: "done" 
   }
   // The task goes back to planning on the Full path; the planner's turn is due at the new revision.
   const due = next.stage === "PLAN" && next.state === "READY" ? [workflowDispatchItem(env.deps.tableName, task.taskId, next.revision, "PLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)] : [];
-  await transactWorkflow(env, loaded, next, due, workflow.stage === "PLAN_REVIEW" ? { stage: "PLAN_REVIEW", states: ["WAITING"] } : { stage: "PLAN", states: ["READY"] });
+  await transactWorkflow(env, loaded, next, due, workflow.stage === "PLAN_REVIEW" ? { stage: "PLAN_REVIEW", states: ["WAITING"] } : { stage: "PLAN", states: ["READY"] },
+    { marker, entityType: "DESIGN_FIRST", fence: secondPersonMembershipCondition(directory.people.membershipVersion) });
   return { outcome: "done" };
 }
 
-async function skip(env: Env, taskId: string, requestId: string): Promise<{ outcome: "done" }> {
+/** One choice on the cost card, the same code whichever door it comes through (the card's own buttons and the task view's Skip): the handler re-works the gate for THIS caller and applies the friction of the card's tier. */
+async function spendChoiceOf(env: Env, taskId: string, choice: DesignSpendChoiceName, requestId: string, shownDigest: string | undefined): Promise<{ outcome: "done"; choice: DesignSpendChoiceName; replay?: true }> {
+  // A repeat of a choice that was made: the earlier answer, before anything is read again (once chosen, the card no longer asks).
+  const earlier = await decisionStoreOf(env).findDecision({ orgId: env.caller.orgId, developerId: env.caller.developerId }, requestId);
+  if (earlier !== undefined && earlier.cardId === `approve_spend:${taskId}` && earlier.reason === choice) return { outcome: "done", choice, replay: true };
+  const result = await designSpendChoiceHandler(spendPortsOf(env))(env.caller, { taskId, choice, requestId, ...(shownDigest === undefined ? {} : { shownDigest }) });
+  return { outcome: "done", choice: result.choice };
+}
+
+async function skip(env: Env, taskId: string, requestId: string, shownDigest: string | undefined): Promise<{ outcome: "done"; choice?: DesignSpendChoiceName; replay?: true }> {
   const loaded = await loadDesignTask(env, taskId);
   if (loaded === undefined) throw agentXError("NOT_FOUND", GONE);
-  const { task, workflow } = loaded;
+  const { workflow } = loaded;
   const review = workflow.designReview!;
+  const marker = markerOf(taskId, "DESIGN_SKIP", requestId);
+  if (await replayOf(env, marker) === "done") return { outcome: "done" };
   if (review.decidedBy === "person_skip" && review.skippedBy?.actorId === env.caller.developerId) return { outcome: "done" };
   const facts = await factsOf(env, loaded);
+  if (!memberOf(facts.directory, env.caller.developerId)) throw agentXError("NOT_FOUND", GONE);
+  // At the cost hold this IS the spend card's Skip (ON-3): the same handler, with the digest, the evidence, the sign-in, the membership fence and the request record it applies.
+  if (review.status === "waiting_cost" && workflow.stage === "PLAN_CRITIQUE" && workflow.state === "WAITING") return spendChoiceOf(env, taskId, "skip", requestId, shownDigest);
   const verdict = maySkipDesignReview({ setting: facts.setting, reasons: review.reasons, touches: facts.touches, skipperId: env.caller.developerId, directory: facts.directory, edition: facts.edition });
-  if (!verdict.ok) throw agentXError(verdict.code === "not_a_member" ? "NOT_FOUND" : "FORBIDDEN", verdict.code === "not_a_member" ? GONE : SKIP_WORDS[verdict.code]);
+  if (!verdict.ok) throw agentXError("FORBIDDEN", skipRefusalWords(verdict.code, facts.setting));
+  // Before the design is written, a skip of a design review with a high-risk area is a high decision: a live browser session and a fresh sign-in, never a token.
+  if (isHighRiskDesign([...review.reasons, ...facts.touches])) {
+    if (env.caller.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
+    if (!(await freshSignInOf(env.facts, env.caller))) throw agentXError("FORBIDDEN", "Sign in again to decide this.");
+  }
   let commit;
   try { commit = designSpendCommitItems({ tableName: env.deps.tableName, taskId, workflow, write: { actorId: env.caller.developerId, applied: { choice: "skip" } }, now: nowIso(env) }); } catch (error) {
     if (error instanceof WorkflowTransitionError) throw agentXError("CONFIG_INVALID", "Design review can't be skipped at this step.");
     throw error;
   }
-  void task; void requestId;
-  try { await env.task.actions.transact(commit.items as never); } catch (error) {
-    if (isConditional(error) || (error as { name?: string }).name === "TransactionCanceledException") throw agentXError("CHANGE_STALE", "This changed since you loaded it. Reload to see the current version.");
+  const now = nowIso(env);
+  try {
+    await env.task.actions.transact([...commit.items, membershipFenceItem(env.deps.tableName, env.caller.orgId, secondPersonMembershipCondition(facts.directory.people.membershipVersion)),
+      { Put: { TableName: env.deps.tableName, Item: { ...marker, entityType: "DESIGN_SKIP", actorId: env.caller.developerId, at: now }, ConditionExpression: "attribute_not_exists(pk)" } }] as never);
+  } catch (error) {
+    if (isConditional(error) || (error as { name?: string }).name === "TransactionCanceledException") {
+      if (await replayOf(env, marker).catch(() => undefined) === "done") return { outcome: "done" };
+      throw agentXError("CHANGE_STALE", "This changed since you loaded it. Reload to see the current version.");
+    }
     throw error;
   }
   return { outcome: "done" };
 }
 
-async function retryNotRun(env: Env, taskId: string): Promise<{ outcome: "done" }> {
+async function retryNotRun(env: Env, taskId: string, requestId: string): Promise<{ outcome: "done" }> {
   const loaded = await loadDesignTask(env, taskId);
   if (loaded === undefined) throw agentXError("NOT_FOUND", GONE);
-  const { workflow } = loaded;
+  const { workflow, task } = loaded;
+  const marker = markerOf(taskId, "DESIGN_RETRY", requestId);
+  if (await replayOf(env, marker) === "done") return { outcome: "done" };
   const facts = await factsOf(env, loaded);
   if (!memberOf(facts.directory, env.caller.developerId)) throw agentXError("NOT_FOUND", GONE);
+  if (!mayDirectWork(facts.directory, task, env.caller.developerId)) throw agentXError("FORBIDDEN", REQUESTER_OR_MAINTAINER);
   const now = nowIso(env);
   let next: WorkflowSnapshot;
   try { next = retryDesignReviewNotRun(workflow, { expectedRevision: workflow.revision, by: { actorId: env.caller.developerId }, now }); } catch (error) {
@@ -405,7 +545,8 @@ async function retryNotRun(env: Env, taskId: string): Promise<{ outcome: "done" 
     throw error;
   }
   const due = next.stage === "PLAN_CRITIQUE" && next.state === "READY" ? [workflowDispatchItem(env.deps.tableName, taskId, next.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, now)] : [];
-  await transactWorkflow(env, loaded, next, due, { stage: "PLAN_REVIEW", states: ["WAITING"] });
+  await transactWorkflow(env, loaded, next, due, { stage: "PLAN_REVIEW", states: ["WAITING"] },
+    { marker, entityType: "DESIGN_RETRY", fence: secondPersonMembershipCondition(facts.directory.people.membershipVersion) });
   return { outcome: "done" };
 }
 
@@ -416,6 +557,13 @@ async function approveOnPage(env: Env, taskId: string, body: { requestId: string
   if (env.caller.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
   const loaded = await loadDesignTask(env, taskId);
   if (loaded === undefined) throw agentXError("NOT_FOUND", GONE);
+  // A repeat of a press that approved (ON-13): the first answer. The design is approved, so no card is drawn any more; the decision on the record carries this request and the person who pressed.
+  const approvedBy = loaded.workflow.decisions.find((decision) => decision.requestId === body.requestId);
+  if (approvedBy !== undefined) {
+    const pressed = approvedBy.actorId === env.caller.developerId || approvedBy.actorId === taskOwnerKey(env.caller.developerId, taskId);
+    if (!pressed || approvedBy.decision !== "APPROVE") throw agentXError("CONFIG_INVALID", REQUEST_REUSED);
+    return new StatusReply(200, { cardId: `approve_design:${taskId}`, outcome: "approved", replay: true });
+  }
   const facts = await factsOf(env, loaded);
   const item = await approveItemOf(env, loaded, facts.touches);
   if (item === undefined) throw agentXError("NOT_FOUND", GONE);
@@ -466,23 +614,28 @@ export async function routeDesignReview(deps: DeveloperRouteDependencies, caller
   const action = match[2]!;
   if (request.method === "GET") return confirmationCard(env, taskId);
   const plain = z.object({ requestId: Request }).strict();
-  if (action === "first") { bodyOf(plain, request); return designFirst(env, taskId); }
-  if (action === "skip") return skip(env, taskId, bodyOf(plain, request).requestId);
-  if (action === "retry") { bodyOf(plain, request); return retryNotRun(env, taskId); }
-  if (action === "resume") return designResumeHandler(resumePortsOf(env))(caller, { taskId, requestId: bodyOf(plain, request).requestId });
+  if (action === "first") return designFirst(env, taskId, bodyOf(plain, request).requestId);
+  if (action === "skip") {
+    const body = bodyOf(z.object({ requestId: Request, shownDigest: z.string().min(1).max(200).optional() }).strict(), request);
+    return skip(env, taskId, body.requestId, body.shownDigest);
+  }
+  if (action === "retry") return retryNotRun(env, taskId, bodyOf(plain, request).requestId);
+  if (action === "resume") {
+    const { requestId } = bodyOf(plain, request);
+    const task = await loadDesignTask(env, taskId);
+    if (task !== undefined && await replayOf(env, markerOf(taskId, "DESIGN_RESUME", requestId)) === "done") return { kind: "done" };
+    return designResumeHandler(resumePortsOf(env))(caller, { taskId, requestId });
+  }
   if (action === "approve") return approveOnPage(env, taskId, bodyOf(z.object({ requestId: Request, shownDigest: z.string().min(1).max(200), reason: z.string().max(500).optional() }).strict(), request));
   if (action === "answers") {
     const body = bodyOf(z.object({ requestId: Request, answers: z.array(z.unknown()).min(1).max(3) }).strict(), request);
+    if (await loadDesignTask(env, taskId) !== undefined && await replayOf(env, markerOf(taskId, "DESIGN_ANSWERS", body.requestId)) === "done") return { kind: "done" };
     return designAnswersHandler(answersPortsOf(env))(caller, { taskId, requestId: body.requestId, answers: body.answers });
   }
   const choice = SPEND_CHOICES[action.slice("spend/".length)];
   if (choice === undefined) throw agentXError("NOT_FOUND", "route not found");
   const body = bodyOf(z.object({ requestId: Request, shownDigest: z.string().min(1).max(200) }).strict(), request);
-  // A repeat of a choice that was made: the earlier answer, before anything is read again (once chosen, the card no longer asks).
-  const earlier = await decisionStoreOf(env).findDecision({ orgId: caller.orgId, developerId: caller.developerId }, body.requestId);
-  if (earlier !== undefined && earlier.cardId === `approve_spend:${taskId}` && earlier.reason === choice) return { outcome: "done", choice, replay: true };
-  const result = await designSpendChoiceHandler(spendPortsOf(env))(caller, { taskId, choice, requestId: body.requestId, shownDigest: body.shownDigest });
-  return { outcome: "done", choice: result.choice };
+  return spendChoiceOf(env, taskId, choice, body.requestId, body.shownDigest);
 }
 
 // ---- the task view's Design first and Skip
@@ -538,12 +691,12 @@ export function designActionsFor(deps: DeveloperRouteDependencies, caller: Devel
 }
 
 /**
- * The playbook routes' design review dependencies (DR8 wiring pending): the install's edition (a group can be the high-risk approver only in Enterprise) and who may be NAMED as the approver in a project: its
- * maintainers and contributors, never a viewer or an Auditor, case-normalised (the store compares folded ids).
+ * The playbook routes' design review dependencies (DR8 wiring pending): who may be NAMED as the approver in a project: its maintainers and contributors, never a viewer or an Auditor, case-normalised (the store
+ * compares folded ids). The install's edition is NOT passed: groups have no member store yet, so a group is refused as the high-risk approver everywhere (ON-12, fail closed) and the editor is not offered one.
+ * The playbook routes use this only for a project the design review runs for.
  */
 export function designPlaybookDeps(deps: DeveloperRouteDependencies) {
   return {
-    edition: deps.editionPolicy,
     namedApproverCandidates: async (orgId: OrgId, project: string): Promise<string[]> =>
       (await listProjectMembers(projectMembersDepsOf(deps), orgId, project)).filter((row) => row.role !== "viewer").map((row) => row.developerId.normalize("NFC").trim().toLowerCase()),
   };

@@ -5,6 +5,12 @@ import { type DesignReviewTier } from "@agentx/contracts";
 import type { DecisionItem } from "../decisions/project.js";
 import type { DesignReviewCapGate, DesignSpendChoice } from "./estimate.js";
 
+/**
+ * What the card asks for, by which its tier is worked out: the estimate when there is one; with NO price ("run it anyway") it is what the run may spend at most, the room left under the cap (ON-9), so an unpriced run is
+ * never low risk by default.
+ */
+export const designSpendAmountUsd = (gate: Extract<DesignReviewCapGate, { kind: "ask" }>, capUsd: number, spentUsd: number): number => gate.estimateUsd ?? Math.max(0, Math.round((capUsd - spentUsd) * 1e6) / 1e6);
+
 /** The choices a person can make on the card; the last path segment of each action. */
 export const DESIGN_SPEND_CHOICE_SEGMENTS = { lower_tier: "lower-tier", raise_cap: "raise-cap", run_unpriced: "run-unpriced", skip: "skip" } as const;
 
@@ -34,6 +40,8 @@ export interface DesignSpendCardInput {
   /** The gate's answer (`kind: "ask"`). */
   gate: Extract<DesignReviewCapGate, { kind: "ask" }>;
   capUsd: number;
+  /** What the review has spent already (the unpriced card is tiered by the room left under the cap). */
+  spentUsd?: number | undefined;
   /** A version of what the person is shown: the design digest and the gate's inputs, so a changed design or cap makes an earlier look worthless. */
   contentVersion: string;
 }
@@ -53,8 +61,8 @@ export function designSpendCardItem(input: DesignSpendCardInput): DecisionItem {
     createdAt: input.createdAt,
     openPath: input.openPath,
     contentVersion: input.contentVersion,
-    // "Cost unavailable" asks for no priced amount (0, so the card is low risk); an over-cap card is tiered by what it would spend, like any spend request.
-    amountUsd: gate.estimateUsd ?? 0,
+    // An over-cap card is tiered by what it would spend, like any spend request; "cost unavailable" by what the run may spend at most (the room left under the cap).
+    amountUsd: designSpendAmountUsd(gate, input.capUsd, input.spentUsd ?? 0),
     scopeLabel: "this design review",
     design: {
       why: gate.why,
