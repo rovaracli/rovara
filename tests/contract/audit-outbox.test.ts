@@ -790,6 +790,8 @@ describe("I4: the builders", () => {
     ["auditProjectAutomaticRunsCapChanged", (occurrence) => builders.auditProjectAutomaticRunsCapChanged({ ...base, occurrence, details, projectName: "Secret Project", fromCap: 30, toCap: 60 })],
     ["auditAutomaticRunsPaused", (occurrence) => builders.auditAutomaticRunsPaused({ ...base, details, actor: { kind: "system", id: "rovara" }, occurrence, projectName: "Secret Project", month: "2026-11", cap: 30 })],
     ["auditAutomaticRunEnded", (occurrence) => builders.auditAutomaticRunEnded({ ...base, details, actor: { kind: "system", id: "rovara" }, occurrence, projectName: "Secret Project", job: "nightly", reason: "cap_reached" })],
+    ["auditCompanyDesignReviewPolicyChanged", (occurrence) => builders.auditCompanyDesignReviewPolicyChanged({ ...base, occurrence, details, field: "allowed", from: "off", to: "on", mode: "second_person", revision: 2 })],
+    ["auditCompanyDesignReviewPolicyProposed", (occurrence) => builders.auditCompanyDesignReviewPolicyProposed({ ...base, occurrence, details, field: "allowed", from: "off", to: "on" })],
     ["auditCompanyChangeAppliedToProject", (occurrence) => builders.auditCompanyChangeAppliedToProject({ ...base, occurrence, details, projectName: "Secret Project", changeRevision: 5, settingCount: 2 })],
     // Test environment: a tier change records the tier and how many less-safe fields it turned on
     ["auditProjectTestEnvChanged", (occurrence) => builders.auditProjectTestEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, tier: "preview", lessSafeCount: 1 })],

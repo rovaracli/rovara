@@ -1,22 +1,39 @@
-// Design review stage, DR7: the switch. Two packed broker settings (AGENTX_SETTINGS) decide it, both off by default:
-//   `dr`  (BROKER_SETTINGS.designReview, variable DESIGN_REVIEW_ENABLED)   the stage exists in this environment only when the value is exactly "1";
-//   `dp`  (BROKER_SETTINGS.designReviewProjects, variable DESIGN_REVIEW_PROJECTS)   the project names the stage runs for, joined by ":" (a project name is lower case letters, digits and hyphens, so the colon is free).
-// Fail closed: `dr` on with no `dp` (or an empty one) runs NO project. A project that is not named in `dp`, a value that is not plain text and a name that is not a project name all give OFF, and OFF is the whole of today's
-// behaviour: nothing reads the project's setting, `resolveDesignMode` is never called, and no task ever carries a `designReview`. The stack parameters are DesignReviewEnabled and DesignReviewProjects (control plane).
-// The switch is read at every step, not only when a task enters the stage (B2-m3): `dr` at 0, or the project taken out of `dp`, ends a review under way at its next round or planner run, as not run (`switched_off`). A run already
-// working finishes; nothing is approved for anyone.
-import { AGENTX_NAME_PATTERN, BROKER_SETTINGS, BROKER_SETTING_VALUE, liveInteractionFlagOn } from "@agentx/contracts";
+// Design review stage, DR7 + DR-FU4: the switch. Three things decide whether a project runs design review, all off by default:
+//   `dr`  (BROKER_SETTINGS.designReview, variable DESIGN_REVIEW_ENABLED)   the operator's environment-wide master switch; the stage exists in this environment only when the value is exactly "1";
+//   the company's `allowed` (design-review/lock.ts, set by a company admin in How we work)   whether the company allows design review at all;
+//   the project's effective mode (its How we work setting, or Off when it has none, held to the company's lock)   not Off (`never`).
+// `dp` (BROKER_SETTINGS.designReviewProjects, stack parameter DesignReviewProjects) no longer gates anything: it stays one more release so an upgrade can move its projects into stored settings (dp-migration.ts), and is removed after.
+// Fail closed: a value that is not "1" in `dr` is OFF with NO table read at all, so with `dr` off nothing else runs, `resolveDesignMode` is never called, and no task ever carries a `designReview`. A company item or a project
+// setting that cannot be read gives OFF here (the caller of a read that must not guess uses `readEffectiveDesignReview`, which throws).
+// The switch is read at every step, not only when a task enters the stage (B2-m3): `dr` at 0, the company no longer allowing it, or the project set to Off, ends a review under way at its next round or planner run, as not run
+// (`switched_off`). A run already working finishes; nothing is approved for anyone. A review the PERSON asked for (design first) keeps going while the stage exists, whatever the project's mode (owner Q3): see `designReviewStillOn`.
+import { liveInteractionFlagOn, BROKER_SETTINGS, type OrgId } from "@agentx/contracts";
+import type { ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
+import { readDesignReviewCompany } from "./lock.js";
+import { readEffectiveWhenAllowed } from "./setting.js";
 
-/** Whether the design review stage exists in this environment at all. Anything but exactly "1" is off. It says nothing about any project: use `designReviewEnabledFor`. */
+/** Whether the design review stage exists in this environment at all. Anything but exactly "1" is off. It says nothing about any company or project: use `designReviewAvailableFor` or `designReviewEnabledFor`. */
 export const designReviewEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => liveInteractionFlagOn(env[BROKER_SETTINGS.designReview.variable]);
 
-/** The project names `dp` lists. A value that is not plain text, or a name that is not a project name, makes the whole list empty (fail closed). */
-export function designReviewProjects(env: NodeJS.ProcessEnv = process.env): readonly string[] {
-  const raw = env[BROKER_SETTINGS.designReviewProjects.variable];
-  if (raw === undefined || raw === "" || !BROKER_SETTING_VALUE.test(raw)) return [];
-  const names = raw.split(":");
-  return names.every((name) => AGENTX_NAME_PATTERN.test(name)) ? names : [];
+/** Whether the stage exists for this company: `dr` on AND the company allows it AND its lock reads (an unreadable company item is OFF, never Always). `dr` off reads nothing. */
+export async function designReviewAvailableFor(deps: ProjectPlaybookReader, orgId: OrgId, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  if (!designReviewEnabled(env)) return false;
+  try { const company = await readDesignReviewCompany(deps, orgId); return company.policy.allowed && company.lock.kind !== "unreadable"; } catch { return false; }
 }
 
-/** Whether the design review runs for this project: the switch is on AND the project is named in the allowlist. */
-export const designReviewEnabledFor = (project: string, env: NodeJS.ProcessEnv = process.env): boolean => designReviewEnabled(env) && designReviewProjects(env).includes(project);
+/** Whether design review runs for this project: `dr` on AND the company allows it AND the project's effective mode is not Off. `dr` off reads nothing. A read that fails is OFF. */
+export async function designReviewEnabledFor(deps: ProjectPlaybookReader, orgId: OrgId, project: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  if (!designReviewEnabled(env)) return false;
+  try {
+    const effective = await readEffectiveWhenAllowed(deps, orgId, project);
+    return effective !== undefined && effective.setting.mode !== "never";
+  } catch { return false; }
+}
+
+/**
+ * B2-m3, for a review under way: whether it may take its next step. A review the person asked for (`decidedBy: "person"`) goes on while the stage exists for the company, even in a project that is Off (the person asked, owner Q3);
+ * any other review needs the project to be on, as `designReviewEnabledFor`.
+ */
+export async function designReviewStillOn(deps: ProjectPlaybookReader, orgId: OrgId, project: string, decidedBy: string | undefined, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  return decidedBy === "person" ? designReviewAvailableFor(deps, orgId, env) : designReviewEnabledFor(deps, orgId, project, env);
+}

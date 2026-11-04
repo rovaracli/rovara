@@ -63,8 +63,8 @@ function routeDeps(harness: Harness, log: DeveloperTaskRouteDependencies["log"] 
  * A Quick task of project "payments", started by the API or in Slack, whose plan is approved. Coding then stops (FAILED), so the work is blocked and can be sent back.
  * `program: true` gives the stored workflow a program whose coding step is "code".
  */
-async function blockedTask(options: { slack?: boolean; program?: boolean; autofix?: boolean; findings?: boolean; beforeReview?: (harness: Harness) => void } = {}) {
-  const harness = await createSingleAnswerPlanBroker({ brokerExtra: { planSelfCheck: false, ...(options.autofix === true ? { autofix: { enabled: true, capUsd: 1000, roundEstimateUsd: 3 } } : {}) } });
+async function blockedTask(options: { audit?: ReturnType<typeof capturingAuditDeps>; slack?: boolean; program?: boolean; autofix?: boolean; findings?: boolean; beforeReview?: (harness: Harness) => void } = {}) {
+  const harness = await createSingleAnswerPlanBroker({ ...(options.audit === undefined ? {} : { audit: options.audit }), brokerExtra: { planSelfCheck: false, ...(options.autofix === true ? { autofix: { enabled: true, capUsd: 1000, roundEstimateUsd: 3 } } : {}) } });
   seedProject(harness.db);
   let taskId: string;
   if (options.slack === true) {
@@ -585,13 +585,18 @@ describe("code send-back needs the project access starting a task needs (0.4.27)
     expect(asked).toEqual([undefined, undefined, undefined]);
   });
 
-  it("Rovara's own send-back still runs when the owner has lost project access", async () => {
+  it("Rovara's own send-back is stopped when the owner has lost project access (S2, owner decision 2026-11-04; this replaces the 0.4.27 rule that it still ran)", async () => {
     // Maya's only access is the project's Slack channel; she leaves it before the review finds the problem.
-    const t = await blockedTask({ autofix: true, beforeReview: (harness) => harness.channelMembers.mockResolvedValue({ ok: true, memberOf: [] }) });
+    const audit = capturingAuditDeps();
+    const t = await blockedTask({ audit, autofix: true, beforeReview: (harness) => harness.channelMembers.mockResolvedValue({ ok: true, memberOf: [] }) });
     const refusedStart = await t.harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: PROJECT, instructions: "Another task", client: "test-client", workflow: true, workflowPath: "QUICK" });
     expect(refusedStart.body).toMatchObject({ error: { code: "PROJECT_ACCESS_DENIED" } });
-    expect(workflowOf(t.harness, t.taskId).decisions.filter((decision) => decision.source === "AUTO_FIX")).toHaveLength(1);
-    expect(workflowOf(t.harness, t.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+    // Rovara did not send it back by itself: the review's block stands for a person, with its ask, and no second coding run started.
+    expect(workflowOf(t.harness, t.taskId).decisions.filter((decision) => decision.source === "AUTO_FIX")).toHaveLength(0);
+    expect(workflowOf(t.harness, t.taskId)).toMatchObject({ stage: "REVIEW", state: "BLOCKED" });
+    expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(1);
+    expect(audit.recordedBy("task.work_refused")).toHaveLength(1);
+    expect(audit.recordedBy("task.work_refused")[0]).toMatchObject({ target: { kind: "task", id: t.taskId }, facts: { path: "autofix", cause: "no_project_access" } });
   });
 
   describe("a review finding to fix sends the task back to coding, so it needs the same access", () => {
@@ -618,10 +623,10 @@ describe("code send-back needs the project access starting a task needs (0.4.27)
       const refused = await takenBy("none", { findings: true });
       await expectRefusedUnchanged(refused, () => refused.fixWith(tasksOff(denied), refused.who), noAccess);
     });
-    it("accepting every finding is not a send-back: no access is not asked for", async () => {
+    it("accepting every finding starts the next step, so it needs the same access (S2, any path; this replaces 'no access is not asked for')", async () => {
       const t = await takenBy("none", { findings: true });
       const runs = codingRuns(t.harness, t.workspaceId).length;
-      await t.fixWith(denied, t.who, "ACCEPT").catch((error: unknown) => { expect(error).not.toMatchObject({ code: "PROJECT_ACCESS_DENIED" }); });
+      await expect(t.fixWith(denied, t.who, "ACCEPT")).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
       expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs);
     });
   });

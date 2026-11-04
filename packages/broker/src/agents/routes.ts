@@ -77,6 +77,7 @@ import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolv
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from "./run-version-gate.js";
 import type { ApprovalDependencies } from "./approvals.js";
+import { log as logEvent } from "./approvals-store.js";
 import { validateRecipeForOrg, readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
 import { newOriginMemo, originView, withOriginView } from "../agent-sessions/origin.js";
@@ -239,7 +240,18 @@ const withDisabled = <T extends object>(body: T, disabled: ReadonlyArray<unknown
 
 /** The triggers a change turned off because they no longer qualify, for the answer. The change itself has been made. */
 async function recheck(deps: AgentRouteDependencies, orgId: OrgId, agentId: AgentId): Promise<Awaited<ReturnType<NonNullable<AgentRouteDependencies["triggerHooks"]>["recheckTriggersForTarget"]>>> {
-  return await deps.triggerHooks?.recheckTriggersForTarget(orgId, { kind: "agent", agentId }) ?? [];
+  // The change was committed before this runs (L5): a failure is logged and the answer is the change that was made, without the list. A trigger left on is looked at again when it starts a run.
+  try {
+    return await deps.triggerHooks?.recheckTriggersForTarget(orgId, { kind: "agent", agentId }) ?? [];
+  } catch (error) {
+    logRecheckFailed(deps, { kind: "agent", id: agentId }, error);
+    return [];
+  }
+}
+
+/** A trigger re-check that failed after its change was committed (L5), through the route dependencies' logger (the event the trigger code logs for one trigger, with the target's kind and id; only the error's name). */
+export function logRecheckFailed(deps: Pick<ApprovalDependencies, "log">, target: { kind: "agent" | "chain"; id: string }, error: unknown): void {
+  logEvent(deps, "trigger_recheck.failed", { targetKind: target.kind, targetId: target.id, error: error instanceof Error ? error.name : "unknown" });
 }
 
 /** `requireAgentAccess` for reading an agent: a built-in the company turned off is not found by a member, as it is missing from their list; owners and admins still see it. */
@@ -586,7 +598,10 @@ async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, ag
   const { mark, replay } = await markRequest(deps, caller, archive ? "archive" : "unarchive", agentId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: customView(replay.result as AgentRecord, access) };
   if (archive) {
-    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark, guard === undefined ? undefined : { checks: guard });
+    // Archiving holds the person to the access this route checked, at the commit: still a member in this role, the company open, and the agent still the one they could manage.
+    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark, {
+      actor: { developerId: caller.developerId, role: caller.orgRole }, ...("owner" in agent ? { manageSnapshot: agent } : {}), ...(guard === undefined ? {} : { checks: guard }),
+    });
     // An archived agent starts nothing, so its triggers go off with it. Unarchiving turns none back on: a person does that.
     await deps.triggerHooks?.disableTriggersForTarget(caller.orgId, { kind: "agent", agentId });
     return { agent: customView(archived, access) };
@@ -630,7 +645,8 @@ async function putOwner(deps: AgentRouteDependencies, caller: AgentCaller, agent
   const change: OwnerCapChange = { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
   const updated = await holdingCap(deps, caller, agentId, agent, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, change, mark, (options) => deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: agent }));
   if (updated instanceof StatusReply) return updated;
-  return { agent: customView(updated, access) };
+  // A custom agent runs as its owner, so its triggers are looked at again for the new one: those they can't run are turned off, and the answer says which.
+  return withDisabled({ agent: customView(updated, access) }, await recheck(deps, caller.orgId, agentId));
 }
 
 async function putAccountable(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown | StatusReply> {

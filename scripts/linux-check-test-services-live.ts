@@ -339,7 +339,7 @@ async function startNode(context: Context, lab: Lab, name: string, ip: string, n
   const args = [
     "run", "-d", "--name", name, "--network", networkName, ...(networkName === lab.net.name ? ["--ip", ip] : []), ...lab.labels,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m", "--pids-limit", "64", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5",
-    "--user", "1000:1000", "--pull=never", ...mounts, "--entrypoint", NODE, context.input.workerImage, "-e", `${listen === undefined ? "" : `require('net').createServer((s)=>s.end()).listen(${String(listen)},'0.0.0.0');`}setInterval(()=>{},1e6)`,
+    "--user", "1000:1000", "--pull=never", ...mounts, "--entrypoint", NODE, context.input.workerImage, "-e", `${listen === undefined ? "" : `require('net').createServer((s)=>{s.on('error',()=>{});s.end();}).listen(${String(listen)},'0.0.0.0');`}setInterval(()=>{},1e6)`,
   ];
   const started = await sh(context, args);
   if (started.exitCode !== 0) throw new Error(`could not start ${name}: ${clean(started.stderr).slice(0, 160)}`);
@@ -428,6 +428,17 @@ async function networkAddress(context: Context, container: string, network: stri
 
 // ---- TS-L3 (the sealed check sandbox)
 
+/** The working sandbox's listener for the relay item. It keeps running when a peer resets the connection: without the error handler, a probe that connects and closes before reading makes node throw ECONNRESET
+ * and the working sandbox exits, which hid the relay (a dead listener cannot relay) and left the spoofing item's probe from .3 with no container to run in. */
+export const RELAY_LISTENER_JS = "require('net').createServer((s)=>{s.on('error',()=>{});s.end('relay');}).listen(7777,'0.0.0.0');setInterval(()=>{},1e6)";
+
+/** A container's state and the last lines of its log, one line, for a FAIL detail (the DNS helper prints nothing unless it fails; formatLine redacts and cuts it). */
+async function containerState(context: Context, container: string): Promise<string> {
+  const state = await sh(context, ["inspect", "--format", "{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}", container]);
+  const logs = await sh(context, ["logs", "--tail", "5", container]);
+  return `state=${clean(state.stdout) || `unknown(${clean(state.stderr).slice(0, 60)})`} log=${clean(`${logs.stdout} ${logs.stderr}`).slice(0, 200)}`;
+}
+
 async function checkL3(context: Context): Promise<LiveLine[]> {
   const { layer, input } = context;
   const lab = await startLab(context, "l3");
@@ -435,7 +446,7 @@ async function checkL3(context: Context): Promise<LiveLine[]> {
   // the working sandbox (.3), dual-homed, with a listener started in it BEFORE the detach
   const workingName = `${lab.net.name}-work`;
   await sh(context, ["run", "-d", "--name", workingName, "--network", "agentx-task", ...lab.labels, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m",
-    "--pids-limit", "64", "--memory", "128m", "--memory-swap", "128m", "--user", "1000:1000", "--pull=never", "--entrypoint", NODE, input.workerImage, "-e", "require('net').createServer((s)=>s.end('relay')).listen(7777,'0.0.0.0');setInterval(()=>{},1e6)"]);
+    "--pids-limit", "64", "--memory", "128m", "--memory-swap", "128m", "--user", "1000:1000", "--pull=never", "--entrypoint", NODE, input.workerImage, "-e", RELAY_LISTENER_JS]);
   const joined = await sh(context, ["network", "connect", "--ip", lab.net.workingSandboxIp, lab.net.name, workingName]);
   if (joined.exitCode !== 0) return L3_IDS.map(([id, name]) => fail(id, name, "the working sandbox could not join the run's network at .3"));
   const workspace = join(input.workDir, "workspace");
@@ -453,6 +464,12 @@ async function checkL3(context: Context): Promise<LiveLine[]> {
   await layer.check.writeCheckSandboxFiles(plan);
   const dns = await sh(context, plan.dnsHelperRunArgs);
   if (dns.exitCode !== 0) return L3_IDS.map(([id, name]) => fail(id, name, "the sealed DNS helper could not start"));
+  // As the product does (test-services-run.ts): the check sandbox starts only once the name server listens.
+  const dnsReady = await layer.check.waitForSealedDnsHelper(context.docker, plan.dnsHelperName).then(() => undefined, (error: unknown) => (error instanceof Error ? error.message : String(error)));
+  if (dnsReady !== undefined) {
+    const why = await containerState(context, plan.dnsHelperName);
+    return L3_IDS.map(([id, name]) => fail(id, name, `the sealed DNS helper is not listening: ${dnsReady}; ${why}`));
+  }
   const lines: LiveLine[] = [];
   const neighbour = await startNode(context, lab, `${lab.net.name}-nbr`, layer.runNetwork.runNetworkHelperIp(lab.slot, 20));
   // the relay is real before the detach: a neighbour reaches the listener in the working sandbox at .3
@@ -463,7 +480,7 @@ async function checkL3(context: Context): Promise<LiveLine[]> {
     await start();
     const check = plan.sandboxName;
     const tests: ProbeTest[] = [
-      { label: "resolv", kind: "file", path: "/etc/resolv.conf" }, { label: "embedded", kind: "dnsq", server: "127.0.0.11", name: "postgres" },
+      { label: "resolv", kind: "file", path: "/etc/resolv.conf" }, { label: "embedded", kind: "dnsq", server: "127.0.0.11", name: "postgres" }, { label: "embedded-public", kind: "dnsq", server: "127.0.0.11", name: "registry.npmjs.org" },
       { label: "known", kind: "lookup", name: "postgres" }, { label: "unknown", kind: "lookup", name: `tsl-${randomBytes(4).toString("hex")}.example.invalid` },
       conn("relay", lab.net.workingSandboxIp, 7777), conn("helper", lab.helper.address, PROBE_PORT, 5000), conn("other-helper", other.helper.address, PROBE_PORT), conn("other-sandbox", other.net.workingSandboxIp, PROBE_PORT),
       { label: "routes", kind: "routes" }, { label: "addrs", kind: "addrs" }, { label: "write-resolv", kind: "write", path: "/etc/resolv.conf" }, { label: "write-hosts", kind: "write", path: "/etc/hosts" },
@@ -475,6 +492,9 @@ async function checkL3(context: Context): Promise<LiveLine[]> {
     return { results, afterWrite, dnsRecord, networks: detachedNetworks.stdout };
   });
   const results = round.results;
+  // The positive control of the relay item: the listener in the working sandbox is still there after the round (it is back at .3), so ".4 could not reach .3" was the detach, not a dead listener.
+  const relayAfter = await probe(context, neighbour, [conn("relay-after", lab.net.workingSandboxIp, 7777, 5000)]);
+  const dnsAfter = results.get("unknown")?.rest === sinkholeIp ? "" : await containerState(context, plan.dnsHelperName);
   const resolvFile = results.get("resolv")?.rest ?? "";
   const nameservers = [...resolvFile.matchAll(/nameserver ([0-9.]+)/gu)].map((match) => match[1]);
   // L3.live: a run name resolves to its helper, an unknown name goes to the sinkhole, an IP literal on the internet fails
@@ -483,17 +503,21 @@ async function checkL3(context: Context): Promise<LiveLine[]> {
     ...(results.get("unknown")?.rest === sinkholeIp ? [] : [`unknown-name-not-sinkholed:${results.get("unknown")?.status ?? "no-result"}:${results.get("unknown")?.rest ?? ""}`]),
     ...unexpected(results, ["helper"], ["open"]), ...unexpected(results, WALL_LABELS, NOT_THROUGH),
     ...(round.dnsRecord.unknown.some((row) => row.name.startsWith("tsl-")) ? [] : ["unknown-name-not-recorded"]),
+    ...(dnsAfter === "" ? [] : [`dns-helper:${dnsAfter}`]),
   ], `a run name resolves to ${lab.helper.address}, an unknown name resolves to the sinkhole ${sinkholeIp} and is recorded, an IP literal on the internet fails`));
   lines.push(verdict("L3.embedded-resolver", "docker-embedded-resolver-and-dnat", [
     ...(nameservers.length === 1 && nameservers[0] === lab.net.dnsHelperIp ? [] : [`resolv.conf-names:${nameservers.join(",") || "none"}`]),
-    ...unexpected(results, ["embedded"], SILENT),
+    ...unexpected(results, ["embedded"], SILENT).map((p) => `${p}${results.get("embedded")?.rest ? `(${results.get("embedded")!.rest})` : ""}`),
+    // Whatever the run's own names do, the embedded resolver must never hand out an address for a public name (CVE-2024-29018: no forwarding out of an internal network).
+    ...(results.get("embedded-public")?.status === "timeout" || /\ban=0\b/u.test(results.get("embedded-public")?.rest ?? "") ? [] : [`embedded-public=${results.get("embedded-public")?.status ?? "no-result"}(${results.get("embedded-public")?.rest ?? ""})`]),
     ...(round.afterWrite.get("resolv")?.rest === resolvFile ? [] : ["resolv.conf-changed"]),
   ], `the sandbox's resolv.conf names ${lab.net.dnsHelperIp} alone and a query to 127.0.0.11 gets no answer`));
   const attachedNames = round.networks.split(/\s+/u).filter(Boolean);
   lines.push(verdict("L3.working-relay", "working-sandbox-relay-is-gone", [
     ...unexpected(results, ["relay"], NOT_THROUGH), ...(attachedNames.includes(workingName) ? ["working-sandbox-still-on-the-network"] : []),
     ...unexpected(relayBefore, ["relay-before"], ["open"]).map((p) => `listener-before-detach:${p}`),
-  ], `with a listener in the working sandbox from before the detach, a connection from .4 to .3 fails; the network lists ${attachedNames.join(", ")}`));
+    ...unexpected(relayAfter, ["relay-after"], ["open"]).map((p) => `listener-after-round:${p}`),
+  ], `with a listener in the working sandbox from before the detach (and still there after the round), a connection from .4 to .3 fails; the network lists ${attachedNames.join(", ")}`));
   const v6Global = /v6global=(\S*)/u.exec(results.get("addrs")?.rest ?? "")?.[1] ?? "?";
   lines.push(verdict("L3.ipv6", "no-ipv6-in-or-out", [
     ...(v6Global === "" ? [] : [`global-ipv6-address:${v6Global}`]), ...unexpected(results, ["v6-conn"], [...NOT_THROUGH, "error:EAFNOSUPPORT", "error:ENETUNREACH", "error:EINVAL"]),

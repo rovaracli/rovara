@@ -19,6 +19,8 @@ const rawCatalog = () => JSON.parse(readFileSync("environments/service-catalog/c
 function pinnedCatalog(change: (entries: ReturnType<typeof rawCatalog>["entries"]) => void = () => undefined): ServiceCatalog {
   const raw = rawCatalog();
   for (const entry of raw.entries) {
+    // Slice 3: a helper that runs from the worker's own image has no image to pin.
+    if ((entry as { workerImage?: boolean }).workerImage === true) continue;
     entry.image.digest = sha("a");
     entry.sbomRef = sha("b");
     entry.scan = { scannedAt: "2026-11-02T00:00:00.000Z", criticalOpen: 0, highOpen: 0 };
@@ -27,7 +29,17 @@ function pinnedCatalog(change: (entries: ReturnType<typeof rawCatalog>["entries"
   change(raw.entries);
   return ServiceCatalogSchema.parse(raw);
 }
-const unpinnedCatalog = () => ServiceCatalogSchema.parse(rawCatalog());
+/** An explicit UNPINNED fixture: the shipped file's entries with every pin taken off, so this does not change when an operator pins an entry in the shipped file. */
+const unpinnedCatalog = () => {
+  const raw = rawCatalog();
+  raw.pinned = false;
+  for (const entry of raw.entries) {
+    delete entry.image.digest;
+    delete entry["sbomRef"];
+    delete entry["scan"];
+  }
+  return ServiceCatalogSchema.parse(raw);
+};
 
 const approval = (by: string) => ({ by: person(by), at: "2026-11-02T10:00:00.000Z", freshSignIn: true, kind: "approver", approvedDigest: "" });
 function account(over: Record<string, unknown> = {}): TestAccount {

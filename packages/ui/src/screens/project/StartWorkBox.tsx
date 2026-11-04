@@ -1,7 +1,7 @@
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useQuery, skipToken } from "@tanstack/react-query";
-import { SessionIdSchema, type HowWeWorkViewReaderSchema } from "@agentx/contracts/web";
+import { formatUsdMicrodollars, SessionIdSchema, type HowWeWorkViewReaderSchema } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
 import { createCodeApi, CODE_TEXT_MAX } from "../../api/code.js";
 import { howWeWorkKey } from "../../api/how-we-work.js";
@@ -28,6 +28,12 @@ function useRunsLine(project: string, agents: readonly { agentId: string; name: 
 export function StartWorkBox({ project, agents }: { project: string; agents: readonly { agentId: string; name: string }[] }) {
  const host = useAppHost(), api = useMemo(() => createCodeApi(host), [host]), field = useId(), runs = useRunsLine(project, agents);
  const [text, setText] = useState(""), [busy, setBusy] = useState(false), [accepted, setAccepted] = useState(false), [error, setError] = useState<string>(), [full, setFull] = useState(false), [pending, setPending] = useState<Exclude<SendResult<unknown>, { kind: "done" }>>();
+ const [preview, setPreview] = useState<{ project: string; api: typeof api; stop: number }>();
+ useEffect(() => {
+  const abort = new AbortController();let live = true;
+  void api.previewStart(project, abort.signal).then(value => { if (live) setPreview(value === undefined ? undefined : { project, api, stop: value.effectiveStopMicrousd }); });
+  return () => { live = false;abort.abort(); };
+ }, [api, project]);
  const sending = useRef(false), intent = useRef<{ text: string; requestId: string } | undefined>(undefined);
  const tooLong = text.length > CODE_TEXT_MAX, locked = busy || accepted || pending !== undefined, blocked = locked || !text.trim() || tooLong;
  async function start() {
@@ -49,5 +55,5 @@ export function StartWorkBox({ project, agents }: { project: string; agents: rea
   }
   finally { sending.current = false;setBusy(false); }
  }
- return <section className="rv-project-start" aria-label="Start work"><form onSubmit={event => { event.preventDefault();void start(); }}><div className="rv-field"><label htmlFor={field}>What do you need?</label><textarea id={field} className="rv-input rv-project-start-text" value={text} disabled={locked} aria-invalid={tooLong || undefined} aria-describedby={field + "-count " + field + "-runs"} onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault();void start(); } }} /></div><div className="rv-project-start-bar"><p id={field + "-count"} className={tooLong ? "rv-error" : "rv-muted"}>{text.length} / {CODE_TEXT_MAX}</p><Button type="submit" variant="primary" busy={busy} disabled={blocked}>Start</Button></div><p id={field + "-runs"} className="rv-muted"><VisibleText text={runs} /></p>{error && <p role="alert"><VisibleText text={error} /></p>}{full && <OpenTasksToClose onClosed={() => { setFull(false);setError(undefined); }} />}{accepted && <p role="status">Work was accepted. <Link to="/app/live">Open Live</Link> to find its session.</p>}{pending && <ConfirmInBrowser result={pending} subjectKey={["project", project, "overview"]} isApplied={() => false} />}</form></section>;
+ return <section className="rv-project-start" aria-label="Start work"><form onSubmit={event => { event.preventDefault();void start(); }}><div className="rv-field"><label htmlFor={field}>What do you need?</label><textarea id={field} className="rv-input rv-project-start-text" value={text} disabled={locked} aria-invalid={tooLong || undefined} aria-describedby={field + "-count " + field + "-runs"} onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault();void start(); } }} /></div><div className="rv-project-start-bar"><p id={field + "-count"} className={tooLong ? "rv-error" : "rv-muted"}>{text.length} / {CODE_TEXT_MAX}</p><Button type="submit" variant="primary" busy={busy} disabled={blocked}>Start</Button></div><p id={field + "-runs"} className="rv-muted"><VisibleText text={runs} /></p>{preview?.project === project && preview.api === api && <p className="rv-muted">Effective spending stop: {formatUsdMicrodollars(preview.stop)}. Checked again when work starts.</p>}{error && <p role="alert"><VisibleText text={error} /></p>}{full && <OpenTasksToClose onClosed={() => { setFull(false);setError(undefined); }} />}{accepted && <p role="status">Work was accepted. <Link to="/app/live">Open Live</Link> to find its session.</p>}{pending && <ConfirmInBrowser result={pending} subjectKey={["project", project, "overview"]} isApplied={() => false} />}</form></section>;
 }

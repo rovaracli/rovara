@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": 1,
-  "pinned": false,
+  "revision": 2,
+  "pinned": true,
   "entries": [
     {
       "id": "postgres@15",
@@ -82,6 +82,7 @@
       "status": "default",
       "image": {
         "repository": "svc/postgres",
+        "digest": "d57d57125e5b0d7caa8ab98817005a9460fc092e47d8f1155628b97e9756f106",
         "platforms": [
           "linux/arm64",
           "linux/amd64"
@@ -140,6 +141,12 @@
         "kind": "template_db"
       },
       "licence": "PostgreSQL",
+      "sbomRef": "30189ede8cf1374c5a87c3b0c25ed5a678f29a1151b228ab355fd67e05fb845c",
+      "scan": {
+        "scannedAt": "2026-11-04T14:31:38.000Z",
+        "criticalOpen": 0,
+        "highOpen": 12
+      },
       "editions": [
         "public",
         "enterprise"
@@ -471,6 +478,7 @@
       "status": "default",
       "image": {
         "repository": "svc/local-aws",
+        "digest": "e1e95b4f89d16b8ebd29ed088afabc4c22cf5e7bb62a1508f61ea4bfa9a4a672",
         "platforms": [
           "linux/arm64"
         ]
@@ -513,6 +521,12 @@
         "kind": "http_reset"
       },
       "licence": "LicenseRef-Rovara AND MIT",
+      "sbomRef": "c4f4de986d462e3e110652afffcf4f8b37a4f92f86a50e8fe141fa32991fdba4",
+      "scan": {
+        "scannedAt": "2026-11-04T14:41:28.000Z",
+        "criticalOpen": 0,
+        "highOpen": 1
+      },
       "editions": [
         "public",
         "enterprise"
@@ -579,10 +593,10 @@
       "health": {
         "kind": "tcp",
         "port": 8080,
-        "startTimeoutS": 15
+        "startTimeoutS": 30
       },
       "resources": {
-        "memMiB": 128,
+        "memMiB": 512,
         "cpus": 0.5,
         "pids": 64
       },
@@ -597,7 +611,8 @@
       "editions": [
         "public",
         "enterprise"
-      ]
+      ],
+      "workerImage": true
     },
     {
       "id": "test-account-proxy@r1",
@@ -647,7 +662,8 @@
       "editions": [
         "public",
         "enterprise"
-      ]
+      ],
+      "workerImage": true
     },
     {
       "id": "dns-helper@r1",
@@ -697,7 +713,8 @@
       "editions": [
         "public",
         "enterprise"
-      ]
+      ],
+      "workerImage": true
     }
   ]
 }

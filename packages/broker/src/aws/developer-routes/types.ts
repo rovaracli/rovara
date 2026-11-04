@@ -11,6 +11,7 @@ import type { LoadedKnowledgeRouteDependencies } from "../../developer/loaded-kn
 import type { MetaProjectCreated } from "../../org/create-from-meta.js";
 import type { MetaConfigDependencies } from "../../meta-repo/config-import.js";
 import type { SavedEnvDeps } from "../../test-env/saved-env.js";
+import type { FixtureDenyFor, FixtureStore } from "../../test-env/fixture-store.js";
 import type { ServiceStatusDependencies } from "../../org/service-status.js";
 import type { AllowedDomainBrowserDependencies } from "../../org/project-allowed-domains-http.js";
 import type { WorkingBranchReviewDependencies } from "../../org/project-working-branch.js";
@@ -136,6 +137,8 @@ export interface DeveloperRouteDependencies {
   serviceCatalog?: ServiceCatalogSource;
   /** Saved project images: the registry (store, sessions, ECR), only where the install's `sv` switch is on and it was installed. Without it the project's Environment panel routes do not exist. */
   savedEnv?: SavedEnvDeps;
+  /** Test services, slice 3: the fixture store on its real ports, made for one request with the production deny list that request reads (the project's). Only where the install has the fixture key; without it the fixture routes do not exist. */
+  fixtureStore?: (denyFor: FixtureDenyFor) => FixtureStore;
   /**
    * Meta repo lane B: a file of one of an org's repositories at a commit, as GitHub holds it (undefined when it is not there; throws when GitHub cannot answer). The setup agent's
    * citations are re-read through it. Without it every citation reads `unchecked` and nothing is pre-ticked.

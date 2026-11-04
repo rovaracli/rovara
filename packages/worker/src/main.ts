@@ -35,6 +35,7 @@ import { createSavedEnvFallbackReporter, createSavedEnvLoginProvider } from "./s
 import { rememberCredentials, runSavedEnvRebuild } from "./saved-env/rebuild.js";
 import { savedEnvOptionsOf } from "./saved-env/use.js";
 import { createDockerCli } from "./swebench/containers.js";
+import { assertWorkerScratchReady, checkWorkerScratch, workerBootFailureOf } from "./worker-scratch.js";
 import { collectTestServicesUsage, testServicesAdvertisedFeatures, testServicesAtWorkerBoot } from "./test-services-run.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
 
@@ -73,6 +74,10 @@ if (taskShellSelection().kind === "sandbox") {
     (error: unknown) => { console.error(`could not remove leftover mask volumes: ${error instanceof Error ? error.message : String(error)}`); },
   );
 }
+// TF12 (M3): worker scratch (throwaway Git, the credential folder) must be made outside the workspace volume. Found out once, here: the answer is on /ping, and a worker that cannot refuses every
+// task with the reason, instead of failing in the middle of the first Git operation.
+const workerScratch = await checkWorkerScratch();
+console.log(JSON.stringify({ component: "worker", event: "worker.scratch.checked", ...workerScratch }));
 const containedRuntimeReadiness: ContainedRuntimeReadiness = await inspectContainedRuntimeReadiness().catch((): ContainedRuntimeReadiness => ({ status: "unavailable", reason: "private-runtime-paths-unavailable" }));
 if (containedRuntimeReadiness.status !== "ready") {
   console.error(`project.setupSmoke unavailable: ${containedRuntimeReadiness.reason}`);
@@ -90,12 +95,15 @@ const state = createWorkerServerState(
   journal,
   {
     invocationFeatures: [...projectSetupRuntime.invocationFeatures, ...testServicesAdvertisedFeatures()],
-    invocationFeatureDiagnostics: projectSetupRuntime.invocationFeatureDiagnostics,
+    invocationFeatureDiagnostics: { ...projectSetupRuntime.invocationFeatureDiagnostics, "worker.scratch": workerScratch },
     // Application CHECKS are listed on /ping only while this worker can run them, from the last background check (never a Docker call per ping).
     ...applicationChecks.executor,
+    // N1: a failed scratch check is a failed boot as far as the broker can see: /ping answers 503 BootFailed, so no task is routed here and the instance is recycled.
+    ...(workerBootFailureOf(workerScratch) === undefined ? {} : { bootFailure: workerBootFailureOf(workerScratch)! }),
     steer: (invocation) => handleSteerInvocation(invocation, cancellationController, journal),
     peek: (invocation) => handlePeekInvocation(invocation, rootPath),
     async execute(invocation: WorkerInvocation): Promise<unknown> {
+      assertWorkerScratchReady(workerScratch);
       if (invocation.kind === "project-setup-smoke") {
         return projectSetupRuntime.execute(invocation);
       }
@@ -123,7 +131,7 @@ const state = createWorkerServerState(
           // Saved environments (SH25): start from the project's saved image; any problem sets up fresh.
           ...(invocation.payload.savedEnv === undefined ? {} : { savedEnv: savedEnvOptionsOf(invocation.payload.savedEnv, createSavedEnvLoginProvider({ controlPlaneUrl, invocation }), undefined, createSavedEnvFallbackReporter({ controlPlaneUrl, invocation })) }),
           ...(invocation.payload.registries === undefined ? {} : { registries: invocation.payload.registries, registryCredentialProvider: createRegistryCredentialProvider({ controlPlaneUrl, invocation }) }),
-          ...(invocation.payload.testServices === undefined ? {} : { testServices: { dependencies: invocation.payload.testServices.dependencies, operationId: invocation.operationId, cancellation: cancellationController, onUsageRecord: testServicesUsage.collect } }),
+          ...(invocation.payload.testServices === undefined ? {} : { testServices: { dependencies: invocation.payload.testServices.dependencies, operationId: invocation.operationId, cancellation: cancellationController, onUsageRecord: testServicesUsage.collect, fixtureSet: createWorkerCallbackSinks({ controlPlaneUrl, invocation }).fixtureSet } }),
         });
         // Saved project images: a rebuild job builds the project's image from this read-only, pinned preparation (saved-env/rebuild.ts) and posts the result to the broker's lease route.
         if (invocation.payload.savedEnvBuild !== undefined) {

@@ -1,7 +1,11 @@
 // split-by: scripts/split/split-broker.ts (the broker's modules are in ./broker/; broker.ts composes them and builds the Lambda handler)
 // split-modules: definitions, scope-helpers, dependency-wiring, handler, workspace-routes, project-registration, workspace-preparation, thread-workspaces, task-operations, model-access, acceptance, slack-workflow-events, callbacks, evidence-and-setup, workflow-e2e-verification, feedback-and-codebuild, pull-request-reconcile, terminal-and-github-events, sweeps-and-readiness, dispatch, e2e-rounds, workflow-items, plan-answers, terminal-result, records, admin-and-helpers, runtime-clients
 
-// The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
+// First of all the imports, so that it runs before any module below can read the environment: puts back the names the control plane passes as one variable
+// (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
+// tests/contract/broker-environment-first.test.ts keeps it first and fails on any read of a packed name before it runs.
+import "./broker-environment-init.js";
+// The file's own imports, in their old order (after the environment init), so every dependency loads as it did before the split.
 import "../model-selection/evidence.js";
 import "../agents/table-writes.js";
 import "../org/task-stop-funding.js";
@@ -28,9 +32,6 @@ import "../org/legacy-domain-narrowing.js";
 import "../org/project-domain-initial.js";
 import "../org/allowed-domain-policy.js";
 import "../org/approval-membership.js";
-// First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
-// (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
-import "./broker-environment-init.js";
 import "../org/task-stop-window.js";
 import "../org/project-working-branch-provider.js";
 import "./task-web.js";
@@ -700,7 +701,7 @@ export const handler = createAwsBrokerHandler({
       }
     : {}),
   async deleteEc2Session(workspaceId) {
-    await ec2Sessions.deleteSession(workspaceId);
+    await ec2Sessions().deleteSession(workspaceId);
   },
   // Spec 043: read per request, so installing the eval stack or a new runner image needs no broker release.
   ...(process.env.SWEBENCH_SETTINGS_PREFIX

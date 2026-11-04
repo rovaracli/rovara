@@ -2,7 +2,7 @@
 // table below, so roles (slice 3) change only these two places; callers never decide roles themselves.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, agentXError, emailSafeName, projectAllows, projectMemberKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
-import { effectiveProjectRole, viewerCannotStartTasksMessage } from "./project-roles.js";
+import { effectiveProjectRole, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "./project-roles.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { resolveTaskPeopleAccess, type TaskRole } from "./task-people.js";
@@ -91,13 +91,16 @@ export const sendBackNoAccessMessage = (project: string) => `You don't have acce
  * admin passes, anyone else needs the project access check to give them a role that may start tasks (a grant, or a bound Slack channel's
  * contributor access). A viewer gets the viewer message; no access gets the same PROJECT_ACCESS_DENIED. The task already exists, so the project's
  * tasks-off switch does not apply: the same rule is asked with the switch set aside. When the check is unavailable (Slack, a read) the retryable
- * error stands. When it failed otherwise, it judges by the person's own grant row (no channel) and refuses without one.
+ * error stands. When it failed otherwise, it judges by the person's own grant row (no channel) and refuses without one. An archived project refuses everyone (PROJECT_ARCHIVED, S2).
+ * The same rule covers every path that restarts coding for a person: Fix-on-findings, forward onto a coding step, the review-comment fix approval and the CI-fix Retry.
  */
 export async function requireProjectSendBackRole(
   deps: Pick<AccessDependencies, "checkAccess" | "documentClient" | "tableName">,
   task: { project: string },
   actor: { developerId: string; orgId: OrgId; orgRole: OrgRole },
 ): Promise<void> {
+  // An archived project takes no new work, whoever asks (S2, F27-5): a company owner or admin included.
+  await requireNewWorkAllowed(deps, actor.orgId, task.project, "contributor", "task");
   if (actor.orgRole === "owner" || actor.orgRole === "admin") return;
   let role: ProjectRole | undefined;
   try {

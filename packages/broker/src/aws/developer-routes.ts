@@ -1,3 +1,5 @@
+import { previewTaskStartStop } from "../org/task-stop-start-preview.js";
+import { getTaskStopEnrollment, reviewTaskStopEnrollment, writeTaskStopEnrollment } from "../org/task-stop-enrollment.js";
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
 // The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
 import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./developer-routes/spec-routes.js";
@@ -183,6 +185,7 @@ import { routeTestEnvironment, testEnvStoreOf } from "./developer-routes/test-en
 import { routeTestHealth } from "./developer-routes/test-health.js";
 import { KNOWN_FAILING_MARKS_BROWSER_MESSAGE, KNOWN_FAILING_MARKS_PATH, routeKnownFailingMarks } from "./developer-routes/known-failing-marks.js";
 import { verifyResultsEnabled } from "../verification/switch.js";
+import { DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE, DESIGN_REVIEW_COMPANY_PATH, routeDesignReviewCompany } from "./developer-routes/design-review-company.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
 import { SECOND_REVIEW_ACK_BROWSER_MESSAGE, acknowledgeSecondReview } from "./developer-tasks/second-review-ack.js";
 import { SECOND_REVIEW_BROWSER_MESSAGE, SECOND_REVIEW_PATH, routeSecondReview } from "./developer-routes/second-review.js";
@@ -191,6 +194,7 @@ import { routeJiraOrgAdmin } from "./developer-routes/jira-org-admin.js";
 import { SETUP_RECIPES_BROWSER_MESSAGE, isSetupRecipesPath, routeSetupRecipes } from "./developer-routes/setup-recipes.js";
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
 import { SAVED_ENV_IMAGE_BROWSER_MESSAGE, isSavedEnvImagePath, routeSavedEnvImage } from "./developer-routes/saved-env-image.js";
+import { routeFixtures } from "./developer-routes/fixtures.js";
 import { savedEnvEnabled } from "../test-env/saved-env-switch.js";
 import { nightlyHooks } from "../test-env/nightly-wiring.js";
 import { StatusReply } from "./status-reply.js";
@@ -308,6 +312,7 @@ export { effectiveProjectRole, requireNewWorkAllowed };
 
 export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL, authenticated?: { caller: DeveloperCaller; csrf: string }): Promise<unknown> {
   if(request.method==="PUT"&&url.pathname==="/v1/app/org/model-selection-policy"&&authenticated?.caller.browserSession!==true)throw agentXError("FORBIDDEN","Use a live browser session to change company model policy.");
+  if (/^\/v1\/app\/org\/task-stop-policy\/(enrollment|cutover-review)$/.test(url.pathname) && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session to manage enforcement.");
   // Website proposal routes accept only the trusted opaque-cookie adapter.
   // Reject token callers before authentication or any project/proposal lookup.
   if (/^\/v1\/app\/projects\/[^/]+\/allowed-websites(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
@@ -327,6 +332,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // The company setting "always two people" for known-failing marks: changing it is browser-only (the read is open to members).
   if (url.pathname === KNOWN_FAILING_POLICY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_POLICY_BROWSER_MESSAGE);
+  if (url.pathname === DESIGN_REVIEW_COMPANY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE);
   if (url.pathname === SECOND_REVIEW_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_BROWSER_MESSAGE);
   if (/\/tasks\/[^/]+\/second-review-acknowledge$/u.test(url.pathname) && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_ACK_BROWSER_MESSAGE);
   // The project's known-failing marks (list and Undo) are browser-only for both methods, while vx is on (off: the path is not found, as any unknown path).
@@ -553,12 +559,16 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (testEnvReply !== undefined) return testEnvReply;
   const testHealthReply = await routeTestHealth(deps, caller, request, url);
   if (testHealthReply !== undefined) return testHealthReply;
+  const designReviewCompanyReply = await routeDesignReviewCompany(deps, caller, request, url);
+  if (designReviewCompanyReply !== undefined) return designReviewCompanyReply;
   const knownFailingPolicyReply = await routeKnownFailingPolicy(deps, caller, request, url);
   if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
   const setupRecipesReply = await routeSetupRecipes(deps, caller, request, url);
   if (setupRecipesReply !== undefined) return setupRecipesReply;
   const savedEnvImageReply = await routeSavedEnvImage(deps, caller, request, url);
   if (savedEnvImageReply !== undefined) return savedEnvImageReply;
+  const fixturesReply = await routeFixtures(deps, caller, request, url);
+  if (fixturesReply !== undefined) return fixturesReply;
   // SR-1: the task owner acknowledges that an `on` second review did not run (the merge gate). Owner only, in a browser session, audited.
   const secondReviewAck = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/second-review-acknowledge$/iu.exec(url.pathname);
   if (secondReviewAck !== null && request.method === "POST") return new StatusReply(200, await acknowledgeSecondReview(developerTaskRouteDependencies(deps, caller), caller, secondReviewAck[1]!, jsonBody(request)));
@@ -572,6 +582,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (knownFailingMarksReply !== undefined) return knownFailingMarksReply;
   const intakeReply = await routeIntake(deps, caller, request, url);
   if (intakeReply !== undefined) return intakeReply;
+  const startPreviewRoute = /^\/v1\/app\/projects\/([^/]+)\/start-preview$/.exec(url.pathname);
+  if (request.method === "POST" && startPreviewRoute !== null) return previewTaskStartStop(deps, caller, startPreviewRoute[1]!, jsonBody(request));
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
   if (request.method === "POST" && codeIntentRoute !== null) return routeCodeIntentStart(codeIntentDependenciesOf(deps, caller), caller, codeIntentRoute[1]!, jsonBody(request), request.headers);
   // Rovara Code (Plan 6 Task 19): a project's code settings. Anyone who can see the project reads them; a maintainer changes them.
@@ -718,6 +730,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
+  if (url.pathname === "/v1/app/org/task-stop-policy/enrollment") {
+    if (request.method === "GET") return getTaskStopEnrollment(deps, caller, url.searchParams.get("fresh") === "1");
+    if (request.method === "PUT") return writeTaskStopEnrollment(deps, caller, request.body);
+  }
+  if (url.pathname === "/v1/app/org/task-stop-policy/cutover-review" && request.method === "POST") return reviewTaskStopEnrollment(deps, caller, request.body);
   const spendingEditing = /^\/v1\/app\/org\/task-stop-policy(?:\/projects\/([^/]+))?(?:\/(editing|decisions))?$/.exec(url.pathname);
   if (spendingEditing !== null) {
     const project = spendingEditing[1] === undefined ? undefined : decodeURIComponent(spendingEditing[1]);

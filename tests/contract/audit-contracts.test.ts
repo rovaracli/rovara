@@ -123,7 +123,7 @@ describe("the event catalog", () => {
   it("lists the actions exactly, in order", () => {
     expect([...AUDIT_ACTIONS]).toEqual([
       "approval.decided", "approval.expired", "approval.requested", "approval.rerouted", "write.executed", "spend_request.created", "spend_request.decided",
-      "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "spending.stop_admitted", "spending.stop_refused", "spending.stop_reached", "spending.stop_exempted", "spending.policy_seeded", "spending.policy_changed", "spending.policy_change_requested", "spending.policy_change_decided", "pull_request.opened",
+      "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "spending.stop_admitted", "spending.stop_refused", "spending.stop_reached", "spending.stop_exempted", "spending.policy_seeded", "spending.enrollment_changed", "spending.policy_changed", "spending.policy_change_requested", "spending.policy_change_decided", "pull_request.opened",
   "pull_request.merged",
   "pull_request.merge_requested",
   "member.joined",
@@ -176,9 +176,9 @@ describe("the event catalog", () => {
       "audit.exported", "audit.staff_read", "audit.subject_erased", "audit.org_shred_scheduled",
       // "How we work" playbook (H1)
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
-      "process.published", "process.rolled_back", "playbook.default_process_changed", "playbook.design_review_changed", "company.change_applied_to_project",
+      "process.published", "process.rolled_back", "playbook.default_process_changed", "playbook.design_review_changed", "company.design_review_policy_proposed", "company.design_review_policy_changed", "company.change_applied_to_project",
       // Proof and evidence
-      "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged", "task.design_sole_owner_exception", "company.second_review_mode_proposed", "company.second_review_mode_changed", "company.second_review_mode_refused", "company.second_review_mode_cancelled", "company.second_review_replay_recorded", "company.second_review_verdict_recorded", "company.second_review_verdict_withdrawn",
+      "project.test_env_changed", "project.fixture_set_approved", "project.fixture_set_rejected", "project.fixture_set_withdrawn", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged", "task.design_sole_owner_exception", "company.second_review_mode_proposed", "company.second_review_mode_changed", "company.second_review_mode_refused", "company.second_review_mode_cancelled", "company.second_review_replay_recorded", "company.second_review_verdict_recorded", "company.second_review_verdict_withdrawn",
       // Team record and lessons (learning v2, R1)
       "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "record.tracker_person_mapped", "record.tracker_person_unmapped", "record.tracker_autolink_changed", "lesson.mode_changed", "lesson.proposed",
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
@@ -190,7 +190,7 @@ describe("the event catalog", () => {
       "mcp_server.installed", "mcp_server.probed", "mcp_server.changed_needs_review", "mcp_server.task_started", "mcp_server.task_stopped", "mcp_server.egress_updated", "mcp_server.secret_replaced",
       "context_source.proposed", "context_source.applied", "context_source.rejected",
       // Live interaction part 2
-      "session.redirected", "task.asked", "ask.linear_comment_kept", "diagnosis.started", "diagnosis.proposed", "diagnosis.proposal_raised", "diagnosis.support_escalated", "diagnosis.bundle_prepared", "setup.host_asked", "setup.host_refused", "setup.limits_changed", "setup.locks_changed", "setup.locks_change_proposed", "setup.locks_change_approved",
+      "session.redirected", "task.asked", "task.work_refused", "ask.linear_comment_kept", "diagnosis.started", "diagnosis.proposed", "diagnosis.proposal_raised", "diagnosis.support_escalated", "diagnosis.bundle_prepared", "setup.host_asked", "setup.host_refused", "setup.limits_changed", "setup.locks_changed", "setup.locks_change_proposed", "setup.locks_change_approved",
       "sso.sign_in", "sso.sign_in_refused", "sso.break_glass_used", "sso.group_mapping_changed", "sso.break_glass_changed", "sso.saml_changed",
       // v1.2 learning loop (B7)
       "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.withdrawn", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
@@ -243,8 +243,13 @@ describe("the event catalog", () => {
     "process.rolled_back": { target: { kind: "process", id: "agt_1" }, keys: ["fromVersion", "toVersion", "safety"], sample: { fromVersion: 3, toVersion: 2, safety: "safe" } },
     "playbook.default_process_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "processKind"], sample: { revision: 4, processKind: "builtin" } },
     "playbook.design_review_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "mode", "tier", "allowSkip", "capCents", "approverKind", "approverCount"], sample: { revision: 4, mode: "auto", tier: "standard", allowSkip: true, capCents: 1000, approverKind: "maintainers", approverCount: 0 } },
+    "company.design_review_policy_proposed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["field", "from", "to"], sample: { field: "allowed", from: "off", to: "on" } },
+    "company.design_review_policy_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["field", "from", "to", "mode", "revision"], sample: { field: "allowed", from: "off", to: "on", mode: "second_person", revision: 2 } },
     "company.change_applied_to_project": { target: { kind: "project", name: "web" }, keys: ["changeRevision", "settingCount"], sample: { changeRevision: 5, settingCount: 2 } },
     "project.test_env_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "tier", "lessSafeCount"], sample: { revision: 2, tier: "sandbox", lessSafeCount: 0 } },
+    "project.fixture_set_approved": { target: { kind: "project", name: "web" }, keys: ["digest"], sample: { digest: "a".repeat(64) } },
+    "project.fixture_set_rejected": { target: { kind: "project", name: "web" }, keys: ["digest"], sample: { digest: "a".repeat(64) } },
+    "project.fixture_set_withdrawn": { target: { kind: "project", name: "web" }, keys: ["digest"], sample: { digest: "a".repeat(64) } },
     "project.known_failing_marked": { target: { kind: "project", name: "web" }, keys: ["cause", "testCount", "recordEpoch", "taskCount", "taskIdsSha256", "testSetSha256", "rowVersionAfter", "totalAfter", "approvalMode", "secondPersonWhy"], sample: { cause: "fails-on-original-code", testCount: 3, recordEpoch: 1, taskCount: 2, taskIdsSha256: "a".repeat(64), testSetSha256: "b".repeat(64), rowVersionAfter: 1, totalAfter: 3, approvalMode: "single", secondPersonWhy: "not_needed" } },
     "project.known_failing_removed": { target: { kind: "project", name: "web" }, keys: ["removal", "testCount", "markEpoch", "testSetSha256", "rowVersionAfter", "totalAfter"], sample: { removal: "undo", testCount: 1, markEpoch: 2, testSetSha256: "b".repeat(64), rowVersionAfter: 4, totalAfter: 2 } },
     "company.known_failing_policy_proposed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["fromAlwaysTwo", "toAlwaysTwo"], sample: { fromAlwaysTwo: true, toAlwaysTwo: false } },
@@ -259,6 +264,7 @@ describe("the event catalog", () => {
     "company.second_review_replay_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["runId", "cases", "passed"], sample: { runId: "run-1", cases: 50, passed: true } },
     "company.second_review_verdict_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model", "runId", "days", "findings", "agreed"], sample: { model: "openrouter:openai/gpt-5.5", runId: "run-1", days: 14, findings: 40, agreed: 20 } },
     "company.second_review_verdict_withdrawn": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model"], sample: { model: "openrouter:openai/gpt-5.5" } },
+    "task.work_refused": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["path", "cause"], sample: { path: "ci_fix_round", cause: "no_project_access" } },
     "task.second_review_acknowledged": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["cause"], sample: { cause: "no-answer" } },
     "task.design_sole_owner_exception": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["tier", "openBlockers"], sample: { tier: "high", openBlockers: 0 } },
     "project.second_review_narrowed": { target: { kind: "project", name: "web" }, keys: ["change", "count"], sample: { change: "choose", count: 1 } },
@@ -495,4 +501,10 @@ describe("auditEventId", () => {
       expect(AuditEventIdSchema.safeParse(auditEventId(action, "occurrence-1")).success).toBe(true);
     }
   });
+});
+
+it("validates enrollment change facts and refuses unreviewed detail fields", () => {
+ const sample = event({ action: "spending.enrollment_changed", target: { kind: "org", id: ORG }, facts: { requestId: "change", reviewId: "review", reviewDigest: "d".repeat(64), before: "ready", after: "enabled", revision: 3, tasksReviewed: 1, tasksAtEnable: 2, newImpacts: 1, pendingExpired: false } });
+ expect(AuditEventInputSchema.safeParse(sample).success).toBe(true);
+ expect(AuditEventInputSchema.safeParse({ ...sample, facts: { taskTitle: "private" } }).success).toBe(false);
 });

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
-  BlockedError, ITEMS, LISTEN_JS, PROBE_JS, SSM_CHUNK_CHARS, TSL_WORKSPACE, blockedLines, formatLine, hasDefaultRoute, labelArgsFrom, loadVerifiedCatalog, manifestFilesPort, parseProbeOutput, parseUids, postgresEntry, pullList, resolvePostgres, runLiveChecks, ssmCommands, unexpected,
+  BlockedError, ITEMS, LISTEN_JS, PROBE_JS, RELAY_LISTENER_JS, SSM_CHUNK_CHARS, TSL_WORKSPACE, blockedLines, formatLine, hasDefaultRoute, labelArgsFrom, loadVerifiedCatalog, manifestFilesPort, parseProbeOutput, parseUids, postgresEntry, pullList, resolvePostgres, runLiveChecks, ssmCommands, unexpected,
   type RunLayer,
 } from "../../scripts/linux-check-test-services-live.js";
 import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf, type VerifiedCatalog } from "@agentx/contracts";
@@ -18,6 +18,17 @@ const REGISTRY = "944937319445.dkr.ecr.us-west-2.amazonaws.com";
 const IMAGE = `${REGISTRY}/agentx-staging/worker@sha256:${"a".repeat(64)}`;
 
 describe("the live driver's lines and probe output", () => {
+  it("the relay listener survives a peer that connects and resets before reading (it used to die on ECONNRESET, so the working sandbox exited)", async () => {
+    const program = RELAY_LISTENER_JS.replace("listen(7777,", "listen(0,").replace("setInterval(()=>{},1e6)", "");
+    expect(RELAY_LISTENER_JS).toContain("s.on('error',()=>{})");
+    const script = `const http=require('net');const srv=(()=>{${program.replace("require('net').createServer", "return require('net').createServer")}})();srv.on('listening',async()=>{const port=srv.address().port;
+      for(let i=0;i<20;i+=1){await new Promise((done)=>{const c=http.connect(port,'127.0.0.1',()=>{setTimeout(()=>{c.resetAndDestroy();done();},20);});c.on('error',done);});}
+      await new Promise((r)=>setTimeout(r,200));console.log('alive');process.exit(0);});`;
+    const child = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: 20_000 });
+    expect(child.stderr).toBe("");
+    expect(child.stdout.trim()).toBe("alive");
+  });
+
   it("formats a line the way the shell script counts it, on one line, with the removed values gone", () => {
     expect(formatLine({ id: "L1.live", status: "PASS", name: "x", detail: "ok" })).toBe("TSL L1.live PASS x | ok");
     const line = formatLine({ id: "L4.live", status: "FAIL", name: "y", detail: `bad\nsecret=hunter2hunter2 and ${"z".repeat(500)}` }, (text) => text.split("hunter2hunter2").join("[removed]"));

@@ -22,6 +22,7 @@ import {
   type OrgId,
   type OperationStatus,
   type SpendingAdmissionReference,
+  type TestEnvProdDeny,
   type WorkerInvocation,
   type WorkspaceInstance,
 } from "@agentx/contracts";
@@ -121,6 +122,10 @@ export interface OperationRecord extends Operation {
   baselineSource?: StoredBaselineSource;
   /** T7b: a planning run that was asked to export the unchanged code so its plan's must-not-change scenarios can be tried on the current app (absent: it was not). It may upload that one export, under its own operation key. */
   groundingSourceAsked?: true;
+  /** Test services (slice 3): the digests of the fixture sets the run's pinned plan named, written at dispatch. The `fixture-set` callback delivers only these (absent: the run serves no fake). */
+  fixtureSetDigests?: string[];
+  /** Test services (slice 3, a candidate check's PREPARE operation): the production deny list of the proposal under check, kept so the first check (no approved environment yet) scans a fake with it. */
+  fixtureProdDeny?: TestEnvProdDeny;
   workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string } | undefined;
   /** A PR feedback review started by a broker that gives the critic only the owner's notes for its round (absent: an earlier release's run). */
   feedbackNotesScoped?: true;
@@ -195,7 +200,7 @@ export interface CallbackClaims {
   workspaceId: string;
   operationId: string;
   fence: number;
-  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools" | "context-tools" | "design-review-packet" | "saved-env-push-login" | "saved-env-result" | "setup-agent" | "nightly-result">;
+  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools" | "context-tools" | "design-review-packet" | "saved-env-push-login" | "saved-env-result" | "setup-agent" | "nightly-result" | "fixture-set">;
   expiresAt: number;
 }
 
@@ -326,6 +331,8 @@ export interface CapabilityOptions {
   setupAgent?: boolean;
   /** NH-1: the nightly run reports its result through one action (`POST .../nightly-result`); granted only to the verification operation of a nightly task. */
   nightlyResult?: boolean;
+  /** Test services (slice 3): fetch a fresh read address of an approved fixture set the run's plan names (`POST .../fixture-set`); granted only to an operation whose plan names fixture sets. */
+  fixtureDelivery?: boolean;
   /** Saved project images: the rebuild job's push login and result (`POST .../saved-env-push-login`, `.../saved-env-result`); granted only to the preparation made for a rebuild job. It lives as long as the other actions (the lease, 3 hours, is shorter), unlike the repository grant (15 minutes). */
   savedEnvBuild?: boolean;
 }
@@ -367,6 +374,7 @@ export function issueCapability(
       ...(options.designReviewPacket === true ? ["design-review-packet" as const] : []),
       ...(options.setupAgent === true ? ["setup-agent" as const] : []),
       ...(options.nightlyResult === true ? ["nightly-result" as const] : []),
+      ...(options.fixtureDelivery === true ? ["fixture-set" as const] : []),
       ...(options.savedEnvBuild === true ? ["saved-env-push-login" as const, "saved-env-result" as const] : []),
     ],
     expiresAt: Math.floor(Date.now() / 1_000) + 32_400,

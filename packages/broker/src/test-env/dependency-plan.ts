@@ -4,18 +4,20 @@
 // offered in this edition, and pinned to an image digest; the catalog must be newer than the release's minimum (a rolled-back catalog could pin a digest that was later found critical). Anything else is refused
 // with a fixed reason, never a plan that leaves a dependency out (a run with no database would only fail its tests in a confusing way). Pure apart from the catalog source; it never reads a clock, a network or a file itself.
 //
-// Slice 1 starts real software from the catalog only (backing `local`, no substitute image). Slice 2 adds Rovara local AWS (backing `emulated`, entry `local-aws`) for exactly S3, SQS and DynamoDB. Every other backing, and every
+// Slice 1 starts real software from the catalog only (backing `local`, no substitute image). Slice 2 adds Rovara local AWS (backing `emulated`, entry `local-aws`) for exactly S3, SQS and DynamoDB. Slice 3 adds a fake (backing `fake`,
+// entry `fake-server`, which runs from the worker's own image) for an APPROVED, digest-pinned fixture set of this organisation, answering requests with no recording with an error (`fail`). Every other backing, and every
 // other AWS service, is "not available yet", at approval (`dependenciesStartableNow`) and again here.
 import { TEST_SERVICES_AWS_PLAN_SERVICES, emulatorServiceTier, loadSignedCatalog, type CatalogEntry, type CatalogTrustContext, type TaskDependencyPlan, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TaskDependencyPlanSchema, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName, catalogPrepullList } from "@agentx/contracts";
-import { chooseBacking, effectiveAllowedBackings, type BackingPlace, type SkipReason } from "./backing-choice.js";
+import { STATEFUL_KINDS, chooseBacking, effectiveAllowedBackings, type BackingPlace, type SkipReason } from "./backing-choice.js";
+import type { ApprovedFixture } from "./fixture-lookup.js";
 
 /**
  * The oldest catalog revision this release will start images from. Raise it with every catalog release that retires or replaces a pinned digest. It is a constant of the release, not a setting: the broker's
  * environment has no room for another variable, and a rollback of the catalog file must not be a matter of configuration.
  */
-export const TEST_SERVICES_MIN_CATALOG_REVISION = 1;
+export const TEST_SERVICES_MIN_CATALOG_REVISION = 2;
 
-export const DEPENDENCY_PLAN_REFUSALS = ["no_catalog", "catalog_too_old", "not_available_yet", "not_in_catalog", "not_in_edition", "retired", "not_pinned", "not_allowed", "too_many", "invalid"] as const;
+export const DEPENDENCY_PLAN_REFUSALS = ["no_catalog", "catalog_too_old", "not_available_yet", "not_in_catalog", "not_in_edition", "retired", "not_pinned", "not_allowed", "too_many", "invalid", "fixture_not_approved"] as const;
 export type DependencyPlanRefusal = (typeof DEPENDENCY_PLAN_REFUSALS)[number];
 /** What a person reads when a run cannot start its dependencies. Fixed words: no catalog id, digest or error text of any kind. */
 export const DEPENDENCY_PLAN_REFUSAL_WORDS: Record<DependencyPlanRefusal, string> = {
@@ -29,6 +31,7 @@ export const DEPENDENCY_PLAN_REFUSAL_WORDS: Record<DependencyPlanRefusal, string
   not_allowed: "A test service this project asks for is not allowed by the company's settings.",
   too_many: "This project asks for more test services than a run starts.",
   invalid: "The plan for this project's test services could not be built.",
+  fixture_not_approved: "A fake this project asks for has no approved set of answers.",
 };
 
 export type DependencyPlanResult = { ok: true; dependencies: TaskDependencyPlan[] } | { ok: false; reason: DependencyPlanRefusal };
@@ -41,12 +44,19 @@ export const EMULATED_TASK_SERVICES: readonly string[] = TEST_SERVICES_AWS_PLAN_
 
 type DependencyBacking = TestEnvDependency["backing"];
 type EmulatedBacking = Extract<DependencyBacking, { kind: "emulated" }>;
+type FakeBacking = Extract<DependencyBacking, { kind: "fake" }>;
 
 const startableLocal = (backing: DependencyBacking): boolean => backing.kind === "local" && backing.substituteImage === undefined;
 /** Rovara local AWS for S3, SQS or DynamoDB only: the family and every service the backing lists are among them. */
 const startableEmulated = (family: string, backing: DependencyBacking): backing is EmulatedBacking =>
   backing.kind === "emulated" && family.startsWith("aws:") && EMULATED_TASK_SERVICES.includes(family.slice(4)) && backing.awsServices.every((service) => EMULATED_TASK_SERVICES.includes(service)) && backing.awsServices.includes(family.slice(4));
-const startableBacking = (family: string, backing: DependencyBacking): boolean => startableLocal(backing) || startableEmulated(family, backing);
+/**
+ * A fake (slice 3): the policy for a request with no recording is `fail` (a made-up answer is not available yet), and the dependency is reset by a new fake each round (`fresh_per_round`): a restart between checks would lose the
+ * fake's request ledger, and with it the count of what the tests asked it. Whether the set is approved is asked at the plan (`planFake`), which has the store.
+ */
+const startableFake = (dependency: Pick<TestEnvDependency, "kind" | "family" | "reset">, backing: DependencyBacking): boolean =>
+  backing.kind === "fake" && backing.unmatched === "fail" && dependency.reset === "fresh_per_round" && !(STATEFUL_KINDS.includes(dependency.kind) && !dependency.family.startsWith("aws:"));
+const startableBacking = (dependency: Pick<TestEnvDependency, "kind" | "family" | "reset">, backing: DependencyBacking): boolean => startableLocal(backing) || startableEmulated(dependency.family, backing) || startableFake(dependency, backing);
 
 /**
  * Whether every dependency is something this release can start: real software from the catalog (no substitute image), or Rovara local AWS for S3, SQS and DynamoDB; the same while coding, and a fallback of nothing at most.
@@ -56,13 +66,14 @@ export function dependenciesStartableNow(dependencies: readonly TestEnvDependenc
   const emulated = dependencies.flatMap((dependency) => (dependency.backing.kind === "emulated" ? [dependency.backing] : []));
   if (emulated.some((backing) => backing.catalogId !== emulated[0]!.catalogId || backing.region !== emulated[0]!.region)) return false;
   return dependencies.every((dependency) =>
-    startableBacking(dependency.family, dependency.backing)
-    && (dependency.workingBacking === undefined || (startableBacking(dependency.family, dependency.workingBacking) && sameBacking(dependency.workingBacking, dependency.backing)))
+    startableBacking(dependency, dependency.backing)
+    && (dependency.workingBacking === undefined || (startableBacking(dependency, dependency.workingBacking) && sameBacking(dependency.workingBacking, dependency.backing)))
     && (dependency.fallback === undefined || dependency.fallback.kind === "none"));
 }
 
 const sameBacking = (left: DependencyBacking, right: DependencyBacking): boolean =>
-  (left.kind === "local" && right.kind === "local" && left.catalogId === right.catalogId) || (left.kind === "emulated" && right.kind === "emulated" && JSON.stringify(left) === JSON.stringify(right));
+  (left.kind === "local" && right.kind === "local" && left.catalogId === right.catalogId) || (left.kind === "emulated" && right.kind === "emulated" && JSON.stringify(left) === JSON.stringify(right))
+  || (left.kind === "fake" && right.kind === "fake" && left.fixtureSetRef === right.fixtureSetRef && left.unmatched === right.unmatched);
 
 const REFUSAL_OF_SKIP: Partial<Record<SkipReason, DependencyPlanRefusal>> = {
   not_allowed: "not_allowed", not_in_catalog: "not_in_catalog", not_in_edition: "not_in_edition", retired: "retired", no_such_version: "not_in_catalog", not_pinned: "not_pinned",
@@ -119,10 +130,43 @@ function planEmulated(dependency: TestEnvDependency, backing: EmulatedBacking, c
   } };
 }
 
+/** The refusals for a fake that the chooser skips: the company's setting and a dependency a fake cannot stand in for keep their own words. */
+const REFUSAL_OF_FAKE_SKIP: Partial<Record<SkipReason, DependencyPlanRefusal>> = { not_allowed: "not_allowed", fake_not_for_this_kind: "not_available_yet" };
+
+/**
+ * Slice 3: one dependency backed by a fake. The fake server is the catalog's `fake-server` entry (a helper that runs from the worker's own image: it has no digest, and it is not in the pre-pull list), offered in this
+ * edition. The fixture set must be one of THIS organisation's approved sets (`fixtures`, from `approvedFixturesOf`), for the dependency's own family, and the chooser applies the company's "fakes" setting and the kinds a fake
+ * cannot stand in for in each place the dependency runs. The plan carries the set's DIGEST, never a URL: a read address would expire before the round, so the worker asks for a fresh one when a phase starts.
+ * The fake needs a name to be reached by (an alias): without one the connection variables have no host.
+ */
+function planFake(dependency: TestEnvDependency, backing: FakeBacking, catalog: VerifiedCatalog, edition: "public" | "enterprise", projectId: string, prodDeny: TestEnvironmentBody["prodDeny"], fixtures: ReadonlyMap<string, ApprovedFixture>): { ok: true; plan: unknown } | { ok: false; reason: DependencyPlanRefusal } {
+  const approved = fixtures.get(backing.fixtureSetRef);
+  if (approved === undefined || approved.family !== dependency.family) return { ok: false, reason: "fixture_not_approved" };
+  if (!startableFake(dependency, backing) || dependency.seeds.length > 0 || dependency.connect.hostAliases.length === 0) return { ok: false, reason: "not_available_yet" };
+  const entry = catalog.entries.find((candidate) => candidate.backing === "fake" && catalogIdName(candidate.id) === "fake-server" && candidate.workerImage === true && candidate.status !== "retired");
+  if (entry === undefined) return { ok: false, reason: "not_available_yet" };
+  if (!entry.editions.includes(edition)) return { ok: false, reason: "not_in_edition" };
+  for (const place of ["task_check", "working"] as const satisfies readonly BackingPlace[]) {
+    const chosen = chooseBacking({
+      dependency: { family: dependency.family, kind: dependency.kind, maintainerChoice: "fake" }, place, edition, allowed: effectiveAllowedBackings(undefined),
+      catalog: { ...catalog, entries: [entry] }, projectId, projectImages: [], accounts: [], prodDeny, fixtures: [{ ref: approved.digest, family: approved.family, origin: approved.origin, unmatched: "fail" }], canMakeFake: false, now: 0,
+    });
+    if (chosen.backing.kind !== "fake" || chosen.backing.fixtureSetRef !== backing.fixtureSetRef) {
+      const skipped = chosen.skipped.find((step) => step.step === "fake");
+      return { ok: false, reason: (skipped === undefined ? undefined : REFUSAL_OF_FAKE_SKIP[skipped.reason]) ?? "not_available_yet" };
+    }
+  }
+  return { ok: true, plan: {
+    id: dependency.id, name: dependency.name, kind: dependency.kind, family: dependency.family, backing: "fake", catalogId: entry.id, repository: entry.image.repository,
+    fake: { fixtureSetRef: backing.fixtureSetRef, unmatched: "fail" }, config: {}, aliases: dependency.connect.hostAliases, connect: dependency.connect.env, seeds: [], reset: dependency.reset,
+  } };
+}
+
 /** One dependency's plan, or the reason it cannot be pinned. */
-function planOne(dependency: TestEnvDependency, catalog: VerifiedCatalog, edition: "public" | "enterprise", projectId: string, prodDeny: TestEnvironmentBody["prodDeny"]): { ok: true; plan: unknown } | { ok: false; reason: DependencyPlanRefusal } {
+function planOne(dependency: TestEnvDependency, catalog: VerifiedCatalog, edition: "public" | "enterprise", projectId: string, prodDeny: TestEnvironmentBody["prodDeny"], fixtures: ReadonlyMap<string, ApprovedFixture>): { ok: true; plan: unknown } | { ok: false; reason: DependencyPlanRefusal } {
   const backing = dependency.backing;
   if (!dependenciesStartableNow([dependency])) return { ok: false, reason: "not_available_yet" };
+  if (backing.kind === "fake") return planFake(dependency, backing, catalog, edition, projectId, prodDeny, fixtures);
   if (backing.kind === "emulated") return planEmulated(dependency, backing, catalog, edition, projectId, prodDeny);
   if (backing.kind !== "local") return { ok: false, reason: "not_available_yet" };
   const entry = catalogEntryById(catalog, backing.catalogId);
@@ -149,17 +193,19 @@ function planOne(dependency: TestEnvDependency, catalog: VerifiedCatalog, editio
 /**
  * The pinned plans of every dependency of an approved environment, or the first reason one cannot be started. `catalog` is what `serviceCatalogSourceOf` loaded (undefined: it could not be). Never throws.
  */
-export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; catalog: VerifiedCatalog | undefined; edition: "public" | "enterprise"; projectId?: string; minCatalogRevision?: number }): DependencyPlanResult {
+export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; catalog: VerifiedCatalog | undefined; edition: "public" | "enterprise"; projectId?: string; minCatalogRevision?: number; /** The approved fixture sets of the task's organisation, by digest (`approvedFixturesOf`). Absent: no set is approved, so every fake is refused. */ fixtures?: ReadonlyMap<string, ApprovedFixture> }): DependencyPlanResult {
   try {
     const dependencies = input.body.dependencies ?? [];
     if (dependencies.length > TASK_DEPENDENCY_PLAN_MAX) return { ok: false, reason: "too_many" };
     if (input.catalog === undefined) return { ok: false, reason: "no_catalog" };
     if (input.catalog.revision < (input.minCatalogRevision ?? TEST_SERVICES_MIN_CATALOG_REVISION)) return { ok: false, reason: "catalog_too_old" };
     // An unpinned catalog names no image to start. For a project that asks for Rovara local AWS alone that is the same "not available yet" as at approval (there is no pinned local-aws); otherwise slice 1's words.
-    if (!input.catalog.pinned) return { ok: false, reason: dependencies.length > 0 && dependencies.every((dependency) => dependency.backing.kind === "emulated") ? "not_available_yet" : "not_pinned" };
+    // A fake starts no catalog image (it runs from the worker's own), so only the other dependencies need a pinned catalog.
+    const imaged = dependencies.filter((dependency) => dependency.backing.kind !== "fake");
+    if (!input.catalog.pinned && imaged.length > 0) return { ok: false, reason: imaged.every((dependency) => dependency.backing.kind === "emulated") ? "not_available_yet" : "not_pinned" };
     const plans: TaskDependencyPlan[] = [];
     for (const dependency of dependencies) {
-      const one = planOne(dependency, input.catalog, input.edition, input.projectId ?? "", input.body.prodDeny);
+      const one = planOne(dependency, input.catalog, input.edition, input.projectId ?? "", input.body.prodDeny, input.fixtures ?? new Map());
       if (!one.ok) return one;
       const parsed = TaskDependencyPlanSchema.safeParse(one.plan);
       if (!parsed.success) return { ok: false, reason: "invalid" };

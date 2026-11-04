@@ -19,6 +19,7 @@ import { eraseDiagnosisPerson } from "../diagnosis/store.js";
 import { rememberErasedAliases } from "../agent-sessions/ask-erased-aliases.js";
 import { readChosenName } from "../developer/chosen-name.js";
 import type { ScopeCursor } from "./store.js";
+import { scrubFixtureDevelopers } from "../test-env/fixture-erase.js";
 import { scrubConfigDeveloper, scrubTier0Developer, bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
 
 export interface EraseBudget {
@@ -106,7 +107,7 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   // others, and the next run resumes it. The erased markers were written first, so no event, snapshot or join can put an id back while this runs.
   const ids = identities.map((identity) => identity.sourceId);
   const context: EraseContext = { deps, orgId, who, ids, identities, rows, links: allLinks, at, occurrence, budget, queue, lessonsPurged: 0 };
-  const done: Record<EraseStep, boolean> = { lake: true, principals: true, access: true, config: true, lessons: true, asks: true, diagnoses: true, attribution: true, rows: true };
+  const done: Record<EraseStep, boolean> = { lake: true, principals: true, access: true, config: true, lessons: true, asks: true, diagnoses: true, attribution: true, fixtures: true, rows: true };
   for (const step of REQUIRED_ERASE_STEPS) {
     try {
       if (step === "rows") continue; // last: the rows go only after the lessons that rest on them are settled
@@ -267,6 +268,11 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     if (context.who.developerId === undefined || context.deps.attribution === undefined) return true;
     await context.deps.attribution.erase(context.orgId, context.who.developerId);
     return true;
+  },
+  // Test services slice 3 (M3): the person's id leaves the answer-set rows (submittedBy, decidedBy, withdrawnBy) in the State table. A person with no developer id is named in none.
+  async fixtures(context) {
+    if (context.who.developerId === undefined) return true;
+    return scrubFixtureDevelopers({ documentClient: context.deps.table.documentClient, tableName: context.deps.table.tableName, ...(context.deps.now === undefined ? {} : { now: context.deps.now }) }, context.orgId, context.who.developerId, (context.deps.now ?? Date.now)() + (context.budget.maxMs ?? SCRUB_MS_PER_RUN));
   },
 };
 

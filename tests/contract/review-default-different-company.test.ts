@@ -12,7 +12,7 @@ const gpt = { provider: "openai", modelId: "gpt-5" };
 const gemini = { provider: "google", modelId: "gemini-2.5-pro" };
 const REVIEWS = ["code_review", "security_review", "plan_check"] as const;
 const row = (model: { provider: string; modelId: string }, sourceId = "rovara") => ({ model, sourceId, enabled: true, inEffectiveOrder: true, evidence: { orgId: "org_a", sourcesRevision: 2, kind: "rovara_catalog" as const } });
-const input = (stage: (typeof REVIEWS)[number], models = [sonnet, opus, gpt, gemini], more: Partial<StageModelInput> = {}): StageModelInput => ({
+const input = (stage: StageModelInput["stage"], models = [sonnet, opus, gpt, gemini], more: Partial<StageModelInput> = {}): StageModelInput => ({
   orgId: "org_a", stage, sourcesRevision: 2, candidates: models.map((model) => row(model)), forbidden: [], builtinDefault: sonnet, referenceModel: sonnet, allowLegacyDefaultFallback: true, reviewDefaultDifferentCompany: true, ...more,
 });
 
@@ -32,6 +32,25 @@ describe("rule 1: a review nobody has set defaults to the strongest usable model
   });
   it("a build step is untouched (the default is for steps that check another step)", () => {
     expect(resolveStageModel({ ...input("code_review"), stage: "build", referenceModel: undefined })).toMatchObject({ kind: "resolved", reason: "BUILTIN_DEFAULT" });
+  });
+});
+
+describe("the fallback note names the model that was asked for, never the model that ran (QA-06)", () => {
+  const unusableOpus = { ...row(opus), accountCannotUse: true as const };
+  for (const stage of REVIEWS) {
+    it(`${stage}: the preferred other model is not callable on this account, so the builder's model checks and the note says the preferred model was unavailable`, () => {
+      const result = resolveStageModel(input(stage, [sonnet], { candidates: [row(sonnet), unusableOpus] }));
+      expect(result).toMatchObject({ kind: "resolved", model: sonnet, fallback: { used: "anthropic/claude-sonnet-4", wanted: "anthropic/claude-opus-4", reasonCode: "DEFAULT_MODEL_UNAVAILABLE" } });
+    });
+  }
+  it("the same model on a source that cannot serve it, replaced by the same model on one that can: the note names no model", () => {
+    const source = { model: sonnet, sourceId: "src_aaaaaaaaaaaaaaaaaaaa", enabled: true, inEffectiveOrder: true, evidence: { orgId: "org_a", sourcesRevision: 2, kind: "tested_bedrock_role" as const } };
+    const result = resolveStageModel({ ...input("code_review", [sonnet]), stage: "build" as const, referenceModel: undefined, candidates: [{ ...row(sonnet), accountCannotUse: true as const }, source] });
+    expect(result).toMatchObject({ kind: "resolved", model: sonnet, sourceId: "src_aaaaaaaaaaaaaaaaaaaa", fallback: { used: "anthropic/claude-sonnet-4", wanted: null } });
+  });
+  it("with no other model asked for at all, the note names none (the page says \"the preferred model\") rather than the model that ran", () => {
+    const result = resolveStageModel(input("code_review", [sonnet]));
+    expect(result).toMatchObject({ kind: "resolved", model: sonnet, fallback: { used: "anthropic/claude-sonnet-4", wanted: null } });
   });
 });
 

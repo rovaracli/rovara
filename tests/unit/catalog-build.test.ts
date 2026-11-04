@@ -28,6 +28,8 @@ import {
   ecrServesPort,
   childrenProblem,
   evidenceFolderOf,
+  REPO_ROOT,
+  assertOutsideRepo,
   parseEntryIds,
   platformSlugOf,
   skopeoMirrorPort,
@@ -42,7 +44,8 @@ import {
 import { sha, testSigner, unpinnedCatalog } from "../support/catalog-pinning.js";
 
 const catalog = unpinnedCatalog();
-const live = catalog.entries.filter((entry) => entry.status !== "retired");
+// Slice 3: the helpers that run from the worker's own image have no image to mirror, scan or pin.
+const live = catalog.entries.filter((entry) => entry.status !== "retired" && entry.workerImage !== true);
 const sourceDigest = (id: string): string => sha(`source:${id}`);
 const sources = (): SourcesFile => ({ schemaVersion: 1, sources: Object.fromEntries(live.map((entry) => [entry.id, `registry.example.com/library/${entry.family}@sha256:${sourceDigest(entry.id)}`])) });
 const PLATFORMS = ["linux/arm64", "linux/amd64"] as const;
@@ -103,7 +106,7 @@ describe("pinning the catalog", () => {
     expect(calls.mirror).toContain(`postgres@16 registry.example.com/library/postgres@sha256:${sourceDigest("postgres@16")} -> rovara-catalog/staging/svc/postgres`);
     const pinned = ServiceCatalogSchema.parse(JSON.parse(output.catalogBytes.toString("utf8")));
     expect(pinned).toMatchObject({ pinned: true, revision: catalog.revision + 1 });
-    for (const entry of pinned.entries) {
+    for (const entry of pinned.entries.filter((candidate) => candidate.workerImage !== true)) {
       expect(entry.image.digest, entry.id).toBe(sourceDigest(entry.id));
       // One SBOM hash per entry in the catalog: the combined hash of its platforms' SBOM hashes (each platform's own is in the evidence and the signed statement).
       expect(entry.sbomRef, entry.id).toBe(combinedSbomRef(platformsOf(entry.id).map((platform) => ({ platform, sbomRef: sha256HexOf(sbomDocument(entry.id, platform)) }))));
@@ -264,7 +267,7 @@ describe("what refuses a build (all of them: nothing is returned, so nothing can
   });
   it("high findings do not refuse; they are recorded", async () => {
     const output = await build(fakePorts({ scan: () => ({ highOpen: 40 }) }).ports);
-    expect(output.catalog.entries.every((entry) => entry.status === "retired" || entry.scan?.highOpen === 40)).toBe(true);
+    expect(output.catalog.entries.every((entry) => entry.status === "retired" || entry.workerImage === true || entry.scan?.highOpen === 40)).toBe(true);
   });
   it("a failing port refuses that entry in words, and the rest are still tried (the operator sees every refusal at once)", async () => {
     const { ports } = fakePorts();
@@ -274,7 +277,7 @@ describe("what refuses a build (all of them: nothing is returned, so nothing can
   it("a refusal anywhere means no pinned file at all: a half-pinned catalog cannot come out", async () => {
     let result: unknown;
     try {
-      result = await build(fakePorts({ scan: (id) => (id === "dns-helper@r1" ? { criticalOpen: 3 } : {}) }).ports);
+      result = await build(fakePorts({ scan: (id) => (id === "mysql@8" ? { criticalOpen: 3 } : {}) }).ports);
     } catch {
       result = undefined;
     }
@@ -289,6 +292,26 @@ describe("what refuses a build (all of them: nothing is returned, so nothing can
     const { ports } = fakePorts();
     const stranger = testSigner();
     expect(await refusalsOf(build({ ...ports, signer: { publicKeyPem: ports.signer.publicKeyPem, sign: (message) => stranger.sign(message) } }))).toContainEqual({ id: "postgres@16", code: "unsigned" });
+  });
+});
+
+describe("helpers that run from the worker's own image (slice 3)", () => {
+  const helperIds = catalog.entries.filter((entry) => entry.workerImage === true).map((entry) => entry.id);
+  it("are carried over untouched by a full build: no mirror, no scan, no pin", async () => {
+    const { ports, calls } = fakePorts();
+    const output = await build(ports);
+    const pinned = ServiceCatalogSchema.parse(JSON.parse(output.catalogBytes.toString("utf8")));
+    expect(helperIds.length).toBe(3);
+    for (const id of helperIds) {
+      expect(pinned.entries.find((entry) => entry.id === id)).toEqual(catalog.entries.find((entry) => entry.id === id));
+      expect(calls.mirror.some((call) => call.startsWith(`${id} `))).toBe(false);
+    }
+  });
+  it("are refused when a build names one, as a selection or with a source", async () => {
+    const withSource = { schemaVersion: 1, sources: { ...sources().sources, "fake-server@r1": `registry.example.com/library/fake@sha256:${sourceDigest("fake-server@r1")}` } };
+    expect(await refusalsOf(build(fakePorts().ports, { sources: withSource }))).toContainEqual({ id: "fake-server@r1", code: "worker_image_entry" });
+    const selected = buildPinnedCatalog({ catalog, sources: { schemaVersion: 1, sources: {} }, env: "staging", ports: fakePorts().ports, entries: ["fake-server@r1"] });
+    expect(await refusalsOf(selected)).toContainEqual({ id: "fake-server@r1", code: "worker_image_entry" });
   });
 });
 
@@ -430,14 +453,16 @@ describe("writing a build", () => {
     const { ports, signer } = fakePorts();
     const output = await build(ports);
     const root = await temporary();
-    await writeCatalogBuild(output, { catalogDir: join(root, "environments/service-catalog"), prepullFile: join(root, "packages/worker/service-catalog/prepull.json") });
+    await writeCatalogBuild(output, { catalogDir: join(root, "environments/service-catalog"), prepullFile: join(root, "packages/worker/service-catalog/prepull.json"), evidenceDir: join(root, "evidence-out") });
     const loaded = loadSignedCatalogWithKeys({
       catalogBytes: await readFile(join(root, "environments/service-catalog", CATALOG_FILE)),
       signatureBytes: await readFile(join(root, "environments/service-catalog", CATALOG_SIGNATURE_FILE)),
       trustedKeys: [signer.publicKeyPem],
     });
     expect(loaded.ok).toBe(true);
-    expect((await readdir(join(root, "environments/service-catalog/evidence"))).sort()).toEqual(live.map((entry) => evidenceFolderOf(entry.id)).sort());
+    // The evidence is written to the folder named, laid out per entry, and NOT beside the catalog.
+    expect((await readdir(join(root, "evidence-out"))).sort()).toEqual(live.map((entry) => evidenceFolderOf(entry.id)).sort());
+    expect((await readdir(join(root, "environments/service-catalog"))).sort()).toEqual([CATALOG_FILE, CATALOG_SIGNATURE_FILE].sort());
     expect(JSON.parse(await readFile(join(root, "packages/worker/service-catalog/prepull.json"), "utf8"))).toEqual(JSON.parse(output.prepullBytes.toString()));
     expect((await readdir(join(root, "environments/service-catalog"))).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
@@ -448,14 +473,26 @@ describe("writing a build", () => {
     await mkdir(join(root, "c"), { recursive: true });
     const good = output.evidence[0]!;
     // A good file comes first and a bad one second: nothing at all is written.
-    await expect(writeCatalogBuild({ ...output, evidence: [good, { path: "evidence/../../outside.json", bytes: Buffer.from("x") }] }, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json") })).rejects.toThrow();
+    await expect(writeCatalogBuild({ ...output, evidence: [good, { path: "evidence/../../outside.json", bytes: Buffer.from("x") }] }, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json"), evidenceDir: join(root, "e") })).rejects.toThrow();
     await expect(readFile(join(root, "c", CATALOG_FILE))).rejects.toThrow();
-    await expect(readFile(join(root, "c", good.path))).rejects.toThrow();
+    await expect(readFile(join(root, "e", good.path.slice("evidence/".length)))).rejects.toThrow();
     await expect(readFile(join(root, "p.json"))).rejects.toThrow();
     for (const bad of ["evidence/x/other.json", "/etc/passwd", "evidence/UPPER/linux-arm64/sbom.json", "evidence/a/b/sbom.json", "evidence/a/linux-arm64/other.json", "evidence/a/linux-s390x/sbom.json", "evidence/a/sbom.json", "evidence/a/linux-arm64/../../b/sbom.json", "outside/postgres-16/linux-arm64/sbom.json"]) {
-      await expect(writeCatalogBuild({ ...output, evidence: [{ path: bad, bytes: Buffer.from("x") }] }, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json") }), bad).rejects.toThrow();
+      await expect(writeCatalogBuild({ ...output, evidence: [{ path: bad, bytes: Buffer.from("x") }] }, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json"), evidenceDir: join(root, "e") }), bad).rejects.toThrow();
     }
     await writeFile(join(root, "keep"), "x");
+  });
+  it("refuses an evidence folder inside the repository, before anything is written (the SBOMs are megabytes and are never committed)", async () => {
+    const { ports } = fakePorts();
+    const output = await build(ports);
+    const root = await temporary();
+    for (const inside of [REPO_ROOT, join(REPO_ROOT, "environments/service-catalog/evidence"), join(REPO_ROOT, "x/../tmp-evidence")]) {
+      await expect(writeCatalogBuild(output, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json"), evidenceDir: inside }), inside).rejects.toThrow(/outside the repository/u);
+    }
+    await expect(readFile(join(root, "c", CATALOG_FILE))).rejects.toThrow();
+    await expect(readFile(join(root, "p.json"))).rejects.toThrow();
+    expect(() => assertOutsideRepo(root)).not.toThrow();
+    expect(() => assertOutsideRepo(join(REPO_ROOT, "..", "sibling"))).not.toThrow();
   });
   it("makes an evidence folder name from any catalog id, and refuses two ids that would share one", async () => {
     expect(evidenceFolderOf("redis@7.2_a")).toBe("redis-7-2-a");
@@ -484,7 +521,8 @@ describe("the real ports (against fake commands and a fake ECR; nothing is run)"
   it("mirrors with every platform and the digests kept, a destination tag derived from the digest, and the credential in a file, never in an argument", async () => {
     const { port, log } = commands(indexManifest);
     const result = await skopeoMirrorPort({ commands: port, registry: "111122223333.dkr.ecr.us-west-2.amazonaws.com", authFile: "/tmp/auth/config.json" })({ id: "postgres@16", source: `registry.example.com/library/postgres@sha256:${digest}`, repositoryName: "rovara-catalog/staging/svc/postgres", expectedDigest: digest });
-    expect(log[0]).toEqual({ file: "skopeo", args: ["copy", "--all", "--preserve-digests", "--dest-authfile", "/tmp/auth/config.json", `docker://registry.example.com/library/postgres@sha256:${digest}`, `docker://111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres:${digest.slice(0, 32)}`], env: undefined });
+    // The source is read with the auth file too: repack leaves it in the install's private repository (a staging run failed without it).
+    expect(log[0]).toEqual({ file: "skopeo", args: ["copy", "--all", "--preserve-digests", "--src-authfile", "/tmp/auth/config.json", "--dest-authfile", "/tmp/auth/config.json", `docker://registry.example.com/library/postgres@sha256:${digest}`, `docker://111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres:${digest.slice(0, 32)}`], env: undefined });
     expect(log[1]!.args).toEqual(["inspect", "--raw", "--authfile", "/tmp/auth/config.json", `docker://111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres@sha256:${digest}`]);
     // The digest is HASHED from the manifest bytes the destination served, not read from anything it said.
     // The platforms are the index's, each with its OWN manifest digest; the attestation manifest and an entry without a real digest are not platforms.

@@ -65,13 +65,13 @@ describe("Suite 4: checks", () => {
     const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS },
       checkResult: () => fail ? { exitCode: 1, stdout: "", stderr: "1 failing" } : undefined });
     await atPlanReview(e2e);
-    const key = projectMetaKey(TEST_ORG, "payments");
-    e2e.db.set({ ...e2e.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
-    // An existing plan decision and its ongoing workflow still proceed after archive.
+    // The plan is approved while the project is active (S2: approving a plan in an archived project is refused now; this replaces "an existing plan decision still proceeds after archive").
     fail = true;
     await e2e.click("agentx_workflow_approve");
     await e2e.settle();
     expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED" });
+    const key = projectMetaKey(TEST_ORG, "payments");
+    e2e.db.set({ ...e2e.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
     const before = structuredClone(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META"));
     const invocations = e2e.invocations.length;
     const response = await e2e.handler({ version: "2.0", rawPath: `/v1/dev/tasks/${e2e.taskId()}/workflow/send-back`, rawQueryString: "",

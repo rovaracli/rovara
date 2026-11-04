@@ -217,6 +217,14 @@ describe("EC2 worker user data", () => {
     expect(() => ec2WorkerBootScript({ ...config, environmentKind: "legacy" as "named" }, bootScript)).toThrow();
   });
 
+  it("exports AGENTX_TEST_SERVICES=1 only when test services are on, and only for a named environment", () => {
+    const named = { ...config, environmentKind: "named" as const, bootStage2Sha256: "ab".repeat(32) };
+    expect(ec2WorkerBootScript({ ...named, testServices: true }, bootScript)).toContain("export AGENTX_TEST_SERVICES='1'");
+    expect(ec2WorkerBootScript(named, bootScript)).not.toContain("AGENTX_TEST_SERVICES");
+    expect(ec2WorkerBootScript({ ...config, testServices: true }, bootScript)).not.toContain("AGENTX_TEST_SERVICES");
+    expect(() => ec2WorkerBootScript({ ...named, testServices: false as true }, bootScript)).toThrow();
+  });
+
   it("exports exactly the variables the boot script requires", () => {
     const required = /for name in ([\s\S]*?); do/.exec(bootScript)?.[1]?.split(/[\s\\]+/).filter(Boolean) ?? [];
     const exported = [...ec2WorkerBootScript(config, bootScript).matchAll(/^export (\w+)=/gm)].map((match) => match[1]);

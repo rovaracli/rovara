@@ -28,7 +28,7 @@ import { pinsOf } from "./round-inputs.js";
 import { recordedReviewerCost } from "./estimate.js";
 import { plannerRunRoomUsd } from "./resolve-budget.js";
 import type { RoundRecordPorts } from "./round-record.js";
-import { designReviewEnabledFor } from "./switch.js";
+import { designReviewStillOn } from "./switch.js";
 import { designDocumentKey } from "./template-store.js";
 import { readDesignTemplate } from "./template.js";
 import { workflowRunEndedReason } from "../aws/outbox-failure.js";
@@ -129,7 +129,7 @@ export async function startDesignResolveRun(
   const round = workflow.designReview?.rounds.at(-1);
   if (!designResolveDue(workflow) || round === undefined) return "STALE";
   // B2-m3: the switch is read at every step (see `startDesignReviewRound`). Switched off, the planner is not started: the review ends as it stands, not run (`switched_off`), and the design goes to the person with the findings unresolved.
-  if (!designReviewEnabledFor(task.project)) return switchedOffAtResolve(deps, task, workflow);
+  if (!(await designReviewStillOn(deps, deps.orgId, task.project, workflow.designReview?.decidedBy))) return switchedOffAtResolve(deps, task, workflow);
   await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);

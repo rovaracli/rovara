@@ -11,9 +11,10 @@
 // Only keys under the exact prefixes above are ever listed or deleted; an owner or workspace id that is not a plain id is refused, so no id can widen a prefix.
 import { DeleteObjectsCommand, ListObjectsV2Command, type S3Client } from "@aws-sdk/client-s3";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { WORKSPACE_PROJECT_INDEX, orgProjectCatalogPk, workspaceProjectIndexValue, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, WORKSPACE_PROJECT_INDEX, orgProjectCatalogPk, workspaceProjectIndexValue, type OrgId } from "@agentx/contracts";
 import { taskKey } from "../developer/task-records.js";
 import { nightlyMapsOfOrg, nightlyMapsOfProject } from "../test-env/map-keys.js";
+import { deleteFixtureRowsOfOrg, fixtureObjectsOfOrg, scrubFixtureDevelopers } from "../test-env/fixture-erase.js";
 
 const PLAIN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 
@@ -167,7 +168,18 @@ export function createEvidenceErase(ports: EvidenceErasePorts): EvidenceErase {
   };
 
   /** The nightly coverage maps of a project or a company (NH-1), whether or not evidence was ever kept: one prefix, deleted with the rest. A person's erase has none. */
-  const eraseMaps = (p: PendingErase, stop: number): Promise<boolean> => (p.kind === "person" ? Promise.resolve(true) : deletePrefix(ports, p.kind === "project" ? nightlyMapsOfProject(p.orgId, p.scopeKey) : nightlyMapsOfOrg(p.orgId), stop));
+  const eraseMapsOnly = (p: PendingErase, stop: number): Promise<boolean> => (p.kind === "person" ? Promise.resolve(true) : deletePrefix(ports, p.kind === "project" ? nightlyMapsOfProject(p.orgId, p.scopeKey) : nightlyMapsOfOrg(p.orgId), stop));
+  /**
+   * Test services slice 3 (M3), whether or not evidence was ever kept: a company close deletes its answer sets (fixture rows first, so nothing is delivered meanwhile, then every object under `private/<org>/fixtures/`);
+   * a person's erase replaces their id in the rows' `submittedBy`, `decidedBy` and `withdrawnBy`. A project archive keeps its sets (a project can come back; the company's close removes them).
+   */
+  const eraseFixtures = async (p: PendingErase, stop: number): Promise<boolean> => {
+    // Only a real company id can hold a set (the store refuses any other): nothing to erase for anything else.
+    if (p.kind === "project" || !OrgIdSchema.safeParse(p.orgId).success) return true;
+    if (p.kind === "person") return scrubFixtureDevelopers(ports, p.orgId, p.scopeKey, stop);
+    return (await deleteFixtureRowsOfOrg(ports, p.orgId, stop)) && deletePrefix(ports, fixtureObjectsOfOrg(p.orgId), stop);
+  };
+  const eraseMaps = async (p: PendingErase, stop: number): Promise<boolean> => (await eraseMapsOnly(p, stop)) && (await eraseFixtures(p, stop));
 
   /** One erase, continued from its saved cursor. True when finished (its record is gone). */
   async function run(p: PendingErase, budgetMs: number): Promise<boolean> {

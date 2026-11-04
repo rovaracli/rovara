@@ -33,6 +33,8 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { builtinSettingsKey, modelKeyKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { seedDesignReviewCompany } from "../support/design-review-company.js";
+import { projectPlaybookKey } from "../../packages/contracts/src/index.js";
 
 // A test can take the catalog's price away from every model (a source whose models are not on the list): "cost unavailable", the unpriced path.
 const catalog = vi.hoisted(() => ({ unpriced: false }));
@@ -49,8 +51,8 @@ const NOW = "2026-11-03T12:00:00.000Z";
 const LATER = "2026-11-03T12:05:00.000Z";
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
-// The switch is read at every step (B2-m3): the world's project is on `dp` unless a test takes it off.
-beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); vi.stubEnv("DESIGN_REVIEW_PROJECTS", "payments"); catalog.unpriced = false; });
+// The switch is read at every step (B2-m3): the world's company allows design review (default mode Auto) unless a test takes it off.
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); catalog.unpriced = false; });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); catalog.unpriced = false; });
 
 const REQUIREMENTS = "# Requirements\n\nR1: A payment that times out is retried once.\nR2: A payment is never charged twice.\n";
@@ -76,6 +78,7 @@ async function world(options: { slack?: boolean; modelAccess?: boolean; budgetUs
   });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
+  seedDesignReviewCompany(harness.db, TEST_ORG, { project: "payments" });
   await new AgentStore({ documentClient: harness.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
   harness.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
   // `slack`: the task is started from a Slack thread, so a Slack press on its card reaches the same transition as every other door.
@@ -878,13 +881,23 @@ describe("B2-m3: the switch is read at every step", () => {
     expect(w.task().workflow.outcome).toBeUndefined();
   });
 
-  it("the project taken out of `dp` while round 1 ran: the planner's resolve run does not start, the findings stay unresolved for the person, and the spend is kept", async () => {
+  it("the company no longer allowing design review while round 1 ran: the planner's resolve run does not start, the findings stay unresolved for the person, and the spend is kept", async () => {
     const w = await world();
-    vi.stubEnv("DESIGN_REVIEW_PROJECTS", "web:other");
+    seedDesignReviewCompany(w.db, TEST_ORG, { allowed: false, revision: 2 });
     await runWorker(w, String(w.operations()[0]!.id), { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 });
     expect(w.plannerOps()).toHaveLength(0);
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done", notRunReason: "switched_off" } });
     expect(review(w).rounds[0]!.resolutions).toEqual([]);
+    expect(review(w).spentUsd).toBeCloseTo(1.0, 6);
+    expect(review(w).approvals).toBeUndefined();
+  });
+
+  it("the project set to Off in its How we work while round 1 ran: the planner's resolve run does not start, the review ends as switched_off, and the spend is kept", async () => {
+    const w = await world();
+    w.db.set({ ...projectPlaybookKey(TEST_ORG, "payments"), entityType: "PROJECT_PLAYBOOK", orgId: TEST_ORG, revision: 1, defaultProcess: { kind: "builtin" }, designReview: { mode: "never", tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } }, updatedAt: "2026-10-19T12:00:00.000Z", updatedBy: MAYA.developerId });
+    await runWorker(w, String(w.operations()[0]!.id), { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 });
+    expect(w.plannerOps()).toHaveLength(0);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done", notRunReason: "switched_off" } });
     expect(review(w).spentUsd).toBeCloseTo(1.0, 6);
     expect(review(w).approvals).toBeUndefined();
   });
@@ -909,8 +922,8 @@ describe("B2-m3: the switch is read at every step", () => {
 
 // ---- DR7 slice C: the real routes. Every press below goes through the broker's HTTP handler as a person would send it; nothing calls a handler or a commit item by hand.
 describe("slice C: the design review's routes", () => {
-  beforeEach(() => { process.env.DECISION_CARDS_ENABLED = "1"; process.env.DESIGN_REVIEW_ENABLED = "1"; process.env.DESIGN_REVIEW_PROJECTS = "payments"; });
-  afterEach(() => { delete process.env.DECISION_CARDS_ENABLED; delete process.env.DESIGN_REVIEW_ENABLED; delete process.env.DESIGN_REVIEW_PROJECTS; });
+  beforeEach(() => { process.env.DECISION_CARDS_ENABLED = "1"; process.env.DESIGN_REVIEW_ENABLED = "1"; });
+  afterEach(() => { delete process.env.DECISION_CARDS_ENABLED; delete process.env.DESIGN_REVIEW_ENABLED; });
 
   type Grant = "viewer" | "contributor" | "maintainer" | undefined;
   /** The company's people, as the second-person records need them: a membership, the approval counter, the project, and a grant for a member. */
@@ -1076,6 +1089,7 @@ describe("slice C: the design review's routes", () => {
 
   it("Design first turns the review on for a task that has none: the Full path, recorded with who asked, the planner due; the project must run design review", async () => {
     const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, cloud: true } });
+    seedDesignReviewCompany(harness.db, TEST_ORG, { project: "payments" });
     await new AgentStore({ documentClient: harness.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
     harness.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
     const started = await harness.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Retry timed-out payments" }, path: "QUICK" });
@@ -1086,9 +1100,9 @@ describe("slice C: the design review's routes", () => {
     harness.db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId });
     harness.db.set({ ...(harness.db.get(orgMetaKey(TEST_ORG)) as Record<string, unknown>), approvalMembershipVersion: 3 });
     harness.db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "contributor" });
-    process.env.DESIGN_REVIEW_PROJECTS = "other-project";
-    expect((await harness.dev(MAYA, "POST", `/v1/app/tasks/${taskId}/design-review/first`, { requestId: randomUUID() })).status, "the project does not run design review").toBe(404);
-    process.env.DESIGN_REVIEW_PROJECTS = "payments";
+    seedDesignReviewCompany(harness.db, TEST_ORG, { allowed: false, revision: 2 });
+    expect((await harness.dev(MAYA, "POST", `/v1/app/tasks/${taskId}/design-review/first`, { requestId: randomUUID() })).status, "the company has not allowed design review").toBe(404);
+    seedDesignReviewCompany(harness.db, TEST_ORG, { revision: 3, project: "payments" });
     // ON-11: a contributor who did not ask for the task is not the one to move it to the Full path.
     seedMembership(harness.db, OMAR.developerId, { orgId: TEST_ORG, role: "member" });
     harness.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "contributor" });

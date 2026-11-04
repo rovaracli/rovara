@@ -50,6 +50,8 @@ async function currentTask(deps: DeveloperTaskRouteDependencies, caller: Develop
   }
   // A restart is new agent work: an archived project takes none, whoever asks.
   await requireNewWorkAllowed(deps, deps.orgId, access.task.project, "contributor", "task");
+  // S2 (any path): every redirect restart (planning, coding, send-back) is work started for this person, so it meets the send-back's project access rule too.
+  await requireProjectSendBackRole(deps, access.task, caller);
   return { access, task: access.task, workflow };
 }
 

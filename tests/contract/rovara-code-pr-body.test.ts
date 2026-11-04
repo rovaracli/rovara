@@ -854,7 +854,7 @@ describe("a pushed fix on a version 2 task", () => {
   const PR_URL = "https://github.com/example/demo/pull/42";
 
   /** The pull request is open with the first description; the fix (tree c) touching infra/ has just passed its checks and reviews. */
-  async function fixPassed(options: { boundTo?: string; beforeOpen?: (harness: Harness, taskId: string, orgId: string) => void; descriptionUpdateMaxMs?: number; structuredPlan?: boolean } = {}) {
+  async function fixPassed(options: { boundTo?: string; beforeOpen?: (harness: Harness, taskId: string, orgId: string) => void; descriptionUpdateMaxMs?: number; structuredPlan?: boolean; fixFiles?: string[] } = {}) {
     const state = { head: "d".repeat(40), tree: "b".repeat(40), body: "" };
     const branch = { name: "x" };
     const details = (number: number) => ({ number, url: PR_URL, state: "open" as const, headBranch: branch.name, baseBranch: "main", headCommit: state.head, title: "t", body: state.body });
@@ -914,7 +914,7 @@ describe("a pushed fix on a version 2 task", () => {
     harness.db.set((workflowDispatchItem("state", taskId, reviewing.revision, "REVIEW", fix.digest, now).Put as { Item: Record<string, unknown> }).Item);
     await harness.handler({ source: "agentx.workflow-dispatch-recovery" });
     const reviewTwo = operations(harness, workspaceId).filter((item) => item.workflowMode === "REVIEW").at(-1)!;
-    await harness.artifact(workspaceId, String(reviewTwo.id), "workspace.diff", DIFF(["src/retry.ts", "infra/queue.ts"]));
+    await harness.artifact(workspaceId, String(reviewTwo.id), "workspace.diff", DIFF(options.fixFiles ?? ["src/retry.ts", "infra/queue.ts"]));
     return { harness, gateway, state, taskId, workspaceId, record, first, fix, finishReviews: () => reviews(reviewTwo, fix), opened: String(p.body) };
   }
 
@@ -939,6 +939,19 @@ describe("a pushed fix on a version 2 task", () => {
     expect(t.gateway.updatePullRequest).toHaveBeenCalled();
     expect(t.state.body).toContain("infra/queue.ts");
     expect(proofPart(t.state.body)).toContain("| Requirement | Evidence | Result |");
+    expect(t.state.body).toContain("A note from Priya, kept.");
+  });
+
+  it("S3 (H3): the description rewritten after a pushed fix, through the real reconcile path, carries no email address from the changed files", async () => {
+    const at = String.fromCharCode(64);
+    const t = await fixPassed({ structuredPlan: true, fixFiles: ["src/retry.ts", `notes/omar.diaz${at}example.test.md`] });
+    await pushFix(t);
+    expect(t.gateway.updatePullRequest).toHaveBeenCalled();
+    // A positive control: the rewrite ran and listed the fix's files, and the address in one path is hidden on the way to GitHub.
+    expect(t.state.body).toContain("src/retry.ts");
+    expect(t.state.body).toContain("[email removed]");
+    expect(t.state.body).not.toContain("omar.diaz");
+    expect(t.state.body).not.toContain(`example.test.md`);
     expect(t.state.body).toContain("A note from Priya, kept.");
   });
 

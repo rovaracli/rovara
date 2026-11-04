@@ -438,11 +438,18 @@ describe("the /ping feature", () => {
     const dir = await temp("rsv-ship-");
     const shipped = structuredClone(JSON.parse(readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url), "utf8")) as ServiceCatalog);
     shipped.pinned = true;
+    // Slice 3: the fake server has its own feature (worker-test-services-fakes.test.ts); this test is about the AWS one.
+    shipped.entries = shipped.entries.filter((entry) => entry.family !== "fake-server");
     for (const entry of shipped.entries) {
       if (entry.id === "postgres@16" || (entry.id === "local-aws@r1" && pinned)) {
         entry.image.digest = entry.id === "postgres@16" ? "d".repeat(64) : DIGEST;
         entry.sbomRef = "e".repeat(64);
         entry.scan = { scannedAt: "2026-11-03T00:00:00.000Z", criticalOpen: 0, highOpen: 0 };
+      } else {
+        // The shipped file pins local-aws since revision 2; this helper builds the "not pinned" case explicitly.
+        delete entry.image.digest;
+        delete entry.sbomRef;
+        delete entry.scan;
       }
     }
     await writeFile(join(dir, "catalog.json"), JSON.stringify(shipped));
@@ -474,6 +481,14 @@ describe("the /ping feature", () => {
       expect(emulatorImagePrepulled(shipped, { AGENTX_TEST_SERVICES_NOT_PULLED: bad }), bad).toBe(false);
     }
     expect([...(notPulledRepositories({ AGENTX_TEST_SERVICES_NOT_PULLED: "svc/a,svc/b" }) as Set<string>)]).toEqual(["svc/a", "svc/b"]);
+  });
+  it("the withhold boot-stage2.sh writes when the IPv6 wall fails (AGENTX_TEST_SERVICES_NOT_PULLED=all, the last such line in worker.env) yields no task.testServices.* feature, with a complete configuration that otherwise offers both", async () => {
+    const shipped = await files(listed, true);
+    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.aws.v1"]);
+    const withheld = testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "all" }, shipped);
+    expect(withheld).toEqual([]);
+    expect(withheld.filter((feature) => feature.startsWith("task.testServices"))).toEqual([]);
+    expect(emulatorImagePrepulled(shipped, { AGENTX_TEST_SERVICES_NOT_PULLED: "all" })).toBe(false);
   });
   it("reads the shipped files once, not on every /ping (the answer is cached for the life of the process)", async () => {
     const shipped = await files(listed, true);

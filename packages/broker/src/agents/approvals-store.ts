@@ -6,7 +6,7 @@ import {ModelSelectionPolicyPutSchema,type ModelSelectionPolicyPut} from "@agent
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, hideEmailAddresses, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@agentx/contracts";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import type { CodeMergeHost, PullRequestMergeSubject } from "../rovara-code/merge.js";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
@@ -679,10 +679,18 @@ export const log = (deps: Pick<ApprovalDependencies, "log">, event: string, fiel
 
 export const stripCode = (error: { message: string; code?: string }): string => (error.code !== undefined && error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message);
 
-/** Words an agent or a vendor supplied, made safe to show: no control or format characters, secrets redacted, cut to `max`. */
+/** Words an agent or a vendor supplied, made safe to show: no control or format characters, secrets redacted, no email address (S3), cut to `max`. */
 export function shownText(text: string, max: number): string {
-  const cleaned = redactText(text).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim();
+  const cleaned = hideEmailAddresses(redactText(text)).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim();
   return capText(cleaned, max).text;
+}
+
+/**
+ * A person's name as other people read it in an approval text: the name without any address in it, or their placeholder when nothing else is left (`safeDisplayName`), then cleaned like any text.
+ * Not `shownText` alone: a name that is only an address would read "[email removed]" (S3-L3).
+ */
+export function shownPersonName(person: { developerId: string; name: string }, max: number): string {
+  return shownText(safeDisplayName(person.name, person.developerId), max);
 }
 
 const DecideBodySchema = z.object({ requestId: z.string().uuid(), decision: z.enum(["APPROVE", "DECLINE"]) }).strict();

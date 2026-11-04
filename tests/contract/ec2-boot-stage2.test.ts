@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ec2WorkerBootScript, type Ec2WorkerBootConfig } from "../../packages/contracts/src/session.js";
+import { parseBootFacts } from "../../packages/worker/src/test-services-report.js";
+import { testServicesAdvertisedFeatures } from "../../packages/worker/src/test-services-run.js";
 
 // Task 10: a named environment's boot is two files. boot.sh is user data and stops after it pulls the worker image; the rest, boot-stage2.sh, is
 // read out of that image, checked against a hash the control plane launched the worker with, and sourced. A legacy worker keeps today's boot.sh as
@@ -126,7 +128,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(stage1).toContain(legacyMainHead);
     const stage2Main = /^stage2_main\(\) \{\n([\s\S]*?)^\}$/m.exec(stage2)?.[1] ?? "";
     // The one addition: in a named environment, after the worker environment is written and before the worker unit, Docker's address pools and the rvi-to-rvi wall (design test-services.md 4.0.1).
-    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    if pull_catalog_images "$region"; then\n      write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"\n    else\n      log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"\n    fi\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n    wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"\n    install_run_walls_unit || fail "could not install the unit that restores the run network walls"\n    write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"\n  fi\n';
+    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    if pull_catalog_images "$region"; then\n      write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"\n    else\n      log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"\n    fi\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n    wall_ipv6_into_host || withhold_test_services_for_ipv6 "${IPV6_WALL_REASON:-ip6tables-unusable}" || fail "could not withhold test services after the IPv6 wall failed"\n    install_run_walls_unit || fail "could not install the unit that restores the run network walls"\n    write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"\n  fi\n';
     expect(legacyTail).toContain('  write_worker_environment "$region"\n');
     expect(stage2Main).toBe(`  local region=$1 instance_id=$2\n  BOOT_STEP="download the worker image"\n${legacyTail.replace('  write_worker_environment "$region"\n', addition)}`);
   });
@@ -149,7 +151,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(sourced.status, sourced.stderr).toBe(0);
     expect(sourced.stderr).toBe("");
     const defined = sourced.stdout.split("\n").filter(Boolean).map((line) => line.replace(/^declare -f /, "")).sort();
-    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "install_run_walls_unit", "pull_catalog_images", "write_test_services_boot_facts", "write_test_services_environment", "stage2_main"].sort());
+    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "withhold_test_services_for_ipv6", "install_run_walls_unit", "catalog_seconds", "pull_catalog_images", "write_test_services_boot_facts", "write_test_services_environment", "stage2_main"].sort());
     expect(stage2).not.toMatch(/^main "\$@"/m);
   });
 });
@@ -277,6 +279,20 @@ esac
 const directories: string[] = [];
 const responders: string[] = [];
 
+/** Host tools that change or read the real firewall or kernel: never reachable from a boot in this suite (the harness fakes iptables and ip6tables in its bin directory). */
+const HOST_ONLY_SBIN = /^(?:ip6?tables|xtables|nft|ebtables|arptables|sysctl|modprobe|insmod|rmmod)(?:[-.].*)?$/u;
+/** A directory of links to what /usr/sbin and /sbin hold, minus HOST_ONLY_SBIN. */
+function hostSbin(directory: string): string {
+  const sbin = join(directory, "sbin");
+  mkdirSync(sbin);
+  for (const system of ["/usr/sbin", "/sbin"]) {
+    let names: string[];
+    try { names = readdirSync(system); } catch { names = []; }
+    for (const name of names) if (!HOST_ONLY_SBIN.test(name) && !existsSync(join(sbin, name))) symlinkSync(join(system, name), join(sbin, name));
+  }
+  return sbin;
+}
+
 /**
  * The failure responders (boot.sh's `python3 -c ... BootFailed ...` server) that a run in one of `dirs` left alive. A responder is recognised
  * by the BootFailed body in its command line and by the run's own failure-file path, its last argument, so only a server this suite started
@@ -371,16 +387,9 @@ async function boot(options: { served: (directory: string) => string; expected?:
     if (name === "ip6tables" && ip6tables === "missing") continue;
     writeFileSync(join(bin, name), body); chmodSync(join(bin, name), 0o755);
   }
-  // "missing": the system's sbin directories are on PATH only through links to what they hold, minus any ip6tables (a Linux runner has a real one there).
-  const sbin = join(directory, "sbin");
-  mkdirSync(sbin);
-  if (ip6tables === "missing") {
-    for (const system of ["/usr/sbin", "/sbin"]) {
-      let names: string[];
-      try { names = readdirSync(system); } catch { names = []; }
-      for (const name of names) if (!name.startsWith("ip6tables") && !existsSync(join(sbin, name))) symlinkSync(join(system, name), join(sbin, name));
-    }
-  }
+  // The system's sbin directories are on PATH (macOS keeps chown there) only through links to what they hold, minus every host firewall and kernel tool (a Linux runner has a real
+  // ip6tables, iptables, nft, sysctl and modprobe there): the fakes in bin are the only ones a boot can find, and "missing" is missing on Linux too.
+  const sbin = hostSbin(directory);
   // The host's IPv6 state, as boot-stage2.sh's ipv6_active reads it (placedStage2 points its /proc/ here).
   const ipv6 = options.ipv6 ?? true;
   for (const scope of ["all", "default"]) {
@@ -428,7 +437,7 @@ wall_off_containers() { echo "wall_off_containers" >>"$LOG"; echo "DOCKER-USER -
   const ran = spawnSync("bash", [script], {
     encoding: "utf8",
     env: {
-      PATH: ip6tables === "missing" ? `${bin}:/usr/bin:/bin:${sbin}` : `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG: log, IPT_STATE: join(directory, "iptables.state"), IP6T_STATE: join(directory, "ip6tables.state"),
+      PATH: `${bin}:/usr/bin:/bin:${sbin}`, LOG: log, IPT_STATE: join(directory, "iptables.state"), IP6T_STATE: join(directory, "ip6tables.state"),
       ...(ip6tables === "unusable" ? { IP6T_UNUSABLE: "1" } : {}),
       ...(options.flushOnRestart ? { FLUSH_ON_RESTART: "1" } : {}), ...(options.firewallRestores === false ? { FW_RESTORES: "0" } : {}), ...(options.firewallRule ? { FW_RULE: options.firewallRule } : {}), IMAGE_STAGE2: image, RESPONDER_PID: pid, AGENTX_TEST_LOG: log,
       ...(options.cpFails ? { CP_FAILS: "1" } : {}),
@@ -618,6 +627,16 @@ describe("stage 1 runs stage 2 from the worker image", () => {
 
   // TS-SEAL-2 on a host with IPv6 on (an AL2023 worker): the INPUT drops go in through ip6tables, or the boot stops. Only a host with no IPv6 at all may boot without them.
   const ip6Rules = (run: Run) => readFileSync(join(run.directory, "ip6tables.state"), "utf8").split("\n").filter(Boolean);
+  it("the boot's PATH, minus the harness's own fakes, finds no host firewall or kernel tool (a Linux runner has real ones in /usr/sbin), so every case runs the same on macOS and Linux", () => {
+    const directory = mkdtempSync(join(tmpdir(), "boot-stage2-path-"));
+    directories.push(directory);
+    const path = `/usr/bin:/bin:${hostSbin(directory)}`;
+    const found = (tool: string) => spawnSync("/bin/bash", ["-c", `command -v ${tool}`], { env: { PATH: path }, encoding: "utf8" }).stdout.trim();
+    for (const tool of ["ip6tables", "iptables", "ip6tables-nft", "iptables-legacy", "nft", "sysctl", "modprobe"]) expect(found(tool), `${tool} is reachable from the boot's PATH`).toBe("");
+    // the positive control: the lookup works, and chown (in /usr/sbin on macOS) is still there
+    expect(found("chown")).not.toBe("");
+    expect(found("cat")).not.toBe("");
+  });
   it("with IPv6 on and a usable ip6tables, drops rvb+ and rvi+ into the host over IPv6 before the worker unit is written", async () => {
     const run = await boot({ served: placedStage2 });
     expect(run.failure, run.stderr).toBeUndefined();
@@ -628,22 +647,49 @@ describe("stage 1 runs stage 2 from the worker image", () => {
     expect(readFileSync(join(run.directory, "etc", "agentx", "worker.env"), "utf8")).toContain('"ipv6Drops":true');
   });
 
+  const workerEnv = (run: Run) => readFileSync(join(run.directory, "etc", "agentx", "worker.env"), "utf8");
+  const bootFacts = (run: Run) => parseBootFacts(workerEnv(run).split("\n").find((line) => line.startsWith("AGENTX_TEST_SERVICES_BOOT_FACTS="))?.slice("AGENTX_TEST_SERVICES_BOOT_FACTS=".length));
+  // Owner decision 2026-11-04: an IPv6 wall that cannot be put in place does not stop the worker. It runs normal tasks without test services.
   for (const ip6tables of ["missing", "unusable"] as const) {
-    it(`with IPv6 on and ip6tables ${ip6tables}, the boot stops with the exact message and starts no worker unit`, async () => {
+    it(`with IPv6 on and ip6tables ${ip6tables}, the boot completes, withholds test services before the worker unit is written, reports ipv6Drops false with a reason, and the worker advertises no test-services feature`, async () => {
       const run = await boot({ served: placedStage2, ip6tables, ipv6: true });
-      expect(run.status).not.toBe(0);
-      expect(run.failure).toBe("could not drop IPv6 from run networks into the host");
-      expect(run.calls.some((call) => call.startsWith("systemctl enable --now"))).toBe(false);
-      expect(run.calls.some((call) => call.startsWith("systemctl daemon-reload"))).toBe(false);
+      expect(run.failure, run.stderr).toBeUndefined();
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.calls.some((call) => call.startsWith("systemctl enable --now"))).toBe(true);
+      const env = workerEnv(run);
+      expect(env.split("\n").filter((line) => line.startsWith("AGENTX_TEST_SERVICES_NOT_PULLED="))).toEqual(["AGENTX_TEST_SERVICES_NOT_PULLED=all"]);
+      expect(env).toContain('"ipv6Drops":false,"ipv6DropsReason":"ip6tables-unusable"');
+      expect(bootFacts(run)).toMatchObject({ metadataBlocked: true, runWalls: true, ipv6Drops: false, ipv6DropsReason: "ip6tables-unusable" });
+      expect(run.stderr).toContain("TEST SERVICES WITHHELD");
+      // The walls that stay fatal were still put in place, and the walls unit was installed.
+      expect(run.calls.some((call) => call.startsWith("iptables -I DOCKER-USER -i rvi+"))).toBe(true);
+      expect(run.calls.some((call) => call.includes("systemctl enable rovara-run-walls.service"))).toBe(true);
+      // What the worker does with that environment: no test-services feature, whatever else is configured.
+      const environment = Object.fromEntries(env.split("\n").filter((line) => /^[A-Z0-9_]+=/u.test(line)).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+      const withRunDirectory = { ...environment, AGENTX_TEST_SERVICES_RUN_DIR: join(run.directory, "tsrun") };
+      expect(testServicesAdvertisedFeatures(withRunDirectory)).toEqual([]);
+      // Positive control: the same environment without the withhold does offer test services, so the empty answer above is the withhold's doing.
+      expect(testServicesAdvertisedFeatures({ ...withRunDirectory, AGENTX_TEST_SERVICES_NOT_PULLED: undefined })).toContain("task.testServices.v1");
     });
 
-    it(`with IPv6 off on the host and ip6tables ${ip6tables}, the boot goes on (there is no IPv6 to drop)`, async () => {
+    it(`with IPv6 off on the host and ip6tables ${ip6tables}, the boot goes on as before: no withhold, ipv6Drops true`, async () => {
       const run = await boot({ served: placedStage2, ip6tables, ipv6: false });
       expect(run.failure, run.stderr).toBeUndefined();
       expect(run.status, run.stderr).toBe(0);
-      expect(readFileSync(join(run.directory, "etc", "agentx", "worker.env"), "utf8")).toContain('"ipv6Drops":true');
+      expect(workerEnv(run)).toContain('"ipv6Drops":true');
+      expect(workerEnv(run)).not.toContain("ipv6DropsReason");
+      expect(workerEnv(run)).not.toContain("AGENTX_TEST_SERVICES_NOT_PULLED");
+      expect(run.stderr).not.toContain("TEST SERVICES WITHHELD");
     });
   }
+
+  it("with IPv6 on and a usable ip6tables, nothing is withheld and the facts carry no reason", async () => {
+    const run = await boot({ served: placedStage2 });
+    expect(run.status, run.stderr).toBe(0);
+    expect(workerEnv(run)).not.toContain("AGENTX_TEST_SERVICES_NOT_PULLED");
+    expect(workerEnv(run)).not.toContain("ipv6DropsReason");
+    expect(bootFacts(run)).toMatchObject({ ipv6Drops: true });
+  });
 
   it("fails when the launch carries no stage 2 hash, before it creates a container", async () => {
     const run = await boot({ served: placedStage2, noHash: true });

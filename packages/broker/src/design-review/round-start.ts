@@ -31,7 +31,7 @@ import { putSlotPackets } from "./packet-store.js";
 import { designSourcesOf, pinsOf } from "./round-inputs.js";
 import type { DesignReviewDispatch, DesignReviewResolved, DesignReviewRoundPorts } from "./round-ports.js";
 import { allocateSlotBudgets } from "./slot-keys.js";
-import { designReviewEnabledFor } from "./switch.js";
+import { designReviewStillOn } from "./switch.js";
 
 type NotRunReason = (typeof DESIGN_REVIEW_NOT_RUN_REASONS)[number];
 
@@ -225,9 +225,9 @@ export async function startDesignReviewRound(
   if (!workflowIsDesignReviewing(workflow) || review === undefined || (review.status !== "estimating" && !approvedHold) || review.rounds.length >= DESIGN_REVIEW_ROUNDS_MAX) return "STALE";
   // A deployment whose broker did not give this path the round's ports (the owner's immediate start after a retry) leaves the dispatch row to the sweep, which has them.
   if (ports === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the design review cannot be started from here");
-  // B2-m3: the switch is read at every step, not only when a task enters the stage. `dr` set to 0, or the project taken out of `dp`, ends a review that is under way here, at its next step: it did not run (`switched_off`), the
+  // B2-m3: the switch is read at every step, not only when a task enters the stage. `dr` set to 0, the company no longer allowing design review, or the project set to Off, ends a review that is under way here, at its next step: it did not run (`switched_off`), the
   // design goes to the person as it stands, and nothing is approved on anyone's behalf. A round already running finishes (its keys and its result are the ones the broker minted); the NEXT round, planner run or retry does not start.
-  if (!designReviewEnabledFor(task.project)) return applyStop(deps, task, workflow, { kind: "not_run", reason: "switched_off" }, iso(deps));
+  if (!(await designReviewStillOn(deps, deps.orgId, task.project, review.decidedBy))) return applyStop(deps, task, workflow, { kind: "not_run", reason: "switched_off" }, iso(deps));
   await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);

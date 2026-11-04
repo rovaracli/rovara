@@ -46,7 +46,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { BROKER_SETTINGS, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { BROKER_SETTINGS, fixtureKeyAlias, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
@@ -262,6 +262,20 @@ export class ControlPlaneStack extends Stack {
     if (naming.env !== undefined) {
       BrokerNames.of(broker).add("stateTable", state.tableName);
       BrokerNames.of(broker).add("artifactBucket", artifacts.bucketName);
+      // Test services, slice 3: the answer sets (fakes) are objects under private/<company>/fixtures/ in the artifacts bucket, written with this key (SSE-KMS) and read back with it. Only the broker may use it, to
+      // generate a data key and decrypt, and the grant is on this key alone. Retained like the bucket: the objects outlive a stack deletion and are unreadable without it. Named environments only.
+      const fixtureKey = new kms.Key(this, "FixtureKey", {
+        // The broker builds the key's alias ARN from the environment's name (fixtureKeyAlias, contracts/derived-names.ts) and passes nothing: S3 accepts an alias for SSE-KMS.
+        alias: fixtureKeyAlias(naming.env),
+        description: "Rovara: encrypts the answer sets (fakes) kept under private/<company>/fixtures/ in the artifacts bucket",
+        enableKeyRotation: true,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      // Only through S3 in this region (kms:ViaService): the broker's grant cannot be used for a direct KMS call. (A grant on the key resource alone, not on the alias.)
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["kms:GenerateDataKey", "kms:Decrypt"], resources: [fixtureKey.keyArn],
+        conditions: { StringEquals: { "kms:ViaService": `s3.${Stack.of(this).region}.amazonaws.com` } },
+      }));
     }
     // The merged control plane's broker policy is past CDK's 10,000-character inline limit, and CDK would move the overflow into a
     // managed policy, which the deploy's CloudFormation role may not create (R53). Merge same-shaped statements instead.
@@ -1507,6 +1521,8 @@ export class ControlPlaneStack extends Stack {
     const sessions = new SessionLifecycle(this, "Sessions", { naming, state, invokeSigningKey, notifyOperator });
     // A6: where the State table expires index items itself, the reconciler's legacy sweep is off.
     if (naming.env !== undefined) sessions.reconciler.addEnvironment("INDEX_EXPIRY", "ttl");
+    // Test services (`tx`): the launch tells a worker's boot to pre-pull the catalog images only when this is "1" (the boot's AGENTX_TEST_SERVICES). Named environments only; the legacy template is unchanged.
+    if (signInParameters !== undefined) sessions.steps.addEnvironment("TEST_SERVICES_ENABLED", signInParameters.testServicesEnabled.valueAsString);
     // Issue 195: the alarm for stuck cancels. Named environments only: the legacy template is
     // unchanged. A stuck cancel on a live worker is queued again with the signing key the backstop
     // below gives the reconciler; the legacy reconciler has none, and only logs and counts it.

@@ -127,10 +127,21 @@ describe("the intake and the first card", () => {
     expect(parseWorkflowStartRequest("design first: quick: add a retry")).toEqual({ kind: "start", instructions: "design first: quick: add a retry" });
     expect(parseWorkflowStartRequest("quick: add a retry")).toEqual({ kind: "start", path: "QUICK", instructions: "add a retry" });
     expect(parseWorkflowStartRequest("design first: chat: hello").kind).toBe("start");
-    const on = { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "payments:web" };
-    expect(designFirstRequestOf("payments", "Design first: add a retry", on)).toEqual({ designFirst: true, rest: "add a retry" });
-    expect(designFirstRequestOf("other", "Design first: add a retry", on)).toEqual({ designFirst: false, rest: "Design first: add a retry" });
-    expect(designFirstRequestOf("payments", "Design first: add a retry", { ...on, DESIGN_REVIEW_ENABLED: "0" })).toEqual({ designFirst: false, rest: "Design first: add a retry" });
+  });
+
+  it("`design first:` is read only while `dr` is on AND the company allows design review; `dp` decides nothing, and with `dr` off nothing is read at all", async () => {
+    const company = (allowed: boolean) => {
+      const sent: unknown[] = [];
+      return { sent, table: { tableName: "state", documentClient: { send: async (command: unknown) => { sent.push(command); return { Item: { revision: 1, lock: {}, policy: { allowed } } }; } } } };
+    };
+    const on = { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "other" };
+    const allowed = company(true);
+    expect(await designFirstRequestOf(allowed.table, ORG, "Design first: add a retry", on)).toEqual({ designFirst: true, rest: "add a retry" });
+    const refused = company(false);
+    expect(await designFirstRequestOf(refused.table, ORG, "Design first: add a retry", on)).toEqual({ designFirst: false, rest: "Design first: add a retry" });
+    const off = company(true);
+    expect(await designFirstRequestOf(off.table, ORG, "Design first: add a retry", { ...on, DESIGN_REVIEW_ENABLED: "0" })).toEqual({ designFirst: false, rest: "Design first: add a retry" });
+    expect(off.sent).toHaveLength(0);
   });
 
   it("ON-2: the model's note on the classification line is made inert for Slack and Linear threads: no @channel, no link, no mention, no tag", () => {

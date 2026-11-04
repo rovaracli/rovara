@@ -30,8 +30,9 @@ const KEPT_TTL_SECONDS = 400 * 86_400;
 
 /** What the upkeep needs of Linear: both calls refuse a comment that is not Rovara's own. */
 export interface LinearScrubPort {
-  update(input: { orgId: OrgId; commentId: string; text: string }): Promise<void>;
-  remove(input: { orgId: OrgId; commentId: string }): Promise<void>;
+  /** `workspace` is the Linear workspace the comment was posted in, when the post recorded it (AL-1): only a connection to it can say the comment is gone. */
+  update(input: { orgId: OrgId; commentId: string; text: string; workspace?: string | undefined }): Promise<void>;
+  remove(input: { orgId: OrgId; commentId: string; workspace?: string | undefined }): Promise<void>;
 }
 
 export interface LinearScrubDependencies extends AskStoreTable {
@@ -65,16 +66,18 @@ export async function settleLinearScrubs(deps: LinearScrubDependencies, orgId: O
   /** Settles one item. Answers "stop" when Linear asked to slow down (the rest waits for the next run). */
   const settle = async (item: AskItem): Promise<"next" | "stop"> => {
     const sessionId = item["sessionId"], askId = item["askId"], commentId = item["commentId"];
+    // AL-1: the workspace the comment was posted in goes with it, so another workspace's connection can never read it as gone.
+    const workspace = typeof item["workspace"] === "string" && item["workspace"] !== "" ? item["workspace"] : undefined;
     if (item["orgId"] !== orgId || typeof commentId !== "string" || commentId === "" || typeof sessionId !== "string" || typeof askId !== "string") { await done(item); return "next"; }
     try {
       const found = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: sessionAskKey(orgId, sessionId, askId), ConsistentRead: true }))) as { Item?: AskItem }).Item;
       const record = found?.["orgId"] === orgId ? askRecordFromItem(found) : undefined;
       if (record?.answer !== undefined && record.answer.trim() !== "") {
-        await deps.port.update({ orgId, commentId, text: linearAnswerText(record.answer) });
+        await deps.port.update({ orgId, commentId, text: linearAnswerText(record.answer), ...(workspace === undefined ? {} : { workspace }) });
         result.rewritten += 1;
       } else {
         // No scrubbed words to put back (the Ask is gone, or kept none): the comment goes.
-        await deps.port.remove({ orgId, commentId });
+        await deps.port.remove({ orgId, commentId, ...(workspace === undefined ? {} : { workspace }) });
         result.removed += 1;
       }
       await done(item);

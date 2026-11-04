@@ -203,3 +203,16 @@ export async function readAllowedDomainActorConditions(deps: SecondPersonEvidenc
  if (meta === undefined || meta.closedAt !== undefined || meta.closingAt !== undefined) throw stale();
  return [...actor.conditions, { ConditionCheck: { TableName: deps.tableName, Key: orgMetaKey(input.orgId), ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)" } }];
 }
+
+/**
+ * A company owner's or admin's OWN live authority, fenced, with no roster read: the evidence for a change that only tightens or turns a company safeguard off, which must keep working when the roster evidence is
+ * incomplete (a legacy company, a young tracking record). A member (project maintainer or not) and an Auditor are refused.
+ */
+export async function readCompanyAdminActorConditions(deps: SecondPersonEvidenceDependencies, input: { orgId: OrgId; actorId: string }): Promise<TransactItem[]> {
+ if (!personId.test(input.actorId) || !deps.signInTableName) throw forbidden();
+ const actor = await livePerson(deps, { orgId: input.orgId, proposerId: input.actorId, approverId: input.actorId }, input.actorId);
+ if (actor.member.role !== "owner" && actor.member.role !== "admin") throw forbidden();
+ const meta = await read(deps, orgMetaKey(input.orgId));
+ if (meta === undefined || meta.closedAt !== undefined || meta.closingAt !== undefined) throw stale();
+ return [...actor.conditions, { ConditionCheck: { TableName: deps.tableName, Key: orgMetaKey(input.orgId), ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)" } }];
+}

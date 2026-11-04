@@ -43,3 +43,5 @@ export async function getTaskStopCompany(deps: Dependencies, caller: DeveloperCa
 }
 
 export { captureTaskStopAdmission, previewTaskStopCutover, type TaskStopCaptureDependencies, type TaskStopCaptureRequest, type CapturedTaskStop } from "./task-stop-admission.js";
+
+export { taskStopEconomicDigest } from "./task-stop-cutover-review.js";

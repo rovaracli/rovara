@@ -98,19 +98,19 @@ describe("continue (US1 scenario 5, FR-019)", () => {
     }
   });
 
-  it("lets a developer who lost channel access continue and open a PR on their own task (R11, spec edge case)", async () => {
+  it("refuses a developer who lost channel access a continue and a PR on their own task (S2, owner decision 2026-11-04: this replaces R11, where they could)", async () => {
     let member = true;
     const channelMembers = async (request: ChannelMembersRequest): Promise<ChannelMembersResponse> => ({ ok: true, memberOf: member ? request.channelIds.filter((id) => id === SLACK_CHANNEL) : [] });
     const { post, turns, finish, task, active } = await finished("SUCCEEDED", { channelMembers });
     member = false;
     const continued = await post("continue", { requestId: randomUUID(), instructions: "more" });
-    expect(continued.status).toBe(200);
-    expect(continued.body.task).toMatchObject({ status: "RUNNING" });
-    await finish(task.workspaceId, active(), "SUCCEEDED");
+    expect(continued.status).toBe(403);
+    expect(continued.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
     const opened = await post("pull-requests", { requestId: randomUUID(), title: "x" });
-    expect(opened.status).toBe(200);
-    expect(opened.body).toMatchObject({ operationStatus: "ACCEPTED" });
-    expect(turns().filter((item) => (item.action === "continue" || item.action === "pull_request") && item.phase === "accepted")).toHaveLength(2);
+    expect(opened.status).toBe(403);
+    expect(opened.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+    expect(turns().filter((item) => (item.action === "continue" || item.action === "pull_request") && item.phase === "accepted")).toHaveLength(0);
+    void finish; void task; void active;
   });
 
   it("refuses to cancel a closed task, as continue does, and writes no audit record (final review M2)", async () => {

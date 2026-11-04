@@ -548,6 +548,16 @@ export function auditPlaybookDesignReviewChanged(input: AuditBuilderBase & { pro
   return build("playbook.design_review_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, mode: input.mode, tier: input.tier, allowSkip: input.allowSkip, capCents: input.capCents, approverKind: input.approverKind, approverCount: input.approverCount });
 }
 
+/** `occurrence`: `auditOccurrence("design_review_policy", item revision)` for a change, the proposal's id for a proposal. `field` is `allowed` or `lock`; `from`/`to` are fixed words (or, for `lock`, how many fields it holds). */
+export function auditCompanyDesignReviewPolicyChanged(input: AuditBuilderBase & { field: "allowed" | "lock"; from: string; to: string; mode: "direct" | "second_person" | "sole_owner_exception" | "migration" | "cancelled"; revision: number }): AuditEventInput {
+  return build("company.design_review_policy_changed", input, { kind: "org", id: input.orgId }, { field: input.field, from: input.from, to: input.to, mode: input.mode, revision: input.revision });
+}
+
+/** `occurrence`: the proposal's id. A different admin has to approve turning "allowed" on. */
+export function auditCompanyDesignReviewPolicyProposed(input: AuditBuilderBase & { field: "allowed" | "lock"; from: string; to: string }): AuditEventInput {
+  return build("company.design_review_policy_proposed", input, { kind: "org", id: input.orgId }, { field: input.field, from: input.from, to: input.to });
+}
+
 /** `occurrence`: `auditOccurrence(project, company document revision)`. One event per project the change reached; `settingCount` is the number of settings that changed for it. */
 export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });
@@ -556,6 +566,11 @@ export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { p
 /** `occurrence`: the request id of the approved change. `tier` is `sandbox`, `preview` or `shared`; `lessSafeCount` is the number of less-safe fields the change turned on (`testEnvLessSafeChanges`). */
 export function auditProjectTestEnvChanged(input: AuditBuilderBase & { projectName: string; revision: number; tier: "sandbox" | "preview" | "shared"; lessSafeCount: number }): AuditEventInput {
   return build("project.test_env_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, tier: input.tier, lessSafeCount: input.lessSafeCount });
+}
+
+/** Test services, slice 3 (M1): a decision on an answer set (a fake). `occurrence`: the set's digest and the row version it was decided at (`auditOccurrence`), so one decision is one event. `digest` is the only fact: the set's content is never in the ledger. */
+export function auditProjectFixtureSetDecided(input: AuditBuilderBase & { projectName: string; decision: "approved" | "rejected" | "withdrawn"; digest: string }): AuditEventInput {
+  return build(`project.fixture_set_${input.decision}`, input, { kind: "project", name: input.projectName }, { digest: input.digest });
 }
 
 /** `occurrence`: the request id of the change. `setting` is the fixed word `propose_fix_task` (the nightly setting `nightly.proposeFixTask`); `enabled` says whether it is on after the change. */
@@ -1003,4 +1018,12 @@ export type TestAccountAuditAction = "test_account.added" | "test_account.approv
  */
 export function auditTestAccountChange(input: AuditBuilderBase & { action: TestAccountAuditAction; accountId: string; facts: Record<string, Fact> }): AuditEventInput {
   return build(input.action, input, { kind: "test_account", id: input.accountId }, input.facts);
+}
+
+/**
+ * S2 (send-back gate): work a task would have started was refused because the person it runs as lost their place. The target is the task; `path` and `cause` are fixed words
+ * (see `AUDIT_FACT_KEYS`). `occurrence` is the task and the step it was refused at, so a retried refusal is the same event. Never a name, a message or a project's name.
+ */
+export function auditTaskWorkRefused(input: AuditBuilderBase & { taskId: string; path: string; reason: string }): AuditEventInput {
+  return build("task.work_refused", input, { kind: "task", id: input.taskId }, { path: input.path, cause: input.reason });
 }

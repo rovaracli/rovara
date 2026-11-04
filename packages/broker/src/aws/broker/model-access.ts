@@ -65,11 +65,29 @@ import { taskAccessFence } from "../../developer/task-people.js";
 import { taskRecipeKey } from "../../developer/task-records.js";
 import { designReviewSlotOf, isSlotRefusal, resolveSlotAsk } from "./design-review-slot-access.js";
 import { plannerRunRoomUsd } from "../../design-review/resolve-budget.js";
+import { ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
 
 /**
  * Task 21's write gate runtime, built from Task 19's own pieces: what an approved write needs to be classified, re-granted and sent, long after the step's request
  * ended. It is on the request-time dependencies and, the same object, on the ones the settlement job hands `runApprovalSweep`, so a retry finds it.
  */
+/**
+ * S2 (any path, review M5): every step of an agent run is work started for the task's owner, so it meets the send-back's project access rule and the archive check at the step, not only at the run's start.
+ * A refusal is PROJECT_ACCESS_DENIED with the plain reason; the engine ends the run (FAILED) with those words, and the refusal is audited (path `agent_step`). A task with no org of record, or an install with
+ * no developer API, is left to the creator check.
+ */
+async function requireOwnerMayRunAgentStep(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord): Promise<void> {
+  if (dependencies.developer === undefined || task.orgId === undefined) return;
+  const route = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now,
+    tasks: developerTaskActions(dependencies) }, await ownerCallerOf(dependencies, task, "agent-step-access"), undefined, null);
+  const refusal = await ownerWorkRefusal(route, task);
+  if (refusal === undefined) return;
+  await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
+    orgId: task.orgId, taskId: task.taskId, path: "agent_step", reason: refusal.reason, occurrence: "agent_step", now: new Date().toISOString() },
+    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, task });
+  throw agentXError("PROJECT_ACCESS_DENIED", refusal.message);
+}
+
 /**
  * Plan 3, Task 22: what the agent-step engine needs of the broker. `startStep` is `acceptTask` with the step's payload (the engine's own update of the run
  * rides in the operation's transaction); the creator and recipe checks are the ones every other dispatch makes; ending a task blocks the keys of its
@@ -84,7 +102,10 @@ export function agentRunHostOf(dependencies: AwsBrokerDependencies, tasks: Devel
         { operationId: input.operationId, programStepId: input.step.id, agentRun: { step: input.step, inputs: input.inputs, resultContract: input.resultContract, checkout: input.checkout } });
       return { operationId: accepted.operation.id, duplicate: accepted.duplicate };
     },
-    requireCreator: (task) => requireCreatorStillMember(creatorCheckOf(dependencies), task),
+    requireCreator: async (task) => {
+      await requireCreatorStillMember(creatorCheckOf(dependencies), task);
+      await requireOwnerMayRunAgentStep(dependencies, task);
+    },
     // Plan 5 Task 11b: the messages people sent to this run from its session, for the step about to be made.
     stepNotes: (task, requestId, redoFrom) => agentStepNotes(dependencies, task.taskId, requestId, redoFrom),
     requireRecipeAllowed: (task, recipe) => requireRecipeAllowed(routeDependencies, task.orgId as OrgId, task.project, task.agent?.name ?? "This agent", recipe),

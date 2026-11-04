@@ -28,7 +28,7 @@ import {
   type SubstituteApprovalPort,
   type SubstituteApprovalRecord,
 } from "@agentx/contracts";
-import { digestOfId, pinnedCatalog, sha, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
+import { digestOfId, pinnedCatalog, sha, shippedCatalog, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 
 const catalog = verifiedCatalog(pinnedCatalog());
 const digest = (id: string): string => digestOfId(id);
@@ -76,9 +76,9 @@ describe("the worker pre-pull list", () => {
   it("is empty for an unpinned catalog", () => {
     expect(catalogPrepullList(unpinnedCatalog())).toEqual({ schemaVersion: 1, catalogRevision: 1, images: [] });
   });
-  it("holds EVERY pinned local and emulated entry (not only each family's default), the pinned defaults of the other families and the always-used helper, by repository and digest, sorted, and nothing else", () => {
+  it("holds EVERY pinned local and emulated entry (not only each family's default) by repository and digest, sorted, and nothing else (the helpers that run from the worker's own image have no image to pull)", () => {
     const list = catalogPrepullList(catalog);
-    expect(list.images.map((image) => image.id)).toEqual(["dns-helper@r1", "fake-server@r1", "local-aws@r1", "mysql@8", "postgres@15", "postgres@16", "postgres@17", "rabbitmq@3", "redis@7", "valkey@8"]);
+    expect(list.images.map((image) => image.id)).toEqual(["local-aws@r1", "mysql@8", "postgres@15", "postgres@16", "postgres@17", "rabbitmq@3", "redis@7", "valkey@8"]);
     // The test-account proxy is a helper that runs only with `ta`: not pulled ahead.
     expect(list.images.map((image) => image.id)).not.toContain("test-account-proxy@r1");
     expect(list.images.length).toBeLessThanOrEqual(PREPULL_MAX_IMAGES);
@@ -102,7 +102,13 @@ describe("the worker pre-pull list", () => {
     expect(PrepullListSchema.safeParse({ ...good, images: [first, first] }).success).toBe(false);
   });
   it("is the file that ships in the worker image (regenerate it with scripts/catalog-build.ts, which writes it)", () => {
-    expect(JSON.parse(readFileSync("packages/worker/service-catalog/prepull.json", "utf8"))).toEqual(catalogPrepullList(unpinnedCatalog()));
+    const shipped = JSON.parse(readFileSync("packages/worker/service-catalog/prepull.json", "utf8")) as ReturnType<typeof catalogPrepullList>;
+    expect(shipped).toEqual(catalogPrepullList(shippedCatalog()));
+    // The shipped state itself: revision 2, and exactly the two pinned images (postgres@16 for both platforms, the emulator for arm64).
+    expect(shipped.catalogRevision).toBe(2);
+    expect(shipped.images.map((image) => [image.id, image.repository, image.platforms])).toEqual([["local-aws@r1", "svc/local-aws", ["linux/arm64"]], ["postgres@16", "svc/postgres", ["linux/arm64", "linux/amd64"]]]);
+    // An unpinned catalog (revision 1) pre-pulls nothing.
+    expect(catalogPrepullList(unpinnedCatalog())).toEqual({ schemaVersion: 1, catalogRevision: 1, images: [] });
   });
 });
 
@@ -336,9 +342,14 @@ describe("resolving an image to start", () => {
     });
     it("is not allowed in Public, or for Rovara's own emulator, fake server or helpers, or when its shape is wrong", async () => {
       expect(await refusal({ ...good(), edition: "public", served: served("rovara_registry", OTHER) })).toBe("substitute_not_allowed");
-      for (const id of ["local-aws@r1", "fake-server@r1", "dns-helper@r1"]) {
+      for (const id of ["local-aws@r1"]) {
         const sub = { digest: OTHER, catalogDigest: digest(id), approvalRef: APPROVAL };
         expect(await refusal(request({ catalogId: id, substitute: sub, served: served("company_registry", OTHER, id), approvals: portOf({ approvalRef: APPROVAL, catalogId: id, catalogDigest: digest(id), digest: OTHER }) })), id).toBe("substitute_not_allowed");
+      }
+      // Slice 3: the fake server and the DNS helper run from the worker's own image, so they have no image to resolve at all (a substitute for one is a substitute for nothing).
+      for (const id of ["fake-server@r1", "dns-helper@r1"]) {
+        const sub = { digest: OTHER, catalogDigest: digest(id), approvalRef: APPROVAL };
+        expect(await refusal(request({ catalogId: id, substitute: sub, served: served("company_registry", OTHER, id), approvals: portOf({ approvalRef: APPROVAL, catalogId: id, catalogDigest: digest(id), digest: OTHER }) })), id).toBe("not_pinned");
       }
       expect(await refusal({ ...good(), substitute: substitute({ digest: digest("postgres@16") }) })).toBe("substitute_not_allowed");
       expect(await refusal({ ...good(), substitute: substitute({ approvalRef: "x" }) })).toBe("substitute_not_allowed");

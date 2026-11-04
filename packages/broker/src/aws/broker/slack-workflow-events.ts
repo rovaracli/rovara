@@ -273,10 +273,11 @@ export async function startSlackWorkflow(dependencies: AwsBrokerDependencies, ta
   let instructions = event.instructions.trim();
   if (!instructions || Buffer.byteLength(instructions, "utf8") > RUN_INPUT_TEXT_MAX_BYTES) throw agentXError("CONFIG_INVALID", "workflow request is empty or too long");
   if (dependencies.developer.slackTeamId !== thread.teamId) throw agentXError("FORBIDDEN", "Slack workspace is not enabled for developer tasks");
-  const binding = await getSlackBinding(dependencies, await slackTeamOrg(dependencies, thread.teamId), thread.teamId, thread.channelId);
+  const teamOrg = await slackTeamOrg(dependencies, thread.teamId);
+  const binding = await getSlackBinding(dependencies, teamOrg, thread.teamId, thread.channelId);
   if (binding === undefined) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
-  // `design first:` (DR11) is read HERE, where the project is known, and only while the design review runs for it (`dr` on and the project in `dp`). With the stage off the text is exactly what the person typed.
-  const first = designFirstRequestOf(binding.projectName, instructions);
+  // `design first:` (DR11) is read HERE, where the project is known, and only while the design review stage exists for the company (`dr` on and the company allows it). With the stage off the text is exactly what the person typed.
+  const first = await designFirstRequestOf(dependencies, teamOrg, instructions);
   if (first.designFirst) {
     const nested = parseWorkflowStartRequest(first.rest);
     instructions = (nested.kind === "start" ? nested.instructions : first.rest).trim();

@@ -44,6 +44,12 @@ export const teamRecordVectorBucketName = (env: string): string => `${teamRecord
 export const teamRecordTableBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-lake`;
 export const teamRecordWorkGroupName = (env: string): string => `${teamRecordNamePrefix(env)}-record`;
 
+/**
+ * Test services, slice 3: the alias of the key the answer sets (fakes) are encrypted with (SSE-KMS accepts an alias). CDK names the key's alias with this; the broker builds the alias ARN from it, so no variable is passed
+ * (M4: 40 bytes of Lambda environment saved). The broker's grant is on the key itself, not on the alias: an alias repointed at another key gives the broker nothing there, and the broker's writes fail instead of going elsewhere.
+ */
+export const fixtureKeyAlias = (env: string): string => `alias/agentx/${env}/fixtures`;
+
 /** The port the model proxy's inference listener serves on; the broker builds the proxy's URL from the load balancer's name and this. */
 export const MODEL_PROXY_INFERENCE_PORT = 4000;
 
@@ -57,7 +63,9 @@ export const MODEL_PROXY_INFERENCE_PORT = 4000;
 export type DerivedBrokerVariable =
   | { readonly variable: string; readonly kind: "text"; readonly value: (env: string) => string; readonly cloudOnly?: true }
   | { readonly variable: string; readonly kind: "roleArn"; readonly roleName: (env: string) => string; readonly cloudOnly?: true }
-  | { readonly variable: string; readonly kind: "queueUrl"; readonly queueName: (env: string) => string; readonly cloudOnly?: true };
+  | { readonly variable: string; readonly kind: "queueUrl"; readonly queueName: (env: string) => string; readonly cloudOnly?: true }
+  /** The ARN (`arn:<partition>:kms:<region>:<account>:<alias>`) of a KMS alias with a fixed name. */
+  | { readonly variable: string; readonly kind: "kmsAliasArn"; readonly alias: (env: string) => string; readonly cloudOnly?: true };
 
 export const DERIVED_BROKER_VARIABLES: readonly DerivedBrokerVariable[] = [
   { variable: "CONNECTOR_SECRET_PREFIX", kind: "text", value: environmentConnectorSecretPrefix },
@@ -84,4 +92,6 @@ export const DERIVED_BROKER_VARIABLES: readonly DerivedBrokerVariable[] = [
   { variable: "TEAM_RECORD_VECTOR_BUCKETS", kind: "text", value: teamRecordVectorBucketName },
   { variable: "TEAM_RECORD_TABLE_BUCKET", kind: "text", value: teamRecordTableBucketName },
   { variable: "TEAM_RECORD_ATHENA_WORKGROUP", kind: "text", value: teamRecordWorkGroupName },
+  // Test services, slice 3: the answer sets' key, by its alias (named environments only: the legacy install has no AGENTX_ENV and no key). Nothing reads it while `tx` is off.
+  { variable: "FIXTURE_KEY_ARN", kind: "kmsAliasArn", alias: fixtureKeyAlias },
 ];

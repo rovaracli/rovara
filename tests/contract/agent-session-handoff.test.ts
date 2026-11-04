@@ -1618,3 +1618,14 @@ describe("the route", () => {
     expect((await w.view(ARJUN, sessionId)).you.actions).not.toContain("handoff");
   });
 });
+
+describe("S3: a move to the cloud keeps the owner's own words", () => {
+  it("the cloud task's text is the session's title as stored, an address in it included", async () => {
+    const w = world();
+    const { sessionId } = await w.onMac();
+    const title = `Add ${["omar", "example.test"].join(String.fromCharCode(64))} to the allow list`;
+    w.patchSession(sessionId, { title });
+    await w.move(PRIYA, sessionId, w.body());
+    expect(w.calls.starts[0]).toMatchObject({ input: { text: title } });
+  });
+});

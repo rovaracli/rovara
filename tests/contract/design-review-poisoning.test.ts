@@ -15,13 +15,14 @@ import { designApproveItem, designCardFactsOf } from "../../packages/broker/src/
 import { applyPlannerResolve } from "../../packages/broker/src/design-review/resolve-answer.js";
 import { designProofLine } from "../../packages/broker/src/design-review/proof-line.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
+import { seedDesignReviewCompany } from "../support/design-review-company.js";
 import { DESIGN_V1, LATER, REQUIREMENTS, designWorld, runDesignWorker, sha256, type DesignWorld } from "../support/design-review-world.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { COMMIT, HIDDEN_NO_NEWLINE, PAYLOADS, countOf, expectedFrameTags, frameTagNames, tokenFor } from "../support/design-review-poisoning.js";
 import { TEST_ORG } from "../support/orgs.js";
 
-// The switch is read at every step (B2-m3): the world's project is listed in `dp`.
-beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); vi.stubEnv("DESIGN_REVIEW_PROJECTS", "payments"); });
+// The switch is read at every step (B2-m3): the world's company allows design review (seeded by designWorld).
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 const review = (w: DesignWorld): WorkflowDesignReview => w.task().workflow.designReview!;
@@ -264,12 +265,12 @@ describe("Understand's reading is a reading: a note that sets a tier, a cap or a
 
   async function understoodAs(assessment: IntentAssessment, playbook?: Record<string, unknown>) {
     vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
-    // B2: the switch alone runs no project; the allowlist (`dp`) names the project the stage runs for.
-    vi.stubEnv("DESIGN_REVIEW_PROJECTS", "payments");
+    // B2: the switch alone runs no project; the company must allow design review (seeded below).
     const access = fakeModelAccess();
     const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: { rovaraCodeV2Live: true }, modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
+    seedDesignReviewCompany(h.db, TEST_ORG, { ...(playbook === undefined ? { project: "payments" } : {}) });
     await new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
     h.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
     if (playbook !== undefined) h.db.set({ ...projectPlaybookKey(TEST_ORG, "payments"), entityType: "PROJECT_PLAYBOOK", ...playbook });

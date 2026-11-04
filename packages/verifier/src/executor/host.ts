@@ -225,6 +225,8 @@ export function createE2EApplicationCliHost(input: { launchContext: E2EApplicati
   } };
   const shared = {
     casePlans, caseObservations: fileLedger.caseObservations, evidence: fileLedger.evidence, actionWindows: fileLedger.actionWindows,
+    // One line in the executor's own log (the parent writes it too), redacted of the run's credentials and session values; best effort, never a verdict input.
+    log: (line: string) => { try { appendFileSync(join(context.outDir, "executor.log"), `${new Date().toISOString()} ${agentRedactor.text(line)}\n`); } catch { /* a log that cannot be written is not a reason to fail a case */ } },
     openCaseSession: async (request: Parameters<E2EWebRuntimePorts["openCaseSession"]>[0], signal: AbortSignal) => {
       const opened = await store.open(request, signal);
       activeSessionRef = opened.sessionRef;

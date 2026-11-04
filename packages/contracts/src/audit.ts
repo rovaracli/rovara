@@ -113,6 +113,7 @@ export const AUDIT_ACTIONS = [
   "spend_policy.changed",
   "spending.stop_admitted", "spending.stop_refused", "spending.stop_reached", "spending.stop_exempted",
   "spending.policy_seeded",
+  "spending.enrollment_changed",
   "spending.policy_changed", "spending.policy_change_requested", "spending.policy_change_decided",
   "pull_request.opened",
   "pull_request.merged",
@@ -198,9 +199,16 @@ export const AUDIT_ACTIONS = [
   "playbook.default_process_changed",
   // Design review stage (DR8): a maintainer changed the project's design review setting in How we work.
   "playbook.design_review_changed",
+  // Design review (DR-FU4): a company admin changed the company's design review policy (allowed, lock) or the system moved `dp` projects into it; turning "allowed" on waits for a different admin.
+  "company.design_review_policy_proposed",
+  "company.design_review_policy_changed",
   "company.change_applied_to_project",
   // Proof and evidence (W4/W5): the approved test environment changed; a task reader downloaded a stored evidence artifact.
   "project.test_env_changed",
+  // Test services, slice 3 (M1): a maintainer approved, rejected or withdrew a hand-written or recorded answer set (a fake) of a project.
+  "project.fixture_set_approved",
+  "project.fixture_set_rejected",
+  "project.fixture_set_withdrawn",
   // Setup and test health (SH28): a maintainer turned "propose a fix task when tests fail" on or off for a project.
   "project.test_health_setting_changed",
   "evidence.downloaded",
@@ -279,6 +287,8 @@ export const AUDIT_ACTIONS = [
   // Live interaction part 2 (Stop & redirect, Ask, Fix with agent): ids, fixed words and counts only. An instruction, a question, an answer and a diagnosis's text never go in.
   "session.redirected",
   "task.asked",
+  // S2 (send-back gate): work a task would have started was refused because the person it runs as lost their place (removed, or no longer allowed in the project). Fixed words only: `path`, `cause`.
+  "task.work_refused",
   // Lane ask-linear: a Linear comment an erase meant to rewrite could not be (given up after the bounded tries). Ids, a fixed reason word and a count only.
   "ask.linear_comment_kept",
   "diagnosis.started",
@@ -422,6 +432,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "spend_request.resume_dropped": ["kind", "cause"],
   "budget.changed": ["scopeKind", "field", "fromCents", "toCents"],
   "spend_policy.changed": ["field", "from", "to"],
+  "spending.enrollment_changed": ["requestId", "reviewId", "reviewDigest", "before", "after", "revision", "tasksReviewed", "tasksAtEnable", "newImpacts", "pendingExpired"],
   "spending.policy_changed": ["scopeKind", "revision", "requestId", "proposalId", "beforeKind", "afterKind", "beforeMicrousd", "afterMicrousd", "decision", "outcomeCode"],
   "spending.policy_change_requested": ["scopeKind", "revision", "requestId", "proposalId", "beforeKind", "afterKind", "beforeMicrousd", "afterMicrousd", "decision", "outcomeCode"],
   "spending.policy_change_decided": ["scopeKind", "revision", "requestId", "proposalId", "beforeKind", "afterKind", "beforeMicrousd", "afterMicrousd", "decision", "outcomeCode"],
@@ -513,9 +524,16 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "playbook.default_process_changed": ["revision", "processKind"],
   // `mode` is auto, always or never; `tier` light, standard or thorough; `approverKind` maintainers, people or group (never the people or the group named); `capCents` the per-task cap in whole cents.
   "playbook.design_review_changed": ["revision", "mode", "tier", "allowSkip", "capCents", "approverKind", "approverCount"],
+  // `field` is `allowed` or `lock`; `from` and `to` are fixed words (on/off) or, for `lock`, how many fields the lock holds; `mode` is `direct`, `second_person`, `sole_owner_exception`, `migration` or `cancelled` (a waiting request withdrawn: `from` is `requested`, `to` is `withdrawn`).
+  "company.design_review_policy_proposed": ["field", "from", "to"],
+  "company.design_review_policy_changed": ["field", "from", "to", "mode", "revision"],
   "company.change_applied_to_project": ["changeRevision", "settingCount"],
   // `tier` is `sandbox`, `preview` or `shared`; `lessSafeCount` is how many less-safe fields the change turned on. `artifactKind` and `retentionClass` are the fixed words of the evidence contract.
   "project.test_env_changed": ["revision", "tier", "lessSafeCount"],
+  // The set's digest only (64 hex): never a word of its content. The actor, the org and the project are the event's own.
+  "project.fixture_set_approved": ["digest"],
+  "project.fixture_set_rejected": ["digest"],
+  "project.fixture_set_withdrawn": ["digest"],
   "project.test_health_setting_changed": ["setting", "enabled"],
   "evidence.downloaded": ["artifactKind", "retentionClass"],
   // `cause` is a fixed auto-fix code word (the environment fault the card was about); `testCount` is how many tests were added to the project's already-failing list; the rest are the card's epoch, counts, two sha256 hashes (the waiting tasks, the exact set marked) and the list's version and size afterwards. Never a test name.
@@ -595,6 +613,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   // Live interaction. `mode` is keep_plan or change_plan, `outcome` a redirect outcome word, `audience` web, slack or linear (or `all` on a daily count), `scope` each or daily, `tier` light or deep.
   "session.redirected": ["mode", "step", "outcome"],
   "task.asked": ["audience", "scope", "count", "contextBytes", "model"],
+  // `path` is a fixed word for the place work was refused (`ci_fix_round`, `feedback_round`, `conflict_round`, `program_step`, `feedback_review`, `queued_dispatch`, `direct_start`, `agent_step`, `spend_resume`, `autofix`); `cause` is `owner_removed`, `no_project_access`, `viewer`, `project_archived`, `project_inactive`, `other_org` or `slack_unavailable`.
+  "task.work_refused": ["path", "cause"],
   "ask.linear_comment_kept": ["cause", "attempts"],
   "diagnosis.started": ["errorKind", "errorCode", "tier"],
   "diagnosis.proposed": ["total", "dropped", "explain", "retryWithNote", "redirect", "settingsChange", "newTask", "adminSteps", "contactSupport"],

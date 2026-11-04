@@ -19,14 +19,20 @@
 //   - FAIL CLOSED. A worker without the sealed round (s1-sealed) or without configuration refuses a plan with dependencies before it starts anything. A dependency whose repository, digest or family differs from the worker's
 //     signed catalog is refused. A check that is asked for with no sealed round open is refused (it never falls back to the working sandbox).
 //
+// SLICE 3, FAKES: a plan dependency with `backing: "fake"` starts the fake server from the WORKER'S OWN image (service-helpers.ts, fake-helper.ts) serving an approved fixture set the plan names by DIGEST. At the start of
+// each phase that serves one (the coding phase, and every sealed round: a new fake each, like Postgres) the set is fetched through `FixtureDelivery` (fixture-delivery.ts: a fresh read address from the broker's `fixture-set`
+// callback, the bytes held to the digest) and written into THAT helper's own run directory, mounted read-only into that one helper. It is in no env file, no argument, no log and no sandbox mount, and nothing keeps it between
+// phases (a set withdrawn after one round is not served in the next). A round's fake answers the check sandbox's address alone, and sits on the round's own network that the working sandbox is never on. Its ledger summary is
+// read while it runs (fake-usage.ts) and goes into the usage record as five bucketed counts per fake.
+//
 // WHAT IS NOT HERE (listed in the lane report): fixture seeds (`seeds[].fixturePath`: refused, "not available yet"), a sinkhole container (slice 3: the sealed name server still counts every unknown name, which is what the
-// usage record reads), Prove's use of this module (T2, prepare.ts), and any backing but `local` (the plan schema allows only that).
+// usage record reads), a fake that makes up answers (`schema_synth`), a fake that is restarted between checks, and any backing but `local`, `emulated` and `fake`.
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, readFileSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import {
-  CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName,
+  CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName,
   type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskAwsResource, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
@@ -35,7 +41,7 @@ import type { ArtifactSink } from "./artifacts.js";
 import type { WorkerCancellationController } from "./cancel.js";
 import type { CommandResult } from "./readiness.js";
 import {
-  checkSandboxPlan, writeCheckSandboxFiles,
+  checkSandboxPlan, waitForSealedDnsHelper, writeCheckSandboxFiles,
   type CheckSandboxNetwork, type CheckSandboxPlan,
 } from "./check-sandbox.js";
 import type { ContainerExec } from "./devcontainer.js";
@@ -52,11 +58,13 @@ import { EmulatorControlError, type EmulatorControlTarget } from "./emulator-con
 import { emulatorLedgerPort, type EmulatorLedgerPort } from "./emulator-ledger.js";
 import { EmulatorSeedError, SEEDED_AWS_SERVICES, readAwsResourcesFromIac, seedEmulator } from "./service-seed-aws.js";
 import { createResetHooks, resetForNextCheck, seedRun, type ResetDependency, type SeedPorts } from "./service-reset.js";
+import { createFixtureDelivery, type FixtureDelivery, type FixtureSetCallback } from "./fixture-delivery.js";
+import { fakeUsagePort, type FakeUsagePort } from "./fake-usage.js";
 import {
   createDockerServiceRunner, type SandboxAttachment, type ServiceRunner, type ServiceSession,
 } from "./service-runner.js";
 import { refuseTestServicesWithDevcontainer, withSealedCheckRound } from "./check-round-runners.js";
-import { UNREADABLE_AWS_USAGE, buildServiceUsageRecord, countResets, mergeAwsUsage } from "./service-usage-record.js";
+import { UNREADABLE_AWS_USAGE, buildServiceUsageRecord, countResets, mergeAwsUsage, mergeFakeUsage } from "./service-usage-record.js";
 import { setupWorkspaceKey } from "./setup-network.js";
 import { TEST_SERVICES_BOOT_FACTS_ENVIRONMENT, emitReport, type ReportOutcome } from "./test-services-report.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
@@ -83,7 +91,7 @@ const MODES_WITH_SERVICES: ReadonlySet<string | undefined> = new Set([undefined,
 // ---- errors
 
 export type TestServicesFailureReason =
-  | "not_configured" | "unsupported" | "nightly" | "init_file" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "setup_failed";
+  | "not_configured" | "unsupported" | "nightly" | "init_file" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "setup_failed" | "fixtures";
 
 /** The one sentence for an image the worker cannot use: it is not one of the digests pinned INSIDE this worker image, or it was not pre-pulled onto this worker at boot. The worker never pulls. */
 export const PULL_FAILED_SENTENCE = "Dependency image not available on this worker";
@@ -101,6 +109,7 @@ const SENTENCES: Record<TestServicesFailureReason, string> = {
   not_healthy: "A test service did not become healthy",
   seed_failed: "A test service's seeds did not complete",
   setup_failed: "The sealed check round's name server could not be set up",
+  fixtures: "The approved answers a test service needs could not be fetched",
 };
 
 /** The one error of this module. `message` is a fixed sentence (never a command's output, a path or a value); `failures` is what the usage record says per dependency. */
@@ -138,6 +147,8 @@ export interface UsageRecordSetup {
   redactor: ServiceRedactor;
   /** Slice 2: the emulator's ledger, read now (the round's own emulator, while it still runs). */
   emulator?: EmulatorLedgerPort;
+  /** Slice 3: the round's fake servers' ledger summaries, read now (while they still run). */
+  fakes?: FakeUsagePort;
 }
 
 /**
@@ -215,6 +226,8 @@ export function testServicesConfigFromEnvironment(
   const runDirectoryParent = environment[TEST_SERVICES_RUN_DIR_ENVIRONMENT];
   const probeImage = environment[TASK_SANDBOX_IMAGE_ENVIRONMENT];
   if (!registry || !catalogEnv || !runDirectoryParent || !probeImage) return undefined;
+  // Root withheld test services on this host (boot-stage2.sh writes `all`, also when the IPv6 wall failed and the images ARE here): no configuration, so no entry point can start a run, whatever the plan.
+  if (notPulledRepositories(environment) === "all") return undefined;
   const edition = environment[TEST_SERVICES_EDITION_ENVIRONMENT] === "enterprise" ? "enterprise" : "public";
   const mem = Number(environment[TEST_SERVICES_MAX_MEM_ENVIRONMENT] ?? DEFAULT_MAX_MEM_MIB);
   return {
@@ -266,6 +279,8 @@ interface Base {
   files: NonNullable<HelperRequest["files"]>;
   /** Slice 2: this base is the ONE Rovara local AWS helper that all of the plan's emulated entries share (`plan` is the first of them). */
   emulator?: EmulatorBase;
+  /** Slice 3: this base is a fake server, serving the fixture set with this digest (the plan's pin). */
+  fake?: { digest: string };
 }
 
 /** What the plan's emulated entries add up to: their ids (each reports its own usage row), the AWS services they need, the region the code is told, and the infrastructure files that declare the resources. */
@@ -333,6 +348,8 @@ async function requireLocalImages(docker: DockerCli, config: Pick<TestServicesCo
   const missing = new Map<string, TestServicesStartFailure>();
   for (const base of bases) {
     if (signal?.aborted === true) throw new TestServicesError("start_failed");
+    // A fake runs from the worker's own image (the probe image), which is on this host by being the worker's: it has no catalog image to pull.
+    if (base.fake !== undefined) continue;
     const reference = `${config.registry}/${catalogRepositoryName(config.catalogEnv, base.plan.repository)}@sha256:${base.plan.digest}`;
     const present = await docker.run(["image", "inspect", "--format", "{{.Id}}", reference], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(signal === undefined ? {} : { signal }) }).catch(() => undefined);
     if (present === undefined || present.exitCode !== 0) for (const id of base.emulator?.ids ?? [base.plan.id]) missing.set(id, "pull_failed");
@@ -358,9 +375,45 @@ function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly Tas
       }
       continue;
     }
-    bases.push(resolveLocal(catalog, plan, config));
+    bases.push(plan.backing === "fake" ? resolveFake(catalog, plan, config) : resolveLocal(catalog, plan, config));
   }
   return bases;
+}
+
+/**
+ * A fake against the worker's own catalog: the entry must be the catalog's fake server (a helper that runs from the worker's image: marked `workerImage`, no digest), offered in this edition and not retired, for the repository
+ * the plan names; the plan carries no image digest, a fixture set digest, no seeds and a reset that makes a new fake each round, and a name to be reached by. Anything else is `mismatch`: the broker's plan is never trusted to
+ * name an image or a policy. A catalog this worker image does not have the entry in at all is the fixed `pull_failed` ("not available on this worker").
+ */
+function resolveFake(catalog: ServiceCatalog, plan: TaskDependencyPlan, config: Pick<TestServicesConfig, "edition">): Base {
+  const entry = catalogEntryById(catalog, plan.catalogId);
+  if (entry === undefined) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
+  if (entry.backing !== "fake" || entry.family !== "fake-server" || entry.workerImage !== true || entry.status === "retired" || !entry.editions.includes(config.edition) || entry.image.repository !== plan.repository) throw new TestServicesError("mismatch");
+  if (plan.digest !== undefined || plan.fake === undefined || plan.fake.unmatched !== "fail" || plan.seeds.length > 0 || plan.reset !== "fresh_per_round" || plan.aws !== undefined || (plan.config.initFiles?.length ?? 0) > 0) throw new TestServicesError("mismatch");
+  const aliases = [...plan.aliases];
+  const host = aliases[0];
+  const port = entry.run.ports[0];
+  if (host === undefined || port === undefined) throw new TestServicesError("mismatch");
+  return { plan, entry, aliases, host, port, user: DEFAULT_USER, database: DEFAULT_DATABASE, resetDependency: { id: plan.id, seeds: [], reset: "fresh_per_round" }, files: [], fake: { digest: plan.fake.fixtureSetRef } };
+}
+
+/**
+ * The fixture sets of the plan's fakes for ONE phase, as JSON text by digest. Each is fetched now through the run's delivery (a fresh read address, the bytes held to the digest) and returned to the caller, which hands it to
+ * the one helper that serves it: nothing here keeps a set. A plan with a fake and no delivery (a worker started without the callback), or any fetch that fails, is the fixed `fixtures`.
+ */
+async function fetchFixtures(bases: readonly Base[], delivery: FixtureDelivery | undefined, signal: AbortSignal | undefined): Promise<ReadonlyMap<string, string>> {
+  const texts = new Map<string, string>();
+  for (const base of bases) {
+    const digest = base.fake?.digest;
+    if (digest === undefined || texts.has(digest)) continue;
+    if (delivery === undefined) throw new TestServicesError("fixtures");
+    try {
+      texts.set(digest, JSON.stringify(await delivery(digest, signal)));
+    } catch {
+      throw new TestServicesError("fixtures");
+    }
+  }
+  return texts;
 }
 
 /** The plan's allowed region words: the contract's AWS shape is checked by the broker; this is the worker's own, looser-but-closed form (it never relies on the broker alone). */
@@ -425,8 +478,19 @@ function resolveLocal(catalog: ServiceCatalog, plan: TaskDependencyPlan, config:
   return { plan, entry, aliases, host, port, user, database, resetDependency: { id: plan.id, seeds: plan.seeds, reset: plan.reset }, files: [] };
 }
 
-/** One phase's helper request and variables, with a password made now: the working phase and every sealed round have their own, so no phase's helpers or password are another's. */
-function materialize(base: Base): Resolved {
+/**
+ * One phase's helper request and variables, with a password made now: the working phase and every sealed round have their own, so no phase's helpers or password are another's. A fake's request carries its phase's set (fetched
+ * for this phase) and which sandbox it answers; it has no password.
+ */
+function materialize(base: Base, phase: "working" | "check", fixtures: ReadonlyMap<string, string>): Resolved {
+  if (base.fake !== undefined) {
+    const fixtureJson = fixtures.get(base.fake.digest);
+    if (fixtureJson === undefined) throw new TestServicesError("fixtures");
+    return {
+      ...base, request: { id: base.plan.id, name: base.plan.name, entry: base.entry, aliases: base.aliases, fake: { phase, digest: base.fake.digest, fixtureJson } },
+      env: { id: base.plan.id, host: base.host, port: base.port, credentials: {}, connect: { env: base.plan.connect, hostAliases: base.aliases } },
+    };
+  }
   if (base.emulator !== undefined) {
     // Rovara local AWS: THREE fresh, different secrets for each emulator that starts (the working phase's and every sealed round's own): the presign secret as `password`, the control token and the SQS receipt-handle secret.
     return { ...base, request: { id: base.plan.id, name: base.plan.name, entry: base.entry, aliases: base.aliases, credentials: newLocalAwsCredentials(), region: base.emulator.region, awsServices: base.emulator.services } };
@@ -550,6 +614,8 @@ export interface StartTestServicesInput {
   artifactSink?: ArtifactSink | undefined;
   /** Stops the start (pulls, helper starts, seeds) when the task is cancelled. */
   signal?: AbortSignal;
+  /** Slice 3: fetches the approved fixture set of a fake by digest, at the start of each phase that serves one (fixture-delivery.ts). Absent: a plan with a fake is refused (`fixtures`) before anything starts. */
+  fixtureDelivery?: FixtureDelivery;
 }
 
 const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -575,6 +641,7 @@ function mergeUsageRecords(earlier: TestServicesUsageRecord | undefined, later: 
   const ranked = [...domains].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
   const overflow = ranked.slice(limits.unknownDomains).reduce((sum, [, count]) => sum + count, 0);
   const aws = mergeAwsUsage(earlier.aws, later.aws);
+  const fakes = mergeFakeUsage(earlier.fakes, later.fakes);
   return {
     schemaVersion: 1,
     dependencies: later.dependencies.map((entry) => ({ ...entry, resetCount: Math.min(limits.resets, entry.resetCount + (before.get(entry.id)?.resetCount ?? 0)) })),
@@ -583,6 +650,7 @@ function mergeUsageRecords(earlier: TestServicesUsageRecord | undefined, later: 
       otherCount: Math.min(limits.count, earlier.unknownCalls.otherCount + later.unknownCalls.otherCount + overflow),
     },
     ...(aws === undefined ? {} : { aws }),
+    ...(fakes === undefined ? {} : { fakes }),
   };
 }
 
@@ -601,6 +669,8 @@ interface RoundState {
   resetDeps: readonly ResetDependency[];
   /** Slice 2: reads this round's emulator's request ledger (absent when the plan has no emulator). */
   ledger: EmulatorLedgerPort | undefined;
+  /** Slice 3: reads this round's fake servers' ledger summaries (absent when the plan has no fake). */
+  fakes: FakeUsagePort | undefined;
   /** Absent while the round is still starting. */
   runners: CheckRunners | undefined;
   /** Ends the sealed round (the check sandbox removed, the working sandbox put back). */
@@ -732,6 +802,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       const built = await ports.buildServiceUsageRecord({
         planned: ids, session: view.session, startMs: open.startMs, resetCounts: view.resets, failures, redactor: open.redactor, dns: { docker, dnsHelperName: open.plan.dnsHelperName },
         ...(open.ledger === undefined ? {} : { emulator: open.ledger }),
+        ...(open.fakes === undefined ? {} : { fakes: open.fakes }),
       });
       const parsed = TestServicesUsageRecordSchema.safeParse(built);
       return parsed.success ? parsed.data : undefined;
@@ -789,7 +860,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       // No working phase: the sandbox keeps its commands as they are, and `dispose()` still tears the rounds down.
       input.sandbox.attachServices({ wrapExec: (inner) => inner, teardown });
     } else {
-      const working = materializeAll(bases);
+      const working = materializeAll(bases, "working", await fetchFixtures(bases, input.fixtureDelivery, input.signal));
       const workingEnv = environmentFor("working", working);
       secrets.push(...helperSecretValues(working.map((item) => item.request)), ...workingEnv.secretValues);
       redactor = createServiceRedactor(secrets);
@@ -839,7 +910,14 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     const number = rounds;
     // The init files are read again from the candidate tree as it is NOW (the agent may have edited them), with the same checks as at the start.
     const current = await Promise.all(bases.map(async (base) => ({ ...base, files: await initFilesOf(base.plan, root, input.repositoryPaths) })));
-    const resolved = materializeAll(current);
+    let fixtures: ReadonlyMap<string, string>;
+    try {
+      fixtures = await fetchFixtures(current, input.fixtureDelivery, signal);
+    } catch (error) {
+      for (const id of ids) failures.set(id, "start_failed");
+      throw error;
+    }
+    const resolved = materializeAll(current, "check", fixtures);
     const environment = environmentFor("check", resolved);
     secrets.push(...helperSecretValues(resolved.map((item) => item.request)), ...environment.secretValues);
     redactor = createServiceRedactor(secrets);
@@ -873,6 +951,8 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       dnsStarted = true;
       const dns = await docker.run(plan.dnsHelperRunArgs, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
       if (dns === undefined || dns.exitCode !== 0) throw new TestServicesError("setup_failed");
+      // The check sandbox starts only once the name server listens: before that, every lookup in the round would fail at once, unrecorded.
+      await waitForSealedDnsHelper(docker, plan.dnsHelperName, { signal, now, ...(config.sleep === undefined ? {} : { sleep: config.sleep }) }).catch(() => { throw new TestServicesError("setup_failed"); });
       check();
 
       // The sealed round: the working sandbox was never on this network; the check sandbox starts inside `withSealedCheckRound`.
@@ -898,9 +978,10 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       const emulatorItem = resolved.find((item) => item.emulator !== undefined);
       const roundLedger = emulatorItem === undefined ? undefined : emulatorLedgerPort(controlTargetOf(emulatorItem, session, roundFiles, roundRunId));
       const countedRound = countResets(session);
+      const roundFakes = resolved.flatMap((item) => (item.fake === undefined ? [] : [{ id: item.plan.id, digest: item.fake.digest }]));
       const state: RoundState = {
         number, session, counted: countedRound.session, resets: countedRound.resets, plan, files: roundFiles, redactor: roundRedactor, startMs, dnsStarted, runners, sealedClose: closeSealed,
-        resetDeps: roundDeps, ledger: roundLedger,
+        resetDeps: roundDeps, ledger: roundLedger, fakes: roundFakes.length === 0 ? undefined : fakeUsagePort(docker, session, roundFakes),
       };
       round = state;
 
@@ -1000,8 +1081,8 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   return run;
 }
 
-function materializeAll(bases: readonly Base[]): Resolved[] {
-  return bases.map(materialize);
+function materializeAll(bases: readonly Base[], phase: "working" | "check", fixtures: ReadonlyMap<string, string>): Resolved[] {
+  return bases.map((base) => materialize(base, phase, fixtures));
 }
 
 /** The seeds' ports: a command runs where the caller says; a fixture file is not available in slice 1 (refused, so the seed fails closed). */
@@ -1034,6 +1115,8 @@ export interface StartTaskTestServicesInput {
   artifactSink: ArtifactSink;
   /** The worker's cancellation controller: a cancel while the services start stops the pulls, the helper starts and the seeds. */
   cancellation?: Pick<WorkerCancellationController, "register"> | undefined;
+  /** Slice 3: the run's `fixture-set` callback (callback-client.ts), for a plan with a fake. */
+  fixtureSet?: FixtureSetCallback | undefined;
 }
 
 /**
@@ -1058,6 +1141,7 @@ export async function startTaskTestServices(input: StartTaskTestServicesInput): 
     return await startTestServicesRun(config, {
       dependencies, operationId: input.operationId, rootPath: input.rootPath, repositoryPaths: input.repositoryPaths, sandbox: input.sandbox, hasDevcontainer: input.devcontainer,
       artifactSink: input.artifactSink, signal: stop.signal,
+      ...(input.fixtureSet === undefined ? {} : { fixtureDelivery: createFixtureDelivery(input.fixtureSet) }),
       // A CHECKS run has no agent and no use for a working-phase Postgres: only the sealed rounds start services (H3).
       workingPhase: input.mode !== "CHECKS",
     });
@@ -1070,10 +1154,24 @@ export async function startTaskTestServices(input: StartTaskTestServicesInput): 
 }
 
 /** The features this worker adds to /ping for test services: the plan feature only when the worker has a test-services configuration (a worker without one would only refuse such a plan). */
-export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env, shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE> {
+export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env, shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE> {
   if (testServicesConfigFromEnvironment(environment, undefined, undefined) === undefined) return [];
   if (notPulledRepositories(environment) === "all") return [];
-  return emulatorImagePrepulled(shipped, environment) ? [TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE] : [TEST_SERVICES_PLAN_FEATURE];
+  // Slice 3: a worker whose image carries the catalog's fake server (a helper that runs from the worker's own image) can run a plan with a fake; it needs no image pulled.
+  const features: Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE> = [TEST_SERVICES_PLAN_FEATURE];
+  if (emulatorImagePrepulled(shipped, environment)) features.push(TEST_SERVICES_AWS_PLAN_FEATURE);
+  if (fakeServerBaked(shipped)) features.push(TEST_SERVICES_FAKE_PLAN_FEATURE);
+  return features;
+}
+
+/** Whether the catalog baked into this worker image holds the fake server as a worker-image helper that is offered (any edition) and not retired. Read synchronously from the image's own file; any problem is false. */
+export function fakeServerBaked(shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): boolean {
+  try {
+    const catalog = ServiceCatalogSchema.parse(JSON.parse(readFileSync(shipped.catalog, "utf8")));
+    return catalog.entries.some((entry) => entry.backing === "fake" && entry.family === "fake-server" && entry.workerImage === true && entry.status !== "retired");
+  } catch {
+    return false;
+  }
 }
 
 /** The two files the worker image ships beside `dist/`: the pinned catalog and the list root pulled at boot. */
@@ -1135,6 +1233,8 @@ export interface PrepareTestServices {
   cancellation?: Pick<WorkerCancellationController, "register">;
   /** Receives the usage record once, after the readiness commands and before the services stop (also when the start failed: then every dependency is `started: false` with its fixed failure). */
   onUsageRecord?(record: TestServicesUsageRecord): void | Promise<void>;
+  /** Slice 3: the preparation's `fixture-set` callback, for a plan with a fake. */
+  fixtureSet?: FixtureSetCallback;
 }
 
 type ReadinessRunner = (command: Parameters<SeedPorts["runCommand"]>[0], index: number, rootPath: string) => Promise<CommandResult>;
@@ -1174,7 +1274,7 @@ export async function startPrepareTestServices(input: { options: PrepareTestServ
   let run: TestServicesRun;
   try {
     await input.sandbox.start();
-    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false, repositoryPaths: input.repositoryPaths, signal: stop.signal, workingPhase: false });
+    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false, repositoryPaths: input.repositoryPaths, signal: stop.signal, workingPhase: false, ...(options.fixtureSet === undefined ? {} : { fixtureDelivery: createFixtureDelivery(options.fixtureSet) }) });
   } catch (error) {
     unregister?.();
     const failure = failureOf(error);

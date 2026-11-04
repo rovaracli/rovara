@@ -1,7 +1,6 @@
 // "How we work" (H2): `GET` and `PUT /v1/app/projects/{p}/playbook`. Anyone who can see the project reads it; the PUT needs `edit_settings` (a maintainer), as the project's code
 // settings do, and the revision the caller read. The project is found through `projectFor`, so another org's project and one the caller has no role in answer the same 404.
 import {
-  DESIGN_REVIEW_LOCKED_FIELDS,
   ProjectPlaybookBodySchema,
   agentXError,
   featureEnabled,
@@ -19,8 +18,8 @@ import { assertStoredVersionModelsResolvable, pointerModelGuards } from "../agen
 import type { AuditRuntime, TransactItem } from "../audit/outbox.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
-import { designReviewEnabledFor } from "../design-review/switch.js";
-import { checkDesignReviewWrite, effectiveDesignReviewSetting, lockedFields, readDesignReviewLock, type DesignReviewLockRead } from "../design-review/lock.js";
+import { designReviewAvailableFor, designReviewEnabled } from "../design-review/switch.js";
+import { checkDesignReviewWrite, effectiveDesignReviewSetting, lockedFields, readDesignReviewCompany, readDesignReviewLock, type DesignReviewCompanyRead } from "../design-review/lock.js";
 import { computeHowWeWork, type HowWeWorkDependencies } from "./effective.js";
 import { postProjectProcess } from "./process-layer.js";
 import { DESIGN_REVIEW_GROUP_EDITION, DESIGN_REVIEW_LOCKED, DESIGN_REVIEW_LOCK_UNREADABLE, readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
@@ -69,19 +68,28 @@ const MAINTAINERS_ONLY = "only a project maintainer can change how the project w
  * cannot be read (or a read that fails) is never "no lock". The stored document is untouched by this; a client that saves again sends only the fields it changed.
  */
 async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, playbook: ProjectPlaybook, project: string): Promise<ProjectPlaybookResponse> {
-  // OFF reading (the safer one): where the design review does not run for this project (`dr` off, or the project not named in `dp`) the answer is exactly what it was before the stage existed: the playbook without a
-  // design review setting, no lock list and no groups flag. The stored setting is kept untouched; it shows again when the stage is on for the project.
-  if (!designReviewEnabledFor(project)) {
+  void project;
+  // OFF reading (the safer one): where the design review stage does not exist (`dr` off) the answer is exactly what it was before the stage existed: the playbook without a design review setting, no lock list, no groups
+  // flag and no company word, and nothing is read. The stored setting is kept untouched; it shows again when the stage is on.
+  if (!designReviewEnabled()) {
     const { designReview: _kept, ...plain } = playbook;
     void _kept;
     return { playbook: plain };
   }
-  const lock: DesignReviewLockRead = await readDesignReviewLock(deps, orgId).catch((): DesignReviewLockRead => ({ kind: "unreadable" }));
+  const company: DesignReviewCompanyRead = await readDesignReviewCompany(deps, orgId).catch((): DesignReviewCompanyRead => ({ lock: { kind: "unreadable" }, policy: { allowed: false }, policyUnreadable: true, revision: undefined }));
+  // `dr` is on but design review is not available for the company (DR-FU4): not allowed, or its stored rules cannot be read (fail closed to off): the setting is not shown or edited, and the page says why from this one flag.
+  if (!company.policy.allowed || company.lock.kind === "unreadable") {
+    const { designReview: _kept, ...plain } = playbook;
+    void _kept;
+    return { playbook: plain, designReviewAllowed: false };
+  }
   // Groups can be named as the high-risk approver only where the edition has them (Enterprise): the page offers the choice from this flag alone.
   const groups = deps.edition !== undefined && featureEnabled(deps.edition, "groups") ? { designReviewGroups: true as const } : {};
-  if (lock.kind === "none") return { playbook, ...groups };
+  const { lock } = company;
+  // What the project RUNS with: its own setting, or Off when it has none, held to the lock.
   const held = effectiveDesignReviewSetting(playbook, lock);
-  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewLocked: lock.kind === "lock" ? lockedFields(lock.lock) : [...DESIGN_REVIEW_LOCKED_FIELDS], ...groups };
+  const locked = lock.kind === "lock" ? lockedFields(lock.lock) : [];
+  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewAllowed: true, ...(locked.length === 0 ? {} : { designReviewLocked: locked }), ...groups };
 }
 
 /** `GET /v1/app/projects/{p}/playbook`: to anyone who can see the project. */
@@ -106,8 +114,8 @@ export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, call
     throw agentXError("CONFIG_INVALID", `${path}: ${issue === undefined || issue.code === "unrecognized_keys" ? "has a field this route does not take" : issue.message}`);
   }
   const { expectedRevision, defaultProcess, designReview } = parsed.data;
-  // Where the design review does not run for the project, the route takes no design review setting, as before the stage existed (the same words as any field it does not take).
-  if (designReview !== undefined && !designReviewEnabledFor(found.name)) throw agentXError("CONFIG_INVALID", "designReview: has a field this route does not take");
+  // Where the design review stage does not exist (`dr` off, or the company has not allowed it), the route takes no design review setting, as before the stage existed (the same words as any field it does not take).
+  if (designReview !== undefined && !(await designReviewAvailableFor(deps, caller.orgId))) throw agentXError("CONFIG_INVALID", "designReview: has a field this route does not take");
   // A design review setting is held to the company's lock BEFORE anything is written: a project can never loosen it (a stricter value is fine). A lock that is there but unreadable refuses the write.
   if (designReview !== undefined) {
     const check = checkDesignReviewWrite(designReview, await readDesignReviewLock(deps, caller.orgId), deps.edition);

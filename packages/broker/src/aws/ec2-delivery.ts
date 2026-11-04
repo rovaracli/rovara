@@ -26,6 +26,7 @@ import {
   DESIGN_REVIEW_WORKER_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   TEST_SERVICES_AWS_PLAN_FEATURE,
+  TEST_SERVICES_FAKE_PLAN_FEATURE,
   TEST_SERVICES_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
   PREPARE_SAVED_ENV_FEATURE,
@@ -414,7 +415,9 @@ async function forWorkerFeatures(
   const carriesOwnerRedirect = invocation.kind === "task" && invocation.payload.ownerRedirect !== undefined;
   // Learning v2: advice from approved lessons. An older worker is sent the stage without it (never refused), so it runs as it would without memory.
   const carriesLearnedContext = invocation.kind === "task" && (invocation.payload.learnedContext !== undefined || invocation.payload.learnedRefs !== undefined);
-  if (requestedThinkingLevel === undefined && !carriesSavedEnv && !carriesSavedEnvBuild && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
+  // Test environment and test services: a preparation that carries `testServices`, or a task that carries `testEnvironment`, reaches the feature gates below even when it carries nothing else (the gates are never skipped for it).
+  const carriesTestServices = (invocation.kind === "task" && invocation.payload.testEnvironment !== undefined) || (invocation.kind === "prepare" && invocation.payload.testServices !== undefined);
+  if (requestedThinkingLevel === undefined && !carriesSavedEnv && !carriesSavedEnvBuild && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext && !carriesTestServices) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -466,6 +469,10 @@ async function forWorkerFeatures(
   }
   // Test services (slice 2): a plan that starts Rovara local AWS (an `emulated` dependency) also needs the worker to list the AWS feature: an older worker's strict parse would refuse the entry.
   if ((invocation.kind === "task" ? invocation.payload.testEnvironment?.dependencies : invocation.kind === "prepare" ? invocation.payload.testServices?.dependencies : undefined)?.some((dependency) => dependency.backing === "emulated") === true && !features.includes(TEST_SERVICES_AWS_PLAN_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Test services (slice 3): a plan with a fake (the fake server from the worker's own image, and a fixture set fetched through the `fixture-set` callback) also needs the worker to list the fake feature: an older worker's strict parse would refuse the entry.
+  if ((invocation.kind === "task" ? invocation.payload.testEnvironment?.dependencies : invocation.kind === "prepare" ? invocation.payload.testServices?.dependencies : undefined)?.some((dependency) => dependency.backing === "fake") === true && !features.includes(TEST_SERVICES_FAKE_PLAN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.

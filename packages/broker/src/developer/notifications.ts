@@ -9,7 +9,7 @@ export interface StreamRecord {
   eventName?: string;
   dynamodb?: { ApproximateCreationDateTime?: number; NewImage?: Record<string, AttributeValue>; OldImage?: Record<string, AttributeValue> };
 }
-export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report" | "spec_changed" | "spec_hold" | "settings_proof" | "design_wait";
+export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report" | "spec_changed" | "spec_hold" | "settings_proof" | "design_wait" | "owner_stopped_dm";
 export interface Notice {
   /** Fixed per change, so a repeated delivery posts once (C9). */
   id: string;
@@ -31,6 +31,8 @@ export interface Notice {
   /** Workflow snapshot revision to resume when verification failed before a manifest existed. */
   expectedWorkflowRevision?: number;
   peopleRequestId?: string;
+  /** S2, an `owner_stopped_dm` notice: the sort key of the pending row (one per stop and per person) the notifier reads; the notice holds no text. */
+  ownerStopKey?: string;
   /** TE-4: the project's settings-proof item whose saved commands failed their check, and the check it is about. The notifier reads the item; the notice holds no text. */
   proofItem?: { pk: string; sk: string };
   proofCheckId?: string;
@@ -163,6 +165,13 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
       // Stamped with the window's own start, to the millisecond, so it compares exactly with the share's time.
       const windowStart = text(next.windowStart);
       return [{ id: `${taskId}:nudge:${nudgeId}`, kind: "comment_nudge", taskId, at: Number.isNaN(Date.parse(windowStart)) ? at : windowStart, notBefore: dueAt }];
+    }
+    // S2: Rovara stopped a step because the task's owner lost their place; each person who could take the task over hears once (one row per stop and person).
+    case "TASK_OWNER_STOPPED_NOTIFICATION": {
+      const taskId = text(next.taskId);
+      const sk = text(next.sk);
+      if (previous !== undefined || taskId === "" || !sk.startsWith("OWNER_STOP_NOTIFY#") || next.status !== "PENDING") return [];
+      return [{ id: `${taskId}:owner_stopped:${sk.slice("OWNER_STOP_NOTIFY#".length)}`, kind: "owner_stopped_dm", taskId, ownerStopKey: sk, at }];
     }
     case "TASK_PEOPLE_NOTIFICATION": {
       const taskId = text(next.taskId);

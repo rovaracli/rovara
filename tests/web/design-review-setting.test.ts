@@ -13,10 +13,10 @@ import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 
 const PERSON = "b".repeat(64);
-interface World { setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
+interface World { off?: boolean; allowed?: boolean | undefined; setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
 function setup(world: World = {}, canEdit = true, filter: "all" | "changed" | "locked" = "all") {
  const state = { ...world }, puts: Array<{ path: string; body: Record<string, unknown> }> = [];
- const answer = () => ({ playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.setting === undefined ? {} : { designReview: state.setting }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
+ const answer = () => ({ ...(state.allowed === undefined ? {} : { designReviewAllowed: state.allowed }), playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.off === true || state.allowed === false ? {} : { designReview: state.setting ?? DESIGN_REVIEW_DEFAULT_SETTING }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
  const f = fakeHost(async request => {
   if (request.path.endsWith("/playbook") && request.method === "GET") return { status: 200, body: answer() };
   if (request.path.endsWith("/playbook") && request.method === "PUT") { const body = request.body as Record<string, unknown>;puts.push({ path: request.path, body });state.setting = body.designReview as DesignReviewSetting;state.revision = (state.revision ?? 4) + 1;return { status: 200, body: answer() }; }
@@ -41,30 +41,31 @@ it("shows the stage card with its six rows and the settings, from the owner's de
 });
 
 it("reads a locked field as read-only with the reason, and the page can still change the others", async () => {
- const f = setup({ setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "always", allowSkip: false }, locked: ["designReview.mode", "designReview.allowSkip"] });
+ const f = setup({ setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "always", allowSkip: false }, locked: ["designReview.tier", "designReview.allowSkip"] });
  const editor = await screen.findByRole("region", { name: "Design review settings editor" });
- expect(within(editor).getByLabelText("When it runs").hasAttribute("disabled")).toBe(true);
+ // The mode is never locked: the company cannot stop a project turning itself on or off.
+ expect(within(editor).getByLabelText("When it runs").hasAttribute("disabled")).toBe(false);
  expect(within(editor).getByLabelText("Allow skipping design review").hasAttribute("disabled")).toBe(true);
- expect(within(editor).getByLabelText("Tier").hasAttribute("disabled")).toBe(false);
+ expect(within(editor).getByLabelText("Tier").hasAttribute("disabled")).toBe(true);
  expect(within(editor).getAllByText("Your company has locked this setting. A company admin can change it.")).toHaveLength(2);
  expect(screen.getAllByText("Locked by company").length).toBeGreaterThan(0);
  expect(screen.getByText("Your company locks some of these settings. Locked settings are read-only.")).toBeTruthy();
- // The save sends the locked values as shown (the held ones), with only the tier changed.
- fireEvent.change(within(editor).getByLabelText("Tier"), { target: { value: "thorough" } });
+ // The save sends the locked values as shown (the held ones), with only the mode changed.
+ fireEvent.change(within(editor).getByLabelText("When it runs"), { target: { value: "never" } });
  fireEvent.click(within(editor).getByRole("button", { name: "Save design review settings" }));
  await waitFor(() => expect(f.puts).toHaveLength(1));
- expect(f.puts[0]!.body).toMatchObject({ expectedRevision: 4, defaultProcess: { kind: "builtin" }, designReview: { mode: "always", tier: "thorough", allowSkip: false, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } });
+ expect(f.puts[0]!.body).toMatchObject({ expectedRevision: 4, defaultProcess: { kind: "builtin" }, designReview: { mode: "never", tier: "standard", allowSkip: false, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } });
  expect(await screen.findByText("Saved. New design reviews use these settings; running ones keep theirs.")).toBeTruthy();
  f.close();
 });
 
-it("locks every field when the company lock cannot be read, and offers nothing to save", async () => {
- const all = ["designReview.mode", "designReview.tier", "designReview.allowSkip", "designReview.capUsdPerTask", "designReview.highRiskApprover"];
+it("locks every field the company can lock, but never the mode, and offers nothing to save", async () => {
+ const all = ["designReview.tier", "designReview.allowSkip", "designReview.capUsdPerTask", "designReview.highRiskApprover"];
  const f = setup({ setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "always", allowSkip: false }, locked: all });
  const editor = await screen.findByRole("region", { name: "Design review settings editor" });
- for (const label of ["When it runs", "Tier", "Allow skipping design review", "Cost limit per task (USD)", "Who approves a high-risk design"]) expect(within(editor).getByLabelText(label).hasAttribute("disabled")).toBe(true);
+ expect(within(editor).getByLabelText("When it runs").hasAttribute("disabled")).toBe(false);
+ for (const label of ["Tier", "Allow skipping design review", "Cost limit per task (USD)", "Who approves a high-risk design"]) expect(within(editor).getByLabelText(label).hasAttribute("disabled")).toBe(true);
  expect(screen.getByText("Your company controls every design review setting here.")).toBeTruthy();
- expect(within(editor).getByRole("button", { name: "Save design review settings" }).hasAttribute("disabled")).toBe(true);
  f.close();
 });
 
@@ -116,6 +117,15 @@ it("says plainly, without an alert, when the setting cannot be read, and shows n
  missing.unmount();
 });
 
+it("shows no card where design review is off for the project: the playbook answer has no designReview field (QA-04)", async () => {
+ const f = setup({ off: true });
+ await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.method === "GET" && request.path.endsWith("/playbook"))).toBe(true));
+ await waitFor(() => expect(f.container.querySelector("section, [id=hww-stage-design-review]")).toBeNull());
+ expect(screen.queryByText("Design review")).toBeNull();
+ expect(screen.queryByLabelText("When it runs")).toBeNull();
+ f.close();
+});
+
 it("gives a person who cannot edit the card and no editor", async () => {
  const f = setup({}, false);
  await screen.findByRole("region", { name: "Design review" });
@@ -129,9 +139,45 @@ it("keeps the pure rules: the default marks, the locked set and the setting a dr
  expect(rows[0]!.values[0]!.mark).toMatchObject({ locked: true, lockedBy: "company" });
  expect(rows[5]!.values[0]!.mark).toMatchObject({ locked: false, source: "rovara" });
  expect(settingLines({ ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" }, new Set())[0]!.mark).toMatchObject({ source: "project" });
- expect(lockedSet(["designReview.mode", "nonsense"])).toEqual(new Set(["mode"]));
+ expect(lockedSet(["designReview.mode", "designReview.tier", "nonsense"])).toEqual(new Set(["tier"]));
  const draft = draftOf(DESIGN_REVIEW_DEFAULT_SETTING);
  expect(settingOf(draft, false)).toEqual({ ok: true, setting: DESIGN_REVIEW_DEFAULT_SETTING });
  expect(settingOf({ ...draft, approverKind: "group", groupId: "g" }, false)).toMatchObject({ ok: false, problems: { group: "Groups are not available in this edition." } });
  expect(settingOf({ ...draft, capText: "0.1" }, true)).toMatchObject({ ok: false });
+});
+
+it("DR-FU4: where the company has not allowed design review the card says so in plain words and offers no setting and no editor, whoever looks", async () => {
+ for (const canEdit of [true, false]) {
+  const f = setup({ allowed: false }, canEdit);
+  const card = await screen.findByRole("region", { name: "Design review" });
+  expect(await within(card).findByText(/Design review is not turned on for your company/u)).toBeTruthy();
+  expect(within(card).getByText(/A company owner or admin can allow it in How we work for the company/u)).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Design review settings editor" })).toBeNull();
+  expect(screen.queryByLabelText("Design review settings")).toBeNull();
+  expect(f.puts).toHaveLength(0);
+  f.close();
+ }
+});
+
+it("DR-FU4: where the company allows it the project chooses Off, Auto or Always, in that order, and a change is saved", async () => {
+ const f = setup({ allowed: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ const editor = await screen.findByRole("region", { name: "Design review settings editor" });
+ const select = within(editor).getByRole<HTMLSelectElement>("combobox", { name: "When it runs" });
+ const options = [...select.options].filter(option => option.value !== "");
+ expect(options.map(option => option.value)).toEqual(["never", "auto", "always"]);
+ expect(options[0]!.textContent).toMatch(/^Off:/u);
+ expect(select.value).toBe("never");
+ fireEvent.change(select, { target: { value: "auto" } });
+ fireEvent.click(within(editor).getByRole("button", { name: "Save design review settings" }));
+ await waitFor(() => expect(f.puts).toHaveLength(1));
+ expect(f.puts[0]!.body.designReview).toMatchObject({ mode: "auto" });
+ f.close();
+});
+
+it("DR-FU4: a project with no setting shows Off, and there is no text about a company default", async () => {
+ const f = setup({ allowed: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ const editor = await screen.findByRole("region", { name: "Design review settings editor" });
+ expect(within(editor).getByRole<HTMLSelectElement>("combobox", { name: "When it runs" }).value).toBe("never");
+ expect(screen.queryByText(/company default/u)).toBeNull();
+ f.close();
 });

@@ -39,6 +39,7 @@ import {
   type OrgRole,
   type SessionLevel,
   atLeast,
+  hideEmailAddresses,
 } from "@agentx/contracts";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { grantRoleOf } from "../developer/project-roles.js";
@@ -333,7 +334,7 @@ export async function putSessionShare(deps: SessionShareDependencies, caller: Sh
     const record = await createPendingChange(approvals, {
       orgId: caller.orgId, requestId: input.requestId, requestedBy: caller.developerId,
       subject: { kind: SHARE_RULE, sessionId: session.sessionId, level: input.level },
-      changes: [`Share "${session.title}" with everyone in your company (${LEVEL_WORDS[input.level]})`],
+      changes: [`Share "${hideEmailAddresses(session.title)}" with everyone in your company (${LEVEL_WORDS[input.level]})`],
       approvers: { kind: "rule", rule: SHARE_RULE, candidates: [caller.developerId] },
     });
     // A replay of a request that was decided since is not waiting any more.

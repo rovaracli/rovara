@@ -2,7 +2,7 @@
 
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@agentx/contracts";
+import { AgentXError, WorkflowTransitionError, stopWorkflowStepNotRun, isSystemOwnerId, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@agentx/contracts";
 import { withDesignReviewPorts } from "../../design-review/wiring.js";
 import { designResolveDue } from "../../design-review/resolve-run.js";
 import { StoredBaselineSourceSchema } from "../baseline-source.js";
@@ -14,7 +14,10 @@ import { E2EPortablePlanReferenceError } from "../../e2e/feature-plan-intent.js"
 import { TERMINAL, getItem, operationKey, type OperationRecord } from "../cancellation.js";
 import { driveAgentRun } from "../../agents/run-engine.js";
 import { END_LEASE_MS, type TaskEndOutcome } from "../../agents/task-end.js";
-import { taskKey, taskAgentRunKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { effectiveTaskOwner, taskKey, taskAgentRunKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { requireCreatorStillMember } from "../../developer/creator-member.js";
+import { SLACK_WAIT_CAP_MS, STEP_NOT_RUN_SLACK, ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
+import { stopIfOwnerRefused } from "../developer-tasks/owner-stop.js";
 import { operationEndDispatchItem, type WorkflowDispatchRecord, isConditional } from "../broker-shared.js";
 import { recycleDriftedWorker, requalifyHoldActive } from "../../e2e/requalify-hold.js";
 import { ApplicationDispatchRefusal, ApplicationPlanDefect } from "../../e2e/application-dispatch-check.js";
@@ -38,7 +41,7 @@ import { readObjectText } from "./plan-answers.js";
 import { requireWorkspace } from "./records.js";
 import { ec2Sessions } from "./runtime-clients.js";
 import { canReadBaseBranchHead, changeRequestRef, hostNameOf, hostOfTaskRepository } from "./repository-hosts.js";
-import { githubScopeOf, webhookRepositoryUrl } from "./scope-helpers.js";
+import { creatorCheckOf, githubScopeOf, webhookRepositoryUrl } from "./scope-helpers.js";
 import { workflowApplicationRouteDependencies } from "./slack-workflow-events.js";
 import { blockWorkflowE2EReadiness, closeUncheckedPlanCheck, companyChoseCriticModel, ensureWorkflowE2EComputeReadiness, recordWorkflowDispatchFailure, returnWorkflowToCorrectE2EPlan, settleLostBranchSync, type AccessPausedWorkflowDispatch } from "./sweeps-and-readiness.js";
 import { refreshTaskFeedbackForOwnerDecision, refusalText, releaseIfFinished } from "./terminal-and-github-events.js";
@@ -177,6 +180,69 @@ async function endStuckUnderstanding(dependencies: AwsBrokerDependencies, task: 
 /** How long a row that is waiting for its machine to be prepared is put off. */
 const WAIT_FOR_MACHINE_MS = 2 * 60_000;
 
+/**
+ * S2 (review M6): Slack could not be asked who may start work. Fail closed: nothing starts. The row is looked at again in two minutes without using its tries, the task page says it waits for Slack (a note on the
+ * workflow at its own revision), and after `SLACK_WAIT_CAP_MS` from the first miss the step stops with a plain, retryable reason (a person's Retry, or the next sweep once Slack is back, is the way on), the row goes
+ * and the stop is audited. The wait started is kept on the row (`slackWaitSince`), so retries do not restart the clock.
+ */
+async function deferForSlack(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<"DISPATCHED" | "STALE"> {
+  const key = { pk: item.pk, sk: item.sk };
+  const now = Date.now();
+  const stored = await getItem<Record<string, unknown>>(dependencies, key);
+  if (stored === undefined) return "STALE";
+  const since = typeof stored.slackWaitSince === "string" && !Number.isNaN(Date.parse(stored.slackWaitSince)) ? stored.slackWaitSince : new Date(now).toISOString();
+  if (stored.slackWaitSince === undefined) {
+    try {
+      await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: key, UpdateExpression: "SET slackWaitSince = :since", ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(slackWaitSince)",
+        ExpressionAttributeValues: { ":since": since } }));
+    } catch (error) { if (!isConditional(error)) throw error; }
+  }
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
+  const workflow = task?.workflow;
+  const at = new Date(now).toISOString();
+  if (now - Date.parse(since) >= SLACK_WAIT_CAP_MS) {
+    console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_slack_cap", taskId: item.taskId, kind: item.kind }));
+    if (task !== undefined && workflow !== undefined && task.orgId !== undefined) {
+      try {
+        await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+          ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",
+          ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+          ExpressionAttributeValues: { ":workflow": stopWorkflowStepNotRun(workflow, STEP_NOT_RUN_SLACK, at), ":now": at, ":revision": workflow.revision, ":stage": workflow.stage, ":state": workflow.state } }));
+      } catch (error) {
+        if (!isConditional(error) && !(error instanceof WorkflowTransitionError)) throw error;
+      }
+      await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
+        orgId: task.orgId, taskId: task.taskId, path: "queued_dispatch", reason: "slack_unavailable", occurrence: `slack#${item.sk}`, now: at });
+    }
+    await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
+    return "STALE";
+  }
+  console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_deferred_slack", taskId: item.taskId, kind: item.kind }));
+  if (workflow !== undefined && workflow.accessCheckWaitSince?.revision !== workflow.revision && (workflow.state === "READY" || workflow.state === "WAITING")) {
+    try {
+      await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: taskKey(item.taskId), UpdateExpression: "SET workflow.accessCheckWaitSince = :note",
+        ConditionExpression: "workflow.revision = :revision AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":note": { revision: workflow.revision, since }, ":revision": workflow.revision } }));
+    } catch (error) { if (!isConditional(error)) throw error; }
+  }
+  await waitForMachine(dependencies, item);
+  return "DISPATCHED";
+}
+
+/** The access check answered: ends an earlier Slack wait (the clock on the row, the note on the workflow at its revision). Best effort; a lost race changes nothing. */
+async function clearSlackWait(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord, workflow: WorkflowSnapshot): Promise<void> {
+  if ((item as { slackWaitSince?: unknown }).slackWaitSince !== undefined) {
+    try {
+      await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk }, UpdateExpression: "REMOVE slackWaitSince", ConditionExpression: "attribute_exists(pk)" }));
+    } catch (error) { if (!isConditional(error)) throw error; }
+  }
+  if (workflow.accessCheckWaitSince !== undefined) {
+    try {
+      await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: taskKey(item.taskId), UpdateExpression: "REMOVE workflow.accessCheckWaitSince",
+        ConditionExpression: "workflow.revision = :revision AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":revision": workflow.revision } }));
+    } catch (error) { if (!isConditional(error)) throw error; }
+  }
+}
+
 /** Puts a waiting dispatch row's next sweep off, conditional on the attempts it was read with (a row someone else moved is left to them). */
 async function waitForMachine(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
   const next = new Date(Date.now() + WAIT_FOR_MACHINE_MS).toISOString();
@@ -220,6 +286,27 @@ export async function readUnderstandingArtifact(dependencies: AwsBrokerDependenc
   if (text === undefined) return undefined;
   const read = readIntentArtifact(text);
   return read.ok ? { assessment: read.assessment, artifact: { id: String(artifact.id), objectKey: artifact.objectKey, createdAt: String(artifact.createdAt) } } : undefined;
+}
+
+/**
+ * MR-3: whether the task's owner is gone, so a queued dispatch must not run for them. `requireCreatorStillMember` (ruling R60) reads the owner's membership live; a removed owner (or a system owner
+ * whose project or company no longer stands) ends the task `creator_removed` there and refuses with TASK_ACCESS_DENIED, which is a final stop here: the caller removes the row (no retry, no parking)
+ * and the stop is audited with fixed words. A read that fails throws, and the dispatch's own bounded retry goes on.
+ */
+async function stopForGoneOwner(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord): Promise<boolean> {
+  try {
+    await requireCreatorStillMember(creatorCheckOf(dependencies), task);
+    return false;
+  } catch (error) {
+    if (!(error instanceof AgentXError) || error.code !== "TASK_ACCESS_DENIED") throw error;
+  }
+  if (task.orgId !== undefined) {
+    const system = isSystemOwnerId(effectiveTaskOwner(task).developerId);
+    await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
+      orgId: task.orgId, taskId: task.taskId, path: "queued_dispatch", reason: system ? "project_inactive" : "owner_removed", occurrence: "queued_dispatch", now: new Date().toISOString() },
+      { documentClient: dependencies.documentClient, tableName: dependencies.tableName, task });
+  }
+  return true;
 }
 
 export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: AccessPausedWorkflowDispatch): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
@@ -268,6 +355,8 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
     }
     // Plan 6 Task 17: a merge of the base whose machine was lost (the row names its operation): judged from what GitHub shows.
     if (item.kind === "SYNC" && workflow.state === "RUNNING") return await settleLostBranchSync(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
+    // MR-3: a task whose owner was removed (or whose system owner no longer stands) runs nothing more. The guard records `creator_removed` on the task; the row goes, so nothing retries it, and the stop is audited.
+    if (await stopForGoneOwner(dependencies, task)) { await remove(); return "STALE"; }
     const caller = await ownerCallerOf(dependencies, task, "workflow-dispatch");
     const routeDependencies = withDesignReviewPorts(dependencies, developerTaskRouteDependencies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
@@ -280,6 +369,8 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       taskAutonomyNow: (target) => target.orgId === undefined ? Promise.resolve("suggest" as const)
         : taskAutonomy(() => readTaskRecipe(dependencies, target.taskId, target.orgId!), undefined, () => companyAutonomyLimit(dependencies, target.orgId!)),
       ...specSeamsOf(dependencies),
+      // S2: the Audit Ledger, so a fix round the owner may not start is audited (`task.work_refused`).
+      ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
       currentPullRequestHead: async (target, pullRequest) => {
         const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
         if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
@@ -293,6 +384,14 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       currentBaseCommit: currentBaseCommitOf(dependencies),
     }, caller, undefined, null));
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
+    // S2 (any path): every other queued step runs as the task's owner, so it meets the send-back's project access rule and the archive check now. A step the owner may not have started is not
+    // started: the task blocks where it stands with a plain reason, the row goes (nothing retries it), and the refusal is audited. IMPLEMENT asks the same inside its own start (its path names the round).
+    // GROUNDING asks inside its own start (a check already running is not cut off: `runGroundingStep`), and CHECKS after a round was admitted goes on with it.
+    const underway = item.kind === "GROUNDING" || (item.kind === "CHECKS" && workflow.e2e?.currentRoundId !== undefined);
+    const asked = item.kind !== "IMPLEMENT" && !underway;
+    if (asked && await stopIfOwnerRefused(routeDependencies, task, workflow, "queued_dispatch")) { await remove(); return "STALE"; }
+    // The access check answered (Slack included): an earlier Slack wait is over, on the row and on the task, so a later short outage starts its own 30 minutes and the page stops saying "Waiting for Slack".
+    if (asked) await clearSlackWait(dependencies, item, workflow);
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.
     let outcome: "STARTED" | "DUPLICATE" | "STALE" | "WAITING";
     if (item.kind === "CHECKS") {
@@ -394,6 +493,9 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       }
       return "RETRY";
     }
+    // S2 (review M6): the owner's access is checked live, and for an owner whose access comes from a Slack channel that needs Slack. When Slack cannot be reached nothing is started (fail closed) and the row is
+    // looked at again later without using up its tries, as a row waiting for its machine is: an outage must not block the task with "could not start".
+    if (error instanceof AgentXError && error.code === "SLACK_UNAVAILABLE") return await deferForSlack(dependencies, item);
     // Plan 3, Task 16: the company or the project no longer allows the model this step needs. Trying again cannot change that, so the task is
     // blocked at once with the refusal's own words, which the owner can read.
     if (error instanceof AgentXError && error.code === "MODEL_NOT_ALLOWED") {
@@ -489,6 +591,8 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
     task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
     if (config?.enabled !== true || task === undefined || dependencies.developer === undefined) { await remove(); return "STALE"; }
     // MONEY (mainline #408 sync; owner ruling pending): Rovara's own moves run as the task's effective owner in the task's own org with the plain member role, nothing elevated.
+    // MR-3: Rovara's own look at a blocked step runs as the owner too; a removed owner stops it for good.
+    if (await stopForGoneOwner(dependencies, task)) { await remove(); return "STALE"; }
     const caller = await ownerCallerOf(dependencies, task, "workflow-autofix");
     const tasks = developerTaskActions(dependencies);
     const route = developerTaskRouteDependencies({
@@ -500,6 +604,17 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
       validateWorkflowE2EApplicationPlan: workflowApplicationRouteDependencies(dependencies).validateWorkflowE2EApplicationPlan,
       ...specSeamsOf(dependencies),
     }, caller, undefined, null);
+    // S2 (any path, owner decision 2026-11-04; this replaces "Rovara's own send-back still runs for an owner who lost access"): Rovara's own look, send-back and retry run as the owner, so they stop for an
+    // owner who may no longer have work started (project access, archived project). The blocked step stands for a person, with the plain ask ("only a person can fix this"); the stop is audited; the row goes.
+    const refusal = await ownerWorkRefusal(route, task);
+    if (refusal !== undefined) {
+      await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
+        orgId: String(task.orgId), taskId: task.taskId, path: "autofix", reason: refusal.reason, occurrence: `autofix#${String(item.workflowRevision)}`, now: new Date().toISOString() },
+        { documentClient: dependencies.documentClient, tableName: dependencies.tableName, task });
+      await recordAutofixGiveUpAsk(store, task, Date.now());
+      await remove();
+      return "STALE";
+    }
     const blockedByEnvironment = blockedByEnvironmentHook({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) });
     const deps: AutofixDependencies = {
       config, route, store: { documentClient: dependencies.documentClient, tableName: dependencies.tableName },
@@ -521,7 +636,7 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
         return exported.success && exported.data.status === "READY";
       },
       readArtifactText: async (key) => { const bytes = await readStoredBytes(dependencies, key, 64 * 1024 + 1); return bytes?.toString("utf8"); },
-      recycleWorker: (current) => recycleDriftedWorker(ec2Sessions, current.workspaceId),
+      recycleWorker: (current) => recycleDriftedWorker(ec2Sessions(), current.workspaceId),
       // Setup and test health (SH28): undefined while the `nh` switch is off.
       ...(blockedByEnvironment === undefined ? {} : { blockedByEnvironment }),
       ...fixSetupDependencies(dependencies),

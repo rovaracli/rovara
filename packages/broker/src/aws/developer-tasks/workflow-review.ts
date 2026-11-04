@@ -34,9 +34,10 @@ import {
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { aiToolTurn, developerTaskIdentity, partyOfTask, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional } from "../broker-shared.js";
+import { stopIfOwnerRefused } from "./owner-stop.js";
 import { shortenMarkdown } from "../../developer/plan-artifacts.js";
 import type { DeveloperCaller } from "../developer-routes.js";
-import type { TaskAccess } from "../../developer/task-access.js";
+import { requireProjectSendBackRole, type TaskAccess } from "../../developer/task-access.js";
 import { withTestRule } from "../../rovara-code/verification-report.js";
 import { ciFixPrompt, ciFixPromptWithoutOutput, readCiEvidence } from "../../rovara-code/ci-fix.js";
 import { conflictFixPrompt } from "../../rovara-code/branch-sync.js";
@@ -91,6 +92,8 @@ export async function startTaskWorkflowReview(deps: DeveloperTaskRouteDependenci
   }
   // Contributor intentionally checks only archive here; authorizeTaskAction owns the live role check.
   await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
+  // S2 (any path): starting the reviews by hand spends model money for this person, so it meets the send-back's project access rule too.
+  await requireProjectSendBackRole(deps, task, caller);
   await actionableWorkspace(deps, task);
   try {
     await queueWorkflowReview(deps, task, { ...workflow, candidate: workflow.candidate }, request.requestId, request.instructions, access, caller);
@@ -278,6 +281,8 @@ export async function startTaskWorkflowReviewFromSystem(
     || (workflow.verification.results.length === 0 && !(workflow.verification.reviewOnly === true && workflowIsReviewOnly(workflow.checkPolicy)))
     || workflow.verification.results.some((result) => result.status !== "PASS")) return "STALE";
   await creatorGuard(deps, task);
+  // S2: the reviews also start straight after a gated press (`startAcceptedStep`, access-resume), so the owner's access is asked at the start itself.
+  if (await stopIfOwnerRefused(deps, task, workflow, "direct_start")) return "STALE";
   // Plan 6 Task 16: a review of a round Rovara decided itself is paid work, so the autonomy is read again first.
   if (await stoppedByLoweredAutonomy(deps, task, workflow)) return "STALE";
   const dispatchAccess = await systemTaskAccess(deps, task);
@@ -313,6 +318,10 @@ export async function startTaskWorkflowImplementationFromSystem(
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.program === undefined || workflow.programStepId === undefined
     || workflow.revision !== expected.workflowRevision || workflow.stage !== "IMPLEMENT" || workflow.state !== "READY") return "STALE";
   await creatorGuard(deps, task);
+  // S2 (SB-2): a CI, conflict or review-comment fix round, and a custom sequence's next coding step, run as the task's owner, so they meet the send-back's project access rule (and the archive
+  // check) now; a step the owner may not start is not started, says why on the task, and is audited. Nothing retries it: the row goes.
+  const pathOfStep = workflow.fixSource === "ci" ? "ci_fix_round" : workflow.fixSource === "feedback" ? "feedback_round" : workflow.fixSource === "conflict" ? "conflict_round" : "program_step";
+  if (await stopIfOwnerRefused(deps, task, workflow, pathOfStep)) return "STALE";
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";

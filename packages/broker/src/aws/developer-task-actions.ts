@@ -4,7 +4,7 @@
 import type { DesignReviewDispatch } from "../design-review/round-ports.js";
 import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import type { OwnerRedirectInvocation, OrgId, PreparePins, RunCheckout, ChannelTurn, E2EWorkflowAdmissionRef, Operation, OperationRequest, ProjectCommand, PullRequestLifecycleRequest, PullRequestRequest, WorkflowDependencyInvocation, WorkflowFeedbackApprovalBinding, WorkflowFixPayload, WorkflowReviewBase, WorkflowReviewChecks, WorkflowReviewFeedback, WorkflowReviewNote, WorkflowReviewPlan, WorkspaceInstance } from "@agentx/contracts";
-import type { SpecReviewInput, SpecWriteBinding, TaskDependencyPlan } from "@agentx/contracts";
+import type { SpecReviewInput, SpecWriteBinding, TaskDependencyPlan, TestEnvProdDeny } from "@agentx/contracts";
 import type { ResolvedAttribution } from "../attribution/resolve.js";
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { DeveloperTaskRecord, StoredEvent } from "../developer/task-records.js";
@@ -38,7 +38,7 @@ export interface DeveloperTaskActions {
    * existed from the revision history (index only). CONFIG_INVALID, naming the project, when it cannot be repaired.
    */
   ensureProjectCatalogPointer(orgId: OrgId, projectName: string): Promise<void>;
-  preparation(identity: AuthenticatedIdentity, project: RegisteredProjectRecord, requestId: string, options?: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; pins?: PreparePins; testEnvPin?: { revision: number; digest: string }; /** Test services: the dependencies a candidate check starts (pinned, no secret), sent as the prepare payload's `testServices`. */ testServices?: readonly TaskDependencyPlan[] }): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; pins?: PreparePins }>;
+  preparation(identity: AuthenticatedIdentity, project: RegisteredProjectRecord, requestId: string, options?: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; pins?: PreparePins; testEnvPin?: { revision: number; digest: string }; /** Test services: the dependencies a candidate check starts (pinned, no secret), sent as the prepare payload's `testServices`. */ testServices?: readonly TaskDependencyPlan[]; /** Test services: the production deny list of the PROPOSAL the candidate check is for; kept on the prepare operation so the first check scans a fake with it too. */ testServicesDeny?: TestEnvProdDeny }): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; pins?: PreparePins }>;
   /**
    * Plan 3, Task 32: the outbox item that sends an existing workspace's held preparation (a run started with a run limit of 0), with a new capability and
    * repository grant for it. Refuses a workspace or operation that is no longer the held preparation.

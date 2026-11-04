@@ -300,3 +300,27 @@ describe("S2: the upkeep visits every waiting item, within a time budget, and a 
     expect(waiting(w)[0]).toMatchObject({ attempts: 2 });
   });
 });
+
+describe("AL-1: the posting workspace goes with the comment to the port", () => {
+  it("passes the workspace the post recorded to the rewrite and to the delete", async () => {
+    const w = world();
+    await w.ask();
+    await recordPost(w, askId("1"), { issueKey: "ENG-142", commentId: COMMENT, workspace: "acme" });
+    await eraseAskPerson(w.deps, ORG_A, MAYA, undefined, ["Maya Chen"]);
+    const seen: Array<{ kind: string; workspace?: string | undefined }> = [];
+    const port: LinearScrubPort = {
+      update: async (input) => { seen.push({ kind: "update", workspace: input.workspace }); },
+      remove: async (input) => { seen.push({ kind: "remove", workspace: input.workspace }); },
+    };
+    await settleLinearScrubs({ documentClient: w.db, tableName: "state", port }, ORG_A);
+    expect(seen).toEqual([{ kind: "update", workspace: "acme" }]);
+    // An Ask with nothing to rewrite from is deleted, in the same workspace.
+    const p = world();
+    await p.ask({ edition: "public", askId: askId("3") });
+    await recordPost(p, askId("3"), { issueKey: "ENG-142", commentId: COMMENT, workspace: "acme" });
+    p.db.set({ pk: askLinearScrubPk(ORG_A), sk: "x", entityType: "ASK_LINEAR_FIX", orgId: ORG_A, sessionId: SESSION, askId: askId("3"), issueKey: "ENG-142", commentId: COMMENT, workspace: "acme", attempts: 0 });
+    seen.length = 0;
+    await settleLinearScrubs({ documentClient: p.db, tableName: "state", port }, ORG_A);
+    expect(seen).toEqual([{ kind: "remove", workspace: "acme" }]);
+  });
+});

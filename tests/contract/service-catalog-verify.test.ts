@@ -166,7 +166,7 @@ describe("the company registry serves the exact digest", () => {
     expect(byId.get("mysql@8")).toMatchObject({ ok: false, code: "unreachable" });
     expect(byId.get("postgres@16")).toMatchObject({ ok: false, code: "digest_mismatch" });
     expect(byId.get("valkey@8")).toMatchObject({ ok: false, code: "missing" });
-    expect(results.length).toBe(catalog.entries.filter((entry) => entry.status !== "retired").length);
+    expect(results.length).toBe(catalog.entries.filter((entry) => entry.status !== "retired" && entry.workerImage !== true).length);
     expect(await checkCatalogMirror({ catalog: unpinnedCatalog(), port, repositoryNameFor: (repository) => repository })).toEqual([]);
   });
   it("stops only the image whose repository name the company's naming function cannot make", async () => {
@@ -182,6 +182,6 @@ describe("the company registry serves the exact digest", () => {
     const byId = new Map(results.map((result) => [result.id, result]));
     expect(byId.get("mysql@8")).toMatchObject({ ok: false, code: "unreachable", message: "mysql image: the company registry could not be checked" });
     expect(byId.get("postgres@16")).toMatchObject({ ok: false, code: "missing" });
-    expect(results.length).toBe(catalog.entries.filter((entry) => entry.status !== "retired").length);
+    expect(results.length).toBe(catalog.entries.filter((entry) => entry.status !== "retired" && entry.workerImage !== true).length);
   });
 });

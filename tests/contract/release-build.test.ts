@@ -1,19 +1,35 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONTEXT_ENV, CONTEXT_OVERFLOW_LOCATION_ENV } from "aws-cdk-lib/cx-api";
 import type { ContainerImageAssetMetadataEntry } from "@aws-cdk/cloud-assembly-schema";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";
 import { accumulateAsset, assetSignatureMismatch, buildRelease, parseBuildArgs, type PackageAccumulator } from "../../scripts/release/build.js";
-import { ReleaseManifestSchema } from "../../scripts/release/manifest.js";
+import { ReleaseManifestSchema, type ReleaseManifest } from "../../scripts/release/manifest.js";
 import { readZipEntries } from "../support/zip-entries.js";
 
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 const worker = `public.ecr.aws/agentx/agentx-worker@sha256:${"a".repeat(64)}`;
 const executor = `public.ecr.aws/agentx/agentx-executor@sha256:${"c".repeat(64)}`;
+
+// One default build (version 1.2.3, commit "b"*40, no images, run from the repo root) shared by the cases below that only read it or need a
+// non-empty copy of it. Cases that check other inputs (images, the working directory, TMPDIR) still make their own builds.
+let sharedRoot: string;
+let sharedOut: string;
+let sharedManifest: ReleaseManifest;
+
+beforeAll(async () => {
+  sharedRoot = await mkdtemp(join(tmpdir(), "agentx-release-shared-"));
+  sharedOut = join(sharedRoot, "r");
+  sharedManifest = await buildRelease({ version: "1.2.3", out: sharedOut, gitCommit: "b".repeat(40) });
+}, 600_000);
+
+afterAll(async () => {
+  await rm(sharedRoot, { recursive: true, force: true });
+});
 
 describe("release builder", () => {
   it("writes templates, packages and a manifest whose checksums match the files", async () => {
@@ -52,8 +68,8 @@ describe("release builder", () => {
   }, 600_000);
 
   it("covers every asset parameter in every template with exactly one package, and ships no unused package", async () => {
-    const out = join(await mkdtemp(join(tmpdir(), "agentx-release-")), "r");
-    const manifest = await buildRelease({ version: "1.2.3", out, gitCommit: "b".repeat(40) });
+    const out = sharedOut;
+    const manifest = sharedManifest;
     const declared = new Set(manifest.packages.flatMap((p) => [p.bucketParameter, p.keyParameter, p.hashParameter]));
     const used = new Set<string>();
     for (const t of manifest.templates) {
@@ -70,7 +86,7 @@ describe("release builder", () => {
 
   it("refuses a non-empty output directory and a malformed image reference", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agentx-release-"));
-    await buildRelease({ version: "1.2.3", out: join(dir, "r"), gitCommit: "b".repeat(40) });
+    await cp(sharedOut, join(dir, "r"), { recursive: true });
     await expect(buildRelease({ version: "1.2.3", out: join(dir, "r"), gitCommit: "b".repeat(40) })).rejects.toThrow(/not empty/);
     await expect(buildRelease({ version: "1.2.3", out: join(dir, "s"), gitCommit: "b".repeat(40), images: { worker: "public.ecr.aws/x/y:latest" } })).rejects.toThrow(/digest/);
   }, 600_000);
@@ -110,8 +126,8 @@ describe("release builder", () => {
       const baseOut = await mkdtemp(join(tmpdir(), "agentx-release-tmpdir-check-"));
       const originalTmpdir = process.env.TMPDIR;
       try {
-        const outA = join(baseOut, "a");
-        const manifestA = await buildRelease({ version: "1.2.3", out: outA, gitCommit: "b".repeat(40) });
+        const outA = sharedOut;
+        const manifestA = sharedManifest;
 
         // Simulate a machine/CI whose ambient temp directory sits at a very different depth from
         // this one; the old (buggy) implementation synthesized under os.tmpdir(), which made the

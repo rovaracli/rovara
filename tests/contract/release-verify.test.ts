@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { buildRelease } from "../../scripts/release/build.js";
+import type { ReleaseManifest } from "../../scripts/release/manifest.js";
 import { verifyRelease } from "../../scripts/release/verify.js";
 
 const temporaryDirectories: string[] = [];
@@ -13,20 +14,38 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
+// One real build for the whole "release verification" group. Each case that changes files works on its own copy of it
+// (`copyOfBuiltRelease`), so no case sees another's changes. verifyRelease still rebuilds from source on its own, as the real check does.
+let builtRoot: string;
+let builtDir: string;
+let builtManifest: ReleaseManifest;
+
+async function copyOfBuiltRelease(): Promise<string> {
+  const base = await mkdtemp(join(tmpdir(), "agentx-verify-"));
+  temporaryDirectories.push(base);
+  const dir = join(base, "r");
+  await cp(builtDir, dir, { recursive: true });
+  return dir;
+}
+
 describe("release verification", () => {
+  beforeAll(async () => {
+    builtRoot = await mkdtemp(join(tmpdir(), "agentx-verify-built-"));
+    builtDir = join(builtRoot, "r");
+    builtManifest = await buildRelease({ version: "1.2.3", out: builtDir, gitCommit: "c".repeat(40) });
+  }, 900_000);
+  afterAll(async () => {
+    await rm(builtRoot, { recursive: true, force: true });
+  });
+
   it("passes for a release built from the current source", async () => {
-    const base = await mkdtemp(join(tmpdir(), "agentx-verify-"));
-    temporaryDirectories.push(base);
-    const dir = join(base, "r");
-    await buildRelease({ version: "1.2.3", out: dir, gitCommit: "c".repeat(40) });
+    const dir = await copyOfBuiltRelease();
     expect(await verifyRelease({ dir })).toEqual({ ok: true });
   }, 900_000);
 
   it("names a tampered package and a tampered template", async () => {
-    const base = await mkdtemp(join(tmpdir(), "agentx-verify-"));
-    temporaryDirectories.push(base);
-    const dir = join(base, "r");
-    const manifest = await buildRelease({ version: "1.2.3", out: dir, gitCommit: "c".repeat(40) });
+    const dir = await copyOfBuiltRelease();
+    const manifest = builtManifest;
     await writeFile(join(dir, manifest.packages[0]!.file), "tampered");
     await writeFile(join(dir, manifest.templates[0]!.file), "{}\n");
     const result = await verifyRelease({ dir });
@@ -37,10 +56,8 @@ describe("release verification", () => {
   }, 900_000);
 
   it("names a missing file instead of throwing", async () => {
-    const base = await mkdtemp(join(tmpdir(), "agentx-verify-"));
-    temporaryDirectories.push(base);
-    const dir = join(base, "r");
-    const manifest = await buildRelease({ version: "1.2.3", out: dir, gitCommit: "c".repeat(40) });
+    const dir = await copyOfBuiltRelease();
+    const manifest = builtManifest;
     await rm(join(dir, manifest.templates[0]!.file));
     const result = await verifyRelease({ dir });
     expect(result.ok).toBe(false);
@@ -49,10 +66,8 @@ describe("release verification", () => {
   }, 900_000);
 
   it("names a template that a rebuild from current source produces but the release doesn't have, not just the reverse", async () => {
-    const base = await mkdtemp(join(tmpdir(), "agentx-verify-"));
-    temporaryDirectories.push(base);
-    const dir = join(base, "r");
-    const manifest = await buildRelease({ version: "1.2.3", out: dir, gitCommit: "c".repeat(40) });
+    const dir = await copyOfBuiltRelease();
+    const manifest = builtManifest;
     const dropped = manifest.templates[0]!;
     const edited = {
       ...manifest,

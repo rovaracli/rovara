@@ -962,7 +962,15 @@ describe("no confirm link reaches a session viewer", () => {
     const long = `https://sentry.example.com/issues/${"a".repeat(150)}`;
     at(long);
     expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).toMatchObject({ url: long });
-    for (const bad of ["https://sentry.example.com/issues/1?x=\u0007y", "not a link", `https://sentry.example.com/${"a".repeat(2100)}`]) {
+    // S3-L4: the link is not run through the email rule: an at sign in its query or path is part of the link, which stays whole (the title beside it is still hidden).
+    for (const keep of ["https://sentry.example.com/issues?user=maya@example.test&x=1", "https://sentry.example.com/u/maya@example.test/issues"]) {
+      at(keep);
+      expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).toMatchObject({ url: keep });
+    }
+    v.w.db.set({ ...meta, startedBy: { ...(meta["startedBy"] as object), title: "Reply to maya@example.test", url: "https://sentry.example.com/issues/1" } });
+    expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).toMatchObject({ title: "Reply to [email removed]", url: "https://sentry.example.com/issues/1" });
+    at("https://sentry.example.com/issues/1");
+    for (const bad of ["https://sentry.example.com/issues/1?x=\u0007y", "not a link", "https://user:hunter2@sentry.example.com/issues/1", `https://sentry.example.com/${"a".repeat(2100)}`]) {
       at(bad);
       expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).not.toHaveProperty("url");
     }

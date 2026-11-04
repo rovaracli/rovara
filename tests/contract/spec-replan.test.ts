@@ -71,6 +71,20 @@ describe("Re-plan after the spec changed", () => {
   });
 });
 
+describe("an owner who lost the project's access (the send-back's project access rule)", () => {
+  it("cannot Re-plan: refused, and no planning run starts", async () => {
+    const t = await editedSpecTask();
+    t.channelMembers.mockImplementation(async () => ({ ok: true, memberOf: [] }));
+    const before = t.record();
+    const runs = t.db.find((item) => item.entityType === "OUTBOX").length;
+    const reply = await t.press();
+    expect(reply.body).toMatchObject({ error: { code: "PROJECT_ACCESS_DENIED" } });
+    expect(t.record()).toEqual(before);
+    expect(t.db.find((item) => item.entityType === "OUTBOX").length).toBe(runs);
+    expect((await t.store.load(t.taskId)).state?.editPrompt?.status).toBe("open");
+  });
+});
+
 describe("an archived project takes no new work", () => {
   const archive = (t: Awaited<ReturnType<typeof editedSpecTask>>) => {
     const key = projectMetaKey(TEST_ORG, "payments");

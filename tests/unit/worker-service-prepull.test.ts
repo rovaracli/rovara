@@ -6,15 +6,18 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { catalogPrepullList } from "@agentx/contracts";
 import { EMPTY_PREPULL_LIST, PREPULL_LIST_URL, loadPrepullList, prepullCatalogImages, prepullReferences } from "../../packages/worker/src/service-prepull.js";
-import { pinnedCatalog, sha } from "../support/catalog-pinning.js";
+import { pinnedCatalog, sha, shippedCatalog } from "../support/catalog-pinning.js";
 
 const list = catalogPrepullList(pinnedCatalog());
 const REGISTRY = "111122223333.dkr.ecr.us-west-2.amazonaws.com";
 
 describe("the shipped list", () => {
-  it("is where the worker image puts it, next to dist, and is valid (empty until the catalog is pinned)", async () => {
+  it("is where the worker image puts it, next to dist, and is valid (the pinned revision 2: the emulator and postgres@16)", async () => {
     expect(PREPULL_LIST_URL.pathname.endsWith("/packages/worker/service-catalog/prepull.json")).toBe(true);
-    expect(await loadPrepullList()).toEqual({ schemaVersion: 1, catalogRevision: 1, images: [] });
+    const loaded = await loadPrepullList();
+    expect(loaded.catalogRevision).toBe(2);
+    expect(loaded.images.map((image) => image.id)).toEqual(["local-aws@r1", "postgres@16"]);
+    expect(loaded).toEqual(catalogPrepullList(shippedCatalog()));
   });
   it("is the empty list when the file is not there, and an error when it is there and wrong or too large", async () => {
     const dir = await mkdtemp(join(tmpdir(), "prepull-test-"));

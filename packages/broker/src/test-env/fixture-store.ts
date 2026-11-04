@@ -32,6 +32,7 @@
 // until it expires (up to FIXTURE_READ_URL_SECONDS); withdrawing stops new URLs, it cannot recall one. The worker pins the digest, so what such a URL returns is still exactly the approved bytes.
 import { createHash } from "node:crypto";
 import {
+  AGENTX_NAME_PATTERN,
   FIXTURE_SET_MAX_BYTES,
   FixtureSetSchema,
   OrgIdSchema,
@@ -49,17 +50,19 @@ export const FIXTURE_READ_URL_SECONDS = 15 * 60;
 export const FIXTURE_SAMPLE_PAIRS = 3;
 const SAMPLE_CHARS = 300;
 const DIGEST = /^[a-f0-9]{64}$/u;
-const STORE_ID = /^fxs:(org_[0-9a-z]{20}):([a-f0-9]{64})$/u;
+const STORE_ID = /^fxs:(org_[0-9a-z]{20}):([a-z][a-z0-9-]{0,62}):([a-f0-9]{64})$/u;
+/** A project's name, as every project name is (`AGENTX_NAME_PATTERN`). A set belongs to ONE project of an org (H1): the project is part of its row key, its store id and its object key. */
+export const isFixtureProject = (project: unknown): project is string => typeof project === "string" && AGENTX_NAME_PATTERN.test(project);
 
-/** The id of a stored set: its org and its digest. Two orgs never share an id. */
-export const fixtureStoreId = (orgId: string, digest: string): string => `fxs:${orgId}:${digest}`;
-export function parseFixtureStoreId(storeId: string): { orgId: string; digest: string } | undefined {
+/** The id of a stored set: its org, its project and its digest. Two orgs, or two projects, never share an id. */
+export const fixtureStoreId = (orgId: string, project: string, digest: string): string => `fxs:${orgId}:${project}:${digest}`;
+export function parseFixtureStoreId(storeId: string): { orgId: string; project: string; digest: string } | undefined {
   const found = STORE_ID.exec(storeId);
-  return found === null ? undefined : { orgId: found[1]!, digest: found[2]! };
+  return found === null ? undefined : { orgId: found[1]!, project: found[2]!, digest: found[3]! };
 }
 
-/** The object key of a set. `prefix` is `private` on Public Cloud (the Rovara bucket, one prefix per org); the Enterprise install gives its own bucket and key prefix to the adapter instead. */
-export const fixtureObjectKey = (orgId: string, digest: string, prefix = "private"): string => `${prefix}/${orgId}/fixtures/${digest}`;
+/** The object key of a set. `prefix` is `private` on Public Cloud (the Rovara bucket, one prefix per org); the Enterprise install gives its own bucket and key prefix to the adapter instead. Under the org's prefix the project comes first, so one project's sets never share a key with another's. */
+export const fixtureObjectKey = (orgId: string, project: string, digest: string, prefix = "private"): string => `${prefix}/${orgId}/fixtures/${project}/${digest}`;
 
 const DIGEST_TEXT = /^[a-f0-9]{64}$/u;
 const TIMESTAMP_TEXT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u;
@@ -103,6 +106,8 @@ export type FixtureDecisionAction = "approve" | "reject" | "withdraw";
 export interface VerifiedFixtureDecision {
   readonly [verifiedBrand]: true;
   readonly orgId: string;
+  /** The project in the route the decision was made for (H1): a decision on a set of another project is refused. */
+  readonly project: string;
   readonly actor: string;
   readonly action: FixtureDecisionAction;
   readonly digest: string;
@@ -115,22 +120,22 @@ export interface VerifiedFixtureDecision {
  * environment backing's, not the request's.
  */
 export function verifiedFixtureDecision(session: {
-  orgId: string; actor: string; role: string; action: FixtureDecisionAction; digest: string; signedInAt: Date | undefined; schemaSynth: boolean;
+  orgId: string; project: string; actor: string; role: string; action: FixtureDecisionAction; digest: string; signedInAt: Date | undefined; schemaSynth: boolean;
 }): VerifiedFixtureDecision | undefined {
-  if (session.role !== "maintainer" || !OrgIdSchema.safeParse(session.orgId).success || session.actor.trim() === "" || !DIGEST.test(session.digest)) return undefined;
+  if (session.role !== "maintainer" || !OrgIdSchema.safeParse(session.orgId).success || !isFixtureProject(session.project) || session.actor.trim() === "" || !DIGEST.test(session.digest)) return undefined;
   if (session.action !== "approve" && session.action !== "reject" && session.action !== "withdraw") return undefined;
-  const decision = { orgId: session.orgId, actor: session.actor, action: session.action, digest: session.digest, signedInAt: session.signedInAt === undefined ? undefined : new Date(session.signedInAt.getTime()), schemaSynth: session.schemaSynth };
+  const decision = { orgId: session.orgId, project: session.project, actor: session.actor, action: session.action, digest: session.digest, signedInAt: session.signedInAt === undefined ? undefined : new Date(session.signedInAt.getTime()), schemaSynth: session.schemaSynth };
   // The brand is not enumerable, so it is not copied by a spread; the WeakSet is what is trusted.
   Object.defineProperty(decision, BRAND, { value: true, enumerable: false });
   Object.freeze(decision);
   MINTED.add(decision);
   return decision as unknown as VerifiedFixtureDecision;
 }
-/** The decision, if it is one this module minted, is unused, and is for exactly this org, action and digest; it is used up by the call that gets it. Anything else: undefined, and nothing is used up. */
-function useDecision(decision: unknown, orgId: string, action: FixtureDecisionAction, digest: string): VerifiedFixtureDecision | undefined {
+/** The decision, if it is one this module minted, is unused, and is for exactly this org, project, action and digest; it is used up by the call that gets it. Anything else: undefined, and nothing is used up. */
+function useDecision(decision: unknown, orgId: string, project: string, action: FixtureDecisionAction, digest: string): VerifiedFixtureDecision | undefined {
   if (typeof decision !== "object" || decision === null || !MINTED.has(decision)) return undefined;
   const found = decision as VerifiedFixtureDecision;
-  if (found.orgId !== orgId || found.action !== action || found.digest !== digest) return undefined;
+  if (found.orgId !== orgId || found.project !== project || found.action !== action || found.digest !== digest) return undefined;
   return MINTED.delete(decision) ? found : undefined;
 }
 const signedInRecently = (signedInAt: Date | undefined, at: Date): boolean => {
@@ -146,6 +151,8 @@ export type FixtureRecordedFrom = "synthetic" | "test_account" | "written";
 export interface FixtureRecord {
   storeId: string;
   orgId: string;
+  /** The project the set was submitted for (H1). All authority over the set (read, decide, deliver, name in a plan) is that project's. */
+  project: string;
   digest: string;
   dependencyId: string;
   family: string;
@@ -156,7 +163,7 @@ export interface FixtureRecord {
   faults: number;
   bytes: number;
   recordedFrom: FixtureRecordedFrom;
-  /** True when no approved set of this dependency was recorded from a test account before this one. */
+  /** True when no approved set of this dependency was recorded from a test account in this project before this one. */
   firstFromTestAccount: boolean;
   scanClean: boolean;
   status: "pending" | "approved" | "rejected" | "withdrawn";
@@ -182,26 +189,29 @@ export interface FixtureObjectPort {
 }
 /** The index of stored sets, one row per (org, digest). */
 export interface FixtureIndexPort {
-  get(orgId: string, digest: string): Promise<FixtureRecord | undefined>;
+  get(orgId: string, project: string, digest: string): Promise<FixtureRecord | undefined>;
   /** False when the row exists. */
   putIfAbsent(record: FixtureRecord): Promise<boolean>;
   /** Replaces the row when its `version` is the expected one; false otherwise. */
   replace(record: FixtureRecord, expectedVersion: number): Promise<boolean>;
-  listByDependency(orgId: string, dependencyId: string): Promise<FixtureRecord[]>;
+  listByDependency(orgId: string, project: string, dependencyId: string): Promise<FixtureRecord[]>;
 }
+
+/** The production deny list of ONE project of an org (its approved environment's). */
+export type FixtureDenyFor = (orgId: string, project: string) => Promise<TestEnvProdDeny>;
 
 export interface FixtureStoreDependencies {
   /** The `tx` switch, read on every call. */
   enabled(): boolean;
   objects: FixtureObjectPort;
   index: FixtureIndexPort;
-  /** The org's production deny list (hosts, account ids, ARN prefixes). Fail closed: a list that cannot be read is an error, not an empty list. */
-  denyFor(orgId: string): Promise<TestEnvProdDeny>;
+  /** The production deny list the caller knows for the PROJECT of the set (hosts, account ids, ARN prefixes). Fail closed: a list that cannot be read is an error, not an empty list. */
+  denyFor: FixtureDenyFor;
   now?: () => Date;
   prefix?: string;
 }
 
-export type StoreRefusal = "disabled" | "bad_org" | "bad_digest" | "not_found";
+export type StoreRefusal = "disabled" | "bad_org" | "bad_project" | "bad_digest" | "not_found";
 export type SubmitRefusal = StoreRefusal | "invalid" | "too_large" | "data_guard" | "digest_mismatch";
 export type DecideRefusal = StoreRefusal | "already_decided" | "digest_mismatch" | "unauthorised" | "fresh_sign_in_required" | "data_guard" | "not_approved";
 export type DeliverRefusal = StoreRefusal | "not_approved" | "digest_mismatch" | "data_guard";
@@ -284,55 +294,56 @@ export function fixtureSetCardItem(input: {
 }
 
 export interface FixtureStore {
-  submit(orgId: string, raw: unknown, input: { actor: string; recordedFrom: FixtureRecordedFrom }): Promise<{ ok: true; record: FixtureRecord; created: boolean } | { ok: false; reason: SubmitRefusal }>;
-  record(orgId: string, digest: string): Promise<{ ok: true; record: FixtureRecord } | { ok: false; reason: StoreRefusal }>;
-  review(orgId: string, digest: string): Promise<{ ok: true; review: FixtureReview; record: FixtureRecord } | { ok: false; reason: StoreRefusal | "digest_mismatch" }>;
-  approve(orgId: string, digest: string, decision: VerifiedFixtureDecision): Promise<{ ok: true; record: FixtureRecord } | { ok: false; reason: DecideRefusal }>;
-  reject(orgId: string, digest: string, decision: VerifiedFixtureDecision): Promise<{ ok: true; record: FixtureRecord } | { ok: false; reason: DecideRefusal }>;
+  submit(orgId: string, project: string, raw: unknown, input: { actor: string; recordedFrom: FixtureRecordedFrom }): Promise<{ ok: true; record: FixtureRecord; created: boolean } | { ok: false; reason: SubmitRefusal }>;
+  record(orgId: string, project: string, digest: string): Promise<{ ok: true; record: FixtureRecord } | { ok: false; reason: StoreRefusal }>;
+  review(orgId: string, project: string, digest: string): Promise<{ ok: true; review: FixtureReview; record: FixtureRecord } | { ok: false; reason: StoreRefusal | "digest_mismatch" }>;
+  approve(orgId: string, project: string, digest: string, decision: VerifiedFixtureDecision): Promise<{ ok: true; record: FixtureRecord } | { ok: false; reason: DecideRefusal }>;
+  reject(orgId: string, project: string, digest: string, decision: VerifiedFixtureDecision): Promise<{ ok: true; record: FixtureRecord } | { ok: false; reason: DecideRefusal }>;
   /** Takes an approved set out of delivery for good (`not_approved` for a set that is not approved; a pending one is rejected instead). */
-  withdraw(orgId: string, digest: string, decision: VerifiedFixtureDecision): Promise<{ ok: true; record: FixtureRecord } | { ok: false; reason: DecideRefusal }>;
-  /** The 15-minute read URL for an approved set of THIS org. */
-  deliver(orgId: string, digest: string): Promise<{ ok: true; url: string; digest: string; storeId: string; expiresAt: string; bytes: number } | { ok: false; reason: DeliverRefusal }>;
-  /** The same, from a store id (the task plan names one): the id's org must be the caller's. */
-  deliverById(callerOrgId: string, storeId: string): ReturnType<FixtureStore["deliver"]>;
+  withdraw(orgId: string, project: string, digest: string, decision: VerifiedFixtureDecision): Promise<{ ok: true; record: FixtureRecord } | { ok: false; reason: DecideRefusal }>;
+  /** The 15-minute read URL for an approved set of THIS org and THIS project. */
+  deliver(orgId: string, project: string, digest: string): Promise<{ ok: true; url: string; digest: string; storeId: string; expiresAt: string; bytes: number } | { ok: false; reason: DeliverRefusal }>;
+  /** The same, from a store id (the task plan names one): the id's org and project must be the caller's. */
+  deliverById(callerOrgId: string, callerProject: string, storeId: string): ReturnType<FixtureStore["deliver"]>;
   /** The approved set itself, with the stored bytes checked against the digest. */
-  readApproved(orgId: string, digest: string): Promise<{ ok: true; set: FixtureSet } | { ok: false; reason: DeliverRefusal }>;
+  readApproved(orgId: string, project: string, digest: string): Promise<{ ok: true; set: FixtureSet } | { ok: false; reason: DeliverRefusal }>;
 }
 
 export function createFixtureStore(deps: FixtureStoreDependencies): FixtureStore {
   const now = deps.now ?? (() => new Date());
   const prefix = deps.prefix ?? "private";
-  const keyOf = (orgId: string, digest: string): string => fixtureObjectKey(orgId, digest, prefix);
-  const gate = (orgId: string, digest?: string): StoreRefusal | undefined => {
+  const keyOf = (orgId: string, project: string, digest: string): string => fixtureObjectKey(orgId, project, digest, prefix);
+  const gate = (orgId: string, project: string, digest?: string): StoreRefusal | undefined => {
     if (!deps.enabled()) return "disabled";
     if (!OrgIdSchema.safeParse(orgId).success) return "bad_org";
+    if (!isFixtureProject(project)) return "bad_project";
     if (digest !== undefined && !DIGEST.test(digest)) return "bad_digest";
     return undefined;
   };
-  /** The row of THIS org; a row that says another org (a corrupt index) is not found either. */
-  const rowOf = async (orgId: string, digest: string): Promise<FixtureRecord | undefined> => {
-    const row = await deps.index.get(orgId, digest);
-    return row !== undefined && row.orgId === orgId && row.digest === digest && row.storeId === fixtureStoreId(orgId, digest) ? row : undefined;
+  /** The row of THIS org and THIS project; a row that says another org or another project (a corrupt index) is not found either (H1). */
+  const rowOf = async (orgId: string, project: string, digest: string): Promise<FixtureRecord | undefined> => {
+    const row = await deps.index.get(orgId, project, digest);
+    return row !== undefined && row.orgId === orgId && row.project === project && row.digest === digest && row.storeId === fixtureStoreId(orgId, project, digest) ? row : undefined;
   };
   /** The stored bytes of a row, parsed, and held against the digest. Undefined: nothing stored; "mismatch": the object is not the set the digest names. */
-  const load = async (orgId: string, digest: string): Promise<{ set: FixtureSet; bytes: number } | "mismatch" | undefined> => {
-    const bytes = await deps.objects.get(keyOf(orgId, digest), FIXTURE_SET_MAX_BYTES + 1);
+  const load = async (orgId: string, project: string, digest: string): Promise<{ set: FixtureSet; bytes: number } | "mismatch" | undefined> => {
+    const bytes = await deps.objects.get(keyOf(orgId, project, digest), FIXTURE_SET_MAX_BYTES + 1);
     if (bytes === undefined) return undefined;
     if (bytes.length > FIXTURE_SET_MAX_BYTES || sha256(bytes) !== digest) return "mismatch";
     let parsed: FixtureSet;
     try { parsed = FixtureSetSchema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))); } catch { return "mismatch"; }
     return fixtureSetDigest(parsed) === digest ? { set: parsed, bytes: bytes.length } : "mismatch";
   };
-  /** The current scan of a loaded set, with the org's deny list as it is now. */
-  const scanNow = async (orgId: string, set: FixtureSet): Promise<boolean> => fixtureSetFindings(set, await deps.denyFor(orgId)).length === 0;
-  const decide = async (orgId: string, digest: string, decision: VerifiedFixtureDecision, status: "approved" | "rejected" | "withdrawn"): Promise<{ ok: true; record: FixtureRecord } | { ok: false; reason: DecideRefusal }> => {
-    const refused = gate(orgId, digest);
+  /** The current scan of a loaded set, with the deny list of the set's project as it is now. */
+  const scanNow = async (orgId: string, project: string, set: FixtureSet): Promise<boolean> => fixtureSetFindings(set, await deps.denyFor(orgId, project)).length === 0;
+  const decide = async (orgId: string, project: string, digest: string, decision: VerifiedFixtureDecision, status: "approved" | "rejected" | "withdrawn"): Promise<{ ok: true; record: FixtureRecord } | { ok: false; reason: DecideRefusal }> => {
+    const refused = gate(orgId, project, digest);
     if (refused !== undefined) return { ok: false, reason: refused };
-    // The decision must be one the module minted and has not seen used, for THIS org (the session's), THIS action and THIS digest, by a maintainer; it is used up here.
+    // The decision must be one the module minted and has not seen used, for THIS org (the session's), THIS project (the route's), THIS action and THIS digest, by a maintainer; it is used up here.
     const action: FixtureDecisionAction = status === "approved" ? "approve" : status === "rejected" ? "reject" : "withdraw";
-    const verified = useDecision(decision, orgId, action, digest);
+    const verified = useDecision(decision, orgId, project, action, digest);
     if (verified === undefined) return { ok: false, reason: "unauthorised" };
-    const row = await rowOf(orgId, digest);
+    const row = await rowOf(orgId, project, digest);
     if (row === undefined) return { ok: false, reason: "not_found" };
     if (status === "withdrawn") { if (row.status !== "approved") return { ok: false, reason: "not_approved" }; }
     else if (row.status !== "pending") return { ok: false, reason: "already_decided" };
@@ -340,10 +351,10 @@ export function createFixtureStore(deps: FixtureStoreDependencies): FixtureStore
       // High: the first recording from a test account, or an environment that answers the unrecorded from the schema. It is approved only with a fresh sign-in.
       if ((row.firstFromTestAccount || verified.schemaSynth) && !signedInRecently(verified.signedInAt, now())) return { ok: false, reason: "fresh_sign_in_required" };
       // A set that was stored but no longer hashes to its digest, or that is gone, is never approved; and it is scanned again with today's deny list.
-      const loaded = await load(orgId, digest);
+      const loaded = await load(orgId, project, digest);
       if (loaded === undefined || !row.scanClean) return { ok: false, reason: "not_found" };
       if (loaded === "mismatch") return { ok: false, reason: "digest_mismatch" };
-      if (!(await scanNow(orgId, loaded.set))) return { ok: false, reason: "data_guard" };
+      if (!(await scanNow(orgId, project, loaded.set))) return { ok: false, reason: "data_guard" };
     }
     const at = now().toISOString();
     const next: FixtureRecord = status === "withdrawn"
@@ -363,26 +374,26 @@ export function createFixtureStore(deps: FixtureStoreDependencies): FixtureStore
     return "mismatch";
   };
 
-  const deliver: FixtureStore["deliver"] = async (orgId, digest) => {
-    const refused = gate(orgId, digest);
+  const deliver: FixtureStore["deliver"] = async (orgId, project, digest) => {
+    const refused = gate(orgId, project, digest);
     if (refused !== undefined) return { ok: false, reason: refused };
-    const row = await rowOf(orgId, digest);
+    const row = await rowOf(orgId, project, digest);
     if (row === undefined) return { ok: false, reason: "not_found" };
     if (row.status !== "approved") return { ok: false, reason: "not_approved" };
-    const loaded = await load(orgId, digest);
+    const loaded = await load(orgId, project, digest);
     if (loaded === undefined) return { ok: false, reason: "not_found" };
     if (loaded === "mismatch") return { ok: false, reason: "digest_mismatch" };
-    if (!(await scanNow(orgId, loaded.set))) return { ok: false, reason: "data_guard" };
-    const url = await deps.objects.presignGet(keyOf(orgId, digest), FIXTURE_READ_URL_SECONDS);
+    if (!(await scanNow(orgId, project, loaded.set))) return { ok: false, reason: "data_guard" };
+    const url = await deps.objects.presignGet(keyOf(orgId, project, digest), FIXTURE_READ_URL_SECONDS);
     // Read again after signing: a set withdrawn while the URL was being made is not handed out (the URL is dropped).
-    const after = await rowOf(orgId, digest);
+    const after = await rowOf(orgId, project, digest);
     if (after === undefined || after.status !== "approved") return { ok: false, reason: "not_approved" };
     return { ok: true, url, digest, storeId: row.storeId, expiresAt: new Date(now().getTime() + FIXTURE_READ_URL_SECONDS * 1000).toISOString(), bytes: loaded.bytes };
   };
 
   return {
-    async submit(orgId, raw, input) {
-      const refused = gate(orgId);
+    async submit(orgId, project, raw, input) {
+      const refused = gate(orgId, project);
       if (refused !== undefined) return { ok: false, reason: refused };
       const parsed = FixtureSetSchema.safeParse(raw);
       if (!parsed.success) return { ok: false, reason: "invalid" };
@@ -391,66 +402,66 @@ export function createFixtureStore(deps: FixtureStoreDependencies): FixtureStore
       const bytes = new TextEncoder().encode(canonical);
       if (bytes.length > FIXTURE_SET_MAX_BYTES) return { ok: false, reason: "too_large" };
       // The scan covers every string, key and number the set holds (paths, queries, bodies, header values, schema property names, enums and limits), with the org's own deny list; a finding stops the submission and nothing is stored.
-      if (!(await scanNow(orgId, set))) return { ok: false, reason: "data_guard" };
+      if (!(await scanNow(orgId, project, set))) return { ok: false, reason: "data_guard" };
       const digest = sha256(bytes);
       if (digest !== fixtureSetDigest(set)) return { ok: false, reason: "invalid" };
-      const existing = await rowOf(orgId, digest);
+      const existing = await rowOf(orgId, project, digest);
       if (existing !== undefined) {
         // The row is there: the object is made right if a bad write left it wrong.
-        return (await ensureObject(keyOf(orgId, digest), bytes, digest)) === "ok" ? { ok: true, record: existing, created: false } : { ok: false, reason: "digest_mismatch" };
+        return (await ensureObject(keyOf(orgId, project, digest), bytes, digest)) === "ok" ? { ok: true, record: existing, created: false } : { ok: false, reason: "digest_mismatch" };
       }
-      const earlier = input.recordedFrom === "test_account" ? await deps.index.listByDependency(orgId, set.dependency.id) : [];
-      if ((await ensureObject(keyOf(orgId, digest), bytes, digest)) !== "ok") return { ok: false, reason: "digest_mismatch" };
+      const earlier = input.recordedFrom === "test_account" ? await deps.index.listByDependency(orgId, project, set.dependency.id) : [];
+      if ((await ensureObject(keyOf(orgId, project, digest), bytes, digest)) !== "ok") return { ok: false, reason: "digest_mismatch" };
       const record: FixtureRecord = {
-        storeId: fixtureStoreId(orgId, digest), orgId, digest, dependencyId: set.dependency.id, family: set.dependency.family, protocol: set.dependency.protocol, origin: set.origin, revision: set.revision,
+        storeId: fixtureStoreId(orgId, project, digest), orgId, project, digest, dependencyId: set.dependency.id, family: set.dependency.family, protocol: set.dependency.protocol, origin: set.origin, revision: set.revision,
         entries: set.entries.length, faults: set.faults.length, bytes: bytes.length, recordedFrom: input.recordedFrom,
         firstFromTestAccount: input.recordedFrom === "test_account" && !earlier.some((other) => other.recordedFrom === "test_account" && other.status === "approved"),
         scanClean: true, status: "pending", submittedBy: plainLine(input.actor, 120), submittedAt: now().toISOString(), version: 1,
       };
       if (!(await deps.index.putIfAbsent(record))) {
-        const winner = await rowOf(orgId, digest);
+        const winner = await rowOf(orgId, project, digest);
         return winner === undefined ? { ok: false, reason: "not_found" } : { ok: true, record: winner, created: false };
       }
       return { ok: true, record, created: true };
     },
-    async record(orgId, digest) {
-      const refused = gate(orgId, digest);
+    async record(orgId, project, digest) {
+      const refused = gate(orgId, project, digest);
       if (refused !== undefined) return { ok: false, reason: refused };
-      const row = await rowOf(orgId, digest);
+      const row = await rowOf(orgId, project, digest);
       return row === undefined ? { ok: false, reason: "not_found" } : { ok: true, record: row };
     },
-    async review(orgId, digest) {
-      const refused = gate(orgId, digest);
+    async review(orgId, project, digest) {
+      const refused = gate(orgId, project, digest);
       if (refused !== undefined) return { ok: false, reason: refused };
-      const row = await rowOf(orgId, digest);
+      const row = await rowOf(orgId, project, digest);
       if (row === undefined) return { ok: false, reason: "not_found" };
-      const loaded = await load(orgId, digest);
+      const loaded = await load(orgId, project, digest);
       if (loaded === undefined) return { ok: false, reason: "not_found" };
       if (loaded === "mismatch") return { ok: false, reason: "digest_mismatch" };
       return { ok: true, review: fixtureReviewOf(row, loaded.set), record: row };
     },
-    approve: (orgId, digest, decision) => decide(orgId, digest, decision, "approved"),
-    reject: (orgId, digest, decision) => decide(orgId, digest, decision, "rejected"),
-    withdraw: (orgId, digest, decision) => decide(orgId, digest, decision, "withdrawn"),
+    approve: (orgId, project, digest, decision) => decide(orgId, project, digest, decision, "approved"),
+    reject: (orgId, project, digest, decision) => decide(orgId, project, digest, decision, "rejected"),
+    withdraw: (orgId, project, digest, decision) => decide(orgId, project, digest, decision, "withdrawn"),
     deliver,
-    async deliverById(callerOrgId, storeId) {
-      const refused = gate(callerOrgId);
+    async deliverById(callerOrgId, callerProject, storeId) {
+      const refused = gate(callerOrgId, callerProject);
       if (refused !== undefined) return { ok: false, reason: refused };
       const parsed = parseFixtureStoreId(storeId);
-      // An id that names another org is answered exactly as an id nobody holds.
-      if (parsed === undefined || parsed.orgId !== callerOrgId) return { ok: false, reason: "not_found" };
-      return deliver(callerOrgId, parsed.digest);
+      // An id that names another org or another project is answered exactly as an id nobody holds.
+      if (parsed === undefined || parsed.orgId !== callerOrgId || parsed.project !== callerProject) return { ok: false, reason: "not_found" };
+      return deliver(callerOrgId, callerProject, parsed.digest);
     },
-    async readApproved(orgId, digest) {
-      const refused = gate(orgId, digest);
+    async readApproved(orgId, project, digest) {
+      const refused = gate(orgId, project, digest);
       if (refused !== undefined) return { ok: false, reason: refused };
-      const row = await rowOf(orgId, digest);
+      const row = await rowOf(orgId, project, digest);
       if (row === undefined) return { ok: false, reason: "not_found" };
       if (row.status !== "approved") return { ok: false, reason: "not_approved" };
-      const loaded = await load(orgId, digest);
+      const loaded = await load(orgId, project, digest);
       if (loaded === undefined) return { ok: false, reason: "not_found" };
       if (loaded === "mismatch") return { ok: false, reason: "digest_mismatch" };
-      return (await scanNow(orgId, loaded.set)) ? { ok: true, set: loaded.set } : { ok: false, reason: "data_guard" };
+      return (await scanNow(orgId, project, loaded.set)) ? { ok: true, set: loaded.set } : { ok: false, reason: "data_guard" };
     },
   };
 }
@@ -459,7 +470,7 @@ export function createFixtureStore(deps: FixtureStoreDependencies): FixtureStore
 export function createMemoryFixturePorts(options: { signUrl?: (key: string, seconds: number) => string } = {}): { objects: FixtureObjectPort & { dump(): Map<string, Uint8Array> }; index: FixtureIndexPort } {
   const blobs = new Map<string, Uint8Array>();
   const rows = new Map<string, FixtureRecord>();
-  const rowKey = (orgId: string, digest: string): string => `${orgId}/${digest}`;
+  const rowKey = (orgId: string, project: string, digest: string): string => `${orgId}/${project}/${digest}`;
   return {
     objects: {
       putIfAbsent: (key, bytes) => { if (blobs.has(key)) return Promise.resolve("exists"); blobs.set(key, bytes); return Promise.resolve("created"); },
@@ -474,10 +485,10 @@ export function createMemoryFixturePorts(options: { signUrl?: (key: string, seco
       dump: () => blobs,
     },
     index: {
-      get: (orgId, digest) => Promise.resolve(rows.get(rowKey(orgId, digest))),
-      putIfAbsent: (record) => { const key = rowKey(record.orgId, record.digest); if (rows.has(key)) return Promise.resolve(false); rows.set(key, record); return Promise.resolve(true); },
-      replace: (record, expectedVersion) => { const key = rowKey(record.orgId, record.digest); if (rows.get(key)?.version !== expectedVersion) return Promise.resolve(false); rows.set(key, record); return Promise.resolve(true); },
-      listByDependency: (orgId, dependencyId) => Promise.resolve([...rows.values()].filter((row) => row.orgId === orgId && row.dependencyId === dependencyId)),
+      get: (orgId, project, digest) => Promise.resolve(rows.get(rowKey(orgId, project, digest))),
+      putIfAbsent: (record) => { const key = rowKey(record.orgId, record.project, record.digest); if (rows.has(key)) return Promise.resolve(false); rows.set(key, record); return Promise.resolve(true); },
+      replace: (record, expectedVersion) => { const key = rowKey(record.orgId, record.project, record.digest); if (rows.get(key)?.version !== expectedVersion) return Promise.resolve(false); rows.set(key, record); return Promise.resolve(true); },
+      listByDependency: (orgId, project, dependencyId) => Promise.resolve([...rows.values()].filter((row) => row.orgId === orgId && row.project === project && row.dependencyId === dependencyId)),
     },
   };
 }

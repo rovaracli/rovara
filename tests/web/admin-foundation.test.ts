@@ -206,3 +206,17 @@ it("consumes the own member receipt history state without redisplaying it on Bac
 it("explains why a checking-disabled Change role trigger cannot open", async () => {
  const f = mount();const trigger = await screen.findByRole("button", { name: "Change role for Maya" });trigger.focus();let resolve!: (value: ApiResponse) => void;const pending = new Promise<ApiResponse>(done => { resolve = done; });f.request.mockImplementation(async r => r.path.endsWith("/me") ? pending : { status: 200, body: { members: [member] } });let refresh!: Promise<void>;act(() => { refresh = f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await waitFor(() => expect(trigger.getAttribute("aria-disabled")).toBe("true"));const reason = trigger.getAttribute("aria-describedby");expect(reason).toBeTruthy();expect(document.getElementById(reason!)?.textContent).toContain("Checking company access");fireEvent.click(trigger);expect(screen.queryByRole("dialog")).toBeNull();expect(document.activeElement).toBe(trigger);await act(async () => { resolve({ status: 200, body: f.me });await refresh; });f.close();
 });
+
+for (const role of ["owner", "admin"] as const) it(`offers Health and How we work to a company ${role} without loading either page`, async () => {
+ const f = mount({ role });
+ try {
+  await screen.findByRole("heading", { name: "People" });
+  expect(screen.getByRole("link", { name: "Health" }).getAttribute("href")).toBe("/app/admin/health");
+  expect(screen.getByRole("link", { name: "How we work" }).getAttribute("href")).toBe("/app/admin/how-we-work");
+  expect(f.request.mock.calls.some(([r]) => /service-status|model-selection-policy/.test(r.path))).toBe(false);
+ } finally { f.close(); }
+});
+it("admin navigation links disappear with company access", async () => {
+ const f = mount({ role: "member" });
+ try { await screen.findByRole("heading", { name: "Administration unavailable" });expect(screen.queryByRole("link", { name: "Health" })).toBeNull();expect(screen.queryByRole("link", { name: "How we work" })).toBeNull(); } finally { f.close(); }
+});

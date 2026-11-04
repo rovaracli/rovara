@@ -1,3 +1,4 @@
+import { PER_TASK_BUDGET_USD } from "@agentx/contracts";
 import { AuditEventInputSchema } from "@agentx/contracts";
 import { auditTaskStopDecision, auditOccurrence } from "../audit/events.js";
 import { auditPendingItem } from "../audit/outbox.js";
@@ -43,6 +44,18 @@ export function savedTaskStopBounds(value: unknown): { requestedMicrousd?: numbe
   const input = checkedTaskStopSnapshot(value).calculationInput;
   return { ...(input.requestedMicrousd === undefined ? {} : { requestedMicrousd: input.requestedMicrousd }),
     ...(input.chainMicrousd === undefined ? {} : { chainMicrousd: input.chainMicrousd }), ...(input.testingMicrousd === undefined ? {} : { testingMicrousd: input.testingMicrousd }) };
+}
+/** The exact numeric identity used when Continue opens a fresh window. */
+export function continueAdmissionIdentity(task: Pick<DeveloperTaskRecord, "spendingStop" | "budgetUsd" | "maxPerRunUsd" | "requestedRunLimitUsd">) {
+ const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop).calculationInput;
+ const requested = previous?.requestedMicrousd ?? (task.requestedRunLimitUsd === undefined ? undefined : usdToWholeMicrodollars(task.requestedRunLimitUsd));
+ return {
+  pathLimitMicrousd: previous?.approvedRunLimitMicrousd ?? previous?.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
+  ...(task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
+  ...(requested !== undefined ? { requestedMicrousd: requested } : task.requestedRunLimitUsd === undefined ? {} : { requestedMicrousd: null }),
+  ...(previous?.chainMicrousd === undefined ? {} : { chainMicrousd: previous.chainMicrousd }),
+  ...(previous?.testingMicrousd === undefined ? {} : { testingMicrousd: previous.testingMicrousd }),
+ };
 }
 /** Task-specific consent persists independently of later agent inheritance. */
 export function taskMaxPerRunForAdmission(admission: CapturedTaskStop): number | undefined {

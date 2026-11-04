@@ -3014,13 +3014,13 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "1",
       ],
       "Default": "0",
-      "Description": "1: fresh-context reviewers check the design of a Full task before a person approves it, but only for the projects named in DesignReviewProjects (with that empty, no project); 0: no task has a design review, and a review already under way ends at its next step as not run (agentx config set designReview.enabled 1)",
+      "Description": "1: fresh-context reviewers check the design of a Full task before a person approves it, but only where a company admin has allowed it and the project's mode is not Off (both are set in How we work); 0: no task has a design review, and a review already under way ends at its next step as not run (agentx config set designReview.enabled 1)",
       "Type": "String",
     },
     "DesignReviewProjects": {
       "AllowedPattern": "^$|^[a-z][a-z0-9-]{0,62}(:[a-z][a-z0-9-]{0,62})*$",
       "Default": "",
-      "Description": "The projects the design review runs for when DesignReviewEnabled is 1: project names joined by a colon (payments:web), 20 characters at most; empty runs it for none; a project taken out ends its reviews under way at their next step (agentx config set designReview.projects payments)",
+      "Description": "Retired: this list no longer decides anything and cannot be set (agentx config set designReview.projects is refused). Design review is turned on per project in How we work. An old value is moved into stored settings once, and this parameter is removed in 0.5.6",
       "MaxLength": 20,
       "Type": "String",
     },
@@ -4812,6 +4812,35 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "Path": "/agentx/staging/",
         "PolicyDocument": {
           "Statement": [
+            {
+              "Action": [
+                "kms:GenerateDataKey",
+                "kms:Decrypt",
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "s3.",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ".amazonaws.com",
+                      ],
+                    ],
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "FixtureKeyED64BC2A",
+                  "Arn",
+                ],
+              },
+            },
             {
               "Action": [
                 "dynamodb:BatchGetItem",
@@ -8742,6 +8771,61 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "TreatMissingData": "notBreaching",
       },
       "Type": "AWS::CloudWatch::Alarm",
+    },
+    "FixtureKeyAlias8B887067": {
+      "Properties": {
+        "AliasName": "alias/agentx/staging/fixtures",
+        "TargetKeyId": {
+          "Fn::GetAtt": [
+            "FixtureKeyED64BC2A",
+            "Arn",
+          ],
+        },
+      },
+      "Type": "AWS::KMS::Alias",
+    },
+    "FixtureKeyED64BC2A": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "Description": "Rovara: encrypts the answer sets (fakes) kept under private/<company>/fixtures/ in the artifacts bucket",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": "kms:*",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":root",
+                    ],
+                  ],
+                },
+              },
+              "Resource": "*",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::KMS::Key",
+      "UpdateReplacePolicy": "Retain",
     },
     "GithubInstallCallbackRoute": {
       "Properties": {
@@ -13811,6 +13895,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "MODEL_PROXY_REQUIRED": "true",
             "STATE_TABLE_NAME": {
               "Ref": "State1C20CC9A",
+            },
+            "TEST_SERVICES_ENABLED": {
+              "Ref": "TestServicesEnabled",
             },
             "WORKER_LOG_GROUP_NAME": "/agentx/staging/worker",
             "WORKER_SETTINGS_PREFIX": "/agentx/staging/",

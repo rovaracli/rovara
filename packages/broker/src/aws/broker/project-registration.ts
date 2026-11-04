@@ -407,13 +407,18 @@ export async function registerProjectFor(
     if (snapshot.catalog === undefined && snapshot.newestRevision === 0) {
       const policyKey = orgSettingsKey(orgId, "TASK_STOP_POLICY");
       const policy = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: policyKey, ConsistentRead: true }))).Item;
-      // An unenrolled company keeps the existing registration and settings shape.
-      // Explicit upgrade inventories prepare inheritance before enrollment.
-      const enrollment = z.object({ version: z.literal(1), state: z.literal("enabled") }).safeParse(policy?.enrollment);
+      // Ready and enabled companies prepare inheritance under the company snapshot.
+      // Disabled companies keep the existing settings shape and only fence cutover.
+      const enrollment = z.object({ version: z.literal(1), state: z.enum(["ready", "enabled"]) }).safeParse(policy?.enrollment);
       if (policy?.entityType === "ORG_TASK_STOP_POLICY" && policy.orgId === orgId && enrollment.success) {
         const key = projectAiKey(orgId, definition.name);
         const existing = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: key, ConsistentRead: true }))).Item;
         projectSpendingItems.push(...nativeSnapshotConditions(dependencies.tableName, [policyKey], [policy], ["enrollment"]), ...(existing === undefined ? taskStopProjectCreationItems(dependencies.tableName, orgId, definition.name, Date.parse(now)) : nativeSnapshotConditions(dependencies.tableName, [key], [existing], ["taskStopPolicy"])));
+      } else if (policy !== undefined) {
+        // No new item while off; a cutover after this read retries registration on the enabled path.
+        const policySource = policy as Record<string, unknown>;
+        const enrollmentSource = { ...policyKey, orgId: policySource.orgId, entityType: policySource.entityType, enrollment: policySource.enrollment };
+        projectSpendingItems.push(...nativeSnapshotConditions(dependencies.tableName, [policyKey], [enrollmentSource], ["enrollment"]));
       }
     }
     const registrationItems: TransactItems = [

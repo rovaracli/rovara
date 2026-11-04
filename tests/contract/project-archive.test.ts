@@ -140,7 +140,7 @@ describe("POST /v1/app/projects/{name}/archive", () => {
 });
 
 describe("archiving a project with work in flight", () => {
-  it("keeps a running task's continue and cancel working, and refuses only a new task start, with the exact message", async () => {
+  it("refuses a continue (S2: this replaces 'keeps continue working') and a new task start, with the exact message, and keeps cancel working", async () => {
     const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const started = await h.dev(OMAR, "POST", "/v1/dev/tasks", start());
@@ -154,7 +154,8 @@ describe("archiving a project with work in flight", () => {
     expect((await archiveRoute(h, OMAR)).status).toBe(200);
 
     const continued = await h.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "more" });
-    expect(continued.status, JSON.stringify(continued.body)).toBe(200);
+    expect(continued.status, JSON.stringify(continued.body)).toBe(409);
+    expect(continued.body.error).toMatchObject({ code: "PROJECT_ARCHIVED" });
     const refused = await h.dev(OMAR, "POST", "/v1/dev/tasks", start());
     expect(refused.status).toBe(409);
     expect(refused.body.error).toMatchObject({ code: "PROJECT_ARCHIVED", message: expect.stringContaining(ARCHIVED_MESSAGE) as string });
@@ -206,7 +207,7 @@ describe("archiving a project with work in flight", () => {
       return { workspaceId, ownerKey: record.ownerKey };
     }
 
-    it("runs its next round after the project is archived: the creator-authority recheck passes", async () => {
+    it("does not run its next round after the project is archived (S2: this replaces 'runs its next round')", async () => {
       const h = await createSingleAnswerPlanBroker();
       setRole(h.db, OMAR, "owner");
       const { workspaceId, ownerKey } = await waitingForRound(h, OMAR);
@@ -214,7 +215,7 @@ describe("archiving a project with work in flight", () => {
       h.db.delete(projectMemberKey(TEST_ORG, ownerKey, "payments"));
       expect((await archiveRoute(h, OMAR)).status).toBe(200);
       await h.handler({ source: "agentx.workflow-dispatch-recovery" });
-      expect(operations(h, workspaceId).filter((item) => item.workflowE2EReadiness !== undefined)).toHaveLength(1);
+      expect(operations(h, workspaceId).filter((item) => item.workflowE2EReadiness !== undefined)).toHaveLength(0);
     });
   });
 });

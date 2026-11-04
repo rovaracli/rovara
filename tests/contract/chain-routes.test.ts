@@ -1,8 +1,9 @@
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 4: the app's chain routes (`/v1/app/chains*`), through the broker's handler with two orgs. A publish or rollback that makes anything less
 // safe than what runs answers 202 with a confirmation link and changes nothing; deciding it is Plan 3's page (R66).
+import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord, type ApproverSpec } from "../../packages/broker/src/agents/approvals.js";
 import { AgentStore, type BuiltinSource } from "../../packages/broker/src/agents/store.js";
@@ -80,6 +81,8 @@ async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
     enabled: new Set<string>(),
     rechecked: [] as Array<{ orgId: string; chainId: string }>,
     disabledByCheck: [] as Array<{ triggerId: string; problems: Array<{ path: string; message: string }> }>,
+    /** Makes the next checks fail, as a trigger store that cannot be reached would. */
+    recheckFails: false,
     archived: [] as string[],
     /** Runs once, inside the next check of whether the chain has a trigger: where a test lets something land between a route's read and its write. */
     betweenReadAndWrite: undefined as (() => Promise<void>) | undefined,
@@ -91,7 +94,11 @@ async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
       await hook?.();
       return triggers.enabled.has(chainId);
     },
-    recheckTriggersForTarget: async (orgId, target) => { triggers.rechecked.push({ orgId, chainId: target.chainId }); return triggers.disabledByCheck; },
+    recheckTriggersForTarget: async (orgId, target) => {
+      triggers.rechecked.push({ orgId, chainId: target.chainId });
+      if (triggers.recheckFails) throw Object.assign(new Error("secret detail the log must not carry"), { name: "ThrottlingException" });
+      return triggers.disabledByCheck;
+    },
     disableTriggersForTarget: async (_orgId, target) => { triggers.archived.push(target.chainId); },
   };
   const members = new FakeProjectMembers();
@@ -111,6 +118,8 @@ async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
     guardrails: { ...(await import("../../packages/contracts/src/agent-guardrails.js")).DEFAULT_AGENT_GUARDRAILS, maxAutonomy: "run" },
   });
   members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
+  // The write holds a new accountable maintainer to a real grant row in its own transaction, as the project roles read it.
+  h.db.set({ pk: projectMemberKey(TEST_ORG, MAX.developerId, "web").pk, sk: projectMemberKey(TEST_ORG, MAX.developerId, "web").sk, entityType: "MEMBERSHIP", role: "developer", projectRole: "maintainer" });
   members.grant(TEST_ORG, "web", CARL.developerId, "contributor");
   members.grant(TEST_ORG, "web", VIV.developerId, "viewer");
   // Beside the broker's own stores: the same table, so a test can seed a published version without going through the routes.
@@ -385,6 +394,32 @@ describe("who can see and change a chain", () => {
     const rolled = await call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
     expect(rolled.body.disabledTriggers).toEqual(triggers.disabledByCheck);
     expect(triggers.rechecked).toEqual([chainId, chainId, chainId].map((id) => ({ orgId: TEST_ORG, chainId: id })));
+  });
+});
+
+describe("a trigger check that fails after the change was made", () => {
+  it("answers the change that was made (not a 500), lists no triggers, and logs a fixed event without the error's text (L5)", async () => {
+    const { call, create, putDraft, publish, triggers, state } = await setup();
+    const chainId = await create(MAYA);
+    triggers.recheckFails = true;
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await putDraft(MAYA, chainId, variant({ investigate: { name: "second" } }));
+      const published = await publish(MAYA, chainId);
+      expect(published.status, JSON.stringify(published.body)).toBe(200);
+      expect(published.body.disabledTriggers).toEqual([]);
+      expect(triggers.rechecked).toEqual([{ orgId: TEST_ORG, chainId }]);
+      const budget = await call(MAYA, "PUT", `/v1/app/chains/${chainId}/budget`, { monthlyUsd: 5 });
+      expect(budget.status, JSON.stringify(budget.body)).toBe(200);
+      expect(budget.body.disabledTriggers).toEqual([]);
+      expect((await state(chainId)).monthlyBudgetUsd).toBe(5);
+      const lines = log.mock.calls.map(call => String(call[0])).filter(line => line.includes("trigger_recheck.failed"));
+      expect(lines).toHaveLength(2);
+      expect(JSON.parse(lines[0]!)).toMatchObject({ component: "broker", event: "trigger_recheck.failed", targetKind: "chain", targetId: chainId, error: "ThrottlingException" });
+      expect(lines.join("")).not.toContain("secret detail");
+    } finally {
+      log.mockRestore();
+    }
   });
 });
 
@@ -699,7 +734,7 @@ describe("a publish or rollback that makes something less safe", () => {
     const onHelper = (instructions?: string): ChainDefinitionInput => ({ start: "a", steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: helper, version: "current" }, ...(instructions === undefined ? {} : { instructions }), next: { kind: "end" } }] });
     await s.seed(chainId, onHelper());
     await s.seed(chainId, onHelper("Say what you did."));
-    await s.store.archive(TEST_ORG, helper, MAYA.developerId);
+    await s.store.archive(TEST_ORG, helper, MAYA.developerId, undefined, { actor: fixtureActor(s.store, TEST_ORG, MAYA.developerId) });
     const refused = await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
     expect(refused.status).toBe(409);
     expect(errorOf(refused)).toMatchObject({ code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being rolled back. Roll back again." });

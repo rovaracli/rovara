@@ -1382,3 +1382,9 @@ export const TEAM_RECORD_ORG_DIRECTORY_PK = "TEAM_RECORD_ORGS";
 export function teamRecordOrgDirectoryKey(orgId: OrgId): { pk: string; sk: string } {
   return { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: orgId };
 }
+
+/** An owner's immutable, expiring company cutover review (never a paid-work receipt). */
+export function taskStopReviewKey(orgId: OrgId, reviewId: string): OrgKey {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(reviewId)) throw new Error("Invalid review id.");
+  return { pk: orgScoped(orgId, "TASK_STOP_REVIEW"), sk: reviewId };
+}

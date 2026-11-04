@@ -129,6 +129,8 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       SLACK_ORCHESTRATOR_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.slackOrchestratorRole}`,
       TEAM_RECORD_VECTORS_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.teamRecordVectorsRole}`,
       CHATGPT_CONNECTION_KEY_ARN: "arn:aws:kms:us-west-2:123456789012:key/1a2b3c4d-4e5f-6789-abcd-ef0123456789",
+      // Test services slice 3: derived from AGENTX_ENV (the key's fixed alias), not passed.
+      FIXTURE_KEY_ARN: "arn:aws:kms:us-west-2:123456789012:alias/agentx/staging/fixtures",
       PROVISIONER_ARN: `arn:aws:states:us-west-2:123456789012:stateMachine:${NAMES.provisionerStateMachine}`,
       DELETER_ARN: `arn:aws:states:us-west-2:123456789012:stateMachine:${NAMES.deleterStateMachine}`,
     });

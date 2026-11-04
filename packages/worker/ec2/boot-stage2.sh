@@ -34,21 +34,55 @@ wall_between_run_networks() {
   ! command -v ip6tables >/dev/null || ! ip6tables -S DOCKER-USER >/dev/null 2>&1 || ip6tables -C $rule 2>/dev/null || ip6tables -I $rule || return 1
 }
 # 4. TS-SEAL-2: nothing on a run bridge (rvi+) or a build bridge (rvb+) reaches the HOST over IPv6 either. The firewall unit's own ip6tables rule is best effort (a failure there only prints a line, and it is skipped when ip6tables is
-#    missing), so after the Docker restart this puts the INPUT drops in place or stops the boot. Each is inserted at the top of INPUT, once. Without a usable ip6tables the boot is allowed to go on only when the host has no IPv6 at
+#    missing), so after the Docker restart this puts the INPUT drops in place, or (4b below) withholds test services. Each is inserted at the top of INPUT, once. Without a usable ip6tables the boot is allowed to go on only when the host has no IPv6 at
 #    all: IPv6 counts as off only when it is disabled for the interfaces that exist (conf/all) AND for those that will (conf/default, which a new bridge takes), or when the kernel has no IPv6.
 ipv6_active() {
   [[ -e /proc/net/if_inet6 ]] || return 1
   [[ $(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null) != 1 || $(cat /proc/sys/net/ipv6/conf/default/disable_ipv6 2>/dev/null) != 1 ]]
 }
+IPV6_WALL_REASON=""
 wall_ipv6_into_host() {
   local bridge
+  IPV6_WALL_REASON=""
   if command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; then
     for bridge in rvb+ rvi+; do
-      ip6tables -C INPUT -i $bridge -j DROP 2>/dev/null || ip6tables -I INPUT -i $bridge -j DROP || return 1
+      ip6tables -C INPUT -i $bridge -j DROP 2>/dev/null || ip6tables -I INPUT -i $bridge -j DROP || { IPV6_WALL_REASON=rule-not-added; return 1; }
     done
-  else
-    ! ipv6_active
+  elif ipv6_active; then
+    IPV6_WALL_REASON=ip6tables-unusable
+    return 1
   fi
+}
+# 4b. An IPv6 wall that cannot be put in place does NOT stop the worker (owner, 2026-11-04). The worker runs normal tasks as in 0.5.2 but offers no test services: AGENTX_TEST_SERVICES_NOT_PULLED=all is the existing fail-closed
+#    withhold (testServicesAdvertisedFeatures returns no feature, and testServicesConfigFromEnvironment no configuration, for `all`), written here BEFORE the worker unit starts. The wall itself records why it failed in
+#    IPV6_WALL_REASON (one fixed word: ip6tables-unusable | rule-not-added), and the boot facts reuse that: ipv6Drops is false exactly when the wall failed, with the reason. The run network walls and the metadata block stay
+#    fatal. Also run by the walls unit on a reboot or Docker restart, so there the worker comes back withheld instead of not at all.
+#    The withhold is STICKY for the life of the instance (it fails closed): if the walls unit later succeeds (a reboot, a Docker restart), worker.env keeps `all` and the old reason until a new launch rewrites worker.env.
+withhold_test_services_for_ipv6() {
+  local reason=${1:-ip6tables-unusable} file=${WORKER_ENV_FILE:-/etc/agentx/worker.env} tmp from to
+  IPV6_WALL_REASON=$reason
+  from='"ipv6Drops":true'
+  to="\"ipv6Drops\":false,\"ipv6DropsReason\":\"$reason\""
+  # A private (0600) temp file in the SAME directory, moved over the target: the replace is atomic, so a reader never sees a half-written worker.env. The whole new file is written by ONE subshell redirected into
+  # it that stops at the first failed write; the last line must then be the withhold itself, or the temp file is removed and nothing is moved (a full disk must not leave a worker.env without the withhold).
+  tmp=$(mktemp "$file.XXXXXX") || return 1
+  (
+    line=""
+    if [[ -f "$file" ]]; then
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        case $line in
+          AGENTX_TEST_SERVICES_NOT_PULLED=*) ;;
+          AGENTX_TEST_SERVICES_BOOT_FACTS=*) printf '%s\n' "${line//"$from"/$to}" || exit 1 ;;
+          *) printf '%s\n' "$line" || exit 1 ;;
+        esac
+      done <"$file"
+    fi
+    printf 'AGENTX_TEST_SERVICES_NOT_PULLED=all\n' || exit 1
+  ) >"$tmp" || { rm -f "$tmp"; return 1; }
+  [[ $(tail -n 1 "$tmp") == AGENTX_TEST_SERVICES_NOT_PULLED=all ]] || { rm -f "$tmp"; return 1; }
+  sync "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+  log "TEST SERVICES WITHHELD: could not drop IPv6 from run networks into the host ($reason); the worker runs normal tasks and offers no test services"
 }
 # 5. The walls above and the isolation DROP are not in the container firewall unit (boot.sh, at its size limit, writes that), so they would be lost at a host reboot or a Docker restart (a restart rebuilds Docker's chains) if
 #    only this one-time boot put them in place. A unit of its own re-applies them whenever the firewall unit runs, before the worker starts. An idle stop TERMINATES the instance and the next start launches a new one that runs boot.sh
@@ -56,7 +90,8 @@ wall_ipv6_into_host() {
 readonly RUN_WALLS_UNIT=rovara-run-walls.service
 install_run_walls_unit() {
   install -d -o root -g root -m 0755 /usr/local/libexec
-  { printf 'set -e\n'; declare -f ipv6_active wall_between_run_networks wall_ipv6_into_host; printf 'wall_between_run_networks\nwall_ipv6_into_host\n'; } >/usr/local/libexec/rovara-run-walls || return 1
+  # The run network wall is fatal here; the IPv6 one is not: a failure withholds test services (see 4b) and lets the worker start. A worker that is already running is restarted (best effort, not waited for: it is ordered after this unit) so it re-reads its environment.
+  { printf 'set -e\nWORKER_ENV_FILE=%s\nWORKER_UNIT=%s\nlog() { printf "%%s\\n" "$*" >&2; }\n' "$WORKER_ENV_FILE" "$WORKER_UNIT"; declare -f ipv6_active wall_between_run_networks wall_ipv6_into_host withhold_test_services_for_ipv6; printf 'wall_between_run_networks\nwall_ipv6_into_host || { withhold_test_services_for_ipv6 "${IPV6_WALL_REASON:-ip6tables-unusable}" || exit 1; systemctl try-restart --no-block "$WORKER_UNIT" || true; }\n'; } >/usr/local/libexec/rovara-run-walls || return 1
   cat >"/etc/systemd/system/$RUN_WALLS_UNIT" <<UNIT || return 1
 [Unit]
 Description=Wall run networks off from each other and from the host over IPv6
@@ -90,7 +125,8 @@ write_test_services_environment() {
   { printf 'AGENTX_TEST_SERVICES_REGISTRY=%s\n' "$registry"; printf 'AGENTX_TEST_SERVICES_ENV=%s\n' "$environment"; } >>"$WORKER_ENV_FILE"
   # Per image: the repositories that did not pre-pull (a comma list of svc/<name>); the worker does not offer them. FAIL CLOSED: a list that is not well formed or has more than 16 names is written as `all`
   # (every image counts as not pulled and the worker offers no test-services feature), never dropped, because writing nothing would offer images that are not here.
-  if [[ -n "${PREPULL_FAILED_REPOS:-}" ]]; then
+  # A worker already withheld (`all`, written by withhold_test_services_for_ipv6 or by a launch with tx off) STAYS withheld: a per-image list never replaces or follows it.
+  if [[ -n "${PREPULL_FAILED_REPOS:-}" ]] && ! grep -qx 'AGENTX_TEST_SERVICES_NOT_PULLED=all' "$WORKER_ENV_FILE" 2>/dev/null; then
     if [[ "$PREPULL_FAILED_REPOS" =~ ^svc/[a-z0-9][a-z0-9._-]{0,62}(,svc/[a-z0-9][a-z0-9._-]{0,62}){0,15}$ ]]; then printf 'AGENTX_TEST_SERVICES_NOT_PULLED=%s\n' "$PREPULL_FAILED_REPOS" >>"$WORKER_ENV_FILE"
     else printf 'AGENTX_TEST_SERVICES_NOT_PULLED=all\n' >>"$WORKER_ENV_FILE"; fi
   fi
@@ -101,9 +137,20 @@ write_test_services_environment() {
 # Some images arriving and others not (slice 2) is `partial`: returns 0, the settings are written, and the repositories that did not arrive are listed in AGENTX_TEST_SERVICES_NOT_PULLED (not offered; the rest stay available).
 # What the last pull_catalog_images did, for the boot facts the worker reports (CloudWatch): none | ok | partial (some images arrived, the rest are named in AGENTX_TEST_SERVICES_NOT_PULLED) | failed, how many digests, and whether the registry login was removed.
 PREPULL_RESULT=none; PREPULL_COUNT=0; PREPULL_LOGGED_OUT=false; PREPULL_FAILED_REPOS=""
+# ONLY when test services are on (`tx`; the control plane's launch writes AGENTX_TEST_SERVICES=1 only then). With them off there is no list read, no ECR login, no pull and no log line, and the boot facts say `off`. This is gated on
+# the switch and NOT on the build flavor: the worker image is a release-flavor build even on staging (it trusts only digests baked into its own image plus this pre-pull), so an empty list in release builds would stop staging workers.
+# Every pull is the install's OWN registry and environment (cut from its worker image and log group below), never a fixed account: the list carries repository and digest only.
+# `catalog_seconds N`: N seconds, but never past the boot deadline (less the 10 s the kill grace adds), so the whole pre-pull ends inside /ping's window. At least 1.
+catalog_seconds() {
+  local left=$(( ${BOOT_DEADLINE:-$((SECONDS + 100000))} - SECONDS - 10 ))
+  ((left > 1)) || left=1
+  printf '%s\n' $(($1 < left ? $1 : left))
+}
 pull_catalog_images() {
   local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 failed="" pairs=() pair reference results file index=0
   local timeout_s=180 parallel=4
+  # Off: nothing is read, logged in or pulled, and nothing is logged. The facts say `off`. (The broker sends no dependency plan while `tx` is off; a worker launched with it off that is later asked for one refuses at run time with the fixed "not available on this worker" words, as for any image that did not arrive.)
+  if [[ "${AGENTX_TEST_SERVICES:-}" != 1 ]]; then PREPULL_RESULT=off; return 0; fi
   # Overrides count only as plain positive whole numbers; anything else (0, empty, text) is the default.
   [[ "${CATALOG_PULL_TIMEOUT_S:-}" =~ ^[1-9][0-9]*$ ]] && timeout_s=$CATALOG_PULL_TIMEOUT_S
   [[ "${CATALOG_PULL_PARALLEL:-}" =~ ^[1-9][0-9]*$ ]] && parallel=$CATALOG_PULL_PARALLEL
@@ -112,15 +159,21 @@ pull_catalog_images() {
   environment=${BASH_REMATCH[1]}
   # The list is read with a throwaway `cat` of the image's own file (no network, read-only, no capability): not a second copy-out of the image (stage 1 copies out stage 2 only, once).
   list=$(mktemp) || return 1
-  timeout --foreground --kill-after=10s 120s docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint cat "$AGENTX_WORKER_IMAGE" /opt/agentx/packages/worker/service-catalog/prepull.json >"$list" 2>/dev/null || : >"$list"
+  timeout --foreground --kill-after=10s "$(catalog_seconds 120)s" docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint cat "$AGENTX_WORKER_IMAGE" /opt/agentx/packages/worker/service-catalog/prepull.json >"$list" 2>/dev/null || : >"$list"
   while IFS= read -r line; do
     if [[ "$line" =~ ^\"repository\":\ *\"(svc/[a-z0-9][a-z0-9._-]{0,62})\" ]]; then repository=${BASH_REMATCH[1]}
     elif [[ "$line" =~ \"digest\":\ *\"(sha256:)?([a-f0-9]{64})\" && -n "${repository:-}" ]]; then pairs+=("$repository@sha256:${BASH_REMATCH[2]}"); repository=""; fi
   done < <(tr -d '\r' <"$list" | sed -E 's/^[[:space:]]+//; s/,$//' | grep -E '^"(repository|digest)"')
   rm -f "$list"
   ((${#pairs[@]} > 0)) || return 0
-  { timeout --foreground --kill-after=10s 120s aws ecr get-login-password --region "$region" \
-      | timeout --foreground --kill-after=10s 120s docker login --username AWS --password-stdin "$registry" >/dev/null 2>&1; } \
+  # Too little of the boot deadline left to log in and pull (under 30 s): pull nothing, name every repository as not pulled (AGENTX_TEST_SERVICES_NOT_PULLED) and keep the worker starting.
+  if [[ -n "${BOOT_DEADLINE:-}" ]] && ((BOOT_DEADLINE - SECONDS < 30)); then
+    for pair in "${pairs[@]}"; do failed="$failed ${pair%%@*}"; done
+    PREPULL_FAILED_REPOS=$(printf '%s\n' $failed | sort -u | paste -sd, -)
+    PREPULL_RESULT=failed; log "CATALOG PRE-PULL SKIPPED: the boot deadline is too close: $PREPULL_FAILED_REPOS"; return 1
+  fi
+  { timeout --foreground --kill-after=10s "$(catalog_seconds 120)s" aws ecr get-login-password --region "$region" \
+      | timeout --foreground --kill-after=10s "$(catalog_seconds 120)s" docker login --username AWS --password-stdin "$registry" >/dev/null 2>&1; } \
     || { docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true; PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: the registry login failed"; return 1; }
   # Each pull is bounded on its own (180 s, then killed; CATALOG_PULL_TIMEOUT_S overrides) and up to 4 run at once (CATALOG_PULL_PARALLEL), so one hung pull holds boot for one timeout and not for ten minutes. A pull that fails
   # does NOT stop the others (slice 2, per image): the rest are pulled and stay available, and each repository that did not arrive is named in AGENTX_TEST_SERVICES_NOT_PULLED so the worker does not offer it (a plan that needs
@@ -130,12 +183,12 @@ pull_catalog_images() {
   results=$(mktemp -d) || { docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true; PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: no scratch directory"; return 1; }
   for pair in "${pairs[@]}"; do
     index=$((index + 1))
-    if [[ -n "${BOOT_DEADLINE:-}" ]] && ((SECONDS >= BOOT_DEADLINE)); then printf '%s' "${pair%%@*}" >"$results/$index.fail"; continue; fi
+    if [[ -n "${BOOT_DEADLINE:-}" ]] && ((BOOT_DEADLINE - SECONDS < 20)); then printf '%s' "${pair%%@*}" >"$results/$index.fail"; continue; fi
     reference="$registry/rovara-catalog/$environment/$pair"
     while (($(jobs -rp | wc -l) >= parallel)); do sleep 1; done
     (
       docker image inspect "$reference" >/dev/null 2>&1 && : >"$results/$index.ok" && exit 0
-      timeout --foreground --kill-after=10s "${timeout_s}s" docker pull "$reference" >/dev/null 2>&1 && : >"$results/$index.ok" && exit 0
+      timeout --foreground --kill-after=10s "$(catalog_seconds "$timeout_s")s" docker pull "$reference" >/dev/null 2>&1 && : >"$results/$index.ok" && exit 0
       printf '%s' "${pair%%@*}" >"$results/$index.fail"
     ) &
   done
@@ -159,18 +212,16 @@ pull_catalog_images() {
 # The facts only root can see, handed to the worker as ONE environment value that it logs at its start (staging workers are not SSM-managed, so nothing reads them from the host). Booleans, a count and a version number:
 # no name, path or secret. Written after the walls are in place; the worker validates the shape (packages/worker/src/test-services-report.ts parseBootFacts).
 write_test_services_boot_facts() {
-  local imds=false walls=false ip6=false docker_version
+  local imds=false walls=false ip6=false ip6_reason="" docker_version
   metadata_blocked && imds=true
   iptables -C DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP 2>/dev/null && walls=true
-  if command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; then
-    ip6tables -C INPUT -i rvb+ -j DROP 2>/dev/null && ip6tables -C INPUT -i rvi+ -j DROP 2>/dev/null && ip6=true
-  else
-    ipv6_active || ip6=true
-  fi
+  # The IPv6 fact is the wall's own result (IPV6_WALL_REASON, set by wall_ipv6_into_host / the withhold in this same boot), not a second probe that could disagree with it.
+  if [[ -z "${IPV6_WALL_REASON:-}" ]]; then ip6=true; else ip6_reason=$IPV6_WALL_REASON; fi
   docker_version=$(docker version --format '{{.Server.Version}}' 2>/dev/null | head -n1)
   [[ "$docker_version" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){0,3}(-[a-z0-9.]{1,12})?$ ]] || docker_version=0
-  printf 'AGENTX_TEST_SERVICES_BOOT_FACTS={"metadataBlocked":%s,"runWalls":%s,"ipv6Drops":%s,"prepull":"%s","prepulled":%s,"loggedOut":%s,"dockerVersion":"%s"}\n' \
-    "$imds" "$walls" "$ip6" "$PREPULL_RESULT" "$PREPULL_COUNT" "$PREPULL_LOGGED_OUT" "$docker_version" >>"$WORKER_ENV_FILE"
+  [[ -z "$ip6_reason" ]] || ip6_reason=",\"ipv6DropsReason\":\"$ip6_reason\""
+  printf 'AGENTX_TEST_SERVICES_BOOT_FACTS={"metadataBlocked":%s,"runWalls":%s,"ipv6Drops":%s%s,"prepull":"%s","prepulled":%s,"loggedOut":%s,"dockerVersion":"%s"}\n' \
+    "$imds" "$walls" "$ip6" "$ip6_reason" "$PREPULL_RESULT" "$PREPULL_COUNT" "$PREPULL_LOGGED_OUT" "$docker_version" >>"$WORKER_ENV_FILE"
 }
 # This optional preload is bounded; failure leaves the worker available.
 pull_contained_image() {
@@ -526,7 +577,7 @@ stage2_main() {
     set_docker_address_pools || fail "could not set Docker's address pools"
     metadata_blocked || fail "the metadata block is missing after the Docker restart"
     wall_between_run_networks || fail "could not wall run networks off from each other"
-    wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"
+    wall_ipv6_into_host || withhold_test_services_for_ipv6 "${IPV6_WALL_REASON:-ip6tables-unusable}" || fail "could not withhold test services after the IPv6 wall failed"
     install_run_walls_unit || fail "could not install the unit that restores the run network walls"
     write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"
   fi

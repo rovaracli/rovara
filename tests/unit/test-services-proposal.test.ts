@@ -7,6 +7,7 @@ import { sanitizeTestEnvDraft, testEnvDraftEndItems } from "../../packages/broke
 import { approveTestEnvItemsFor, takesTheChange } from "../../packages/broker/src/decisions/test-env-source.js";
 import { DEPENDENCY_CLASH_NOTE, mergeDraftWithApproved } from "../../packages/broker/src/aws/developer-routes/test-environment.js";
 import { proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
+import { TEST_SERVICES_MIN_CATALOG_REVISION } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
 import { pinnedCatalog, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -79,7 +80,7 @@ describe("a draft's dependency candidates", () => {
   });
 
   it("proposes only what the catalog has PINNED: an unpinned catalog proposes nothing", () => {
-    const draft = sanitizeTestEnvDraft(draftOf([candidate("postgres")]), options(verifiedCatalog(unpinnedCatalog())))!;
+    const draft = sanitizeTestEnvDraft(draftOf([candidate("postgres")]), options(verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION))))!;
     expect(draft.environment.dependencies).toBeUndefined();
     expect(draft.notes).toContain(DEPENDENCIES_NOT_PROPOSED_NOTE);
   });

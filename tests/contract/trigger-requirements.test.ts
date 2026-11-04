@@ -9,6 +9,7 @@ import { recheckTriggersForTarget } from "../../packages/broker/src/triggers/lif
 import { triggerProblems } from "../../packages/broker/src/triggers/requirements.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { CARL, DANA, MAX, ORG_A, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
+import { fixtureActor } from "../support/money-authority.js";
 
 afterEach(disposeGateWorlds);
 
@@ -102,6 +103,7 @@ describe("a change to a chain that takes away what its trigger needs", () => {
     const chain = await v.budgetedChain(ONE_STEP({ steps: [{ kind: "agent", id: "look", name: "Look", agent: { agentId: agent.agentId, version: "current" }, next: { kind: "end" } }], limits: { maxRunUsd: 5 } }));
     const trigger = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, createdBy: DANA });
     expect(await triggerProblems(v.routeDeps, trigger)).toEqual([]);
+    fixtureActor(v.db, ORG_A, DANA); // archiving holds the admin to their company access in its own transaction
     expect((await v.agentCall(DANA, "POST", `/v1/app/agents/${agent.agentId}/archive`, {})).status).toBe(200);
     const [problem] = await triggerProblems(v.routeDeps, trigger);
     expect(problem).toMatchObject({ code: "CHAIN_UNAVAILABLE" });
@@ -249,9 +251,14 @@ describe("a change to an agent that takes away what its trigger needs", () => {
     const hooks = v.routeDeps.triggers!;
     const original = hooks.listForTarget.bind(hooks);
     hooks.listForTarget = async () => { throw new Error("the table is not reachable"); };
-    const removed = await v.chainCall(PRIYA, "PUT", `/v1/app/chains/${chain.chainId}/budget`, { monthlyUsd: null }).catch((error: unknown) => ({ status: 500, body: { error } }));
+    const logged: string[] = [];
+    v.routeDeps.log = (event) => { logged.push(event); };
+    // L5: the change is made before the re-check, so a re-check that cannot list the triggers is logged and the answer is the change that was made (it used to be a 500).
+    const removed = await v.chainCall(PRIYA, "PUT", `/v1/app/chains/${chain.chainId}/budget`, { monthlyUsd: null });
     hooks.listForTarget = original;
-    expect(removed.status).toBe(500);
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect(removed.body["disabledTriggers"]).toEqual([]);
+    expect(logged).toContain("trigger_recheck.failed");
     expect((await v.chains.get(ORG_A, chain.chainId))?.monthlyBudgetUsd).toBeUndefined();
     expect((await stored(v, trigger.triggerId)).enabled).toBe(true);
     expect((await triggerProblems(v.routeDeps, await stored(v, trigger.triggerId)))[0]).toMatchObject({ code: "CHAIN_BUDGET_REQUIRED" });
