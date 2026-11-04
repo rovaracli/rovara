@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { runGitWithCredential, pushCommitFromIsolatedRepository } from "../../packages/worker/src/git-auth.js";
+import { exportCandidateBuildSourceInScratch } from "../../packages/worker/src/e2e-build-source-export.js";
 import { withIsolatedGit } from "../../packages/worker/src/isolated-git.js";
 import { isEc2WorkerRuntime } from "../../packages/worker/src/task-sandbox.js";
-import { ec2WorkerRuntime, makeWorkerScratch, useScratchDeviceProbeForTests, workerScratchBase } from "../../packages/worker/src/worker-scratch.js";
+import { assertWorkerScratchReady, checkWorkerScratch, ec2WorkerRuntime, makeWorkerScratch, useScratchDeviceProbeForTests, workerScratchBase } from "../../packages/worker/src/worker-scratch.js";
 
 const execFile = promisify(execFileCallback);
 const WORKSPACE = "/mnt/test-workspace-root";
@@ -113,5 +114,49 @@ describe("the throwaway Git repository and the credential folder use it (TF12)",
     });
     expect(cwd).toBeDefined();
     expect(["/tmp", "/var/tmp"]).toContain(dirname(cwd!));
+  });
+});
+
+describe("the other throwaway Git users take worker scratch too (TF12, M1)", () => {
+  it("the build source export's default scratch is made through worker scratch", async () => {
+    const probed: string[] = [];
+    undo.push(useScratchDeviceProbeForTests(async (path) => { probed.push(path); return productionLayout(path); }));
+    const previous = process.env.AGENTX_WORKSPACE_ROOT;
+    process.env.AGENTX_WORKSPACE_ROOT = WORKSPACE;
+    undo.push(() => { if (previous === undefined) delete process.env.AGENTX_WORKSPACE_ROOT; else process.env.AGENTX_WORKSPACE_ROOT = previous; });
+    const result = await exportCandidateBuildSourceInScratch({
+      repositoryRoot: join(tmpdir(), "agentx-no-such-repository"), signal: new AbortController().signal,
+      candidate: { schemaVersion: "workflow-candidate/v1", repositories: [], digest: "x" } as never,
+    });
+    expect(result.status).toBe("UNAVAILABLE");
+    expect(probed).toContain(WORKSPACE);
+  });
+});
+
+const READY = { status: "ready", base: "/tmp", offWorkspaceVolume: true } as const;
+
+describe("the worker checks its scratch once, at start (TF12, M3)", () => {
+  it("is ready, and says where, when scratch is made off the workspace volume", async () => {
+    undo.push(useScratchDeviceProbeForTests(productionLayout));
+    const status = await checkWorkerScratch({ environment });
+    expect(status).toMatchObject({ status: "ready", offWorkspaceVolume: true });
+    expect(["/tmp", "/var/tmp"]).toContain((status as { base: string }).base);
+  });
+
+  it("is ready but says so when the workspace has no volume of its own (a developer's machine)", async () => {
+    undo.push(useScratchDeviceProbeForTests(async () => VOLUME));
+    expect(await checkWorkerScratch({ environment })).toMatchObject({ status: "ready", offWorkspaceVolume: false });
+  });
+
+  it("is unavailable, with a reason, on an EC2 worker that has no such scratch, and every task is then refused clearly", async () => {
+    undo.push(useScratchDeviceProbeForTests(async () => VOLUME));
+    const status = await checkWorkerScratch({ environment: { ...environment, AGENTX_RUNTIME: "ec2" } });
+    expect(status.status).toBe("unavailable");
+    expect(() => assertWorkerScratchReady(status)).toThrow(/did not run the task/u);
+    expect(() => assertWorkerScratchReady(status)).toThrow(expect.objectContaining({ code: "RUNTIME_UNAVAILABLE" }) as never);
+  });
+
+  it("lets a ready worker's tasks through", async () => {
+    expect(() => assertWorkerScratchReady(READY)).not.toThrow();
   });
 });

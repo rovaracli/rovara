@@ -16,9 +16,9 @@ afterEach(async () => {
 });
 
 /** A Docker CLI whose container is this machine: `docker exec` runs the command here, with the `--env` pairs and the host's PATH. */
-function localContainer(): DockerCli {
+function localContainer(imagePath: string[] = []): DockerCli {
   return {
-    run: async (args) => {
+    run: async (args, options) => {
       if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "bridge {} false", stderr: "" };
       if (args[0] !== "exec") return { exitCode: 0, stdout: "", stderr: "" };
       const flags: Record<string, string> = {};
@@ -30,11 +30,11 @@ function localContainer(): DockerCli {
       }
       const command = args.slice(index + 1);
       return await new Promise((resolve) => {
-        const child = spawn(command[0]!, command.slice(1), { env: { PATH: process.env["PATH"] ?? "", ...flags }, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(command[0]!, command.slice(1), { env: { PATH: [...imagePath, process.env["PATH"] ?? ""].join(":"), ...flags }, stdio: ["ignore", "pipe", "pipe"] });
         let stdout = "";
         let stderr = "";
-        child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-        child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+        child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); options?.onStdout?.(chunk); });
+        child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); options?.onStderr?.(chunk); });
         child.on("error", (error) => resolve({ exitCode: -1, stdout, stderr: `${stderr}${error.message}` }));
         child.on("close", (code) => resolve({ exitCode: code ?? -1, stdout, stderr }));
       });
@@ -42,20 +42,20 @@ function localContainer(): DockerCli {
   };
 }
 
-async function started(): Promise<{ root: string; sandbox: TaskSandbox; marker: string; plant(name: string): Promise<void> }> {
+async function started(imagePath: string[] = []): Promise<{ root: string; sandbox: TaskSandbox; marker: string; plant(name: string, body?: string): Promise<void> }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "agentx-path-shadow-")));
   cleanup.push(root);
   await mkdir(join(root, "repo"), { recursive: true });
-  const sandbox = new TaskSandbox({ rootPath: root, taskId: "path-shadow", docker: localContainer(), image: IMAGE });
+  const sandbox = new TaskSandbox({ rootPath: root, taskId: "path-shadow", docker: localContainer(imagePath), image: IMAGE });
   await sandbox.start();
   const marker = join(root, "shadow-ran.marker");
   return {
     root, sandbox, marker,
     // A program of the task's own, put where the sandbox looks first.
-    async plant(name) {
+    async plant(name, body) {
       const path = join(root, SANDBOX_PYTHON_USER_BASE_DIRECTORY, "bin", name);
       await mkdir(join(root, SANDBOX_PYTHON_USER_BASE_DIRECTORY, "bin"), { recursive: true });
-      await writeFile(path, `#!/bin/sh\ntouch '${marker}'\n`);
+      await writeFile(path, `#!/bin/sh\n${body ?? `touch '${marker}'`}\n`);
       await chmod(path, 0o755);
     },
   };
@@ -65,12 +65,15 @@ const exists = async (path: string): Promise<boolean> => stat(path).then(() => t
 const exits = (executable: string, args: string[]) => ({ cwd: "repo", executable, args, timeoutSeconds: 20 });
 
 describe("C67: a program in the Python user site's bin does not shadow what AgentX's own wrapper calls", () => {
-  it("positive control: the planted program is first on PATH for the task's own command, as Bug K needs", async () => {
+  it("positive control: a tool only the user site has (what pip --user installed, Bug K) is found by the task's own command", async () => {
     const box = await started();
-    await box.plant("rm");
-    const result = await box.sandbox.runCommand(exits("rm", ["-f", join(box.root, "nothing")]));
+    await box.plant("pipinstalled-only", "echo user-site");
+    const result = await box.sandbox.runCommand(exits("pipinstalled-only", []));
     expect(result.exitCode).toBe(0);
-    expect(await exists(box.marker)).toBe(true);
+    expect(result.stdout.trim()).toBe("user-site");
+    const shell: string[] = [];
+    await box.sandbox.bashOperations().exec("pipinstalled-only", join(box.root, "repo"), { onData: (data) => shell.push(data.toString()), timeout: 20, env: {} });
+    expect(shell.join("").trim()).toBe("user-site");
   });
 
   it("a planted rm does not run in the wrapper of a project command (setup, readiness)", async () => {
@@ -88,5 +91,32 @@ describe("C67: a program in the Python user site's bin does not shadow what Agen
     const result = await box.sandbox.bashOperations().exec("exit 0", join(box.root, "repo"), { onData: (data) => output.push(data.toString()), timeout: 20, env: {} });
     expect(result.exitCode).toBe(0);
     expect(await exists(box.marker)).toBe(false);
+  });
+});
+
+describe("M2: the user site's bin comes after the image's PATH, so a planted tool cannot stand in for one the image has", () => {
+  async function imageWith(name: string): Promise<string> {
+    const directory = await mkdtemp(join(tmpdir(), "agentx-image-bin-"));
+    cleanup.push(directory);
+    await writeFile(join(directory, name), "#!/bin/sh\necho image\n");
+    await chmod(join(directory, name), 0o755);
+    return directory;
+  }
+
+  it("runs the image's pytest, not one planted in .agentx-python/bin that always passes, for a project command (setup, readiness) and for the agent's shell", async () => {
+    const box = await started([await imageWith("pytest")]);
+    await box.plant("pytest", "echo planted; exit 0");
+    const command = await box.sandbox.runCommand(exits("pytest", []));
+    expect(command.stdout.trim()).toBe("image");
+    const shell: string[] = [];
+    await box.sandbox.bashOperations().exec("pytest", join(box.root, "repo"), { onData: (data) => shell.push(data.toString()), timeout: 20, env: {} });
+    expect(shell.join("").trim()).toBe("image");
+  });
+
+  it("leaves a project command's own PATH alone", async () => {
+    const box = await started();
+    await box.plant("only-here", "echo user-site");
+    const result = await box.sandbox.runCommand({ ...exits("sh", ["-c", "command -v only-here || echo none"]), env: { PATH: "/usr/bin:/bin" } });
+    expect(result.stdout.trim()).toBe("none");
   });
 });

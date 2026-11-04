@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { availableParallelism, totalmem } from "node:os";
-import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { openDirectory } from "./candidate-fs.js";
 import { join, resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
@@ -84,6 +85,14 @@ export const SANDBOX_UNSET_ENVIRONMENT: readonly string[] = ["NODE_ENV"];
  * into the repository. The folder holds a `.gitignore` of `*`, so a repository at the workspace root never sees it as a change.
  */
 export const SANDBOX_PYTHON_USER_BASE_DIRECTORY = ".agentx-python";
+/**
+ * What every customer command in a sandbox of the workspace `rootPath` starts with: no NODE_ENV (Bug F), the Python user site (Bug K), and that site's bin AFTER the image's PATH (M2), so a
+ * program the task planted there cannot stand in for a tool the image has. One definition for the working sandbox and the sealed check round (check-round-runners.ts).
+ */
+export function sandboxCommandOptions(rootPath: string): ContainerCommandOptions {
+  const base = join(resolve(rootPath), SANDBOX_PYTHON_USER_BASE_DIRECTORY);
+  return { unsetEnvironment: SANDBOX_UNSET_ENVIRONMENT, defaultEnvironment: { PYTHONUSERBASE: base }, pathSuffix: [join(base, "bin")] };
+}
 /** The environment variable that names the sandbox image; boot.sh sets it to the worker's own image. */
 export const TASK_SANDBOX_IMAGE_ENVIRONMENT = "AGENTX_SANDBOX_IMAGE";
 /** `local` or `sandbox` (the default): where a project without a devcontainer runs its commands. `local` is for tests and a developer's machine, never EC2. */
@@ -291,8 +300,7 @@ export class TaskSandbox {
 
   /** What every customer command in the sandbox starts without (NODE_ENV, Bug F) and with (the Python user site, Bug K), unless the command sets it itself. */
   private commandOptions(): ContainerCommandOptions {
-    const base = join(resolve(this.options.rootPath), SANDBOX_PYTHON_USER_BASE_DIRECTORY);
-    return { unsetEnvironment: SANDBOX_UNSET_ENVIRONMENT, defaultEnvironment: { PYTHONUSERBASE: base }, pathPrefix: [join(base, "bin")] };
+    return sandboxCommandOptions(this.options.rootPath);
   }
 
   /** The agent's shell in the sandbox. */
@@ -371,10 +379,24 @@ export class TaskSandbox {
       });
       if (found !== undefined && (found.isSymbolicLink() || !found.isDirectory())) await rm(path, { force: true });
       await mkdir(path, { recursive: true });
-      // Rewritten on every start (C67): a task may have emptied, replaced or linked it. The old entry goes first (a link itself, never its target), then the file is made
-      // exclusively, so the write can never follow a link a task puts there between the two.
-      await rm(join(path, ".gitignore"), { recursive: true, force: true });
-      await writeFile(join(path, ".gitignore"), "*\n", { flag: "wx" });
+      // Rewritten on every start (C67): a task may have emptied, replaced or linked it. The folder is opened once, without following a link (a swap for a link after the check above
+      // fails the open), and the new file is made exclusively under a name of its own in that folder and renamed over `.gitignore`: a rename replaces a link or file at the name and never
+      // writes through it, and only the held folder is touched (L1).
+      const held = await openDirectory(join(await realpath(root), SANDBOX_PYTHON_USER_BASE_DIRECTORY));
+      try {
+        const temporary = held.entry(`.gitignore.${randomUUID()}.tmp`);
+        await writeFile(temporary, "*\n", { flag: "wx" });
+        try {
+          await rename(temporary, held.entry(".gitignore"));
+        } catch (error) {
+          // A directory at the name (rename cannot replace it with a file): it goes, and the rename is made again.
+          if ((error as { code?: unknown }).code !== "EISDIR" && (error as { code?: unknown }).code !== "ENOTEMPTY" && (error as { code?: unknown }).code !== "EEXIST") throw error;
+          await rm(held.entry(".gitignore"), { recursive: true, force: true });
+          await rename(temporary, held.entry(".gitignore"));
+        }
+      } finally {
+        await held.close();
+      }
     } catch (error) {
       (this.options.log ?? logEvent)({ event: "task-sandbox.python-user-base.failed", taskId: this.options.taskId, reason: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300) });
     }

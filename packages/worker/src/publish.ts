@@ -18,7 +18,7 @@ import {
 } from "@agentx/contracts";
 import { AGENTX_GIT_EMAIL, AGENTX_GIT_NAME } from "./git.js";
 import { assertCredentialFreeRemote, pushCommitFromIsolatedRepository, type CredentialedGitRunner } from "./git-auth.js";
-import { candidateLayout, snapshotTree, withIsolatedGit } from "./isolated-git.js";
+import { CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC, candidateLayout, snapshotTree, withIsolatedGit } from "./isolated-git.js";
 import { assertWorkspaceIsPlain, runIsolatedGit, withIsolatedRepository } from "./isolated-repository.js";
 import { stopWorkspaceProcesses } from "./workspace-processes.js";
 import { sweepWorkspaceContainers } from "./workspace-containers.js";
@@ -472,7 +472,7 @@ async function prepareCleanPublicationCommit(input: {
     if (error instanceof AgentXError) throw error;
     throw agentXError("CONFIG_INVALID", "Git could not read the repository's files");
   }
-  await input.git(["add", "--all"]);
+  await input.git(["add", "--all", "--", ".", CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC]);
   const workspaceTree = (await input.git(["write-tree"])).trim();
   const workspaceCommit = (await input.git([
     "-c",

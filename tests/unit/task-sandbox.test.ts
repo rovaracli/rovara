@@ -1,6 +1,6 @@
 // Ruling R56: on an EC2 worker, task-controlled code never runs in the worker's own process, network or user. It runs
 // in a sandbox container with no Docker socket, no host network, no capabilities and only the workspace mounted.
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -399,6 +399,15 @@ describe("the Python user site's .gitignore is rewritten on every start (C67)", 
     await rm(join(root, ".agentx-python", ".gitignore"));
     await start(root);
     expect(await readFile(join(root, ".agentx-python", ".gitignore"), "utf8")).toBe("*\n");
+  });
+
+  it("replaces a directory a task left at its name, and leaves no temporary file behind (L1)", async () => {
+    const root = await workspace();
+    await mkdir(join(root, ".agentx-python", ".gitignore"), { recursive: true });
+    await writeFile(join(root, ".agentx-python", ".gitignore", "inner"), "x");
+    await start(root);
+    expect(await readFile(join(root, ".agentx-python", ".gitignore"), "utf8")).toBe("*\n");
+    expect(await readdir(join(root, ".agentx-python"))).toEqual([".gitignore"]);
   });
 
   it("replaces a link a task left at its name, without writing through it", async () => {

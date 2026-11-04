@@ -165,7 +165,7 @@ describe("a CHECKS run with no dependencies in the plan (tx off) is today's, cal
           "<sandbox>",
           "bash",
           "-c",
-          "unset NODE_ENV; set -m; (export PATH='<root>/.agentx-python/bin':"$PATH"; cd -- "$1" && shift 2 && exec "$@") & child=$!; set +m; echo "$child" > "$2"; wait "$child"; status=$?; command -p rm -f "$2"; exit "$status"",
+          "unset NODE_ENV; set -m; (export PATH="$PATH":'<root>/.agentx-python/bin'; cd -- "$1" && shift 2 && exec "$@") & child=$!; set +m; echo "$child" > "$2"; wait "$child"; status=$?; command -p rm -f "$2" 2>/dev/null || :; exit "$status"",
           "bash",
           "<root>/repo/sample",
           "/tmp/agentx-command-<uuid>.pgid",

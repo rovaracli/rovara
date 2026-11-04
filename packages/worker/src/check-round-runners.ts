@@ -16,7 +16,7 @@
 // (`plan.dnsHelperRunArgs`, the caller does, with the helpers), or read the name server's record (`buildServiceUsageRecord`, service-usage-record.ts, after the round and before the services stop).
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { agentXError } from "@agentx/contracts";
 import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
 import { withDetachedWorking, type CheckSandboxPlan, type WorkingPhaseNetwork } from "./check-sandbox.js";
@@ -26,7 +26,7 @@ import type { DockerCli } from "./swebench/containers.js";
 import { matchTestCommand } from "@agentx/contracts";
 import { tailCollector } from "./collected-process.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
-import { SANDBOX_PYTHON_USER_BASE_DIRECTORY, SANDBOX_UNSET_ENVIRONMENT } from "./task-sandbox.js";
+import { sandboxCommandOptions } from "./task-sandbox.js";
 import { CheckNotRunError, containedDirectory, runChecks, withoutRootError, type CheckPlan, type CheckRound, type CheckRunners } from "./verification/checks.js";
 
 /**
@@ -43,8 +43,7 @@ interface SealedSeam {
  * The agent's replay gets the AgentX git identity only: the worker's own environment is not copied into the sealed sandbox, and the run's variables come from the seam's env file, which wins over any `env` of the command.
  */
 function createSealedCheckRunners(rootPath: string, seam: SealedSeam): CheckRunners {
-  const base = join(resolve(rootPath), SANDBOX_PYTHON_USER_BASE_DIRECTORY);
-  const commandOptions = { unsetEnvironment: SANDBOX_UNSET_ENVIRONMENT, defaultEnvironment: { PYTHONUSERBASE: base }, pathPrefix: [join(base, "bin")] };
+  const commandOptions = sandboxCommandOptions(rootPath);
   const operations = containerBashOperations(seam.exec, commandOptions);
   const canonicalRoot = realpath(resolve(rootPath));
   canonicalRoot.catch(() => undefined);

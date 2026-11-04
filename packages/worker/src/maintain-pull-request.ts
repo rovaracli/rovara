@@ -16,6 +16,7 @@ import { assertWorkspaceIsPlain, runIsolatedGit, withIsolatedRepository } from "
 import type { PullRequestUpdateSink } from "./callback-client.js";
 import { runCodeBuildGates, type CodeBuildSink } from "./codebuild.js";
 import type { RepositoryCredentialProvider } from "./repository-credentials.js";
+import { CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC } from "./isolated-git.js";
 import { containWorkspace, runReadinessChecks, temporaryIndexTree, type OtherOperationWait } from "./publish.js";
 import type { TaskShellSelection } from "./task-sandbox.js";
 import { stopWorkspaceProcesses } from "./workspace-processes.js";
@@ -142,7 +143,7 @@ export async function maintainPullRequest(options: {
     }
     let workspaceTree: string;
     if (reviewedTree === undefined) {
-      await git(repositoryPath, ["add", "--all"]);
+      await git(repositoryPath, ["add", "--all", "--", ".", CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC]);
       workspaceTree = (await git(repositoryPath, ["write-tree"])).trim();
     } else {
       // In a temporary index, as the reviewed tree was computed, so the real index is untouched.
@@ -232,7 +233,7 @@ export async function maintainPullRequest(options: {
         // The merge's files stay as it left them (markers in the conflicting ones, the base's new files in place), and the branch of the workspace moves to a local merge commit of them (parents: the
         // head, then the base commit; never pushed). A candidate cannot be captured from a repository with unmerged index entries, and one is compared with the base commit it is reviewed against,
         // which the workspace's history must therefore hold; the coder resolving the files by editing them, as it edits anything, must not also have to mark each one in Git.
-        await git(repositoryPath, ["add", "--all"]);
+        await git(repositoryPath, ["add", "--all", "--", ".", CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC]);
         const markedTree = (await git(repositoryPath, ["write-tree"])).trim();
         const marked = (await git(repositoryPath, [
           "-c", `user.name=${AGENTX_GIT_NAME}`, "-c", `user.email=${AGENTX_GIT_EMAIL}`,

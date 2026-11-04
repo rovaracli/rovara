@@ -239,7 +239,8 @@ export async function withIsolatedGit<T>(
 export const CANDIDATE_EXCLUDE_PATHSPEC = ":(exclude,glob)**/.agentx-file-ops-*";
 /**
  * Leaves the sandbox's Python user site (`.agentx-python`, task-sandbox.ts; a drift test pins the name) out of every snapshot, at the top of the work tree only (C67). Its own `.gitignore` of
- * `*` is the first line of defence; a task that deletes that file, or force-adds the folder, must not get a program of its own into the candidate that way.
+ * `*` is the first line of defence; a task that deletes that file, or force-adds the folder to the index, must not get a program of its own into the candidate that way. A task that commits
+ * the folder to HEAD keeps it in the snapshot (it is then in the reviewed diff, so nothing is hidden), and later edits to a tracked folder are not captured.
  */
 export const CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC = ":(top,exclude,literal).agentx-python";
 
