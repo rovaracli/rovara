@@ -31,7 +31,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { CATALOG_FILE, CatalogIdSchema, CatalogRegistryHostSchema, ServiceCatalogSchema, catalogRepositoryName } from "@agentx/contracts";
-import { DEFAULT_CATALOG_DIR, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_COPY_TIMEOUT_MS, SourceRefSchema, createCommandPort, tagFor, timeoutFlag, type CommandPort } from "./catalog-build.js";
+import { DEFAULT_CATALOG_DIR, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_COPY_TIMEOUT_MS, SourceRefSchema, createCommandPort, parseEntryIds, tagFor, timeoutFlag, type CommandPort } from "./catalog-build.js";
 
 export const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json";
 export const DOCKER_MANIFEST_LIST_MEDIA_TYPE = "application/vnd.docker.distribution.manifest.list.v2+json";
@@ -88,7 +88,7 @@ export interface RepackPorts {
 export const REPACK_REFUSAL_CODES = [
   "unknown_id", "retired_entry", "no_upstream", "tag_refused", "bad_reference",
   "upstream_digest_mismatch", "upstream_not_index", "platform_missing", "platform_ambiguous", "child_not_image",
-  "child_digest_changed", "index_verify_failed", "tag_missing", "port_failed",
+  "child_digest_changed", "index_verify_failed", "tag_missing", "port_failed", "unselected_id",
 ] as const;
 export type RepackRefusalCode = (typeof REPACK_REFUSAL_CODES)[number];
 export interface RepackRefusal { id: string; code: RepackRefusalCode; message: string }
@@ -236,8 +236,12 @@ interface Plan {
 /**
  * Repacks every non-retired entry of the catalog. Reads and writes only through the ports and returns the two files' bytes without writing them. Phase one is READ ONLY (every reference checked, every upstream index
  * read, hashed and its platforms picked): any refusal there throws before anything is copied or pushed, listing every refusal. Phase two copies, builds, pushes and verifies, entry by entry, and stops at the first refusal.
+ *
+ * `entries` (slice 1, `--entries <ids>`): repacks ONLY those entries, so one image can be repacked and pinned at a time. The repack file then lists exactly the selected ids (an id it lists that was not selected is
+ * refused, never ignored), and the entries that were not selected are not read, copied or pushed. An id the catalog does not have, a retired id, and an empty or repeated list are refused. Left out, every non-retired
+ * entry must be listed, as before.
  */
-export async function repackCatalog(input: { catalog: unknown; repack: unknown; env: string; registry: string; ports: RepackPorts }): Promise<RepackOutput> {
+export async function repackCatalog(input: { catalog: unknown; repack: unknown; env: string; registry: string; ports: RepackPorts; entries?: readonly string[] }): Promise<RepackOutput> {
   const catalog = ServiceCatalogSchema.parse(input.catalog);
   const repack = RepackFileSchema.parse(input.repack);
   const registry = CatalogRegistryHostSchema.parse(input.registry);
@@ -245,16 +249,25 @@ export async function repackCatalog(input: { catalog: unknown; repack: unknown; 
   const entries = [...catalog.entries].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const refusals: RepackRefusal[] = [];
   const refuse = (id: string, code: RepackRefusalCode, message: string): void => void refusals.push({ id, code, message });
+  if (input.entries !== undefined && input.entries.length === 0) throw new Error("--entries needs at least one catalog id");
+  if (input.entries !== undefined && new Set(input.entries).size !== input.entries.length) throw new Error("--entries names an id twice");
+  const selected = input.entries === undefined ? undefined : new Set(input.entries);
 
   // ---- phase one: references (no I/O), then upstream indexes (read only)
   const byEntry = new Map(entries.map((entry) => [entry.id, entry]));
   for (const id of Object.keys(repack.entries).sort()) {
     if (!CatalogIdSchema.safeParse(id).success || !byEntry.has(id)) refuse(id, "unknown_id", "the repack file names an id the catalog does not have");
     else if (byEntry.get(id)?.status === "retired") refuse(id, "retired_entry", "a retired entry is not repacked");
+    else if (selected !== undefined && !selected.has(id)) refuse(id, "unselected_id", "the repack file lists an entry that --entries did not select");
+  }
+  for (const id of selected ?? []) {
+    if (!byEntry.has(id)) refuse(id, "unknown_id", "--entries names an id the catalog does not have");
+    else if (byEntry.get(id)?.status === "retired") refuse(id, "retired_entry", "a retired entry is not repacked");
   }
   const plans: Plan[] = [];
   for (const entry of entries) {
     if (entry.status === "retired") continue;
+    if (selected !== undefined && !selected.has(entry.id)) continue;
     const reference = repack.entries[entry.id];
     if (reference === undefined) {
       refuse(entry.id, "no_upstream", "the repack file has no upstream reference for this entry");
@@ -375,7 +388,7 @@ function indexProblem(served: Buffer, built: BuiltIndex, selected: readonly Sele
 }
 
 /** Repacks, then writes the provenance record and then the sources file (the file catalog-build reads) LAST. Nothing is written when anything was refused. */
-export async function runRepack(input: { catalog: unknown; repack: unknown; env: string; registry: string; ports: RepackPorts; outputs: { sourcesFile: string; provenanceFile: string } }): Promise<RepackOutput> {
+export async function runRepack(input: { catalog: unknown; repack: unknown; env: string; registry: string; ports: RepackPorts; entries?: readonly string[]; outputs: { sourcesFile: string; provenanceFile: string } }): Promise<RepackOutput> {
   const output = await repackCatalog(input);
   await input.ports.files.write([
     { path: input.outputs.provenanceFile, bytes: output.provenanceBytes },
@@ -446,7 +459,7 @@ export const fileOutputPort: OutputPort = {
 // ---- command line
 
 export function repackUsage(): string {
-  return `Usage: tsx scripts/catalog-repack.ts --repack-file <file> --env <environment> --registry <host> --sources-out <file> --provenance-out <file> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--repack-time <ISO time>] [--overwrite] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
+  return `Usage: tsx scripts/catalog-repack.ts --repack-file <file> --env <environment> --registry <host> --sources-out <file> --provenance-out <file> [--entries <id,id,...>] [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--repack-time <ISO time>] [--overwrite] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
 Run by an operator, with the owner's OK, on STAGING only: ~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/catalog-repack.ts ... (account 944937319445, us-west-2). Needs skopeo and oras (1.2.0 or newer, for
 \`oras resolve\`) on PATH. Upstream images must be anonymously pullable (no upstream credential is used); Docker Hub limits anonymous pulls, so a run may stop on a rate limit: wait and retry (see --repack-time).
 For each non-retired catalog entry it reads the upstream INDEX named in the repack file, checks its bytes hash to the digest the operator reviewed, picks exactly the catalog's platforms (linux/arm64 and linux/amd64; an
@@ -457,6 +470,7 @@ The attestation manifests (unknown/unknown) in the upstream index are dropped an
 The repack time is part of each index. RETRY an aborted run with the SAME --repack-time (the first run's time; use the one printed at its start): the indexes already pushed and tagged for completed entries are then
 reused, not orphaned beside new ones, and the immutable tags are not touched again. Without --repack-time the time is now, so a new run makes new indexes.
 The output directories must exist or be creatable and writable, the two output files must differ, and an existing sources or provenance file is not overwritten unless --overwrite is given.
+--entries repacks only the listed catalog ids (comma-separated, for example postgres@16): the repack file then lists exactly those ids, and no other entry is read, copied or pushed. Pass the same --entries to catalog-build.
 Each skopeo inspect and oras command is killed after --command-timeout-seconds, each skopeo copy after --copy-timeout-seconds.\n`;
 }
 
@@ -468,11 +482,13 @@ export interface RepackArgs {
   provenanceOut: string;
   catalogDir: string;
   repackTime: string | undefined;
+  /** The catalog ids to repack, or nothing for every non-retired entry. */
+  entries: string[] | undefined;
   overwrite: boolean;
   commandTimeoutMs: number;
   copyTimeoutMs: number;
 }
-const VALUE_FLAGS = ["--repack-file", "--env", "--registry", "--sources-out", "--provenance-out", "--catalog-dir", "--repack-time", "--command-timeout-seconds", "--copy-timeout-seconds"] as const;
+const VALUE_FLAGS = ["--repack-file", "--env", "--registry", "--sources-out", "--provenance-out", "--catalog-dir", "--repack-time", "--entries", "--command-timeout-seconds", "--copy-timeout-seconds"] as const;
 const BOOLEAN_FLAGS = ["--overwrite", "--help"] as const;
 
 /** Reads the command line. A flag it does not know, a flag given twice, a missing value, a bad time and identical output files are all errors (a typo must not be ignored). Paths are resolved. */
@@ -509,6 +525,7 @@ export function parseRepackArgs(argv: readonly string[]): RepackArgs {
     provenanceOut: resolve(need("--provenance-out")),
     catalogDir: resolve(found.get("--catalog-dir") ?? DEFAULT_CATALOG_DIR),
     repackTime,
+    entries: parseEntryIds(found.get("--entries")),
     overwrite,
     commandTimeoutMs,
     copyTimeoutMs,
@@ -619,6 +636,7 @@ async function main(argv: string[]): Promise<void> {
       repack: JSON.parse(await readFile(args.repackFile, "utf8")) as unknown,
       env,
       registry,
+      ...(args.entries === undefined ? {} : { entries: args.entries }),
       outputs: { sourcesFile: args.sourcesOut, provenanceFile: args.provenanceOut },
       ports: realRepackPorts({
         commands,

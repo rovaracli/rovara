@@ -63,12 +63,12 @@ export function effectiveAllowedBackings(company: Partial<AllowedBackings> | und
 // ---- the facts
 
 /** Where the dependency will run. Only the sealed places (a task's check round, the nightly run) may use a test account. */
-export const BACKING_PLACES = ["task_check", "nightly", "working", "setup", "team_runner"] as const;
+export const BACKING_PLACES = ["task_check", "nightly", "prove_final", "working", "setup", "team_runner"] as const;
 export type BackingPlace = (typeof BACKING_PLACES)[number];
-// DEFERRED (L3): Prove's final run and the end-to-end checker's rounds are sealed places too (6.3: "task checks, Prove's final run, nightly and E2E rounds whose plan names the account"). They have no place
-// here yet because nothing runs them through this chooser. When Prove (TS22) and the end-to-end checker (TS24) are wired, add `prove_final` and `e2e` to BACKING_PLACES and to this list, with tests, or a
-// test account would be replaced by a fake in exactly the rounds that are meant to prove it. Until then an unknown place is read as NOT sealed (fail closed).
-const SEALED_PLACES: readonly BackingPlace[] = ["task_check", "nightly"];
+// Prove's final run (`prove_final`) is a sealed place (TS-CHOICE-1, slice 1 T5): its test checks run in the sealed check sandbox, so a test account may be used there (6.3: "task checks, Prove's final run, nightly and E2E rounds whose
+// plan names the account"). DEFERRED: the end-to-end checker's rounds (`e2e`, TS32) are sealed too but have no place here yet; add it with tests when the E2E checker runs on the service runner, or a test account would be replaced by a
+// fake in exactly the rounds meant to prove it. An unknown place is read as NOT sealed (fail closed).
+const SEALED_PLACES: readonly BackingPlace[] = ["task_check", "nightly", "prove_final"];
 
 export type BackingStep = "local" | "project_image" | "emulated" | "test_account" | "fake";
 /** The order of 3.4. */

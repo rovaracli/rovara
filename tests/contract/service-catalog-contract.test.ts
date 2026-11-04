@@ -84,6 +84,9 @@ describe("the v1 data file", () => {
       expect(entry.run.user.split(":").every((part) => Number(part) > 0), entry.id).toBe(true);
     }
     expect(catalog.entries.find((entry) => entry.id === "local-aws@r1")!.health).toMatchObject({ kind: "http", path: "/_rovara/health", startTimeoutS: 30 });
+    // Rovara local AWS is built for arm64 only (the workers are arm64); every other entry lists both platforms.
+    expect(catalog.entries.find((entry) => entry.id === "local-aws@r1")!.image.platforms).toEqual(["linux/arm64"]);
+    expect(catalog.entries.filter((entry) => entry.id !== "local-aws@r1").every((entry) => entry.image.platforms.join() === "linux/arm64,linux/amd64")).toBe(true);
   });
   it("gives the database entries a template database reset and the cache a flush", () => {
     const reset = (id: string) => catalog.entries.find((entry) => entry.id === id)!.reset.kind;
@@ -330,6 +333,32 @@ describe("the catalog as a whole", () => {
       delete first.sbomRef;
       delete first.scan;
       expect(catalogOk(retired)).toBe(true);
+    });
+    it("slice 1: a pinned file may hold entries that are not pinned yet (none of the three), but never a half-pinned entry, and it pins at least one image", () => {
+      const pinnedOnly = (ids: string[]) => {
+        const data = file();
+        data.pinned = true;
+        data.entries = data.entries.map((entry) => (ids.includes(entry.id) ? { ...entry, image: { ...entry.image, digest: sha("a") }, sbomRef: sha("b"), scan: { scannedAt: "2026-11-02T00:00:00.000Z", criticalOpen: 0, highOpen: 1 } } : entry));
+        return data;
+      };
+      expect(catalogOk(pinnedOnly(["postgres@16"]))).toBe(true);
+      const parsed = cat.ServiceCatalogSchema.parse(pinnedOnly(["postgres@16"]));
+      expect(parsed.entries.filter((entry) => entry.image.digest !== undefined).map((entry) => entry.id)).toEqual(["postgres@16"]);
+      // No image pinned at all is not a pinned file.
+      expect(catalogOk(pinnedOnly([]))).toBe(false);
+      // A pinned entry with only some of the three, or an unpinned one that carries a process artifact, is refused.
+      for (const drop of ["digest", "sbomRef", "scan"] as const) {
+        const data = pinnedOnly(["postgres@16", "mysql@8"]);
+        const entry = data.entries.find((candidate) => candidate.id === "mysql@8") as RawEntry;
+        if (drop === "digest") delete entry.image.digest;
+        else delete entry[drop];
+        expect(catalogOk(data), drop).toBe(false);
+      }
+      const withProcess = pinnedOnly(["postgres@16"]);
+      (withProcess.entries.find((candidate) => candidate.id === "mysql@8") as RawEntry).process = { artifactDigest: sha("a"), entry: "bin/x", args: [] };
+      expect(catalogOk(withProcess)).toBe(false);
+      // The unpinned file still holds no pin anywhere.
+      expect(catalogOk(file())).toBe(true);
     });
     it("refuses a scan with a critical finding open, and a malformed digest", () => {
       expect(cat.CatalogScanSchema.safeParse({ scannedAt: "2026-11-02T00:00:00.000Z", criticalOpen: 1, highOpen: 0 }).success).toBe(false);

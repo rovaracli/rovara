@@ -24,7 +24,9 @@ import {
   TestEnvProposeBodySchema,
   TestEnvProveBodySchema,
   TestEnvRequestApprovalBodySchema,
+  TestEnvDependenciesSchema,
   TestEnvironmentBodySchema,
+  EDITION_ENV_VAR,
   agentXError,
   testEnvApprovalRisk,
   testEnvDigest,
@@ -54,6 +56,7 @@ import { readTestEnvDraft, readTestEnvDraftNote } from "../../test-env/draft.js"
 import { commandsMissingFromSettings } from "../../test-env/candidate-commands.js";
 import { TEST_ENV_REFUSAL_WORDS, commandsNotRun } from "../../test-env/prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
+import { testServicesEnabled } from "../../test-env/test-services-switch.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { projectRoleForRoute } from "./project-members.js";
@@ -88,9 +91,23 @@ const refuse = (refusal: TestEnvRefusal): AgentXError => agentXError(refusal ===
  * The draft environment merged onto the approved one, so a new proposal replaces what the detectors own (the repositories' setup commands and checks, and which checks always run) and keeps what a person
  * set (tier, services, accounts, the production deny list, the nightly run, capture, the round budget). Without an approved environment the draft is the proposal. Undefined when the merge is not a valid environment.
  */
-export function mergeDraftWithApproved(draft: TestEnvironmentBody, approved: TestEnvironmentBody | undefined): TestEnvironmentBody | undefined {
+/** The note when a dependency the detectors found clashes with the approved ones and is left out of the proposal. */
+export const DEPENDENCY_CLASH_NOTE = "A dependency that was found clashes with one already approved (the same name, address or setting), so it is not part of the proposal.";
+
+export function mergeDraftWithApproved(draft: TestEnvironmentBody, approved: TestEnvironmentBody | undefined, notes?: string[]): TestEnvironmentBody | undefined {
   if (approved === undefined) return draft;
   const ids = new Set(draft.repos.flatMap((repo) => repo.checks.map((check) => check.id)));
+  // Test services: the approved environment's dependencies stay exactly as a person set them. A dependency the detectors found and it does not have is added when the list stays one the contract accepts (unique ids,
+  // aliases and variables; at most 12 started); one that would clash is left out and said so once, in fixed words, instead of making the whole proposal unprovable.
+  const dependencies = [...(approved.dependencies ?? [])];
+  const known = new Set(dependencies.map((dependency) => dependency.id));
+  let clashed = false;
+  for (const dependency of draft.dependencies ?? []) {
+    if (known.has(dependency.id)) continue;
+    if (TestEnvDependenciesSchema.safeParse([...dependencies, dependency]).success) dependencies.push(dependency);
+    else clashed = true;
+  }
+  if (clashed) notes?.push(DEPENDENCY_CLASH_NOTE);
   const merged = {
     ...approved,
     repos: draft.repos,
@@ -99,6 +116,7 @@ export function mergeDraftWithApproved(draft: TestEnvironmentBody, approved: Tes
       alwaysRun: draft.selection.alwaysRun.filter((id) => ids.has(id)),
       fullSuiteOn: [...new Set([...approved.selection.fullSuiteOn, ...draft.selection.fullSuiteOn])].slice(0, 100),
     },
+    ...(dependencies.length === 0 ? {} : { dependencies }),
   };
   const parsed = TestEnvironmentBodySchema.safeParse(merged);
   return parsed.success ? parsed.data : undefined;
@@ -116,7 +134,9 @@ async function latestOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: st
 async function currentDraft(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, revision: number): Promise<{ status: "ready"; draft: TestEnvDraft } | { status: "none" | "stale"; note?: string }> {
   const state = await setupDraftState({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name, revision);
   if (state.status !== "ready" || state.pointer === undefined) return { status: "none" };
-  const stored = await readTestEnvDraft(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now());
+  // Test services: the dependencies the detectors found become proposed ones here, from the signed catalog (none without it, or with the switch off).
+  const catalog = testServicesEnabled() ? await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined) : undefined;
+  const stored = await readTestEnvDraft(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now(), { propose: { catalog, edition: process.env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: name } });
   if (stored === undefined) {
     const note = await readTestEnvDraftNote(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now());
     return note === undefined ? { status: "none" } : { status: "none", note };
@@ -150,6 +170,13 @@ async function shownProposal(deps: DeveloperRouteDependencies, project: ProjectV
   return await readProposal(store, project.orgId, project.name, digest) === undefined ? undefined : { body: candidate, digest, source: "setup" };
 }
 
+/** The notes the merge onto the approved environment adds (a dependency left out because it clashes). */
+function mergeNotesOf(draft: TestEnvironmentBody, approved: TestEnvironmentBody | undefined): string[] {
+  const notes: string[] = [];
+  mergeDraftWithApproved(draft, approved, notes);
+  return notes;
+}
+
 async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): Promise<TestEnvironmentState> {
   const store = testEnvStoreOf(deps);
   const latest = await latestOf(deps, project.orgId, project.name);
@@ -170,7 +197,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
     proposal = {
       digest: shown.digest, source: shown.source, risk, lessSafe, summary: testEnvSummaryOf(shown.body), environment: shown.body, runs: runsOf(shown.body),
       valueSources: valueSources.flatMap((entry) => { const parsed = valueSourceOf(entry); return parsed === undefined ? [] : [parsed]; }),
-      proved: testEnvIsProved(report, shown.digest), proveSteps: (report?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
+      proved: testEnvIsProved(report, shown.digest, shown.body), proveSteps: (report?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
       needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || candidate.check?.origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
       approval: { status: approval },
       commandsNotInSettings: commandsNotRun(shown.body, latest.definition),
@@ -180,7 +207,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
   return {
     ...(approved === undefined ? {} : { approved: { revision: approved.revision, approvedAt: approved.approvedAt, digest: testEnvDigest(approved.environment), summary: testEnvSummaryOf(approved.environment), ...await approvedGapOf(deps, project, approved.environment, latest.definition) } }),
     draft: draft.status === "ready"
-      ? { status: "ready", notes: draft.draft.notes, questions: draft.draft.questions, pendingServices: draft.draft.pendingServices }
+      ? { status: "ready", notes: [...draft.draft.notes, ...mergeNotesOf(draft.draft.environment, approved?.environment)], questions: draft.draft.questions, pendingServices: draft.draft.pendingServices }
       : { status: draft.status, notes: draft.note === undefined ? [] : [draft.note], questions: [], pendingServices: [] },
     ...(proposal === undefined ? {} : { proposal }),
   };
@@ -310,7 +337,7 @@ export async function routeTestEnvironment(
     if ((current?.revision ?? 0) !== parsed.data.expectedRevision) throw agentXError("CHANGE_STALE", "someone changed the test environment; reload and review again");
     const lessSafe = testEnvLessSafeChanges(current?.environment, proposal);
     if (lessSafe.length === 0) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.secondPersonNotNeeded);
-    if (!testEnvIsProved(await readTestEnvProveReport(store, caller.orgId, name, parsed.data.digest), parsed.data.digest)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.provedFirst);
+    if (!testEnvIsProved(await readTestEnvProveReport(store, caller.orgId, name, parsed.data.digest), parsed.data.digest, proposal)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.provedFirst);
     if (deps.agents === undefined) throw agentXError("RUNTIME_UNAVAILABLE", TEST_ENV_EDIT_WORDS.unavailable);
     const asked = await requestTestEnvCard(deps.agents, caller, { project: name, digest: parsed.data.digest, expectedRevision: parsed.data.expectedRevision, lessSafe, diff: testEnvChangeLines(current?.environment, proposal) });
     const confirmUrl = asked.state === "pending" ? (await confirmationReply(deps.agents, caller, { approvalId: asked.record.approvalId, changes: asked.record.changes })).body.confirmUrl : undefined;

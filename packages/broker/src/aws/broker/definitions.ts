@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): limits, the setup capture policy, the record and dependency types, route keys.
 
+import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
 import type { LinearReplyPort } from "../../rovara-code/linear-comments.js";
 import type { SlackAskDependencies } from "./ask-service.js";
 import type { DiagnosisCoreDependencies } from "../../diagnosis/light.js";
@@ -366,6 +367,8 @@ export interface AwsBrokerDependencies {
    * replaces the write gate there (`gate`), and a test replaces a check or a lister with its own.
    */
   agentTools?: { configure?: (base: AgentToolsDependencies) => AgentToolsDependencies };
+  /** Test services (slice 1): the release's signed service image catalog (`releaseServiceCatalogSource`). Absent while the switch `tx` is off: nothing reads it. */
+  serviceCatalog?: ServiceCatalogSource;
   /** Lane E: the MCP context sources' servers, Team record hooks and result keeper (`/v1/internal/context-tools*`). Absent: the routes answer that no sources are set up. */
   contextSources?: ContextSourcesRuntime;
   /** Learning v2 wiring (WA-2): the terminal-task hook's dependencies. Absent (the pilot default): no hook is registered and learning reads and writes nothing at a task's end. */

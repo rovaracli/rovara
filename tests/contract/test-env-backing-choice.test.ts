@@ -296,7 +296,7 @@ describe("the working sandbox swap (owner Q2)", () => {
   it("uses the test account in the sealed places only", () => {
     for (const place of BACKING_PLACES) {
       const choice = chooseBacking(pay({ ...withAccount, fixtures: [fixture(sha("3"))], place }));
-      if (place === "task_check" || place === "nightly") expect(choice.backing.kind, place).toBe("test_account");
+      if (place === "task_check" || place === "nightly" || place === "prove_final") expect(choice.backing.kind, place).toBe("test_account");
       else expect(choice.backing.kind, place).toBe("fake");
     }
   });

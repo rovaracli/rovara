@@ -65,7 +65,7 @@ import { SETUP_DRAFT_PREAMBLE } from "../../rovara-code/setup-draft.js";
 import { setupAgentWireOf } from "../../rovara-code/setup-agent.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { recordedOffersOf, setupRecipeOffersFor } from "../../org/setup-recipe-dispatch.js";
-import { testEnvPlanFor } from "../../test-env/task-plan.js";
+import { testEnvImplementPlanFor, testEnvPlanFor } from "../../test-env/task-plan.js";
 import { isNightlyOperation, nightlyRunPayloadOf } from "../../test-env/nightly-run.js";
 import { DIAGNOSIS_DEEP_PREAMBLE } from "@agentx/contracts";
 import { object, parseBody, verifyCapability } from "./admin-and-helpers.js";
@@ -528,7 +528,10 @@ export async function taskOperationParts(
   if (contextToolsOn && dependencies.contextSources?.prewarm !== undefined) await prewarmStageServers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, prewarm: dependencies.contextSources.prewarm }, orgId, workspace.projectName, input.workflowMode);
   // Test environment (wire-testenv): the plan of the environment this task pinned, for a verification run whose first commands are the environment's checks. Nothing while the switch is off.
   const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
-    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness }) : undefined;
+    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness })
+    // Test services: a coding run is sent the plan too, but only when the task's environment has dependencies (the working sandbox gets them while the agent codes); nothing otherwise and nothing with `tx` off.
+    : input.workflowMode === "IMPLEMENT" && task !== undefined
+      ? await testEnvImplementPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog }, { orgId, project: workspace.projectName, taskId: task.taskId }) : undefined;
   // SH30 + SR-3 (switch `sp`): the company recipes a setup draft is offered, recorded on this operation (id and revision) so the run's reported recipe sources are intersected with what was sent. Nothing while `sp` is off.
   const recipeOffers = input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? await setupRecipeOffersFor(dependencies, orgId, workspace.projectName) : [];
   if (recipeOffers.length > 0) operation.setupRecipeOffers = recordedOffersOf(recipeOffers);

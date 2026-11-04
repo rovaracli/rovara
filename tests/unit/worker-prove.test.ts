@@ -56,7 +56,7 @@ describe("a passing run", () => {
     expect(report.fullSuite).toEqual({ durationMs: 90_000, tests: 1_240 });
     expect(report.coverageMapRef).toBe(sha("c"));
     expect(report.services).toEqual([{ name: "scorer", modeUsed: "mocked" }]);
-    expect(testEnvIsProved(report, testEnvDigest(environment))).toBe(true);
+    expect(testEnvIsProved(report, testEnvDigest(environment), environment)).toBe(true);
   });
   it("a suite longer than the round budget is a result, not a failure (that is why selection exists)", async () => {
     const { ports, clock } = fakes();
@@ -94,7 +94,7 @@ describe("a failing step ends the run and names itself in fixed words", () => {
     const after = report.steps.slice(report.steps.indexOf(failed) + 1);
     expect(after.every((item) => item.status === "skipped")).toBe(true);
     expect(ran.length).toBeLessThanOrEqual(4);
-    expect(testEnvIsProved(report, report.proposalDigest)).toBe(false);
+    expect(testEnvIsProved(report, report.proposalDigest, {})).toBe(false);
     if (step !== "full_suite") expect(ran).not.toContain("pytest -q");
   });
   it("a command that hits its own time limit", async () => {
@@ -133,7 +133,7 @@ describe("pre-prod", () => {
     const reachable = await prove(fakes().ports, environment);
     expect(reachable.services).toEqual([{ name: "scorer", modeUsed: "preprod" }]);
     expect(statuses(reachable).mocks).toBe("skipped");
-    expect(testEnvIsProved(reachable, reachable.proposalDigest)).toBe(true);
+    expect(testEnvIsProved(reachable, reachable.proposalDigest, {})).toBe(true);
   });
   it("in auto mode an unreachable service falls back to the mock and says so; a reachable one uses pre-prod", async () => {
     const environment = preprodAuto();
@@ -166,7 +166,7 @@ describe("bounds", () => {
     const empty = env({ repos: [{ repositoryId: "svc", setupCommands: [], checks: [] }], services: [] });
     const report = await prove(fakes().ports, empty);
     expect(Object.values(statuses(report)).every((status) => status === "skipped")).toBe(true);
-    expect(testEnvIsProved(report, report.proposalDigest)).toBe(false);
+    expect(testEnvIsProved(report, report.proposalDigest, {})).toBe(false);
   });
   it("refuses to label a run with a digest that is not the environment's", async () => {
     const environment = env();
@@ -174,6 +174,6 @@ describe("bounds", () => {
   });
   it("binds the report to the digest it was given", async () => {
     const report = await prove(fakes().ports);
-    expect(testEnvIsProved(report, sha("0"))).toBe(false);
+    expect(testEnvIsProved(report, sha("0"), {})).toBe(false);
   });
 });

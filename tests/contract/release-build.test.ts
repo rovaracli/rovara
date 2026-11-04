@@ -18,7 +18,8 @@ const executor = `public.ecr.aws/agentx/agentx-executor@sha256:${"c".repeat(64)}
 describe("release builder", () => {
   it("writes templates, packages and a manifest whose checksums match the files", async () => {
     const out = join(await mkdtemp(join(tmpdir(), "agentx-release-")), "r");
-    const manifest = await buildRelease({ version: "1.2.3", out, gitCommit: "b".repeat(40), images: { worker, executor } });
+    // The worker image says it was built as a release (the Dockerfile label); a staging image would be refused (tests/contract/release-catalog-flavor.test.ts).
+    const manifest = await buildRelease({ version: "1.2.3", out, gitCommit: "b".repeat(40), images: { worker, executor }, readImageLabels: async () => ({ "ai.rovara.catalog-flavor": "release" }) });
     expect(ReleaseManifestSchema.parse(JSON.parse(await readFile(join(out, "release.json"), "utf8")))).toEqual(manifest);
     expect(manifest.legalDocuments?.map((document) => document.file)).toEqual([
       "legal/LICENSE",

@@ -21,7 +21,7 @@ import { cloudFormationStackReader, stsCallerIdentity } from "../environments/ad
 import { ssmParameterStore, type ParameterStore } from "../environments/parameter-store.js";
 import { settingsParameterName } from "../environments/settings.js";
 import { ACCOUNT_PATTERN, AuditLockProfileSchema, BudgetAnswersSchema, CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, IdentityAnswersSchema, ImagesAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
-import { assertCdkBootstrapped, assertSourceAtRelease, buildSource, cdkDeployer, type CommandRunner } from "./cdk-engine.js";
+import { assertCdkBootstrapped, assertSourceAtRelease, buildSource, catalogFlavorFor, cdkDeployer, type BuiltSource, type CommandRunner } from "./cdk-engine.js";
 import { synthDeclaredParameters } from "./cdk-source.js";
 import { adoptOrphanedEditionRecord, resolveDeployEdition, settleEditionRecord } from "./edition.js";
 import type { ChangeSetChange, DeployEvent, StackDeployer, StackOutputs } from "./deployer.js";
@@ -751,6 +751,7 @@ export async function prepareDeployment(input: {
 
   let deployer: StackDeployer;
   let cdkOutputsDir: string | undefined;
+  let builtSource: BuiltSource | undefined;
   let declaredParameters: PreparedDeployment["declaredParameters"];
   if (deps.deployer !== undefined) {
     // A test seam with no synth: the edition is only checked (a changed one is refused).
@@ -765,25 +766,32 @@ export async function prepareDeployment(input: {
     edition = await resolveEdition();
     // After the cheap checks, before any cdk deploy: infra/dist is gitignored, so only a fresh
     // install and build guarantees `cdk deploy` synthesizes the tagged source.
-    await buildSource({ runner, source });
-    // Issue 152: one synth of the built source, with the deploy's own app and context, says which
-    // parameters each stack declares; the release's templates may not exist (a source-built agentx).
-    const cloud = {
-      ...(input.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
-      ...(edition === undefined ? {} : { edition }), ...(input.newInstall === true ? { newInstall: true } : {}),
-    };
-    declaredParameters = await synthDeclaredParameters({ runner, source, env: input.env, region, identityMode: input.identityMode, ...cloud });
-    cdkOutputsDir = await mkdtemp(join(tmpdir(), "agentx-cdk-outputs-"));
-    deployer = cdkDeployer({
-      runner,
-      source,
-      env: input.env,
-      region,
-      identityMode: input.identityMode,
-      ...cloud,
-      outputsDir: cdkOutputsDir,
-      outputs: deps.stackOutputs ?? cloudFormationOutputsReader(new CloudFormationClient({ region })),
-    });
+    // The catalog flavor of what is built: staging only for env "staging" in the staging account (the account STS says the credentials in use belong to), release in every other case.
+    builtSource = await buildSource({ runner, source, flavor: catalogFlavorFor({ env: input.env, account: caller.account }) });
+    try {
+      // Issue 152: one synth of the built source, with the deploy's own app and context, says which
+      // parameters each stack declares; the release's templates may not exist (a source-built agentx).
+      const cloud = {
+        ...(input.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
+        ...(edition === undefined ? {} : { edition }), ...(input.newInstall === true ? { newInstall: true } : {}),
+      };
+      declaredParameters = await synthDeclaredParameters({ runner, source, env: input.env, region, identityMode: input.identityMode, ...cloud });
+      cdkOutputsDir = await mkdtemp(join(tmpdir(), "agentx-cdk-outputs-"));
+      deployer = cdkDeployer({
+        runner,
+        source,
+        env: input.env,
+        region,
+        identityMode: input.identityMode,
+        ...cloud,
+        outputsDir: cdkOutputsDir,
+        outputs: deps.stackOutputs ?? cloudFormationOutputsReader(new CloudFormationClient({ region })),
+      });
+    } catch (error) {
+      // The checkout is put back to the committed release flavor whatever fails after the build (the synth, the deployer): cleanup() is not returned yet.
+      await builtSource.restore().catch(() => input.stderr.write("the source checkout could not be put back to the release catalog flavor; run `npx tsx packages/contracts/tools/catalog-flavor.ts release` in it\n"));
+      throw error;
+    }
   } else {
     // The prebuilt templates carry no edition: this refuses an Enterprise install, or an edition request, on this engine.
     await resolveEdition();
@@ -808,6 +816,8 @@ export async function prepareDeployment(input: {
     ...(input.engine === "cdk" && edition === "enterprise" ? { settleEditionRecord: (completed: boolean) => settleEditionRecord({ store, env: input.env, completed }), adoptEditionRecord: () => adoptOrphanedEditionRecord({ store, env: input.env, edition, foundationResources: deps.foundationResources ?? cloudFormationResourceIds(new CloudFormationClient({ region }), environmentStackName(input.env, "foundation")) }) } : {}),
     async cleanup() {
       if (outputsDir !== undefined) await rm(outputsDir, { recursive: true, force: true });
+      // The checkout goes back to the committed release flavor (the deploy has used the compiled output by now).
+      await builtSource?.restore().catch(() => input.stderr.write("the source checkout could not be put back to the release catalog flavor; run `npx tsx packages/contracts/tools/catalog-flavor.ts release` in it\n"));
     },
   };
 }

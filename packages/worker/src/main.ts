@@ -34,6 +34,7 @@ import { createSavedEnvFallbackReporter, createSavedEnvLoginProvider } from "./s
 import { rememberCredentials, runSavedEnvRebuild } from "./saved-env/rebuild.js";
 import { savedEnvOptionsOf } from "./saved-env/use.js";
 import { createDockerCli } from "./swebench/containers.js";
+import { collectTestServicesUsage, testServicesAdvertisedFeatures, testServicesAtWorkerBoot } from "./test-services-run.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
 
 const rootPath = process.env.AGENTX_WORKSPACE_ROOT ?? "/mnt/workspace";
@@ -63,6 +64,8 @@ if (taskShellSelection().kind === "sandbox") {
     (removed) => { if (removed.containers + removed.networks > 0) console.log(JSON.stringify({ component: "worker", event: "setup-run.leftovers.removed", ...removed })); },
     (error: unknown) => { console.error(`could not remove leftover setup runs: ${error instanceof Error ? error.message : String(error)}`); },
   );
+  // Test services (TS-RN-3 rule 3): a killed worker's run networks and helpers (labelled, this workspace's only) go before any task starts, and the catalog images are pulled ahead. Does nothing on a worker with no test services configuration.
+  await testServicesAtWorkerBoot({ rootPath });
   // The empty volumes a dev container's start mounted over the worker's folders go with their container; any no container uses are removed.
   await removeLeftoverMaskVolumes().then(
     (removed) => { if (removed > 0) console.log(JSON.stringify({ component: "worker", event: "mask-volumes.leftovers.removed", removed })); },
@@ -85,7 +88,7 @@ const cancellationController = new WorkerCancellationController();
 const state = createWorkerServerState(
   journal,
   {
-    invocationFeatures: projectSetupRuntime.invocationFeatures,
+    invocationFeatures: [...projectSetupRuntime.invocationFeatures, ...testServicesAdvertisedFeatures()],
     invocationFeatureDiagnostics: projectSetupRuntime.invocationFeatureDiagnostics,
     // Application CHECKS are listed on /ping only while this worker can run them, from the last background check (never a Docker call per ping).
     ...applicationChecks.executor,
@@ -99,6 +102,8 @@ const state = createWorkerServerState(
         const controlPlaneUrl = requiredEnvironment("AGENTX_CONTROL_PLANE_URL");
         // The clone credential is fetched by the preparation alone; its values are remembered for a rebuild's secret scan.
         const cloneCredentials = rememberCredentials(createRepositoryCredentialProvider({ controlPlaneUrl, invocation }));
+        // Test services (Prove): a candidate check that carries a dependency plan reports its usage record in the result, under the contract's key `testServicesUsage`.
+        const testServicesUsage = collectTestServicesUsage();
         const manifest = await prepareWorkspace({
           rootPath,
           project: invocation.payload.project,
@@ -117,6 +122,7 @@ const state = createWorkerServerState(
           // Saved environments (SH25): start from the project's saved image; any problem sets up fresh.
           ...(invocation.payload.savedEnv === undefined ? {} : { savedEnv: savedEnvOptionsOf(invocation.payload.savedEnv, createSavedEnvLoginProvider({ controlPlaneUrl, invocation }), undefined, createSavedEnvFallbackReporter({ controlPlaneUrl, invocation })) }),
           ...(invocation.payload.registries === undefined ? {} : { registries: invocation.payload.registries, registryCredentialProvider: createRegistryCredentialProvider({ controlPlaneUrl, invocation }) }),
+          ...(invocation.payload.testServices === undefined ? {} : { testServices: { dependencies: invocation.payload.testServices.dependencies, operationId: invocation.operationId, cancellation: cancellationController, onUsageRecord: testServicesUsage.collect } }),
         });
         // Saved project images: a rebuild job builds the project's image from this read-only, pinned preparation (saved-env/rebuild.ts) and posts the result to the broker's lease route.
         if (invocation.payload.savedEnvBuild !== undefined) {
@@ -132,6 +138,7 @@ const state = createWorkerServerState(
           projectName: manifest.projectName,
           projectRevision: manifest.projectRevision,
           ...preparedBaseResult(manifest),
+          ...testServicesUsage.result(),
         };
       }
       if (invocation.kind === "task") {

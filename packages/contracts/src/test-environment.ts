@@ -15,9 +15,13 @@ import { CheckKindSchema, EVIDENCE_SELECTION_METHODS } from "./evidence.js";
 import { GitBranchNameSchema } from "./git-branch.js";
 import { ProjectCommandSchema, RelativeWorkspacePathSchema } from "./project.js";
 import { SetupDraftSchema } from "./rovara-code.js";
-import { SetupValueSourceSchema } from "./setup-run.js";
+import { TestEnvDependenciesSchema, testEnvDependencyApprovalRisk, testEnvDependencyLessSafeChanges } from "./test-env-dependency.js";
+import { TestEnvValueSourceSchema } from "./test-env-value-source.js";
 import { hostOfUrl, prodDenyMatchesArn, prodDenyMatchesHost, prodDenyMatchesPool } from "./test-environment-prod-deny.js";
 import { sha256Hex } from "./web-hash.js";
+
+// Moved to ./test-env-value-source.ts (so the dependency contract can use it without a cycle); still exported from here.
+export { TestEnvValueSourceSchema, type TestEnvValueSource } from "./test-env-value-source.js";
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 function line(max: number, min = 1) {
@@ -136,6 +140,12 @@ export const TestEnvironmentBodySchema = z
       .strict(),
     nightly: z.object({ enabled: z.boolean(), cronUtc: z.string().regex(/^[0-9*/,-]+(?: [0-9*/,-]+){4}$/u).max(64), branch: GitBranchNameSchema }).strict(),
     services: z.array(TestEnvServiceSchema).max(32),
+    /**
+     * Test services (slice 1): what the code talks to besides itself and what Rovara puts behind each for a run (design test-services.md 2.2). Optional, and ABSENT unless a person approved at least one: a body
+     * without it parses to a value with no such key, so `testEnvDigest` is the digest it always was (golden test). Replaces `services` for the dependencies below; v1 `services` are unchanged and still refused
+     * with the switch `tx` on (`environmentUnusedReason`). Nothing reads this field while `tx` is off.
+     */
+    dependencies: TestEnvDependenciesSchema.optional(),
     /** Synthetic data only: seeded so a run repeats. A seed is a command or a fixture file inside the repository. */
     data: z
       .object({ seeds: z.array(z.union([z.object({ command: ProjectCommandSchema }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema }).strict()])).max(20), generator: z.literal("faker_seeded"), seed: z.number().int().min(0).max(2_147_483_647) })
@@ -251,8 +261,11 @@ export function testEnvTouchesProd(env: TestEnvironmentBody): boolean {
 
 // ---- less-safe fields and the approval card's risk
 
-/** The fields whose change is a less-safe change (a second person and a fresh sign-in, like a less-safe process change). */
-export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced", "nightly_enabled", "nightly_more_often", "preview_cost_raised", "selection_narrowed"] as const;
+/**
+ * The fields whose change is a less-safe change (a second person and a fresh sign-in, like a less-safe process change). The last six are the dependency fields (`TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS`, test-env-dependency.ts;
+ * `schema_synth` is shared with the v1 mocks): a test account, a project image, a company-approved substitute image, a dependency run with excluded tests, and a raised run cap.
+ */
+export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced", "nightly_enabled", "nightly_more_often", "preview_cost_raised", "selection_narrowed", "test_account", "project_image", "substitute_image", "none_excluded_tests", "dependency_seed", "run_cap_raised"] as const;
 export type TestEnvLessSafeField = (typeof TEST_ENV_LESS_SAFE_FIELDS)[number];
 
 function lessSafeSet(env: TestEnvironmentBody): Set<TestEnvLessSafeField> {
@@ -337,23 +350,24 @@ export function testEnvLessSafeChanges(previous: TestEnvironmentBody | undefined
     if (selectionNarrowed(previous, next)) changed.push("selection_narrowed");
     if (missing(previous.prodDeny.accountIds, next.prodDeny.accountIds) || missing(previous.prodDeny.hosts, next.prodDeny.hosts) || missing(previous.prodDeny.arnPrefixes, next.prodDeny.arnPrefixes)) changed.push("prod_deny_reduced");
   }
+  // Test services: the less-safe uses a dependency list turns on (a test account, a project image, a substitute image, excluded tests), by value, so a moved or added use is a change and a removed one is not.
+  // Nothing is added for a body without dependencies, so every result for one is what it was.
+  if (next.dependencies !== undefined && next.dependencies.length > 0) {
+    for (const field of testEnvDependencyLessSafeChanges(previous?.dependencies, next.dependencies)) if (!changed.includes(field)) changed.push(field);
+  }
   return changed.sort((a, b) => TEST_ENV_LESS_SAFE_FIELDS.indexOf(a) - TEST_ENV_LESS_SAFE_FIELDS.indexOf(b));
 }
 
 /** The risk of the `approve_test_env` card: medium; high when the environment adds pre-prod access, a shared environment, tier 2, or video or traces. Deterministic: no model output sets it. */
 export function testEnvApprovalRisk(env: TestEnvironmentBody): DecisionRisk {
   const set = lessSafeSet(env);
-  return set.has("preprod") || set.has("shared") || set.has("preview") || set.has("video") || set.has("traces") || env.tier !== "sandbox" ? "high" : "medium";
+  // A dependency backed by a test account, a project image, a company-approved image, or run with excluded tests is high too (`testEnvDependencyApprovalRisk`); real software from the catalog is medium.
+  const dependencyRisk = env.dependencies === undefined || env.dependencies.length === 0 ? "medium" : testEnvDependencyApprovalRisk(env.dependencies);
+  return set.has("preprod") || set.has("shared") || set.has("preview") || set.has("video") || set.has("traces") || env.tier !== "sandbox" || dependencyRisk === "high" ? "high" : "medium";
 }
 
 // ---- the proposal and the Prove run
 
-/**
- * Where a proposed value came from: a file and line, a code detector, the setup agent's own reading, or (setup run, SH2) a command the run observed working (`observed:<run>#<n>`),
- * a company recipe (`recipe:<id>@<rev>`) or a person. Replaces: the three-member union; the new members are additions, so every stored proposal still parses.
- */
-export const TestEnvValueSourceSchema = z.union([z.object({ path: line(500), line: z.number().int().min(1).max(10_000_000) }).strict(), z.literal("model"), z.string().regex(/^detector:[a-z0-9_-]{1,40}$/u), SetupValueSourceSchema]);
-export type TestEnvValueSource = z.infer<typeof TestEnvValueSourceSchema>;
 
 /** The setup agent's proposal: today's `SetupDraft` (and its flagged commands, which stay flagged) plus the test environment it proposes and the source of each value. A proposal, nothing more. */
 export const TestEnvironmentProposalSchema = SetupDraftSchema.extend({
@@ -363,9 +377,13 @@ export const TestEnvironmentProposalSchema = SetupDraftSchema.extend({
 });
 export type TestEnvironmentProposal = z.infer<typeof TestEnvironmentProposalSchema>;
 
-export const TEST_ENV_PROVE_STEPS = ["setup", "build", "boot", "smoke", "full_suite", "mocks", "preprod_probe"] as const;
+/** The Prove steps that exist with no test services: a report built with the switch `tx` off carries exactly these (a worker that maps over `TEST_ENV_PROVE_STEPS` must skip the two below unless it ran them). */
+export const TEST_ENV_BASE_PROVE_STEPS = ["setup", "build", "boot", "smoke", "full_suite", "mocks", "preprod_probe"] as const;
+/** Test services (design 8.2): "start dependencies" (the helpers start, are healthy and their seeds and readiness commands pass) and "dependency usage check" (the sealed test checks called nothing Rovara did not start). Derived by the broker from the candidate check's usage record; they replace the mocks and pre-prod probe steps for a dependency (those two stay for v1 `services`). */
+export const TEST_ENV_DEPENDENCY_PROVE_STEPS = ["dependencies", "dependency_usage"] as const;
+export const TEST_ENV_PROVE_STEPS = [...TEST_ENV_BASE_PROVE_STEPS, ...TEST_ENV_DEPENDENCY_PROVE_STEPS] as const;
 /** Why a Prove step failed, in fixed words (never the command's own text; the redacted tail is separate). */
-export const TEST_ENV_PROVE_FAILURES = ["setup_failed", "build_failed", "boot_failed", "health_timeout", "smoke_failed", "tests_failed", "round_budget_exceeded", "mock_unmatched", "preprod_unreachable", "coverage_unreadable", "infrastructure"] as const;
+export const TEST_ENV_PROVE_FAILURES = ["setup_failed", "build_failed", "boot_failed", "health_timeout", "smoke_failed", "tests_failed", "round_budget_exceeded", "mock_unmatched", "preprod_unreachable", "coverage_unreadable", "infrastructure", "dependency_start_failed", "dependency_unexpected_call"] as const;
 
 export const TestEnvProveReportSchema = z
   .object({
@@ -400,11 +418,13 @@ export const TestEnvProveReportSchema = z
   });
 export type TestEnvProveReport = z.infer<typeof TestEnvProveReportSchema>;
 
-/** Whether a Prove run passed for this proposal: every step passed or was skipped, and the report is for exactly this digest. A missing or unreadable report is never "proved". */
-export function testEnvIsProved(report: TestEnvProveReport | undefined, proposalDigest: string): boolean {
+/** Whether a Prove run passed for this proposal: every step passed or was skipped, and the report is for exactly this digest (and, because the environment is a required argument, its dependencies started and called nothing unknown: a caller cannot forget them). A missing or unreadable report is never "proved". */
+export function testEnvIsProved(report: TestEnvProveReport | undefined, proposalDigest: string, environment: Pick<TestEnvironmentBody, "dependencies">): boolean {
   if (report === undefined || report.proposalDigest !== proposalDigest || report.steps.length === 0 || report.steps.some((step) => step.status === "failed")) return false;
   // Skipped is not proved: something must have actually passed that exercises the code (the smoke check or the full suite), and an app that is a service must have booted.
   const passed = (name: (typeof TEST_ENV_PROVE_STEPS)[number]) => report.steps.some((step) => step.step === name && step.status === "passed");
+  // Test services: an environment with dependencies is proved only when they started and the sealed test checks called nothing Rovara did not start. A report without those two steps proves nothing about them.
+  if (environment.dependencies !== undefined && environment.dependencies.length > 0 && !(passed("dependencies") && passed("dependency_usage"))) return false;
   return (passed("smoke") || passed("full_suite")) && (report.services.length === 0 || passed("boot"));
 }
 

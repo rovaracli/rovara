@@ -1,4 +1,4 @@
-import { TESTING_REASON_TEXT, TESTING_RESULT_LABELS, TESTING_ROW_STATUS_LABELS, testingSummary } from "@agentx/contracts/web";
+import { EVIDENCE_FALLBACK_REASON_WORDS, TESTING_REASON_TEXT, TESTING_RESULT_LABELS, TESTING_ROW_STATUS_LABELS, evidenceDependencyLabelWords, testingSummary } from "@agentx/contracts/web";
 import { SecondReviewAck } from "./SecondReviewAck.js";
 import { useAppHost } from "../../host.js";
 import { DataTable } from "../../design/DataTable.js";
@@ -107,6 +107,7 @@ function BrowserSection({ evidence }: { evidence: Evidence }) {
 function EnvironmentSection({ environment }: { environment: Evidence["environment"] }) {
  return <><h3>Environment</h3><p>{(tierWords[environment.tier] ?? "Test environment") + ", revision " + environment.envRevision + ". Test data: synthetic."}</p>
   {environment.services.length > 0 && <ul>{environment.services.map(service => <li key={service.name}><VisibleText text={service.name} /><span>{": " + (modeWords[service.mode] ?? "unavailable") + (service.recordedAt ? ", recorded " + service.recordedAt.slice(0, 10) : "") + (service.unrecordedAnswered ? ", " + service.unrecordedAnswered + " unrecorded requests answered" : "")}</span></li>)}</ul>}
+  {(environment.dependencies ?? []).length > 0 && <ul aria-label="Dependencies">{(environment.dependencies ?? []).map(dependency => <li key={dependency.name}><VisibleText text={dependency.name} /><span>{": " + (dependency.label === "unknown" ? "unavailable" : evidenceDependencyLabelWords(dependency.label, dependency.name, dependency.madeUpAnswers ?? 0)) + (dependency.fellBack ? " (fallback: " + (dependency.fellBack.reason === "unknown" ? "unavailable" : EVIDENCE_FALLBACK_REASON_WORDS[dependency.fellBack.reason]) + ")" : "") + (dependency.startedMs !== undefined ? ", started in " + dependency.startedMs + " ms" : "")}</span></li>)}</ul>}
   {environment.accounts.length > 0 && <p>{"Test accounts: " + environment.accounts.map(account => account.profileId + (account.kind === "run_scoped" ? " (single-use)" : " (registered)")).join(", ")}</p>}</>;
 }
 const extraKinds = new Set(["mocked_service", "not_selected", "environment"]);

@@ -9,6 +9,7 @@
 //   - one overall deadline bounds the run, and a stop signal ends it; either fails the step in progress with `infrastructure`;
 //   - a suite that is longer than the round budget is NOT a failure (it is why test selection exists); a suite that hits its own time limit is.
 import {
+  TEST_ENV_DEPENDENCY_PROVE_STEPS,
   TEST_ENV_PROVE_STEPS,
   TestEnvProveReportSchema,
   redactText,
@@ -156,7 +157,8 @@ export async function proveEnvironment(ports: ProvePorts, input: ProveInput): Pr
     await Promise.resolve().then(() => ports.release?.()).catch(() => undefined);
   }
 
-  const steps = TEST_ENV_PROVE_STEPS.map((step) => {
+  // The two dependency steps (test services) are in the report only when this run ran them; with the switch off the report is today's, step for step.
+  const steps = TEST_ENV_PROVE_STEPS.filter((step) => results.has(step) || !(TEST_ENV_DEPENDENCY_PROVE_STEPS as readonly string[]).includes(step)).map((step) => {
     const result = results.get(step) ?? { status: "skipped" as const, durationMs: 0 };
     return { step, status: result.status, durationMs: result.durationMs, ...(result.failure === undefined ? {} : { failure: result.failure }), ...(result.tail === undefined || result.tail === "" ? {} : { outputTail: result.tail }) };
   });

@@ -253,7 +253,7 @@ describe("the Prove report derived from the setup check", () => {
     expect(Object.fromEntries(result.report.steps.map((step) => [step.step, step.status]))).toEqual({ setup: "passed", build: "passed", smoke: "skipped", full_suite: "passed" });
     expect(result.report.fullSuite).toBeUndefined();
     expect(result.report.coverageMapRef).toBeUndefined();
-    expect(testEnvIsProved(result.report, testEnvDigest(environment))).toBe(true);
+    expect(testEnvIsProved(result.report, testEnvDigest(environment), environment)).toBe(true);
   });
 
   it("is not proved for a check that did not pass, did not run, or ran on other settings", () => {

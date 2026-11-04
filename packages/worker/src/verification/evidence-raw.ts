@@ -5,7 +5,7 @@
 //
 // The file is UNTRUSTED by the broker, which binds it to the candidate's digest, checks every count against the check report it holds itself and the data guard before anything is kept
 // (broker/src/rovara-code/evidence-keep.ts). This module only has to be bounded and never throw: a fault leaves the file out, and the round goes on as it would have.
-import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_RAW_ARTIFACT, EVIDENCE_RAW_MAX_BYTES, EvidenceRawSchema, createCandidateManifest, redactText, type CandidateRepository, type CheckEntry, type EvidenceRaw, type ProjectCommand } from "@agentx/contracts";
+import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_RAW_ARTIFACT, EVIDENCE_RAW_MAX_BYTES, EvidenceRawSchema, createCandidateManifest, redactText, type CandidateRepository, type CheckEntry, type TestServicesUsageRecord, type EvidenceRaw, type ProjectCommand } from "@agentx/contracts";
 import type { ArtifactSink } from "../artifacts.js";
 import type { CheckPlan } from "./checks.js";
 import { coveragePart, readChangedCoverage, type RepositoryChanges } from "./cobertura-lcov-coverage.js";
@@ -49,6 +49,11 @@ export interface CollectEvidenceInput {
   coveragePaths?: ReadonlyArray<string | undefined> | undefined;
   /** What test selection decided (test environment, wire-testenv): used as it is when it ran fewer tests than the whole, otherwise only its fallback reason is kept and the counts are what the reports measured. */
   selection?: EvidenceSelection | undefined;
+  /**
+   * Test services: the usage record of the run's dependencies for this round (`TestServicesRun.usageRecord()`), kept in the raw file as FACTS the broker labels (evidence-pack.ts). It is kept even when no check left a
+   * report: a round that ran against Postgres says so whether or not a test report was read.
+   */
+  testServices?: TestServicesUsageRecord | undefined;
 }
 
 type EvidenceSelection = NonNullable<EvidenceRaw["selection"]>;
@@ -201,9 +206,10 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
         ...(partial.outputTail === undefined ? {} : { outputTail: partial.outputTail }),
       });
     }
-    if (checks.length === 0) return undefined;
+    if (checks.length === 0 && input.testServices === undefined) return undefined;
     const raw: EvidenceRaw = {
       schemaVersion: 1, candidateDigest: input.candidateDigest, checks,
+      ...(input.testServices === undefined ? {} : { testServices: input.testServices }),
       ...(selectionOf(input.selection, measured) === undefined ? {} : { selection: selectionOf(input.selection, measured)! }),
     };
     const parsed = EvidenceRawSchema.safeParse(raw);
@@ -237,6 +243,8 @@ export async function saveEvidenceRaw(input: {
   roundStartedAtMs?: number | undefined;
   /** P4: what the baseline run of the SARIF-writing checks on the original code needs. Absent: no baseline, so no finding is reported. */
   baseline?: Pick<BaselineRun, "runners" | "signal" | "budgetMs" | "originalCode" | "capMs"> | undefined;
+  /** Test services: the round's usage record (see `CollectEvidenceInput.testServices`). Absent for a task without dependencies: then the file is what it always was. */
+  testServices?: TestServicesUsageRecord | undefined;
 }): Promise<boolean> {
   try {
     if (input.plan.source !== "project" || input.plan.readiness === undefined) return false;
@@ -251,6 +259,7 @@ export async function saveEvidenceRaw(input: {
       rootPath: input.rootPath, commands: input.plan.readiness, entries: input.entries, candidateDigest: createCandidateManifest(input.candidateBefore).digest, roundStartedAtMs: input.roundStartedAtMs,
       repositories: placed, repositoriesComplete: complete,
       selection: input.selection, coveragePaths: input.coveragePaths,
+      ...(input.testServices === undefined ? {} : { testServices: input.testServices }),
       ...(baseline === undefined || !complete ? {} : {
         baselineScans: (scans: readonly BaselineScan[]) => runBaselineScans(scans, { ...baseline, rootPath: input.rootPath, repositories: placed.map((repository) => ({ directory: repository.directory, commit: repository.startCommit })) }),
       }),

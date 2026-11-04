@@ -243,6 +243,8 @@ export interface ImageBuild {
    * images, so an image that is not a release (spec 043's SWE-bench runner) must not use it.
    */
   tagPrefix?: string;
+  /** `--build-arg NAME=value` pairs for the Dockerfile. */
+  buildArgs?: Readonly<Record<string, string>>;
 }
 
 export async function buildAndPushWorker(
@@ -257,6 +259,8 @@ export async function buildAndPushWorker(
     dockerfile: "environments/base/Dockerfile",
     localName: "agentx-worker",
     smokeTest: smokeTestWorker,
+    // A production release is a release-flavor image: the staging-only catalog key is not in it. Only the staging build path passes staging.
+    buildArgs: { CATALOG_FLAVOR: "release" },
   }, revision);
 }
 
@@ -282,6 +286,7 @@ export async function buildAndPushImage(
     `org.opencontainers.image.revision=${revision}`,
     "--label",
     `org.opencontainers.image.created=${new Date().toISOString()}`,
+    ...Object.entries(image.buildArgs ?? {}).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]),
     "--file",
     image.dockerfile,
     ".",

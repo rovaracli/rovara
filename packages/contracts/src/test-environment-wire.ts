@@ -10,12 +10,22 @@ import { z } from "zod";
 import { CoverageMapSchema } from "./test-env-nightly.js";
 import { CheckKindSchema } from "./evidence.js";
 import { RelativeWorkspacePathSchema } from "./project.js";
+import {
+  CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, SeedRefSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
+  TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, catalogIdName, testEnvStartedCount,
+} from "./test-env-dependency.js";
+import { reservedDependencyEnvName } from "./test-services-shared.js";
 import { TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECTION_METHODS, TEST_ENV_SELECT_PLACEHOLDER, TestEnvValueSourceSchema, TestEnvironmentBodySchema, type TestEnvironmentBody } from "./test-environment.js";
 
 export const TEST_ENV_DETECT_FEATURE = "task.testEnvDetect.v1";
 export const TEST_ENV_PLAN_FEATURE = "task.testEnvironment.v1";
 /** A worker that lists this reads `checks[].coveragePath` of the plan (the approved report to read changed-line coverage from). A worker that does not is sent the plan without that field (informational only), because its strict parse would refuse it. */
 export const TEST_ENV_COVERAGE_PATH_FEATURE = "task.testEnvCoveragePath.v1";
+/**
+ * Test services (slice 1): a worker that lists this reads `testEnvironment.dependencies` of the plan (the dependencies to start, pinned by digest) and runs the check rounds sealed. A worker that does not is never sent a plan with
+ * the field (its strict parse would refuse it): the broker refuses the run to such a worker at dispatch (`ec2-delivery.ts`). Also in `WORKER_INVOCATION_FEATURES`; the worker lists it in `implemented-features.ts` when it can do both.
+ */
+export const TEST_SERVICES_PLAN_FEATURE = "task.testServices.v1";
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
@@ -30,16 +40,75 @@ export const TEST_ENV_PLAN_FAILURES_MAX = 500;
 export const TestEnvPendingServiceSchema = z.object({ kind: z.enum(["sagemaker_runtime", "http"]), target: line(253) }).strict();
 export type TestEnvPendingService = z.infer<typeof TestEnvPendingServiceSchema>;
 
+// ---- dependency candidates (what the detectors found, in a draft)
+
+/** Things a detector saw that Rovara would refuse to run as written (compose / CI / dev container). Fixed words, never repository text. Mirrors the worker's `DEPENDENCY_REFUSED_FIELDS`. */
+export const TEST_ENV_CANDIDATE_REFUSED_FIELDS = ["privileged", "host_network", "host_pid", "host_ipc", "host_volume", "docker_socket", "cap_add", "devices", "build"] as const;
+export const TEST_ENV_CANDIDATE_STRENGTHS = ["declared", "used", "mentioned"] as const;
+export const TEST_ENV_CANDIDATE_MAX = 64;
+
+const CandidateKeyAttribute = z.object({ name: line(255), type: z.enum(["S", "N", "B"]) }).strict();
+const CandidateResource = z
+  .object({
+    kind: z.enum(["table", "bucket", "queue", "topic"]),
+    name: line(300),
+    keySchema: z.object({ partitionKey: CandidateKeyAttribute, sortKey: CandidateKeyAttribute.optional() }).strict().optional(),
+  })
+  .strict();
+
+/**
+ * One dependency a detector found (test services D1-D7), as it rides in a setup draft. UNTRUSTED like the rest of the draft: every field is a family id, a kind, a fixed word, a number, a variable NAME or a repository path
+ * (never a value read from a file: no host, password or token). It is not a `TestEnvDependency`: the broker turns a candidate into a proposed dependency only through `chooseBacking`, and a person approves it.
+ * Mirrors the worker's `DependencyCandidate` (`env-detect/types.ts`).
+ */
+export const TestEnvDependencyCandidateSchema = z
+  .object({
+    family: FamilyIdSchema,
+    kind: TestEnvDependencyKindSchema,
+    /** Where it was seen: files and lines, at least one and at most 8. */
+    evidence: z.array(z.object({ path: line(500), line: z.number().int().min(1).max(10_000_000) }).strict()).min(1).max(TEST_ENV_DEPENDENCY_LIMITS.sources),
+    strength: z.enum(TEST_ENV_CANDIDATE_STRENGTHS),
+    hints: z
+      .object({
+        version: z.string().regex(/^\d{1,3}$/u).optional(),
+        envNames: z.array(EnvNameSchema).max(16).optional(),
+        ports: z.array(z.number().int().min(1).max(65_535)).max(8).optional(),
+        hasHealthcheck: z.boolean().optional(),
+        initFiles: z.array(RelativeWorkspacePathSchema).max(4).optional(),
+        dependsOn: z.array(line(80)).max(16).optional(),
+        refused: z.array(z.enum(TEST_ENV_CANDIDATE_REFUSED_FIELDS)).max(TEST_ENV_CANDIDATE_REFUSED_FIELDS.length).optional(),
+        explicitEndpoint: z.boolean().optional(),
+        fakedByTests: z.boolean().optional(),
+        testcontainers: z.boolean().optional(),
+        /** The settings that name it, parsed down to the scheme and the host FAMILY; never the host. */
+        url: z.object({ scheme: line(32), hostFamily: z.enum(["local", "private", "cloud", "unknown"]) }).strict().optional(),
+        resources: z.array(CandidateResource).max(TEST_ENV_DEPENDENCY_LIMITS.awsServices).optional(),
+        seenBy: z.array(line(40)).max(8).optional(),
+      })
+      .strict(),
+  })
+  .strict();
+export type TestEnvDependencyCandidate = z.infer<typeof TestEnvDependencyCandidateSchema>;
+
 export const TestEnvDraftSchema = z
   .object({
     environment: TestEnvironmentBodySchema,
     valueSources: z.array(z.object({ field: line(200), source: TestEnvValueSourceSchema }).strict()).max(400),
     pendingServices: z.array(TestEnvPendingServiceSchema).max(32),
+    /**
+     * Test services: the dependencies the detectors found (CANDIDATES, not an environment). Absent unless a detector found one, so a draft with none is today's draft byte for byte. This is a different thing from
+     * `environment.dependencies`: a draft's environment must carry none (a worker cannot approve a backing); the broker turns these candidates into proposed dependencies through `chooseBacking` (`sanitizeTestEnvDraft`).
+     */
+    dependencies: z.array(TestEnvDependencyCandidateSchema).max(TEST_ENV_CANDIDATE_MAX).optional(),
     /** Fixed statements for the maintainer (what was found that the proposal cannot use, and what is not known). */
     notes: z.array(line(400)).max(60),
     questions: z.array(line(400)).max(60),
   })
-  .strict();
+  .strict()
+  // A worker never proposes a backing: what it reports is candidates, and the environment of its draft carries no dependencies. The broker proposes dependencies itself (`sanitizeTestEnvDraft`), after this parse.
+  .superRefine((draft, context) => {
+    if ((draft.environment.dependencies?.length ?? 0) > 0) context.addIssue({ code: "custom", path: ["environment", "dependencies"], message: "a draft reports dependency candidates; its environment holds no dependencies" });
+  });
 export type TestEnvDraft = z.infer<typeof TestEnvDraftSchema>;
 
 /** The most a draft may weigh once serialized (worker and broker both hold to it): well under DynamoDB's 400 KB item limit, which would cancel the setup draft's own result write. */
@@ -47,6 +116,48 @@ export const TEST_ENV_DRAFT_MAX_BYTES = 200 * 1_024;
 
 /** The key under which a draft rides in a SETUP_DRAFT run's result. */
 export const TEST_ENV_DRAFT_RESULT_KEY = "testEnvironmentDraft";
+
+/**
+ * Test services: one dependency of a task's run as the worker starts it. Everything is a pin or a name, never a secret: the catalog entry and image digest the broker chose (the worker checks its own signed catalog agrees
+ * on the digest and refuses otherwise), the names the code reaches it by, the connection TEMPLATES (the worker fills `{user}`, `{password}` and the rest at run time; the run's own password never rides here), the seeds
+ * and the reset. Slice 1 starts real software from the catalog only (`backing: "local"`); a later slice that starts anything else lists it under a new feature string.
+ */
+export const TaskDependencyPlanSchema = z
+  .object({
+    id: TestEnvDependencyIdSchema,
+    name: line(80),
+    kind: TestEnvDependencyKindSchema,
+    family: FamilyIdSchema,
+    backing: z.literal("local"),
+    catalogId: CatalogIdSchema,
+    /** The repository under the install's registry (`svc/postgres`); the registry host is the install's. */
+    repository: z.string().regex(/^svc\/[a-z0-9][a-z0-9._-]{0,62}$/u),
+    /** The image digest the catalog pinned: required, because an unpinned image is never started. */
+    digest: Sha256,
+    /** Names and files carried over from the project (database, user, extensions, init files); no password. */
+    config: CatalogConfigSchema,
+    aliases: z.array(DnsLabelSchema).max(TEST_ENV_DEPENDENCY_LIMITS.hostAliases),
+    connect: z.array(z.object({ name: EnvNameSchema, template: ConnectTemplateSchema }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.connectEnv),
+    seeds: z.array(SeedRefSchema).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
+    reset: z.enum(TEST_ENV_DEPENDENCY_RESETS),
+  })
+  .strict()
+  .superRefine((plan, context) => {
+    const problem = (path: (string | number)[], message: string) => context.addIssue({ code: "custom", path, message });
+    if ((TEST_ENV_HELPER_CATALOG_NAMES as readonly string[]).includes(catalogIdName(plan.catalogId))) problem(["catalogId"], "a local dependency is real software from the catalog, not one of Rovara's helpers");
+    if (new Set(plan.aliases).size !== plan.aliases.length) problem(["aliases"], "an alias is listed once");
+    plan.aliases.forEach((alias, index) => {
+      if ((TEST_ENV_RESERVED_ALIASES as readonly string[]).includes(alias)) problem(["aliases", index], "this name belongs to a Rovara helper");
+    });
+    if (new Set(plan.connect.map((entry) => entry.name)).size !== plan.connect.length) problem(["connect"], "a variable is set once");
+    plan.connect.forEach((entry, index) => {
+      if (reservedDependencyEnvName(entry.name)) problem(["connect", index, "name"], "this variable is set by Rovara or the system, not by a dependency");
+    });
+  });
+export type TaskDependencyPlan = z.infer<typeof TaskDependencyPlanSchema>;
+
+/** The most dependencies one run starts (the Rovara maximum; the default cap is lower and the broker applies it). */
+export const TASK_DEPENDENCY_PLAN_MAX = TEST_ENV_DEPENDENCY_LIMITS.startedMax;
 
 export const TestEnvTaskPlanSchema = z
   .object({
@@ -71,15 +182,27 @@ export const TestEnvTaskPlanSchema = z
     lastNightlyFailures: z.array(z.string().min(1).max(500)).max(TEST_ENV_PLAN_FAILURES_MAX).optional(),
     /** The nightly's coverage map, only when it fits (`TEST_ENV_PLAN_MAP_MAX_BYTES`); without it a coverage-map selection runs the whole check, with its reason. */
     coverageMap: CoverageMapSchema.optional(),
+    /**
+     * Test services: the dependencies this run starts, pinned. Present only when the switch `tx` is on, the project's approved environment has dependencies and the plan could pin every one of them (otherwise the run is
+     * refused before dispatch, never sent half a plan); absent otherwise, so a plan without test services is today's plan byte for byte. Sent only to a worker whose /ping lists `TEST_SERVICES_PLAN_FEATURE`. Never empty.
+     */
+    dependencies: z.array(TaskDependencyPlanSchema).min(1).max(TASK_DEPENDENCY_PLAN_MAX).optional(),
   })
   .strict()
-  .refine((plan) => plan.coverageMap === undefined || JSON.stringify(plan.coverageMap).length <= TEST_ENV_PLAN_MAP_MAX_BYTES, { message: "an inline coverage map is at most 256 KiB", path: ["coverageMap"] });
+  .refine((plan) => plan.coverageMap === undefined || JSON.stringify(plan.coverageMap).length <= TEST_ENV_PLAN_MAP_MAX_BYTES, { message: "an inline coverage map is at most 256 KiB", path: ["coverageMap"] })
+  .superRefine((plan, context) => {
+    const dependencies = plan.dependencies ?? [];
+    const unique = <T>(values: readonly T[]) => new Set(values).size === values.length;
+    if (!unique(dependencies.map((dependency) => dependency.id))) context.addIssue({ code: "custom", path: ["dependencies"], message: "dependency ids are unique" });
+    if (!unique(dependencies.flatMap((dependency) => dependency.connect.map((entry) => entry.name)))) context.addIssue({ code: "custom", path: ["dependencies"], message: "two dependencies set the same variable" });
+    if (!unique(dependencies.flatMap((dependency) => dependency.aliases))) context.addIssue({ code: "custom", path: ["dependencies"], message: "two dependencies use the same alias" });
+  });
 export type TestEnvTaskPlan = z.infer<typeof TestEnvTaskPlanSchema>;
 
 // ---- the setup routes
 
 export const TEST_ENV_REFUSALS = [
-  "no_draft", "stale_draft", "no_proposal", "not_provable", "outdated", "checking", "failed", "no_setup_check", "commands_differ", "nothing_to_prove", "services_need_prove", "setup_check_old", "setup_run_moved",
+  "no_draft", "stale_draft", "no_proposal", "not_provable", "outdated", "checking", "failed", "no_setup_check", "commands_differ", "nothing_to_prove", "services_need_prove", "setup_check_old", "setup_run_moved", "dependencies_not_checked",
 ] as const;
 export type TestEnvRefusal = (typeof TEST_ENV_REFUSALS)[number];
 
@@ -93,6 +216,8 @@ export const TestEnvSummarySchema = z
     roundBudgetMin: z.number().int(),
     nightly: z.object({ enabled: z.boolean(), cronUtc: line(64), branch: line(255) }).strict(),
     services: z.number().int().min(0),
+    /** Test services: how many dependencies the environment lists, and how many of them run something Rovara starts. Absent when there are none, so a summary without test services is today's summary. */
+    dependencies: z.object({ count: z.number().int().min(1).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies), started: z.number().int().min(0).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies) }).strict().optional(),
   })
   .strict();
 export type TestEnvSummary = z.infer<typeof TestEnvSummarySchema>;
@@ -105,6 +230,7 @@ export function testEnvSummaryOf(body: TestEnvironmentBody): TestEnvSummary {
     roundBudgetMin: body.roundBudgetMin,
     nightly: { enabled: body.nightly.enabled, cronUtc: body.nightly.cronUtc, branch: body.nightly.branch },
     services: body.services.length,
+    ...(body.dependencies === undefined || body.dependencies.length === 0 ? {} : { dependencies: { count: body.dependencies.length, started: testEnvStartedCount(body.dependencies) } }),
   };
 }
 

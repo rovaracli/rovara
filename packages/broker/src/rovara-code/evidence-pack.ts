@@ -5,6 +5,7 @@
 //
 // Pure apart from hashing: the caller reads the raw file (bounded), lists the stored artifacts, stores `newArtifacts` and persists the pack. The wiring into the task view is one hot-file hunk (see the report).
 import { createHash } from "node:crypto";
+import { dependencyEvidenceOf, type PinnedDependency } from "./dependency-evidence.js";
 import {
   ArtifactLinkSchema, ArtifactRefSchema, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, EVIDENCE_CHECKS_MAX, EVIDENCE_NOT_TESTED_MAX, EVIDENCE_RAW_MAX_BYTES, EvidencePackSchema, EvidenceRawSchema, EvidenceViewSchema,
   redactText,
@@ -46,6 +47,8 @@ export interface EvidenceBuildInput {
   checkKinds?: ReadonlyMap<string, CheckKind> | undefined;
   /** From the approved test environment and what the run used, never from the raw file. */
   environment: EvidenceEnvironment;
+  /** Test services: the dependencies the broker pinned for this run. The pack's `environment.dependencies` and the "blocked by environment" item are built from them and the raw file's usage record (labels are the broker's). Absent: today's pack. */
+  dependencies?: readonly PinnedDependency[] | undefined;
   /** Not-tested items the broker already has (the proof table's own, the environment's). */
   notTested?: readonly EvidenceNotTested[] | undefined;
   /** What the artifact store really holds, by sha256: a reference to anything else is dropped. */
@@ -232,6 +235,9 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
     if (tests?.skippedBefore !== undefined && tests.skippedAfter !== undefined && tests.skippedAfter > tests.skippedBefore) add({ kind: "check", id: entry.checkId, text: entry.label, reason: "more tests skipped than before" });
   }
   if (input.rawText !== undefined && raw === undefined) add({ kind: "environment", id: "evidence", text: "Test, coverage and scan details", reason: "could not be read" });
+  // Test services: the rows come from what the broker pinned and the worker's usage record; nothing is added for a run without dependencies.
+  const dependencyEvidence = input.dependencies === undefined || input.dependencies.length === 0 ? undefined : dependencyEvidenceOf(input.dependencies, raw?.testServices);
+  for (const item of dependencyEvidence?.notTested ?? []) add(item);
 
   const pack = {
     schemaVersion: 1 as const,
@@ -240,6 +246,7 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
       ...input.environment,
       services: input.environment.services.map((service) => ({ ...service, name: plain(service.name, 80) })),
       accounts: input.environment.accounts.map((account) => ({ ...account, profileId: plain(account.profileId, 120) })),
+      ...(dependencyEvidence === undefined ? {} : { dependencies: dependencyEvidence.dependencies }),
     },
     checks, selection, api, browser, notTested: [...notTested.values()],
   };

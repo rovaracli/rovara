@@ -1,7 +1,7 @@
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ENVIRONMENT_PLACEHOLDER, STACK_PARTS, environmentStackName } from "@agentx/contracts";
+import { CATALOG_BUILD_FLAVOR, ENVIRONMENT_PLACEHOLDER, STACK_PARTS, environmentStackName } from "@agentx/contracts";
 import { CONTEXT_ENV, CONTEXT_OVERFLOW_LOCATION_ENV } from "aws-cdk-lib/cx-api";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";
@@ -14,10 +14,15 @@ import { enterpriseReleaseProfiles } from "./profiles.js";
 import { ImageDigest, ReleaseManifestSchema, type ReleaseManifest } from "./manifest.js";
 import { gitSourceState, releaseCommitOfCleanTree } from "./source-state.js";
 import { zipDirectory } from "./zip.js";
+import { assertReleaseFlavorImage, skopeoLabelReader, type ImageLabelReader } from "./image-flavor.js";
 
 export { accumulateAsset, assetSignatureMismatch, type PackageAccumulator, type ReleaseAssetLike };
 
 export interface BuildReleaseInput {
+  /** Reads an image's labels (a worker image must say catalog-flavor=release). Defaults to skopeo; a test gives a fake. */
+  readImageLabels?: ImageLabelReader;
+  /** Where the catalog trust files are checked (`assertReleaseCatalogTree`). Defaults to this checkout; the command line never sets it. */
+  catalogTreeRoot?: string;
   version: string;
   out: string;
   gitCommit: string;
@@ -38,6 +43,26 @@ export interface BuildReleaseInput {
 // `<repoRoot>/.release-synth/...` produced clean "../../../node_modules/..." with no absolute path.
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const RELEASE_SYNTH_ROOT = join(REPO_ROOT, ".release-synth");
+
+/**
+ * A release is made from a tree whose catalog trust files are release and EMPTY, in the source and in the compiled output the Lambda bundles and the images are made from: the flavor file says release, the staging-only
+ * key list is `[]`, and so are the compiled copies. Anything else (a staging build's leftovers, a hand edit, a stale build) refuses the release, so release code never contains the staging key. Reads files only.
+ */
+export async function assertReleaseCatalogTree(root: string): Promise<void> {
+  const check = async (file: string, pattern: RegExp, what: string): Promise<void> => {
+    let text: string;
+    try {
+      text = await readFile(join(root, file), "utf8");
+    } catch {
+      throw new Error(`release refused: ${file} is missing (build the packages first); ${what}`);
+    }
+    if (!pattern.test(text)) throw new Error(`release refused: ${file} ${what}`);
+  };
+  await check("packages/contracts/src/catalog-build-flavor.ts", /CATALOG_BUILD_FLAVOR: "release" \| "staging" = "release";/u, "is not the release flavor; run packages/contracts/tools/catalog-flavor.ts release");
+  await check("packages/contracts/src/catalog-staging-keys.ts", /CATALOG_STAGING_ONLY_SIGNING_KEYS: readonly CatalogSigningKey\[\] = \[\];/u, "holds a staging-only catalog key; a release build contains none (packages/contracts/tools/catalog-flavor.ts release)");
+  await check("packages/contracts/dist/catalog-build-flavor.js", /CATALOG_BUILD_FLAVOR = "release";/u, "is compiled from another flavor; rebuild the packages");
+  await check("packages/contracts/dist/catalog-staging-keys.js", /CATALOG_STAGING_ONLY_SIGNING_KEYS = \[\];/u, "is compiled with a staging-only catalog key; rebuild the packages");
+}
 
 /** Validates images against ImageDigest before any other work, so a bad reference fails fast. */
 function checkedImages(images: BuildReleaseInput["images"]): ReleaseManifest["images"] {
@@ -169,6 +194,11 @@ export async function buildRelease(input: BuildReleaseInput): Promise<ReleaseMan
   const version = checkedVersion(input.version);
   const gitCommit = checkedGitCommit(input.gitCommit);
   checkedNoAmbientCdkContext();
+  // A public or Enterprise release is a RELEASE build: the staging-only catalog signing key (catalog-trust.ts) is honoured by a staging build alone, and a release build does not contain it. The tree and its compiled
+  // output are checked, and so is the worker image the release names: Docker builds that from whatever tree it was given.
+  if (CATALOG_BUILD_FLAVOR !== "release") throw new Error("a release is built from a release flavor (packages/contracts/src/catalog-build-flavor.ts); this tree is a staging build");
+  await assertReleaseCatalogTree(input.catalogTreeRoot ?? REPO_ROOT);
+  if (images.worker !== undefined) await assertReleaseFlavorImage("worker", images.worker, input.readImageLabels ?? skopeoLabelReader);
   await claimOutDir(input.out);
 
   await mkdir(RELEASE_SYNTH_ROOT, { recursive: true });

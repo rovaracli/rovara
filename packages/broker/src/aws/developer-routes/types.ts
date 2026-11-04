@@ -1,3 +1,4 @@
+import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
 import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { EvidenceErase } from "../../rovara-code/evidence-erase.js";
 import type { CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
@@ -120,6 +121,8 @@ export interface DeveloperApiConfiguration {
   slackRequestQueue?: SlackRequestQueue;
 }
 export interface DeveloperRouteDependencies {
+  /** Test services (slice 1): the release's signed service image catalog (`serviceCatalogSourceOf`). The setup draft's dependency candidates become proposed dependencies only with it; without it none are proposed. */
+  serviceCatalog?: ServiceCatalogSource;
   /** Saved project images: the registry (store, sessions, ECR), only where the install's `sv` switch is on and it was installed. Without it the project's Environment panel routes do not exist. */
   savedEnv?: SavedEnvDeps;
   /**

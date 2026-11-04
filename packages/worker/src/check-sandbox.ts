@@ -554,15 +554,49 @@ export async function startCheckSandbox(docker: DockerCli, plan: CheckSandboxPla
   return started.stdout.trim();
 }
 
+/** The working sandbox's own network for the working phase (not a round's), and its address there. */
+export interface WorkingPhaseNetwork { name: string; ip: string }
+
+function assertWorkingPhaseNetwork(plan: Pick<CheckSandboxPlan, "network">, to: WorkingPhaseNetwork): void {
+  if (!SERVICES_NETWORK_NAME.test(to.name) || to.name === plan.network.name || to.name === "bridge" || to.name === "host" || to.name === "none" || !/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(to.ip)) {
+    throw agentXError("CONFIG_INVALID", "the working sandbox goes back to its working phase network, never to a round's network");
+  }
+}
+
+/** After a round: the working sandbox is on its working-phase network (it never left it, so normally this only looks). Connects it at its address when it is not. Never touches the round's network. */
+async function ensureOnWorkingPhaseNetwork(docker: DockerCli, plan: PlanForWorking, to: WorkingPhaseNetwork): Promise<void> {
+  assertWorkingPhaseNetwork(plan, to);
+  if (await networksOf(docker, plan.workingSandboxName).then((networks) => networks.includes(to.name), () => false)) return;
+  const connected = await docker.run(["network", "connect", "--ip", to.ip, to.name, plan.workingSandboxName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+  if (connected !== undefined && connected.exitCode === 0) return;
+  if (await networksOf(docker, plan.workingSandboxName).then((networks) => networks.includes(to.name), () => false)) return;
+  throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox could not be attached to its working phase network again");
+}
+
 /**
  * One check round: detaches the working sandbox, runs `round` (which starts the check sandbox with `start()` and does its work), then REMOVES the check sandbox and reattaches the working sandbox in a `finally`, whether
  * the round succeeded, failed or was cancelled. This is the only supported way for TS17 to use the sealed sandbox. If the check sandbox cannot be removed (it still exists after `docker rm --force`), the working sandbox
  * is NOT reattached (a relay beside a live check sandbox would break the seal) and the call throws. The round's own error wins over a clean-up error.
  */
-export async function withDetachedWorking<T>(docker: DockerCli, plan: CheckSandboxPlan, round: (start: () => Promise<string>) => Promise<T>): Promise<T> {
+export async function withDetachedWorking<T>(
+  docker: DockerCli, plan: CheckSandboxPlan, round: (start: () => Promise<string>) => Promise<T>,
+  options: { returnTo?: WorkingPhaseNetwork | "none"; pauseWorking?: boolean } = {},
+): Promise<T> {
+  // `returnTo` is the network the working sandbox belongs on once the round is over (its working-phase network), or "none" when it has no services network at all (a run with no working phase). With it, the working
+  // sandbox is NEVER connected to this round's network, not even for a moment: the round's own network is only ever looked at. Without it (the single-network design of the first version) it is reattached to the round's
+  // network at .3, as before.
+  if (options.returnTo !== undefined && options.returnTo !== "none") assertWorkingPhaseNetwork(plan, options.returnTo);
   const detached = await detachWorkingSandbox(docker, plan);
+  // `pauseWorking`: the working sandbox is FROZEN (`docker pause`) from before the check sandbox starts until the check sandbox is gone. The two share the workspace volume, so a process the agent or a seed left running in the
+  // working sandbox could otherwise relay workspace files to the internet during a sealed round. A pause that fails stops the round (fail closed); a sandbox that could not be removed stays paused.
+  let paused = false;
   let outcome: { value: T } | { error: unknown };
   try {
+    if (options.pauseWorking === true) {
+      const frozen = await docker.run(["pause", plan.workingSandboxName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+      if (frozen === undefined || frozen.exitCode !== 0) throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox could not be paused, so the sealed round did not start");
+      paused = true;
+    }
     outcome = { value: await round(() => startCheckSandbox(docker, plan, detached)) };
   } catch (error) {
     outcome = { error };
@@ -570,13 +604,24 @@ export async function withDetachedWorking<T>(docker: DockerCli, plan: CheckSandb
   let cleanup: unknown;
   try {
     await removeCheckSandbox(docker, plan);
-    await reattachWorkingSandbox(docker, plan);
+    if (options.returnTo === undefined) await reattachWorkingSandbox(docker, plan);
+    else if (options.returnTo !== "none") await ensureOnWorkingPhaseNetwork(docker, plan, options.returnTo);
+    if (paused) await unpauseWorkingSandbox(docker, plan);
   } catch (error) {
     cleanup = error;
   }
   if ("error" in outcome) throw outcome.error as Error;
   if (cleanup !== undefined) throw cleanup as Error;
   return outcome.value;
+}
+
+/** `docker unpause`, once more if it fails; a sandbox that stays frozen is an error (loud: the task cannot go on). */
+async function unpauseWorkingSandbox(docker: DockerCli, plan: Pick<CheckSandboxPlan, "workingSandboxName">): Promise<void> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const result = await docker.run(["unpause", plan.workingSandboxName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+    if (result !== undefined && result.exitCode === 0) return;
+  }
+  throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox could not be unpaused after the sealed round");
 }
 
 /** Removes the check sandbox (`docker rm --force`); a container that does not exist is fine, one that still exists after the attempt is an error. */

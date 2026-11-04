@@ -56,6 +56,11 @@ export interface CheckRunners {
    * was about to run and every one after it is `not_run`. Absent: nothing changes. (Seeding a Prove run, `seedRun`, is a TS30 wiring item, not this port.)
    */
   resetBetweenChecks?(signal: AbortSignal): Promise<void>;
+  /**
+   * Test services (slice 1): the round that `runChecks` ran is over, whether it finished, failed or was stopped. Called once per `runChecks`, last, so a sealed round (the check sandbox up, the working sandbox off the services
+   * network) is always closed and the working sandbox put back, also for the TESTPROOF rerun and the baseline scans, which call `runChecks` themselves. Its rejection is ignored. Absent: nothing changes.
+   */
+  endRound?(): Promise<void>;
 }
 
 export interface CheckPlan {
@@ -154,6 +159,19 @@ interface PlannedCheck {
  * stopped round by its signal.
  */
 export async function runChecks(
+  plan: CheckPlan,
+  runners: CheckRunners,
+  options: { budgetMs: number; signal: AbortSignal; now?: () => number },
+): Promise<CheckRound> {
+  if (runners.endRound === undefined) return runChecksRound(plan, runners, options);
+  try {
+    return await runChecksRound(plan, runners, options);
+  } finally {
+    await Promise.resolve().then(() => runners.endRound?.()).catch(() => undefined);
+  }
+}
+
+async function runChecksRound(
   plan: CheckPlan,
   runners: CheckRunners,
   options: { budgetMs: number; signal: AbortSignal; now?: () => number },
@@ -335,6 +353,8 @@ export interface CheckRunnerOptions {
 
 /** The real runners: readiness as preparation runs it, and agent commands as the agent's own shell runs them. */
 export function createCheckRunners(options: CheckRunnerOptions): CheckRunners {
+  // Sealed checks (test services) are made only by a sealed check round (check-round-runners.ts), which owns the sealed sandbox's exec. A `sealed` option here would be ignored and run the checks unsealed, so it is refused.
+  if (Object.hasOwn(options, "sealed")) throw new Error("sealed checks are made only by a sealed check round");
   const devcontainer = options.devcontainer;
   // Ruling K: a devcontainer session's replays run in the devcontainer, never on the host.
   const sandboxCommands = options.sandbox === undefined ? undefined : executionFor(SANDBOX_TARGET, { sandbox: options.sandbox });
@@ -392,7 +412,7 @@ export function createCheckRunners(options: CheckRunnerOptions): CheckRunners {
  * The directory a replayed `cd` names, resolved with realpath, so a symlink cannot lead out of the workspace (Ruling D).
  * The command then runs there directly rather than through the shell's own `cd`, which would follow the link again.
  */
-async function containedDirectory(root: string, path: string, inContainer: boolean): Promise<string> {
+export async function containedDirectory(root: string, path: string, inContainer: boolean): Promise<string> {
   let target: string;
   try {
     target = await realpath(resolve(root, path));
@@ -418,7 +438,7 @@ function withoutRoot(text: string, root: string): string {
   return text.split(root).join("<workspace>");
 }
 
-function withoutRootError(error: unknown, root: string): unknown {
+export function withoutRootError(error: unknown, root: string): unknown {
   if (!(error instanceof Error) || error instanceof CheckNotRunError || !error.message.includes(root)) return error;
   return new Error(withoutRoot(error.message, root), { cause: error });
 }

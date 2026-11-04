@@ -38,7 +38,7 @@ export async function candidateStateOf(deps: DeveloperRouteDependencies, orgId: 
 export async function deriveCandidateProve(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, proposal: TestEnvironmentBody, definition: CandidateDefinition): Promise<ProveFromSetupCheck & { candidate?: CandidateCheck }> {
   const { check, setup } = await candidateStateOf(deps, orgId, name, testEnvDigest(proposal), definition);
   if (check === undefined) return { ok: false, refusal: "no_setup_check" };
-  const derived = proveReportFromSetupCheck({ environment: proposal, definition: { revision: definition.revision, setup: check.setup, readiness: check.readiness }, setup, nowMs: deps.now() });
+  const derived = proveReportFromSetupCheck({ environment: proposal, definition: { revision: definition.revision, setup: check.setup, readiness: check.readiness }, setup, nowMs: deps.now(), usage: check.usage });
   if (!derived.ok) return derived;
   // The check ran exactly the lists the settings would hold with this proposal's commands added: a record that says otherwise (damaged, or the proposal changed under its digest) proves nothing.
   const lists = candidateListsChecked(proposal, definition);
@@ -51,6 +51,9 @@ export async function deriveCandidateProve(deps: DeveloperRouteDependencies, org
   }
   return { ...derived, candidate: check };
 }
+
+// Test services (slice 1, Prove): the plan a candidate check carries lives in test-env/candidate-plan.ts (a leaf module the setup check's route shares).
+export { candidateDependencyPlan } from "../../test-env/candidate-plan.js";
 
 /** Words for the apply. */
 export const CANDIDATE_APPLY_WORDS = {

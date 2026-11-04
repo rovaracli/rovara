@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { registriesPrepareOf } from "./registry-credentials.js";
 import { savedEnvPrepareOf } from "./saved-env-prepare.js";
-import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition, metaRepositoryOf, type CodeHost, type PreparePins } from "@agentx/contracts";
+import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, type TaskDependencyPlan, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition, metaRepositoryOf, type CodeHost, type PreparePins } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { auditPending, tryAuditEvent } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";
@@ -109,7 +109,7 @@ export async function newWorkspacePreparation(
   project: RegisteredProjectRecord,
   targetOwnerKey: string,
   requestId: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; pins?: PreparePins; grantedBy?: unknown; testEnvPin?: { revision: number; digest: string } } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; pins?: PreparePins; grantedBy?: unknown; testEnvPin?: { revision: number; digest: string }; testServices?: readonly TaskDependencyPlan[] } = {},
 ): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; membership: MembershipRecord | undefined; pins?: PreparePins }> {
   const projectName = project.definition.name;
   const projectRevision = project.definition.revision;
@@ -179,6 +179,8 @@ export async function newWorkspacePreparation(
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
       ...(pins === undefined ? {} : { pins }),
+      // Test services: a candidate check's dependencies (pinned; no secret). Nothing for any other preparation.
+      ...(options.testServices === undefined || options.testServices.length === 0 ? {} : { testServices: { dependencies: [...options.testServices] } }),
       // N9 (INTG2): the project's registries (where, never a credential), only for a run that runs the project's code.
       ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: requireOrgId(identity.orgId) }),
       ...savedEnv,

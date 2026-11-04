@@ -33,6 +33,7 @@ import { runCollected, type CollectedProcess } from "./collected-process.js";
 import { describeCommandFailure } from "./command-failure.js";
 import { DOCKER_DATA_DIRECTORY, RUNTIME_BACKING_DIRECTORY } from "./devcontainer-policy.js";
 import { evaluateReadiness, type CommandResult } from "./readiness.js";
+import { startPrepareTestServices, type PrepareServices, type PrepareTestServices } from "./test-services-run.js";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import { assertLocalTaskExecutionAllowed, taskSandboxFor, taskShellSelection, type TaskShellSelection } from "./task-sandbox.js";
 import { projectCommandEnvironment } from "./git.js";
@@ -132,6 +133,8 @@ export interface PrepareWorkspaceOptions {
   materializer?: RepositoryMaterializer;
   credentialProvider?: RepositoryCredentialProvider;
   commandRunner?: PreparationCommandRunner;
+  /** Test services (Prove, a candidate check): the plan's dependencies start for this preparation, its readiness test checks run sealed, and the usage record goes to `onUsageRecord`. Absent: today's preparation. */
+  testServices?: PrepareTestServices;
   devcontainerCli?: DevcontainerCli;
   /**
    * Where setup and readiness commands run in a project without a devcontainer: the task sandbox (R56), started when the
@@ -307,6 +310,7 @@ async function prepareWorkspaceOnce(options: PrepareWorkspaceOptions): Promise<P
   // A crashed preparation may have left a registry config (and a token) behind: removed before anything else runs.
   await removeLeftoverRegistryConfigs(canonicalRoot);
   let registrySession: RegistrySession | undefined;
+  let services: PrepareServices | undefined;
   let manifest = await loadOrCreateManifest(
     canonicalRoot,
     project,
@@ -422,6 +426,7 @@ async function prepareWorkspaceOnce(options: PrepareWorkspaceOptions): Promise<P
       }));
     }
 
+    services = await startPrepareTestServices({ options: options.testServices, sandbox, devcontainer: target !== undefined, operationId: options.creationIdentity ?? "agentx-worker", rootPath: canonicalRoot, repositoryPaths: project.repositories.map((repository) => resolve(canonicalRoot, repository.path)) });
     for (const [index, command] of project.setup.entries()) {
       if (manifest.completedSetupSteps.includes(index)) continue;
       let result: CommandResult;
@@ -444,7 +449,7 @@ async function prepareWorkspaceOnce(options: PrepareWorkspaceOptions): Promise<P
 
     const readiness = await evaluateReadiness(
       { rootPath: canonicalRoot, commands: project.readiness },
-      run,
+      services?.sealedReadiness(run) ?? run,
     );
     // The readiness runner turns an error into a result; a leak found by a check's scan is thrown here instead.
     const leak = registrySession?.leak();
@@ -476,6 +481,7 @@ async function prepareWorkspaceOnce(options: PrepareWorkspaceOptions): Promise<P
   } finally {
     // The registries' config first: nothing that fails after it can leave a token on the disk. A config that cannot be removed fails the preparation and taints the workspace (S2).
     let removalFailure: unknown;
+    await services?.finish();
     try { await registrySession?.dispose(); } catch (disposeError) { removalFailure = disposeError; }
     await savedEnv?.dispose();
     await sandbox?.dispose();

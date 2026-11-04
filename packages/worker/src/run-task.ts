@@ -87,6 +87,7 @@ import { createSourceTextGuard, guardArtifactSink, guardEventSink, type SourceTe
 import { isContextSourceStage, type ContextToolCatalog } from "@agentx/contracts";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
+import { startTaskTestServices, withTestServices, type TestServicesConfig } from "./test-services-run.js";
 
 export interface TaskInvocationResult {
   /** The broker-issued conversation ID, which stays the same for every turn of one conversation. */
@@ -196,6 +197,8 @@ export interface TaskInvocationDependencies {
    * publication uses before a push. Tests supply fakes. Default: the real ones.
    */
   stopBeforeReading?: StopBeforeReadingOptions;
+  /** Test services (slice 1): the worker's configuration for a plan with dependencies. Default: made from the worker's environment, only when a plan has dependencies. Tests supply one. */
+  testServices?: TestServicesConfig;
 }
 
 export async function runTaskInvocation(
@@ -342,6 +345,10 @@ async function runTask(
       localShell = true;
     }
   }
+  // Test services (slice 1): a plan with dependencies starts them now, for the whole task. Nothing at all happens for a plan without them. Torn down by the sandbox's dispose, on every exit path.
+  const testServices = await startTaskTestServices({ plan: step?.kind === "agent" ? undefined : invocation.payload.testEnvironment, mode, sandbox, devcontainer: devcontainer !== undefined, nightly: invocation.payload.nightlyRun !== undefined, operationId: invocation.operationId, rootPath: canonicalRoot,
+    repositoryPaths: manifest.repositories.map((repository) => resolve(canonicalRoot, repository.path)), config: dependencies.testServices, artifactSink: dependencies.artifactSink, cancellation: dependencies.cancellationController })
+    .catch((error: unknown) => reportFeedbackReviewStartFailure(error));
   // R56: the agent's file tools run in the same container as its shell, never in the worker (sandbox-file-tools.ts), for every
   // Pi session of this task: the main ones, the feedback review and the critic and security reviews.
   const fileToolsDocker = dependencies.docker ?? (dependencies.taskShell?.kind === "sandbox" ? dependencies.taskShell.docker : undefined) ?? createDockerCli();
@@ -490,13 +497,13 @@ async function runTask(
         : invocation.payload.workflowE2EAdmission?.purpose === "grounding"
         ? "AgentX is checking the plan's unchanged-behaviour checks against the current app. It has no code-editing tools and decides nothing about the change."
         : "AgentX is running the selected project checks against the current code. This retry has no code-editing tools." });
-      const runners = dependencies.checkRunners ?? createCheckRunners({
+      const runners = withTestServices(testServices, dependencies.checkRunners ?? createCheckRunners({
         rootPath: canonicalRoot,
         ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
         ...(bashOperations === undefined ? {} : { bashOperations }),
         ...(sandbox === undefined ? {} : { sandbox }),
         ...(localShell ? { local: true } : {}),
-      });
+      }));
       const roundBudgetMs = dependencies.checkBudgetMs?.() ?? testEnv?.budgetMs ?? CHECK_ROUND_BUDGET_MS;
       const roundStarted = Date.now();
       const round = await runChecks(plan, runners, { budgetMs: roundBudgetMs, signal: stop.signal });
@@ -541,7 +548,9 @@ async function runTask(
       // The baseline run of a scanner on the original code (P4) takes time from the same budget the test proof below has.
       const evidenceStarted = Date.now();
       if (invocation.payload.evidenceCapture === true && !stop.signal.aborted) {
-        await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted, selection: testEnv?.selection, coveragePaths: invocation.payload.testEnvironment?.checks.map((check) => check.coveragePath),
+        // Test services: the rounds' usage record rides in the raw file (the broker labels it; nothing of it was reaching the evidence). Read before the services stop.
+        const servicesRecord = await testServices?.usageRecord().catch(() => undefined);
+        await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted, selection: testEnv?.selection, ...(servicesRecord === undefined ? {} : { testServices: servicesRecord }), coveragePaths: invocation.payload.testEnvironment?.checks.map((check) => check.coveragePath),
           baseline: { runners, signal: stop.signal, budgetMs: roundBudgetMs - roundSpentMs, ...(dependencies.testProofOriginalCode === undefined ? {} : { originalCode: dependencies.testProofOriginalCode }) } });
       }
       const evidenceSpentMs = Date.now() - evidenceStarted;
@@ -701,12 +710,12 @@ async function runTask(
     // The agent's shell is the devcontainer's, where the repository is at its container path (Minor 11).
     ...(containerPaths === undefined ? {} : { cdTarget: (target: string) => workspaceRelativeCdTarget(target, containerPaths, canonicalRoot) }),
   });
-  const checkRunners = dependencies.checkRunners ?? createCheckRunners({
+  const checkRunners = withTestServices(testServices, dependencies.checkRunners ?? createCheckRunners({
     rootPath: canonicalRoot,
     ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
     ...(sandbox === undefined ? {} : { sandbox }),
     ...(localShell ? { local: true } : {}),
-  });
+  }));
   const checkBudgetMs = dependencies.checkBudgetMs ?? (() => CHECK_ROUND_BUDGET_MS);
   let checkPlan: CheckPlan | undefined;
   let reportedChecks: CheckReport | undefined;

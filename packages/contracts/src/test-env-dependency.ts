@@ -15,7 +15,8 @@
 import { z } from "zod";
 import type { DecisionRisk } from "./decision-cards.js";
 import { RelativeWorkspacePathSchema, ProjectCommandSchema } from "./project.js";
-import { TestEnvValueSourceSchema, type TestEnvService } from "./test-environment.js";
+import type { TestEnvService } from "./test-environment.js";
+import { TestEnvValueSourceSchema } from "./test-env-value-source.js";
 import { TestServiceHostSchema, looksLikeSecretValue, reservedDependencyEnvName } from "./test-services-shared.js";
 import { sha256Hex } from "./web-hash.js";
 
@@ -319,7 +320,7 @@ export const TestEnvDependenciesSchema = testEnvDependenciesSchemaFor(TEST_ENV_D
 // ---- less-safe fields and the approval card's risk (2.2, 2.7)
 
 /** The dependency fields whose change is a less-safe change (a second person and a fresh sign-in), added to the environment's own list (`TEST_ENV_LESS_SAFE_FIELDS`) when the body is wired. */
-export const TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS = ["test_account", "project_image", "substitute_image", "schema_synth", "none_excluded_tests", "run_cap_raised"] as const;
+export const TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS = ["test_account", "project_image", "substitute_image", "schema_synth", "none_excluded_tests", "dependency_seed", "run_cap_raised"] as const;
 export type TestEnvDependencyLessSafeField = (typeof TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS)[number];
 
 /** Each less-safe field a dependency list turns on, with a signature per use, so a moved or added use is a change and a removed one is not. */
@@ -327,6 +328,8 @@ function lessSafeSignatures(dependencies: readonly TestEnvDependency[]): Map<Tes
   const found = new Map<TestEnvDependencyLessSafeField, Set<string>>(TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS.map((field) => [field, new Set<string>()]));
   const add = (field: TestEnvDependencyLessSafeField, signature: string) => found.get(field)?.add(signature);
   for (const dependency of dependencies) {
+    // A seed COMMAND runs with the dependency's network access after it starts, so a new or changed one is less safe (a second person sees it). A seed that is a repository file is data the project already holds.
+    for (const seed of dependency.seeds) if ("command" in seed) add("dependency_seed", `${dependency.id}/${JSON.stringify(seed.command)}`);
     for (const slot of SLOT) {
       const backing = dependency[slot];
       if (backing === undefined) continue;
@@ -358,7 +361,7 @@ export function testEnvDependencyLessSafeChanges(previous: readonly TestEnvDepen
 /** The risk the dependencies add to the `approve_test_env` card: high for any test account, project image, company-approved substitute image or excluded tests; medium otherwise. No model output sets it. */
 export function testEnvDependencyApprovalRisk(dependencies: readonly TestEnvDependency[]): DecisionRisk {
   const found = lessSafeSignatures(dependencies);
-  return (["test_account", "project_image", "substitute_image", "none_excluded_tests"] as const).some((field) => (found.get(field)?.size ?? 0) > 0) ? "high" : "medium";
+  return (["test_account", "project_image", "substitute_image", "none_excluded_tests", "dependency_seed"] as const).some((field) => (found.get(field)?.size ?? 0) > 0) ? "high" : "medium";
 }
 
 // ---- reading today's `TestEnvService` (2.3)

@@ -119,6 +119,21 @@ export async function assertSourceAtRelease(input: { runner: CommandRunner; sour
   }
 }
 
+export type CatalogFlavor = "release" | "staging";
+export interface BuiltSource { flavor: CatalogFlavor; restore(): Promise<void> }
+/** The tool that switches a checkout's catalog flavor (packages/contracts/tools/catalog-flavor.ts). */
+export const CATALOG_FLAVOR_TOOL = "packages/contracts/tools/catalog-flavor.ts";
+/** The one AWS account the staging flavor is built in. */
+export const CATALOG_STAGING_BUILD_ACCOUNT = "944937319445";
+
+/**
+ * Which catalog flavor an upgrade's build gets: `staging` ONLY when the target environment is named "staging" AND the account the upgrade's own AWS client is signed in to (STS, at build time) is the staging
+ * account. Every other case, including an account that could not be read, is `release`: no staging key is trusted. The broker checks the account again at run time.
+ */
+export function catalogFlavorFor(input: { env: string; account: string | undefined }): CatalogFlavor {
+  return input.env === "staging" && input.account === CATALOG_STAGING_BUILD_ACCOUNT ? "staging" : "release";
+}
+
 /**
  * Installs and builds the release's source checkout before `cdk deploy` runs: `infra/dist` is
  * gitignored, so a checkout at the right tag can still hold a stale build (or none at all), and the
@@ -126,9 +141,33 @@ export async function assertSourceAtRelease(input: { runner: CommandRunner; sour
  * exactly the lockfile's dependencies (including the CDK CLI `npx --no-install cdk` then runs), and
  * `npm run build` compiles every workspace, infra included.
  */
-export async function buildSource(input: { runner: CommandRunner; source: string }): Promise<void> {
+export async function buildSource(input: { runner: CommandRunner; source: string; flavor?: CatalogFlavor }): Promise<BuiltSource> {
   await input.runner.run("npm", ["ci"], { cwd: input.source, display: "npm ci" });
-  await input.runner.run("npm", ["run", "build"], { cwd: input.source, display: "npm run build" });
+  // The catalog flavor of the Lambdas and the contracts dist (test services slice 1, H4). The committed tree IS the release flavor, so a release-flavor build runs nothing extra, command for command as before. Only a build
+  // that was asked for the staging flavor switches the tree (the flavor line and the staging-only key list), and a switch that throws puts the tree back to release and builds as release: no staging key is ever trusted
+  // by a build whose switch did not run to the end. If even the way back fails the build stops (a tree in an unknown state is never built).
+  let staged = false;
+  if (input.flavor === "staging") {
+    try {
+      await input.runner.run("npx", ["tsx", CATALOG_FLAVOR_TOOL, "staging"], { cwd: input.source, display: "set the staging catalog flavor" });
+      staged = true;
+    } catch {
+      await input.runner.run("npx", ["tsx", CATALOG_FLAVOR_TOOL, "release"], { cwd: input.source, display: "set the release catalog flavor" });
+    }
+  }
+  try {
+    await input.runner.run("npm", ["run", "build"], { cwd: input.source, display: "npm run build" });
+  } catch (error) {
+    if (staged) await input.runner.run("npx", ["tsx", CATALOG_FLAVOR_TOOL, "release"], { cwd: input.source, display: "set the release catalog flavor" }).catch(() => undefined);
+    throw error;
+  }
+  return {
+    flavor: staged ? "staging" : "release",
+    // Puts the source's files back to the committed release flavor (the compiled output keeps the flavor it was built with), so the checkout is clean for the next upgrade.
+    async restore() {
+      if (staged) await input.runner.run("npx", ["tsx", CATALOG_FLAVOR_TOOL, "release"], { cwd: input.source, display: "set the release catalog flavor" });
+    },
+  };
 }
 
 /** Quotes an argument for the printed command line when it contains whitespace (only `--app`'s value does today). */

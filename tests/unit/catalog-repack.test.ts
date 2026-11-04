@@ -157,6 +157,65 @@ const parsedProvenance = (bytes: Uint8Array): ProvenanceDoc => JSON.parse(text(b
 const parsedSources = (bytes: Uint8Array): SourcesDoc => JSON.parse(text(bytes)) as SourcesDoc;
 const upstreamIndexOf = (image: UpstreamImage): { manifests: unknown[]; [key: string]: unknown } => JSON.parse(image.index.toString("utf8")) as { manifests: unknown[] };
 
+describe("repacking chosen entries only (--entries)", () => {
+  const runOnly = (w: ReturnType<typeof world>, entries: readonly string[], repack: unknown = w.repackFile((list) => { for (const id of Object.keys(list)) if (!entries.includes(id)) delete list[id]; })) =>
+    repackCatalog({ catalog, repack, env: "staging", registry: REGISTRY, ports: w.ports, entries });
+
+  it("repacks postgres@16 alone: one upstream index read, two children copied, one index pushed, and a sources file holding that one id", async () => {
+    const w = world();
+    const output = await runOnly(w, ["postgres@16"]);
+    const postgres = w.images.get("postgres@16") as UpstreamImage;
+    expect(w.calls.copies).toHaveLength(2);
+    expect(w.calls.copies.every((copy) => copy.endsWith(`-> ${destination("svc/postgres")}`))).toBe(true);
+    expect(w.calls.pushes).toHaveLength(1);
+    expect(w.calls.reads.filter((read) => read === `docker.io/library/postgres@${postgres.indexDigest}`)).toHaveLength(1);
+    expect(w.calls.reads.some((read) => !read.includes("postgres"))).toBe(false);
+    const sources = SourcesFileSchema.parse(parsedSources(output.sourcesBytes));
+    expect(Object.keys(sources.sources)).toEqual(["postgres@16"]);
+    expect(parsedProvenance(output.provenanceBytes).entries.map((entry) => entry.id)).toEqual(["postgres@16"]);
+  });
+  it("repacks the emulator from its arm64 image alone (the catalog lists linux/arm64 only)", async () => {
+    const w = world();
+    const output = await runOnly(w, ["local-aws@r1"]);
+    const emulator = w.images.get("local-aws@r1") as UpstreamImage;
+    expect(w.calls.copies).toEqual([`docker.io/library/local-aws@${(emulator.children.get("linux/arm64/v8") as { digest: string }).digest} -> ${destination("svc/local-aws")}`]);
+    const index = parsed(w.calls.pushes[0]!.bytes);
+    expect(index.manifests.map((m) => `${m.platform.os}/${m.platform.architecture}`)).toEqual(["linux/arm64"]);
+    expect(Object.keys(SourcesFileSchema.parse(parsedSources(output.sourcesBytes)).sources)).toEqual(["local-aws@r1"]);
+  });
+  it("does not need the other entries in the repack file, and without --entries it still needs every one", async () => {
+    const w = world();
+    const only = w.repackFile((list) => { for (const id of Object.keys(list)) if (id !== "postgres@16") delete list[id]; });
+    expect(await refusalsOf(run(w, only))).toContainEqual({ id: "mysql@8", code: "no_upstream" });
+    expect(w.calls.copies).toEqual([]);
+    await expect(runOnly(world(), ["postgres@16"], only)).resolves.toBeDefined();
+  });
+  it("refuses a repack file that lists an entry that was not selected, an unknown or retired id, an empty or repeated list, and touches no registry", async () => {
+    const w = world();
+    expect(await refusalsOf(runOnly(w, ["postgres@16"], w.repackFile()))).toContainEqual({ id: "mysql@8", code: "unselected_id" });
+    expect(await refusalsOf(runOnly(w, ["mongo@7"], w.repackFile((list) => { for (const id of Object.keys(list)) delete list[id]; })))).toEqual([{ id: "mongo@7", code: "unknown_id" }]);
+    const retiredCatalog = ServiceCatalogSchema.parse({ ...catalog, entries: catalog.entries.map((entry) => (entry.id === "postgres@15" ? { ...entry, status: "retired" } : entry)) });
+    expect(await refusalsOf(repackCatalog({ catalog: retiredCatalog, repack: w.repackFile((list) => { for (const id of Object.keys(list)) if (id !== "postgres@16") delete list[id]; }), env: "staging", registry: REGISTRY, ports: w.ports, entries: ["postgres@15"] }))).toContainEqual({ id: "postgres@15", code: "retired_entry" });
+    await expect(runOnly(w, [])).rejects.toThrow(/at least one/u);
+    await expect(runOnly(w, ["postgres@16", "postgres@16"])).rejects.toThrow(/twice/u);
+    expect(w.calls.copies).toEqual([]);
+    expect(w.calls.pushes).toEqual([]);
+  });
+  it("still refuses a tag for the chosen entry", async () => {
+    const w = world();
+    expect(await refusalsOf(runOnly(w, ["postgres@16"], { schemaVersion: 1, entries: { "postgres@16": "docker.io/library/postgres:16" } }))).toEqual([{ id: "postgres@16", code: "tag_refused" }]);
+  });
+  it("is read from the command line as --entries", () => {
+    const base = ["--repack-file", "/o/repack.json", "--env", "staging", "--registry", REGISTRY, "--sources-out", "/o/sources.json", "--provenance-out", "/o/provenance.json"];
+    expect(parseRepackArgs(base).entries).toBeUndefined();
+    expect(parseRepackArgs([...base, "--entries", "postgres@16"]).entries).toEqual(["postgres@16"]);
+    expect(() => parseRepackArgs([...base, "--entries", ""])).toThrow();
+    expect(() => parseRepackArgs([...base, "--entries", "postgres@16", "--entries", "mysql@8"])).toThrow();
+    expect(() => parseRepackArgs([...base, "--entries", "postgres@16,postgres@16"])).toThrow();
+    expect(repackUsage()).toContain("--entries");
+  });
+});
+
 describe("repacking an entry", () => {
   it("copies exactly the catalog's two child manifests by digest, builds a two-child index with the annotations, pushes it by digest with the digest-prefix tag, and records it in the sources file", async () => {
     const w = world();
@@ -166,7 +225,7 @@ describe("repacking an entry", () => {
     const arm64 = (postgres.children.get("linux/arm64/v8") as { digest: string }).digest;
     expect(w.calls.copies).toContain(`docker.io/library/postgres@${amd64} -> ${destination("svc/postgres")}`);
     expect(w.calls.copies).toContain(`docker.io/library/postgres@${arm64} -> ${destination("svc/postgres")}`);
-    expect(w.calls.copies).toHaveLength(live.length * 2);
+    expect(w.calls.copies).toHaveLength(live.reduce((total, entry) => total + entry.image.platforms.length, 0));
     const push = w.calls.pushes.find((candidate) => parsed(candidate.bytes).annotations["io.rovara.repack.source.digest"] === `sha256:${postgres.indexDigest}`) as (typeof w.calls.pushes)[number];
     expect(push.repository).toBe(destination("svc/postgres"));
     expect(push.mediaType).toBe(OCI_INDEX_MEDIA_TYPE);

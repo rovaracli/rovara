@@ -82,4 +82,5 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   SECOND_REVIEWER_FEATURE,
   // NH-1: the nightly run (nightly-run.ts): the Prove sequence over the approved environment, with one rerun of failures and the coverage map, reported through the nightly action.
   NIGHTLY_RUN_FEATURE,
+  // Test services (`task.testServices.v1`) is NOT listed here: it is advertised only by a worker that has a test-services configuration (test-services-run.ts `testServicesAdvertisedFeatures`, added in main.ts).
 ] as const satisfies readonly WorkerInvocationFeature[];

@@ -4544,6 +4544,37 @@ describe("questions in a Slack-started task's thread", () => {
 });
 
 /** The prompt the worker invocation for this operation carries. */
+/** The whole invocation payload the worker is sent for this operation (taskOperationParts builds it). */
+function outboxPayload(harness: Harness, operationId: string): Record<string, unknown> {
+  const outbox = harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0];
+  return (outbox?.invocation as { payload: Record<string, unknown> }).payload;
+}
+
+describe("test services: the coding dispatch (M4)", () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+  const implementPayload = async (): Promise<Record<string, unknown>> => {
+    const harness = await createSingleAnswerPlanBroker();
+    const { workspaceId } = await workflowAtVerification(harness);
+    const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    return outboxPayload(harness, String(implementation.id));
+  };
+
+  it("with tx off the IMPLEMENT payload carries no test environment and no test services; with tx on and no dependencies in the environment it is the very same payload, values included", async () => {
+    const off = await implementPayload();
+    expect(off).not.toHaveProperty("testEnvironment");
+    expect(off).not.toHaveProperty("testServices");
+    expect(JSON.stringify(off)).not.toMatch(/dependencies|task\.testServices/u);
+    vi.stubEnv("TEST_ENVIRONMENT_ENABLED", "1");
+    vi.stubEnv("TEST_SERVICES_ENABLED", "1");
+    const on = await implementPayload();
+    // The whole payload, values included: ids, times and digests are made by each run, so they are named; everything else (the prompt, the readiness, the settings, the limits) must be the same.
+    const normalised = (payload: Record<string, unknown>): string => JSON.stringify(payload)
+      .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gu, "<uuid>").replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/gu, "<time>").replace(/[0-9a-f]{64}/gu, "<hex>");
+    expect(normalised(on)).toBe(normalised(off));
+    expect(on).not.toHaveProperty("testEnvironment");
+  });
+});
+
 function outboxPrompt(harness: Harness, operationId: string): string {
   const outbox = harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0];
   return String((outbox?.invocation as { payload: { prompt: string } } | undefined)?.payload.prompt);

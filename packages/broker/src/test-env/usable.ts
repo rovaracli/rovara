@@ -11,9 +11,12 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, mediaTierAllowed, projectPk, testEnvDigest, testEnvProdDenyViolations, type OrgId, type TestEnvironment } from "@agentx/contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import { readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
+import { dependenciesStartableNow } from "./dependency-plan.js";
+import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS, projectUsesDevcontainer } from "./devcontainer-check.js";
 import { testEnvironmentEnabled } from "./switch.js";
+import { testServicesEnabled } from "./test-services-switch.js";
 
-export const UNUSED_REASONS = ["none", "unreadable", "names_production", "recording_not_allowed", "services_not_connected", "accounts_not_connected", "tier_not_connected"] as const;
+export const UNUSED_REASONS = ["none", "unreadable", "names_production", "recording_not_allowed", "services_not_connected", "accounts_not_connected", "tier_not_connected", "dependencies_not_connected", "dependencies_not_available_yet", "dependencies_with_devcontainer"] as const;
 export type UnusedReason = (typeof UNUSED_REASONS)[number];
 
 /** What a person reads when the approved environment was not used (fixed words). */
@@ -25,19 +28,29 @@ export const UNUSED_WORDS: Record<UnusedReason, string> = {
   services_not_connected: "The approved test environment calls services, which tasks do not use yet",
   accounts_not_connected: "The approved test environment uses test accounts, which tasks do not use yet",
   tier_not_connected: "The approved test environment is not a sandbox, which tasks do not use yet",
+  dependencies_not_connected: "The approved test environment lists dependencies, which tasks do not start yet",
+  dependencies_not_available_yet: "The approved test environment asks for a kind of backing that tasks do not start yet",
+  dependencies_with_devcontainer: DEPENDENCIES_WITH_DEVCONTAINER_WORDS,
 };
 
 /** `judged` is the environment the refusal is about, so a pin names the revision that was judged and not one approved a moment later. */
 export type UsableEnvironment = { ok: true; environment: TestEnvironment } | { ok: false; reason: UnusedReason; judged?: TestEnvironment };
 
-/** Whether an approved environment may be carried out by a task now, and if not, why not. Pure. */
-export function environmentUnusedReason(environment: TestEnvironment): UnusedReason | undefined {
+/**
+ * Whether an approved environment may be carried out by a task now, and if not, why not. Pure apart from the install switches in `env`. Dependencies (test services) are carried out only with the switch `tx` on, and
+ * only real software from the catalog (`dependenciesStartableNow`); v1 `services` stay refused as before. Whether the catalog can PIN each one is asked at dispatch (`taskDependencyPlansOf`), which has the catalog.
+ */
+export function environmentUnusedReason(environment: TestEnvironment, env: NodeJS.ProcessEnv = process.env): UnusedReason | undefined {
   const body = environment.environment;
   if (testEnvProdDenyViolations(body).length > 0) return "names_production";
   if ((body.capture.video || body.capture.traces) && !mediaTierAllowed(body.tier)) return "recording_not_allowed";
   if (body.tier !== "sandbox" || body.preview !== undefined || body.shared !== undefined) return "tier_not_connected";
   if (body.services.length > 0) return "services_not_connected";
   if (body.accounts.length > 0) return "accounts_not_connected";
+  if (body.dependencies !== undefined && body.dependencies.length > 0) {
+    if (!testServicesEnabled(env)) return "dependencies_not_connected";
+    if (!dependenciesStartableNow(body.dependencies)) return "dependencies_not_available_yet";
+  }
   return undefined;
 }
 
@@ -54,7 +67,7 @@ export async function usableTestEnvironment(deps: TestEnvDeps, orgId: OrgId, pro
     return { ok: false, reason: "unreadable" };
   }
   if (approved === undefined) return { ok: false, reason: "none" };
-  const reason = environmentUnusedReason(approved);
+  const reason = environmentUnusedReason(approved, env);
   return reason === undefined ? { ok: true, environment: approved } : { ok: false, reason, judged: approved };
 }
 
@@ -99,6 +112,11 @@ export async function readTestEnvPin(deps: Pick<TestEnvDeps, "documentClient" | 
 export async function testEnvironmentForStart(deps: TestEnvDeps, input: { orgId: OrgId; project: string; taskId: string }, env: NodeJS.ProcessEnv = process.env): Promise<{ used?: TestEnvironment; pin?: TransactItem }> {
   if (!testEnvironmentEnabled(env)) return {};
   const found = await usableTestEnvironment(deps, input.orgId, input.project, undefined, env);
+  // Test services: dependencies and a dev container do not combine yet. The environment is then not applied, and the pin says why (a project without dependencies is never asked).
+  if (found.ok && (found.environment.environment.dependencies?.length ?? 0) > 0 && await projectUsesDevcontainer(deps, input.orgId, input.project)) {
+    const pin = testEnvPinItem(deps.tableName, { ...input, nowMs: deps.now(), unused: { revision: found.environment.revision, digest: testEnvDigest(found.environment.environment), reason: "dependencies_with_devcontainer" } });
+    return pin === undefined ? {} : { pin };
+  }
   if (found.ok) return { used: found.environment, pin: testEnvPinItem(deps.tableName, { ...input, nowMs: deps.now(), used: found.environment })! };
   if (found.reason === "none" || found.reason === "unreadable") return {};
   // An environment exists but is not applied: say which, from the revision that was judged, so the evidence names it.

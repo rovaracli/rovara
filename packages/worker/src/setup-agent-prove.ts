@@ -299,7 +299,7 @@ export async function proveAfterAgent(input: {
       // The digest is recomputed from the environment that is run, and an environment that does not read gets no proof.
       const digest = testEnvDigest(input.environment);
       const report = await proveEnvironment(fresh.ports, { proposalDigest: digest, environment: input.environment, signal: input.signal, deadlineMs: input.deadlineMs });
-      return { ok: true, report, proved: testEnvIsProved(report, digest), agentSandboxRemoved };
+      return { ok: true, report, proved: testEnvIsProved(report, digest, input.environment), agentSandboxRemoved };
     } catch {
       return { ok: false, reason: "prove_failed", agentSandboxRemoved };
     }

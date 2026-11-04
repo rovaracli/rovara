@@ -31,6 +31,7 @@ import { setEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment 
 import { shownLine } from "../../org/shown-line.js";
 import { derivedRequestId } from "../../rovara-code/setup-draft.js";
 import { refusedCommand } from "../../test-env/draft.js";
+import { SEED_COMMAND_PROBLEM_WORDS, dependencySeedCommands, seedCommandProblem } from "../../test-env/refused-command.js";
 import { commandsToApply } from "../../test-env/candidate-commands.js";
 import { TEST_ENV_REFUSAL_WORDS, selectionFieldsAreSafe } from "../../test-env/prove-from-setup-check.js";
 import { getSignIn } from "./authentication.js";
@@ -96,6 +97,11 @@ export function refuseUnsafeEdit(body: TestEnvironmentBody): void {
   if (!selectionFieldsAreSafe(body)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.selection);
   const commands = body.repos.flatMap((repo) => [...repo.setupCommands, ...repo.checks.map((check) => check.command)]);
   if (commands.some(refusedCommand)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.remoteCode);
+  // A dependency's seed commands run with its network access: the same refusals, plus the env and length rules (`seedCommandProblem`).
+  for (const command of dependencySeedCommands(body.dependencies)) {
+    const problem = seedCommandProblem(command);
+    if (problem !== undefined) throw agentXError("CONFIG_INVALID", `dependencies: ${SEED_COMMAND_PROBLEM_WORDS[problem]}`);
+  }
 }
 
 /** Stores a maintainer's edited body as a proposal and makes it the one the wizard shows. The body is re-parsed here: a request body is never trusted to be what the schema already saw. */

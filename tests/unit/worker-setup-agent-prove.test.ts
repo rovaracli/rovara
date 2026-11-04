@@ -248,7 +248,7 @@ describe("the proof in a fresh sandbox", () => {
     expect(result.proved).toBe(true);
     expect(result.agentSandboxRemoved).toBe(true);
     expect(result.report.proposalDigest).toBe(testEnvDigest(draftOf().environment));
-    expect(testEnvIsProved(result.report, testEnvDigest(draftOf().environment))).toBe(true);
+    expect(testEnvIsProved(result.report, testEnvDigest(draftOf().environment), draftOf().environment)).toBe(true);
   });
   it("never touches the agent's sandbox beyond its identity and its removal (any other use throws)", async () => {
     const log: string[] = [];
