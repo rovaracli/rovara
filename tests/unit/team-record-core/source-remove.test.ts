@@ -870,3 +870,24 @@ describe("T8: the editors' view lists a removed source while its data is still b
     expect(queue(h)[0]).toMatchObject({ project: "web", scope: GITHUB_SCOPE, cause: "excluded" });
   });
 });
+
+describe("T8 round 1: a full delete queue is not a removal", () => {
+  const fill = async (h: Harness, count: number) => {
+    for (let index = 0; index < count; index += 1) await putScopeWork(h.w.table, ORG_A, { type: "tombstone", system: "github", cause: "excluded", hidePending: true, hidden: 0, childPending: true, requestId: randomUUID(), scope: `github:repo/${String(5000 + index)}`, at: new Date(Date.parse(AT) + index).toISOString(), queuedAtSeconds: 1 + index });
+  };
+  it("with 500 items queued an add answers its own fixed code and sentence, never 'just removed'", async () => {
+    const h = harness();
+    await fill(h, 500);
+    const reply = await post(h, WHO.owner, add());
+    expect(reply).toEqual({ status: 409, body: { code: "SOURCE_REMOVAL_BUSY", message: "Rovara is still deleting data from recently removed sources. Try again in an hour." } });
+    expect(JSON.stringify(reply.body)).not.toContain("just removed");
+    expect(sourceRows(h)).toHaveLength(0);
+  });
+  it("with 498 other items queued the add goes through; once the place itself is removed (499 queued) it still says 'just removed'", async () => {
+    const h = harness();
+    await fill(h, 498);
+    expect(await post(h, WHO.owner, add())).toMatchObject({ status: 200 });
+    await post(h, WHO.owner, remove(1));
+    expect(await post(h, WHO.owner, add())).toMatchObject({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING" } });
+  });
+});

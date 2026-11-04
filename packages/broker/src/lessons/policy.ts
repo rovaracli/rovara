@@ -132,6 +132,20 @@ export async function resolveLearning(reader: LearningSettingsReader, workspaceI
   return { mode: mode.data, approval: approval.data, requiredGroups: [...new Set([floor.data.requiredGroup, projectApproval.data.requiredGroup].filter((g): g is string => g !== undefined))], expiryDays: days };
 }
 
+/**
+ * Why `resolveLearning` said Off, for the one read that tells the person: "off" (the project's own choice, or the company's lock agreeing), "locked" (the company's lock forces Off while the project's choice is on),
+ * or "unreadable" (the setting could not be read or does not parse: turning learning on would change nothing, so the person is told to retry). Only asked after `resolveLearning` already answered Off.
+ */
+export async function whyLearningOff(reader: LearningSettingsReader, workspaceId: string, project: string): Promise<"off" | "locked" | "unreadable"> {
+  let settings: LearningSettings;
+  try { settings = (await reader.read(workspaceId, project)) ?? {}; } catch { return "unreadable"; }
+  const own = LearningModeSchema.safeParse(settings.mode ?? DEFAULT_LEARNING_MODE);
+  const lock = settings.companyLock === undefined ? undefined : LearningModeSchema.safeParse(settings.companyLock);
+  if (!own.success || (lock !== undefined && !lock.success)) return "unreadable";
+  if (lock?.success === true && lock.data === "Off" && own.data !== "Off") return "locked";
+  return own.data === "Off" ? "off" : "unreadable";
+}
+
 const SAFE_FACT = /^[A-Za-z0-9:_\-.#@/]{1,128}$/u;
 /** Writes an audit event whose facts hold ids, counts and fixed codes only (the v1.2 rule): a string value that is not id-shaped is dropped. */
 function safeFacts(event: LessonAuditEvent): LessonAuditEvent {

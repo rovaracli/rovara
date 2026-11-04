@@ -107,9 +107,12 @@ const WORDS = {
 } as const;
 /** An add is refused while the deletion of the same place is still queued: answered with its own code (route-local, like the two above). */
 class RemovalRunning extends Error {}
+/** The delete queue is too long to tell whether this place is in it (500 or more items): every add waits, with its own code, so the person is not told a source "was just removed" that never was. */
+class RemovalBusy extends Error {}
 /** A place the edition's rules never allow (Slack Connect; a DM in Public): answered 422 with its own route-local code, like the two above. */
 class NotAllowed extends Error {}
 const removalRunningReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This source was just removed and its stored data is still being deleted. You can add it again in about an hour." } });
+const removalBusyReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_BUSY", message: "Rovara is still deleting data from recently removed sources. Try again in an hour." } });
 const notAllowedReply = (error: NotAllowed): RecordRouteReply => ({ status: 422, body: { code: "SOURCE_NOT_ALLOWED", message: error.message } });
 const invalid = (message: string = WORDS.invalid) => agentXError("CONFIG_INVALID", message);
 const stale = (message: string = WORDS.stale) => agentXError("CHANGE_STALE", message);
@@ -172,6 +175,7 @@ export async function handleSourceWrite(deps: RecordQueryDependencies, request: 
     }
   } catch (error) {
     if (error instanceof RemovalRunning) return removalRunningReply();
+    if (error instanceof RemovalBusy) return removalBusyReply();
     if (error instanceof NotAllowed) return notAllowedReply(error);
     throw error;
   }
@@ -420,7 +424,7 @@ const QUEUE_READ = 500;
 async function refuseWhileRemoving(run: Run, scope: string): Promise<void> {
   let queue: Awaited<ReturnType<typeof listScopeWork>>;
   try { queue = await listScopeWork(run.deps.table, run.orgId, QUEUE_READ); } catch { throw unavailable(); }
-  if (queue.length >= QUEUE_READ) throw new RemovalRunning();
+  if (queue.length >= QUEUE_READ) throw new RemovalBusy();
   const above = new Set(scopeAndAncestors(scope));
   const busy = queue.some((work) => work.type === "tombstone" && work.textOnly !== true && work.scope !== undefined && (work.cause === "excluded" || work.cause === "source_deleted")
     && (above.has(work.scope) || work.scope.startsWith(`${scope}/`)));

@@ -1,5 +1,6 @@
-import { useState } from "react";
-import type { SourcesAdminViewData } from "../../../api/record-sources.js";
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { sourcesAdminKey, type SourcesAdminViewData } from "../../../api/record-sources.js";
 import { Button } from "../../../design/Button.js";
 import { Select } from "../../../design/Select.js";
 import { Switch } from "../../../design/Switch.js";
@@ -14,13 +15,19 @@ const SOURCE_OF: Readonly<Record<Kind, string>> = { repository: "github", rovara
 const KIND_WORDS: Readonly<Record<Kind, string>> = { repository: T.SRC_KIND_REPO, rovara: T.SRC_KIND_ROVARA, slack: T.SRC_KIND_SLACK, linear: T.SRC_KIND_LINEAR, jira: T.SRC_KIND_JIRA };
 const PLACE_WORDS: Readonly<Record<"slack" | "linear" | "jira", { label: string; hint: string }>> = { slack: { label: T.SRC_PLACE_SLACK, hint: T.SRC_HINT_SLACK }, linear: { label: T.SRC_PLACE_LINEAR, hint: T.SRC_HINT_LINEAR }, jira: { label: T.SRC_PLACE_JIRA, hint: T.SRC_HINT_JIRA } };
 
-/** True while the place of a removed source is still being cleared (the editors' view lists it). */
-const isClearing = (view: SourcesAdminViewData, source: string, scope: string): boolean => (view.clearing ?? []).some(place => place.source === source && place.scope === scope);
+/** The place and the places above it, itself first (`slack:T1/C9` -> `slack:T1/C9`, `slack:T1`): the same rule as the server's `scopeAndAncestors`, kept here so the screen does not pull the keys module into the web bundle. */
+const withAncestors = (scope: string): string[] => { const out = [scope];for (let at = scope.lastIndexOf("/"); at > 0; at = scope.lastIndexOf("/")) { scope = scope.slice(0, at);out.push(scope); } return out; };
+
+/** True while the place, or one above or below it, of a removed source is still being cleared: what the server refuses (`refuseWhileRemoving`), so the form never disagrees with it. */
+const isClearing = (view: SourcesAdminViewData, source: string, scope: string): boolean => {
+ const above = new Set(withAncestors(scope));
+ return (view.clearing ?? []).some(place => place.source === source && (above.has(place.scope) || place.scope.startsWith(scope + "/")));
+};
 
 /** The kinds this person can add now: only what the server offers a retention for, a repository only from the project's own list (minus the ones already added), the Rovara row once. */
 function addableKinds(view: SourcesAdminViewData): Kind[] {
  const have = new Set(view.sources.map(row => row.kind + "|" + row.scope)), kinds: Kind[] = [];
- if (offeredFor(view.offered, "github").length > 0 && (view.repositories ?? []).some(repository => !have.has("github|" + repository.scope) && !isClearing(view, "github", repository.scope))) kinds.push("repository");
+ if (offeredFor(view.offered, "github").length > 0 && (view.repositories ?? []).some(repository => !have.has("github|" + repository.scope))) kinds.push("repository");
  if (offeredFor(view.offered, "rovara").length > 0 && !view.sources.some(row => row.kind === "rovara")) kinds.push("rovara");
  for (const kind of ["slack", "linear", "jira"] as const) if (offeredFor(view.offered, kind).length > 0) kinds.push(kind);
  return kinds;
@@ -28,14 +35,17 @@ function addableKinds(view: SourcesAdminViewData): Kind[] {
 
 /** Add a source: pick the kind, then the place, how long to keep it and who sees it. The server checks the place (and classifies a Slack channel); this never says what a channel is. */
 export function SourceAdd({ project, view, notify }: { project: string; view: SourcesAdminViewData; notify: (text: string) => void }) {
- const writer = useSourceWrite(project), kinds = addableKinds(view), [formKey, setFormKey] = useState(0);
+ const writer = useSourceWrite(project), query = useQueryClient(), kinds = addableKinds(view), [formKey, setFormKey] = useState(0);
  const [kind, setKind] = useState<string>(""), [place, setPlace] = useState(""), [retention, setRetention] = useState(""), [audience, setAudience] = useState<string>("maintainers"), [enabled, setEnabled] = useState(true);
- if (kinds.length === 0) return <section aria-label={T.SRC_ADD} className="rv-lessons-section"><h3>{T.SRC_ADD}</h3><p className="rv-muted">{T.SRC_ADD_NONE}</p></section>;
  const chosen = kinds.find(candidate => candidate === kind), choices = chosen === undefined ? [] : offeredFor(view.offered, SOURCE_OF[chosen]);
- const repositories = (view.repositories ?? []).filter(repository => !view.sources.some(row => row.kind === "github" && row.scope === repository.scope) && !isClearing(view, "github", repository.scope));
+ const repositories = (view.repositories ?? []).filter(repository => !view.sources.some(row => row.kind === "github" && row.scope === repository.scope));
  const scope = chosen === "rovara" ? "rovara:project/" + project : place.trim();
  // A place that was just removed is refused up front, in the server's own words (it refuses too).
  const clearingNow = chosen !== undefined && isClearing(view, SOURCE_OF[chosen], scope);
+ // The worker may have finished since the view was read: when the person picks or types a place that matches a clearing row, read the view once more (once per place, not on every render).
+ const matchedPlace = chosen !== undefined && clearingNow ? SOURCE_OF[chosen] + "|" + scope : "";
+ useEffect(() => { if (matchedPlace !== "") void query.invalidateQueries({ queryKey: sourcesAdminKey(project) }); }, [matchedPlace, project, query]);
+ if (kinds.length === 0) return <section aria-label={T.SRC_ADD} className="rv-lessons-section"><h3>{T.SRC_ADD}</h3><p className="rv-muted">{T.SRC_ADD_NONE}</p></section>;
  const ready = chosen !== undefined && retention !== "" && choices.includes(retention) && scope !== "" && !clearingNow;
  const add = async () => {
   if (chosen === undefined) return;
@@ -47,7 +57,7 @@ export function SourceAdd({ project, view, notify }: { project: string; view: So
  return <section aria-label={T.SRC_ADD} className="rv-lessons-section"><h3>{T.SRC_ADD}</h3>
   <fieldset key={formKey} className="rv-lessons-edit" disabled={writer.busy}><legend>{T.SRC_ADD}</legend>
    <Select label={T.SRC_ADD_KIND} value={kind} placeholder={T.SRC_CHOOSE} options={kinds.map(candidate => ({ value: candidate, label: KIND_WORDS[candidate] }))} onValueChange={next => { setKind(next);setPlace("");setRetention(""); }} />
-   {chosen === "repository" && <Select label={T.SRC_REPO} value={place} placeholder={T.SRC_CHOOSE} options={repositories.map(repository => ({ value: repository.scope, label: visibleText(repository.name) }))} onValueChange={setPlace} />}
+   {chosen === "repository" && <Select label={T.SRC_REPO} value={place} placeholder={T.SRC_CHOOSE} options={repositories.map(repository => isClearing(view, "github", repository.scope) ? { value: repository.scope, label: visibleText(repository.name) + " " + T.SRC_BEING_REMOVED, disabled: true } : { value: repository.scope, label: visibleText(repository.name) })} onValueChange={setPlace} />}
    {(chosen === "slack" || chosen === "linear" || chosen === "jira") && <TextField label={PLACE_WORDS[chosen].label} hint={PLACE_WORDS[chosen].hint} value={place} maxLength={300} autoComplete="off" onChange={event => { setPlace(event.target.value); }} />}
    {clearingNow && <p role="alert">{T.SRC_ERR_REMOVAL}</p>}
    {chosen !== undefined && <>

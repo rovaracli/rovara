@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // T5: the Sources tab for a person who may edit sources: add, change, remove, and approve or reject a waiting change. The server decides every rule; these tests hold what the screen shows and sends.
-import { describe, expect, it, vi } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { SourceWriteBodySchema } from "@agentx/contracts/web";
 import { ok } from "./support/lessons-fixture.js";
 import { adminRow, adminView, flat, pendingChange, wrapped } from "./support/sources-fixture.js";
@@ -316,14 +316,23 @@ describe("T8: a source that was removed and is still being cleared", () => {
   expect(screen.queryByRole("list", { name: "Being removed" })).toBeNull();
   expect(document.body.textContent).not.toContain("Removing");
  });
- it("does not offer a repository that is still clearing, and offers no repository kind when every one is", async () => {
+ it("keeps a repository that is still clearing in the picker as a disabled option labelled (being removed), so the cause stays next to the choice", async () => {
   await openEditor({ view: adminView({ sources: [], clearing: [clearing()] }) });
   pick("What to add", "repository");
-  expect(values(optionsOf("Repository", screen.getByRole("region", { name: "Add a source" })))).toEqual(["github:repo/12"]);
+  const options = [...optionsOf("Repository", screen.getByRole("region", { name: "Add a source" }))];
+  const clearingOption = options.find(option => option.value === "github:repo/9")!;
+  expect(clearingOption.textContent).toBe("payments-api (being removed)");
+  expect(clearingOption.disabled).toBe(true);
+  const other = options.find(option => option.value === "github:repo/12")!;
+  expect(other.textContent).toBe("web-app");
+  expect(other.disabled).toBe(false);
  });
- it("offers no repository kind when every repository is still clearing", async () => {
+ it("still offers the repository kind when every repository is clearing, all of them disabled", async () => {
   await openEditor({ view: adminView({ sources: [], clearing: [clearing(), clearing({ scope: "github:repo/12" })] }) });
-  expect(values(optionsOf("What to add"))).not.toContain("repository");
+  expect(values(optionsOf("What to add"))).toContain("repository");
+  pick("What to add", "repository");
+  const options = [...optionsOf("Repository", screen.getByRole("region", { name: "Add a source" }))].filter(option => option.value !== "");
+  expect(options.map(option => option.disabled)).toEqual([true, true]);
  });
  it("refuses a typed place that is still clearing up front, with the same sentence, and sends nothing", async () => {
   const f = await openEditor({ view: adminView({ sources: [], clearing: [clearing({ source: "slack", scope: "slack:T1/C9" })] }) });
@@ -349,5 +358,107 @@ describe("T8: nothing in the source error sentences says place or scope", () => 
   const sentences = Object.entries(T).filter(([key]) => key.startsWith("SRC_ERR_")).map(([, text]) => text);
   expect(sentences.length).toBeGreaterThanOrEqual(10);
   for (const sentence of sentences) expect(sentence, sentence).not.toMatch(/\b(place|places|scope|scopes)\b/iu);
+ });
+});
+
+describe("T8 round 1: refreshing, matching the server's rule, and the other refusals", () => {
+ const refusalFor = (typed: string, clearingScope = "slack:T1/C9", source = "slack") => async () => {
+  const f = await openEditor({ view: adminView({ sources: [], clearing: [clearing({ source, scope: clearingScope })] }) });
+  const form = screen.getByRole("region", { name: "Add a source" });
+  pick("What to add", "slack");
+  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: typed } });
+  pick("How long Rovara keeps it", "B", form);
+  return { f, form, send: within(form).getByRole<HTMLButtonElement>("button", { name: "Add source" }) };
+ };
+ it("refuses a place above or below a clearing place too, as the server does, and not an unrelated one", async () => {
+  for (const typed of ["slack:T1", "slack:T1/C9/extra", "slack:T1/C9"]) {
+   const { form, send, f } = await refusalFor(typed)();
+   expect(within(form).getByText(/was just removed/u), typed).toBeTruthy();
+   expect(send.disabled, typed).toBe(true);
+   fireEvent.click(send);
+   expect(f.posts, typed).toHaveLength(0);
+   cleanup();
+  }
+  for (const typed of ["slack:T1/C90", "slack:T2/C9", "slack:T11"]) {
+   const { form, send } = await refusalFor(typed)();
+   expect(within(form).queryByText(/was just removed/u), typed).toBeNull();
+   expect(send.disabled, typed).toBe(false);
+   cleanup();
+  }
+ });
+ it("a clearing place of another kind does not block the same text", async () => {
+  const { form, send } = await refusalFor("slack:T1/C9", "slack:T1/C9", "linear")();
+  expect(within(form).queryByText(/was just removed/u)).toBeNull();
+  expect(send.disabled).toBe(false);
+ });
+ it("typing a place that matches a clearing row reads the editors' view once more, not again while it stays the same place, and again for another matching place", async () => {
+  const f = await openEditor({ view: adminView({ sources: [], clearing: [clearing({ source: "slack", scope: "slack:T1/C9" })] }) });
+  const before = f.recordReads().length;
+  const form = screen.getByRole("region", { name: "Add a source" });
+  const type = (value: string) => fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value } });
+  pick("What to add", "slack");
+  type("slack:T1/C8"); // no match: nothing is read
+  expect(f.recordReads().length).toBe(before);
+  type("slack:T1/C9");
+  await waitFor(() => { expect(f.recordReads().length).toBe(before + 1); });
+  type("slack:T1/C9 "); // the same place (trimmed): not read again
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(f.recordReads().length).toBe(before + 1);
+  // The worker finished meanwhile: the next read has no clearing row and the refusal goes.
+  f.state.view = adminView({ sources: [] });
+  type("slack:T1");
+  await waitFor(() => { expect(f.recordReads().length).toBe(before + 2); });
+  await waitFor(() => { expect(within(form).queryByText(/was just removed/u)).toBeNull(); });
+ });
+ it("says the queue is busy in its own sentence for SOURCE_REMOVAL_BUSY, never 'just removed'", async () => {
+  await openEditor({ write: () => flat("SOURCE_REMOVAL_BUSY", "server words that must not show", 409) });
+  const form = screen.getByRole("region", { name: "Add a source" });
+  pick("What to add", "repository");
+  pick("Repository", "github:repo/12");
+  pick("How long Rovara keeps it", "B", form);
+  fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
+  expect(await within(form).findByText("Rovara is still deleting data from recently removed sources. Try again in an hour.")).toBeTruthy();
+  expect(document.body.textContent).not.toMatch(/just removed|server words/u);
+ });
+});
+
+describe("T8 round 1: the editors' view is read again every minute while something is clearing", () => {
+ const reads = (f: Awaited<ReturnType<typeof openEditor>>) => f.recordReads().length;
+ const tick = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+ const hidden = (value: boolean) => { Object.defineProperty(document, "visibilityState", { configurable: true, get: () => value ? "hidden" : "visible" });document.dispatchEvent(new Event("visibilitychange")); };
+ afterEach(() => { vi.useRealTimers();hidden(false); });
+
+ it("polls every 60 s while clearing is non-empty, stops once it is empty, and does not poll a view that never had one", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+  const f = await openEditor({ view: adminView({ sources: [], clearing: [clearing()] }) });
+  const start = reads(f);
+  await tick(59_000);
+  expect(reads(f)).toBe(start);
+  await tick(2_000);
+  expect(reads(f)).toBe(start + 1);
+  await tick(60_000);
+  expect(reads(f)).toBe(start + 2);
+  // The worker finished: the next poll sees no clearing row and the polling stops.
+  f.state.view = adminView({ sources: [] });
+  await tick(60_000);
+  expect(reads(f)).toBe(start + 3);
+  expect(screen.queryByRole("list", { name: "Being removed" })).toBeNull();
+  await tick(180_000);
+  expect(reads(f)).toBe(start + 3);
+ });
+ it("never polls a view with nothing clearing", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+  const f = await openEditor();
+  const start = reads(f);
+  await tick(300_000);
+  expect(reads(f)).toBe(start);
+ });
+ it("does not poll while the tab is hidden", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+  const f = await openEditor({ view: adminView({ sources: [], clearing: [clearing()] }) });
+  hidden(true);
+  const start = reads(f);
+  await tick(300_000);
+  expect(reads(f)).toBe(start);
  });
 });

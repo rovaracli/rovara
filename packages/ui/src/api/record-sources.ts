@@ -12,13 +12,16 @@ import { lessonsKey } from "./lessons.js";
 export type SourcesAdminViewData = ReturnType<typeof SourcesAdminViewReaderSchema.parse>;
 export type SourceWriteResult = ReturnType<typeof SourceWriteReplyReaderSchema.parse>;
 const path = (project: string) => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(project)) + "/record/sources";
+const CLEARING_POLL_MS = 60_000;
 export const sourcesAdminKey = (project: string) => [...lessonsKey(project), "sources-admin"] as const;
 export const sourcesReadKey = (project: string) => [...lessonsKey(project), "sources"] as const;
 
 /** The editors' view. Asked only for a person the project page says is a maintainer; a refusal or a reply of the members' shape leaves the read-only tab as it is. */
 export function useSourcesAdmin(project: string, enabled: boolean) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
- return useQuery({ queryKey: sourcesAdminKey(project), enabled, retry: false, queryFn: () => api.get(path(project), SourcesAdminViewReaderSchema, undefined, { retry: "never" }) });
+ return useQuery({ queryKey: sourcesAdminKey(project), enabled, retry: false,
+  // While a removed source is still being cleared the screen says so and blocks adding it again: read again every minute so that ends without a reload. Nothing else polls, and a hidden tab pauses (Query's default).
+  refetchInterval: query => (query.state.data?.clearing?.length ?? 0) > 0 ? CLEARING_POLL_MS : false, queryFn: () => api.get(path(project), SourcesAdminViewReaderSchema, undefined, { retry: "never" }) });
 }
 
 const CODE = /^[A-Z][A-Z0-9_]{0,79}$/;

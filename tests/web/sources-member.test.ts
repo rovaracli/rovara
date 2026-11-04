@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // T5: a member keeps the read-only Sources tab, and the editing chunk is never loaded for them.
 import { describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { refusal, source, sources } from "./support/lessons-fixture.js";
 import { adminView, flat } from "./support/sources-fixture.js";
 import { openSources } from "./support/sources-render.js";
@@ -79,4 +79,22 @@ describe("T8: learning is off for the project", () => {
   expect(screen.queryByText(/Learning is off/u)).toBeNull();
   expect(f.recordCalls()).toHaveLength(0);
  });
+ it("a company lock gives its own line, with the existing company wording", async () => {
+  const f = openSources({ lessonsSources: refusal("LEARNING_LOCKED", "Learning is off for this project because of a company setting.", 404) });
+  expect(await screen.findByText("Learning is off for this project. Your company set this to be stricter than the project's own choice.")).toBeTruthy();
+  expect(screen.queryByText(/Turn learning on/u)).toBeNull();
+  expect(screen.queryByText(/isn't set up/u)).toBeNull();
+  expect(f.recordCalls()).toHaveLength(0);
+ });
+ it("a setting that could not be read says so and offers Retry, which asks again (it is not 'learning is off')", async () => {
+  const f = openSources({ lessonsSources: refusal("RUNTIME_UNAVAILABLE", "private upstream detail", 503) });
+  expect(await screen.findByText("Couldn't load the sources. Try again.", {}, { timeout: 8000 })).toBeTruthy();
+  expect(screen.queryByText(/Learning is off/u)).toBeNull();
+  expect(screen.queryByText(/private upstream detail/u)).toBeNull();
+  const asked = () => f.request.mock.calls.map(([request]) => request).filter(request => request.path.split("?")[0]!.endsWith("/lessons/sources")).length;
+  const before = asked();
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  await waitFor(() => { expect(asked()).toBeGreaterThan(before); }, { timeout: 8000 });
+  expect(f.recordCalls()).toHaveLength(0);
+ }, 20_000);
 });
