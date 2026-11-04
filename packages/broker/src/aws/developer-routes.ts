@@ -191,6 +191,7 @@ import { routeJiraOrgAdmin } from "./developer-routes/jira-org-admin.js";
 import { SETUP_RECIPES_BROWSER_MESSAGE, isSetupRecipesPath, routeSetupRecipes } from "./developer-routes/setup-recipes.js";
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
 import { SAVED_ENV_IMAGE_BROWSER_MESSAGE, isSavedEnvImagePath, routeSavedEnvImage } from "./developer-routes/saved-env-image.js";
+import { routeFixtures } from "./developer-routes/fixtures.js";
 import { savedEnvEnabled } from "../test-env/saved-env-switch.js";
 import { nightlyHooks } from "../test-env/nightly-wiring.js";
 import { StatusReply } from "./status-reply.js";
@@ -557,6 +558,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (setupRecipesReply !== undefined) return setupRecipesReply;
   const savedEnvImageReply = await routeSavedEnvImage(deps, caller, request, url);
   if (savedEnvImageReply !== undefined) return savedEnvImageReply;
+  const fixturesReply = await routeFixtures(deps, caller, request, url);
+  if (fixturesReply !== undefined) return fixturesReply;
   // SR-1: the task owner acknowledges that an `on` second review did not run (the merge gate). Owner only, in a browser session, audited.
   const secondReviewAck = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/second-review-acknowledge$/iu.exec(url.pathname);
   if (secondReviewAck !== null && request.method === "POST") return new StatusReply(200, await acknowledgeSecondReview(developerTaskRouteDependencies(deps, caller), caller, secondReviewAck[1]!, jsonBody(request)));

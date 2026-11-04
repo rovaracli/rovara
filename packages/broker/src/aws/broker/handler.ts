@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { noteInvokedFunctionArn } from "../../test-env/lambda-identity.js";
 import { EVIDENCE_RESUME_BUDGET_MS, evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
 import { runCompanyDomainRecheck } from "../../org/company-domains/recheck.js";
@@ -164,6 +165,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
           // Test services (slice 1): the signed service image catalog the setup draft's dependency candidates are proposed from (only with the switch `tx` on).
           ...(dependencies.serviceCatalog === undefined ? {} : { serviceCatalog: dependencies.serviceCatalog }),
+          // Test services, slice 3: the fixture store for the hand-written answer set routes (only with `tx` on and the install's fixture key).
+          ...fixtureStoreForRoutes(dependencies),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           createProject: (caller, input) => createCloudProject(dependencies, caller, input),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
