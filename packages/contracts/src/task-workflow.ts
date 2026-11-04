@@ -17,6 +17,10 @@ export const ActorIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const WORKFLOW_PLAN_MAX_BYTES = 32_768;
 
 /** Shown to the owner when AgentX gave up opening the draft pull request on its own; Retry opening the pull request starts it. */
+/** S2: every reason a step was not started because its owner may no longer have work started for them begins with these words (the broker's messages, and the one place the schema recognises them). */
+export const WORKFLOW_NOT_RUN_PREFIX = "Rovara didn't start";
+export const isStepNotRunReason = (reason: string | undefined): boolean => reason !== undefined && reason.startsWith(WORKFLOW_NOT_RUN_PREFIX);
+
 export const WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE = "AgentX couldn't open the pull request automatically. Use Retry opening the pull request to try again.";
 
 export const WORKFLOW_BLOCK_REASONS = {
@@ -1007,7 +1011,7 @@ export const WorkflowSnapshotShapeSchema = z.object({
   // Ready, or blocked only because AgentX gave up opening the draft pull request on its own (the owner retries it), or
   // running only while a fix is pushed to the pull requests already open.
   if (workflow.stage === "PULL_REQUEST" && workflow.state !== "READY"
-    && !(workflow.state === "BLOCKED" && workflow.blockReason === WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE)
+    && !(workflow.state === "BLOCKED" && (workflow.blockReason === WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE || isStepNotRunReason(workflow.blockReason)))
     && !(workflow.state === "RUNNING" && (workflow.pullRequests ?? []).length > 0)) {
     context.addIssue({ code: "custom", path: ["state"], message: "pull request stage must be ready" });
   }
@@ -1015,7 +1019,7 @@ export const WorkflowSnapshotShapeSchema = z.object({
     const pullRequests = workflow.pullRequests ?? [];
     const required = pullRequests.filter((pullRequest) => pullRequest.required);
     // A pull request holds earlier reviewed code only after pushing its fix failed (or was stopped because the autonomy was lowered), or when it merged before the fix was pushed.
-    const earlierAllowed = workflow.stage === "MERGED" || (workflow.state === "BLOCKED" && (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed || workflow.blockReason === FEEDBACK_STOPPED_REASON));
+    const earlierAllowed = workflow.stage === "MERGED" || (workflow.state === "BLOCKED" && (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed || workflow.blockReason === FEEDBACK_STOPPED_REASON || isStepNotRunReason(workflow.blockReason)));
     if (required.length === 0 || workflow.candidate === undefined
       || (!earlierAllowed && pullRequests.some((pullRequest) => pullRequest.candidateDigest !== workflow.candidate?.digest))
       || workflow.candidate.repositories.some((repository) => !required.some((pullRequest) => pullRequest.repositoryId === repository.repositoryId))) {

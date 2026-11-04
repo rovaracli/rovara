@@ -393,6 +393,18 @@ describe("Revise the plan, as every other planning start behaves", () => {
     expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
   });
 
+  it("an owner who lost the project's access is refused (the send-back's project access rule), nothing is planned, and the task and the message do not change", async () => {
+    const s = await codingStoppedForLiveChange();
+    s.harness.channelMembers.mockImplementation(async () => ({ ok: true, memberOf: [] }));
+    const before = structuredClone(taskRow(s.harness, s.taskId));
+    const messageBefore = structuredClone(s.messageRow());
+    const refused = await s.press(MAYA);
+    expect(refused.body).toMatchObject({ error: { code: "PROJECT_ACCESS_DENIED" } });
+    expect(taskRow(s.harness, s.taskId)).toEqual(before);
+    expect(s.messageRow()).toEqual(messageBefore);
+    expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
+  });
+
   it("an archived project takes no new work: the Slack press is refused too, and no planning run starts", async () => {
     const s = await codingStoppedForLiveChange({ slack: true });
     archive(s);
@@ -498,11 +510,13 @@ describe("Revise the plan starts its planning run only through the shared guarde
     const base = { authorize: async () => ({ task, actorId: owner, authority: { actorId: owner, ownerIds: [owner] } }), requireMayGoOn: async () => undefined, capWindow: async () => ({ clause: "", values: {} }),
       actionableWorkspace: async () => undefined, retiredClaimIds: async () => [], acceptItems: () => [], refuse: async () => { throw new Error("refused"); }, view: async () => ({ task: {} as never }),
       structuredPrompt: () => "STRUCTURED", markdownBlock: (m: string) => m };
-    const deps = { documentClient: s.harness.db, tableName: "state", orgId: TEST_ORG, actions, now: () => Date.now() } as never;
+    const deps = { documentClient: s.harness.db, tableName: "state", orgId: TEST_ORG, actions, now: () => Date.now(),
+      checkAccess: async () => ({ revision: 1, policy: {}, access: "granted", channelIds: [], role: "contributor" }) } as never;
+    const caller = { developerId: owner, orgId: TEST_ORG, orgRole: "member" } as never;
     const request = { requestId: randomUUID(), expectedRevision: workflowOf(s.harness, s.taskId).revision };
     const fed = { clause: ", threadNotesFedThrough = :fedThrough", condition: " AND threadNoteCount = :noteCount", values: { ":fedThrough": "T", ":noteCount": 3 } };
     const guarded = { ...base, withNotes: async (_d: unknown, _t: unknown, _r: string, accept: (current: unknown, notes: unknown) => Promise<unknown>) => { order.push("guard"); return accept(task, { suffix: "\n\nNOTES-SUFFIX", fed }); } } as unknown as RevisePlanHost;
-    await reviseTaskPlan(deps, { developerId: owner } as never, s.taskId, request, guarded);
+    await reviseTaskPlan(deps, caller, s.taskId, request, guarded);
     expect(order).toEqual(["guard", "accept"]);
     expect(prompt).toContain("NOTES-SUFFIX");
     expect(String(update?.["UpdateExpression"])).toContain("threadNotesFedThrough = :fedThrough");
@@ -511,7 +525,7 @@ describe("Revise the plan starts its planning run only through the shared guarde
     order.length = 0;
     s.harness.db.set({ ...s.messageRow(), delivery: { state: "delivered", at: "2026-10-30T09:00:00.000Z", reason: LIVE_STEER_REAPPROVAL_REASON } });
     const refusing = { ...base, withNotes: async () => { order.push("guard"); throw new Error("TASK_ACCESS_DENIED"); } } as unknown as RevisePlanHost;
-    await expect(reviseTaskPlan(deps, { developerId: owner } as never, s.taskId, { ...request, requestId: randomUUID() }, refusing)).rejects.toThrow();
+    await expect(reviseTaskPlan(deps, caller, s.taskId, { ...request, requestId: randomUUID() }, refusing)).rejects.toThrow();
     expect(order).toEqual(["guard"]);
   });
 });

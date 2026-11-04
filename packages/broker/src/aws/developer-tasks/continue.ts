@@ -56,6 +56,7 @@ import { taskRecipeKey } from "../../developer/task-records.js";
 import { taskStartAgentAuthorityChecks } from "../../org/task-start-agent-authority.js";
 import { taskStartProjectAuthorityChecks } from "../../org/task-start-project-authority.js";
 import { usdToWholeMicrodollars } from "../../org/budget-amount.js";
+import { requireProjectSendBackRole } from "../../developer/task-access.js";
 
 export async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "continue");
@@ -70,6 +71,8 @@ export async function continueTask(deps: DeveloperTaskRouteDependencies, caller:
   if (task.workflow !== undefined && openQuestions(task.workflow).length > 0) throw agentXError("WORKSPACE_BUSY", waitingForAnswersTurnRefusal(task.sessionId));
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
   if (task.agent !== undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) throw agentXError("WORKSPACE_BUSY", AGENT_RUN_TURN_REFUSAL);
+  // S2 (any path): another instruction to the agent is work started for this person: it meets the send-back's project access rule and the archive check.
+  await requireProjectSendBackRole(deps, task, caller);
   await requireMayGoOn(deps, caller, task);
   // A plain task whose dispatch was parked (its creator was a project viewer) comes back by continuing it now that they may work again.
   const resumed = await resumeTaskDispatch(deps, {

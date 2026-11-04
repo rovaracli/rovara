@@ -86,12 +86,26 @@ async function world() {
     h.db.set((workflowDispatchItem("state", taskId, decided.revision, "IMPLEMENT", decided.candidate!.digest, NOW) as { Put: { Item: Record<string, unknown> } }).Put.Item);
     return { taskId, workspaceId, source: "feedback" as const };
   }
+  /** A task put where its other queued steps wait for their dispatch row: planning ready, checks waiting, reviews waiting, or the pull request ready. */
+  async function stepRound(kind: "PLAN" | "CHECKS" | "REVIEW" | "PUBLISH") {
+    const { taskId, workspaceId } = await startTask();
+    const base = { ...meta(taskId).workflow, revision: 30, candidate, reviewBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }], blockReason: undefined };
+    const verification = { candidateDigest: candidate.digest, producer: "broker", environmentId: "test", recordedAt: NOW, results: [], reviewOnly: true };
+    const reviews = ["CRITIC", "SECURITY"].map((role) => ({ operationId: randomUUID(), candidateDigest: candidate.digest, role, provider: "scripted", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: NOW }));
+    const workflow = WorkflowSnapshotSchema.parse(kind === "PLAN" ? { ...meta(taskId).workflow, revision: 30, stage: "PLAN", state: "READY" }
+      : kind === "CHECKS" ? { ...base, stage: "VERIFY", state: "WAITING" }
+      : kind === "REVIEW" ? { ...base, stage: "REVIEW", state: "WAITING", verification }
+      : { ...base, stage: "PULL_REQUEST", state: "READY", verification, reviews });
+    h.db.set({ ...meta(taskId), workflow, checkPolicy: undefined });
+    h.db.set((workflowDispatchItem("state", taskId, workflow.revision, kind === "PUBLISH" ? "PUBLISH" : kind, kind === "PLAN" ? WORKFLOW_NO_CANDIDATE_DIGEST : candidate.digest, NOW) as { Put: { Item: Record<string, unknown> } }).Put.Item);
+    return { taskId, workspaceId, kind, stage: workflow.stage };
+  }
   const notAMember = () => h.channelMembers.mockImplementation(async () => ({ ok: true, memberOf: [] }));
   const grant = (role: "viewer" | "developer") => h.db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role });
   const archive = (orgId = TEST_ORG) => h.db.set({ ...projectMetaKey(orgId, "payments"), entityType: "PROJECT_META", name: "payments", status: "archived", createdAt: NOW, createdBy: "x" });
   const remove = () => { h.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId)); h.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", removedAt: new Date().toISOString() }); };
   const refused = () => audit.recordedBy("task.work_refused");
-  return { h, audit, meta, byMode, sweep, rows, ciRound, feedbackRound, notAMember, grant, archive, remove, refused, access };
+  return { h, audit, meta, byMode, sweep, rows, ciRound, feedbackRound, stepRound, operations, notAMember, grant, archive, remove, refused, access };
 }
 
 const ROUNDS = [["a CI fix round", "ciRound", "ci_fix_round"], ["a review-comment fix round Rovara decided", "feedbackRound", "feedback_round"]] as const;
@@ -129,7 +143,7 @@ describe.each(ROUNDS)("%s runs as the task's owner", (_name, make, path) => {
     stopped(t, round);
     const workflow = t.meta(round.taskId).workflow;
     expect(workflow).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED" });
-    expect(workflow.blockReason).toContain("Rovara didn't start this fix");
+    expect(workflow.blockReason).toContain("Rovara didn't start");
     expect(workflow.fixSource).toBeUndefined();
     expect(t.refused()).toHaveLength(1);
     expect(t.refused()[0]).toMatchObject({ actor: { kind: "system" }, target: { kind: "task", id: round.taskId }, facts: { path, cause: "no_project_access" } });
@@ -205,5 +219,53 @@ describe("MR-3: a queued dispatch of any kind for a removed owner stops for good
     expect(t.refused()[0]).toMatchObject({ facts: { path: "queued_dispatch", cause: "owner_removed" } });
     await t.sweep();
     expect(t.refused()).toHaveLength(1);
+  });
+});
+
+describe.each([["planning", "PLAN"], ["checks", "CHECKS"], ["reviews", "REVIEW"], ["the pull request push", "PUBLISH"]] as const)("a queued %s dispatch runs as the task's owner", (_name, kind) => {
+  it("an owner who lost the project's access: nothing starts, the task blocks with a plain reason, the row goes, and the refusal is audited once", async () => {
+    const t = await world();
+    const round = await t.stepRound(kind);
+    t.notAMember();
+    const before = t.operations(round.workspaceId).length;
+    await t.sweep();
+    expect(t.operations(round.workspaceId)).toHaveLength(before);
+    expect(t.rows(round.taskId)).toEqual([]);
+    const workflow = t.meta(round.taskId).workflow;
+    expect(workflow).toMatchObject({ stage: round.stage, state: "BLOCKED" });
+    expect(workflow.blockReason).toContain("Rovara didn't start");
+    expect(t.refused()).toHaveLength(1);
+    expect(t.refused()[0]).toMatchObject({ target: { kind: "task", id: round.taskId }, facts: { path: "queued_dispatch", cause: "no_project_access" } });
+    await t.sweep();
+    expect(t.refused()).toHaveLength(1);
+  });
+
+  it("an archived project: nothing starts, even for a company admin", async () => {
+    const t = await world();
+    const round = await t.stepRound(kind);
+    t.archive();
+    t.h.db.set({ ...orgMemberKey(TEST_ORG, MAYA.developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: MAYA.developerId, role: "admin", joinedAt: "2026-10-01T00:00:00.000Z" });
+    const before = t.operations(round.workspaceId).length;
+    await t.sweep();
+    expect(t.operations(round.workspaceId)).toHaveLength(before);
+    expect(t.meta(round.taskId).workflow).toMatchObject({ state: "BLOCKED" });
+    expect(t.refused()[0]).toMatchObject({ facts: { path: "queued_dispatch", cause: "project_archived" } });
+  });
+
+  it("an allowed owner is not stopped by the gate", async () => {
+    const t = await world();
+    const round = await t.stepRound(kind);
+    await t.sweep();
+    expect(t.refused()).toEqual([]);
+    expect(t.meta(round.taskId).workflow.blockReason ?? "").not.toContain("Rovara didn't start");
+  });
+
+  it("another company's archived project of the same name changes nothing", async () => {
+    const t = await world();
+    const round = await t.stepRound(kind);
+    t.archive(OTHER_ORG);
+    await t.sweep();
+    expect(t.refused()).toEqual([]);
+    expect(t.meta(round.taskId).workflow.blockReason ?? "").not.toContain("Rovara didn't start");
   });
 });

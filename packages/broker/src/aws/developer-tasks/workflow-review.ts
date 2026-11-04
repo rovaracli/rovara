@@ -37,7 +37,7 @@ import { isConditional } from "../broker-shared.js";
 import { stopIfOwnerRefused } from "./owner-stop.js";
 import { shortenMarkdown } from "../../developer/plan-artifacts.js";
 import type { DeveloperCaller } from "../developer-routes.js";
-import type { TaskAccess } from "../../developer/task-access.js";
+import { requireProjectSendBackRole, type TaskAccess } from "../../developer/task-access.js";
 import { withTestRule } from "../../rovara-code/verification-report.js";
 import { ciFixPrompt, ciFixPromptWithoutOutput, readCiEvidence } from "../../rovara-code/ci-fix.js";
 import { conflictFixPrompt } from "../../rovara-code/branch-sync.js";
@@ -92,6 +92,8 @@ export async function startTaskWorkflowReview(deps: DeveloperTaskRouteDependenci
   }
   // Contributor intentionally checks only archive here; authorizeTaskAction owns the live role check.
   await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
+  // S2 (any path): starting the reviews by hand spends model money for this person, so it meets the send-back's project access rule too.
+  await requireProjectSendBackRole(deps, task, caller);
   await actionableWorkspace(deps, task);
   try {
     await queueWorkflowReview(deps, task, { ...workflow, candidate: workflow.candidate }, request.requestId, request.instructions, access, caller);

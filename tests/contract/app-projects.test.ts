@@ -655,8 +655,9 @@ describe("an org owner's task keeps going without a grant (I4)", () => {
 
     setRole(h.db, OMAR, "member");
     const refused = await h.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "again" });
-    expect(refused.status).toBe(404);
-    expect(refused.body.error).toMatchObject({ code: "NOT_FOUND", message: "project not found" });
+    // S2 (this replaces the old 404 "project not found"): an owner demoted to member with no grant is refused up front, by the send-back's project access rule.
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
   });
 
   it("says the creator is no longer a member, on a cloud install only, when their member record is gone", async () => {
@@ -739,8 +740,11 @@ describe("a required-E2E round of an org owner's task (finding 5, I4)", () => {
     setRole(h.db, OMAR, "member");
     await sweep(h);
     expect(readiness(h, workspaceId)).toHaveLength(0);
-    // The existing rejection: the dispatch is parked for the owner to redrive, as for any creator who lost access.
-    expect(h.db.find((item) => item.pk === "WORKFLOW_DISPATCH")[0]).toMatchObject({ taskAccessPausedAt: expect.any(String) as string });
+    // S2 (this replaces parking the row): the step is not started, the row goes (nothing retries it), and the task is blocked with a plain reason; the owner's Retry, once they have access again, is the way on.
+    expect(h.db.find((item) => item.pk === "WORKFLOW_DISPATCH")).toEqual([]);
+    const blocked = h.db.find((item) => item.entityType === "DEVELOPER_TASK")[0] as { workflow: { state: string; blockReason?: string } };
+    expect(blocked.workflow).toMatchObject({ state: "BLOCKED" });
+    expect(blocked.workflow.blockReason).toContain("Rovara didn't start");
   });
 
   it("records an org-role proof naming the live role, which a demotion removes and a later grant replaces with a direct-membership proof", async () => {
@@ -793,7 +797,7 @@ describe("a required-E2E round of an org owner's task (finding 5, I4)", () => {
     await expect(requireWorkflowE2ECreatorAuthority(h.brokerInput, task())).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
   });
 
-  it("keeps the round going when the project is archived while it is pending (I4)", async () => {
+  it("does not start the round when the project is archived while it is pending (S2: this replaces I4, where it kept going)", async () => {
     const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const { workspaceId, ownerKey } = await waitingForRound(h, OMAR);
@@ -801,7 +805,8 @@ describe("a required-E2E round of an org owner's task (finding 5, I4)", () => {
     h.db.delete(projectMemberKey(TEST_ORG, ownerKey, "payments"));
     h.db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "archived", createdAt: "x", createdBy: "y", archivedAt: "z", archivedBy: "y" });
     await sweep(h);
-    expect(readiness(h, workspaceId)).toHaveLength(1);
+    expect(readiness(h, workspaceId)).toHaveLength(0);
+    expect(h.db.find((item) => item.pk === "WORKFLOW_DISPATCH")).toEqual([]);
   });
 });
 

@@ -2,7 +2,7 @@
 // question the send-back gate asks a person (`requireProjectSendBackRole`), about the person the work runs as: the task's owner now. A refusal is final (nothing retries it), is written on
 // the task by the caller, and is audited here with fixed words only (`task.work_refused`).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, isSystemOwnerId, orgMemberKey, type OrgRole } from "@agentx/contracts";
+import { AgentXError, WORKFLOW_NOT_RUN_PREFIX, isSystemOwnerId, orgMemberKey, type OrgRole } from "@agentx/contracts";
 import { auditTaskWorkRefused, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents, recordAuditEventDurably } from "../audit/flush.js";
 import type { AuditRuntime } from "../audit/outbox.js";
@@ -14,13 +14,13 @@ import { effectiveTaskOwner, type DeveloperTaskRecord } from "./task-records.js"
 /** Why work was refused, as a fixed word for the audit event. */
 export type WorkRefusalReason = "owner_removed" | "no_project_access" | "viewer" | "project_archived" | "project_inactive" | "other_org";
 /** Where it was refused, as a fixed word for the audit event. */
-export type WorkRefusalPath = "ci_fix_round" | "feedback_round" | "conflict_round" | "program_step" | "feedback_review" | "queued_dispatch";
+export type WorkRefusalPath = "ci_fix_round" | "feedback_round" | "conflict_round" | "program_step" | "feedback_review" | "queued_dispatch" | "autofix";
 
 export interface WorkRefusal { reason: WorkRefusalReason; message: string }
 
-/** What a task shows when a fix round was not started because its owner may no longer run work in the project. No names. */
-export const FIX_NOT_RUN_NO_ACCESS = "Rovara didn't start this fix: the person this task runs as no longer has the project access starting a task needs, so nothing was run. Someone with access can take over on GitHub.";
-export const FIX_NOT_RUN_ARCHIVED = "Rovara didn't start this fix: the project is archived, so nothing was run. Someone can take over on GitHub.";
+/** What a task shows when a step was not started because its owner may no longer run work in the project. No names. */
+export const FIX_NOT_RUN_NO_ACCESS = `${WORKFLOW_NOT_RUN_PREFIX} this step: the person this task runs as no longer has the project access starting a task needs, so nothing was run. Someone with access can go on from here.`;
+export const FIX_NOT_RUN_ARCHIVED = `${WORKFLOW_NOT_RUN_PREFIX} this step: the project is archived, so nothing was run. Restore the project, or take over on GitHub.`;
 
 /**
  * Whether the task's owner may still have Rovara start work for them: the same rule a person's send-back meets (a company owner or admin, or a role that may start tasks, in a project that is

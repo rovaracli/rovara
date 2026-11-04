@@ -1,72 +1,70 @@
 # S2 sweep: every path that starts a worker run, dispatch or model call on a task's behalf
 
-Rule (owner, 2026-11-04): a removed or no-longer-allowed person must not trigger more work through any path the send-back access gate covers.
+Rule (owner, 2026-11-04): a removed or no-longer-allowed person must not trigger more work through ANY path.
 
-Gates used:
-- **SB** = `requireProjectSendBackRole` (developer/task-access.ts): owner/admin or a role that may start tasks, and the project is not archived. Same code and words as a send-back.
-- **OWN** = `stopIfOwnerRefused` (aws/developer-tasks/owner-stop.ts): the same rule asked live about the task's owner for a step Rovara starts on its own; refusal blocks the task with a plain reason and audits `task.work_refused`.
-- **CG** = `creatorGuard` / `requireCreatorStillMember` (ruling R60): a removed owner ends the task `creator_removed`.
-- **WR** = the weaker work-role check (`authorizeTaskAction` with a WORK action, `requireProjectWorkRole`): refuses a project viewer, lets a person with no grant through (share design).
-- **ARCH** = `requireNewWorkAllowed` (archived project refused).
-- **SYS** = `systemTaskAccess` (Task People proof for a system start).
+Gates:
+- **SB** = `requireProjectSendBackRole` (developer/task-access.ts): company owner/admin, or a role that may start tasks; and the project is not archived. Same code and words as a send-back. Human presses throw its error (PROJECT_ACCESS_DENIED / PROJECT_ARCHIVED); they are not audited.
+- **OWN** = `stopIfOwnerRefused` (aws/developer-tasks/owner-stop.ts): the same rule asked live about the task's owner for a step Rovara starts on its own. Refusal: nothing runs, the task is blocked where it stands with a plain reason ("Rovara didn't start this step: ..."), the dispatch row goes (no retry), and `task.work_refused` is audited (facts: `path`, `cause`).
+- **CG** = `creatorGuard` / `requireCreatorStillMember` (R60): a removed owner ends the task `creator_removed`. MR-3: also checked before every queued dispatch; the row is removed and the stop audited.
+- **WR** = the weaker work-role check (`authorizeTaskAction`): refuses a project viewer only. Every path below that used to stop at WR now also meets SB.
+- **ARCH** = `requireNewWorkAllowed` (archived project).
 
-Status: **GATED** (SB or OWN), **PARTLY** (CG plus WR/ARCH only), **NEW-WORK** (a start, gated by the start's own role and archive check), **OPEN** (not gated by SB/OWN: reason given; owner question where it matters).
+Status: GATED (SB or OWN), NEW-WORK (a start by a live person; the start's own role and archive check is the gate), N/A (starts no agent work).
 
-## A. Human presses that restart or continue a task's work
+## A. A person presses something that starts or restarts work on an existing task: all GATED (SB)
 
-| Path (function, file) | Gate | Status / why |
-|---|---|---|
-| Send back to coding (`sendTaskWorkflowBackToCoding`, workflow-coding.ts) | SB, ARCH, CG(queue) | GATED (f93233d52, 6068a38f2) |
-| Fix on findings (`resolveTaskWorkflowFindings` FIX) | SB, ARCH | GATED (6068a38f2) |
-| Accept all findings, next step is coding (`resolveTaskWorkflowFindings`, due IMPLEMENT) | SB, ARCH, CG | GATED here (F27-5) |
-| Accept all findings, next step is review or publication | ARCH (review) | OPEN by design: not coding; forward progress with no new coding run |
-| Approve fix of PR review comments (`submitWorkflowFeedbackDecision` APPROVE) | SB, ARCH, CG | GATED here (SB-2) |
-| CI-fix / branch-sync Retry (`retryCiFix`) | SB, ARCH | GATED here (SB-2) |
-| Retry of a blocked coding step (`retryWorkflowImplementation`) | SB, ARCH | GATED here (also called by redirect restart) |
-| Any person's Retry of any step (`retryTaskWorkflow`, one entry: plan, understand, plan check, verify, review, publication, CI fix, coding, design resolve, canvas page retry, session Retry via `retryTaskWorkflowFor`) | SB, ARCH, CG | GATED here at the entry (skipped only for Rovara's own AUTOFIX retry, row E) |
-| Retry review of a failed PR-feedback review (`retryTaskWorkflowFeedbackReview`) | SB, ARCH | GATED here |
-| Stop & redirect: `sendBackForRedirect` (redirect-restart.ts:118) and `restartCodingForRedirect` (via `retryWorkflowImplementation`) | SB, ARCH | GATED (SB-1 for the phase-1 check at redirect-runtime.ts:109; coding restart gated here) |
-| Stop & redirect: `restartPlanningForRedirect`, `revisePlanForRedirect` | WR (`authorizeTaskAction`), pause check | OPEN: planning, not coding (same as live-steer revise below). Owner question |
-| Canvas closeout retry (`retryTaskCanvasCloseout`) | WR on `close` | starts no agent work: re-drives the archive of a terminal task |
-| Revise plan from live steer (`startRevisedPlan`, live-steer-revise.ts) | WR, ARCH, requireMayGoOn | OPEN: planning, not coding; person with no grant passes by the share design. Owner question |
-| Plan decision: approve / request changes (`decideTaskWorkflow`) | WR, ARCH (request changes) | OPEN: approving the plan is the owner's decision on an existing task; coding that follows is started by the dispatch row (row C: IMPLEMENT, gated by OWN). Owner question |
-| Continue a stopped task (`continueTask`) | CG, WR, requireMayGoOn | OPEN: a plain follow-up instruction; WR refuses viewers. Owner question whether Continue should meet SB |
-| Resume after a spend approval (`resumeTaskAfterSpendApproval`) | CG, SYS | OPEN: runs as the task owner after an approver said yes; CG covers removal, no project-access check. Owner question |
-| Start the code review / checks by hand (`startTaskWorkflowReview`, publication retry `retryTaskWorkflowPublication`) | WR, ARCH (review) | OPEN: reviews and pushes are not coding; Retry paths of these steps ARE gated via `retryTaskWorkflow` |
-| Spec change replan (`replanForSpecChange`) | WR, ARCH, requireMayGoOn | OPEN: planning; same as live-steer revise |
+| Path (function, file) | Gate |
+|---|---|
+| Send back to coding (`sendTaskWorkflowBackToCoding`, workflow-coding.ts) | SB (f93233d52, 6068a38f2) |
+| Fix on findings (`resolveTaskWorkflowFindings` FIX) | SB |
+| Accept all findings, next step is coding (`resolveTaskWorkflowFindings`) | SB + CG (F27-5) |
+| Approve fix of PR review comments (`submitWorkflowFeedbackDecision` APPROVE, feedback-review.ts) | SB + CG (SB-2) |
+| Retry review of a failed PR-feedback review (`retryTaskWorkflowFeedbackReview`, feedback-capture.ts) | SB |
+| Any person's Retry of any step (`retryTaskWorkflow`, workflow-retry.ts: plan, understand, plan check, verify, review, publication, CI fix and branch sync, coding, design resolve; also the page's application-round retry and the session Retry) | SB + CG at the one entry (skipped only for Rovara's own AUTOFIX retry, row C) |
+| CI-fix / branch-sync Retry (`retryCiFix`); Retry of coding (`retryWorkflowImplementation`, also reached by redirect restart) | SB (direct, as well as via the entry) |
+| Plan decision: approve, or request changes (`decideTaskWorkflow`, decide.ts) | SB at the point a run would start; a decision that only ends the task (reject, answered) starts nothing and is not gated |
+| Continue a task (`continueTask`, continue.ts) | SB |
+| Open a pull request for a plain task (`openPullRequest`, close.ts) | SB |
+| Start the code review by hand (`startTaskWorkflowReview`) | SB |
+| Publication retry (`retryTaskWorkflowPublication`) | SB, ahead of the step's own state checks |
+| Revise the plan from a live message (`reviseTaskPlan`, live-steer-revise.ts) | SB |
+| Spec change replan (`replanForSpecChange`, spec-replan.ts) | SB |
+| Stop & redirect: planning restart, plan revision, coding restart, send-back (redirect-restart.ts, `currentTask`) | SB for all four, plus the phase-1 check at redirect-runtime.ts:109 (SB-1) |
+| Retry canvas closeout (`retryTaskCanvasCloseout`) | N/A: re-drives the archive of a finished task; no agent work |
 
-## B. New tasks and runs started by a live person (the start is the gate)
+## B. A person starts a new task or run: NEW-WORK (the start is the gate)
 
-| Path | Gate | Status |
-|---|---|---|
-| `startTask` (developer API, MCP, Slack, app) | ARCH + role that may start tasks (`requireNewWorkAllowed`), live | NEW-WORK |
-| `startCodeIntent` / intake `startHeld` / `startWaitingIntake` / change-anyway | go through `startTask` with the member's role | NEW-WORK |
-| Agent runs (`startAgentRun`, runs.ts:285), roster runs, chains (`startOnce`, runner.ts:389) | ARCH + role, live; each step re-checks the creator (`requireCreatorStillMember` in the run engine) | NEW-WORK |
-| Setup agent, setup draft, setup command, setup check | `requireNewWork` (ARCH + role) | NEW-WORK |
-| Diagnosis (`startLightDiagnosis`, `startDeepDiagnosis`) | person's own session and level on the task (diagnosis/authority.ts); runs on the customer's provider | OPEN: not a task restart; model call by the person pressing |
-| Ask (task.asked) / steer notes | person's session level; no worker run | OPEN: not work on the task |
+| Path | Gate |
+|---|---|
+| `startTask` (developer API, MCP, Slack, app); `startCodeIntent`, intake (`startHeld`, `startWaitingIntake`), change-anyway (all go through `startTask`) | ARCH + a role that may start tasks, live (`requireNewWorkAllowed`) |
+| Agent runs (`startAgentRun`, runs.ts:285), roster runs, chains (`startOnce`, runner.ts:389) | ARCH + role, live; every step re-checks the creator in the run engine (R60) |
+| Slack thread workspaces (`thread-workspaces.ts:498`) | ARCH + the requester's role, live |
+| The workspace-level task API (`POST /v1/workspaces/{id}/tasks`, workspace-routes.ts:231, handled by `acceptTask` in acceptance.ts) | CG (`requireWorkspaceCreatorStillMember`, acceptance.ts:217, :426) and the workspace's own ownership; this is the project-less workspace operation, not a developer task. Not a task restart; left as is |
+| Setup agent, setup draft, setup command, setup check | `requireNewWork` (ARCH + role) |
+| Diagnosis (`startLightDiagnosis`, `startDeepDiagnosis`), Ask, steer notes | N/A for task restarts: a model call by the person pressing, on the customer's provider, under their session level (diagnosis/authority.ts); starts no task work |
 
-## C. Rovara's own dispatches (run as the task's owner, no one pressing)
+## C. Rovara's own dispatches (run as the task's owner, no one pressing): all GATED
 
-| Path | Gate | Status / why |
-|---|---|---|
-| IMPLEMENT dispatch: CI, conflict and review-comment fix rounds, and a custom sequence's next coding step (`startTaskWorkflowImplementationFromSystem`) | CG, OWN, SYS, lowered-autonomy | GATED here (paths `ci_fix_round`, `conflict_round`, `feedback_round`, `program_step`) |
-| PR-feedback critic run from a GitHub event (`startTaskWorkflowFeedbackReviewFromWebhook`) | CG, SYS, OWN | GATED here (path `feedback_review`) |
-| Every queued dispatch kind, and the AUTOFIX look (`runWorkflowDispatch`, `runAutofixDispatch`, dispatch.ts) | CG at the top (MR-3): removed owner ends the task, row removed, audited | GATED here (path `queued_dispatch`) |
-| PLAN, UNDERSTAND, PLAN_CRITIQUE, CRITIC_REPLAN starts (`startTaskWorkflowPlanFromSystem`, `...UnderstandFromSystem`, `...PlanCritiqueFromSystem`, `...CriticRevisionFromSystem`, `...PlanRevisionFromSystem`, `resumeAfterRunLimitApproval`) | CG, SYS | PARTLY: removed owner stops (CG + MR-3); no project-access/archive check. These rows are queued by a human's earlier press; owner question whether to add OWN |
-| CHECKS / E2E checks, baseline, grounding, replay (`startTaskWorkflowE2E*FromSystem`) | CG, SYS; E2E also re-reads the creator's project authority (`requireWorkflowE2ECreatorAuthority`, refuses a lost grant, viewer) | PARTLY: E2E rounds already check live project access; plain CHECKS do not |
-| REVIEW (`startTaskWorkflowReviewFromSystem`, `queueWorkflowReview`) | CG, SYS, lowered-autonomy | PARTLY: as above |
-| PUBLISH / UPDATE / branch sync (`startTaskWorkflowPublicationFromSystem`, `startTaskWorkflowBranchSyncFromSystem`) | CG, SYS, lowered-autonomy | PARTLY: a push by Rovara of already-reviewed code; owner question |
-| Design review rounds and resolve runs (`startDesignReviewRound`, `startDesignResolveRun`) | CG, SYS | PARTLY: as the plan steps |
-| Spec writing / republish (`spec-wiring.ts`, `queueRepublish`) | CG, SYS | PARTLY |
-| Rovara's own send-back and retry (AUTOFIX: `autoSendBackToCodingFromSystem`, `retryTaskWorkflow` with `automatic`) | CG; autofix policy and spend cap; mint refusal below | OPEN by design: judged by the autofix policy (6068a38f2 test: Rovara's own send-back for an owner who lost access is unchanged). Owner question |
-| Model key mint (`model-access.ts`, `requireOrgOpenFor`, `requireCreatorStillMember`, task work authority) | removed owner or closed company refused per call | Defence in depth for every row above |
-| Sweeps that only read or end (operation_end, release, milestones) | none needed | start nothing |
+| Path | Gate |
+|---|---|
+| Every queued dispatch kind except IMPLEMENT: UNDERSTAND, PLAN, PLAN_CRITIQUE, CRITIC_REPLAN, REPLAN, GROUNDING, CHECKS (and E2E checks, baseline, replay), REVIEW, SYNC, PUBLISH, UPDATE; design-review rounds and resolve runs; spec writing (`runWorkflowDispatch`, dispatch.ts) | CG (MR-3) then OWN once, before the kind is started (path `queued_dispatch`) |
+| IMPLEMENT dispatch: CI, conflict and review-comment fix rounds, and a custom sequence's next coding step (`startTaskWorkflowImplementationFromSystem`) | CG, OWN (paths `ci_fix_round`, `conflict_round`, `feedback_round`, `program_step`) |
+| PR-feedback critic run from a GitHub event (`startTaskWorkflowFeedbackReviewFromWebhook`) | CG, OWN (path `feedback_review`) |
+| Rovara's own look, send-back and retry on a blocked step (AUTOFIX: `runAutofixDispatch`) | CG, OWN (path `autofix`): the blocked step stands for a person with the ask "only a person can fix this"; the row goes; audited. This replaces the 0.4.27 rule that Rovara's own send-back still ran for an owner who lost access |
+| Starts that follow a human's yes and run as the owner: `resumeTaskAfterSpendApproval`, `resumeAfterRunLimitApproval`, `startAcceptedStep` after a gated decision | CG + the approver's own authority. The step they resume is one the gated paths above already admitted; a lost-access owner is stopped at the next queued dispatch (row 1) and at the model-key mint. Kept out of this change on purpose: they sit in the spend and budget-authority flows other lanes (S1, admin-v11) are editing |
+| Model key mint (`model-access.ts`: `requireOrgOpenFor`, `requireCreatorStillMember`, the task's work authority) | Per model call: a removed owner or a closed company is refused (defence in depth under every row) |
+| Sweeps that only read, end or release (operation_end, release, milestones, reconcile) | N/A: start nothing |
 
-## D. Open owner questions (nothing here changes without a ruling)
+## D. Behaviour changes this replaces (tests updated; each says "this replaces")
 
-1. Should Continue, Plan decision, live-steer revise, spec replan, manual review start and publication retry meet SB (today: work-role only, by the share design)?
-2. Should Rovara's own planning, check, review and publish dispatches ask OWN (project access of the owner now), not only CG? One option: a single OWN call in `runWorkflowDispatch` with a block for every stage.
-3. Should Rovara's AUTOFIX send-back / retry stop for an owner who lost project access?
+- Continue, Open a pull request, plan decisions, review start, publication retry, live-steer revise, spec replan: a person with no project grant, or a viewer-turned-nothing, used to pass the work-role check (share design, R11); now refused like a send-back.
+- Continue (and every other start) in an archived project used to keep working for a running task; now PROJECT_ARCHIVED. Cancel and Close still work.
+- A required-E2E round or any queued step in an archived project used to keep going (I4); now it is not started and the task says why.
+- A queued dispatch for a removed owner used to be parked (`taskAccessPausedAt`); now the row is removed (MR-3).
+- Rovara's own send-back for an owner who lost access used to still run (0.4.27); now it stops (AUTOFIX row).
+- A co-owner or taker without a project grant can no longer start the next step for themselves.
 
-Human-path refusals throw the gate's own error (PROJECT_ACCESS_DENIED / PROJECT_ARCHIVED) and are not audited; only refusals of work Rovara would have started on its own are audited (`task.work_refused`).
+## E. Left alone on purpose
+
+- Reject and answered-task decisions, Cancel, Close, stop, comments, notes: they start no agent work.
+- The audit refusal for a human press is the thrown error only; `task.work_refused` is for work Rovara itself would have started.

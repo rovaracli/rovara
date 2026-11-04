@@ -16,7 +16,8 @@ import { driveAgentRun } from "../../agents/run-engine.js";
 import { END_LEASE_MS, type TaskEndOutcome } from "../../agents/task-end.js";
 import { effectiveTaskOwner, taskKey, taskAgentRunKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { requireCreatorStillMember } from "../../developer/creator-member.js";
-import { recordWorkRefused } from "../../developer/work-refusal.js";
+import { ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
+import { stopIfOwnerRefused } from "../developer-tasks/owner-stop.js";
 import { operationEndDispatchItem, type WorkflowDispatchRecord, isConditional } from "../broker-shared.js";
 import { recycleDriftedWorker, requalifyHoldActive } from "../../e2e/requalify-hold.js";
 import { ApplicationDispatchRefusal, ApplicationPlanDefect } from "../../e2e/application-dispatch-check.js";
@@ -319,6 +320,9 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       currentBaseCommit: currentBaseCommitOf(dependencies),
     }, caller, undefined, null));
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
+    // S2 (any path): every other queued step runs as the task's owner, so it meets the send-back's project access rule and the archive check now. A step the owner may not have started is not
+    // started: the task blocks where it stands with a plain reason, the row goes (nothing retries it), and the refusal is audited. IMPLEMENT asks the same inside its own start (its path names the round).
+    if (item.kind !== "IMPLEMENT" && await stopIfOwnerRefused(routeDependencies, task, workflow, "queued_dispatch")) { await remove(); return "STALE"; }
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.
     let outcome: "STARTED" | "DUPLICATE" | "STALE" | "WAITING";
     if (item.kind === "CHECKS") {
@@ -528,6 +532,16 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
       validateWorkflowE2EApplicationPlan: workflowApplicationRouteDependencies(dependencies).validateWorkflowE2EApplicationPlan,
       ...specSeamsOf(dependencies),
     }, caller, undefined, null);
+    // S2 (any path, owner decision 2026-11-04; this replaces "Rovara's own send-back still runs for an owner who lost access"): Rovara's own look, send-back and retry run as the owner, so they stop for an
+    // owner who may no longer have work started (project access, archived project). The blocked step stands for a person, with the plain ask ("only a person can fix this"); the stop is audited; the row goes.
+    const refusal = await ownerWorkRefusal(route, task);
+    if (refusal !== undefined) {
+      await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
+        orgId: String(task.orgId), taskId: task.taskId, path: "autofix", reason: refusal.reason, occurrence: `autofix#${String(item.workflowRevision)}`, now: new Date().toISOString() });
+      await recordAutofixGiveUpAsk(store, task, Date.now());
+      await remove();
+      return "STALE";
+    }
     const blockedByEnvironment = blockedByEnvironmentHook({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) });
     const deps: AutofixDependencies = {
       config, route, store: { documentClient: dependencies.documentClient, tableName: dependencies.tableName },

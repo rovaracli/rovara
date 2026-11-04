@@ -626,18 +626,17 @@ describe("a removed creator's work stops (ruling R60)", () => {
     await expect(startTaskWorkflowReviewFromSystem(routeDeps(harness) as never, taskId, { workflowRevision: task.workflow.revision, candidateDigest: candidate.digest }))
       .rejects.toMatchObject({ code: "TASK_ACCESS_DENIED", message: expect.stringContaining(REMOVED_REASON("Maya Chen")) as string });
     expect(operations(harness, workspaceId).filter((operation) => operation.workflowMode === "REVIEW")).toEqual([]);
-    // The dispatcher parks the row without spending its attempts.
-    const row = harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH")[0]!;
-    const past = new Date(Date.now() - 1_000).toISOString();
-    harness.db.set({ ...row, nextAttemptAt: past, dispatchDueSk: `${past}#${String(row.sk)}` });
+    // MR-3 (this replaces parking the row): the dispatcher ended the row when it saw the owner gone, so nothing is parked or retried, and a sweep starts nothing.
+    expect(harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH")).toEqual([]);
     await harness.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(operations(harness, workspaceId).filter((operation) => operation.workflowMode === "REVIEW")).toEqual([]);
-    expect(harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH")[0]).toMatchObject({ taskAccessPausedAt: expect.any(String) as string });
   });
 
   it("after a take-over the removal that stops the task is the taker's: the creator's removal changes nothing (Plan 5 Task 12a)", async () => {
     const harness = await org();
     const bea = person(harness, "Bea", "member");
+    // The taker starts the next step for themselves, so they hold a project grant (the send-back's project access rule, S2).
+    harness.db.set({ ...projectMemberKey(TEST_ORG, bea.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: bea.developerId, projectName: "payments", role: "developer" });
     const { taskId, workspaceId, finishImplementation } = await implementing(harness, MAYA);
     const taken = taskRecord(harness, taskId);
     harness.db.set({ ...taken, currentOwner: { developerId: bea.developerId, name: "Bea", provider: "oidc", since: new Date().toISOString() } });

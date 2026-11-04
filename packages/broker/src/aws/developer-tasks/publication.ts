@@ -28,7 +28,7 @@ import { isConditional } from "../broker-shared.js";
 import type { LoadedDocument } from "../../developer/plan-artifacts.js";
 import type { DeveloperTaskActions, TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
-import type { TaskAccess } from "../../developer/task-access.js";
+import { requireProjectSendBackRole, type TaskAccess } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { branchSyncRequestId } from "../../rovara-code/branch-sync.js";
 import { inertPlanLine } from "../../rovara-code/inert-text.js";
@@ -491,6 +491,8 @@ export async function startTaskWorkflowBranchSyncFromSystem(
 export async function retryTaskWorkflowPublication(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(WorkflowPublishRetryRequestSchema, value, deps, "workflow-publish-retry");
   const access = await authorizeTaskAction(deps, caller, taskId, "publish");
+  // S2 (any path): opening the pull request again is a worker run started for this person, so it meets the send-back's project access rule and the archive check.
+  await requireProjectSendBackRole(deps, access.task, caller);
   const resumed = await resumeParkedTaskDispatch(deps, caller, access, request);
   if (resumed !== undefined) return resumed;
   const { task } = access;

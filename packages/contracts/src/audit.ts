@@ -594,7 +594,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   // Live interaction. `mode` is keep_plan or change_plan, `outcome` a redirect outcome word, `audience` web, slack or linear (or `all` on a daily count), `scope` each or daily, `tier` light or deep.
   "session.redirected": ["mode", "step", "outcome"],
   "task.asked": ["audience", "scope", "count", "contextBytes", "model"],
-  // `path` is a fixed word for the place work was refused (`ci_fix_round`, `feedback_round`, `conflict_round`, `program_step`, `feedback_review`, `queued_dispatch`); `cause` is `owner_removed`, `no_project_access`, `viewer`, `project_archived` or `project_inactive`.
+  // `path` is a fixed word for the place work was refused (`ci_fix_round`, `feedback_round`, `conflict_round`, `program_step`, `feedback_review`, `queued_dispatch`, `autofix`); `cause` is `owner_removed`, `no_project_access`, `viewer`, `project_archived` or `project_inactive`.
   "task.work_refused": ["path", "cause"],
   "ask.linear_comment_kept": ["cause", "attempts"],
   "diagnosis.started": ["errorKind", "errorCode", "tier"],

@@ -23,6 +23,7 @@ import { actionableWorkspace, busyOrClosing, capWindowBaseline, capWindowUpdate,
 import { taskView } from "./task-view.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { previousMarkdownBlock, retiredClaimIdList, structuredWorkflowPrompt } from "./workflow-inputs.js";
+import { requireProjectSendBackRole } from "../../developer/task-access.js";
 
 /** The words of a refusal (fixed; nothing from a spec). */
 export const SPEC_REPLAN_REFUSALS = Object.freeze({
@@ -91,6 +92,8 @@ export async function replanForSpecChange(deps: DeveloperTaskRouteDependencies, 
   await requireMayGoOn(deps, caller, task);
   // An archived project takes no new work: a re-plan restarts planning, so it is refused here as a plan change request is (decide.ts).
   await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
+  // S2 (any path): a re-plan restarts planning for this person, so it meets the send-back's project access rule too.
+  await requireProjectSendBackRole(deps, task, caller);
   const receivedAt = new Date(deps.now()).toISOString();
   let returned: WorkflowSnapshot;
   try {
