@@ -15,6 +15,10 @@ export interface FakeServicesDockerOptions {
   listing?: readonly string[];
   /** The exit code of a `docker exec` (default 0): lets a test fail the command that runs in one container. */
   execExit?: (args: readonly string[]) => number;
+  /** Slice 3: what a `docker exec` prints (a fake server's ledger summary). Default: nothing. */
+  execStdout?: (args: readonly string[]) => string | undefined;
+  /** Slice 3: the state `docker inspect --format {{.State.Status}}` answers for a container (default `running`). */
+  stateOf?: (container: string) => string;
 }
 
 export interface RecordedExec {
@@ -62,7 +66,7 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
       }
       if (verb === "network" && second === "ls") return answer(0, (options.listing ?? []).join("\n"));
       if (verb === "ps") return answer(0, (options.listing ?? []).join("\n"));
-      if (verb === "inspect" && args.includes("{{.State.Status}}")) return answer(0, "running\n");
+      if (verb === "inspect" && args.includes("{{.State.Status}}")) return answer(0, `${options.stateOf?.(args[args.length - 1]!) ?? "running"}\n`);
       if (verb === "inspect") {
         const found = containers.get(args[args.length - 1]!);
         return found === undefined ? answer(1, "", "No such object") : answer(0, JSON.stringify(Object.fromEntries([...found.networks].map((name) => [name, {}]))));
@@ -99,7 +103,7 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
           try { recorded.envFile = readFileSync(args[file + 1]!, "utf8"); } catch { /* the file is already gone */ }
         }
         execs.push(recorded);
-        return answer(options.execExit?.(args) ?? 0);
+        return answer(options.execExit?.(args) ?? 0, options.execStdout?.(args) ?? "");
       }
       return answer();
     },

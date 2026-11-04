@@ -579,10 +579,10 @@
       "health": {
         "kind": "tcp",
         "port": 8080,
-        "startTimeoutS": 15
+        "startTimeoutS": 30
       },
       "resources": {
-        "memMiB": 128,
+        "memMiB": 512,
         "cpus": 0.5,
         "pids": 64
       },

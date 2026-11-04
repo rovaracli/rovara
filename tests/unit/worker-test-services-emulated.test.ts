@@ -438,6 +438,8 @@ describe("the /ping feature", () => {
     const dir = await temp("rsv-ship-");
     const shipped = structuredClone(JSON.parse(readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url), "utf8")) as ServiceCatalog);
     shipped.pinned = true;
+    // Slice 3: the fake server has its own feature (worker-test-services-fakes.test.ts); this test is about the AWS one.
+    shipped.entries = shipped.entries.filter((entry) => entry.family !== "fake-server");
     for (const entry of shipped.entries) {
       if (entry.id === "postgres@16" || (entry.id === "local-aws@r1" && pinned)) {
         entry.image.digest = entry.id === "postgres@16" ? "d".repeat(64) : DIGEST;
