@@ -53,6 +53,38 @@ describe("a task's visibility for the record", () => {
     expect(ids[0]).toBe(PRIYA);
   });
 
+  it("People is read before the shares and wins, as the session's own access answer has it: an unreadable list under a company or project share is the owner's alone", async () => {
+    for (const principal of [{ kind: "org" }, { kind: "project", project: "web" }] as const) {
+      const t = setup({ people: [] });
+      t.w.db.set({ pk: `DEVTASK#${t.taskId}`, sk: "PEOPLE", schemaVersion: 7, people: "garbled" });
+      t.w.seedShare(ORG_A, t.sessionId, principal, "view");
+      expect(await t.visibility()).toEqual({ kind: "private", ownerDeveloperId: PRIYA });
+    }
+  });
+
+  it("a denied entry under a company or project share means the task is not the project's: it is the people listed, without the denied person", async () => {
+    for (const principal of [{ kind: "org" }, { kind: "project", project: "web" }] as const) {
+      const t = setup({ people: [{ developerId: MIA, role: "denied" }, { developerId: ARJUN, role: "viewer" }] });
+      t.w.seedShare(ORG_A, t.sessionId, principal, "view");
+      t.w.seedShare(ORG_A, t.sessionId, { kind: "member", developerId: MIA }, "use");
+      expect(await t.visibility()).toEqual({ kind: "shared_with", developerIds: [PRIYA, ARJUN] });
+    }
+    const alone = setup({ people: [{ developerId: MIA, role: "denied" }] });
+    alone.w.seedShare(ORG_A, alone.sessionId, { kind: "project", project: "web" }, "view");
+    expect(await alone.visibility()).toEqual({ kind: "private", ownerDeveloperId: PRIYA });
+  });
+
+  it("an empty or all-viewer People list does not stop a project share from making the task the project's", async () => {
+    const t = setup({ people: [{ developerId: MIA, role: "viewer" }] });
+    t.w.seedShare(ORG_A, t.sessionId, { kind: "project", project: "web" }, "view");
+    expect(await t.visibility()).toEqual({ kind: "shared" });
+  });
+
+  it("the earlier owner of a taken-over task, still listed as People owner, is not on the list (the session gives them nothing for it)", async () => {
+    const t = setup({ currentOwner: ARJUN, people: [{ developerId: PRIYA, role: "owner" }, { developerId: MIA, role: "viewer" }] });
+    expect(await t.visibility()).toEqual({ kind: "shared_with", developerIds: [ARJUN, MIA] });
+  });
+
   it("a taker is the owner now", async () => {
     const t = setup({ currentOwner: ARJUN });
     expect(await t.visibility()).toEqual({ kind: "private", ownerDeveloperId: ARJUN });
