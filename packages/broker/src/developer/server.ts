@@ -1297,7 +1297,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       if (event.kind === "channel-list") {
         const parsed = ChannelListRequestSchema.safeParse(event);
         if (!parsed.success) return { ok: false, error: "invalid_request" };
-        return deps.directory.channelList(parsed.data.teamId, { includeDirect: parsed.data.includeDirect, ...(parsed.data.cursor === undefined ? {} : { cursor: parsed.data.cursor }) });
+        return deps.directory.channelList(parsed.data.teamId, parsed.data.cursor === undefined ? {} : { cursor: parsed.data.cursor });
       }
       if (event.kind === "task-person-proof") {
         const parsed = TaskPersonProofRequestSchema.safeParse(event);

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
+import { dynamoRateLimiter } from "../../../packages/broker/src/team-record/query.js";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import type { SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
 import { linearScope, trackerPlaceCheck, trackerPlaceOptions, type SlackFacts } from "../../../packages/broker/src/team-record/source-places.js";
@@ -45,7 +46,7 @@ const FACTS: Record<string, SlackFacts> = {
   [CH.pub]: { kind: "public", extShared: false }, [CH.priv]: { kind: "private", extShared: false }, [CH.dm]: { kind: "im", extShared: false }, [CH.mpim]: { kind: "mpim", extShared: false },
   [CH.connect]: { kind: "public", extShared: true }, [CH.taken]: { kind: "public", extShared: false }, [CH.mine]: { kind: "public", extShared: false },
 };
-const entry = (id: string, over: Record<string, unknown> = {}) => ({ id, name: `name-${id.toLowerCase()}`, kind: FACTS[id]?.kind ?? "public", extShared: FACTS[id]?.extShared ?? false, ...over });
+const entry = (id: string, over: Record<string, unknown> = {}) => ({ id, name: `name-${id.toLowerCase()}`, kind: FACTS[id]?.kind === "private" ? "private" as const : "public" as const, extShared: FACTS[id]?.extShared ?? false, joined: true, ...over });
 const LINEAR_A = "11111111-aaaa-4aaa-8aaa-111111111111", LINEAR_A2 = "22222222-aaaa-4aaa-8aaa-222222222222", LINEAR_B = "33333333-bbbb-4bbb-8bbb-333333333333";
 
 type SlackEntry = ReturnType<typeof entry>;
@@ -93,7 +94,7 @@ function trackersOf(h: Harness): ConnectedTrackersPort {
 }
 
 const dependencies = (h: Harness) => ({
-  table: h.w.table, modes: h.w.deps.modes, now: () => h.w.clock.ms,
+  table: h.w.table, modes: h.w.deps.modes, now: () => h.w.clock.ms, limiter: dynamoRateLimiter(h.w.table, () => h.w.clock.ms),
   sources: {
     edition: h.w.deps.edition,
     projectRepositories: async () => undefined,
@@ -149,14 +150,14 @@ describe("Slack: the channels of the company's bound workspace", () => {
     expect(reply.status).toBe(200);
     expect(reply.body).toMatchObject({ kind: "slack" });
     expect(optionList(reply)).toEqual([
-      { scope: slackScope(CH.pub), name: "name-c0public1", slackKind: "public", state: "available" },
-      { scope: slackScope(CH.priv), name: "name-c0private", slackKind: "private", state: "available" },
-      { scope: slackScope(CH.connect), name: "name-c0connect1", slackKind: "public", state: "slack_connect" },
-      { scope: slackScope(CH.taken), name: "name-c0taken001", slackKind: "public", state: "available" },
-      { scope: slackScope(CH.mine), name: "name-c0mine0001", slackKind: "public", state: "available" },
+      { scope: slackScope(CH.pub), name: "name-c0public1", slackKind: "public", joined: true, state: "available" },
+      { scope: slackScope(CH.priv), name: "name-c0private", slackKind: "private", joined: true, state: "available" },
+      { scope: slackScope(CH.connect), name: "name-c0connect1", slackKind: "public", joined: true, state: "slack_connect" },
+      { scope: slackScope(CH.taken), name: "name-c0taken001", slackKind: "public", joined: true, state: "available" },
+      { scope: slackScope(CH.mine), name: "name-c0mine0001", slackKind: "public", joined: true, state: "available" },
     ]);
     // Slack is asked only for the company's own bound team, and the strict reply schema holds.
-    expect(h.calls).toEqual([{ teamId: TEAM_A, includeDirect: true }]);
+    expect(h.calls).toEqual([{ teamId: TEAM_A }]);
   });
 
   it("owners, admins and maintainers may list; each state is right: already a source of this project, claimed by another project (it is not named), Slack Connect not allowed", async () => {
@@ -172,7 +173,7 @@ describe("Slack: the channels of the company's bound workspace", () => {
       expect(stateOf(reply, slackScope(CH.pub))).toBe("available");
       // The other project's name never appears, nor anything beyond the fixed fields.
       expect(JSON.stringify(reply.body)).not.toContain("api");
-      for (const option of optionList(reply)) expect(Object.keys(option).sort()).toEqual(["name", "scope", "slackKind", "state"]);
+      for (const option of optionList(reply)) expect(Object.keys(option).sort()).toEqual(["joined", "name", "scope", "slackKind", "state"]);
     }
     // From the other project, "mine" is claimed elsewhere and "taken" is its own.
     const fromApi = await options(h, WHO.owner, { kind: "slack" }, { project: "api" });
@@ -180,43 +181,140 @@ describe("Slack: the channels of the company's bound workspace", () => {
     expect(stateOf(fromApi, slackScope(CH.mine))).toBe("taken");
   });
 
-  it("direct messages and group messages are asked for only in Enterprise and never shown in Public", async () => {
-    const enterprise = harness();
-    enterprise.pages = [[entry(CH.pub), entry(CH.dm), entry(CH.mpim)]];
-    const listed = await options(enterprise, WHO.maint, { kind: "slack" });
-    expect(enterprise.calls[0]).toMatchObject({ includeDirect: true });
-    expect(optionList(listed).map((option) => option.slackKind)).toEqual(["public", "im", "mpim"]);
-    const pub = harness({ edition: "public" });
-    pub.pages = [[entry(CH.pub), entry(CH.dm), entry(CH.mpim), entry(CH.priv)]];
-    const shown = await options(pub, WHO.maint, { kind: "slack" });
-    expect(pub.calls[0]).toMatchObject({ includeDirect: false });
-    // Even if the read sent them, Public lists none.
-    expect(optionList(shown).map((option) => option.slackKind)).toEqual(["public", "private"]);
+  it("an unjoined public channel stays listed and pickable (state available) with joined: false, so the screen can tell the editor to invite Rovara; a missing flag is not a claim to be joined", async () => {
+    const h = harness();
+    h.pages = [[entry(CH.pub, { joined: false }), entry(CH.priv)]];
+    const reply = await options(h, WHO.maint, { kind: "slack" });
+    expect(optionList(reply)).toEqual([
+      { scope: slackScope(CH.pub), name: "name-c0public1", slackKind: "public", joined: false, state: "available" },
+      { scope: slackScope(CH.priv), name: "name-c0private", slackKind: "private", joined: true, state: "available" },
+    ]);
+    const missing = harness();
+    missing.pages = [[{ id: CH.pub, name: "bare", kind: "public", extShared: false } as never]];
+    expect(optionList(await options(missing, WHO.maint, { kind: "slack" }))[0]).not.toHaveProperty("joined", true);
   });
 
-  it("pages with a cursor, at most 200 an answer, and stops at the total bound (10 pages)", async () => {
+  it("direct messages and group messages are never asked for or listed, in either edition (the bot sees only its own), even if the read sent them", async () => {
+    for (const edition of ["enterprise", "public"] as const) {
+      const h = harness({ edition });
+      h.pages = [[entry(CH.pub), { id: CH.dm, name: "U0PERSON1", kind: "im", extShared: false, joined: true } as never, { id: CH.mpim, name: "mpdm-a--b-1", kind: "mpim", extShared: false, joined: true } as never, entry(CH.priv)]];
+      const shown = await options(h, WHO.maint, { kind: "slack" });
+      expect(h.calls[0], edition).toEqual({ teamId: TEAM_A });
+      expect(optionList(shown).map((option) => option.slackKind), edition).toEqual(["public", "private"]);
+    }
+  });
+
+  const manyPages = (h: Harness, count = 12) => { h.pages = Array.from({ length: count }, (_, page) => Array.from({ length: 250 }, (_, index) => entry(`C${String(page)}${String(index).padStart(7, "0")}`))); };
+  const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\./u;
+  const sessions = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_OPTIONS");
+
+  it("pages with a cursor, at most 200 an answer, and the server stops at 10 pages and says the list was cut", async () => {
     const h = harness();
-    h.pages = Array.from({ length: 12 }, (_, page) => Array.from({ length: 250 }, (_, index) => entry(`C${String(page)}${String(index).padStart(7, "0")}`)));
+    manyPages(h);
     const seen: string[] = [];
     let cursor: string | undefined;
+    let last: Reply | undefined;
     let pages = 0;
     do {
       const reply = await options(h, WHO.maint, { kind: "slack", ...(cursor === undefined ? {} : { cursor }) });
       expect(reply.status).toBe(200);
       expect(optionList(reply).length).toBeLessThanOrEqual(200);
+      if (reply.body.next !== undefined) expect(reply.body.next as string).toMatch(SESSION);
       seen.push(...optionList(reply).map((option) => String(option.scope)));
       cursor = reply.body.next as string | undefined;
+      last = reply;
       pages += 1;
     } while (cursor !== undefined && pages < 40);
     expect(pages).toBe(10);
+    expect(last?.body.truncated).toBe(true);
     expect(new Set(seen).size).toBe(seen.length);
-    // The cursor Slack gets is Slack's own, not the page counter the broker wraps around it.
+    expect(h.calls).toHaveLength(10);
+    // The cursor Slack gets is Slack's own, not the session the broker wraps around it.
     expect(h.calls[1]!.cursor).toBe("p1");
+  });
+
+  it("a list that ends by itself is not marked cut", async () => {
+    const h = harness();
+    manyPages(h, 3);
+    let cursor: string | undefined;
+    let last: Reply | undefined;
+    do { last = await options(h, WHO.maint, { kind: "slack", ...(cursor === undefined ? {} : { cursor }) }); cursor = last.body.next as string | undefined; } while (cursor !== undefined);
+    expect(last.body).not.toHaveProperty("truncated");
+    expect(h.calls).toHaveLength(3);
+  });
+
+  it("the page cap is the server's: replaying one cursor never reads past 10 pages in all, a made-up session is refused, and Slack is not asked", async () => {
+    const h = harness();
+    manyPages(h);
+    const first = await options(h, WHO.maint, { kind: "slack" });
+    const cursor = first.body.next as string;
+    let refused = 0;
+    for (let again = 0; again < 15; again += 1) {
+      const reply = await options(h, WHO.maint, { kind: "slack", cursor });
+      if (reply.status === 400) { refused += 1; expect(reply.body).toMatchObject({ code: "CONFIG_INVALID" }); } else expect(reply.status).toBe(200);
+    }
+    expect(h.calls).toHaveLength(10); // the first page and nine more, never more
+    expect(refused).toBe(6);
+    const before = h.calls.length;
+    const forged = await options(h, WHO.maint, { kind: "slack", cursor: `${randomUUID()}.p1` });
+    expect(forged).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    // A number in place of a session (the old shape) is not a cursor.
+    expect(await options(h, WHO.maint, { kind: "slack", cursor: "0.p1" })).toMatchObject({ status: 400 });
+    expect(h.calls).toHaveLength(before);
+  });
+
+  it("a session belongs to one project, one kind and one company: another project, another kind and another company cannot use the cursor", async () => {
+    const h = harness();
+    manyPages(h, 3);
+    const cursor = (await options(h, WHO.owner, { kind: "slack" })).body.next as string;
+    const before = h.calls.length;
+    expect(await options(h, WHO.owner, { kind: "slack", cursor }, { project: "api" })).toMatchObject({ status: 400 });
+    expect(await options(h, WHO.owner, { kind: "jira", cursor })).toMatchObject({ status: 400 });
+    h.teams.set(ORG_B, TEAM_A);
+    expect(await options(h, WHO.otherMaint, { kind: "slack", cursor }, { org: ORG_B })).toMatchObject({ status: 400 });
+    expect(h.calls).toHaveLength(before);
+    // Positive control: the same project, kind and company may go on.
+    expect((await options(h, WHO.owner, { kind: "slack", cursor })).status).toBe(200);
+  });
+
+  it("a session expires: after its time the cursor is refused", async () => {
+    const h = harness();
+    manyPages(h, 3);
+    const cursor = (await options(h, WHO.maint, { kind: "slack" })).body.next as string;
+    h.w.clock.ms += 16 * 60 * 1000;
+    expect(await options(h, WHO.maint, { kind: "slack", cursor })).toMatchObject({ status: 400 });
+  });
+
+  it("a session holds no person, no name and no Slack text: ids of the session, the kind, the project and a count", async () => {
+    const h = harness();
+    manyPages(h, 3);
+    await options(h, WHO.maint, { kind: "slack" });
+    const rows = sessions(h);
+    expect(rows).toHaveLength(1);
+    const text = JSON.stringify(rows);
+    expect(text).not.toContain(MAINT);
+    expect(text).not.toContain("name-c0");
+    expect(rows[0]).toMatchObject({ kind: "slack", project: "web", pages: 1 });
+  });
+
+  it("Slack page reads are rationed per company (12 a minute, shared by every editor), with a fixed 429, and the budget comes back with the next minute", async () => {
+    const h = harness();
+    manyPages(h, 40);
+    const run = async (who: Who) => (await options(h, who, { kind: "slack" })).status;
+    for (let call = 0; call < 12; call += 1) expect(await run(call % 2 === 0 ? WHO.maint : WHO.owner), String(call)).toBe(200);
+    const denied = await options(h, WHO.admin, { kind: "slack" });
+    expect(denied).toMatchObject({ status: 429, body: { code: "TOO_MANY_REQUESTS" } });
+    expect(h.calls).toHaveLength(12);
+    // Another company has its own budget.
+    h.teams.set(ORG_B, TEAM_A);
+    expect((await options(h, WHO.otherMaint, { kind: "slack" }, { org: ORG_B })).status).toBe(200);
+    h.w.clock.ms += 61_000;
+    expect(await run(WHO.maint)).toBe(200);
   });
 
   it("a cursor that is not one of ours is refused, and so is a kind that has no picker; Slack is not asked", async () => {
     const h = harness();
-    for (const query of [{ kind: "slack", cursor: "nope" }, { kind: "slack", cursor: "99.p1" }, { kind: "slack", cursor: `1.${"x".repeat(400)}` }, { kind: "slack", cursor: "1.a b" }, { kind: "mcp" }, { kind: "github" }, { kind: "" }, {}]) {
+    for (const query of [{ kind: "slack", cursor: "nope" }, { kind: "slack", cursor: "99.p1" }, { kind: "slack", cursor: `${randomUUID()}.${"x".repeat(400)}` }, { kind: "slack", cursor: `${randomUUID()}.a b` }, { kind: "mcp" }, { kind: "github" }, { kind: "" }, {}]) {
       expect(await options(h, WHO.maint, query), JSON.stringify(query)).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
     }
     expect(h.calls).toEqual([]);
@@ -334,6 +432,7 @@ describe("Linear teams and Jira projects of the company's connected apps", () =>
     h.apps.set(ORG_A, [{ kind: "jira", places, reads: 0 }]);
     const seen: string[] = [];
     let cursor: string | undefined;
+    let last: Reply | undefined;
     let pages = 0;
     do {
       const reply = await options(h, WHO.maint, { kind: "jira", ...(cursor === undefined ? {} : { cursor }) });
@@ -341,9 +440,11 @@ describe("Linear teams and Jira projects of the company's connected apps", () =>
       expect(optionList(reply).length).toBeLessThanOrEqual(100);
       seen.push(...optionList(reply).map((option) => String(option.scope)));
       cursor = reply.body.next as string | undefined;
+      last = reply;
       pages += 1;
     } while (cursor !== undefined && pages < 40);
     expect(pages).toBe(10);
+    expect(last?.body.truncated).toBe(true);
     expect(seen).toHaveLength(1000);
     expect(new Set(seen).size).toBe(1000);
   });
@@ -377,8 +478,11 @@ describe("Linear teams and Jira projects of the company's connected apps", () =>
     off.trackersOn = false;
     expect(await options(off, WHO.maint, { kind: "linear" })).toEqual(FIXED_503);
     const h = harness();
-    expect(await options(h, WHO.maint, { kind: "linear", cursor: "0.7.abc" })).toEqual({ status: 200, body: { kind: "linear", options: [] } });
-    expect(await options(h, WHO.maint, { kind: "linear", cursor: "garbage" })).toMatchObject({ status: 400 });
+    h.apps.set(ORG_A, [{ kind: "jira", places: [{ scope: "jira:project/ENG", name: "Engineering (ENG)" }, { scope: "jira:project/OPS", name: "Operations (OPS)" }], pageSize: 1, reads: 0 }]);
+    const session = String((await options(h, WHO.maint, { kind: "jira" })).body.next).split(".")[0]!;
+    // A connection number past the company's last connection is an empty page, not a failure.
+    expect(await options(h, WHO.maint, { kind: "jira", cursor: `${session}.7.abc` })).toEqual({ status: 200, body: { kind: "jira", options: [] } });
+    expect(await options(h, WHO.maint, { kind: "jira", cursor: "garbage" })).toMatchObject({ status: 400 });
   });
 
   it("only editors on a live browser session, as for Slack; the apps are not read for anyone else", async () => {
@@ -431,15 +535,15 @@ describe("the broker's own request builds the Slack listing from the identity fu
   const contextWith = (developer: Record<string, unknown>) => recordWriteContextOf({ developer } as never, callerOf, request);
   it("passes the install's team, asks for exactly what the route asked and maps the answers", async () => {
     const asked: unknown[] = [];
-    const replies: unknown[] = [{ ok: true, channels: [{ id: "C0PUBLIC1", name: "general", kind: "public", extShared: false }], next: "abc=" }, { ok: false, error: "missing_scope" }, { ok: false, error: "slack_unavailable" }, { ok: false, error: "invalid_request" }];
+    const replies: unknown[] = [{ ok: true, channels: [{ id: "C0PUBLIC1", name: "general", kind: "public", extShared: false, joined: true }], next: "abc=" }, { ok: false, error: "missing_scope" }, { ok: false, error: "slack_unavailable" }, { ok: false, error: "invalid_request" }];
     const ctx = contextWith({ slackTeamId: TEAM_A, channelList: async (input: unknown) => { asked.push(input); return replies.shift(); } });
     expect(ctx.slackTeamId).toBe(TEAM_A);
-    expect(await ctx.slackChannels!({ teamId: TEAM_A, includeDirect: true, cursor: "abc=" })).toEqual({ ok: true, channels: [{ id: "C0PUBLIC1", name: "general", kind: "public", extShared: false }], next: "abc=" });
-    expect(asked).toEqual([{ kind: "channel-list", teamId: TEAM_A, includeDirect: true, cursor: "abc=" }]);
-    expect(await ctx.slackChannels!({ teamId: TEAM_A, includeDirect: false })).toEqual({ ok: false, error: "missing_scope" });
-    expect(asked[1]).toEqual({ kind: "channel-list", teamId: TEAM_A, includeDirect: false });
-    expect(await ctx.slackChannels!({ teamId: TEAM_A, includeDirect: false })).toEqual({ ok: false, error: "unavailable" });
-    expect(await ctx.slackChannels!({ teamId: TEAM_A, includeDirect: false })).toEqual({ ok: false, error: "unavailable" }); // an identity function without channel-list
+    expect(await ctx.slackChannels!({ teamId: TEAM_A, cursor: "abc=" })).toEqual({ ok: true, channels: [{ id: "C0PUBLIC1", name: "general", kind: "public", extShared: false, joined: true }], next: "abc=" });
+    expect(asked).toEqual([{ kind: "channel-list", teamId: TEAM_A, cursor: "abc=" }]);
+    expect(await ctx.slackChannels!({ teamId: TEAM_A })).toEqual({ ok: false, error: "missing_scope" });
+    expect(asked[1]).toEqual({ kind: "channel-list", teamId: TEAM_A });
+    expect(await ctx.slackChannels!({ teamId: TEAM_A })).toEqual({ ok: false, error: "unavailable" });
+    expect(await ctx.slackChannels!({ teamId: TEAM_A })).toEqual({ ok: false, error: "unavailable" }); // an identity function without channel-list
   });
 
   it("an install with no such read, or no Slack team, offers neither (the picker then falls back to typing)", () => {

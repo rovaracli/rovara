@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { sourceOptionsRoot } from "../../../api/record-source-options.js";
 import { sourcesAdminKey, type SourcesAdminViewData } from "../../../api/record-sources.js";
 import { Button } from "../../../design/Button.js";
 import { Select } from "../../../design/Select.js";
@@ -46,6 +47,8 @@ export function SourceAdd({ project, view, notify }: { project: string; view: So
  const match = chosen === undefined ? undefined : clearingMatch(view, SOURCE_OF[chosen], scope), clearingNow = match !== undefined;
  // The worker may have finished since the view was read: when the person picks or types a place that matches a clearing row, read the view once more. Keyed on the clearing row, not on the typed text, so one match is one read.
  const matchedPlace = match === undefined ? "" : match.source + "|" + match.scope;
+ // The lists read for the pickers live as long as this form: they go when it closes, and after an add (a place just added is no longer free).
+ useEffect(() => () => { query.removeQueries({ queryKey: sourceOptionsRoot(project) }); }, [project, query]);
  useEffect(() => { if (matchedPlace !== "") void query.invalidateQueries({ queryKey: sourcesAdminKey(project) }); }, [matchedPlace, project, query]);
  if (kinds.length === 0) return <section aria-label={T.SRC_ADD} className="rv-lessons-section"><h3>{T.SRC_ADD}</h3><p className="rv-muted">{T.SRC_ADD_NONE}</p></section>;
  const chosenRetention = notesMode ? (notes ? "B" : "A") : retention;
@@ -55,6 +58,7 @@ export function SourceAdd({ project, view, notify }: { project: string; view: So
   const reply = await writer.send({ action: "add", source: SOURCE_OF[chosen], scope, retention: chosenRetention, ...(notesMode && notes ? { notesOptIn: true } : {}), audienceDefault: chosen === "rovara" ? "maintainers" : audience, enabled });
   if (reply === undefined) return;
   notify(T.SRC_ADDED);
+  query.removeQueries({ queryKey: sourceOptionsRoot(project) });
   setKind("");setPlace("");setRetention("");setNotes(false);setAudience("maintainers");setEnabled(true);setFormKey(formKey + 1);
  };
  return <section aria-label={T.SRC_ADD} className="rv-lessons-section"><h3>{T.SRC_ADD}</h3>

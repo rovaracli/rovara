@@ -71,8 +71,8 @@ export interface SourceWriteContext {
   /** The Slack team of this install (the one whose bot token DeveloperIdentity holds). The pickers list only this team, and only for the company it is bound to. Absent: the Slack picker cannot be read. */
   slackTeamId?: string;
   /** One page of the channels the bot can see, read fresh through DeveloperIdentity (`channel-list`). `missing_scope`: the Slack app lacks the listing scopes. Absent: the Slack picker cannot be read. */
-  slackChannels?: (input: { teamId: string; includeDirect: boolean; cursor?: string }) => Promise<
-    { ok: true; channels: Array<{ id: string; name: string; kind: "public" | "private" | "im" | "mpim"; extShared: boolean }>; next?: string } | { ok: false; error: "missing_scope" | "unavailable" }>;
+  slackChannels?: (input: { teamId: string; cursor?: string }) => Promise<
+    { ok: true; channels: Array<{ id: string; name: string; kind: "public" | "private"; extShared: boolean; joined: boolean }>; next?: string } | { ok: false; error: "missing_scope" | "unavailable" }>;
 }
 
 const WORDS = {

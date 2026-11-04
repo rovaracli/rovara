@@ -16,7 +16,7 @@ const slackChannelOf = (read: ChannelClassRead): NonNullable<SourceWriteContext[
 type ChannelListRead = NonNullable<NonNullable<DeveloperRouteDependencies["developer"]>["channelList"]>;
 /** The Slack picker's page, from DeveloperIdentity's `channel-list`: a missing scope keeps its own word, every other failure (an identity function that does not know the request included) is plain unavailable. */
 const slackChannelsOf = (read: ChannelListRead, teamId: string): NonNullable<SourceWriteContext["slackChannels"]> => async (input) => {
-  const answer = await read({ kind: "channel-list", teamId, includeDirect: input.includeDirect, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) });
+  const answer = await read({ kind: "channel-list", teamId, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) });
   if (answer.ok) return { ok: true, channels: answer.channels, ...(answer.next === undefined ? {} : { next: answer.next }) };
   return { ok: false, error: answer.error === "missing_scope" ? "missing_scope" : "unavailable" };
 };

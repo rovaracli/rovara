@@ -124,17 +124,21 @@ export const SourceOptionSchema = z.object({
   /** The place's name as its tool shows it. Shown to people as text only. */
   name: z.string().min(1).max(200),
   state: SourceOptionStateSchema,
-  /** Slack only: what kind of conversation it is. */
-  slackKind: z.enum(["public", "private", "im", "mpim"]).optional(),
+  /** Slack only: a public or a private channel (direct messages and group messages are never listed). */
+  slackKind: z.enum(["public", "private"]).optional(),
+  /** Slack only: false when the bot is not in the channel (`is_member` was not true), so the screen says to invite Rovara. The option stays pickable. */
+  joined: z.boolean().optional(),
 }).strict();
 export type SourceOption = z.infer<typeof SourceOptionSchema>;
 export const SourceOptionsViewSchema = z.object({
   kind: SourcePickerKindSchema,
   options: z.array(SourceOptionSchema).max(200),
-  /** Hand this back as `cursor` for the next page. Absent on the last page, and after the total bound (10 pages). */
+  /** Hand this back as `cursor` for the next page. Absent on the last page, and after the server's bound (10 pages in one session). */
   next: z.string().min(1).max(400).optional(),
+  /** True only when the server stopped at its bound while more existed: the list shown is the first part only. */
+  truncated: z.literal(true).optional(),
 }).strict();
 export type SourceOptionsView = z.infer<typeof SourceOptionsViewSchema>;
 export const SourceOptionsViewReaderSchema = forwardReader(SourceOptionsViewSchema);
-/** The query of the read. The cursor is the one the last page gave (`<page>.<opaque>`); anything else is refused. */
-export const SourceOptionsQuerySchema = z.object({ kind: SourcePickerKindSchema, cursor: z.string().regex(/^[0-9]{1,2}\.[A-Za-z0-9+/=_%.-]{0,330}$/).max(400).optional() }).strict();
+/** The query of the read. The cursor is the one the last page gave (`<session>.<opaque>`: the session is the server's own record of how many pages were read); anything else is refused. */
+export const SourceOptionsQuerySchema = z.object({ kind: SourcePickerKindSchema, cursor: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9+/=_%.-]{0,330}$/).max(400).optional() }).strict();

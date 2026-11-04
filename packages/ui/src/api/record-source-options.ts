@@ -10,7 +10,8 @@ import { lessonsKey } from "./lessons.js";
 import { codeOf, sourcesPath } from "./record-sources.js";
 
 export type SourceOptionsPage = ReturnType<typeof SourceOptionsViewReaderSchema.parse>;
-export const sourceOptionsKey = (project: string, kind: SourcePickerKind) => [...lessonsKey(project), "source-options", kind] as const;
+export const sourceOptionsRoot = (project: string) => [...lessonsKey(project), "source-options"] as const;
+export const sourceOptionsKey = (project: string, kind: SourcePickerKind) => [...sourceOptionsRoot(project), kind] as const;
 
 async function readPage(host: AppHost, project: string, kind: SourcePickerKind, cursor: string | undefined): Promise<SourceOptionsPage> {
  const query = "?kind=" + kind + (cursor === undefined ? "" : "&cursor=" + encodeURIComponent(cursor));
@@ -25,11 +26,14 @@ async function readPage(host: AppHost, project: string, kind: SourcePickerKind, 
  try { return SourceOptionsViewReaderSchema.parse(response.body); } catch { throw new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response."); }
 }
 
-/** The places the picker offers, page by page (the server bounds the pages). Never retried, never kept: a fresh read each time the form picks the kind. */
+/**
+ * The places the picker offers, a page at a time, and only when the person asks for the next (the server bounds the pages). Never retried. The pages already read are kept for as long as the Add form is open, so
+ * switching kinds away and back reads nothing again (the form removes them when it closes and after an add: `sourceOptionsRoot`).
+ */
 export function useSourceOptions(project: string, kind: SourcePickerKind, enabled: boolean) {
  const host = useAppHost(), key = useMemo(() => sourceOptionsKey(project, kind), [project, kind]);
  return useInfiniteQuery<SourceOptionsPage, Error, InfiniteData<SourceOptionsPage, string | undefined>, ReturnType<typeof sourceOptionsKey>, string | undefined>({
-  queryKey: key, enabled, retry: false, gcTime: 0, staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false,
+  queryKey: key, enabled, retry: false, gcTime: Infinity, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false,
   initialPageParam: undefined as string | undefined, getNextPageParam: last => last.next,
   queryFn: ({ pageParam }) => readPage(host, project, kind, pageParam),
  });

@@ -12,7 +12,8 @@ import { expectNoAxeViolations } from "./support/axe.js";
 afterEach(() => { cleanup(); });
 type Raw = Record<string, unknown>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
-const slackOption = (id: string, name: string, over: Raw = {}) => ({ scope: `slack:T1/${id}`, name, state: "available", slackKind: "public", ...over });
+const SESSION = "11111111-2222-4333-8444-555555555555";
+const slackOption = (id: string, name: string, over: Raw = {}) => ({ scope: `slack:T1/${id}`, name, state: "available", slackKind: "public", joined: true, ...over });
 const list = (kind: string, options: Raw[], next?: string) => ok(SourceOptionsViewSchema.parse({ kind, options, ...(next === undefined ? {} : { next }) }));
 const SLACK = [
   slackOption("C0GENERAL", "general"),
@@ -20,8 +21,7 @@ const SLACK = [
   slackOption("C0MINE001", "payments", { state: "added" }),
   slackOption("C0TAKEN01", "platform", { state: "taken" }),
   slackOption("C0SHARED1", "partners", { state: "slack_connect" }),
-  slackOption("D0DIRECT1", "U0PERSON1", { slackKind: "im" }),
-  slackOption("G0GROUPDM", "mpdm-a--b-1", { slackKind: "mpim" }),
+  slackOption("C0NOTIN01", "random", { joined: false }),
 ];
 const pick = (label: string, value: string, scope: HTMLElement = document.body) => fireEvent.change(within(scope).getByLabelText(label), { target: { value } });
 const open = async (options: Parameters<typeof openSources>[0] = {}) => { const f = openSources(options); await screen.findByRole("heading", { name: "Add a source" }); return { f, form: screen.getByRole("region", { name: "Add a source" }) }; };
@@ -59,7 +59,7 @@ describe("the Slack channel picker", () => {
     expect(within(form).getByText("No channel matches that.")).toBeTruthy();
   });
 
-  it("marks what already is a source, what another project holds (not named), and Slack Connect as disabled, each with its reason; tags private and direct conversations", async () => {
+  it("marks what already is a source, what another project holds (not named), and Slack Connect as disabled, each with its reason; tags private channels", async () => {
     const { form } = await open({ options: () => list("slack", SLACK) });
     pick("What to add", "slack");
     await within(form).findByRole("radio", { name: /general/u });
@@ -72,8 +72,8 @@ describe("the Slack channel picker", () => {
     expect(radio(form, /general/u).disabled).toBe(false);
     expect(radio(form, /secret-plans/u).disabled).toBe(false);
     expect(within(form).getByText("Private")).toBeTruthy();
-    expect(within(form).getByText("Direct message")).toBeTruthy();
-    expect(within(form).getByText("Group message")).toBeTruthy();
+    expect(within(form).queryByText("Direct message")).toBeNull();
+    expect(within(form).queryByText("Group message")).toBeNull();
     expect(document.body.textContent).not.toMatch(/other project's name|api/u);
   });
 
@@ -111,20 +111,100 @@ describe("the Slack channel picker", () => {
     expect(f.posts).toEqual([]);
   });
 
-  it("reads the next pages by the cursor it was given (encoded) and shows every page once", async () => {
+  it("an unjoined channel stays pickable and says to invite Rovara; a joined one says nothing; the pick still adds it", async () => {
+    const { f, form } = await open({ options: () => list("slack", SLACK) });
+    pick("What to add", "slack");
+    await within(form).findByRole("radio", { name: /general/u });
+    expect(within(form).getAllByText("Invite Rovara to this channel so it can read it.")).toHaveLength(1);
+    expect(radio(form, /random/u).disabled).toBe(false);
+    expect(within(radio(form, /random/u).closest("label")!).getByText("Invite Rovara to this channel so it can read it.")).toBeTruthy();
+    expect(within(radio(form, /general/u).closest("label")!).queryByText(/Invite Rovara/u)).toBeNull();
+    fireEvent.click(radio(form, /random/u));
+    pick("How long Rovara keeps it", "A", form);
+    fireEvent.click(within(form).getByRole<HTMLButtonElement>("button", { name: "Add source" }));
+    await waitFor(() => { expect(f.posts).toHaveLength(1); });
+    expect(f.posts[0]).toMatchObject({ source: "slack", scope: "slack:T1/C0NOTIN01" });
+  });
+
+  it("reads one page, and the next only when asked (Show more), by the cursor it was given (encoded); every page shows once and the button goes at the end", async () => {
     const seen: string[] = [];
     const { form } = await open({
       options: (url) => {
         seen.push(url.search);
         const cursor = url.searchParams.get("cursor");
-        if (cursor === null) return list("slack", [slackOption("C0PAGE001", "one"), slackOption("C0PAGE002", "two")], "1.ab+/=");
+        if (cursor === null) return list("slack", [slackOption("C0PAGE001", "one"), slackOption("C0PAGE002", "two")], `${SESSION}.ab+/=`);
         return list("slack", [slackOption("C0PAGE002", "two"), slackOption("C0PAGE003", "three")]);
       },
     });
     pick("What to add", "slack");
+    await within(form).findByRole("radio", { name: /one/u });
+    await new Promise(resolve => { setTimeout(resolve, 30); });
+    expect(seen).toEqual(["?kind=slack"]); // nothing else is read on its own
+    fireEvent.click(within(form).getByRole("button", { name: "Show more" }));
     expect(await within(form).findByRole("radio", { name: /three/u })).toBeTruthy();
-    expect(seen).toEqual(["?kind=slack", "?kind=slack&cursor=1.ab%2B%2F%3D"]);
+    expect(seen).toEqual(["?kind=slack", `?kind=slack&cursor=${SESSION}.ab%2B%2F%3D`]);
     expect(within(form).getAllByRole("radio").map(item => item.getAttribute("value"))).toEqual(["slack:T1/C0PAGE001", "slack:T1/C0PAGE002", "slack:T1/C0PAGE003"]);
+    expect(within(form).queryByRole("button", { name: "Show more" })).toBeNull();
+    expect(within(form).queryByText(/Showing the first channels only/u)).toBeNull();
+  });
+
+  it("the pages already loaded stay while the form is open: switching kinds away and back reads nothing again; an add clears them", async () => {
+    const { f, form } = await open({
+      options: (url) => (url.searchParams.get("kind") === "jira" ? list("jira", [{ scope: "jira:project/OPS", name: "Operations (OPS)", state: "available" }])
+        : url.searchParams.get("cursor") === null ? list("slack", [slackOption("C0PAGE001", "one")], `${SESSION}.x`) : list("slack", [slackOption("C0PAGE002", "two")])),
+    });
+    pick("What to add", "slack");
+    await within(form).findByRole("radio", { name: /one/u });
+    fireEvent.click(within(form).getByRole("button", { name: "Show more" }));
+    await within(form).findByRole("radio", { name: /two/u });
+    pick("What to add", "jira");
+    await within(form).findByRole("radio", { name: /Operations/u });
+    pick("What to add", "slack");
+    expect(within(form).getAllByRole("radio")).toHaveLength(2); // both pages, at once
+    expect(f.optionReads).toEqual(["?kind=slack", `?kind=slack&cursor=${SESSION}.x`, "?kind=jira"]);
+    fireEvent.click(radio(form, /one/u));
+    pick("How long Rovara keeps it", "A", form);
+    fireEvent.click(within(form).getByRole<HTMLButtonElement>("button", { name: "Add source" }));
+    expect(await screen.findByText("Source added.")).toBeTruthy();
+    pick("What to add", "slack");
+    await within(form).findByRole("radio", { name: /one/u });
+    expect(f.optionReads.filter(read => read === "?kind=slack")).toHaveLength(2); // read afresh after the add
+  });
+
+  it("when the server cut the list at its bound the screen says so, and a search that finds nothing says 'Not in the channels shown so far.'", async () => {
+    const { form } = await open({ options: () => ok(SourceOptionsViewSchema.parse({ kind: "slack", options: [slackOption("C0PAGE001", "one")], truncated: true })) });
+    pick("What to add", "slack");
+    await within(form).findByRole("radio", { name: /one/u });
+    expect(within(form).getByText("Showing the first channels only. Enter an ID instead to add one that isn't listed.")).toBeTruthy();
+    expect(within(form).queryByRole("button", { name: "Show more" })).toBeNull();
+    fireEvent.change(within(form).getByLabelText("Find a channel"), { target: { value: "zzz" } });
+    expect(within(form).getByText("Not in the channels shown so far.")).toBeTruthy();
+    expect(within(form).queryByText("No channel matches that.")).toBeNull();
+  });
+
+  it("when a later page fails the screen keeps what it has, says so with the same fixed line, offers no more, and never says the list is complete", async () => {
+    const { form } = await open({ options: (url) => (url.searchParams.get("cursor") === null ? list("slack", [slackOption("C0PAGE001", "one")], `${SESSION}.x`) : flat("TOO_MANY_REQUESTS", "slack said: token abc", 429)) });
+    pick("What to add", "slack");
+    await within(form).findByRole("radio", { name: /one/u });
+    fireEvent.click(within(form).getByRole("button", { name: "Show more" }));
+    expect(await within(form).findByText("Showing the first channels only. Enter an ID instead to add one that isn't listed.")).toBeTruthy();
+    expect(within(form).queryByRole("button", { name: "Show more" })).toBeNull();
+    expect(within(form).getAllByRole("radio")).toHaveLength(1);
+    fireEvent.change(within(form).getByLabelText("Find a channel"), { target: { value: "zzz" } });
+    expect(within(form).getByText("Not in the channels shown so far.")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("token abc");
+  });
+
+  it("with more pages to read, a search that finds nothing says 'Not in the channels shown so far.' and offers Show more; a finished list says 'No channel matches that.'", async () => {
+    const { form } = await open({ options: (url) => (url.searchParams.get("cursor") === null ? list("slack", [slackOption("C0PAGE001", "one")], `${SESSION}.x`) : list("slack", [slackOption("C0PAGE002", "two")])) });
+    pick("What to add", "slack");
+    await within(form).findByRole("radio", { name: /one/u });
+    fireEvent.change(within(form).getByLabelText("Find a channel"), { target: { value: "two" } });
+    expect(within(form).getByText("Not in the channels shown so far.")).toBeTruthy();
+    fireEvent.click(within(form).getByRole("button", { name: "Show more" }));
+    expect(await within(form).findByRole("radio", { name: /two/u })).toBeTruthy();
+    fireEvent.change(within(form).getByLabelText("Find a channel"), { target: { value: "zzz" } });
+    expect(within(form).getByText("No channel matches that.")).toBeTruthy();
   });
 
   it("is accessible, light and dark", async () => {

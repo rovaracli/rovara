@@ -394,14 +394,15 @@ export type ChannelClassResponse =
 
 /**
  * Team record source pickers (lane task 10): the channels the bot can see, one page of `conversations.list` at a time, read fresh with the same bot token. Only for the team the bot token belongs to.
- * `includeDirect` adds direct messages and group messages (the broker asks for them only in the edition that allows them). `cursor` is Slack's own, passed back as Slack gave it.
+ * Public and private channels only: direct messages and group messages are never listed (a bot token sees only its own, so a list of them would mislead; they are added by typing the ID). `joined` says whether the bot is in the
+ * channel (`is_member`; missing is not joined). `cursor` is Slack's own, passed back as Slack gave it.
  * `missing_scope`: the Slack app was installed without the scopes that listing needs (the broker says so in one fixed sentence).
  */
 export const ChannelListRequestSchema = z.object({
-  kind: z.literal("channel-list"), teamId: SlackTeamIdSchema, includeDirect: z.boolean(), cursor: z.string().regex(/^[A-Za-z0-9+/=_%.-]{1,300}$/).optional(),
+  kind: z.literal("channel-list"), teamId: SlackTeamIdSchema, cursor: z.string().regex(/^[A-Za-z0-9+/=_%.-]{1,300}$/).optional(),
 }).strict();
 export type ChannelListRequest = z.infer<typeof ChannelListRequestSchema>;
-export type ChannelListEntry = { id: string; name: string; kind: "public" | "private" | "im" | "mpim"; extShared: boolean };
+export type ChannelListEntry = { id: string; name: string; kind: "public" | "private"; extShared: boolean; joined: boolean };
 export type ChannelListResponse =
   | { ok: true; channels: ChannelListEntry[]; next?: string }
   | { ok: false; error: "slack_unavailable" | "missing_scope" | "invalid_request" };
