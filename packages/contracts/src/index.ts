@@ -304,3 +304,7 @@ export * from "./runner.js";
 
 // Company domain verification (owner decision 2026-11-02).
 export * from "./company-domains-web.js";
+
+export * from "./task-stop-enrollment.js";
+
+export * from "./task-stop-start-preview.js";

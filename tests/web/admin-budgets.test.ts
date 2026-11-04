@@ -14,9 +14,18 @@ import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 const orgId="org_aaaaaaaaaaaaaaaaaaaa", developerId="a".repeat(64);
 const settings={orgId,checkedAt:"2026-10-27T12:00:00Z",coverage:"monthly_base_settings_only",orgMonthly:{kind:"limited",microdollars:500_000_000,source:"cloud_default"},memberDefaultMonthly:{kind:"limited",microdollars:29_000_000,source:"configured"},memberOverrideCount:2,memberOverrideCoverage:"configured_only_membership_not_checked",usage:"not_checked",topUps:"not_checked",enforcement:"not_checked"};
+// Match json-reply.ts, including gateway overwrite of a route's own requestId.
+function gatewayHost(...args: Parameters<typeof fakeHost>) {
+ const f = fakeHost(...args);
+ f.host.transport.request = async input => {
+  const response = await f.request(input), body = response.body;
+  return response.status === 200 && body !== null && typeof body === "object" && !Array.isArray(body) ? { ...response, body: { ...body, requestId: "mock-gateway-request" } } : response;
+ };
+ return f;
+}
 function mount(options:{role?:string;respond?:(r:ApiRequest)=>Promise<ApiResponse>;theme?:"light"|"dark";width?:number;prime?:boolean}={}){
  const nav=AppNavSchema.parse({me:{developerId,name:"Priya",orgRole:"owner"},org:{name:"Acme"},homeCount:0,projects:[],shared:{agents:[],sessions:[]},features:{admin:true,localAgents:false,usage:false,chains:false,describe:false,notices:false}}),me={developer:{id:developerId,name:"Priya",orgRole:options.role??"owner"},org:{orgId,name:"Acme",plan:"team"},identities:[]};
- const f=fakeHost(async r=>r.path.endsWith("/me")?{status:200,body:me}:r.path.endsWith("/nav")?{status:200,body:nav}:options.respond?.(r)??{status:200,body:settings});if(options.width!==undefined)f.host.viewport={width:()=>options.width??1280,subscribe:()=>()=>undefined};f.storage.set("rovara.theme",options.theme??"light");const query=createQueryClient();query.setQueryData(["nav"],nav);if(options.prime){query.setQueryData(["admin","identity"],me);query.setQueryData(["admin","budget-settings"],{...settings,orgId:"org_bbbbbbbbbbbbbbbbbbbb",orgMonthly:{kind:"limited",microdollars:777_000_000,source:"configured"}});}const router=createMemoryRouter(appRoutes(nav.features),{initialEntries:["/app/admin/money/budgets"]});const view=renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(ThemeProvider,{host:f.host,children:h(RouterProvider,{router})})})}));return{...f,...view,query,router,me,close(){view.unmount();router.dispose();query.clear();}};
+ const f=gatewayHost(async r=>r.path.endsWith("/me")?{status:200,body:me}:r.path.endsWith("/nav")?{status:200,body:nav}:options.respond?.(r)??{status:200,body:settings});if(options.width!==undefined)f.host.viewport={width:()=>options.width??1280,subscribe:()=>()=>undefined};f.storage.set("rovara.theme",options.theme??"light");const query=createQueryClient();query.setQueryData(["nav"],nav);if(options.prime){query.setQueryData(["admin","identity"],me);query.setQueryData(["admin","budget-settings"],{...settings,orgId:"org_bbbbbbbbbbbbbbbbbbbb",orgMonthly:{kind:"limited",microdollars:777_000_000,source:"configured"}});}const router=createMemoryRouter(appRoutes(nav.features),{initialEntries:["/app/admin/money/budgets"]});const view=renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(ThemeProvider,{host:f.host,children:h(RouterProvider,{router})})})}));return{...f,...view,query,router,me,close(){view.unmount();router.dispose();query.clear();}};
 }
 for(const role of ["owner","admin"])it(`lets ${role} read monthly base settings with explicit coverage and no money writes`,async()=>{const f=mount({role});try{await screen.findByRole("table",{name:"Monthly base budgets"});expect(screen.getByText("$500.00")).toBeTruthy();expect(screen.getByText("$29.00")).toBeTruthy();expect(screen.getByText("Existing cloud default")).toBeTruthy();expect(screen.getByText(/2 configured member overrides/)).toBeTruthy();expect(screen.getByText(/Current membership and individual limits are not checked/)).toBeTruthy();expect(screen.getByText(/Monthly base budgets are read only/)).toBeTruthy();expect(screen.getByText(/Usage, top-ups and enforcement are not checked/)).toBeTruthy();expect(screen.getByText(/does not determine whether a task can start/)).toBeTruthy();expect(screen.queryByRole("button",{name:/save|confirm/i})).toBeNull();expect(f.request.mock.calls.every(([r])=>r.method==="GET")).toBe(true);expect(screen.getByRole("link",{name:"Spending"})).toBeTruthy();}finally{f.close();}});
 it("distinguishes zero from unlimited and preserves display of a single microdollar",async()=>{const f=mount({respond:async()=>({status:200,body:{...settings,orgMonthly:{kind:"limited",microdollars:0,source:"configured"},memberDefaultMonthly:{kind:"unlimited",source:"unset"}}})});try{await screen.findByText("$0.00");expect(screen.getByText("Unlimited (not configured)")).toBeTruthy();f.request.mockImplementation(async r=>r.path.endsWith("/me")?{status:200,body:f.me}:{status:200,body:{...settings,orgMonthly:{kind:"limited",microdollars:1,source:"configured"}}});fireEvent.click(screen.getByRole("button",{name:"Refresh budgets"}));await screen.findByText("$0.000001");}finally{f.close();}});
@@ -80,4 +89,75 @@ it("reloads a failed task stop deliberately even within the same clock tick", as
  const context = { orgId, scopeKind: "company", revision: 1, sourceDigest: "c".repeat(64), policy: { kind: "limited", stopMicrousd: 1 } };let reads = 0;
  const clock = vi.spyOn(Date, "now").mockReturnValue(1), f = mount({ respond: async r => r.path.includes("task-stop-policy") ? ++reads === 1 ? { status: 503, body: {} } : { status: 200, body: context } : { status: 200, body: settings } });
  try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));await screen.findByRole("alert");fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));await screen.findByText("Current task stop: $0.000001. Revision 1.");expect(reads).toBe(2); } finally { f.close();clock.mockRestore(); }
+});
+
+it("owner reviews impacts before two explicit enforcement confirmations, after freshness preflight", async () => {
+ let state = "disabled", revision = 1;
+ const reviewId = "11111111-1111-4111-8111-111111111111", digest = "d".repeat(64);
+ const f = mount({ respond: async r => {
+  if (r.path.includes("/enrollment")) {
+   if (r.method === "PUT") { state = (r.body as { state: string }).state;revision += 1;return { status: 200, body: { orgId, requestId: (r.body as { requestId: string }).requestId, state, revision, tasksReviewed: 0, tasksAtEnable: 0, newImpacts: 0 } }; }
+   return { status: 200, body: { orgId, state, revision } };
+  }
+  if (r.path.endsWith("/cutover-review")) return { status: 200, body: { orgId, reviewId, digest, revision, complete: true, capturedAt: "2026-11-04T15:00:00.000Z", expiresAt: "2026-11-04T15:05:00.000Z", tasks: [], truncated: false, counts: { refuse_next_admission: 0, new_window_at_stop: 0, retain_current_window: 0, exempt: 0 } } };
+  return { status: 200, body: settings };
+ } });
+ try {
+  await screen.findByRole("table");expect(f.request.mock.calls.some(([r]) => r.path.includes("enrollment"))).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));
+  await screen.findByRole("heading", { name: "Review enforcement impacts" });
+  const calls = f.request.mock.calls.map(([r]) => r).filter(r => /enrollment|cutover-review/.test(r.path));
+  expect(calls[0]).toMatchObject({ method: "GET", path: "/v1/app/org/task-stop-policy/enrollment?fresh=1" });
+  expect(calls[1]).toMatchObject({ method: "POST", path: "/v1/app/org/task-stop-policy/cutover-review" });
+  expect(f.request.mock.calls.some(([r]) => r.method === "PUT")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Confirm review and mark ready" }));
+  await screen.findByRole("button", { name: "Enable enforcement" });
+  expect(state).toBe("ready");fireEvent.click(screen.getByRole("button", { name: "Enable enforcement" }));
+  await screen.findByText("Enforcement is enabled.");expect(state).toBe("enabled");
+  expect(f.request.mock.calls.filter(([r]) => r.method === "PUT").map(([r]) => r.body)).toEqual([
+   expect.objectContaining({ state: "ready", expectedRevision: 1, reviewId, expectedReviewDigest: digest }),
+   expect.objectContaining({ state: "enabled", expectedRevision: 2, reviewId, expectedReviewDigest: digest }),
+  ]);
+ } finally { f.close(); }
+});
+it("admin cannot load or change company enforcement", async () => {
+ const f = mount({ role: "admin" });try { await screen.findByRole("table");expect(screen.queryByRole("button", { name: "Turn on enforcement" })).toBeNull();expect(f.request.mock.calls.some(([r]) => /enrollment|cutover-review/.test(r.path))).toBe(false); } finally { f.close(); }
+});
+it("stale sign-in stops before review and offers the existing sign-in flow", async () => {
+ const f = mount({ respond: async r => r.path.includes("/enrollment") ? { status: 403, body: { error: { code: "REAUTH_REQUIRED" } } } : { status: 200, body: settings } });
+ try {
+  await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Sign in again" }));expect(f.host.signIn).toHaveBeenCalled();
+  expect(f.request.mock.calls.some(([r]) => r.method !== "GET")).toBe(false);
+ } finally { f.close(); }
+});
+it("turning off enabled enforcement also handles REAUTH without a second-owner flow", async () => {
+ const f = mount({ respond: async r => r.path.includes("/enrollment") ? r.method === "GET" ? { status: 200, body: { orgId, state: "enabled", revision: 3 } } : { status: 403, body: { error: { code: "REAUTH_REQUIRED" } } } : { status: 200, body: settings } });
+ try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));fireEvent.click(await screen.findByRole("button", { name: "Turn off enforcement" }));await screen.findByRole("button", { name: "Sign in again" });expect(screen.queryByText(/second owner/i)).toBeNull(); } finally { f.close(); }
+});
+
+for (const [code, text] of [
+ ["TASK_STOP_REVIEW_TOO_LARGE", /up to 100 active tasks/],
+ ["TASK_STOP_CONFIG_MISSING", /Prepare the missing Spending setting/],
+ ["TASK_STOP_CONFIG_INVALID", /Repair the invalid Spending setting/],
+ ["CHANGE_STALE", /capture a fresh review/],
+ ["AUDIT_UNAVAILABLE", /audit ledger is unavailable/],
+] as const) it(`enforcement review explains ${code} without writing`, async () => {
+ const f = mount({ respond: async r => r.path.includes("/enrollment") ? { status: 200, body: { orgId, state: "disabled", revision: 1 } } : r.path.endsWith("/cutover-review") ? { status: 409, body: { error: { code, message: "UNTRUSTED SERVER TEXT", resource: { kind: "project", name: "payments" } } } } : { status: 200, body: settings } });
+ try {
+  await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));await screen.findByText(text);
+  if (code.startsWith("TASK_STOP_CONFIG_")) expect(screen.getByRole("alert").textContent).toContain("project: payments");
+  expect(screen.queryByText(/UNTRUSTED SERVER TEXT/)).toBeNull();expect(f.request.mock.calls.some(([r]) => r.method === "PUT")).toBe(false);
+ } finally { f.close(); }
+});
+
+it("stale enable tells the owner to cancel setup; failure sends no follow-up write", async () => {
+ const review = { orgId, reviewId: "11111111-1111-4111-8111-111111111111", digest: "d".repeat(64), revision: 2, complete: true, capturedAt: "2026-11-04T15:00:00.000Z", expiresAt: "2026-11-04T15:05:00.000Z", tasks: [], truncated: false, counts: { refuse_next_admission: 0, new_window_at_stop: 0, retain_current_window: 0, exempt: 0 } };
+ const f = mount({ respond: async r => r.path.endsWith("/cutover-review") ? { status: 200, body: review } : r.path.includes("/enrollment") ? r.method === "GET" ? { status: 200, body: { orgId, state: "ready", revision: 2 } } : { status: 409, body: { error: { code: "CHANGE_STALE", message: "raw server words" } } } : { status: 200, body: settings } });
+ try {
+  await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Enable enforcement" }));await screen.findByText("Spending sources changed. Cancel setup and review again.");
+  expect(screen.getByRole("button", { name: "Cancel enforcement setup" })).toBeTruthy();
+  expect(f.request.mock.calls.filter(([r]) => r.method === "PUT")).toHaveLength(1);expect(screen.queryByText(/raw server words/)).toBeNull();
+ } finally { f.close(); }
 });

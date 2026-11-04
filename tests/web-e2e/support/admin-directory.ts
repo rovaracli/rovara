@@ -8,14 +8,14 @@ import { installationBindingCheck, requireRepositoriesConnected } from "../../..
 import { createWorkingBranchProvider, createWorkingBranchPageProvider } from "../../../packages/broker/src/org/project-working-branch-provider.js";
 import { seedLaneB, readLaneBAgents } from "./admin-projects-agents.js";
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
-import { BatchGetCommand, GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { orgSettingsKey, projectAiKey, orgMemberKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey, slackBindingKey, developerOrgKey, modelSourcesKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
+import { BatchGetCommand, TransactGetCommand, GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { BUILTIN_AGENT_IDS, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, builtinSettingsKey, orgScoped, orgSettingsKey, projectAiKey, orgMemberKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey, slackBindingKey, developerOrgKey, modelSourcesKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
 import { appCsrfTokenFor } from "../../../packages/broker/src/developer/app-csrf.js";
 import { ModelSourceStore } from "../../../packages/broker/src/model-sources/store.js";
 import { OrgStore } from "../../../packages/broker/src/org/store.js";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../../packages/broker/src/aws/developer-routes.js";
 import type { AuditRuntime } from "../../../packages/broker/src/audit/outbox.js";
-import { FIXTURE_ORG, FIXTURE_DEVELOPER } from "../../web/support/fixtures.js";
+import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/support/fixtures.js";
 const syntheticKey = generateKeyPairSync("rsa", {modulusLength:2048}).privateKey.export({type:"pkcs8",format:"pem"}).toString();
 type Row = Record<string, unknown>;
 const keyOf = (key: Row | { pk: string; sk: string } | undefined) => `${String(key?.pk)}|${String(key?.sk)}`;
@@ -77,6 +77,10 @@ export function createAdminDirectory() {
  }
  const documentClient = { async send(command: unknown): Promise<unknown> {
   if (command instanceof GetCommand) return { Item: rows.get(keyOf(command.input.Key ?? {})) };
+  if (command instanceof TransactGetCommand) {
+   const items = command.input.TransactItems;if (items === undefined || items.length > 100) throw new Error("Invalid fixture read transaction.");
+   return { Responses: items.map(item => { if (item.Get?.Key === undefined) throw new Error("Missing fixture read key.");const row = rows.get(keyOf(item.Get.Key));return row === undefined ? {} : { Item: structuredClone(row) }; }) };
+  }
   if (command instanceof BatchGetCommand) {
    // Strict like the earlier fixture: one table, at most 100 keys, always a consistent read, no projection. Callers read chosen names and agent sessions this way; anything else is a new access pattern that needs a deliberate fixture change.
    const entries = Object.entries(command.input.RequestItems ?? {});
@@ -177,8 +181,17 @@ export function createAdminDirectory() {
   addMember(name: string, role: OrgRole) { const id = createHash("sha256").update(name).digest("hex");setRole(id, role);put({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, displayName: name, provider: "cloud" }); },
   changeSourceOrder() { const key=modelSourcesKey(FIXTURE_ORG),row=rows.get(keyOf(key));if(!row||typeof row.revision!=="number")throw new Error("No source fixture.");put({...row,revision:row.revision+1,order:["rovara","personal-chatgpt"]}); },
   seedLaneB() { seedLaneB(put); },
-  seedTaskStops(missingProject = false) {
-   put({ ...orgSettingsKey(FIXTURE_ORG, "TASK_STOP_POLICY"), orgId: FIXTURE_ORG, entityType: "ORG_TASK_STOP_POLICY", revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 2000000 } }, enrollment: { version: 1, state: "disabled" } });
+  seedTaskStops(missingProject = false, enabled = false) {
+   const at = new Date(Date.now() - 60_000).toISOString();
+   put({ pk: `SESSION#${FIXTURE_SESSION}`, sk: "META", sessionId: FIXTURE_SESSION, developerId: FIXTURE_DEVELOPER, amr: "cloud", authTime: at, startedAt: at, endsAt: Math.floor(Date.now() / 1000) + 3600 });
+   put({ ...agentGuardrailsKey(FIXTURE_ORG), orgId: FIXTURE_ORG, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: DEFAULT_AGENT_GUARDRAILS });
+   put({ pk: orgScoped(FIXTURE_ORG, "TASK_STOP_SEED"), sk: "V1#bootstrap", entityType: "TASK_STOP_SEED", orgId: FIXTURE_ORG, version: 1, source: "bootstrap", outcome: "created", policyRevision: 1 });
+   for (const id of BUILTIN_AGENT_IDS) put({ ...builtinSettingsKey(FIXTURE_ORG, id), orgId: FIXTURE_ORG, agentId: id, entityType: "BUILTIN_AGENT_SETTINGS", revision: 1, stopKind: "inherit" });
+   for (const row of [...rows.values()].filter(row => row.pk === orgScoped(FIXTURE_ORG, "PROJECT_CATALOG"))) {
+    put({ ...row, orgId: FIXTURE_ORG });const project = String(row.name);
+    put({ ...projectAiKey(FIXTURE_ORG, project), orgId: FIXTURE_ORG, project, entityType: "PROJECT_AI", revision: 1, projectPays: false, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+   }
+   put({ ...orgSettingsKey(FIXTURE_ORG, "TASK_STOP_POLICY"), orgId: FIXTURE_ORG, entityType: "ORG_TASK_STOP_POLICY", revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 2000000 } }, enrollment: { version: 1, state: enabled ? "enabled" : "disabled" } });
    put({ ...projectAiKey(FIXTURE_ORG, "payments"), orgId: FIXTURE_ORG, project: "payments", entityType: "PROJECT_AI", revision: 1, projectPays: false, monthlyBudgetUsd: 50, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 2000000 } });
    if (missingProject) rows.delete(keyOf(projectAiKey(FIXTURE_ORG, "payments")));
   },

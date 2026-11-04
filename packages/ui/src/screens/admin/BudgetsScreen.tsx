@@ -31,7 +31,7 @@ function MonthlyBase({ orgId, developerId, role }: { orgId: string; developerId:
  return <section aria-busy={locked}>
   <PageHeader focusOnMount title="Spending" description="Monthly base budget settings and task stop policies." actions={<Button aria-disabled={locked} onClick={() => { if (!locked) void read.refetch(); }}>Refresh budgets</Button>} />
   <p className="rv-admin-note">{"Monthly base budgets are read only. Task stops can be reviewed and changed below."}</p>
-  <p className="rv-admin-note">Usage, top-ups and enforcement are not checked on this page. A monthly base is separate from a task stop.</p>
+  <p className="rv-admin-note">Usage, top-ups and enforcement are not checked by the monthly table. A monthly base is separate from a task stop.</p>
   {checking && <p role="status">Checking company access...</p>}{read.isFetching && read.data !== undefined && <p role="status">Checking monthly base budgets...</p>}
   {read.isPending ? <Skeleton label="Loading monthly base budgets" /> : read.isError ? <p role="alert">{error}</p> : read.data !== undefined ? <>
    <DataTable caption="Monthly base budgets" columns={columns} rows={[{ label: "Company", limit: read.data.orgMonthly }, { label: "Default for a member", limit: read.data.memberDefaultMonthly }]} rowKey={row => row.label} />

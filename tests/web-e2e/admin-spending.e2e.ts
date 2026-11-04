@@ -47,3 +47,20 @@ test("repairs missing project spending settings through the authenticated editor
  await page.getByLabel("Task stop policy").selectOption("limited");await page.getByLabel("Task stop amount (USD)").fill("1.234567");await activate(page.getByRole("button", { name: "Review task stop change" }));
  await activate(page.getByRole("button", { name: "Initialize task stop settings" }));await expect(page.getByText("Current task stop: $1.234567. Revision 1.")).toBeVisible();
 });
+
+test("owner reviews, enables and disables enforcement through cookie-backed audited transactions", async ({ page, request }, testInfo) => {
+ await page.goto("/app/admin/money/budgets");await activate(page.getByRole("button", { name: "Turn on enforcement" }));
+ await expect(page.getByRole("heading", { name: "Review enforcement impacts" })).toBeVisible();
+ await expect(page.getByText("No active tasks were visible at review time.")).toBeVisible();
+ await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: testInfo.outputPath("enforcement-review-light.png"), fullPage: true });
+ await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: testInfo.outputPath("enforcement-review-dark.png"), fullPage: true });
+ await activate(page.getByRole("button", { name: "Confirm review and mark ready" }));await expect(page.getByRole("button", { name: "Enable enforcement" })).toBeVisible();
+ await expect(page.getByText("Current enforcement: ready. Revision 2.")).toBeVisible();
+ await activate(page.getByRole("button", { name: "Enable enforcement" }));await expect(page.getByText("Enforcement is enabled.", { exact: true })).toBeVisible();
+ await evidenceShot(page, { path: testInfo.outputPath("enforcement-enabled.png"), fullPage: true });
+ await activate(page.getByRole("button", { name: "Turn off enforcement" }));await expect(page.getByText("Current enforcement: disabled. Revision 4.")).toBeVisible();
+ const evidence = await (await request.get("/__mock/admin-evidence")).json() as { audit: Array<{ action: string; facts?: { before?: string; after?: string } }> };
+ expect(evidence.audit.filter(event => event.action === "spending.enrollment_changed").map(event => [event.facts?.before, event.facts?.after])).toEqual([["disabled", "ready"], ["ready", "enabled"], ["enabled", "disabled"]]);
+ const calls = await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string }>;
+ expect(calls.filter(row => row.method === "PUT" && row.path === "/v1/web/org/task-stop-policy/enrollment")).toHaveLength(3);
+});

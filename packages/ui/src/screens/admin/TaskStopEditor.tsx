@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { formatUsdMicrodollars, taskStopEditKind, TaskStopCompanyPolicySchema, TaskStopProjectPolicySchema, type TaskStopEditablePolicy } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
 import { createTaskStopEditingApi } from "../../api/task-stop-editing.js";
@@ -6,6 +6,7 @@ import { Button } from "../../design/Button.js";
 import { TextField } from "../../design/TextField.js";
 import { Select } from "../../design/Select.js";
 import { useAdminContext } from "./AdminLayout.js";
+const Enforcement = lazy(() => import("./TaskStopEnforcement.js").then(module => ({ default: module.TaskStopEnforcement })));
 const describe = (policy: TaskStopEditablePolicy) => policy.kind === "limited" ? formatUsdMicrodollars(policy.stopMicrousd) : policy.kind === "inherit" ? "Inherit the company task stop" : "Use Rovara's estimate for each task";
 function originalPolicy(value: unknown): TaskStopEditablePolicy {
  const company = TaskStopCompanyPolicySchema.safeParse(value);
@@ -19,8 +20,10 @@ function exactAmount(value: string): number | undefined {
 }
 export function TaskStopEditor() {
  const { orgId, developerId, role, checking } = useAdminContext();
+ const [enforcement, setEnforcement] = useState(false);
  const [project, setProject] = useState(""), [selected, setSelected] = useState<{ project?: string; id: number }>();
  return <section className="rv-admin-section"><h2>Task stops</h2><p>Task stop settings apply to future admissions when task-stop enforcement is enabled for the company. Existing running limits stay in place. Monthly budgets are separate.</p>
+  {role === "owner" && <>{!enforcement && <Button disabled={checking} onClick={() => { setEnforcement(true); }}>Turn on enforcement</Button>}{enforcement && <Suspense fallback={<p role="status">Loading enforcement...</p>}><Enforcement key={`${orgId}:${developerId}:${role}`} orgId={orgId} checking={checking} /></Suspense>}</>}
   <Button disabled={checking} onClick={() => { setSelected(previous => ({ id: (previous?.id ?? 0) + 1 })); }}>Load company task stop</Button>
   <TextField label="Project name for task stop" value={project} onChange={event => { setProject(event.target.value); }} />
   <Button disabled={checking || project.trim() === ""} onClick={() => { setSelected(previous => ({ project: project.trim(), id: (previous?.id ?? 0) + 1 })); }}>Load project task stop</Button>
@@ -57,7 +60,7 @@ function ScopedEditor({ orgId, developerId, project, checking }: { orgId: string
  }
  return <section aria-busy={locked} className="rv-admin-section"><h3>{project === undefined ? "Company task stop" : `Task stop for ${project}`}</h3>
   {busy && <p role="status">Checking task stop...</p>}{error !== "" && <p role="alert">{error}</p>}{message !== "" && <p role="status">{message}</p>}
-  {context !== undefined && <>{context.sourceState === "missing" && <p>Project spending settings are missing. Review a policy to initialize them before work can be admitted.</p>}{context.lastTaskStopChange?.state === "expired" && <p role="status">The previous loosening request expired because a tightening was applied.</p>}{context.seedReview?.reviewRequired === true && <p>This company policy was seeded during {context.seedReview.source}. Company review is required; no fixed USD amount is implied by Rovara’s estimate.</p>}<p>Current task stop: {describe(context.policy)}. Revision {context.revision}.</p>
+  {context !== undefined && <>{context.sourceState === "missing" && <p>Project spending settings are missing. Review a policy to initialize them before work can be admitted.</p>}{context.lastTaskStopChange?.state === "expired" && <p role="status">{context.lastTaskStopChange.reason === "enrollment_changed" ? "The previous loosening request expired because enforcement changed." : "The previous loosening request expired because a tightening was applied."}</p>}{context.seedReview?.reviewRequired === true && <p>This company policy was seeded during {context.seedReview.source}. Company review is required; no fixed USD amount is implied by Rovara’s estimate.</p>}<p>Current task stop: {describe(context.policy)}. Revision {context.revision}.</p>
    {context.pending !== undefined ? <><h4>Pending task stop change</h4><p>Original task stop: {describe(originalPolicy(context.pending.beforePolicy))}.</p><p>Proposed task stop: {describe(context.pending.proposedPolicy)}.</p><p>Requested by {context.pending.requestedBy} on {new Date(context.pending.createdAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC. Approval uses these original terms and fresh access checks.</p>
     {context.pending.requestedBy === developerId ? <Button disabled={locked} onClick={() => { void write("cancel"); }}>Cancel my task stop request</Button> : <Button disabled={locked} onClick={() => { void write("approve"); }}>Approve original task stop change</Button>}
     <Button disabled={locked} onClick={() => { void write("reject"); }}>Reject task stop change</Button></> : null}<>

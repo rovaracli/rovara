@@ -1,3 +1,5 @@
+import { previewTaskStartStop } from "../org/task-stop-start-preview.js";
+import { getTaskStopEnrollment, reviewTaskStopEnrollment, writeTaskStopEnrollment } from "../org/task-stop-enrollment.js";
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
 // The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
 import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./developer-routes/spec-routes.js";
@@ -309,6 +311,7 @@ export { effectiveProjectRole, requireNewWorkAllowed };
 
 export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL, authenticated?: { caller: DeveloperCaller; csrf: string }): Promise<unknown> {
   if(request.method==="PUT"&&url.pathname==="/v1/app/org/model-selection-policy"&&authenticated?.caller.browserSession!==true)throw agentXError("FORBIDDEN","Use a live browser session to change company model policy.");
+  if (/^\/v1\/app\/org\/task-stop-policy\/(enrollment|cutover-review)$/.test(url.pathname) && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session to manage enforcement.");
   // Website proposal routes accept only the trusted opaque-cookie adapter.
   // Reject token callers before authentication or any project/proposal lookup.
   if (/^\/v1\/app\/projects\/[^/]+\/allowed-websites(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
@@ -578,6 +581,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (knownFailingMarksReply !== undefined) return knownFailingMarksReply;
   const intakeReply = await routeIntake(deps, caller, request, url);
   if (intakeReply !== undefined) return intakeReply;
+  const startPreviewRoute = /^\/v1\/app\/projects\/([^/]+)\/start-preview$/.exec(url.pathname);
+  if (request.method === "POST" && startPreviewRoute !== null) return previewTaskStartStop(deps, caller, startPreviewRoute[1]!, jsonBody(request));
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
   if (request.method === "POST" && codeIntentRoute !== null) return routeCodeIntentStart(codeIntentDependenciesOf(deps, caller), caller, codeIntentRoute[1]!, jsonBody(request), request.headers);
   // Rovara Code (Plan 6 Task 19): a project's code settings. Anyone who can see the project reads them; a maintainer changes them.
@@ -724,6 +729,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
+  if (url.pathname === "/v1/app/org/task-stop-policy/enrollment") {
+    if (request.method === "GET") return getTaskStopEnrollment(deps, caller, url.searchParams.get("fresh") === "1");
+    if (request.method === "PUT") return writeTaskStopEnrollment(deps, caller, request.body);
+  }
+  if (url.pathname === "/v1/app/org/task-stop-policy/cutover-review" && request.method === "POST") return reviewTaskStopEnrollment(deps, caller, request.body);
   const spendingEditing = /^\/v1\/app\/org\/task-stop-policy(?:\/projects\/([^/]+))?(?:\/(editing|decisions))?$/.exec(url.pathname);
   if (spendingEditing !== null) {
     const project = spendingEditing[1] === undefined ? undefined : decodeURIComponent(spendingEditing[1]);

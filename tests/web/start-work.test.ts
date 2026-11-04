@@ -21,14 +21,23 @@ import { LAYER, howWeWorkView } from "./support/how-we-work-view.js";
 import { liveFixture } from "./support/live-fixture.js";
 const id = "ses_bbbbbbbbbbbbbbbbbbbb", CODE = "/v1/app/projects/payments/code";
 const started = () => ({ status: 202, body: { task: taskFixture({ sessionId: id }), sessionId: id, sessionUrl: "https://cell.example/s/" + id } });
-function setup(value = projectFixture(), options: { theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse>; seed?: unknown; get?: (request: ApiRequest) => ApiResponse | undefined } = {}) {
- const f = fakeHost(async request => request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.path.endsWith("/setup-agent/limits") ? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } : request.method === "GET" ? (options.get?.(request) ?? { status: 200, body: value }) : options.send ? options.send(request) : started());
+// Match json-reply.ts, including gateway overwrite of a route's own requestId.
+function gatewayHost(...args: Parameters<typeof fakeHost>) {
+ const f = fakeHost(...args);
+ f.host.transport.request = async input => {
+  const response = await f.request(input), body = response.body;
+  return response.status === 200 && body !== null && typeof body === "object" && !Array.isArray(body) ? { ...response, body: { ...body, requestId: "mock-gateway-request" } } : response;
+ };
+ return f;
+}
+function setup(value = projectFixture(), options: { theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse>; seed?: unknown; preview?: () => Promise<ApiResponse>; get?: (request: ApiRequest) => ApiResponse | undefined } = {}) {
+ const f = gatewayHost(async request => request.path.endsWith("/start-preview") ? options.preview?.() ?? { status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "disabled" } } : request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.path.endsWith("/setup-agent/limits") ? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } : request.method === "GET" ? (options.get?.(request) ?? { status: 200, body: value }) : options.send ? options.send(request) : started());
  const query = createQueryClient();
  if (options.seed !== undefined) query.setQueryData([...howWeWorkKey("payments"), "view"], options.seed);
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
  return { ...f, ...ui, query, close() { ui.unmount();query.clear(); } };
 }
-const posts = (f: ReturnType<typeof setup>) => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST");
+const posts = (f: ReturnType<typeof setup>) => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST" && !request.path.endsWith("/start-preview"));
 const box = () => screen.findByRole("textbox", { name: "What do you need?" });
 it("posts the text to the project's code route and opens the returned session", async () => {
  const f = setup(), navigate = vi.spyOn(f.host, "navigate");
@@ -70,13 +79,13 @@ it("shows PROCESS_UNAVAILABLE's message and does not navigate", async () => {
 it("maps the route's fixed codes to plain messages, whatever message came with them", async () => {
  const cases: Array<[number, string, string | RegExp]> = [[400, "PROCESS_UNAVAILABLE", PROCESS_START_REFUSED_MESSAGE], [404, "PROJECT_NOT_FOUND", /wasn't found/u], [403, "FORBIDDEN", /permission/u], [400, "CONFIG_INVALID", /4000/u], [409, "IDEMPOTENCY_CONFLICT", /different/u], [503, "RUNTIME_UNAVAILABLE", /right now/u]];
  for (const [status, code, expected] of cases) {
-  const f = fakeHost(async () => ({ status, body: { error: { code, message: "raw server words" } } })), api = createCodeApi(f.host);
+  const f = gatewayHost(async () => ({ status, body: { error: { code, message: "raw server words" } } })), api = createCodeApi(f.host);
   const failure = await api.startCode("payments", "Fix it").then(() => undefined, (error: unknown) => error as Error);
   expect(failure?.message, code).toMatch(expected instanceof RegExp ? expected : new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));expect(failure?.message).not.toContain("raw server words");
  }
 });
 it("startCode returns the session id and url from the route's answer", async () => {
- const f = fakeHost(async () => started()), api = createCodeApi(f.host), result = await api.startCode("payments", "Fix it");
+ const f = gatewayHost(async () => started()), api = createCodeApi(f.host), result = await api.startCode("payments", "Fix it");
  expect(result).toMatchObject({ kind: "done", value: { sessionId: id } });expect(f.request.mock.calls[0]![0]).toMatchObject({ method: "POST", path: CODE });
 });
 it("lists Rovara Code first in New session and starts it through the code route", async () => {
@@ -87,7 +96,7 @@ it("lists Rovara Code first in New session and starts it through the code route"
  await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));expect(posts(f).map(request => request.path)).toEqual([CODE]);f.close();
 });
 it("routes every Rovara Code call of the runs API to the code route", async () => {
- const f = fakeHost(async () => started()), api = createRunApi(f.host);
+ const f = gatewayHost(async () => started()), api = createRunApi(f.host);
  const result = await api.startWork("rovara-code", { project: "payments", text: "Fix it" });expect(result.kind).toBe("done");
  expect(f.request.mock.calls.map(([request]) => request.path)).toEqual([CODE]);expect(f.request.mock.calls[0]![0].body).toMatchObject({ input: { text: "Fix it" } });
  await expect(async () => api.startWork("rovara-code", { project: "payments", text: "   " })).rejects.toThrow();await expect(async () => api.startWork("rovara-code", { project: "../x", text: "Fix it" })).rejects.toThrow();expect(f.request).toHaveBeenCalledTimes(1);
@@ -132,4 +141,17 @@ it("offers no Close for a task the person does not own, and says so when none ca
  const f = setup(undefined, { send: async () => LIMIT, get: request => request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: [liveFixture({ actions: ["watch"] })] } } : undefined });
  fireEvent.change(await box(), { target: { value: "Fix it" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
  expect(await screen.findByText("No task of yours can be closed from here. Ask an admin to free a place.")).toBeTruthy();expect(screen.queryByRole("button", { name: "Close" })).toBeNull();f.close();
+});
+
+it("shows the confirmed effective spending stop before work starts", async () => {
+ const f = setup(undefined, { preview: async () => ({ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "captured", effectiveStopMicrousd: 750000 } }) });
+ try { await box();expect(await screen.findByText(/Effective spending stop: \$0.75/)).toBeTruthy();expect(posts(f)).toHaveLength(0); } finally { f.close(); }
+});
+for (const result of [{ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "disabled" } }, { status: 503, body: {} }, { status: 200, body: { kind: "captured", effectiveStopMicrousd: "bad" } }]) it(`unclear preview ${JSON.stringify(result)} never blocks Start`, async () => {
+ const f = setup(undefined, { preview: async () => result });
+ try { fireEvent.change(await box(), { target: { value: "Fix it" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1));expect(screen.queryByText(/Effective spending stop:/)).toBeNull(); } finally { f.close(); }
+});
+it("a pending preview never disables Start", async () => {
+ const f = setup(undefined, { preview: async () => new Promise<ApiResponse>(() => undefined) });
+ try { fireEvent.change(await box(), { target: { value: "Fix it" } });expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start" }).disabled).toBe(false);fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1)); } finally { f.close(); }
 });

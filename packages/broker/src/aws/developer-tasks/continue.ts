@@ -44,7 +44,7 @@ import { readTestEnvPin } from "../../test-env/usable.js";
 import { pinOfStoredPin } from "../../test-env/saved-env-pin.js";
 import { Aliases, type TransactItem, failedIndexes } from "../../agents/table-writes.js";
 import { type CapturedTaskStop, captureTaskStopAdmission } from "../../org/task-stop-admission.js";
-import { type PreparedTaskApprovalAdmission, type TaskStopTransition, checkedTaskMaxPerRun, checkedTaskStopSnapshot, readTaskStopTransition, readTaskStopWindow, taskMaxPerRunForAdmission, taskStopTransitionItems, taskStopTransitionRecoveryChecks, taskStopWindowItems, withAdmittedTaskSource } from "../../org/task-stop-window.js";
+import { continueAdmissionIdentity, type PreparedTaskApprovalAdmission, type TaskStopTransition, checkedTaskMaxPerRun, checkedTaskStopSnapshot, readTaskStopTransition, readTaskStopWindow, taskMaxPerRunForAdmission, taskStopTransitionItems, taskStopTransitionRecoveryChecks, taskStopWindowItems, withAdmittedTaskSource } from "../../org/task-stop-window.js";
 import { TaskFundingProofSchema, captureTaskFundingProof, fundingAuditItems, fundingRevisionCheck, taskFundingModelPool } from "../../org/task-stop-funding.js";
 import { budgetActorChecks, budgetActorRefused } from "../../agents/budget-authority.js";
 import { isDeepStrictEqual } from "node:util";
@@ -90,17 +90,10 @@ export async function continueTask(deps: DeveloperTaskRouteDependencies, caller:
   let windowStop: CapturedTaskStop | undefined;
   let windowChecks: TransactItem[] = [];
   if (deps.spendResume === undefined && task.fundingProof === undefined) {
-    const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
-    const pathLimitMicrousd = previous?.calculationInput.approvedRunLimitMicrousd ?? previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD);
-    const oldBounds = previous?.calculationInput;
-    const requestedMicrousd = oldBounds?.requestedMicrousd ?? (task.requestedRunLimitUsd === undefined ? undefined : usdToWholeMicrodollars(task.requestedRunLimitUsd));
     const authorize = async () => { await authorizeTaskAction(deps, caller, taskId, "work"); };
     const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), requireScopeAccess: authorize }, {
       orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
-      pathLimitMicrousd: pathLimitMicrousd ?? null,
-      ...(task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
-      ...(requestedMicrousd !== undefined ? { requestedMicrousd } : task.requestedRunLimitUsd === undefined ? {} : { requestedMicrousd: null }),
-      ...(oldBounds?.chainMicrousd === undefined ? {} : { chainMicrousd: oldBounds.chainMicrousd }), ...(oldBounds?.testingMicrousd === undefined ? {} : { testingMicrousd: oldBounds.testingMicrousd }),
+      ...continueAdmissionIdentity(task),
     });
     if (captured.kind === "captured") {
       checkedTaskMaxPerRun(task);
