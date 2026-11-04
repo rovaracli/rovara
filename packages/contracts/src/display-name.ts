@@ -61,10 +61,12 @@ export const EMAIL_HIDDEN = "[email removed]";
 
 /**
  * The strict address rule for free text (names use the wide `EMAIL_ADDRESS_SOURCE`, where a false match only removes a word; here a false match would corrupt code). A local part of
- * letters, digits and `._%+-` (no slash), an at sign, and a domain of dotted labels whose LAST label is letters only. So `react@18.3.1`, `golang.org/x/tools@v0.1.0`, `@scope/pkg@1.2.3` and
- * `image@sha256:abc` are not addresses. A domain whose first label is all digits is a version (`pkg@1.0.0-rc.final`), and `user@host:path` (scp, git remotes) is not an address either.
+ * letters, digits and `._%+'-` (no slash, starting with a letter or digit), an at sign, and a domain of dotted labels whose LAST label is letters only. So `react@18.3.1`, `golang.org/x/tools@v0.1.0`, `@scope/pkg@1.2.3` and
+ * `image@sha256:abc` are not addresses. A domain that starts with two numeric labels is a version (`pkg@1.0.0-rc.final`, `pkg@1.2.beta`), while `163.com` is a real domain, and `user@host:path` (scp, git remotes) is not an address either.
  */
-const STRICT_ADDRESS = /[\p{L}\p{N}\p{Cf}._%+-]+@(?!\d+\.)(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+\p{L}{2,63}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}]|:[^\s])/gu;
+const STRICT_ADDRESS = /[\p{L}\p{N}][\p{L}\p{N}\p{Cf}._%+'-]*@(?!\d+(?:\.\d+)+)(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+\p{L}{2,63}(?![\p{L}\p{N}]|\.[\p{L}\p{N}]|:[^\s])/gu;
+/** The login of an ssh-like URL (`ssh://git@host/path`, `git+ssh://git@host/path`) is not mail. */
+const SSH_URL_BEFORE = /(?:ssh|sftp|rsync|git|svn)(?:\+\w+)*:\/\/$/iu;
 /** An ssh-like command just before an address: the address is `user@host`, not mail. */
 const SSH_BEFORE = /(?:^|[\s;&|(])(?:ssh|scp|sftp|rsync|mosh)(?:[ \t]+-\S+(?:[ \t]+[^\s-]\S*)?)*[ \t]+$/iu;
 /** The ways an at sign is spelled that NFKC folds to "@" (fullwidth, small). */
@@ -98,7 +100,7 @@ export function hideEmailAddresses(text: string): string {
     const finish = ends[match.index + match[0].length - 1]!;
     if (begin < from) continue;
     const before = text.slice(Math.max(0, text.lastIndexOf("\n", begin - 1) + 1), begin);
-    if (SSH_BEFORE.test(before)) continue;
+    if (SSH_BEFORE.test(before) || SSH_URL_BEFORE.test(before)) continue;
     out += text.slice(from, begin) + EMAIL_HIDDEN;
     from = finish;
   }

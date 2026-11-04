@@ -6,6 +6,7 @@ import { EMAIL_HIDDEN } from "../../packages/contracts/src/index.js";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { fitPullRequestBody } from "../../packages/broker/src/aws/developer-tasks/pull-request-body.js";
 import { workflowPullRequestBody, workflowPullRequestStatusLines } from "../../packages/broker/src/aws/developer-tasks.js";
+import { PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../../packages/broker/src/developer/pull-request-feedback-section.js";
 import { ROVARA_STATUS_END, ROVARA_STATUS_START, rovaraPullRequestBody } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 import { linearAnswerText } from "../../packages/broker/src/agent-sessions/ask.js";
 import { cardOfItem, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
@@ -60,11 +61,24 @@ describe("M4: hiding addresses never costs the pull request its closing marker",
     expect(body).toContain("Rovara session: https://rovara.example/review/x/task");
   });
 
-  it("workflowPullRequestBody never cuts the end marker when a plan with many addresses pushes the body past the cap", () => {
-    const plan = `# Plan\n\n${Array.from({ length: 12 }, (_, i) => `${String(i + 1)}. Tell ${mail("a", "b.co")} ${mail("c", "d.co")} when it ships.`).join("\n")}\n`;
-    const body = workflowPullRequestBody({ title: "Retry" } as never, workflow("1.1.0"), plan, "https://rovara.example/review/x/task", context);
+  it("workflowPullRequestBody: a version 1 body that fits only until its addresses are hidden loses summary, never its end marker, session link or closing line", () => {
+    // Proof lines are free text, so they can fill the body. Calibrate on same-length placeholders until the raw body is just under the cap; hiding the 20 addresses then lengthens it past the cap.
+    const plan = `# Plan\n\n${Array.from({ length: 3 }, (_, i) => `${String(i + 1)}. ${"Make the retry flag work for every payment path. ".repeat(3)}`).join("\n")}\n`;
+    const page = "https://rovara.example/review/x/task";
+    const lines = (pad: number, address: string) => [`- ${"p".repeat(pad)}`, ...Array.from({ length: 20 }, () => `- proof for ${address} ok`)];
+    const bodyWith = (pad: number, address: string) => workflowPullRequestBody({ title: "Retry" } as never, workflow("1.0.0"), plan, page, undefined, lines(pad, address));
+    const placeholder = "aXb.co";
+    const pad = 29_950 - Buffer.byteLength(bodyWith(0, placeholder), "utf8");
+    const raw = bodyWith(pad, placeholder);
+    expect(Buffer.byteLength(raw, "utf8")).toBe(29_950);
+    const body = bodyWith(pad, mail("a", "b.co"));
+    // The addresses made the body longer than the cap would allow, and the summary paid for it.
     expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(30_000);
-    expect(body).toContain(ROVARA_STATUS_END);
+    expect(body).toContain(`...\n\n${PULL_REQUEST_STATUS_START}`);
+    expect(body).toContain(PULL_REQUEST_STATUS_END);
+    expect(body).toContain(`AgentX task: ${page}`);
+    expect(body).toContain("Merge it on GitHub.");
+    expect(body).not.toContain(mail("a", "b.co"));
   });
 });
 

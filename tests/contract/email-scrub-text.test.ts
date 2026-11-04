@@ -53,7 +53,7 @@ describe("hideEmailAddresses", () => {
     const samples = [
       `npm i react${at}18.3.1`, `node${at}22.23.2`, `"${at}agentx/contracts${at}0.4.2"`, `${at}scope/pkg${at}1.2.3`, `go get golang.org/x/tools${at}v0.1.0`, `lodash${at}4.17.21-rc.final`,
       `git clone git${at}github.com:org/repo.git`, `scp file.txt deploy${at}build.example.test:/srv/app`, `ssh ec2-user${at}ip-10-0-0-1.ec2.internal`, `ssh -i key.pem ec2-user${at}ip-10-0-0-1.ec2.internal`,
-      `image${at}sha256:abc123`, `HEAD${at}{1}`, `pkg${at}git+https://example.test/pkg.git`, `${at}Component()`, `cc ${at}maya`, `https://example.test/${at}maya/post.html`,
+      `ssh://git${at}github.com/org/repo.git`, `git+ssh://git${at}github.com/org/repo.git`, `pkg${at}1.2.beta`, `pkg${at}1.0.0-rc.final`, `image${at}sha256:abc123`, `HEAD${at}{1}`, `pkg${at}git+https://example.test/pkg.git`, `${at}Component()`, `cc ${at}maya`, `https://example.test/${at}maya/post.html`,
     ];
     for (const text of samples) expect(hideEmailAddresses(text), text).toBe(text);
   });
@@ -66,6 +66,12 @@ describe("hideEmailAddresses", () => {
       [`[Maya](mailto:maya${at}example.test)`, `[Maya](mailto:${EMAIL_HIDDEN})`], [`<mailto:a${at}x.test|a${at}x.test>`, `<mailto:${EMAIL_HIDDEN}|${EMAIL_HIDDEN}>`],
       [`https://example.test/u?email=maya${at}example.test&x=1`, `https://example.test/u?email=${EMAIL_HIDDEN}&x=1`], [`https://user:pw${at}host.example.test/path/x`, `https://user:${EMAIL_HIDDEN}/path/x`],
       [`ssh to maya${at}example.test later`, `ssh to ${EMAIL_HIDDEN} later`],
+      // N1: a numeric first label with a letters-only TLD is a real address (163.com, 126.com), not a version.
+      [`x${at}163.com`, EMAIL_HIDDEN], [`wang${at}126.com and li${at}189.cn`, `${EMAIL_HIDDEN} and ${EMAIL_HIDDEN}`],
+      // N2: an underscore or a hyphen right after the address is not part of it.
+      [`_a${at}b.io_`, `_${EMAIL_HIDDEN}_`], [`a${at}b.io-based`, `${EMAIL_HIDDEN}-based`], [`bob${at}example.com_x`, `${EMAIL_HIDDEN}_x`],
+      // N3: an apostrophe is part of a local part.
+      [`o'brien${at}example.com`, EMAIL_HIDDEN], [`ask d'arcy.o'neil${at}example.test now`, `ask ${EMAIL_HIDDEN} now`],
     ];
     for (const [text, expected] of cases) expect(hideEmailAddresses(text), text).toBe(expected);
   });

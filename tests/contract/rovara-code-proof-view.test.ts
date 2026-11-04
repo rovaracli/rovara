@@ -131,6 +131,20 @@ describe("the task view's proof table", () => {
     expect((await taskView(deps, stored, { events: 0, details: false, actor: "viewer" })).title).toBe("Reply to [email removed]");
   });
 
+  it("S3 (N6): a reader who is not the owner sees the task's events without an email address, and the owner sees them as written", async () => {
+    const { harness, record } = await task();
+    const input = harness.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
+    const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
+    const base = developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: harness.actions }, caller);
+    const written = `could not mail omar${String.fromCharCode(64)}example.test`;
+    const deps = { ...base, actions: { ...base.actions, eventsNewestFirst: async () => [{ sequence: 1, type: "error", timestamp: now, payload: { message: written } }] } } as typeof base;
+    const owner = await taskView(deps, record() as never, { events: 20, details: false, actor: "owner" });
+    const viewer = await taskView(deps, record() as never, { events: 20, details: false, actor: "viewer" });
+    expect(JSON.stringify(owner.events)).toContain(written);
+    expect(JSON.stringify(viewer.events)).not.toContain(String.fromCharCode(64));
+    expect(JSON.stringify(viewer.events)).toContain("[email removed]");
+  });
+
   it("reads the task's operations once for a full read: the table uses the operations the view already holds", async () => {
     const reads = async (options: Parameters<typeof task>[0]) => {
       const { harness, record } = await task(options);

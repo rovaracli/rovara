@@ -385,7 +385,8 @@ export async function taskView(
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.
     updatedAt,
-    events,
+    // S3: a reader who is not the owner reads the events (a model's and a worker's words) without an email address.
+    events: options.actor === "viewer" ? events.map((event) => ({ ...event, text: hideEmailAddresses(event.text) })) : events,
     ...details,
     ...(channelTurns === undefined ? {} : { channelTurns }),
     ...(unpublished === undefined ? {} : { unpublished }),
