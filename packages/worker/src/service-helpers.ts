@@ -339,7 +339,8 @@ function runArgs(net: ServicesNetwork, plan: Plan, container: string, paths: { e
     ...(entry.run.readOnlyRoot ? ["--read-only"] : []),
     ...(lowestPort < 1024 ? ["--sysctl", `net.ipv4.ip_unprivileged_port_start=${String(lowestPort)}`] : []),
     "--memory", `${String(entry.resources.memMiB)}m`, "--memory-swap", `${String(entry.resources.memMiB)}m`, "--cpus", String(entry.resources.cpus), "--pids-limit", String(entry.resources.pids),
-    "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=1",
+    // Docker's local log driver compresses rotated files by default and refuses compression with one file ("compression cannot be enabled when max file count is 1"), which fails `docker run` at start: compress=false is required.
+    "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=1", "--log-opt", "compress=false",
     ...entry.run.tmpfs.flatMap((tmpfs) => ["--tmpfs", `${tmpfs.path}:rw,nosuid,nodev,noexec,size=${String(tmpfs.sizeMiB)}m,uid=${uid!},gid=${gid!}`]),
     ...(paths.config === undefined ? [] : mount(paths.config, plan.prepared.config!.to)),
     ...paths.files.flatMap((file) => mount(file.path, file.to)),

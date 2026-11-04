@@ -104,10 +104,30 @@ open(out, "w").write(json.dumps(reply["body"]) if "body" in reply and reply["bod
 print(reply["status"])
 `;
 
+/**
+ * The two `stat` dialects an operator's machine has, so each is proven on any test host (the real one is GNU on Linux CI and BSD on a Mac). GNU: `-c FORMAT` prints the format, and `-f` is --file-system (a report on the
+ * file system, every other argument a FILE, so `stat -f '%Lp' file` reports on the file's file system and fails for the file '%Lp'). BSD: `-f FORMAT` prints the format, and there is no `-c`.
+ */
+const MODE_OF = `python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o777, "o"))'`;
+const FAKE_STAT = {
+  gnu: `#!/bin/bash
+if [[ $1 == -c && $2 == %a ]]; then ${MODE_OF} "$3"; exit; fi
+if [[ $1 == -f ]]; then shift; rc=0; for f in "$@"; do if [[ -e $f ]]; then printf '  File: "%s"\n    ID: 0 Namelen: 255 Type: ext2/ext3\nBlock size: 4096\n' "$f"; else echo "stat: cannot read file system information for '$f': No such file or directory" >&2; rc=1; fi; done; exit $rc; fi
+exit 1
+`,
+  bsd: `#!/bin/bash
+if [[ $1 == -f && $2 == %Lp ]]; then ${MODE_OF} "$3"; exit; fi
+[[ $1 != -c ]] || { echo "stat: illegal option -- c" >&2; exit 1; }
+exit 1
+`,
+} as const;
+
 function run(s: Scenario, args: string[], env: Record<string, string> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "tse-script-"));
   const bin = join(directory, "bin");
   mkdirSync(bin);
+  const { TSE_FAKE_STAT: dialect, ...scriptEnv } = env;
+  if (dialect === "gnu" || dialect === "bsd") { writeFileSync(join(bin, "stat"), FAKE_STAT[dialect]); chmodSync(join(bin, "stat"), 0o755); }
   writeFileSync(join(directory, "routes.json"), JSON.stringify(s.routes));
   const normalised = s.events.map((entry) => {
     const wrapped = typeof entry === "object" && entry !== null && "__timed" in entry ? entry as unknown as { event: unknown; ageMs?: number; afterCancel?: boolean } : { event: entry };
@@ -150,7 +170,7 @@ function run(s: Scenario, args: string[], env: Record<string, string> = {}) {
     env: {
       PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: directory, TMPDIR: directory, FAKE_DIR: directory, STAGING_AWS: guard, STAGING_E2E_OWNER_GO: "yes", ROVARA_STAGING_URL: "https://api.staging.example.test",
       ROVARA_STAGING_HOST_REGEX: "^api\\.staging\\.example\\.test$", ROVARA_STAGING_TOKEN_FILE: token, ROVARA_STAGING_PROJECT: PROJECT, TSE_CATALOG_FILE: catalog,
-      TSE_POLL_PROVE: "4", TSE_POLL_TASK: "4", TSE_POLL_REPORTS: "2", TSE_POLL_RUNNING: "3", ...env,
+      TSE_POLL_PROVE: "4", TSE_POLL_TASK: "4", TSE_POLL_REPORTS: "2", TSE_POLL_RUNNING: "3", ...scriptEnv,
     },
   });
   const read = (name: string) => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
@@ -193,6 +213,23 @@ describe("the script uses no SSM and nothing but reads on AWS", () => {
     expect(run(s, ["--cancel-test"]).status).toBe(2);
     expect(run(s, ["--require-heartbeat"]).status).toBe(2);
   });
+});
+
+describe("the token file's mode is read on Linux and macOS alike", () => {
+  for (const dialect of ["gnu", "bsd"] as const) {
+    it(`${dialect} stat: a mode-600 token file is accepted and a mode-644 one is refused`, () => {
+      const accepted = run(scenario(), ["--only", "P0"], { TSE_FAKE_STAT: dialect });
+      expect(accepted.err).not.toContain("REFUSED");
+      expect(verdictOf(accepted.out, "P0")).toBe("PASS");
+      const directory = mkdtempSync(join(tmpdir(), "tse-token-"));
+      const open = join(directory, "token");
+      writeFileSync(open, "not-a-real-token-value");
+      chmodSync(open, 0o644);
+      const refusedRun = run(scenario(), ["--only", "P0"], { TSE_FAKE_STAT: dialect, ROVARA_STAGING_TOKEN_FILE: open });
+      expect(refusedRun.status).toBe(3);
+      expect(refusedRun.err).toContain("REFUSED: the token file must be mode 600.");
+    });
+  }
 });
 
 describe("the success path, end to end", () => {

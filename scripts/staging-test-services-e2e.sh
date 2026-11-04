@@ -130,7 +130,8 @@ API_HOST="${BASH_REMATCH[1]}"
 [[ "$API_HOST" =~ ^[0-9.]+$ || "$API_HOST" == localhost* ]] && { echo "REFUSED: the staging URL must name the staging API by its domain." >&2; exit 3; }
 [[ "$API_HOST" =~ $ROVARA_STAGING_HOST_REGEX ]] || { echo "REFUSED: the API host '$API_HOST' does not match ROVARA_STAGING_HOST_REGEX (the staging API's host): this script must not drive another environment." >&2; exit 3; }
 [[ -r "$ROVARA_STAGING_TOKEN_FILE" ]] || { echo "REFUSED: the token file is not readable." >&2; exit 3; }
-mode=$(stat -f '%Lp' "$ROVARA_STAGING_TOKEN_FILE" 2>/dev/null || stat -c '%a' "$ROVARA_STAGING_TOKEN_FILE" 2>/dev/null)
+# GNU stat first: on Linux `stat -f` means --file-system and takes '%Lp' as a FILE, so it prints the file system report of the token file (and fails), which would be read as the mode. BSD stat has no -c and prints nothing.
+mode=$(stat -c '%a' "$ROVARA_STAGING_TOKEN_FILE" 2>/dev/null || stat -f '%Lp' "$ROVARA_STAGING_TOKEN_FILE" 2>/dev/null)
 [[ "$mode" == "600" || "$mode" == "400" ]] || { echo "REFUSED: the token file must be mode 600." >&2; exit 3; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/tse.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
 # The header goes to curl from a file, so the token is in no argument and no output.
