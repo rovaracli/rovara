@@ -9,6 +9,7 @@ import { redactText } from "./redaction.js";
 import type { WorkflowAcceptedFindingSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackThreadObservationSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramSchema, WorkflowCheckPolicySchema, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WorkflowReviewBaseSchema} from "./task-workflow.js";
 import { WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_SEND_BACK_LIMIT, type WORKFLOW_AUTO_STAGES, WorkflowDecisionRecordSchema } from "./task-workflow.js";
 import { openSecondReviewFindings, ActorIdSchema, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isStepNotRunReason, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowPullRequestSchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, FeedbackIdSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowArtifactSchema, WorkflowDecisionSchema, WorkflowCheckProposalSchema, WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck, type WorkflowCheckPolicy, WorkflowSnapshotShapeSchema, WorkflowAnswerSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, workflowIsReviewOnly, WORKFLOW_BLOCK_REASONS, WorkflowReviewReportSchema, reviewCleared, PROGRAM_ROUNDS_MAX, WorkflowPullRequestUpdateFailureSchema, WorkflowFeedbackReviewSchema, ReviewedWorkflowFeedbackSchema, findingBlocks, findingAccepted, blockingFindings, workflowFindingFingerprint, WORKFLOW_ACCEPTED_FINDINGS_MAX , type WorkflowDefinitionVersion } from "./task-workflow.js";
+import { isRunLimitBlockReason } from "./spend.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { WorkflowProposedCheckInputSchema, feedbackReplacementCheckProblem, WORKFLOW_PROPOSED_CHECK_DEFAULT_TIMEOUT_SECONDS } from "./workflow-check-input.js";
@@ -1266,11 +1267,17 @@ export function stopWorkflowFeedbackRound(currentInput: unknown, reason: string,
  * custom sequence's next coding step becomes IMPLEMENT/BLOCKED; any other step that was about to start (a PR-feedback critic, planning, checks, reviews, the pull request) becomes BLOCKED at its own stage. A person takes over.
  */
 export function stopWorkflowStepNotRun(currentInput: unknown, reason: string, now: string): WorkflowSnapshot {
-  const current = validSnapshot(currentInput);
+  // The "waiting for Slack" note ends with the wait, whichever way the step stops.
+  const { accessCheckWaitSince: _wait, ...current } = validSnapshot(currentInput);
+  void _wait;
   const text = reason.slice(0, 500);
   if (current.stage === "IMPLEMENT" && current.state === "READY") {
     if (current.fixSource !== undefined) return WorkflowSnapshotSchema.parse({ ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: text, updatedAt: now });
     return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, state: "BLOCKED", blockReason: text, updatedAt: now });
+  }
+  // A task paused for budget or a run limit stays blocked where it is, with the plain reason in place of the pause's text (the spend approval stays recorded; Retry or a take-over goes on from here).
+  if (current.state === "BLOCKED" && (current.blockReason === WORKFLOW_BLOCK_REASONS.budgetPaused || isRunLimitBlockReason(current.blockReason))) {
+    return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, blockReason: text, updatedAt: now });
   }
   // Any other step waiting to start (planning, checks, reviews, the pull request, a branch merge, a plan check): blocked where it stands.
   if (current.state === "READY" || current.state === "WAITING" || current.state === "RUNNING") {

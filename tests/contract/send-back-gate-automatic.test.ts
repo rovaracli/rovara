@@ -10,12 +10,14 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { ciEvidenceItem, ciOutputBlock } from "../../packages/broker/src/rovara-code/ci-fix.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { seedReview } from "../support/rovara-code-feedback.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { pullRequestDetails } from "../support/p5-world.js";
+import { notifyOthersOfStop } from "../../packages/broker/src/developer/work-refusal.js";
+import { taskPageStage } from "../../packages/broker/src/aws/developer-tasks/task-page.js";
 
 const NOW = "2026-10-25T12:00:00.000Z";
 const OTHER_ORG = "org_aaaaaaaaaaaaaaaaaaaa" as never;
@@ -340,5 +342,105 @@ describe("review fixes: a refusal can be recovered, parked rows are not resumed,
     await t.sweep();
     expect(t.meta(round.taskId).planGrounding).toBeUndefined();
     expect(t.refused().some((event) => (event.facts as { path?: string }).path === "queued_dispatch")).toBe(true);
+  });
+});
+
+describe("others who can take the task over are told once when Rovara stops a step for the owner", () => {
+  const BEA = "b".repeat(64);
+  const CAL = "c".repeat(64);
+  const DEE = "d".repeat(64);
+  const people = (t: Awaited<ReturnType<typeof world>>, taskId: string) => t.h.db.set({ pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 2, orphaned: false, people: [
+    { developerId: MAYA.developerId, slackUserId: MAYA.slackUserId, name: "Maya Chen", role: "owner" },
+    { developerId: OMAR.developerId, slackUserId: "U0OMAR0001", name: "Omar Diaz", role: "owner" },
+    { developerId: BEA, slackUserId: "U0BEA00001", name: "Bea", role: "commenter" },
+    { developerId: CAL, slackUserId: "U0CAL00001", name: "Cal", role: "viewer" },
+    { developerId: DEE, slackUserId: "U0DEE00001", name: "Dee", role: "denied" },
+  ] });
+  const rows = (t: Awaited<ReturnType<typeof world>>, taskId: string) => t.h.db.find((item) => item.pk === `DEVTASK#${taskId}` && item.entityType === "TASK_OWNER_STOPPED_NOTIFICATION");
+
+  it("a co-owner and a commenter get one pending notice each; the effective owner, a viewer and a denied person get none", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    people(t, round.taskId);
+    t.notAMember();
+    await t.sweep();
+    expect(rows(t, round.taskId).map((row) => row.targetDeveloperId).sort()).toEqual([OMAR.developerId, BEA].sort());
+    expect(rows(t, round.taskId).every((row) => row.status === "PENDING" && row.attempts === 0 && typeof row.slackUserId === "string")).toBe(true);
+    // A second look finds nothing to do and adds nothing.
+    await t.sweep();
+    expect(rows(t, round.taskId)).toHaveLength(2);
+  });
+
+  it("the same stop recorded twice (a retried refusal) is still one notice per person", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    people(t, round.taskId);
+    const task = t.meta(round.taskId) as never;
+    const table = { documentClient: t.h.db as never, tableName: "state" };
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#31", NOW)).toBe(2);
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#31", NOW)).toBe(0);
+    expect(rows(t, round.taskId)).toHaveLength(2);
+    // Another stop is another notice.
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#40", NOW)).toBe(2);
+  });
+
+  it("a removed owner's stop also tells the co-owner, and the notice names nobody", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    people(t, round.taskId);
+    t.remove();
+    await t.sweep();
+    expect(rows(t, round.taskId).map((row) => row.targetDeveloperId)).toContain(OMAR.developerId);
+    expect(JSON.stringify(rows(t, round.taskId))).not.toContain("Maya");
+  });
+
+  it("a task with nobody else on it notifies nobody", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    t.notAMember();
+    await t.sweep();
+    expect(rows(t, round.taskId)).toEqual([]);
+  });
+
+  it("the stop says how to go on: take the task over (or restore the owner's access and press Retry)", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    t.notAMember();
+    await t.sweep();
+    const text = String(t.meta(round.taskId).workflow.blockReason);
+    expect(text).toContain("take");
+    expect(text).toContain("Retry");
+    expect(text).not.toContain("someone with access presses Retry");
+  });
+});
+
+describe("M6: a Slack outage defers with an age cap and says so on the task", () => {
+  it("while deferred the task page says it waits for Slack; the row keeps its tries", async () => {
+    const t = await world();
+    const round = await t.stepRound("PLAN");
+    t.h.channelMembers.mockImplementation(async () => ({ ok: false } as never));
+    await t.sweep();
+    const workflow = t.meta(round.taskId).workflow;
+    expect(workflow.state).toBe("READY");
+    expect(workflow.accessCheckWaitSince).toMatchObject({ revision: workflow.revision });
+    expect(t.rows(round.taskId)[0]!.slackWaitSince).toBeDefined();
+    expect(taskPageStage(workflow, false, true).status).toContain("Slack");
+  });
+
+  it("after 30 minutes of it the step is blocked with a plain, retryable reason, the row goes, and it is audited", async () => {
+    const t = await world();
+    const round = await t.stepRound("PLAN");
+    t.h.channelMembers.mockImplementation(async () => ({ ok: false } as never));
+    await t.sweep();
+    const row = t.rows(round.taskId)[0]!;
+    const past = new Date(Date.now() - 31 * 60_000).toISOString();
+    t.h.db.set({ ...row, slackWaitSince: past, nextAttemptAt: past, dispatchDueSk: `${past}#${String(row.sk)}` });
+    await t.sweep();
+    expect(t.rows(round.taskId)).toEqual([]);
+    const workflow = t.meta(round.taskId).workflow;
+    expect(workflow).toMatchObject({ stage: "PLAN", state: "BLOCKED" });
+    expect(workflow.blockReason).toContain("Slack");
+    expect(workflow.blockReason).toContain("Retry");
+    expect(t.refused()[0]).toMatchObject({ facts: { path: "queued_dispatch", cause: "slack_unavailable" } });
   });
 });

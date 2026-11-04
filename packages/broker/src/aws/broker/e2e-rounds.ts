@@ -877,7 +877,8 @@ export async function runGroundingStep(dependencies: AwsBrokerDependencies, rout
     const refusal = await ownerWorkRefusal(routeDependencies, task);
     if (refusal !== undefined) {
       await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
-        orgId: String(task.orgId), taskId: task.taskId, path: "queued_dispatch", reason: refusal.reason, occurrence: `grounding#${hold.artifactSha256}`, now: new Date().toISOString() });
+        orgId: String(task.orgId), taskId: task.taskId, path: "queued_dispatch", reason: refusal.reason, occurrence: `grounding#${hold.artifactSha256}`, now: new Date().toISOString() },
+        { documentClient: dependencies.documentClient, tableName: dependencies.tableName, task });
       return await finishThenWait(dependencies, item, task.taskId, "start-failed");
     }
     const entry = { id: hold.artifactId, type: "plan" as const, version: hold.version, sha256: hold.artifactSha256, producer: "agentx-worker-untrusted" as const,

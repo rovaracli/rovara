@@ -894,6 +894,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
    * runs it. It names the head the merge is for: a head that is no longer that one (a person pushed) stops it.
    */
   branchSync: WorkflowBranchSyncSchema.optional(),
+  /** S2: a queued step is waiting for Slack to answer the access check (an outage). `revision` is the workflow revision it waits at, so a later step never inherits the note. Set and cleared by the dispatcher; the page says "Waiting for Slack". */
+  accessCheckWaitSince: z.object({ revision: z.number().int().positive(), since: z.string().datetime() }).strict().optional(),
   /**
    * Both versions (Plan 6 Task 17): the commit of the base branch whose merge conflicted, while a conflict round resolves it. The round's fix is pushed as a merge commit with this commit as its second
    * parent. Present only with `fixSource: "conflict"`.

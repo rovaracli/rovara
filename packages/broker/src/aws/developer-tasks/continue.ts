@@ -58,6 +58,7 @@ import { taskStartProjectAuthorityChecks } from "../../org/task-start-project-au
 import { usdToWholeMicrodollars } from "../../org/budget-amount.js";
 import { requireProjectSendBackRole } from "../../developer/task-access.js";
 import { ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
+import { stopIfOwnerRefused } from "./owner-stop.js";
 
 export async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "continue");
@@ -288,11 +289,17 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   if (task === undefined || task.orgId !== deps.orgId || task.orgId !== input.orgId || task.closedAt !== undefined) return;
   // Ruling R60, first: a task whose creator was removed is not resumed, nor a held start dispatched.
   await creatorGuard(deps, task);
-  // S2 (review M1): the approval raised the limit; it does not give a lost-access owner (or an archived project) a coding run. Read-only: nothing of the spend is touched, and the task keeps its pause and approval.
-  const refusal = await ownerWorkRefusal(deps, task);
-  if (refusal !== undefined) {
-    await recordWorkRefused(deps.learningAudit, (entry) => log(deps, entry), { orgId: String(task.orgId), taskId: task.taskId, path: "spend_resume", reason: refusal.reason, occurrence: `spend_resume#${input.spendRequestId}`, now: iso(deps) });
-    return "STALE";
+  // S2 (review M1): the approval raised the limit; it does not give a lost-access owner (or an archived project) a coding run. Nothing of the spend is touched: the approval stands, and the task keeps
+  // its pause but says why it did not go on (a workflow task's block reason; any other task has the audit event and the notice to the others only).
+  if (task.workflow !== undefined) {
+    if (await stopIfOwnerRefused(deps, task, task.workflow, "spend_resume")) return "STALE";
+  } else {
+    const refusal = await ownerWorkRefusal(deps, task);
+    if (refusal !== undefined) {
+      await recordWorkRefused(deps.learningAudit, (entry) => log(deps, entry), { orgId: String(task.orgId), taskId: task.taskId, path: "spend_resume", reason: refusal.reason, occurrence: `spend_resume#${input.spendRequestId}`, now: iso(deps) },
+        { documentClient: deps.documentClient, tableName: deps.tableName, task });
+      return "STALE";
+    }
   }
   if (input.spendingAdmission !== undefined) {
     if (deps.agentRuns === undefined) throw budgetActorRefused();

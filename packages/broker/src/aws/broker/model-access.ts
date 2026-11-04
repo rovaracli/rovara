@@ -83,7 +83,8 @@ async function requireOwnerMayRunAgentStep(dependencies: AwsBrokerDependencies, 
   const refusal = await ownerWorkRefusal(route, task);
   if (refusal === undefined) return;
   await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
-    orgId: task.orgId, taskId: task.taskId, path: "agent_step", reason: refusal.reason, occurrence: "agent_step", now: new Date().toISOString() });
+    orgId: task.orgId, taskId: task.taskId, path: "agent_step", reason: refusal.reason, occurrence: "agent_step", now: new Date().toISOString() },
+    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, task });
   throw agentXError("PROJECT_ACCESS_DENIED", refusal.message);
 }
 

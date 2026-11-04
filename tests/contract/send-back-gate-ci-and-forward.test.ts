@@ -2,7 +2,7 @@
 // send-back access gate (`requireProjectSendBackRole`): a member with no project access, a viewer, an archived project and another company are refused; an allowed person still goes on.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { WorkflowSnapshotSchema, agentXError, resolveWorkflowReviewFindings, retryWorkflowFeedbackReview, ciFixAskMessage, createCandidateManifest, orgMemberKey, orgRemovedKey, projectMetaKey, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, agentXError, resolveWorkflowReviewFindings, retryWorkflowFeedbackReview, ciFixAskMessage, createCandidateManifest, orgMemberKey, orgRemovedKey, projectMetaKey, type WorkflowSnapshot } from "@agentx/contracts";
 import { resolveTaskWorkflowFindings, retryTaskWorkflowFeedbackReview, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import { continueAsTask, resumeTaskAfterSpendApproval } from "../../packages/broker/src/aws/developer-tasks/continue.js";
 import { startTaskWorkflowUnderstandFromSystem } from "../../packages/broker/src/aws/developer-tasks/workflow-starts.js";
@@ -359,18 +359,18 @@ describe("the read-only feedback-review critic meets the send-back gate", () => 
   });
 });
 
-describe("the owner's Retry of a blocked coding step meets the send-back gate", () => {
-  /** A task whose coding run stopped (FAILED), so its IMPLEMENT step is blocked and the owner can Retry it. */
-  async function blockedCoding() {
-    const { harness, taskId, workspaceId, coding } = await approvedPlanTask();
-    await harness.finish(workspaceId, String(coding().id), "FAILED", { error: "the model stopped" });
-    expect(meta(harness, taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
-    const revision = meta(harness, taskId).workflow.revision;
-    const retry = (checkAccess: CheckAccess, caller: DeveloperCaller = OWNER) =>
-      retryTaskWorkflow(routeDeps(harness as never, checkAccess), caller, taskId, { requestId: randomUUID(), instructions: "Try again.", expectedRevision: revision });
-    return { harness, taskId, workspaceId, retry, revision, runs: () => operations(harness, workspaceId).filter((item) => item.workflowMode === "IMPLEMENT").length };
-  }
+/** A task whose coding run stopped (FAILED), so its IMPLEMENT step is blocked and the owner can Retry it. */
+async function blockedCoding() {
+  const { audit, harness, taskId, workspaceId, coding } = await approvedPlanTask();
+  await harness.finish(workspaceId, String(coding().id), "FAILED", { error: "the model stopped" });
+  expect(meta(harness, taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+  const revision = meta(harness, taskId).workflow.revision;
+  const retry = (checkAccess: CheckAccess, caller: DeveloperCaller = OWNER) =>
+    retryTaskWorkflow(routeDeps(harness as never, checkAccess), caller, taskId, { requestId: randomUUID(), instructions: "Try again.", expectedRevision: revision });
+  return { audit, harness, taskId, workspaceId, retry, revision, runs: () => operations(harness, workspaceId).filter((item) => item.workflowMode === "IMPLEMENT").length };
+}
 
+describe("the owner's Retry of a blocked coding step meets the send-back gate", () => {
   it("golden: an allowed contributor's Retry starts coding again", async () => {
     const t = await blockedCoding();
     const before = t.runs();
@@ -633,6 +633,18 @@ describe("review fixes: the owner is judged by the owner's own access, and every
     expect(runs()).toBe(before);
     await resumeTaskAfterSpendApproval(routeDeps(h as never, grantedAs("contributor")), OWNER, { ...input, spendRequestId: randomUUID() });
     expect(runs()).toBe(before + 1);
+  });
+
+  it("M1: the refused resume leaves a plain reason on the task, not only the audit event", async () => {
+    const t = await blockedCoding();
+    const workflow = meta(t.harness, t.taskId).workflow;
+    t.harness.db.set({ ...meta(t.harness, t.taskId), workflow: { ...workflow, blockReason: WORKFLOW_BLOCK_REASONS.budgetPaused } });
+    const input = { orgId: TEST_ORG, taskId: t.taskId, spendRequestId: randomUUID(), resetRunWindow: false, firstDispatch: false };
+    await expect(resumeTaskAfterSpendApproval(routeDeps(t.harness as never, denied, t.audit), OWNER, input)).resolves.toBe("STALE");
+    const after = meta(t.harness, t.taskId).workflow;
+    expect(after).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    expect(after.blockReason).toContain("Rovara didn't start");
+    expect(t.audit.recordedBy("task.work_refused")[0]).toMatchObject({ facts: { path: "spend_resume" } });
   });
 
   it("M2: continue-as-task is gated like any other press", async () => {

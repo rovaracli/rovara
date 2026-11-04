@@ -4,7 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
+import { orgMemberKey, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
 import { developerTaskIdentity, plannerRepliesKey } from "../../packages/broker/src/developer/task-records.js";
 import { SlackPostError, chatPostMessage } from "../../packages/broker/src/aws/slack-web.js";
 import { cachedSlackPoster, createNotifierHandler, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
@@ -18,6 +18,61 @@ import { TEST_ORG } from "../support/orgs.js";
 
 const SECRET = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
 const BOT_TOKEN = "xoxb-1111-2222-plantedbottoken";
+
+describe("the stopped-for-the-owner notice (S2)", () => {
+  const taskId = "22222222-2222-4222-8222-222222222222";
+  const stopId = "ci_fix_round#31";
+  const bea = "b".repeat(64);
+  const key = `OWNER_STOP_NOTIFY#${stopId}#${bea}`;
+  const setup = (role: "owner" | "denied" = "owner", member = true) => {
+    const db = new FakeDynamoDb();
+    const stream = recordStream(db);
+    db.set({ pk: `DEVTASK#${taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId, orgId: TEST_ORG, title: "Fix the retry bug", project: "payments" });
+    db.set({ pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 2, orphaned: false, people: [{ developerId: bea, slackUserId: "U0BEA00001", name: "Bea", role }] });
+    if (member) db.set({ ...orgMemberKey(TEST_ORG, bea), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: bea, role: "member", joinedAt: "2026-10-01T00:00:00.000Z" });
+    const row = { pk: `DEVTASK#${taskId}`, sk: key, entityType: "TASK_OWNER_STOPPED_NOTIFICATION", schemaVersion: 1, taskId, stopId, targetDeveloperId: bea, slackUserId: "U0BEA00001", status: "PENDING", attempts: 0, createdAt: new Date().toISOString() };
+    db.set(row);
+    const post = vi.fn(async (input: { channel: string; text: string }) => { void input; return { ts: "1.2", channel: "D0BEA" }; });
+    const queued: Notice[] = [];
+    const handler = createNotifierHandler({ documentClient: db, tableName: "state", enqueue: async (notices) => { queued.push(...notices); }, retryLater: async () => undefined,
+      post, now: () => Date.now(), log: () => undefined, deliveryFailed: () => undefined, reviewUrlBase: "https://agentx.example.test" });
+    const notice: Notice = { id: `${taskId}:owner_stopped:${stopId}#${bea}`, kind: "owner_stopped_dm", taskId, ownerStopKey: key, at: new Date().toISOString() };
+    const deliver = async (messageId = "m1") => handler({ Records: [{ eventSource: "aws:sqs", messageId, receiptHandle: "r", body: JSON.stringify(notice), attributes: { ApproximateReceiveCount: "1" } }] });
+    return { db, stream, row, post, queued, handler, notice, deliver };
+  };
+
+  it("the new row makes one notice, and a changed row makes none", () => {
+    const t = setup();
+    expect(noticesOf(undefined, t.row, t.notice.at, "stream-1")).toEqual([t.notice]);
+    expect(noticesOf(t.row, { ...t.row, status: "SENT" }, t.notice.at, "stream-2")).toEqual([]);
+  });
+
+  it("sends a direct message with the task, why it stopped, that they can take it over, and the task page link; once; and names nobody", async () => {
+    const t = setup();
+    await t.deliver();
+    await t.deliver("m2");
+    expect(t.post).toHaveBeenCalledOnce();
+    const sent = t.post.mock.calls[0]![0];
+    expect(sent.channel).toBe("U0BEA00001");
+    expect(sent.text).toContain("Rovara stopped");
+    expect(sent.text).toContain("Fix the retry bug");
+    expect(sent.text).toContain("no longer has access");
+    expect(sent.text).toContain("take it over");
+    expect(sent.text).toContain(`https://agentx.example.test/review/${taskId}/task`);
+    expect(t.db.get(`DEVTASK#${taskId}`, key)).toMatchObject({ status: "SENT" });
+  });
+
+  it("is dropped when the person is no longer on the task with a role that can take over, or has left the company", async () => {
+    const denied = setup("denied");
+    await denied.deliver();
+    expect(denied.post).not.toHaveBeenCalled();
+    expect(denied.db.get(`DEVTASK#${taskId}`, key)).toMatchObject({ status: "CANCELLED" });
+    const gone = setup("owner", false);
+    await gone.deliver();
+    expect(gone.post).not.toHaveBeenCalled();
+    expect(gone.db.get(`DEVTASK#${taskId}`, key)).toMatchObject({ status: "CANCELLED" });
+  });
+});
 
 describe("Task People direct-message receipts", () => {
   it("claims and sends a current grant once, then records the Slack receipt", async () => {
