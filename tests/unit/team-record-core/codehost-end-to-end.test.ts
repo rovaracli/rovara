@@ -174,10 +174,13 @@ describe("A. a repository deleted or transferred", () => {
 });
 
 describe("A. who must be linked", () => {
-  it("a verdict with no author and no words (a CI result) needs no linked person; any text, or a person's row, still does", () => {
-    expect(needsLinkedAuthor({ source: "github", trust: "system" })).toBe(false);
-    expect(needsLinkedAuthor({ source: "github", trust: "system", text: "some words" })).toBe(true);
-    expect(needsLinkedAuthor({ source: "github", trust: "outsider" })).toBe(true);
+  it("only a code host's CI verdict (kind github.ci: no author, no words) needs no linked person; any other actor-less system draft, any text, or a person's row still does", () => {
+    expect(needsLinkedAuthor({ source: "github", kind: "github.ci", trust: "system" })).toBe(false);
+    expect(needsLinkedAuthor({ source: "github", kind: "github.ci", trust: "system", text: "some words" })).toBe(true);
+    expect(needsLinkedAuthor({ source: "github", kind: "github.revert", trust: "system" })).toBe(true);
+    expect(needsLinkedAuthor({ source: "linear", kind: "ticket.updated", trust: "system" })).toBe(true);
+    expect(needsLinkedAuthor({ source: "github", trust: "system" })).toBe(true);
+    expect(needsLinkedAuthor({ source: "github", kind: "github.ci", trust: "outsider" })).toBe(true);
     expect(needsLinkedAuthor({ source: "linear" })).toBe(true);
   });
 });

@@ -674,6 +674,21 @@ describe("the Rovara row", () => {
     expect(await h.w.sink.put(note("a-2"))).toEqual({ status: "stored" });
   });
 
+  it("a private task's free-text row (its access scope is the task's) is hidden and deleted with the project's Rovara row, and its structured rows stay", async () => {
+    const h = harness({ edition: "enterprise" });
+    expect(await post(h, WHO.owner, add({ source: "rovara", scope: RS, retention: "C" }))).toMatchObject({ status: 200 });
+    const privateTo = { kind: "restricted", acl: { source: "rovara", scope: "rovara:task/t-priv", principals: ["a".repeat(64)], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } } as never;
+    expect(await h.w.sink.put({ ...note("a-priv"), audience: privateTo, project: "web" })).toEqual({ status: "stored" });
+    expect(await h.w.sink.put({ ...structured("m-priv"), audience: privateTo, scope: RS, project: "web" })).toEqual({ status: "stored" });
+    expect(await post(h, WHO.owner, remove(1, { source: "rovara", scope: RS }))).toEqual({ status: 200, body: { status: "removed" } });
+    const byId = (id: string) => events(h).find((row) => (row.sourceRef as { id: string }).id === id)!;
+    expect(byId("a-priv").tombstone).toMatchObject({ cause: "excluded" });
+    expect(byId("a-priv").text).toBeUndefined();
+    expect(byId("m-priv").tombstone).toBeUndefined();
+    await worker(h);
+    expect(events(h).map((row) => (row.sourceRef as { id: string }).id)).toEqual(["m-priv"]);
+  });
+
   it("when the inline hide fails the worker does it, and the whole place stays hidden meanwhile", async () => {
     const h = harness();
     await post(h, WHO.owner, add({ source: "rovara", scope: RS, retention: "C" }));

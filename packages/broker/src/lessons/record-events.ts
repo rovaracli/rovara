@@ -7,13 +7,14 @@
 // and the item, so a repeat is the same row.)
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { TaskEndHandler, TaskEndOutcome } from "../agents/task-end.js";
-import { effectiveTaskOwner, taskKey, type DeveloperTaskRecord, type TaskOwnerSource } from "../developer/task-records.js";
+import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { RovaraEmitter, RovaraEventBase, TaskVisibility } from "../team-record/sources/rovara.js";
 
 /** How long a caller waits for the record before it goes on without it. */
 export const RECORD_EMIT_BUDGET_MS = 1_500;
 
-type Base = RovaraEventBase;
+/** What an announcement says of the task. WHO may see its rows is not said here: the listener asks `task-visibility.ts` (the task's Plan 5 visibility) when it writes, so every emit point has the one answer. */
+type Base = Omit<RovaraEventBase, "visibility">;
 export type RovaraRecordEvent =
   | (Base & { kind: "remembered"; noteId: string; text: string; actorDeveloperId: string; origin?: "slack" })
   | (Base & { kind: "planOutcome"; planId: string; outcome: string; claims: number; claimsHeld: number })
@@ -63,27 +64,11 @@ export async function announceRovaraEvent(kind: RovaraRecordEvent["kind"], build
   }
 }
 
-/** What the visibility of a task is read from: a `DeveloperTaskRecord` fits, and so does the part of one a hook is given. */
-export type TaskVisibilitySource = Partial<TaskOwnerSource> & Partial<Pick<DeveloperTaskRecord, "shared">>;
+/** The task as an announcement names it: where it is. A `DeveloperTaskRecord` fits. A task with no org (from before orgs) has no Team record to write to. */
+export interface RecordedTask { orgId?: string | undefined; project: string; taskId: string }
 
-/**
- * A task that is shared is the project's; one that is not stays private to its owner now (`effectiveTaskOwner`, the one place that says who owns a task: a taker, else the creator). A task whose
- * sharing is not stated, or whose owner cannot be read, is `undefined`: nothing is recorded for it (fail closed), never a project-wide row and never a guess at the owner.
- */
-export function taskVisibilityOf(task: TaskVisibilitySource): TaskVisibility | undefined {
-  if (task.shared === true) return { kind: "shared" };
-  if (task.shared !== false) return undefined;
-  try { return { kind: "private", ownerDeveloperId: effectiveTaskOwner(task as TaskOwnerSource).developerId }; } catch { return undefined; }
-}
-
-/** The task as the record sees it: where it is and who may see its rows. */
-export interface RecordedTask extends TaskVisibilitySource { orgId?: string | undefined; project: string; taskId: string }
-
-function baseOf(task: RecordedTask, at: string): Base | undefined {
-  const visibility = taskVisibilityOf(task);
-  if (task.orgId === undefined || visibility === undefined) return undefined;
-  return { workspaceId: task.orgId, project: task.project, taskId: task.taskId, visibility, at };
-}
+const baseOf = (task: RecordedTask, at: string): Base | undefined =>
+  task.orgId === undefined ? undefined : { workspaceId: task.orgId, project: task.project, taskId: task.taskId, at };
 
 /** A note was remembered (the first time only). `actorDeveloperId` is the author of the words: the row is theirs, so an erase of them takes it. */
 export const announceRemembered = (task: RecordedTask, input: { noteId: string; text: string; actorDeveloperId: string; at: string; origin?: "slack" | undefined }, options?: { log?: RecordEmitLog }): Promise<void> =>
@@ -104,14 +89,19 @@ export const announceReviewOutcome = (task: RecordedTask, input: { publicationId
     return base === undefined ? undefined : { ...base, kind: "reviewOutcome", publicationId: input.publicationId, outcome: input.outcome, claims: input.claims, claimsHeld: input.claimsHeld };
   }, options);
 
-/** The listener that writes each announcement to the Team record through the Rovara emitter. */
-export function recordListenerOf(emitter: RovaraEmitter): RovaraRecordListener {
+/** Who may read a task's rows now: its Plan 5 visibility (`lessons/task-visibility.ts`). `undefined`: nothing can be recorded for it. */
+export type TaskVisibilityReader = (orgId: string, taskId: string) => Promise<TaskVisibility | undefined>;
+
+/** The listener that writes each announcement to the Team record through the Rovara emitter, with the task's visibility read when it writes. */
+export function recordListenerOf(emitter: RovaraEmitter, visibilityOf: TaskVisibilityReader): RovaraRecordListener {
   return async (event) => {
+    const visibility = await visibilityOf(event.workspaceId, event.taskId);
+    if (visibility === undefined) return;
     switch (event.kind) {
-      case "remembered": { const { kind: _kind, ...input } = event; return await emitter.remembered(input); } // eslint-disable-line @typescript-eslint/no-unused-vars
-      case "planOutcome": { const { kind: _kind, ...input } = event; return await emitter.planOutcome(input); } // eslint-disable-line @typescript-eslint/no-unused-vars
-      case "reviewOutcome": { const { kind: _kind, ...input } = event; return await emitter.reviewOutcome(input); } // eslint-disable-line @typescript-eslint/no-unused-vars
-      case "taskEnded": { const { kind: _kind, ...input } = event; return await emitter.taskEnded(input); } // eslint-disable-line @typescript-eslint/no-unused-vars
+      case "remembered": { const { kind: _kind, ...input } = event; return await emitter.remembered({ ...input, visibility }); } // eslint-disable-line @typescript-eslint/no-unused-vars
+      case "planOutcome": { const { kind: _kind, ...input } = event; return await emitter.planOutcome({ ...input, visibility }); } // eslint-disable-line @typescript-eslint/no-unused-vars
+      case "reviewOutcome": { const { kind: _kind, ...input } = event; return await emitter.reviewOutcome({ ...input, visibility }); } // eslint-disable-line @typescript-eslint/no-unused-vars
+      case "taskEnded": { const { kind: _kind, ...input } = event; return await emitter.taskEnded({ ...input, visibility }); } // eslint-disable-line @typescript-eslint/no-unused-vars
     }
   };
 }
@@ -125,11 +115,11 @@ export function recordOutcomeOf(outcome: TaskEndOutcome): Extract<RovaraRecordEv
   }
 }
 
-const SEND_BACK_SOURCES: ReadonlySet<string> = new Set(["SEND_BACK", "AUTO_FIX"]);
+const SEND_BACK_SOURCES: ReadonlySet<string> = new Set(["SEND_BACK", "FINDINGS", "AUTO_FIX"]);
 
 /**
  * The handler for `registerTaskEndHandler`: the finished task becomes a `rovara.task` row. It reads the task as it is now (the end event names only the org and the task), refuses a task of another
- * org, counts the send-backs from the workflow's own decisions (a person's and Rovara's own) and the rounds as the first round plus one per send-back. It never throws: a handler that threw would
+ * org, counts the send-backs from the workflow's own decisions (a person's, one over review findings, and Rovara's own) and the rounds as the first round plus one per send-back. It never throws: a handler that threw would
  * make the end tell its handlers again.
  */
 export function recordTaskEndHandler(): TaskEndHandler {

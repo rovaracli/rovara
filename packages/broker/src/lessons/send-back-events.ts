@@ -41,14 +41,21 @@ export async function announceHumanSendBack(event: HumanSendBackEvent): Promise<
   }
 }
 
-/** A task that is shared is the project's; one that is not is its owner's alone. */
-export const visibilityOf = (event: Pick<HumanSendBackEvent, "shared" | "ownerDeveloperId">): TaskVisibility =>
-  event.shared ? { kind: "shared" } : { kind: "private", ownerDeveloperId: event.ownerDeveloperId };
+/**
+ * Who may read a send-back's row. The event's `shared` is the C1 Slack-channel flag and says nothing of Plan 5 visibility, so it is not used: the task's visibility is read when the row is
+ * written (`lessons/task-visibility.ts`, the one reader every emit point uses). Without a reader the row is the owner's alone (fail closed).
+ */
+export type SendBackVisibility = (workspaceId: string, taskId: string) => Promise<TaskVisibility | undefined>;
+export const ownerOnly = (event: Pick<HumanSendBackEvent, "ownerDeveloperId">): TaskVisibility => ({ kind: "private", ownerDeveloperId: event.ownerDeveloperId });
 
 /** The listener that writes the send-back to the Team record through the Rovara emitter, naming the person who sent it. */
-export function sendBackToRecord(emitter: Pick<RovaraEmitter, "sendBack">): HumanSendBackListener {
-  return (event) => emitter.sendBack({
-    workspaceId: event.workspaceId, project: event.project, taskId: event.taskId, visibility: visibilityOf(event), at: event.at,
-    sendBackId: event.requestId, round: event.round, origin: "human", reasonText: event.instructions, actorDeveloperId: event.actorDeveloperId,
-  });
+export function sendBackToRecord(emitter: Pick<RovaraEmitter, "sendBack">, visibilityOf?: SendBackVisibility): HumanSendBackListener {
+  return async (event) => {
+    const visibility = visibilityOf === undefined ? ownerOnly(event) : await visibilityOf(event.workspaceId, event.taskId);
+    if (visibility === undefined) return;
+    await emitter.sendBack({
+      workspaceId: event.workspaceId, project: event.project, taskId: event.taskId, visibility, at: event.at,
+      sendBackId: event.requestId, round: event.round, origin: "human", reasonText: event.instructions, actorDeveloperId: event.actorDeveloperId,
+    });
+  };
 }

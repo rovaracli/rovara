@@ -618,8 +618,6 @@ describe("Rovara's own events", () => {
 
   it("follows the task's visibility: a private task's events are not project-wide", async () => {
     const { w, emitter } = emitterSetup();
-    // The project's Rovara row says everyone in the project may read a shared task's events (a row that says "maintainers" narrows them: see rovara-emit-points.test.ts).
-    w.config.set("rovara", "rovara:project/shop", { audienceDefault: "project" });
     await emitter.planOutcome({ ...base(), planId: "p1", outcome: "approved", claims: 4, claimsHeld: 3 });
     await emitter.planOutcome({ ...base({ visibility: { kind: "private", ownerDeveloperId: "dev-1" } }), planId: "p2", outcome: "approved", claims: 1, claimsHeld: 1 });
     await emitter.reviewOutcome({ ...base({ visibility: { kind: "shared_with", developerIds: ["dev-1", "dev-2"] } }), publicationId: "r1", outcome: "published", claims: 2, claimsHeld: 2 });

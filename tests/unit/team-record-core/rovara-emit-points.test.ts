@@ -1,16 +1,17 @@
 // Team record source-row lane, T4: Rovara's own events reach the record. Four hook points (a remembered note, a plan's outcome, a published review's outcome, the end of the task) announce through
 // `lessons/record-events.ts`; `installTeamRecordEmitter` registers the listener and the task-end handler only where the record is on. Three layers are proved:
 //  1. the registration list (off: nothing is registered, so the callers are what they were);
-//  2. each hook point announces the right event with the task's visibility and the actor, never throws into its caller and never holds it past the budget;
-//  3. the real runtime's emitter writes the rows: no `rovara:project/<p>` row means the default retention, a row means ITS retention, audience and switch, and a private task stays restricted.
+//  2. each hook point announces the right event with the actor (who may read it is decided when it is written: lessons/task-visibility.ts, tested apart), never throws into its caller and never holds it past the budget;
+//  3. the real runtime's emitter writes the rows: no `rovara:project/<p>` row means the default retention, a row means ITS retention and switch (never the audience: that is the task's visibility, whatever the row says), and a private task stays restricted.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { developerOrgKey, githubMemberKey } from "@agentx/contracts";
 import type { WorkflowSnapshot } from "../../../packages/contracts/src/index.js";
 import { hasTaskEndHandlers, onTaskEnded, registerTaskEndHandler } from "../../../packages/broker/src/agents/task-end.js";
 import { installTeamRecordEmitter, teamRecordEmitterInstalled, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
+import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { rememberTaskComment } from "../../../packages/broker/src/learning/capture-comment.js";
 import {
-  RECORD_EMIT_BUDGET_MS, recordListenerOf, recordTaskEndHandler, registerRovaraRecordListener, rovaraRecordListenerCount, taskVisibilityOf, type RovaraRecordEvent,
+  RECORD_EMIT_BUDGET_MS, recordListenerOf, recordTaskEndHandler, registerRovaraRecordListener, rovaraRecordListenerCount, type RovaraRecordEvent,
 } from "../../../packages/broker/src/lessons/record-events.js";
 import { outcomeRoundOf, recordPlanOutcome, recordPublicationOutcomes, type OutcomeTask } from "../../../packages/broker/src/rovara-code/outcome-hooks.js";
 import type { OutcomeDependencies } from "../../../packages/broker/src/rovara-code/outcomes.js";
@@ -22,6 +23,7 @@ import { TEST_ORG } from "../../support/orgs.js";
 import { PRIYA, RETRY_TEXT, SAM, learningTask, seedComment, seedPerson } from "../../support/learning-page.js";
 import { pageTask } from "../../support/page-tasks.js";
 import { T0 } from "../../support/team-record-core.js";
+import { ARJUN, MIA, ORG_A as SESSION_ORG, PRIYA as SESSION_OWNER, sessionWorld } from "../../support/agent-session-world.js";
 
 const removers: Array<() => void> = [];
 afterEach(() => {
@@ -81,19 +83,19 @@ describe("remembered", () => {
     await rememberTaskComment(fixture.deps, PRIYA, fixture.taskId, comment.commentId);
     expect(heard).toHaveLength(1);
     expect(heard[0]).toMatchObject({
-      kind: "remembered", workspaceId: TEST_ORG, project: "payments", taskId: fixture.taskId, noteId: answer.correction.id, actorDeveloperId: SAM.developerId, visibility: { kind: "shared" },
+      kind: "remembered", workspaceId: TEST_ORG, project: "payments", taskId: fixture.taskId, noteId: answer.correction.id, actorDeveloperId: SAM.developerId,
     });
+    expect(heard[0]).not.toHaveProperty("visibility");
     expect((heard[0] as { text: string }).text).toContain("shared retry helper");
     expect(heard[0]).not.toHaveProperty("origin");
   });
 
-  it("a private task: the visibility is the owner's alone; a Slack origin is carried when the caller says so", async () => {
+  it("a Slack origin is carried when the caller says so", async () => {
     const heard = listen();
     const fixture = membersTask();
-    fixture.db.set({ ...fixture.db.get(`DEVTASK#${fixture.taskId}`, "META")!, shared: false });
     const comment = seedComment(fixture, SAM, RETRY_TEXT);
     await rememberTaskComment(fixture.deps, PRIYA, fixture.taskId, comment.commentId, { origin: "slack" });
-    expect(heard[0]).toMatchObject({ visibility: { kind: "private", ownerDeveloperId: PRIYA.developerId }, origin: "slack" });
+    expect(heard[0]).toMatchObject({ origin: "slack" });
   });
 
   it("a refused Remember announces nothing, and a listener that throws does not change the answer", async () => {
@@ -116,7 +118,7 @@ describe("remembered", () => {
 });
 
 const critique = { status: "done", critiques: [{ verdict: "ok", model: { provider: "t", modelId: "m" } }] } as unknown as WorkflowSnapshot["critique"];
-const task = (extra: Record<string, unknown> = {}): OutcomeTask => ({ taskId: TASK_ID, orgId: TEST_ORG, project: "payments", shared: true, ...extra });
+const task = (extra: Record<string, unknown> = {}): OutcomeTask => ({ taskId: TASK_ID, orgId: TEST_ORG, project: "payments", ...extra });
 function outcomeDeps(): OutcomeDependencies & { logs: string[] } {
   const db = new FakeDynamoDb();
   const logs: string[] = [];
@@ -129,27 +131,19 @@ describe("planOutcome", () => {
     await recordPlanOutcome(outcomeDeps(), task(), { critique, revision: 4, decision: "APPROVE", at: AT });
     await recordPlanOutcome(outcomeDeps(), task(), { critique, revision: 5, decision: "REJECT", at: AT });
     expect(heard).toMatchObject([
-      { kind: "planOutcome", workspaceId: TEST_ORG, project: "payments", taskId: TASK_ID, planId: "4", outcome: "plan_approved", claims: 1, claimsHeld: 1, visibility: { kind: "shared" }, at: AT },
+      { kind: "planOutcome", workspaceId: TEST_ORG, project: "payments", taskId: TASK_ID, planId: "4", outcome: "plan_approved", claims: 1, claimsHeld: 1, at: AT },
       { kind: "planOutcome", planId: "5", outcome: "plan_rejected", claims: 1, claimsHeld: 0 },
     ]);
   });
 
-  it("a plan with no claim, or a task with no stated visibility, announces nothing; a failed track-record write does not stop the record's own", async () => {
+  it("a plan with no claim, or a task with no org, announces nothing; a failed track-record write does not stop the record's own", async () => {
     const heard = listen();
     await recordPlanOutcome(outcomeDeps(), task(), { critique: undefined, revision: 1, decision: "APPROVE", at: AT });
-    await recordPlanOutcome(outcomeDeps(), task({ shared: undefined }), { critique, revision: 1, decision: "APPROVE", at: AT });
+    await recordPlanOutcome(outcomeDeps(), { ...task(), orgId: undefined }, { critique, revision: 1, decision: "APPROVE", at: AT });
     expect(heard).toEqual([]);
     const broken = { ...outcomeDeps(), ddb: { send: async () => { throw new Error("down"); } } };
     await recordPlanOutcome(broken, task(), { critique, revision: 2, decision: "APPROVE", at: AT });
     expect(heard).toHaveLength(1);
-  });
-
-  it("a private task is announced as the owner's; one with no readable owner is not announced", async () => {
-    const heard = listen();
-    await recordPlanOutcome(outcomeDeps(), task({ shared: false, developerId: PRIYA.developerId, developerName: "Priya", provider: "slack" }), { critique, revision: 1, decision: "SKIP", at: AT });
-    await recordPlanOutcome(outcomeDeps(), task({ shared: false }), { critique, revision: 2, decision: "SKIP", at: AT });
-    expect(heard).toHaveLength(1);
-    expect(heard[0]).toMatchObject({ outcome: "plan_skipped", visibility: { kind: "private", ownerDeveloperId: PRIYA.developerId } });
   });
 
   it("a listener that throws never reaches the caller; one that never answers holds it only for the budget", async () => {
@@ -179,7 +173,7 @@ describe("reviewOutcome", () => {
   it("announces the publication with the number of claims it made (all still pending, so none held yet)", async () => {
     const heard = listen();
     await recordPublicationOutcomes(outcomeDeps(), task(), { workflow: published, proof: { verdicts: ["proves_change"], candidateDigest: CANDIDATE }, now: AT });
-    expect(heard).toMatchObject([{ kind: "reviewOutcome", taskId: TASK_ID, publicationId: outcomeRoundOf(CANDIDATE), outcome: "published", claims: 4, claimsHeld: 0, visibility: { kind: "shared" }, at: AT }]);
+    expect(heard).toMatchObject([{ kind: "reviewOutcome", taskId: TASK_ID, publicationId: outcomeRoundOf(CANDIDATE), outcome: "published", claims: 4, claimsHeld: 0, at: AT }]);
   });
 
   it("a publication that makes no claim announces nothing", async () => {
@@ -200,11 +194,11 @@ describe("taskEnded", () => {
     return { fixture, end: (outcome: Parameters<typeof onTaskEnded>[2]) => onTaskEnded(deps, taskRecord(), outcome, {}, { record: true }) };
   }
 
-  it("a merged task: outcome, rounds and send-backs (a person's and Rovara's own), the task's project and visibility", async () => {
+  it("a merged task: outcome, rounds and send-backs (a person's, one over review findings, and Rovara's own), the task's project", async () => {
     const heard = listen();
-    const { fixture, end } = ended({ decisions: [{ source: "SEND_BACK" }, { source: "AUTO_FIX" }, { source: "AUTO_RETRY" }, { source: "PAGE" }] });
+    const { fixture, end } = ended({ decisions: [{ source: "SEND_BACK" }, { source: "AUTO_FIX" }, { source: "FINDINGS" }, { source: "AUTO_RETRY" }, { source: "PAGE" }] });
     await expect(end("merged")).resolves.toBe("called");
-    expect(heard).toMatchObject([{ kind: "taskEnded", workspaceId: TEST_ORG, project: "payments", taskId: fixture.taskId, outcome: "merged", rounds: 3, sendBacks: 2, visibility: { kind: "shared" }, at: AT }]);
+    expect(heard).toMatchObject([{ kind: "taskEnded", workspaceId: TEST_ORG, project: "payments", taskId: fixture.taskId, outcome: "merged", rounds: 4, sendBacks: 3, at: AT }]);
   });
 
   it.each([["closed", "closed"], ["failed", "failed"], ["cancelled", "cancelled"], ["creator_removed", "cancelled"]] as const)("an end of %s is the record's %s", async (outcome, expected) => {
@@ -220,12 +214,6 @@ describe("taskEnded", () => {
     expect(heard).toEqual([]);
   });
 
-  it("a private task is the owner's alone", async () => {
-    const heard = listen();
-    await ended({ shared: false }).end("merged");
-    expect(heard[0]).toMatchObject({ visibility: { kind: "private", ownerDeveloperId: PRIYA.developerId } });
-  });
-
   it("another org's end event for the task announces nothing", async () => {
     const heard = listen();
     const handler = recordTaskEndHandler();
@@ -238,17 +226,6 @@ describe("taskEnded", () => {
     removers.push(registerRovaraRecordListener(async () => { throw new Error("boom"); }));
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     await expect(ended().end("merged")).resolves.toBe("called");
-  });
-});
-
-describe("visibility", () => {
-  it("shared is the project's, private is the owner's, and an unstated or ownerless task is nobody's (fail closed)", () => {
-    expect(taskVisibilityOf({ shared: true })).toEqual({ kind: "shared" });
-    expect(taskVisibilityOf({ shared: false, developerId: "d".repeat(64), developerName: "Dee", provider: "slack" })).toEqual({ kind: "private", ownerDeveloperId: "d".repeat(64) });
-    expect(taskVisibilityOf({})).toBeUndefined();
-    expect(taskVisibilityOf({ shared: false })).toBeUndefined();
-    // A taker is the owner now, not the creator.
-    expect(taskVisibilityOf({ shared: false, developerId: "d".repeat(64), developerName: "Dee", provider: "slack", currentOwner: { developerId: "e".repeat(64), name: "Eve", provider: "slack", since: AT } })).toEqual({ kind: "private", ownerDeveloperId: "e".repeat(64) });
   });
 });
 
@@ -277,18 +254,21 @@ function recordWorld() {
   return { db, runtime, rows, addRovaraRow };
 }
 
-const base = (visibility: RovaraRecordEvent["visibility"], taskId = TASK_ID) => ({ workspaceId: TEST_ORG, project: "payments", taskId, visibility, at: AT });
-const shared = { kind: "shared" } as const;
-const privateTo = { kind: "private", ownerDeveloperId: OWNER } as const;
+const base = (taskId = TASK_ID) => ({ workspaceId: TEST_ORG, project: "payments", taskId, at: AT });
+type Visibility = NonNullable<Awaited<ReturnType<TeamRecordRuntime["taskVisibility"]>>>;
+const shared: Visibility = { kind: "shared" };
+const privateTo: Visibility = { kind: "private", ownerDeveloperId: OWNER };
+/** The listener of the installed wiring, with the task's visibility given. */
+const sender = (w: { runtime: TeamRecordRuntime }, visibility: Visibility) => recordListenerOf(w.runtime.emitter, async () => visibility);
 
 describe("what the emitter writes (the real runtime)", () => {
   it("with no rovara row the default retention applies: structured parts are kept, a note's text is kept as the default allows, and the audience follows the task", async () => {
     const w = recordWorld();
-    const send = recordListenerOf(w.runtime.emitter);
-    await send({ ...base(shared), kind: "planOutcome", planId: "1", outcome: "plan_approved", claims: 1, claimsHeld: 1 });
-    await send({ ...base(shared), kind: "reviewOutcome", publicationId: "abc", outcome: "published", claims: 4, claimsHeld: 0 });
-    await send({ ...base(shared), kind: "remembered", noteId: "n1", text: "use the shared retry helper", actorDeveloperId: DEV });
-    await send({ ...base(shared), kind: "taskEnded", outcome: "merged", rounds: 2, sendBacks: 1 });
+    const send = sender(w, shared);
+    await send({ ...base(), kind: "planOutcome", planId: "1", outcome: "plan_approved", claims: 1, claimsHeld: 1 });
+    await send({ ...base(), kind: "reviewOutcome", publicationId: "abc", outcome: "published", claims: 4, claimsHeld: 0 });
+    await send({ ...base(), kind: "remembered", noteId: "n1", text: "use the shared retry helper", actorDeveloperId: DEV });
+    await send({ ...base(), kind: "taskEnded", outcome: "merged", rounds: 2, sendBacks: 1 });
     const stored = w.rows();
     expect(stored.map((row) => row.kind).sort()).toEqual(["rovara.plan", "rovara.remembered", "rovara.review", "rovara.task"]);
     expect(stored.every((row) => row.retention === "C" && (row.audience as { kind: string }).kind === "project" && row.scope === "rovara:project/payments")).toBe(true);
@@ -296,55 +276,118 @@ describe("what the emitter writes (the real runtime)", () => {
     expect(stored.find((row) => row.kind === "rovara.remembered")).toMatchObject({ text: "use the shared retry helper", actor: { developerId: DEV } });
   });
 
-  it("a rovara row applies: retention A keeps the structured parts and drops the note's text; audience maintainers narrows a shared task's rows", async () => {
+  it("a rovara row applies its retention: A keeps the structured parts and drops the note's text; its audience (maintainers) does NOT narrow a shared task's rows, which follow the task's visibility", async () => {
     const w = recordWorld();
     await w.addRovaraRow({ retention: "A", audienceDefault: "maintainers" });
-    const send = recordListenerOf(w.runtime.emitter);
-    await send({ ...base(shared), kind: "remembered", noteId: "n1", text: "use the shared retry helper", actorDeveloperId: DEV });
-    await send({ ...base(shared), kind: "taskEnded", outcome: "closed", rounds: 1, sendBacks: 0 });
+    const send = sender(w, shared);
+    await send({ ...base(), kind: "remembered", noteId: "n1", text: "use the shared retry helper", actorDeveloperId: DEV });
+    await send({ ...base(), kind: "taskEnded", outcome: "closed", rounds: 1, sendBacks: 0 });
     const stored = w.rows();
     expect(stored).toHaveLength(2);
     expect(stored.every((row) => row.retention === "A" && row.text === undefined)).toBe(true);
-    expect(stored.every((row) => (row.audience as { kind: string; acl?: { groups?: string[] } }).kind === "restricted" && (row.audience as { acl: { groups: string[] } }).acl.groups.includes("project:maintainers"))).toBe(true);
+    expect(stored.every((row) => (row.audience as { kind: string }).kind === "project")).toBe(true);
     expect(JSON.stringify(stored)).not.toContain("shared retry helper");
   });
 
   it("a disabled rovara row stops the project's own events", async () => {
     const w = recordWorld();
     await w.addRovaraRow({ enabled: false });
-    await recordListenerOf(w.runtime.emitter)({ ...base(shared), kind: "taskEnded", outcome: "merged", rounds: 1, sendBacks: 0 });
+    await sender(w, shared)({ ...base(), kind: "taskEnded", outcome: "merged", rounds: 1, sendBacks: 0 });
     expect(w.rows()).toEqual([]);
   });
 
   it("a rovara row of another project does not apply to this one's events (they follow the default)", async () => {
     const w = recordWorld();
     await w.addRovaraRow({ project: "other", scope: "rovara:project/other", retention: "A", enabled: false });
-    await recordListenerOf(w.runtime.emitter)({ ...base(shared), kind: "taskEnded", outcome: "merged", rounds: 1, sendBacks: 0 });
+    await sender(w, shared)({ ...base(), kind: "taskEnded", outcome: "merged", rounds: 1, sendBacks: 0 });
     expect(w.rows()).toHaveLength(1);
   });
 
   it("a private task's events are restricted to its owner, whatever the row says, and never project-wide", async () => {
     const w = recordWorld();
-    const send = recordListenerOf(w.runtime.emitter);
-    await send({ ...base(privateTo), kind: "planOutcome", planId: "1", outcome: "plan_skipped", claims: 1, claimsHeld: 1 });
-    await send({ ...base(privateTo), kind: "taskEnded", outcome: "failed", rounds: 1, sendBacks: 0 });
+    const send = sender(w, privateTo);
+    await send({ ...base(), kind: "planOutcome", planId: "1", outcome: "plan_skipped", claims: 1, claimsHeld: 1 });
+    await send({ ...base(), kind: "taskEnded", outcome: "failed", rounds: 1, sendBacks: 0 });
     await w.addRovaraRow({ audienceDefault: "project" });
-    await send({ ...base(privateTo, "22222222-2222-4222-8222-222222222222"), kind: "taskEnded", outcome: "failed", rounds: 1, sendBacks: 0 });
+    await send({ ...base("22222222-2222-4222-8222-222222222222"), kind: "taskEnded", outcome: "failed", rounds: 1, sendBacks: 0 });
     const stored = w.rows();
     expect(stored).toHaveLength(3);
-    for (const row of stored) expect(row.audience).toMatchObject({ kind: "restricted", acl: { principals: [OWNER] } });
+    for (const row of stored) {
+      expect(row.audience).toMatchObject({ kind: "restricted", acl: { principals: [OWNER], scope: expect.stringMatching(/^rovara:task\//) as string } });
+      // The row's place is the project's, so removing the project's Rovara row, an erase of the project and the lake reach it.
+      expect(row.scope).toBe("rovara:project/payments");
+    }
   });
 
   it("a rovara row above the default retention still stores a private task's events (the row is looked up by project, not by the task's own place)", async () => {
     const w = recordWorld();
     await w.addRovaraRow({ retention: "D" });
-    await recordListenerOf(w.runtime.emitter)({ ...base(privateTo), kind: "taskEnded", outcome: "merged", rounds: 1, sendBacks: 0 });
+    await sender(w, privateTo)({ ...base(), kind: "taskEnded", outcome: "merged", rounds: 1, sendBacks: 0 });
     expect(w.rows()).toMatchObject([{ retention: "D", kind: "rovara.task" }]);
   });
+});
 
-  it("the hooks reach the record end to end through the installed listener (a plan decision on a shared task)", async () => {
+// ---- the task's own visibility, end to end through the installed wiring (the real runtime reads the State table)
+describe("who may read what the record keeps about a task (Plan 5 visibility, not the Slack-channel flag)", () => {
+  function visibilityWorld() {
     const w = recordWorld();
-    await recordPlanOutcome(outcomeDeps(), task(), { critique, revision: 7, decision: "APPROVE", at: AT });
-    expect(w.rows()).toMatchObject([{ kind: "rovara.plan", structured: { outcome: "plan_approved", claims: 1, claimsHeld: 1 } }]);
+    const sw = sessionWorld();
+    const copy = () => { for (const item of sw.db.find(() => true)) w.db.set(item); };
+    return { ...w, sw, copy };
+  }
+  const retryNote = (taskId: string) => ({ ...base(taskId), kind: "remembered" as const, noteId: "n1", text: "use the shared retry helper", actorDeveloperId: DEV });
+  const storedFor = (rows: Array<Record<string, unknown>>, taskId: string) => rows.filter((row) => (row.sourceRef as { id: string }).id.includes(taskId));
+
+  it("a Slack-shared task with no Plan 5 share is recorded restricted to its owner; a project-shared task project-wide; a person-shared task for the people listed", async () => {
+    const w = visibilityWorld();
+    const slack = w.sw.seedSession();
+    const project = w.sw.seedSession();
+    const people = w.sw.seedSession();
+    w.sw.seedShare(SESSION_ORG, project.sessionId, { kind: "project", project: "web" }, "view");
+    w.sw.seedShare(SESSION_ORG, people.sessionId, { kind: "member", developerId: ARJUN }, "use");
+    w.sw.db.set({ ...(w.sw.db.get(`DEVTASK#${slack.taskId}`, "META") as Record<string, unknown>), shared: true });
+    w.copy();
+    const org = SESSION_ORG;
+    const emit = (taskId: string, project = "web") => recordListenerOf(w.runtime.emitter, (orgId, taskId) => w.runtime.taskVisibility(orgId, taskId))({ ...retryNote(taskId), workspaceId: org, project });
+    await emit(slack.taskId);
+    await emit(project.taskId);
+    await emit(people.taskId);
+    const stored = w.rows();
+    expect(storedFor(stored, slack.taskId)[0]!.audience).toMatchObject({ kind: "restricted", acl: { principals: [SESSION_OWNER] } });
+    expect(storedFor(stored, project.taskId)[0]!.audience).toEqual({ kind: "project" });
+    expect(storedFor(stored, people.taskId)[0]!.audience).toMatchObject({ kind: "restricted", acl: { principals: [SESSION_OWNER, ARJUN] } });
+  });
+
+  it("the hooks reach the record end to end through the installed listener (a plan decision on a project-shared task)", async () => {
+    const w = visibilityWorld();
+    const project = w.sw.seedSession();
+    w.sw.seedShare(SESSION_ORG, project.sessionId, { kind: "project", project: "web" }, "view");
+    w.copy();
+    await recordPlanOutcome(outcomeDeps(), { taskId: project.taskId, orgId: SESSION_ORG, project: "web" }, { critique, revision: 7, decision: "APPROVE", at: AT });
+    expect(w.rows()).toMatchObject([{ kind: "rovara.plan", audience: { kind: "project" }, structured: { outcome: "plan_approved", claims: 1, claimsHeld: 1 } }]);
+  });
+
+  it("a task the record cannot read records nothing", async () => {
+    const w = visibilityWorld();
+    await recordListenerOf(w.runtime.emitter, (orgId, taskId) => w.runtime.taskVisibility(orgId, taskId))({ ...retryNote("00000000-0000-4000-8000-000000000000"), workspaceId: SESSION_ORG });
+    expect(w.rows()).toEqual([]);
+  });
+
+  it("a send-back follows the same reading: the Slack-channel flag no longer makes it project-wide, and a person's share lists the people", async () => {
+    const w = visibilityWorld();
+    const slack = w.sw.seedSession();
+    const people = w.sw.seedSession();
+    w.sw.seedShare(SESSION_ORG, people.sessionId, { kind: "member", developerId: MIA }, "view");
+    w.sw.db.set({ ...(w.sw.db.get(`DEVTASK#${slack.taskId}`, "META") as Record<string, unknown>), shared: true });
+    w.copy();
+    const send = (taskId: string, requestId: string) => announceHumanSendBack({
+      workspaceId: SESSION_ORG, project: "web", taskId, requestId, actorDeveloperId: DEV, instructions: "add a test", round: 1, shared: true, ownerDeveloperId: SESSION_OWNER, at: AT,
+    });
+    await send(slack.taskId, "r1");
+    await send(people.taskId, "r2");
+    const stored = w.rows().filter((row) => row.kind === "rovara.send_back");
+    expect(stored).toHaveLength(2);
+    expect(storedFor(stored, slack.taskId)[0]!.audience).toMatchObject({ kind: "restricted", acl: { principals: [SESSION_OWNER] } });
+    expect(storedFor(stored, people.taskId)[0]!.audience).toMatchObject({ kind: "restricted", acl: { principals: [SESSION_OWNER, MIA] } });
   });
 });

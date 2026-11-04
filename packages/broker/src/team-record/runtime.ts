@@ -31,6 +31,7 @@ import { callRecordTool, recordToolsFor, type RecordToolContext } from "./agent-
 import { runDeleteWorker, type DeleteBudget } from "./delete-worker.js";
 import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition.js";
 import { markSourceFailing } from "./store.js";
+import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
@@ -50,7 +51,7 @@ import { markSyncDue, syncIsDue, syncTrackerUsers, type ConnectedTrackersPort, t
 import { auditOccurrence, auditRecordTrackerAutolinkChanged, auditRecordTrackerPersonMapped, auditRecordTrackerPersonUnmapped } from "../audit/events.js";
 import { needsLinkedAuthor, unlinkedCounter } from "./unlinked.js";
 import { priorEditsPort } from "./prior-edits.js";
-import { createGithubRecordTap, createHookRecordTap, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
+import { createGithubRecordTap, createHookRecordTap, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type TaskVisibility, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
 import { runStats, type StatsDeps } from "./stats-templates.js";
 import { expireRawText } from "./text-expiry.js";
 import { createTransientDistiller } from "./transient-distiller.js";
@@ -157,6 +158,8 @@ export interface TeamRecordRuntime {
     syncConnection(orgId: OrgId, connectionId: string, options?: { maxMs?: number }): Promise<SyncResult | undefined>;
   };
   readonly emitter: RovaraEmitter;
+  /** Who may read the rows about a task: its Plan 5 visibility, read from the State table when a row is written (`lessons/task-visibility.ts`). `undefined`: nothing is recorded for the task. */
+  taskVisibility(orgId: string, taskId: string): Promise<TaskVisibility | undefined>;
   readonly actors: ActorResolverPort;
   readonly modes: LearningModeReader;
   /** `/v1/app/projects/{project}/record/...` (the caller's project role already found by the broker). `undefined` for any other path. */
@@ -1007,5 +1010,5 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return synced;
   }
   trackerSync.run = syncDueTrackers;
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
 }

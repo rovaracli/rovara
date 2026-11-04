@@ -249,7 +249,9 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   // No actor id rides in a structured field (`ACTOR_STRUCTURED_FIELDS`): a row is found for an erase by its actor only.
   const structured = withoutActorFields(cleanStructured(draft.structured, trust, deps.edition === "public" && draft.origin === "slack"));
   // Every row carries the place it came from. Rovara's own rows without one belong to the project's own place.
-  const eventScope = scope ?? (draft.source === "rovara" && project !== undefined ? `rovara:project/${project}` : undefined);
+  // A Rovara row's place is always its project's, also for a private task's event (whose access snapshot names the task's own scope): removing the project's Rovara row, a project erase and the lake all
+  // reach the rows by that place.
+  const eventScope = draft.source === "rovara" && project !== undefined ? `rovara:project/${project}` : (scope ?? undefined);
   if (eventScope === undefined) return refused("no_scope");
   const id = deterministicEventId(orgId, draft.source, draft.sourceRef.system, draft.sourceRef.id, draft.sourceRef.version);
   const candidate = {

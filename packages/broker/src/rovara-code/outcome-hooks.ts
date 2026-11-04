@@ -18,12 +18,12 @@ import type { TestProofRead } from "../developer/test-proof-lines.js";
 import { readCi, readReviews } from "./merge-tracking.js";
 import { OUTCOME_WRITE_FAILED_METRIC, recordOutcomeSample, scoreOutcomeSample, type OutcomeDependencies } from "./outcomes.js";
 import { approvalReviewsOf } from "./host-port.js";
-import { announcePlanOutcome, announceReviewOutcome, type TaskVisibilitySource } from "../lessons/record-events.js";
+import { announcePlanOutcome, announceReviewOutcome } from "../lessons/record-events.js";
 
 type Permission = "admin" | "write" | "read" | "none";
 
-/** What the hooks need of a task. The sharing and owner fields are for the Team record (`lessons/record-events.ts`): a task record has them, and a task that does not state them is not told to it. */
-export interface OutcomeTask extends TaskVisibilitySource {
+/** What the hooks need of a task. */
+export interface OutcomeTask {
   taskId: string;
   orgId?: OrgId | undefined;
   project: string;
