@@ -26,6 +26,14 @@ describe("the Sources tab for a person who cannot edit", () => {
   expect(screen.queryByText("Add a source")).toBeNull();
   expect(chunk.loads).toBe(0);
  });
+ it("an editors' view that says canEdit is false stays the read-only tab and never loads the editing screen", async () => {
+  const f = openSources({ view: adminView({ canEdit: false }), readable: sources({ sources: [source()] }) });
+  expect(await screen.findByRole("list", { name: "Sources" })).toBeTruthy();
+  expect(f.recordReads()).toHaveLength(1);
+  expect(screen.queryByText("Add a source")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(chunk.loads).toBe(0);
+ });
  it("a maintainer without a live browser session gets the members' reply, which stays the read-only tab with a fixed note and no server text", async () => {
   // The route's reply for anyone but an editor in a live browser session: rows without the editors' fields.
   openSources({ adminRead: { status: 200, body: { sources: [{ kind: "github", scope: "github:repo/9", enabled: true, retention: "C", health: "ok", audience: "project", updatedAt: "2026-10-30T10:00:00.000Z", paused: false }], otherPaused: 0 } } });

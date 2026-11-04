@@ -57,6 +57,12 @@ describe("an editor's Sources tab", () => {
 });
 
 describe("adding a source", () => {
+ it("shows a repository name with its hidden control characters spelled out", async () => {
+  await openEditor({ view: adminView({ sources: [], repositories: [{ name: "pay\u202Ements", scope: "github:repo/9" }] }) });
+  pick("What to add", "repository");
+  const labels = [...optionsOf("Repository", screen.getByRole("region", { name: "Add a source" }))].map(option => option.textContent);
+  expect(labels).toContain("pay[U+202E]ments");
+ });
  it("sends a repository add with the place the server listed, a fresh request id, and reads the sources again", async () => {
   const f = await openEditor();
   const reads = f.recordReads().length, form = screen.getByRole("region", { name: "Add a source" });
@@ -220,7 +226,7 @@ describe("changes waiting for a second person", () => {
  const view = (pending: unknown[], over: Record<string, unknown> = {}) => adminView({ pending, ...over });
  it("the person who made it sees Waiting and no Approve or Reject", async () => {
   await openEditor({ view: view([pendingChange({ proposedByYou: true })]) });
-  const card = screen.getByRole("region", { name: "Waiting for a second person" });
+  const card = screen.getByRole("region", { name: /^Waiting for a second person/u });
   expect(within(card).getByText("Waiting")).toBeTruthy();
   expect(within(card).queryByRole("button", { name: "Approve" })).toBeNull();
   expect(within(card).queryByRole("button", { name: "Reject" })).toBeNull();
@@ -229,7 +235,7 @@ describe("changes waiting for a second person", () => {
  });
  it("another person sees Approve and Reject; Approve sends the change id alone and says it is in effect", async () => {
   const f = await openEditor({ view: view([pendingChange()]) });
-  const card = screen.getByRole("region", { name: "Waiting for a second person" });
+  const card = screen.getByRole("region", { name: /^Waiting for a second person/u });
   expect(within(card).queryByText("Waiting")).toBeNull();
   f.state.view = view([]);
   fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
@@ -238,18 +244,25 @@ describe("changes waiting for a second person", () => {
  });
  it("Reject sends the change id alone", async () => {
   const f = await openEditor({ view: view([pendingChange()]), write: body => ok({ status: body.action === "reject" ? "rejected" : "saved", ...(body.action === "reject" ? {} : { revision: 1 }) }) });
-  fireEvent.click(within(screen.getByRole("region", { name: "Waiting for a second person" })).getByRole("button", { name: "Reject" }));
+  fireEvent.click(within(screen.getByRole("region", { name: /^Waiting for a second person/u })).getByRole("button", { name: "Reject" }));
   expect(await screen.findByText("Change rejected.")).toBeTruthy();
   expect(f.posts[0]).toEqual({ action: "reject", changeId: "chg-one" });
  });
  it("the only person who can approve (soleApprover) sees Approve on their own change with the fixed line, and no Reject", async () => {
   const f = await openEditor({ view: view([pendingChange({ proposedByYou: true })], { soleApprover: true }) });
-  const card = screen.getByRole("region", { name: "Waiting for a second person" });
+  const card = screen.getByRole("region", { name: /^Waiting for a second person/u });
   expect(within(card).getByText("You're the only person who can approve this.")).toBeTruthy();
+  expect(within(card).queryByText("Waiting")).toBeNull();
+  expect(within(card).queryByText(/for another person to approve this/u)).toBeNull();
   fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
   await waitFor(() => { expect(f.posts).toHaveLength(1); });
   expect(f.posts[0]).toEqual({ action: "approve", changeId: "chg-one" });
   expect(within(card).queryByRole("button", { name: "Reject" })).toBeNull();
+ });
+ it("each card is named by its source kind and place, so two waiting changes can be told apart", async () => {
+  await openEditor({ view: view([pendingChange(), pendingChange({ changeId: "chg-two", source: "linear", scope: "linear:team/ENG", reasons: ["retention_raise"] })]) });
+  expect(screen.getByRole("region", { name: "Waiting for a second person: Slack slack:T1/C9" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Waiting for a second person: Linear linear:team/ENG" })).toBeTruthy();
  });
  it("without soleApprover the proposer never sees the sole-approver line", async () => {
   await openEditor({ view: view([pendingChange({ proposedByYou: true })]) });
@@ -257,7 +270,7 @@ describe("changes waiting for a second person", () => {
  });
  it("asks for a fresh sign-in in fixed words and offers to sign in again", async () => {
   const f = await openEditor({ view: view([pendingChange()]), write: () => wrapped("REAUTH_REQUIRED", "Sign in again to approve (server text).", 403) });
-  const card = screen.getByRole("region", { name: "Waiting for a second person" });
+  const card = screen.getByRole("region", { name: /^Waiting for a second person/u });
   fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
   expect(await within(card).findByText("Sign in again to approve.")).toBeTruthy();
   fireEvent.click(within(card).getByRole("button", { name: "Sign in again" }));

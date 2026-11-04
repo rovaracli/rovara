@@ -5,7 +5,7 @@ import type { SourcesAdminViewData } from "../../../api/record-sources.js";
 import { Banner } from "../../../design/Banner.js";
 import { Button } from "../../../design/Button.js";
 import { Card } from "../../../design/Card.js";
-import { VisibleText } from "../../../design/VisibleText.js";
+import { VisibleText, visibleText } from "../../../design/VisibleText.js";
 import { SourceAdd } from "./SourceAdd.js";
 import { SourceRow } from "./SourceRow.js";
 import { T, expiryWords, kindWords, sourceReasonWords } from "./lessons-text.js";
@@ -16,17 +16,17 @@ type Pending = SourcesAdminViewData["pending"][number];
 
 /** A change that waits for a second person. The one who made it sees "Waiting"; another person sees Approve and Reject; the only person who can approve (`soleApprover`) may approve their own. */
 function PendingCard({ project, change, soleApprover, now, notify }: { project: string; change: Pending; soleApprover: boolean; now: number; notify: (text: string) => void }) {
- const writer = useSourceWrite(project), id = "change-" + change.changeId, reasons = change.reasons.map(sourceReasonWords).filter(words => words !== "");
+ const writer = useSourceWrite(project), reasons = change.reasons.map(sourceReasonWords).filter(words => words !== "");
  const decide = async (action: "approve" | "reject") => {
   const reply = await writer.send({ action, changeId: change.changeId }, false);
   if (reply !== undefined) notify(action === "approve" ? T.SRC_APPROVED : T.SRC_REJECTED);
  };
- return <li><Card className="rv-lessons-card" aria-labelledby={id}>
-  <h4 id={id}>{T.SRC_PENDING_CARD}</h4>
+ return <li><Card className="rv-lessons-card" aria-label={T.SRC_PENDING_CARD + ": " + kindWords(change.source) + " " + visibleText(change.scope)}>
+  <h4>{T.SRC_PENDING_CARD}</h4>
   <p>{change.kind === "add" ? T.SRC_NEW : T.SRC_CHANGE}: <strong>{kindWords(change.source)}</strong> <span className="rv-muted"><VisibleText text={change.scope} /></span></p>
   {reasons.length > 0 && <p className="rv-muted">{reasons.join(", ")}</p>}
   <p className="rv-muted">{expiryWords(Date.parse(change.expiresAt), now)}</p>
-  {change.proposedByYou && <p><strong>{T.SRC_WAITING}</strong> {T.SRC_WAITING_FOR}</p>}
+  {change.proposedByYou && !soleApprover && <p><strong>{T.SRC_WAITING}</strong> {T.SRC_WAITING_FOR}</p>}
   {change.proposedByYou && soleApprover && <p>{T.SRC_SOLE}</p>}
   {(!change.proposedByYou || soleApprover) && <div className="rv-lessons-actions"><Button variant="primary" busy={writer.busy} onClick={() => { void decide("approve"); }}>{T.APPROVE}</Button>{!change.proposedByYou && <Button busy={writer.busy} onClick={() => { void decide("reject"); }}>{T.REJECT}</Button>}</div>}
   {writer.error !== undefined && <div role="alert"><p>{writer.error}</p>{writer.reauth && <Button onClick={writer.signInAgain}>{T.SRC_SIGN_IN}</Button>}</div>}

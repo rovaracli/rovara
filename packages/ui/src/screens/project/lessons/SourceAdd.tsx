@@ -4,6 +4,7 @@ import { Button } from "../../../design/Button.js";
 import { Select } from "../../../design/Select.js";
 import { Switch } from "../../../design/Switch.js";
 import { TextField } from "../../../design/TextField.js";
+import { visibleText } from "../../../design/VisibleText.js";
 import { AUDIENCE_OPTIONS, offeredFor } from "./SourceRow.js";
 import { T, retentionWords } from "./lessons-text.js";
 import { useSourceWrite } from "./use-source-write.js";
@@ -41,7 +42,7 @@ export function SourceAdd({ project, view, notify }: { project: string; view: So
  return <section aria-label={T.SRC_ADD} className="rv-lessons-section"><h3>{T.SRC_ADD}</h3>
   <fieldset key={formKey} className="rv-lessons-edit" disabled={writer.busy}><legend>{T.SRC_ADD}</legend>
    <Select label={T.SRC_ADD_KIND} value={kind} placeholder={T.SRC_CHOOSE} options={kinds.map(candidate => ({ value: candidate, label: KIND_WORDS[candidate] }))} onValueChange={next => { setKind(next);setPlace("");setRetention(""); }} />
-   {chosen === "repository" && <Select label={T.SRC_REPO} value={place} placeholder={T.SRC_CHOOSE} options={repositories.map(repository => ({ value: repository.scope, label: repository.name }))} onValueChange={setPlace} />}
+   {chosen === "repository" && <Select label={T.SRC_REPO} value={place} placeholder={T.SRC_CHOOSE} options={repositories.map(repository => ({ value: repository.scope, label: visibleText(repository.name) }))} onValueChange={setPlace} />}
    {(chosen === "slack" || chosen === "linear" || chosen === "jira") && <TextField label={PLACE_WORDS[chosen].label} hint={PLACE_WORDS[chosen].hint} value={place} maxLength={300} autoComplete="off" onChange={event => { setPlace(event.target.value); }} />}
    {chosen !== undefined && <>
     <Select label={T.SRC_RETENTION} value={retention} placeholder={T.SRC_CHOOSE} options={choices.map(mode => ({ value: mode, label: retentionWords(mode) }))} onValueChange={setRetention} />
