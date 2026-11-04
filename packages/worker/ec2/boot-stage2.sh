@@ -51,7 +51,7 @@ wall_ipv6_into_host() {
   fi
 }
 # 4b. An IPv6 wall that cannot be put in place does NOT stop the worker (owner, 2026-11-04). The worker runs normal tasks as in 0.5.2 but offers no test services: AGENTX_TEST_SERVICES_NOT_PULLED=all is the existing fail-closed
-#    withhold (testServicesAdvertisedFeatures returns no feature for `all`), written here BEFORE the worker unit starts. The boot facts then say ipv6Drops false with one fixed reason word, and a line is logged. The run-network
+#    withhold (testServicesAdvertisedFeatures returns no feature for `all`), written here BEFORE the worker unit starts. The boot facts then say ipv6Drops false with one fixed reason word, and a line is logged. The run network
 #    walls and the metadata block stay fatal. Also run by the walls unit on a reboot or Docker restart, so there the worker comes back withheld instead of not at all.
 ipv6_wall_failure_reason() {
   if command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; then printf 'rule-not-added'; else printf 'ip6tables-unusable'; fi
