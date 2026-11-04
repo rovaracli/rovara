@@ -29,5 +29,5 @@ export async function previewTaskStartStop(deps: DeveloperRouteDependencies, cal
  const captured = await captureTaskStopAdmission({ ...deps, purpose: "approval_terms", requireScopeAccess: async () => {
   const fresh = await projectRoleForRoute(deps, caller, rawProject);await requireNewWorkAllowed(deps, caller.orgId, project, fresh.role, "task");
  } }, { ...scope, developerId: caller.developerId, role: caller.orgRole, agentId: process.agentId, ...continueAdmissionIdentity({ budgetUsd }) });
- return TaskStopStartPreviewSchema.parse(captured.kind === "disabled" ? { ...scope, kind: "disabled" } : { ...scope, kind: "captured", effectiveStopMicrousd: captured.effectiveStopMicrousd, approvalCapMicrousd: captured.approvalCapMicrousd });
+ return TaskStopStartPreviewSchema.parse(captured.kind === "disabled" ? { ...scope, kind: "disabled" } : { ...scope, kind: "captured", effectiveStopMicrousd: captured.effectiveStopMicrousd });
 }

@@ -22,6 +22,6 @@ export const TaskStopReviewSchema = z.object({ orgId: OrgIdSchema, reviewId: z.s
  for (const outcome of Object.keys(review.counts) as Array<keyof typeof review.counts>) if (review.tasks.filter(task => task.outcome === outcome).length > review.counts[outcome]) context.addIssue({ code: "custom", message: "Review outcome count is too small." });
 });
 export const TaskStopEnrollmentReadSchema = z.object({ orgId: OrgIdSchema, state: TaskStopEnrollmentStateSchema, revision }).strict();
-export const TaskStopEnrollmentResultSchema = TaskStopEnrollmentReadSchema.extend({ requestId: z.string().uuid(), tasksReviewed: z.number().int().nonnegative().max(100), tasksAtEnable: z.number().int().nonnegative().max(100), newImpacts: z.number().int().nonnegative().max(100) }).strict();
+export const TaskStopEnrollmentResultSchema = TaskStopEnrollmentReadSchema.extend({ tasksReviewed: z.number().int().nonnegative().max(100), tasksAtEnable: z.number().int().nonnegative().max(100), newImpacts: z.number().int().nonnegative().max(100) }).strict();
 export type TaskStopReview = z.infer<typeof TaskStopReviewSchema>;
 export type TaskStopImpact = z.infer<typeof TaskStopImpactSchema>;

@@ -8,5 +8,5 @@ const scope = { orgId: OrgIdSchema, project: AgentXNameSchema };
 export const TaskStopStartPreviewSchema = z.discriminatedUnion("kind", [
  z.object({ ...scope, kind: z.literal("disabled") }).strict(),
  z.object({ ...scope, kind: z.literal("unknown") }).strict(),
- z.object({ ...scope, kind: z.literal("captured"), effectiveStopMicrousd: TaskStopMicrousdSchema, approvalCapMicrousd: TaskStopMicrousdSchema }).strict(),
+ z.object({ ...scope, kind: z.literal("captured"), effectiveStopMicrousd: TaskStopMicrousdSchema }).strict(),
 ]);

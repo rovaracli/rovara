@@ -2,6 +2,8 @@ import { OrgIdSchema, TaskStopEditingContextSchema, TaskStopEditResultSchema, Ta
 import type { AppHost, ApiMethod, ApiResponse } from "../host.js";
 import { ApiError } from "./errors.js";
 import { withoutRequestId } from "./without-request-id.js";
+// Legacy write echoes are also overwritten by json-reply; the UI needs only the outcome.
+const TaskStopEditAnswerSchema = TaskStopEditResultSchema.omit({ requestId: true });
 export function createTaskStopEditingApi(host: AppHost, orgId: string, project?: string) {
  let active = true, epoch = 0;
  const path = "/v1/app/org/task-stop-policy" + (project === undefined ? "" : `/projects/${encodeURIComponent(project)}`);
@@ -27,7 +29,7 @@ export function createTaskStopEditingApi(host: AppHost, orgId: string, project?:
     || (project === undefined ? result.data.policy.kind === "inherit" : result.data.policy.kind === "rovara_estimate")) throw new ApiError(502, "INVALID_RESPONSE", "This task stop could not be checked. Reload Spending.");
    return result.data;
   },
-  async edit(body: unknown) { return TaskStopEditResultSchema.parse(await request("PUT", "", TaskStopEditBodySchema.parse(body))); },
-  async decide(body: unknown) { return TaskStopEditResultSchema.parse(await request("POST", "/decisions", TaskStopDecisionBodySchema.parse(body))); },
+  async edit(body: unknown) { return TaskStopEditAnswerSchema.parse(withoutRequestId(await request("PUT", "", TaskStopEditBodySchema.parse(body)))); },
+  async decide(body: unknown) { return TaskStopEditAnswerSchema.parse(withoutRequestId(await request("POST", "/decisions", TaskStopDecisionBodySchema.parse(body)))); },
  };
 }

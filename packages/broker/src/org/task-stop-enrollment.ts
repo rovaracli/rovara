@@ -131,7 +131,7 @@ export async function writeTaskStopEnrollment(deps: EnrollmentDeps, caller: Deve
  if (policyCheck === undefined) throw stale();
  items[index] = { Put: { TableName: deps.tableName, Item: next, ConditionExpression: policyCheck.ConditionExpression, ExpressionAttributeNames: policyCheck.ExpressionAttributeNames, ExpressionAttributeValues: policyCheck.ExpressionAttributeValues } };
  items.push(...auditPending(deps, event));
- const result = TaskStopEnrollmentResultSchema.parse({ orgId: caller.orgId, requestId: body.requestId, state: body.state, revision: next.revision, tasksReviewed, tasksAtEnable, newImpacts });
+ const result = TaskStopEnrollmentResultSchema.parse({ orgId: caller.orgId, state: body.state, revision: next.revision, tasksReviewed, tasksAtEnable, newImpacts });
  const answer = TaskStopEnrollmentResultSchema.parse(await write(deps, caller, body.requestId, fingerprint, result, items, authority, sessions));
  await flushAuditEvents(deps, [event]);return answer;
 }

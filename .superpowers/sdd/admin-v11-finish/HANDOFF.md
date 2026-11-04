@@ -77,3 +77,18 @@ Final M3 verification: 24 files / 1346 tests, 10 Chromium journeys, required roo
 
 
 Publication: feature checkpoint 8b7f0bdc9ac88212417d4d02654ca879841fec06 was pushed to private/feat/admin-v11-finish after the required visibility check printed PRIVATE; the remote ref matched and the worktree was clean. GitHub's push response reported one moderate advisory on the repository's default branch: https://github.com/PrepLabsAI/Rovara-cloud/security/dependabot/36. This lane did not investigate or change that separate default-branch dependency issue. This publication note changes documentation only; the verified source remains 8b7f0bdc9.
+
+
+## REVIEW-M3 required fixes
+
+1. All four new browser reads follow QA-03's envelope convention. Enrollment GET/review/transition use exactAnswer; start preview uses withoutRequestId before strict safeParse. The new enrollment result schema no longer declares a route requestId. The server returns that wire shape and replays it consistently; the request UUID is still in the private receipt key and the audit facts are sourced from the input body. A new test pins receipt, audit and replay behavior.
+2. Start-preview captured responses now contain only orgId, project, kind and effectiveStopMicrousd. approvalCapMicrousd remains internal to calculation and is absent from the wire schema, server projection and component fake. The member contract test asserts exact keys and exact body.
+
+Both new Chromium mock branches now add/overwrite requestId as json-reply.ts does. Both component fake hosts add a non-UUID gateway id to every successful object, including replies replaced later by mockImplementation. Existing enforcement and preview happy-path assertions now exercise that shape. The RED run failed all three selected suites (13 failures); the corrected focused run passed five files / 232 tests. The requested single mutation removed the get and preview strips together; both component suites failed behavior checks. Sources were automatically restored before the final gates.
+
+The realistic M47 envelopes also exposed the same existing bug in TaskStopEditingApi's edit/decide readers (three older component journeys failed). A minimal adjacent fix strips the gateway id and uses a strict outcome reader with the overwritten echo omitted. The older server schema, receipts and audit inputs stay unchanged. This keeps the mock faithful across the complete Spending branch.
+
+Reader audit: the new strict response readers are enrollment get/review/transition and previewStart. All four are covered. The older editing GET already stripped metadata; its two writes now do too. No passthrough schema was introduced. Optional M3 suggestions remain outside the two requested fixes. Final gate evidence and the pushed new head will be recorded in the requested post-push M3-FIXED.md receipt, then this lane stops.
+
+
+REVIEW-M3 final verification: all 18 recorded gates passed (m3-fix-gates.json): root typecheck; strict broker/contracts/contract-tests shards; all six changed-file lint groups; six owning lint shards including pkg-contracts and web-ui; build; 24 affected files / 1347 tests; 10 Chromium journeys with real gateway-id overwrites; inventories, codemap and diff check. The one combined request-id mutation was rechecked after the test-wrapper lint correction and failed both suites. Sources were restored, then root typecheck and five files / 232 focused tests passed again. Initial JS is 185020 gzip bytes, +16 versus M3, below the unchanged 256000-byte cap with 70980 bytes headroom. Commit/private push next; the requested M3-FIXED.md will be written afterward with the exact verified published head. No merge or deployment is part of this fix.

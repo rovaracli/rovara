@@ -1,6 +1,7 @@
 import { TaskStopStartPreviewSchema, PROCESS_START_REFUSED_MESSAGE, ProjectOverviewProjectSchema, SessionIdSchema, TaskResponseReaderSchema } from "@agentx/contracts/web";
 import type { AppHost } from "../host.js";
 import { createApiClient, type Reader, type SendResult } from "./client.js";
+import { withoutRequestId } from "./without-request-id.js";
 import { ApiError } from "./errors.js";
 
 /** The longest request the route takes (the same limit the other start forms show). */
@@ -41,7 +42,7 @@ export function createCodeApi(host: AppHost) {
      cancel = () => { reject(new Error("preview cancelled")); };timer = setTimeout(cancel, 30_000);
      if (signal?.aborted === true) cancel();else signal?.addEventListener("abort", cancel, { once: true });
     })]);
-    const parsed = response.status === 200 ? TaskStopStartPreviewSchema.safeParse(response.body) : undefined;
+    const parsed = response.status === 200 ? TaskStopStartPreviewSchema.safeParse(withoutRequestId(response.body)) : undefined;
     return parsed?.success === true && parsed.data.project === name && parsed.data.kind === "captured" ? parsed.data : undefined;
    } catch { return undefined; }
    finally { clearTimeout(timer);if (cancel !== undefined) signal?.removeEventListener("abort", cancel); }

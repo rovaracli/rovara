@@ -1,6 +1,7 @@
 // Loaded with the owner enforcement step; stale scope responses never drive a write or sign-in.
 import { OrgIdSchema, TaskStopEnrollmentBodySchema, TaskStopEnrollmentReadSchema, TaskStopEnrollmentResultSchema, TaskStopReviewBodySchema, TaskStopReviewSchema } from "@agentx/contracts/web";
 import type { AppHost, ApiMethod, ApiResponse } from "../host.js";
+import { exactAnswer } from "./without-request-id.js";
 import { ApiError } from "./errors.js";
 const path = "/v1/app/org/task-stop-policy";
 export function createTaskStopEnrollmentApi(host: AppHost, orgId: string) {
@@ -33,8 +34,8 @@ export function createTaskStopEnrollmentApi(host: AppHost, orgId: string) {
  function scoped<T extends { orgId: string }>(value: T): T { if (value.orgId !== orgId) throw new ApiError(502, "INVALID_RESPONSE", "Reload Spending.");return value; }
  return {
   setScopeActive(value: boolean) { if (!value) epoch += 1;active = value; },
-  async get() { return scoped(TaskStopEnrollmentReadSchema.parse(await request("GET", "/enrollment?fresh=1"))); },
-  async review(revision: number) { return scoped(TaskStopReviewSchema.parse(await request("POST", "/cutover-review", TaskStopReviewBodySchema.parse({ requestId: crypto.randomUUID(), expectedRevision: revision })))); },
-  async transition(body: unknown) { return scoped(TaskStopEnrollmentResultSchema.parse(await request("PUT", "/enrollment", TaskStopEnrollmentBodySchema.parse(body)))); },
+  async get() { return scoped(exactAnswer(TaskStopEnrollmentReadSchema).parse(await request("GET", "/enrollment?fresh=1"))); },
+  async review(revision: number) { return scoped(exactAnswer(TaskStopReviewSchema).parse(await request("POST", "/cutover-review", TaskStopReviewBodySchema.parse({ requestId: crypto.randomUUID(), expectedRevision: revision })))); },
+  async transition(body: unknown) { return scoped(exactAnswer(TaskStopEnrollmentResultSchema).parse(await request("PUT", "/enrollment", TaskStopEnrollmentBodySchema.parse(body)))); },
  };
 }

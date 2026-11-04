@@ -15,9 +15,10 @@ async function fixture(state = "enabled") {
  const catalog = orgProjectCatalogKey(TEST_ORG, "payments");t.db.set({ ...t.db.get(catalog), ...catalog, orgId: TEST_ORG, entityType: "PROJECT_CATALOG", name: "payments", latestRevision: 1 });
  return { t, policy, ai, preview: (body: Record<string, unknown> = {}) => t.api(MAYA, "POST", path, body) };
 }
-it("start preview returns the canonical effective stop and ceiling approval cap with no work effects", async () => {
+it("start preview returns only the member-visible canonical effective stop with no work effects", async () => {
  const f = await fixture(), result = await f.preview();expect(result.status, JSON.stringify(result.body)).toBe(200);
- expect(result.body).toEqual({ orgId: TEST_ORG, project: "payments", kind: "captured", effectiveStopMicrousd: 750000, approvalCapMicrousd: 1000000 });
+ expect(Object.keys(result.body).sort()).toEqual(["effectiveStopMicrousd", "kind", "orgId", "project"]);
+ expect(result.body).toEqual({ orgId: TEST_ORG, project: "payments", kind: "captured", effectiveStopMicrousd: 750000 });
  expect(f.t.db.find(row => row.entityType === "WORKSPACE" || row.entityType === "DEVELOPER_TASK" || row.entityType === "SPENDING_ADMISSION")).toEqual([]);
  expect(f.t.access.mintKey).not.toHaveBeenCalled();
 });
@@ -55,5 +56,5 @@ it("the selected planning path enters the same numeric identity helper", async (
 
 it("the shared calculator preserves the explicit-agent ceiling rule", async () => {
  const f = await fixture();f.t.db.set({ ...agentGuardrailsKey(TEST_ORG), orgId: TEST_ORG, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 0.25 } });
- expect(await f.preview()).toMatchObject({ status: 200, body: { effectiveStopMicrousd: 250000, approvalCapMicrousd: 250000 } });
+ expect(await f.preview()).toMatchObject({ status: 200, body: { effectiveStopMicrousd: 250000 } });
 });

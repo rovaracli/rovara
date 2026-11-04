@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
 import {
- AgentXError, BUILTIN_AGENT_IDS, INDEX_EXPIRY_ATTRIBUTE, builtinSettingsKey, modelSourcesKey, taskSpendKey, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, createWorkflowSnapshot,
+ AgentXError, agentRequestKey, BUILTIN_AGENT_IDS, INDEX_EXPIRY_ATTRIBUTE, builtinSettingsKey, modelSourcesKey, taskSpendKey, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, createWorkflowSnapshot,
  developerOrgKey, errorStatus, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgScoped,
  orgSettingsKey, projectAiKey, projectMemberKey, projectMetaKey, workspaceProjectIndexValue,
 } from "@agentx/contracts";
@@ -540,4 +540,12 @@ it("keys without TASK_SPENT do not block review; disabled-era requested limit bi
 it("readiness names the first unprepared checked project", async () => {
  const f = fixture();addProject(f, "unprepared");const key = projectAiKey(orgId, "unprepared"), row = f.db.get(key)!;delete row.taskStopPolicy;f.db.set(row);
  expect(await f.call("POST", reviewPath, { requestId: randomUUID(), expectedRevision: 1 })).toMatchObject({ status: 409, body: { code: "TASK_STOP_CONFIG_MISSING", resource: { kind: "project", name: "unprepared" } } });
+});
+
+it("enrollment request identity stays in the private receipt and audit, outside the wire result", async () => {
+ const f = fixture(), review = await f.review(), body = f.transitionBody("ready", 1, review);
+ const reply = await f.call("PUT", enrollment, body);expect(reply.status).toBe(200);expect(reply.body).not.toHaveProperty("requestId");
+ expect(f.db.get(agentRequestKey(orgId, owner, String(body.requestId)))).toMatchObject({ entityType: "AGENT_REQUEST", result: { state: "ready", revision: 2 } });
+ expect(f.changedEvents().at(-1)?.facts).toMatchObject({ requestId: body.requestId });
+ expect(await f.call("PUT", enrollment, body)).toEqual(reply);expect(f.changedEvents()).toHaveLength(1);
 });
