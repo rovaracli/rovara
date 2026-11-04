@@ -173,8 +173,8 @@ export async function writeProjectPlaybook(
   const applied: ProjectPlaybook = { revision: current.revision + 1, defaultProcess: input.defaultProcess, ...(designReview === undefined ? {} : { designReview }) };
   const at = new Date(deps.now()).toISOString();
   const auditDeps: AuditDeps = deps.audit === undefined ? {} : { audit: deps.audit };
-  // `playbook.design_review_changed` only when the setting really changed (a missing setting is the owner's defaults, so saving the defaults over nothing is no change).
-  const designChanged = canonicalJson(designReviewSettingOf(current)) !== canonicalJson(designReviewSettingOf(applied));
+  // `playbook.design_review_changed` only when the setting really changed. A project with no setting runs the COMPANY's default mode (DR-FU4), so saving any setting over none is a change (the mode it will now run with is its own).
+  const designChanged = canonicalJson(current.designReview ?? null) !== canonicalJson(applied.designReview ?? null);
   const events = await tryAuditEvents(auditDeps, () => [
     auditPlaybookDefaultProcessChanged({
       orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(project, String(applied.revision)),

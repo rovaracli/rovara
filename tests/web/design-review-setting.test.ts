@@ -13,10 +13,10 @@ import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 
 const PERSON = "b".repeat(64);
-interface World { setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
+interface World { allowed?: boolean | undefined; setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
 function setup(world: World = {}, canEdit = true, filter: "all" | "changed" | "locked" = "all") {
  const state = { ...world }, puts: Array<{ path: string; body: Record<string, unknown> }> = [];
- const answer = () => ({ playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.setting === undefined ? {} : { designReview: state.setting }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
+ const answer = () => ({ ...(state.allowed === undefined ? {} : { designReviewAllowed: state.allowed }), playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.setting === undefined || state.allowed === false ? {} : { designReview: state.setting }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
  const f = fakeHost(async request => {
   if (request.path.endsWith("/playbook") && request.method === "GET") return { status: 200, body: answer() };
   if (request.path.endsWith("/playbook") && request.method === "PUT") { const body = request.body as Record<string, unknown>;puts.push({ path: request.path, body });state.setting = body.designReview as DesignReviewSetting;state.revision = (state.revision ?? 4) + 1;return { status: 200, body: answer() }; }
@@ -134,4 +134,32 @@ it("keeps the pure rules: the default marks, the locked set and the setting a dr
  expect(settingOf(draft, false)).toEqual({ ok: true, setting: DESIGN_REVIEW_DEFAULT_SETTING });
  expect(settingOf({ ...draft, approverKind: "group", groupId: "g" }, false)).toMatchObject({ ok: false, problems: { group: "Groups are not available in this edition." } });
  expect(settingOf({ ...draft, capText: "0.1" }, true)).toMatchObject({ ok: false });
+});
+
+it("DR-FU4: where the company has not allowed design review the card says so in plain words and offers no setting and no editor, whoever looks", async () => {
+ for (const canEdit of [true, false]) {
+  const f = setup({ allowed: false }, canEdit);
+  const card = await screen.findByRole("region", { name: "Design review" });
+  expect(await within(card).findByText(/Design review is not turned on for your company/u)).toBeTruthy();
+  expect(within(card).getByText(/A company owner or admin can allow it in How we work for the company/u)).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Design review settings editor" })).toBeNull();
+  expect(screen.queryByLabelText("Design review settings")).toBeNull();
+  expect(f.puts).toHaveLength(0);
+  f.close();
+ }
+});
+
+it("DR-FU4: where the company allows it the project chooses Off, Auto or Always, in that order, and a change is saved", async () => {
+ const f = setup({ allowed: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ const editor = await screen.findByRole("region", { name: "Design review settings editor" });
+ const select = within(editor).getByRole<HTMLSelectElement>("combobox", { name: "When it runs" });
+ const options = [...select.options].filter(option => option.value !== "");
+ expect(options.map(option => option.value)).toEqual(["never", "auto", "always"]);
+ expect(options[0]!.textContent).toMatch(/^Off:/u);
+ expect(select.value).toBe("never");
+ fireEvent.change(select, { target: { value: "auto" } });
+ fireEvent.click(within(editor).getByRole("button", { name: "Save design review settings" }));
+ await waitFor(() => expect(f.puts).toHaveLength(1));
+ expect(f.puts[0]!.body.designReview).toMatchObject({ mode: "auto" });
+ f.close();
 });

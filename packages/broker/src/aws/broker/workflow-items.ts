@@ -62,7 +62,7 @@ import { ROVARA_CODE_NAME } from "./model-access.js";
 import { learnModelNotEnabled } from "../../model-sources/learn-not-enabled.js";
 import { planCritiqueOutcome, planRunEstimate, spendLimitKind, storePlanAnswer, type PlannerReplies } from "./plan-answers.js";
 import { requirePullRequest } from "./records.js";
-import { designWaitSweepOf } from "../../design-review/wait-wiring.js";
+import { designDpMigrationOf, designWaitSweepOf } from "../../design-review/wait-wiring.js";
 import { githubScopeOf } from "./scope-helpers.js";
 import { liveSteerChangeItems, liveSteerCodingStop } from "../../agent-sessions/live-steer-revise.js";
 import { PLAN_EVIDENCE_SWEEP_LIMIT, WORKFLOW_DISPATCH_SWEEP_LIMIT } from "./sweeps-and-readiness.js";
@@ -79,6 +79,8 @@ export async function retryDueWorkflowDispatches(dependencies: AwsBrokerDependen
   await sweepGroundingHolds(dependencies);
   // DR10: reminders, park and close for design reviews waiting on people (with the `dr` switch off it only ends cost holds as not run). A failure here never holds back the dispatch rows.
   await designWaitSweepOf(dependencies).catch((error: unknown) => console.log(JSON.stringify({ component: "broker", event: "design_review.wait_sweep_failed", error: error instanceof Error ? error.name : "unknown" })));
+  // DR-FU4: the one-time move of the old `dp` project list into stored settings (it reads nothing while `dr` is off or `dp` is empty). A failure never holds back the dispatch rows.
+  await designDpMigrationOf(dependencies).catch((error: unknown) => console.log(JSON.stringify({ component: "broker", event: "design_review.dp_migration_failed", error: error instanceof Error ? error.name : "unknown" })));
   const page = await dependencies.documentClient.send(new QueryCommand({
     TableName: dependencies.tableName,
     IndexName: WORKFLOW_DISPATCH_DUE_INDEX.name,

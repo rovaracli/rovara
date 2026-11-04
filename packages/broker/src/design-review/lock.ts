@@ -13,7 +13,7 @@ import { z } from "zod";
 import type { TransactItem } from "../audit/outbox.js";
 import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, markEffective, type EffectiveDesignReviewSetting } from "./effective-setting.js";
 import {
-  DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_TIERS, DesignReviewTierSchema, designReviewSettingOf, featureEnabled, orgMetaKey,
+  DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_MODES, DESIGN_REVIEW_TIERS, DesignReviewTierSchema, featureEnabled, orgMetaKey,
   type DesignReviewSetting, type EditionPolicy,
 } from "@agentx/contracts";
 
@@ -46,16 +46,52 @@ export function lockRevisionCheck(table: DesignReviewLockTable, orgId: string, r
   return undefined;
 }
 
+/** The company's design review policy, beside the lock on the same item (DR-FU4). Both fields are optional; absent means not allowed and a default mode of `never`. */
+export const DesignReviewCompanyPolicySchema = z.object({
+  allowed: z.boolean().optional(),
+  defaultMode: z.enum(DESIGN_REVIEW_MODES).optional(),
+}).strict();
+export type DesignReviewCompanyPolicyStored = z.infer<typeof DesignReviewCompanyPolicySchema>;
+/** The policy as it applies: every field filled in. */
+export interface DesignReviewCompanyPolicy { allowed: boolean; defaultMode: DesignReviewSetting["mode"] }
+/** What a company with no policy (or one that cannot be read) has: design review not allowed, projects default to Off. */
+export const DESIGN_REVIEW_COMPANY_POLICY_OFF: Readonly<DesignReviewCompanyPolicy> = Object.freeze({ allowed: false, defaultMode: "never" });
+
+/** The company item as read: the lock, the policy, and the revision they share. One read answers both. */
+export interface DesignReviewCompanyRead {
+  lock: DesignReviewLockRead;
+  policy: DesignReviewCompanyPolicy;
+  /** The stored policy did not parse: it counts as not allowed (fail closed), and the page says so. */
+  policyUnreadable: boolean;
+  /** The item's revision: 0 when there is no item, undefined when the item has no readable revision. */
+  revision: number | undefined;
+}
+
 /**
- * Reads the company's lock from the State table beside its other settings. A missing item is no lock; an item whose `lock` does not parse, that is not an object, or that has no whole-number `revision`
- * (the lock's writer bumps it on every write) is `unreadable` (fail closed). A failed read is the caller's to handle: it must not be taken for "no lock".
+ * Reads the company's lock and policy from the State table beside its other settings, in ONE consistent read. A missing item is no lock and no policy; an item whose `lock` does not parse, that is not an object, or that has
+ * no whole-number `revision` (the writer bumps it on every write) has an `unreadable` lock (fail closed). An item with a policy and no `lock` has no lock. A policy that does not parse counts as "not allowed". A failed read
+ * is the caller's to handle: it must not be taken for "no lock".
  */
-export async function readDesignReviewLock(table: DesignReviewLockTable, orgId: string): Promise<DesignReviewLockRead> {
+export async function readDesignReviewCompany(table: DesignReviewLockTable, orgId: string): Promise<DesignReviewCompanyRead> {
   const found = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: orgMetaKey(orgId).pk, sk: DESIGN_REVIEW_LOCK_SK }, ConsistentRead: true })) as { Item?: Record<string, unknown> };
-  if (found.Item === undefined) return { kind: "none" };
-  const parsed = DesignReviewLockSchema.safeParse(found.Item["lock"]);
+  if (found.Item === undefined) return { lock: { kind: "none" }, policy: { ...DESIGN_REVIEW_COMPANY_POLICY_OFF }, policyUnreadable: false, revision: 0 };
   const revision = found.Item["revision"];
-  return parsed.success && typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0 ? { kind: "lock", lock: parsed.data, revision } : { kind: "unreadable" };
+  const revisionOk = typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0;
+  const storedPolicy = found.Item["policy"];
+  const policyParsed = storedPolicy === undefined ? undefined : DesignReviewCompanyPolicySchema.safeParse(storedPolicy);
+  const policy: DesignReviewCompanyPolicy = policyParsed?.success === true
+    ? { allowed: policyParsed.data.allowed === true, defaultMode: policyParsed.data.defaultMode ?? "never" } : { ...DESIGN_REVIEW_COMPANY_POLICY_OFF };
+  const storedLock = found.Item["lock"] === undefined && storedPolicy !== undefined ? {} : found.Item["lock"];
+  const parsed = DesignReviewLockSchema.safeParse(storedLock);
+  return {
+    lock: parsed.success && revisionOk ? { kind: "lock", lock: parsed.data, revision } : { kind: "unreadable" },
+    policy, policyUnreadable: policyParsed !== undefined && !policyParsed.success, revision: revisionOk ? revision : undefined,
+  };
+}
+
+/** The lock alone (one read). Kept for the writers that rest on it. */
+export async function readDesignReviewLock(table: DesignReviewLockTable, orgId: string): Promise<DesignReviewLockRead> {
+  return (await readDesignReviewCompany(table, orgId)).lock;
 }
 
 const MODE_RANK = { never: 0, auto: 1, always: 2 } as const;
@@ -103,8 +139,9 @@ export function lockedFields(lock: DesignReviewLock): LockViolation[] {
  * The setting a task runs with: the project's (or the owner's defaults) held to the company's lock. An unreadable lock gives the strictest posture. Pure.
  * `setting` is what `designReviewSettingOf(playbook)` gave, or `undefined` for a playbook whose setting could not be read (also strictest).
  */
-export function effectiveDesignReviewSetting(playbook: { designReview?: DesignReviewSetting | undefined }, lock: DesignReviewLockRead): EffectiveDesignReviewSetting {
-  const own = designReviewSettingOf(playbook);
+export function effectiveDesignReviewSetting(playbook: { designReview?: DesignReviewSetting | undefined }, lock: DesignReviewLockRead, defaultMode: DesignReviewSetting["mode"] = DESIGN_REVIEW_DEFAULT_SETTING.mode): EffectiveDesignReviewSetting {
+  // A project with no setting of its own runs the company's default mode (DR-FU4); the rest of its setting is the owner's defaults. A project that has one keeps it.
+  const own = playbook.designReview ?? { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: defaultMode, highRiskApprover: { ...DESIGN_REVIEW_DEFAULT_SETTING.highRiskApprover } };
   // An unreadable lock may have set anything, so every field it could hold is clamped to the strictest known value (L1): always on, no skipping, the default cap at most, the default tier at least,
   // and the maintainers as the approver (a project's own named people could be exactly who the lock was written to replace).
   if (lock.kind === "unreadable") {

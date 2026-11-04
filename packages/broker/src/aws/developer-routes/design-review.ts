@@ -31,7 +31,7 @@ import { readEffectiveDesignReview } from "../../design-review/setting.js";
 import { designSpendChoiceHandler, mayChooseDesignSpend, skipRefusalWords, designSpendGateFor, designSpendItemFor, type DesignSpendChoiceName, type DesignSpendContext, type DesignSpendPorts } from "../../design-review/spend-choice.js";
 import { designSpendCommitItems } from "../../design-review/spend-follow.js";
 import { spendEstimatesOf } from "../../design-review/spend-estimates.js";
-import { designReviewEnabledFor } from "../../design-review/switch.js";
+import { designReviewAvailableFor } from "../../design-review/switch.js";
 import { freshSignInOf, readDesignDirectory, readDesignTouches, readLatestDesignText, type DesignFactsDeps } from "../../design-review/route-facts.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, isConditional, workflowDispatchItem } from "../broker-shared.js";
 import { commitDesignApproval, membershipFenceItem } from "../developer-tasks/design-decision.js";
@@ -296,8 +296,9 @@ async function ownTaskIds(deps: DeveloperRouteDependencies, caller: DeveloperCal
 async function projectTaskIds(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<string[]> {
   const roles = await visibleProjectRoles(deps, caller);
   const found: string[] = [];
+  // The stage exists for the company or it does not (`dr` off reads nothing here); a project that is Off has no new reviews, and a person-asked one is still found.
+  if (!(await designReviewAvailableFor(deps, caller.orgId))) return found;
   for (const project of [...roles.keys()].sort()) {
-    if (!designReviewEnabledFor(project)) continue;
     const workspaces = await deps.documentClient.send(new QueryCommand({
       TableName: deps.tableName, IndexName: WORKSPACE_PROJECT_INDEX.name, KeyConditionExpression: "#project = :project", ExpressionAttributeNames: { "#project": WORKSPACE_PROJECT_INDEX.partitionKey },
       ExpressionAttributeValues: { ":project": workspaceProjectIndexValue(caller.orgId, project) }, ScanIndexForward: false, Limit: PROJECT_TASKS_MAX,
@@ -455,7 +456,7 @@ const REQUESTER_OR_MAINTAINER = "Only the person who asked for this task, or a p
 async function designFirst(env: Env, taskId: string, requestId: string): Promise<{ outcome: "done" }> {
   if (!TASK_ID.test(taskId)) throw agentXError("NOT_FOUND", GONE);
   const task = await get<DeveloperTaskRecord>(env.task, taskKey(taskId));
-  if (task === undefined || task.orgId !== env.caller.orgId || task.closedAt !== undefined || task.workflow === undefined || !designReviewEnabledFor(task.project)) throw agentXError("NOT_FOUND", GONE);
+  if (task === undefined || task.orgId !== env.caller.orgId || task.closedAt !== undefined || task.workflow === undefined || !(await designReviewAvailableFor(env.facts, env.caller.orgId))) throw agentXError("NOT_FOUND", GONE);
   const loaded: Loaded = { task, workflow: task.workflow };
   const { workflow } = loaded;
   const marker = markerOf(taskId, "DESIGN_FIRST", requestId);
@@ -665,7 +666,7 @@ export function designActionsFor(deps: DeveloperRouteDependencies, caller: Devel
     const workflow = task.workflow;
     if (workflow === undefined || task.closedAt !== undefined || task.orgId !== caller.orgId || workflow.definitionVersion !== "1.1.0") return undefined;
     const review = workflow.designReview;
-    if (review === undefined && !designReviewEnabledFor(task.project)) return undefined;
+    if (review === undefined && !(await designReviewAvailableFor(env.facts, caller.orgId))) return undefined;
     const [effective, directory] = await Promise.all([readEffectiveDesignReview(env.facts, caller.orgId, task.project), readDesignDirectory(env.facts, caller.orgId, task.project)]);
     if (!memberOf(directory, caller.developerId)) return undefined;
     const quickCard = workflow.path === "QUICK" && workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING";

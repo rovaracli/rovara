@@ -8,19 +8,20 @@ import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { seedDesignReviewCompany, type CompanyPolicySeed } from "../support/design-review-company.js";
 
 const PROXY_URL = "http://internal-proxy.example.test:4000";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 afterEach(() => { vi.unstubAllEnvs(); });
 
-/** `projects`: the allowlist `dp` (default: this project, "payments"; null: none is set). `dropOrgId`: the task record has no orgId when Understand ends (the type allows it). */
-async function understoodAs(assessment: IntentAssessment, options: { switchOn: boolean; playbook?: Record<string, unknown>; projects?: string | null; dropOrgId?: boolean; designFirst?: boolean }) {
+/** `company`: the company's design review policy (default: allowed, default mode Auto; null: the company has none). `dropOrgId`: the task record has no orgId when Understand ends (the type allows it). */
+async function understoodAs(assessment: IntentAssessment, options: { switchOn: boolean; playbook?: Record<string, unknown>; company?: CompanyPolicySeed | null; dropOrgId?: boolean; designFirst?: boolean }) {
   if (options.switchOn) vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
-  if (options.projects !== null) vi.stubEnv("DESIGN_REVIEW_PROJECTS", options.projects ?? "payments");
   const access = fakeModelAccess();
   const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: { rovaraCodeV2Live: true }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
+  if (options.company !== null) seedDesignReviewCompany(h.db, TEST_ORG, options.company);
   await new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
   h.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
   if (options.playbook !== undefined) h.db.set({ ...projectPlaybookKey(TEST_ORG, "payments"), entityType: "PROJECT_PLAYBOOK", ...options.playbook });
@@ -68,18 +69,37 @@ describe("the design review at the Understand step's ready answer", () => {
     expect(on.workflow.blockReason).toBeUndefined();
   });
 
-  it("the switch alone runs no project: `dr` on with no allowlist, or with another project's name, is OFF and the playbook is never read (fail closed)", async () => {
-    for (const projects of [null, "", "billing", "payments-api"] as const) {
-      const result = await understoodAs(needed(), { switchOn: true, projects });
-      expect(result.workflow, String(projects)).toMatchObject({ stage: "PLAN", state: "RUNNING", path: "QUICK" });
+  it("the switch alone runs no project: `dr` on with no company policy, or a company that has not allowed design review, is OFF and the playbook is never read (fail closed)", async () => {
+    for (const company of [null, { allowed: false }, { allowed: false, defaultMode: "always" }] as const) {
+      const result = await understoodAs(needed(), { switchOn: true, company });
+      expect(result.workflow, JSON.stringify(company)).toMatchObject({ stage: "PLAN", state: "RUNNING", path: "QUICK" });
       expect(result.workflow).not.toHaveProperty("designReview");
-      expect(result.playbookRead, String(projects)).toBe(false);
+      expect(result.playbookRead, JSON.stringify(company)).toBe(false);
     }
   });
 
-  it("the allowlist names the project: `dr` on and the project among several runs the review", async () => {
-    const result = await understoodAs(needed(), { switchOn: true, projects: "billing:payments" });
-    expect(result.workflow).toMatchObject({ path: "FULL", designReview: { status: "estimating" } });
+  it("`dp` decides nothing any more: the old project list is ignored whether or not it names the project", async () => {
+    for (const dp of ["billing:payments", "billing", ""]) {
+      vi.stubEnv("DESIGN_REVIEW_PROJECTS", dp);
+      const result = await understoodAs(needed(), { switchOn: true });
+      expect(result.workflow, dp).toMatchObject({ path: "FULL", designReview: { status: "estimating" } });
+    }
+  });
+
+  it("a project with no setting of its own runs the company's default mode: Off runs nothing, Auto decides from the request, Always reviews every design", async () => {
+    const small = needed({ design: { needed: false, reasons: ["small_change"], note: "A one-line fix." } });
+    const off = await understoodAs(needed(), { switchOn: true, company: { defaultMode: "never" } });
+    expect(off.workflow).toMatchObject({ path: "QUICK" });
+    expect(off.workflow).not.toHaveProperty("designReview");
+    expect((await understoodAs(small, { switchOn: true, company: { defaultMode: "auto" } })).workflow).not.toHaveProperty("designReview");
+    expect((await understoodAs(small, { switchOn: true, company: { defaultMode: "always" } })).workflow).toMatchObject({ path: "FULL", designReview: { decidedBy: "always" } });
+  });
+
+  it("a project's own setting beats the company default, and the company lock still clamps it", async () => {
+    const own = (mode: string) => ({ revision: 1, defaultProcess: { kind: "builtin" }, designReview: { mode, tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } });
+    expect((await understoodAs(needed(), { switchOn: true, company: { defaultMode: "never" }, playbook: own("auto") })).workflow).toMatchObject({ path: "FULL", designReview: { decidedBy: "auto" } });
+    expect((await understoodAs(needed(), { switchOn: true, company: { defaultMode: "always" }, playbook: own("never") })).workflow).not.toHaveProperty("designReview");
+    expect((await understoodAs(needed(), { switchOn: true, company: { defaultMode: "never", lock: { mode: "always" } }, playbook: own("never") })).workflow).toMatchObject({ designReview: { decidedBy: "always" } });
   });
 
   it("ON, a design that is needed: the effective setting decides, the task is forced onto the Full path at the requirements, and the review is switched on with the project's tier and cap", async () => {

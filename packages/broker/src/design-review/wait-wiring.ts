@@ -8,7 +8,10 @@ import { listProjectMembers } from "../org/project-members.js";
 import { readApproverRoster } from "../org/second-person-evidence.js";
 import type { DesignApproverDirectory } from "./approval.js";
 import { readEffectiveDesignReview } from "./setting.js";
-import { designReviewEnabledFor } from "./switch.js";
+import { modelSourceStoreOf } from "../aws/broker/scope-helpers.js";
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { designReviewStillOn } from "./switch.js";
+import { runDesignReviewDpMigration } from "./dp-migration.js";
 import { releaseDesignReviewRound } from "./round-record.js";
 import { roundRecordPortsOf } from "./wiring.js";
 import { sweepDesignWaits, type DesignWaitSweepDeps } from "./wait-sweep.js";
@@ -21,7 +24,7 @@ export function designWaitSweepDepsOf(dependencies: AwsBrokerDependencies): Desi
   const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
   const signInTableName = dependencies.developer?.signInTableName;
   return {
-    ...table, now: Date.now, enabledFor: (project) => designReviewEnabledFor(project), edition: dependencies.editionPolicy, log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+    ...table, now: Date.now, enabledFor: (orgId, project, decidedBy) => designReviewStillOn(table, orgId, project, decidedBy), edition: dependencies.editionPolicy, log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
     setting: async (orgId, project) => (await readEffectiveDesignReview(table, orgId, project)).setting,
     // The shared roster (maintainers, admins and owners whose identity is live) and the project's people: the same live evidence a second-person decision reads. Groups are not read here: a reminder for a group approver falls
     // back to the maintainers, and what a person may DO is still decided by the handlers when they act.
@@ -73,4 +76,20 @@ export function designWaitSweepDepsOf(dependencies: AwsBrokerDependencies): Desi
  */
 export async function designWaitSweepOf(dependencies: AwsBrokerDependencies): Promise<{ attempted: number }> {
   return sweepDesignWaits(designWaitSweepDepsOf(dependencies));
+}
+
+/**
+ * The recovery sweep's one-time move of the old `dp` project list into stored settings (dp-migration.ts). It reads nothing while `dr` is off or `dp` names nothing. Audited as the system; idempotent; removed with `dp`
+ * in the next release.
+ */
+export async function designDpMigrationOf(dependencies: AwsBrokerDependencies): Promise<"off" | "done" | "partial" | "failed"> {
+  const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
+  const audit = dependencies.audit === undefined ? {} : { audit: dependencies.audit };
+  return runDesignReviewDpMigration({
+    playbook: { ...table, now: Date.now, ...audit, edition: dependencies.editionPolicy },
+    company: { ...table, now: Date.now, ...audit, edition: dependencies.editionPolicy },
+    listOrgs: (after, limit) => modelSourceStoreOf(dependencies).listOrgs(after, limit),
+    installOrg: () => { try { return installOrgIdFromEnvironment(); } catch { return undefined; } },
+    now: Date.now, log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+  });
 }

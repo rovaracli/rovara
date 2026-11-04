@@ -24,6 +24,8 @@ import "./how-we-work.css";
 
 // SU-1: the company's setup locks. Its own chunk; it shows nothing while the setup agent is off.
 const SetupLocksRow = lazy(() => import("./SetupLocksRow.js"));
+// DR-FU4: the company's design review card (allowed, default mode, rules). Its own chunk; it shows nothing while design review is off in the environment, and for anyone but an admin.
+const DesignReviewCompanyRow = lazy(() => import("./DesignReviewCompanyRow.js"));
 
 const effortChoice = (effort: CompanyOverride["thinkingLevel"]): EffortChoice => effort === undefined ? "inherit" : effort === null ? "null" : effort;
 type Notice = { kind: "saved" } | { kind: "saved_reload_failed" } | { kind: "stale" } | { kind: "failed"; text: string } | { kind: "confirm"; url: string | undefined; changes: string[]; soleOwner: SoleOwnerConfirmation | undefined };
@@ -40,6 +42,7 @@ export function HowWeWorkCompanyScreen() {
   <KnownFailingPolicyRow />
   <SetupRecipesLink />
   {(role === "owner" || role === "admin") && <Suspense fallback={null}><SetupLocksRow /></Suspense>}
+  {(role === "owner" || role === "admin") && <Suspense fallback={null}><DesignReviewCompanyRow /></Suspense>}
   {notice?.kind === "saved" && <p role="status">{T.SAVED}</p>}
   {notice?.kind === "saved_reload_failed" && <p role="alert">{T.SAVED_RELOAD_FAILED} <Button onClick={() => { setNotice(undefined);void read.refetch(); }}>Reload</Button></p>}
   <ReadSection read={read} label="Company model defaults">{policy => <Editor key={read.dataUpdatedAt} policy={policy} notice={notice} setNotice={setNotice} reread={reread} reload={() => { setNotice(undefined);void read.refetch(); }} />}</ReadSection>

@@ -1,5 +1,5 @@
 // Design review stage, the final fix round (DR-REVIEW-final.md, A): with the stage off for a project, three things the stage touched behave exactly as they did before it existed.
-//   A1  the Slack and Linear `design first:` prefix is read only while `dr` is on AND the project is named in `dp`; otherwise the text is not looked at (no stripping, no marker, no skipped Quick/Full question);
+//   A1  the Slack and Linear `design first:` prefix is read only while `dr` is on AND the company allows design review; otherwise the text is not looked at (no stripping, no marker, no skipped Quick/Full question);
 //   A2  a spec write adds no read of its own: a transient read error cannot fail an OFF spec write;
 //   (A3, the playbook, is pinned in design-review-playbook.test.ts.)
 import { randomUUID } from "node:crypto";
@@ -11,6 +11,8 @@ import { specEndEnvironmentOf } from "../../packages/broker/src/aws/broker/spec-
 import { parseWorkflowStartRequest } from "../../packages/broker/src/aws/slack-workflow-choice.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { ARJUN, ORG_A, sessionWorld } from "../support/agent-session-world.js";
+import { seedDesignReviewCompany } from "../support/design-review-company.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 // Real by default; the intake test takes the start over (the request it is handed is what it looks at).
 const intent = vi.hoisted(() => ({ start: undefined as undefined | ((...args: unknown[]) => Promise<unknown>) }));
@@ -33,25 +35,26 @@ describe("A1: the Slack ingress never reads the prefix (it cannot know the proje
 });
 
 describe("A1: a Slack-started task", () => {
-  const start = async (env: Record<string, string>, threadTs: string) => {
+  const start = async (env: Record<string, string>, threadTs: string, company = false) => {
     for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
     const harness = await createSingleAnswerPlanBroker();
+    if (company) seedDesignReviewCompany(harness.db, TEST_ORG);
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread: { ...SLACK_THREAD, threadTs }, userId: MAYA.slackUserId, instructions: PREFIXED, workflowPath: "QUICK", requestId: randomUUID() });
     expect(started.statusCode).toBe(200);
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
     return harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown>;
   };
 
-  it("with the stage OFF (dr off, or the project not in dp) keeps the prefix in the request and records no marker", async () => {
-    for (const [index, env] of [{ DESIGN_REVIEW_ENABLED: "0", DESIGN_REVIEW_PROJECTS: "payments" }, { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "other" }, {}].entries()) {
+  it("with the stage OFF (dr off, or the company not allowing it) keeps the prefix in the request and records no marker", async () => {
+    for (const [index, env] of [{ DESIGN_REVIEW_ENABLED: "0", DESIGN_REVIEW_PROJECTS: "payments" }, { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "payments" }, {}].entries()) {
       const task = await start(env, `1695500000.0001${String(index)}0`);
       expect(task["designFirst"], JSON.stringify(env)).toBeUndefined();
       expect(JSON.stringify(task), JSON.stringify(env)).toContain("design first: Add a retry to payments");
     }
   });
 
-  it("positive control: with dr on and the project in dp the prefix is read, stripped and recorded for the person who typed it", async () => {
-    const task = await start({ DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "payments" }, "1695500000.000199");
+  it("positive control: with dr on and the company allowing design review the prefix is read, stripped and recorded for the person who typed it (dp is ignored)", async () => {
+    const task = await start({ DESIGN_REVIEW_ENABLED: "1" }, "1695500000.000199", true);
     expect(typeof (task["designFirst"] as { by?: unknown } | undefined)?.by).toBe("string");
     expect(JSON.stringify(task)).not.toContain("design first:");
     expect(JSON.stringify(task)).toContain("Add a retry to payments");
@@ -61,7 +64,7 @@ describe("A1: a Slack-started task", () => {
 describe("A1: a Linear or Jira ticket", () => {
   const request = (project: string) => ({ requestId: randomUUID(), project, input: { text: PREFIXED }, source: "linear" }) as never;
 
-  it("passes the text on untouched and records nothing while the stage is off for the project; reads the prefix when it is on", async () => {
+  it("passes the text on untouched and records nothing while the stage is off (dr off, or the company has not allowed it); reads the prefix when it is on", async () => {
     const taskId = randomUUID();
     const w = sessionWorld();
     w.db.set({ pk: `DEVTASK#${taskId}`, sk: "META", taskId });
@@ -73,7 +76,7 @@ describe("A1: a Linear or Jira ticket", () => {
       intentDependenciesFor: () => ({}) as never,
     };
     const intake = intakePortsOf(wiring);
-    for (const env of [{ DESIGN_REVIEW_ENABLED: "0", DESIGN_REVIEW_PROJECTS: "web" }, { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "ops" }]) {
+    for (const env of [{ DESIGN_REVIEW_ENABLED: "0", DESIGN_REVIEW_PROJECTS: "web" }, { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "web" }]) {
       for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
       await intake.start(ORG_A, ARJUN, request("web"));
       expect(w.db.get(`DEVTASK#${taskId}`, "META")).not.toHaveProperty("designFirst");
@@ -81,7 +84,7 @@ describe("A1: a Linear or Jira ticket", () => {
     expect(sent).toEqual([PREFIXED, PREFIXED]);
     // Positive control.
     vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
-    vi.stubEnv("DESIGN_REVIEW_PROJECTS", "web");
+    seedDesignReviewCompany(w.db, ORG_A);
     await intake.start(ORG_A, ARJUN, request("web"));
     expect(sent.at(-1)).toBe("Add a retry to payments");
     expect(w.db.get(`DEVTASK#${taskId}`, "META")).toMatchObject({ designFirst: { by: ARJUN } });

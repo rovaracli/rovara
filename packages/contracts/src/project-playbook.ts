@@ -50,6 +50,8 @@ export const ProjectPlaybookResponseSchema = z.object({
   designReviewLocked: z.array(DesignReviewLockedFieldSchema).max(DESIGN_REVIEW_LOCKED_FIELDS.length).optional(),
   /** DR11: true only in an edition that has groups (Enterprise). The editor offers "a group" as the high-risk approver only then; the broker refuses a group elsewhere. Absent reads as false. */
   designReviewGroups: z.boolean().optional(),
+  /** DR-FU4: present only where the design review stage exists in the environment (`dr` on). False: the company has not allowed design review, so the project's setting is not shown or editable; true: it is. */
+  designReviewAllowed: z.boolean().optional(),
 }).strict();
 export type ProjectPlaybookResponse = z.infer<typeof ProjectPlaybookResponseSchema>;
 

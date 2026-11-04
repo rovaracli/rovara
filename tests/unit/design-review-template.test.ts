@@ -1,7 +1,8 @@
 // Design review stage, DR7 slice B2: the Rovara design template (instructions and the strict reader) and the two-setting switch.
 import { describe, expect, it } from "vitest";
 import { designTemplateInstructions, designTemplateRetryPrompt, readDesignTemplate } from "../../packages/broker/src/design-review/template.js";
-import { designReviewEnabledFor, designReviewProjects } from "../../packages/broker/src/design-review/switch.js";
+import { designReviewEnabled } from "../../packages/broker/src/design-review/switch.js";
+import { legacyDesignReviewProjects } from "../../packages/broker/src/design-review/dp-migration.js";
 import { designTextOf } from "../../packages/broker/src/design-review/resolve-run.js";
 
 const SECTIONS = ["§1 Problem and goal", "§2 Current system", "§3 Proposed design", "§4 Alternatives", "§5 Risks", "§6 Areas touched", "§7 Assumptions", "§8 Sources"];
@@ -36,19 +37,15 @@ describe("the design template reader", () => {
   });
 });
 
-describe("the switch: `dr` and the project allowlist `dp`", () => {
-  it("runs a project only when `dr` is exactly 1 AND the project is named", () => {
-    const env = (dr: string | undefined, dp: string | undefined) => ({ ...(dr === undefined ? {} : { DESIGN_REVIEW_ENABLED: dr }), ...(dp === undefined ? {} : { DESIGN_REVIEW_PROJECTS: dp }) });
-    expect(designReviewEnabledFor("payments", env("1", "payments"))).toBe(true);
-    expect(designReviewEnabledFor("payments", env("1", "billing:payments"))).toBe(true);
-    for (const [dr, dp] of [["1", undefined], ["1", ""], ["1", "billing"], ["1", "payments-api"], ["0", "payments"], [undefined, "payments"], ["true", "payments"], ["1", "Payments"], ["1", "billing:"], ["1", "pay ments"]] as const) {
-      expect(designReviewEnabledFor("payments", env(dr, dp)), `${String(dr)} ${String(dp)}`).toBe(false);
-    }
+describe("the switch: `dr`, and the old project list `dp` that only the one-time move still reads", () => {
+  it("the stage exists only when `dr` is exactly 1", () => {
+    expect(designReviewEnabled({ DESIGN_REVIEW_ENABLED: "1" })).toBe(true);
+    for (const dr of [undefined, "", "0", "true", " 1", "01", "yes"]) expect(designReviewEnabled(dr === undefined ? {} : { DESIGN_REVIEW_ENABLED: dr }), String(dr)).toBe(false);
   });
   it("reads a list with any malformed name as empty (fail closed)", () => {
-    expect(designReviewProjects({ DESIGN_REVIEW_PROJECTS: "billing:payments" })).toEqual(["billing", "payments"]);
-    expect(designReviewProjects({ DESIGN_REVIEW_PROJECTS: "billing:BAD" })).toEqual([]);
-    expect(designReviewProjects({ DESIGN_REVIEW_PROJECTS: "a".repeat(70) })).toEqual([]);
-    expect(designReviewProjects({})).toEqual([]);
+    expect(legacyDesignReviewProjects({ DESIGN_REVIEW_PROJECTS: "billing:payments" })).toEqual(["billing", "payments"]);
+    expect(legacyDesignReviewProjects({ DESIGN_REVIEW_PROJECTS: "billing:BAD" })).toEqual([]);
+    expect(legacyDesignReviewProjects({ DESIGN_REVIEW_PROJECTS: "a".repeat(70) })).toEqual([]);
+    expect(legacyDesignReviewProjects({})).toEqual([]);
   });
 });

@@ -3,7 +3,7 @@
 //   - a reminder at 24 h and at 72 h: a NOTIFY row (once; `attribute_not_exists`) that the notifier turns into a notice (`design_wait`);
 //   - at 7 days: `parkDesignReview`, with the model keys of the task's design-review rounds blocked and finalized first (what they held is dropped) and a "parked" notice, in one commit;
 //   - at 30 days parked: `closeParkedDesignReview`, the task's release mark and a "closed" notice, in one commit.
-// NOTHING HERE APPROVES, ANSWERS OR SKIPS. The moves it makes record no decision. With the `dr` switch off, or the project not named in `dp`, it does nothing new for the task: no reminder, no park, no close (the row is looked at
+// NOTHING HERE APPROVES, ANSWERS OR SKIPS. The moves it makes record no decision. With the `dr` switch off, the company not allowing design review, or the project Off, it does nothing new for the task: no reminder, no park, no close (the row is looked at
 // again in an hour). The one exception is the cost hold, parked or not, which is ended the way every other step of a switched-off review is (B2-m3): not run, `switched_off`, and the design goes to the person's card. A wait for answers cannot be
 // ended by anyone but the person (`closeDesignReview` refuses it); their answer reaches the planner's step, which ends the review as `switched_off` itself. A design card already waits for the person.
 import { QueryCommand, TransactWriteCommand, UpdateCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
@@ -22,8 +22,8 @@ export interface DesignWaitSweepDeps {
   documentClient: Client;
   tableName: string;
   now(): number;
-  /** The switch: `dr` on and the project named in `dp`. Off: nothing new is done for the task. */
-  enabledFor(project: string): boolean;
+  /** The switch: `dr` on, the company allows it and the project is not Off (a review the person asked for needs only the first two). Off: nothing new is done for the task. With `dr` off it reads nothing. */
+  enabledFor(orgId: OrgId, project: string, decidedBy: string | undefined): Promise<boolean>;
   /** The project's setting held to the company's lock. A read that fails is answered with the strictest posture here, never a guess. */
   setting(orgId: OrgId, project: string): Promise<EffectiveDesignReviewSetting>;
   /** Who is a member, a maintainer or an owner now; undefined when it cannot be read (the requester alone is told). */
@@ -98,7 +98,7 @@ export async function settleDesignWait(deps: DesignWaitSweepDeps, taskId: string
     return "gone";
   }
   const { wait, step } = due;
-  if (!deps.enabledFor(task.project)) {
+  if (!(await deps.enabledFor(task.orgId, task.project, workflow.designReview?.decidedBy))) {
     // The cost hold only waits for a spending choice for a review that is no longer to run: end it as every step does when the switch is off. A PARKED hold too (ON-7): it would otherwise be looked at every hour for ever.
     if (wait.kind === "cost") {
       const ended = closeDesignReview(workflow, { expectedRevision: workflow.revision, outcome: "not_run", notRunReason: "switched_off", now: nowIso });
