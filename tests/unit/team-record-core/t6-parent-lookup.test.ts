@@ -13,7 +13,7 @@ const ctx = { workspaceId: ORG_A, project: "web" };
 
 describe("TR-W1 ParentLookupPort", () => {
   it("has no isOpen: the record cannot say a ticket is open", () => {
-    expect(createRecordParentLookup(world().table).isOpen).toBeUndefined();
+    expect("isOpen" in createRecordParentLookup(world().table)).toBe(false);
   });
 
   it("isRecorded: false for a ticket nobody recorded and a bad workspace id, throws on a broken read (callers fail closed)", async () => {

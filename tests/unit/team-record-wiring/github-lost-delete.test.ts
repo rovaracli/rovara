@@ -86,8 +86,8 @@ describe("the GitHub tap says when a removal begins", () => {
     w.sink.tombstone = async () => { order.push("tombstone"); return { hidden: 1 }; };
     const tap = createGithubRecordTap({ sink: w.sink, actors: w.actors, rovaraPrs: w.prs, mode: w.mode, config: w.config, resolveRepo: async () => ({ workspaceId: WS, project: "shop" }) });
     const envelope = { installation: { id: 1 }, repository: { id: 77, full_name: "acme/shop", private: true } };
-    await tap({ eventName: "repository", deliveryId: "d1", payload: { ...envelope, action: "deleted" }, removalStarted: () => order.push("started") } as never);
-    await tap({ eventName: "repository", deliveryId: "d2", payload: { ...envelope, action: "created" }, removalStarted: () => order.push("started-wrong") } as never);
+    await tap({ eventName: "repository", deliveryId: "d1", payload: { ...envelope, action: "deleted" }, removalStarted: () => order.push("started") });
+    await tap({ eventName: "repository", deliveryId: "d2", payload: { ...envelope, action: "created" }, removalStarted: () => order.push("started-wrong") });
     expect(order).toEqual(["started", "tombstone"]);
   });
 });
