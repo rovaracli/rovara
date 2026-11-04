@@ -74,7 +74,7 @@ describe("the fake server is started from the worker's own image", () => {
     const daemon = fakeServicesDocker();
     const f = files();
     const writes: Array<{ name: string; mode: number }> = [];
-    const spy: HelperFiles = { write: (name, content, mode) => { writes.push({ name, mode }); return f.helper.write(name, content, mode); }, remove: f.helper.remove };
+    const spy: HelperFiles = { write: (name, content, mode) => { writes.push({ name, mode }); return f.helper.write(name, content, mode); }, remove: (name) => f.helper.remove(name) };
     await startHelpers(daemon.docker, makeNet(), { registry: "registry.example.test/rovara", edition: "public", probeImage: PROBE_IMAGE, maxMemMiB: 3_072, helpers: [request("check")], files: spy });
     const call = runOf(daemon);
     const mountIndex = call.findIndex((arg, index) => arg === "-v" && /:\/rovara\/fixture\.json:ro$/u.test(call[index + 1] ?? ""));

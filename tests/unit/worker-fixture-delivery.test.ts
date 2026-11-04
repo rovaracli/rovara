@@ -59,7 +59,7 @@ describe("fetching an approved set", () => {
   });
   it("says 'refused' when the broker refuses (another company's set, a digest outside the plan, a closed task, a withdrawn set read alike), and 'unavailable' when the download fails", async () => {
     expect(await reasonOf(make(() => Promise.reject(new Error("CALLBACK_FORBIDDEN: this operation cannot be given that fixture set")), body(bytesOf(SET)))(DIGEST))).toBe("refused");
-    expect(await reasonOf(make(() => Promise.resolve(reply()), (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch)(DIGEST))).toBe("unavailable");
+    expect(await reasonOf(make(() => Promise.resolve(reply()), () => Promise.reject(new Error("offline")))(DIGEST))).toBe("unavailable");
     expect(await reasonOf(make(() => Promise.resolve(reply()), body("denied", { status: 403 }))(DIGEST))).toBe("unavailable");
   });
   it("refuses a digest that is not 64 hex before it asks anyone, and a stopped run before it asks or downloads", async () => {
@@ -97,7 +97,7 @@ describe("the callback itself", () => {
   });
   it("fails with a fixed message when the broker refuses (HTTP 403)", async () => {
     const sinks = createWorkerCallbackSinks({
-      controlPlaneUrl: "https://control.example.test", fetchImplementation: (() => Promise.resolve(new Response("{}", { status: 403 }))) as unknown as typeof fetch,
+      controlPlaneUrl: "https://control.example.test", fetchImplementation: () => Promise.resolve(new Response("{}", { status: 403 })),
       invocation: { protocolVersion: 1, kind: "task", operationId: "22222222-2222-4222-8222-222222222222", workspaceId: "11111111-1111-4111-8111-111111111111", fence: 1, projectRevision: 1, callbackCapability: "cap.sig", payload: {} } as never,
     });
     await expect(sinks.fixtureSet({ digest: DIGEST })).rejects.toThrow(/fixture-set failed with HTTP 403/u);

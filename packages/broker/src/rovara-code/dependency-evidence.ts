@@ -66,7 +66,8 @@ export function dependencyEvidenceOf(pinned: readonly PinnedDependency[], usage:
     taken.add(name);
     const used = usage?.dependencies.find((entry) => entry.id === dependency.id);
     const ran = used !== undefined && used.started && used.healthy && used.failure === undefined;
-    if (!ran) return { name, backing: "none", label: "not_available", fellBack: { from: dependency.backing, reason: "did_not_start" } };
+    // A fake that did not start is "not available" with no fallback story: the pack's fallback is from real software, Rovara local AWS or a test account to a fake or nothing, never from a fake.
+    if (!ran) return { name, backing: "none", label: "not_available", ...(dependency.backing === "fake" ? {} : { fellBack: { from: dependency.backing, reason: "did_not_start" as const } }) };
     if (dependency.backing === "fake") return fakeRow(dependency, name, used.startMs, usage);
     if (dependency.backing === "emulated") return { name, backing: "emulated", label: evidenceDependencyLabelFor({ backing: "emulated" }), startedMs: used.startMs };
     return { name, backing: "local", label: evidenceDependencyLabelFor({ backing: "local", ...(dependency.substituteImage === true ? { substituteImage: true } : {}) }), startedMs: used.startMs };

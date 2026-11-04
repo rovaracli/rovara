@@ -118,7 +118,8 @@ describe("the plan of a fake", () => {
     expect(TestEnvTaskPlanSchema.safeParse({ revision: 1, digest: "a".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: result.dependencies }).success).toBe(true);
     expect(fixtureDigestsOfPlan({ dependencies: result.dependencies })).toEqual([digest]);
     // The real software beside it is exactly what slice 1 planned.
-    expect(result.dependencies.find((entry) => entry.id === "postgres")).toMatchObject({ backing: "local", digest: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+    expect(result.dependencies.find((entry) => entry.id === "postgres")).toMatchObject({ backing: "local" });
+    expect(result.dependencies.find((entry) => entry.id === "postgres")?.digest).toMatch(/^[a-f0-9]{64}$/u);
   });
   it("needs no pinned catalog for a fake alone (it starts no catalog image), and still needs one beside real software", async () => {
     const store = storeOf();
@@ -197,7 +198,7 @@ async function approvedWith(environment: TestEnvironmentBody, store: FixtureStor
   const deps: TestEnvDeps & { serviceCatalog?: () => Promise<VerifiedCatalog | undefined>; fixtureStore?: FixtureStore } = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit, env: ON, ...(store === undefined ? {} : { fixtureStore: store }) };
   deps.serviceCatalog = async () => catalog();
   const proposal = await proposeTestEnvironment(deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: environment });
-  await recordTestEnvProveReport(deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }, { step: "dependencies", status: "passed", durationMs: 1 }, { step: "dependency_usage", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(clock.now).toISOString() } as never });
+  await recordTestEnvProveReport(deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }, { step: "dependencies", status: "passed", durationMs: 1 }, { step: "dependency_usage", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(clock.now).toISOString() } });
   await approveTestEnvironment(deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-12345678", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: clock.now - 1_000 });
   const start = await testEnvironmentForStart(deps, { orgId: ORG, project: PROJECT, taskId: "t1" }, ON);
   db.set((start.pin as { Put: { Item: Record<string, unknown> } }).Put.Item);
@@ -391,7 +392,7 @@ describe("what the evidence says about a fake", () => {
   });
   it("shows a fake that did not start as not available, never as a fake that ran", () => {
     const record = { ...usageOf([fakeRow()]), dependencies: [{ id: "postgres", started: true, healthy: true, startMs: 800, resetCount: 0 }, { id: "payments", started: false, healthy: false, startMs: 0, resetCount: 0, failure: "start_failed" }] } as RawUsage;
-    expect(dependencyEvidenceOf(pinnedFake({ origin: "hand_written" }), record).dependencies[1]).toMatchObject({ backing: "none", label: "not_available", fellBack: { from: "fake", reason: "did_not_start" } });
+    expect(dependencyEvidenceOf(pinnedFake({ origin: "hand_written" }), record).dependencies[1]).toEqual({ name: "payments API", backing: "none", label: "not_available" });
   });
   it("reads the label from the store for the organisation of the task, by the pinned digest", async () => {
     const store = storeOf();
@@ -414,7 +415,7 @@ describe("the Prove usage step with a fake", () => {
   });
   it("fails on an unmatched request, a foreign call, an unreadable ledger and a record with no row", () => {
     for (const fakes of [[fakeRow({ unmatched: 1 })], [fakeRow({ foreign: 1 })], [fakeRow({ ledger: "unreadable", matched: 0 })], []]) expect(stepOf("dependency_usage", dependencyStepsOf(planned(), record(fakes)))).toBe("failed");
-    expect(stepOf("dependency_usage", dependencyStepsOf(planned(), { ...record(), fakes: undefined } as TestServicesUsageRecord))).toBe("failed");
+    expect(stepOf("dependency_usage", dependencyStepsOf(planned(), { ...record(), fakes: undefined }))).toBe("failed");
   });
   it("still starts the fake as a dependency, and an environment without a fake gets the steps it had", () => {
     expect(stepOf("dependencies", dependencyStepsOf(planned(), record([fakeRow()])))).toBe("passed");

@@ -355,7 +355,7 @@ describe("the feature the worker lists", () => {
   const real = new URL("../../environments/service-catalog/catalog.json", import.meta.url);
   it("lists the fake feature only with a test-services configuration and the baked catalog's fake server", async () => {
     const configured = { AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", [TASK_SANDBOX_IMAGE_ENVIRONMENT]: IMAGE } as NodeJS.ProcessEnv;
-    expect(testServicesAdvertisedFeatures({} as NodeJS.ProcessEnv, shipped(real.pathname))).toEqual([]);
+    expect(testServicesAdvertisedFeatures({}, shipped(real.pathname))).toEqual([]);
     expect(fakeServerBaked(shipped(real.pathname))).toBe(true);
     expect(testServicesAdvertisedFeatures(configured, shipped(real.pathname))).toEqual(["task.testServices.v1", "task.testServices.fake.v1"]);
     // a catalog baked without the fake server (an older image) does not list it, and a catalog that cannot be read does not either
