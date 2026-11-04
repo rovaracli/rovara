@@ -1,3 +1,4 @@
+// The SBOMs, scans and signed statements behind this signature are NOT in the repo (megabytes): ~/web/rovara-research-2026-10-26/test-services-evidence/2026-11-04-rev2/ (README there), from GitHub run 41848024467 of the emulator image.
 // Test services, the staging pin: the catalog this tree SHIPS (environments/service-catalog/catalog.json and catalog.sig.json, pinned at revision 2 and signed with the staging-only key) is trusted by a STAGING-flavor build
 // running in the staging account, and by nothing else. A release-flavor build (the committed state of every release) does not contain the key, so it refuses the same files with "no trusted catalog key".
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -6,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { CATALOG_STAGING_ACCOUNT_ID, CATALOG_STAGING_ONLY_SIGNING_KEYS, CatalogSignatureSchema, loadSignedCatalog, parseBundlePublicKey, sha256HexOf, type CatalogSigningKey } from "@agentx/contracts";
+import { CATALOG_STAGING_ACCOUNT_ID, CATALOG_STAGING_ONLY_SIGNING_KEYS, CatalogSignatureSchema, ServiceCatalogSchema, loadSignedCatalog, parseBundlePublicKey, sha256HexOf, type CatalogSigningKey } from "@agentx/contracts";
 import { loadSignedCatalogWithKeys, trustedKeyPemsFor } from "@agentx/contracts/testing";
 import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/contracts/tools/catalog-flavor.js";
 
@@ -87,12 +88,22 @@ describe("the shipped signed catalog", () => {
     expect(loadSignedCatalog({ catalogBytes, signatureBytes })).toEqual({ ok: false, reason: "no trusted catalog key" });
   });
 
-  it("is refused by a staging build when one byte of the catalog changes (the signature is over the exact bytes)", async () => {
+  it("is refused by a staging build when the catalog changes by one byte: by the file hash, and (with the hash recomputed) by the ECDSA check itself, on a catalog that still passes the schema", async () => {
     const { keys } = await compiledKeys("staging");
     const trusted = trustedKeyPemsFor(STAGING, { real: [], stagingOnly: keys, flavor: "staging" });
-    const changed = Buffer.concat([catalogBytes, Buffer.from(" ")]);
-    const refused = loadSignedCatalogWithKeys({ catalogBytes: changed, signatureBytes, trustedKeys: trusted });
-    expect(refused.ok).toBe(false);
+    // A change that keeps the file a valid pinned catalog: postgres@16's high-finding count 12 becomes 13 (the schema checks the shape, not the number).
+    const text = catalogBytes.toString("utf8");
+    const at = text.indexOf('"highOpen": 12');
+    expect(at).toBeGreaterThan(0);
+    const changed = Buffer.from(`${text.slice(0, at)}"highOpen": 13${text.slice(at + '"highOpen": 12'.length)}`, "utf8");
+    expect(ServiceCatalogSchema.safeParse(JSON.parse(changed.toString("utf8"))).success).toBe(true);
+    // 1. The signature file still names the old hash: refused as a different file.
+    expect(loadSignedCatalogWithKeys({ catalogBytes: changed, signatureBytes, trustedKeys: trusted })).toEqual({ ok: false, reason: "the signature file names a different catalog.json" });
+    // 2. The hash is recomputed over the changed bytes, so only the signature can refuse it: it does not match.
+    const rehashed = Buffer.from(JSON.stringify({ ...signature, catalogSha256: sha256HexOf(changed) }), "utf8");
+    expect(loadSignedCatalogWithKeys({ catalogBytes: changed, signatureBytes: rehashed, trustedKeys: trusted })).toEqual({ ok: false, reason: "the signature does not match" });
+    // Positive control: the same rehashed file with the real bytes is the shipped signature, and the shipped pair loads.
+    expect(loadSignedCatalogWithKeys({ catalogBytes, signatureBytes: Buffer.from(JSON.stringify({ ...signature, catalogSha256: sha256HexOf(catalogBytes) }), "utf8"), trustedKeys: trusted }).ok).toBe(true);
   });
 });
 

@@ -105,6 +105,15 @@ describe("session steps", () => {
       expect(gunzipSync(Buffer.from((await launch(legacy.handler)).userData, "base64")).toString("utf8")).not.toContain("export AGENTX_ENVIRONMENT_KIND=");
     });
 
+    it("tells the boot to pre-pull (AGENTX_TEST_SERVICES) only when test services are on in a named environment", async () => {
+      const text = async (overrides: Parameters<typeof setup>[1]) => gunzipSync(Buffer.from((await launch(setup(undefined, overrides, named(proxyUrl)).handler)).userData, "base64")).toString("utf8");
+      expect(await text({ modelProxyRequired: true, testServices: true })).toContain("export AGENTX_TEST_SERVICES='1'");
+      expect(await text({ modelProxyRequired: true, testServices: false })).not.toContain("AGENTX_TEST_SERVICES");
+      expect(await text({ modelProxyRequired: true })).not.toContain("AGENTX_TEST_SERVICES");
+      // The legacy launch never says it, whatever the switch.
+      expect(gunzipSync(Buffer.from((await launch(setup(undefined, { testServices: true }).handler)).userData, "base64")).toString("utf8")).not.toContain("AGENTX_TEST_SERVICES");
+    });
+
     it("refuses to launch a worker without the proxy URL when the environment requires one, naming the missing setting", async () => {
       const { handler } = setup(undefined, { modelProxyRequired: true }, named());
       await expect(launch(handler)).rejects.toThrow(/model proxy URL.*missing/i);

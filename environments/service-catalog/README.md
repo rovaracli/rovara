@@ -51,3 +51,5 @@ Relative paths are read from the sources file's folder. `catalog-build` then (1)
 ## Evidence is not committed
 
 `catalog-build` writes the per-image evidence (SBOMs, scans, signed statements; megabytes) to the folder given by the required `--evidence-dir`, which must be outside the repository (a path inside it is refused). Keep that folder with the release evidence. The repository holds only what is checked at run time: `catalog.json` (the combined `sbomRef` and scan per image), `catalog.sig.json` and the pre-pull list. Nothing reads the evidence files at run time. A test fails if a file over 64 KB appears under `environments/service-catalog/evidence/`.
+
+Where revision 2's evidence lives: `~/web/rovara-research-2026-10-26/test-services-evidence/2026-11-04-rev2/` on the owner's Mac (its README names the catalog hash, the signing key id and the per-image hashes). The emulator image was built by GitHub run 41848024467 of `PrepLabsAI/rovara-local-aws` (`image.yml`, fork commit `bf8d1fd5ab3fef639594796a683b430eff344e88`). The postgres@16 scan records 12 HIGH findings (0 critical), to be reviewed before use outside staging.

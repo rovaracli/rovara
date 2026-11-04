@@ -149,7 +149,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(sourced.status, sourced.stderr).toBe(0);
     expect(sourced.stderr).toBe("");
     const defined = sourced.stdout.split("\n").filter(Boolean).map((line) => line.replace(/^declare -f /, "")).sort();
-    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "install_run_walls_unit", "pull_catalog_images", "write_test_services_boot_facts", "write_test_services_environment", "stage2_main"].sort());
+    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "install_run_walls_unit", "catalog_seconds", "pull_catalog_images", "write_test_services_boot_facts", "write_test_services_environment", "stage2_main"].sort());
     expect(stage2).not.toMatch(/^main "\$@"/m);
   });
 });

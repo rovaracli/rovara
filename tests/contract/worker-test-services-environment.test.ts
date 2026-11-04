@@ -92,8 +92,8 @@ describe("root pulls the catalog images by digest before the worker starts (H2)"
         'esac',
       ].join("\n"),
     });
-    const program = `log() { echo "$*" >> "${directory}/log"; }\n${fn("pull_catalog_images")}\npull_catalog_images us-west-2`;
-    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker", TMPDIR: directory, ...options.env } });
+    const program = `log() { echo "$*" >> "${directory}/log"; }\n${fn("catalog_seconds")}\n${fn("pull_catalog_images")}\npull_catalog_images us-west-2`;
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker", TMPDIR: directory, AGENTX_TEST_SERVICES: "1", ...options.env } });
     const read = (name: string): string => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
     return { status: ran.status, calls: read("calls"), log: read("log"), directory, read };
   };
@@ -164,9 +164,9 @@ describe("the boot pulls are bounded per image and run in parallel (slice-1 foll
         'esac',
       ].join("\n"),
     });
-    const program = `log() { echo "$*" >> "${directory}/log"; }\n${fn("pull_catalog_images")}\npull_catalog_images us-west-2`;
+    const program = `log() { echo "$*" >> "${directory}/log"; }\n${fn("catalog_seconds")}\n${fn("pull_catalog_images")}\npull_catalog_images us-west-2`;
     const started = Date.now();
-    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker", TMPDIR: directory, ...options.env } });
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker", TMPDIR: directory, AGENTX_TEST_SERVICES: "1", ...options.env } });
     const read = (name: string): string => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
     return { status: ran.status, calls: read("calls"), log: read("log"), pulls: read("pulls").split("\n").filter((line) => line !== ""), seconds: (Date.now() - started) / 1000, read };
   }
@@ -237,7 +237,8 @@ describe("the boot pulls are bounded per image and run in parallel (slice-1 foll
     const r = drive(3, { pullScript: "exit 0", env: { BOOT_DEADLINE: "0" } });
     expect(r.pulls).toHaveLength(0);
     expect(r.status).toBe(1);
-    expect(r.log).toContain("CATALOG PRE-PULL FAILED");
+    // Too late to log in at all: nothing is started and every repository counts as not pulled.
+    expect(r.log).toContain("CATALOG PRE-PULL SKIPPED");
   });
   it("counts every image it pulled in the boot facts and still logs out", () => {
     const r = drive(6, { pullScript: "exit 0" });
@@ -341,4 +342,108 @@ describe("the facts root hands to the worker for its CloudWatch self-report (sta
     const pull = fn("pull_catalog_images");
     for (const needle of ["PREPULL_RESULT=ok", "PREPULL_RESULT=failed", "PREPULL_LOGGED_OUT=true", "PREPULL_COUNT=$count"]) expect(pull, needle).toContain(needle);
   });
+});
+
+describe("the pre-pull runs only with test services on, from the install's own registry, and inside the boot deadline", () => {
+  const SHIPPED = readFileSync(new URL("../../packages/worker/service-catalog/prepull.json", import.meta.url), "utf8");
+  // A different install: another account, another region, another environment name. Nothing here is the staging account or the staging environment.
+  const OTHER_IMAGE = `111122223333.dkr.ecr.eu-west-1.amazonaws.com/agentx-production/worker@sha256:${"a".repeat(64)}`;
+  function drive(options: { image?: string; logGroup?: string; env?: Record<string, string>; pullScript?: string; list?: string; after?: string }) {
+    const directory = mkdtempSync(join(tmpdir(), "tsl-gate-"));
+    writeFileSync(join(directory, "prepull.json"), options.list ?? SHIPPED);
+    const path = tools(directory, {
+      timeout: [`echo "timeout $*" >> "${directory}/calls"`, 'while [[ "$1" == --* ]]; do shift; done', 'shift', 'exec "$@"'].join("\n"),
+      aws: `echo "aws $@" >> "${directory}/calls"; echo token`,
+      docker: [
+        `echo "docker $@" >> "${directory}/calls"`,
+        'case "$1" in',
+        `  run) cat "${directory}/prepull.json" ;;`,
+        '  login) cat >/dev/null ;;',
+        '  image) exit 1 ;;',
+        `  pull) ${options.pullScript ?? "exit 0"} ;;`,
+        '  logout) ;;',
+        'esac',
+      ].join("\n"),
+    });
+    const envFile = join(directory, "worker.env");
+    writeFileSync(envFile, "");
+    const program = `log() { echo "$*" >> "${directory}/log"; }\nreadonly WORKER_ENV_FILE=${envFile}\n${fn("catalog_seconds")}\n${fn("pull_catalog_images")}\n${fn("write_test_services_environment")}\npull_catalog_images us-west-2; rc=$?\nwrite_test_services_environment\necho "rc=$rc result=$PREPULL_RESULT failed=$PREPULL_FAILED_REPOS count=$PREPULL_COUNT" > "${directory}/summary"\n${options.after ?? ""}`;
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: options.image ?? OTHER_IMAGE, AGENTX_LOG_GROUP: options.logGroup ?? "/agentx/production/worker", TMPDIR: directory, ...options.env } });
+    const read = (name: string): string => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
+    return { status: ran.status, calls: read("calls"), log: read("log"), summary: read("summary").trim(), worker: read("worker.env") };
+  }
+  const durations = (calls: string): number[] => [...calls.matchAll(/^timeout --foreground --kill-after=10s (\d+)s /gmu)].map((match) => Number(match[1]));
+
+  it("with test services off (or the switch missing, or anything but 1) reads no list, logs in to nothing, pulls nothing and logs nothing; the facts say off and the worker offers no feature", () => {
+    for (const value of [undefined, "0", "", "true", " 1"]) {
+      const r = drive({ env: value === undefined ? { AGENTX_TEST_SERVICES: "" } : { AGENTX_TEST_SERVICES: value } });
+      expect(r.status, String(value)).toBe(0);
+      expect(r.calls, String(value)).toBe("");
+      expect(r.log, String(value)).toBe("");
+      expect(r.summary, String(value)).toContain("rc=0 result=off failed=all");
+      expect(r.worker, String(value)).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=all");
+    }
+  });
+  it("with test services on, pulls the shipped list; a release-flavor image still pre-pulls (the worker image is release flavor even on staging)", () => {
+    const r = drive({ env: { AGENTX_TEST_SERVICES: "1" } });
+    expect(r.summary).toContain("rc=0 result=ok");
+    expect(r.calls.match(/^docker pull /gmu)).toHaveLength(2);
+    expect(r.worker).not.toContain("NOT_PULLED");
+  });
+  it("on another install, every reference is that install's own registry and environment, never the staging account or environment (the list carries a repository and a digest, no registry)", () => {
+    const shipped = JSON.parse(SHIPPED) as { images: Array<Record<string, unknown>> };
+    expect(SHIPPED).not.toMatch(/944937319445|dkr\.ecr|amazonaws|staging/u);
+    for (const image of shipped.images) expect(Object.keys(image).sort()).toEqual(["digest", "id", "platforms", "repository"]);
+    const r = drive({ env: { AGENTX_TEST_SERVICES: "1" } });
+    const pulls = r.calls.split("\n").filter((line) => line.startsWith("docker pull "));
+    expect(pulls).toHaveLength(shipped.images.length);
+    for (const line of pulls) expect(line).toMatch(/^docker pull 111122223333\.dkr\.ecr\.eu-west-1\.amazonaws\.com\/rovara-catalog\/production\/svc\/[a-z0-9-]+@sha256:[a-f0-9]{64}$/u);
+    expect(r.calls).toContain("docker login --username AWS --password-stdin 111122223333.dkr.ecr.eu-west-1.amazonaws.com");
+    expect(r.calls).not.toMatch(/944937319445|rovara-catalog\/staging/u);
+    expect(r.worker).toContain("AGENTX_TEST_SERVICES_REGISTRY=111122223333.dkr.ecr.eu-west-1.amazonaws.com");
+    expect(r.worker).toContain("AGENTX_TEST_SERVICES_ENV=production");
+  });
+  it("an image missing from that install's catalog is a miss that is not fatal: it is listed as not pulled, the other stays, and the boot goes on", () => {
+    const r = drive({ env: { AGENTX_TEST_SERVICES: "1" }, pullScript: 'case "$2" in *svc/local-aws@*) exit 1 ;; *) exit 0 ;; esac' });
+    expect(r.status).toBe(0);
+    expect(r.summary).toContain("rc=0 result=partial failed=svc/local-aws count=1");
+    expect(r.worker).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=svc/local-aws");
+    expect(r.log).toContain("CATALOG PRE-PULL PARTIAL");
+    // Every image missing: failed (returns 1, the caller does not offer test services), still non-fatal to the boot.
+    const none = drive({ env: { AGENTX_TEST_SERVICES: "1" }, pullScript: "exit 1" });
+    expect(none.summary).toContain("rc=1 result=failed failed=svc/local-aws,svc/postgres");
+  });
+  it("caps every limit to the boot deadline (less the kill grace): with 100 s left nothing waits longer than 90 s, where it was 120 s, 120 s and 180 s", () => {
+    const r = drive({ env: { AGENTX_TEST_SERVICES: "1", BOOT_DEADLINE: "100" } });
+    const limits = durations(r.calls);
+    expect(limits.length).toBeGreaterThanOrEqual(4);
+    for (const limit of limits) expect(limit + 10).toBeLessThanOrEqual(100);
+    expect(Math.max(...limits)).toBe(90);
+    // Plenty of time left: the limits are as before.
+    expect(Math.max(...durations(drive({ env: { AGENTX_TEST_SERVICES: "1", BOOT_DEADLINE: "100000" } }).calls))).toBe(180);
+  });
+  it("the whole pre-pull stays under the time left: with 40 s left every limit plus its kill grace is within 40 s; with under 30 s left nothing is read-logged-in or pulled, and every repository is listed as not pulled", () => {
+    for (const limit of durations(drive({ env: { AGENTX_TEST_SERVICES: "1", BOOT_DEADLINE: "40" } }).calls)) expect(limit + 10).toBeLessThanOrEqual(40);
+    const late = drive({ env: { AGENTX_TEST_SERVICES: "1", BOOT_DEADLINE: "25" } });
+    expect(late.status).toBe(0);
+    expect(late.calls).not.toContain("docker login");
+    expect(late.calls).not.toContain("docker pull");
+    expect(late.calls).not.toContain("aws ecr");
+    expect(late.summary).toContain("rc=1 result=failed failed=svc/local-aws,svc/postgres");
+    expect(late.worker).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=svc/local-aws,svc/postgres");
+    expect(late.log).toContain("SKIPPED");
+  });
+  it("the real time spent stays inside the deadline when a pull hangs: it is killed at the capped limit, not at 180 s", () => {
+    const directory = mkdtempSync(join(tmpdir(), "tsl-hang-"));
+    writeFileSync(join(directory, "prepull.json"), SHIPPED);
+    const path = tools(directory, {
+      timeout: ['d=; while [[ "$1" == --* ]]; do shift; done', 'd=${1%s}; shift', '"$@" & p=$!', '( sleep "$d"; kill $p 2>/dev/null ) >/dev/null 2>&1 & k=$!', 'wait $p; rc=$?; kill $k 2>/dev/null; if [ $rc -ge 128 ]; then exit 124; fi; exit $rc'].join("\n"),
+      aws: "echo token",
+      docker: ['case "$1" in', `  run) cat "${directory}/prepull.json" ;;`, "  login) cat >/dev/null ;;", "  image) exit 1 ;;", "  pull) sleep 60 ;;", "  logout) ;;", "esac"].join("\n"),
+    });
+    const program = `log() { :; }\n${fn("catalog_seconds")}\n${fn("pull_catalog_images")}\npull_catalog_images us-west-2; echo "result=$PREPULL_RESULT"; echo "elapsed=$SECONDS"`;
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: OTHER_IMAGE, AGENTX_LOG_GROUP: "/agentx/production/worker", TMPDIR: directory, AGENTX_TEST_SERVICES: "1", BOOT_DEADLINE: "42" } });
+    expect(ran.stdout).toContain("result=failed");
+    expect(Number(/elapsed=(\d+)/u.exec(ran.stdout)?.[1])).toBeLessThanOrEqual(42);
+  }, 90_000);
 });
