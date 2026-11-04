@@ -1,7 +1,7 @@
 import {expect,it} from "vitest";
 import {getCompanyModelSelectionPolicy} from "../../packages/broker/src/model-selection/company-read.js";
 import {FakeDynamoDb} from "../support/fake-dynamodb.js";
-import {orgMemberKey,developerOrgKey,orgMetaKey} from "../../packages/contracts/src/index.js";
+import {orgMemberKey,developerOrgKey,orgMetaKey,canonicalModelName,modelNotEnabledSentence} from "../../packages/contracts/src/index.js";
 const org="org_aaaaaaaaaaaaaaaaaaaa",person="a".repeat(64);
 function fixture(role="owner") {const db=new FakeDynamoDb();db.set({...orgMemberKey(org,person),orgId:org,developerId:person,role});db.set({...developerOrgKey(person),orgId:org,role});db.set({...orgMetaKey(org),orgId:org});return {db,deps:{documentClient:db,tableName:"state",now:()=>0,routing:{}},caller:{orgId:org,developerId:person,orgRole:"owner" as const,name:"A",amr:"cloud" as const,sessionId:"fixture"}};}
 for(const role of ["owner","admin","member","maintainer","viewer","unknown"]) it(`uses live ${role} authority for company candidates`,async()=>{
@@ -18,4 +18,13 @@ it("exposes the company GET on the actual app router with no unknown query input
  const result=await routeDeveloperRequest(deps,{method:"GET",path,headers:{},requestId:"model-policy"},new URL(path,"https://cell.example"),{caller:f.caller,csrf:""});
  expect(result).toHaveProperty("candidates.build");
  await expect(routeDeveloperRequest(deps,{method:"GET",path:path+"?orgId=other",headers:{},requestId:"model-policy"},new URL(path+"?orgId=other","https://cell.example"),{caller:f.caller,csrf:""})).rejects.toThrow("CONFIG_INVALID");
+});
+
+it("marks the Rovara catalog models the account cannot call, with the broker's words, and no others",async()=>{
+ const f=fixture(),plain=await getCompanyModelSelectionPolicy(f.deps,f.caller),refused=plain.candidates!.build![0]!;
+ expect(plain.candidates!.build!.every(candidate=>candidate.unusableReason===undefined)).toBe(true);
+ const marked=await getCompanyModelSelectionPolicy({...f.deps,routing:{usableModels:{unusable:async()=>new Set([canonicalModelName(refused.model)]),markUnusable:async()=>undefined}}},f.caller);
+ const list=marked.candidates!.build!;
+ expect(list.find(candidate=>candidate.model.modelId===refused.model.modelId)?.unusableReason).toBe(modelNotEnabledSentence(undefined,undefined));
+ expect(list.filter(candidate=>candidate.unusableReason!==undefined)).toHaveLength(1);
 });

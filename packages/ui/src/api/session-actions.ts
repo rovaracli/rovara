@@ -1,4 +1,4 @@
-import { SessionIdSchema, SessionResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema } from "@agentx/contracts/web";
+import { SessionIdSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema } from "@agentx/contracts/web";
 import type { AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { StartedCodeReader } from "./code.js";
@@ -12,6 +12,8 @@ export function createSessionActions(host: AppHost) {
   answer: (id: string, body: { requestId: string; round: number; revision: number; answers: Array<{ questionId: string; optionId?: string; text?: string }> }) => api.send("POST", path(id) + "/answers", body, SessionResponseReaderSchema),
   // "Make a change anyway" after an Answered task: starts a new task (the route answers 202 with the new task and its session). The same request id is the same start, however often it is sent.
   changeAnyway: (id: string, requestId: string) => api.send("POST", path(id) + "/change-anyway", { requestId }, StartedCodeReader),
+  // The task's own close. The first ask never discards unpublished work; `discardUnpublished` is the person's answer to the list the first answer gave.
+  close: (id: string, body: { requestId: string; discardUnpublished?: true }) => api.send("POST", path(id) + "/close", body, SessionCloseResponseReaderSchema),
   follow: (id: string) => api.send("POST", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema),
   unfollow: (id: string) => api.send("DELETE", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema),
   stop: (id: string) => control(id, "stop"), retry: (id: string) => control(id, "retry"), takeOver: (id: string) => control(id, "take-over"),

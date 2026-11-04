@@ -220,6 +220,7 @@ export { taskCommentSection, taskOwnsThread, workflowTaskAnswerContext } from ".
 export { type TaskActor, cancelTask, cancelTaskFor, retryTaskWorkflowFor } from "./developer-tasks/cancel.js";
 export {
   type EndTold,
+  closeTask,
   finishTaskClose,
   noteTaskEnded,
   noteTaskPaused,

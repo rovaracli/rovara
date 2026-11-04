@@ -92,7 +92,7 @@ describe("reading a task session", () => {
       where: { kind: "cloud" }, link: `${CELL}/s/${sessionId}`, body: { kind: "task", task: { taskId } }, approvals: [], viewingNow: [], bindings: [],
       you: { level: "edit", owner: true, following: true }, followers: 0, revision: 1,
     });
-    expect(session.you.actions).toEqual(["watch", "comment", "steer", "stop", "take_over", "share", "handoff"]);
+    expect(session.you.actions).toEqual(["watch", "comment", "steer", "stop", "take_over", "share", "handoff", "close"]);
   });
 
   it("offers retry only once the session has failed or been cancelled (13 review)", async () => {

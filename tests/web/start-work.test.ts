@@ -16,12 +16,13 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 import { projectFixture } from "./support/project-fixture.js";
-import { taskFixture } from "./support/session-fixture.js";
+import { taskFixture, sessionFixture } from "./support/session-fixture.js";
 import { LAYER, howWeWorkView } from "./support/how-we-work-view.js";
+import { liveFixture } from "./support/live-fixture.js";
 const id = "ses_bbbbbbbbbbbbbbbbbbbb", CODE = "/v1/app/projects/payments/code";
 const started = () => ({ status: 202, body: { task: taskFixture({ sessionId: id }), sessionId: id, sessionUrl: "https://cell.example/s/" + id } });
-function setup(value = projectFixture(), options: { theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse>; seed?: unknown } = {}) {
- const f = fakeHost(async request => request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.path.endsWith("/setup-agent/limits") ? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } : request.method === "GET" ? { status: 200, body: value } : options.send ? options.send(request) : started());
+function setup(value = projectFixture(), options: { theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse>; seed?: unknown; get?: (request: ApiRequest) => ApiResponse | undefined } = {}) {
+ const f = fakeHost(async request => request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.path.endsWith("/setup-agent/limits") ? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } : request.method === "GET" ? (options.get?.(request) ?? { status: 200, body: value }) : options.send ? options.send(request) : started());
  const query = createQueryClient();
  if (options.seed !== undefined) query.setQueryData([...howWeWorkKey("payments"), "view"], options.seed);
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
@@ -102,3 +103,33 @@ it("shows a process name safely and never as markup", async () => {
  const f = setup(layer, { seed: howWeWorkView() });const line = await screen.findByText(/^Runs: /u);expect(line.querySelector("b")).toBeNull();expect(line.textContent).toContain("[U+202E]");f.close();
 });
 for (const theme of ["light", "dark"] as const) it("has an accessible start box in " + theme, async () => { const f = setup(undefined, { theme });await box();await expectNoAxeViolations(f.container);f.close(); });
+
+const LIMIT = { status: 409, body: { error: { code: "WORKSPACE_LIMIT", message: "you have reached the limit of 3 open workspaces per person; close a task with agentx_close_task." } } };
+const OPEN = (...ids: string[]) => ids.map((sessionId, index) => liveFixture({ sessionId, title: "Open task " + String(index + 1), actions: ["watch", "close"] }));
+it("answers a full workspace limit with the person's open tasks as links with a Close button, never the AI-tool command, and starts again once one is closed", async () => {
+ const first = "ses_cccccccccccccccccccc", second = "ses_dddddddddddddddddddd";
+ let open = OPEN(first, second), refuse = true;
+ const send = vi.fn(async (request: ApiRequest): Promise<ApiResponse> => request.path === CODE ? (refuse ? LIMIT : started()) : request.path.endsWith("/close") ? { status: 200, body: { closed: true, session: { ...sessionFixture({ sessionId: first }) } } } : { status: 500, body: {} });
+ const f = setup(undefined, { send, get: request => request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: open } } : undefined }), navigate = vi.spyOn(f.host, "navigate");
+ fireEvent.change(await box(), { target: { value: "Fix the duplicate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
+ expect((await screen.findByRole("alert")).textContent).toBe("You have too many open tasks to start more work. Close one of these, then start again.");
+ expect(document.body.textContent).not.toContain("agentx_close_task");
+ const list = await screen.findByRole("list", { name: "Your open tasks" });
+ expect(within(list).getAllByRole("link").map(link => [link.textContent, link.getAttribute("href")])).toEqual([["Open task 1", "/s/" + first], ["Open task 2", "/s/" + second]]);
+ // Close the first: the dialog asks, and only its button closes.
+ fireEvent.click(within(list).getAllByRole("button", { name: "Close" })[0]!);
+ expect(await screen.findByRole("dialog", { name: "Close this task?" })).toBeTruthy();
+ expect(send.mock.calls.some(([request]) => request.path.endsWith("/close"))).toBe(false);
+ open = OPEN(second);refuse = false;
+ fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close task" }));
+ await waitFor(() => expect(send.mock.calls.filter(([request]) => request.path === "/v1/app/sessions/" + first + "/close")).toHaveLength(1));
+ expect(send.mock.calls.find(([request]) => request.path.endsWith("/close"))![0]).toMatchObject({ method: "POST", body: { requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown } });
+ // The refusal is gone, so the same text can be started again.
+ await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+ fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));f.close();
+});
+it("offers no Close for a task the person does not own, and says so when none can be closed from here", async () => {
+ const f = setup(undefined, { send: async () => LIMIT, get: request => request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: [liveFixture({ actions: ["watch"] })] } } : undefined });
+ fireEvent.change(await box(), { target: { value: "Fix it" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
+ expect(await screen.findByText("No task of yours can be closed from here. Ask an admin to free a place.")).toBeTruthy();expect(screen.queryByRole("button", { name: "Close" })).toBeNull();f.close();
+});

@@ -61,7 +61,12 @@ async function queryAll(table: IntakeTable, prefix: string, pages: number): Prom
   let read = 0;
   do {
     const page = await table.documentClient.send(new QueryCommand({
-      TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": "INTAKE_SOURCES", ":prefix": prefix }, ConsistentRead: true, Limit: 100,
+      TableName: table.tableName,
+      // DynamoDB refuses begins_with with an empty value (ValidationException), so "every source" is the partition alone.
+      ...(prefix === ""
+        ? { KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": "INTAKE_SOURCES" } }
+        : { KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": "INTAKE_SOURCES", ":prefix": prefix } }),
+      ConsistentRead: true, Limit: 100,
       ...(start === undefined ? {} : { ExclusiveStartKey: start }),
     })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
     for (const raw of page.Items ?? []) {

@@ -11,14 +11,15 @@ import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
+import { capturingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 type Item = Record<string, unknown>;
 
 beforeAll(async () => { await loadSlackBroker(); });
 
-async function setup() {
-  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {} } });
+async function setup(options: { audit?: AuditCapture } = {}) {
+  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {} }, ...(options.audit === undefined ? {} : { audit: options.audit }) });
   const operations = (workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION") as Array<Item & { id: string; kind: string; fence: number; status: string }>;
   const meta = (taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as Item & { workspaceId: string; sessionId?: string };
   const session = (sessionId: string) => ({
@@ -206,6 +207,84 @@ describe("a Rovara Code task, through the real broker", () => {
     const again = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
     expect(again.status).toBe(200);
     expect(t.events(task.sessionId).filter((event) => event.type === "stopped")).toHaveLength(1);
+  });
+
+  it("ends a session whose workflow is blocked when it is stopped, with a stopped event and an audit item, and says so in the answer (staging: it said Nothing was running)", async () => {
+    const audit = capturingAuditDeps();
+    const t = await setup({ audit });
+    const task = await startWorkflow(t);
+    grantProject(t.db, OMAR);
+    expect((await t.share(task.sessionId)).status).toBe(200);
+    await t.finish(task.workspaceId, t.steps(task.workspaceId)[0]!.id, "FAILED", { error: "the planner stopped" });
+    expect(t.meta(task.taskId)).toMatchObject({ workflow: { stage: "PLAN", state: "BLOCKED" } });
+    await refreshSessionSummary({ documentClient: t.db, tableName: "state", now: Date.now }, TEST_ORG, task.sessionId);
+    const requestId = randomUUID();
+    const stopped = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
+    expect(stopped.status, JSON.stringify(stopped.body)).toBe(200);
+    // Something was ended, so this is not the "nothing was running" answer.
+    expect(stopped.body.stop).toBeUndefined();
+    expect(t.meta(task.taskId)).toMatchObject({ workflow: { stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED" } });
+    expect((t.meta(task.taskId) as unknown as { workflow: { blockReason?: string } }).workflow.blockReason).toBeUndefined();
+    expect(t.events(task.sessionId).filter((event) => event.type === "stopped")).toEqual([{ type: "stopped", text: "Omar Diaz stopped this session." }]);
+    expect(t.session(task.sessionId)).toMatchObject({ record: { summary: { status: "cancelled" } }, open: false });
+    // The stop is audited, and a Retry of the closed task is refused.
+    expect(audit.recordedBy("session.stopped")).toHaveLength(1);
+    // The task's own record says what the stop did.
+    expect(t.db.find((item) => JSON.stringify(item).includes("Stopped while the work was blocked.")).length).toBeGreaterThan(0);
+    const retry = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/retry`, { requestId: randomUUID() });
+    expect(retry.status).toBeGreaterThanOrEqual(400);
+    // The same request again changes nothing.
+    const again = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
+    expect(again.status).toBe(200);
+    expect(t.events(task.sessionId).filter((event) => event.type === "stopped")).toHaveLength(1);
+  });
+
+  it("closes a task from the session page as the task's own close does: only its owner, once for a repeated request id, and the session stops offering Close", async () => {
+    const t = await setup();
+    const reply = await t.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const task = reply.body.task as { taskId: string; sessionId: string };
+    const { workspaceId } = t.meta(task.taskId);
+    // Its setup failed: the task holds a place toward the open-workspace limit until it is closed, and closing it has nothing to check.
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((operation) => operation.kind === "prepare")!.id), "FAILED", { error: "npm ci exited 1" });
+    grantProject(t.db, OMAR);
+    expect((await t.share(task.sessionId)).status).toBe(200);
+    const actionsOf = async (who: typeof MAYA) => ((await t.dev(who, "GET", `/v1/app/sessions/${task.sessionId}`)).body.session as { you: { actions: string[] } }).you.actions;
+    // The owner is offered Close; a person who may edit the session but does not own the task is not.
+    expect(await actionsOf(MAYA)).toContain("close");
+    expect(await actionsOf(OMAR)).not.toContain("close");
+    const other = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/close`, { requestId: randomUUID() });
+    expect(other.status).toBeGreaterThanOrEqual(400);
+    expect(t.meta(task.taskId).closedAt).toBeUndefined();
+    const requestId = randomUUID();
+    const closed = await t.dev(MAYA, "POST", `/v1/app/sessions/${task.sessionId}/close`, { requestId });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(closed.body).toMatchObject({ closed: true, session: { sessionId: task.sessionId } });
+    expect(t.meta(task.taskId).closedAt).toBeDefined();
+    // The task's own record of the close is the one the AI-tool close writes.
+    expect(t.db.find((item) => item.pk === `TASK#${task.taskId}` && item.action === "close").length).toBeGreaterThan(0);
+    expect(((closed.body.session as { you: { actions: string[] } }).you.actions)).not.toContain("close");
+    // The same request again answers the same, and a body the route does not take is refused.
+    expect((await t.dev(MAYA, "POST", `/v1/app/sessions/${task.sessionId}/close`, { requestId })).body).toMatchObject({ closed: true });
+    expect((await t.dev(MAYA, "POST", `/v1/app/sessions/${task.sessionId}/close`, { requestId: randomUUID(), discard_unpublished: true })).status).toBe(400);
+  });
+
+  it("answers a close that finds unpublished work with the list, so the page can ask before discarding, and closes nothing", async () => {
+    const t = await setup();
+    const task = await startWorkflow(t);
+    // The planning step is done; the close's own check then finds work that was never published.
+    const active = () => String((t.db.get(`WORKSPACE#${task.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+    await t.finish(task.workspaceId, t.steps(task.workspaceId)[0]!.id, "FAILED", { error: "the planner stopped" });
+    const requestId = randomUUID();
+    const first = await t.dev(MAYA, "POST", `/v1/app/sessions/${task.sessionId}/close`, { requestId });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body).toMatchObject({ closed: false });
+    await t.finish(task.workspaceId, active(), "SUCCEEDED", { result: { safeToClose: false, repositories: [{ name: "demo", reasons: ["worktree_changes"] }] } });
+    // The same request id: the broker answers a repeat of it from the check that ran.
+    const second = await t.dev(MAYA, "POST", `/v1/app/sessions/${task.sessionId}/close`, { requestId });
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.body).toMatchObject({ closed: false, unpublished: [{ repository: "demo", reasons: ["worktree_changes"] }] });
+    expect(t.meta(task.taskId).closedAt).toBeUndefined();
   });
 
   it("fences the stop on the task's People revision: a task with a People list is stopped at the revision the list has", async () => {

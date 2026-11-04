@@ -41,7 +41,7 @@ import {
 import { grantRoleOf } from "../developer/project-roles.js";
 import { taskKey } from "../developer/task-records.js";
 import type { Item } from "../agents/table-writes.js";
-import { newSessionRoleMemo, peopleOfItem, sessionActionsFor, sessionAccessFor, type SessionAccess, type SessionAccessPrefetch } from "./access.js";
+import { closableSession, newSessionRoleMemo, peopleOfItem, sessionActionsFor, sessionAccessFor, type SessionAccess, type SessionAccessPrefetch } from "./access.js";
 import { presenceIsFresh } from "./followers.js";
 import { approveLink, cursorKeyOf, openCursor, sealCursor, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import { sessionFromItem } from "./store.js";
@@ -366,7 +366,7 @@ async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query
       viewingNowCount: looking.length,
       needsYou: summary.needsPeople.includes(caller.developerId),
       following: access.owner || followers.has(session.sessionId),
-      actions: sessionActionsFor(access, summary),
+      actions: sessionActionsFor(access, { ...summary, closable: closableSession(session) }),
       ...(approvalUrl === undefined ? {} : { approvalUrl }),
       updatedAt: session.updatedAt,
     });

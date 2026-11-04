@@ -21,6 +21,7 @@ import {
   type DeveloperTaskView,
   type OrgId,
   type SessionView,
+  type SessionCloseResponseSchema,
 } from "@agentx/contracts";
 import type { AgentRunRequest, AgentRunResult } from "../agents/runs.js";
 import { failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
@@ -43,7 +44,12 @@ import { sessionEventItem } from "./store.js";
  */
 export interface SessionControlHost {
   /** `cancelTaskFor` with the session actor: the same cancel as the task's own route, idempotent by `requestId`. */
-  cancelTask(task: DeveloperTaskRecord, requestId: string): Promise<void>;
+  cancelTask(task: DeveloperTaskRecord, requestId: string): Promise<{ nothingRunning: boolean } | void>;
+  /**
+   * The task's own close (`closeTask`, the route the Slack button and the AI-tool close use) for the signed-in person: it checks that they own the task, and asks the workspace about unpublished work first.
+   * `discardUnpublished` is the person's answer to that question. Without it a close is refused (`RUNTIME_UNAVAILABLE`).
+   */
+  closeTask?(task: DeveloperTaskRecord, input: { requestId: string; discardUnpublished: boolean }): Promise<{ closed: boolean; discardedUnpublished?: boolean; unpublished?: Array<{ repository: string; reasons: string[] }>; message?: string }>;
   /** `retryTaskWorkflowFor` with the session actor, at the task's revision now: the same retry as the task's own route. */
   retryWorkflow(task: DeveloperTaskRecord, requestId: string): Promise<void>;
   /**
@@ -159,9 +165,14 @@ export async function afterControl(deps: SessionReadDependencies, session: Agent
 }
 
 /** The answer to a stop or retry: the session as `GET` shows it to the caller. */
-export async function answerOf(deps: SessionReadDependencies, caller: SessionReadCaller, sessionId: string): Promise<{ session: SessionView }> {
-  return { session: await sessionView(deps, caller, sessionId) };
+export async function answerOf(deps: SessionReadDependencies, caller: SessionReadCaller, sessionId: string, stop?: "NOTHING_RUNNING"): Promise<{ session: SessionView; stop?: "NOTHING_RUNNING" }> {
+  return { session: await sessionView(deps, caller, sessionId), ...(stop === undefined ? {} : { stop }) };
 }
+
+/** What a stop remembers about its answer: only the one fact the page needs, that the stop found nothing to stop. */
+const NOTHING_RUNNING_RESULT = { stop: "NOTHING_RUNNING" } as const;
+const stopOf = (prior: ControlRequest): "NOTHING_RUNNING" | undefined =>
+  typeof prior.result === "object" && prior.result !== null && (prior.result as { stop?: unknown }).stop === "NOTHING_RUNNING" ? "NOTHING_RUNNING" : undefined;
 
 /** A stop or retry that finds its request item is a repeat of that request: the same id for the other action is a mistake. */
 export function repeatOf(prior: ControlRequest, action: ControlRequest["action"], by: string): ControlRequest {
@@ -175,14 +186,14 @@ export function repeatOf(prior: ControlRequest, action: ControlRequest["action"]
  * `POST /v1/app/sessions/{id}/stop` `{ requestId }`. Needs "can edit" (an org owner or admin may stop with `view`). An ended session is `SESSION_ENDED`; a session on a Mac waits for a
  * later task. A task session is stopped by Plan 3's cancel; a chain session by Plan 4's, and without it nothing is written. Answers the session.
  */
-export async function stopSession(deps: SessionReadDependencies, caller: ControlCaller, sessionId: string, body: unknown): Promise<{ session: SessionView }> {
+export async function stopSession(deps: SessionReadDependencies, caller: ControlCaller, sessionId: string, body: unknown): Promise<{ session: SessionView; stop?: "NOTHING_RUNNING" }> {
   const input = parseControlBody(body);
   const access: SessionAccess = await requireSessionLevel(deps, caller, sessionId, "edit", "stop it", { orgAdminMay: true });
   const { session } = access;
   const prior = await readControlRequest(deps, session, input.requestId);
   if (prior !== undefined) {
     repeatOf(prior, "stop", caller.developerId);
-    return answerOf(deps, caller, session.sessionId);
+    return answerOf(deps, caller, session.sessionId, stopOf(prior));
   }
   if (isEnded(session)) throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
   // A session on a Mac is stopped by telling its device (Task 18).
@@ -190,6 +201,7 @@ export async function stopSession(deps: SessionReadDependencies, caller: Control
   if (session.where.kind !== "cloud") throw agentXError("RUNTIME_UNAVAILABLE", MAC_STOP_UNAVAILABLE);
 
   let related: string;
+  let nothingRunning = false;
   if (session.subject.kind === "chain") {
     // Without Plan 4's chain control (no chain runs in this deployment) a chain run is not stopped, and nothing is written.
     if (deps.chainControl === undefined) throw agentXError("RUNTIME_UNAVAILABLE", CHAIN_STOP_UNAVAILABLE);
@@ -200,7 +212,7 @@ export async function stopSession(deps: SessionReadDependencies, caller: Control
     const task = await taskOfSession(deps, session);
     if (task === undefined) throw agentXError("NOT_FOUND", "session not found");
     related = task.taskId;
-    await deps.control.cancelTask(task, input.requestId);
+    nothingRunning = (await deps.control.cancelTask(task, input.requestId))?.nothingRunning === true;
   } else {
     throw agentXError("RUNTIME_UNAVAILABLE", MAC_STOP_UNAVAILABLE);
   }
@@ -213,7 +225,7 @@ export async function stopSession(deps: SessionReadDependencies, caller: Control
     orgId, actor: auditActorOf(caller.developerId), occurredAt: at, occurrence: input.requestId, related: [related], sessionId: session.sessionId, sessionKind: session.kind,
   })]);
   const items: TransactItem[] = [
-    controlRequestItem(deps, session, input.requestId, { action: "stop", by: caller.developerId, at, sessionId: session.sessionId }, Math.floor(nowMs / 1000) + 30 * 86_400),
+    controlRequestItem(deps, session, input.requestId, { action: "stop", by: caller.developerId, at, sessionId: session.sessionId, ...(nothingRunning ? { result: NOTHING_RUNNING_RESULT } : {}) }, Math.floor(nowMs / 1000) + 30 * 86_400),
     sessionEventItem(deps, { orgId, sessionId: session.sessionId }, {
       eventId: sessionEventId("stopped", input.requestId), at, type: "stopped", actor: { kind: "member", developerId: caller.developerId, name }, text: `${name} stopped this session.`,
     }),
@@ -228,11 +240,48 @@ export async function stopSession(deps: SessionReadDependencies, caller: Control
     const recorded = await readControlRequest(deps, session, input.requestId);
     if (recorded === undefined) throw error;
     repeatOf(recorded, "stop", caller.developerId);
-    return answerOf(deps, caller, session.sessionId);
+    return answerOf(deps, caller, session.sessionId, stopOf(recorded));
   }
   await flushAuditEvents(deps, events);
   await afterControl(deps, session, caller.developerId, access.effectiveOwner.developerId);
-  return answerOf(deps, caller, session.sessionId);
+  return answerOf(deps, caller, session.sessionId, nothingRunning ? "NOTHING_RUNNING" : undefined);
+}
+
+// ---- close
+
+const CloseBodySchema = z.object({ requestId: z.string().uuid(), discardUnpublished: z.boolean().optional() }).strict();
+export const CLOSE_UNAVAILABLE = "Closing a task isn't available right now.";
+/** A chain run or a session on a Mac has no cloud task to close here. */
+export const CLOSE_NOT_A_TASK = "This session has no cloud task to close.";
+
+/**
+ * `POST /v1/app/sessions/{id}/close` `{ requestId, discardUnpublished? }`: closes the session's task exactly as `POST /v1/dev/tasks/{id}/close` does (same owner check, same request id, the same
+ * check for unpublished work that stops the close until the person agrees to discard it). The task's close answers whether it is closed; this adds the session as `GET` shows it. A repeat of the
+ * same request id is the task close's own repeat. Needs "can edit" on the session; only the task's owner passes the close itself.
+ */
+export async function closeSession(deps: SessionReadDependencies, caller: ControlCaller, sessionId: string, body: unknown): Promise<z.infer<typeof SessionCloseResponseSchema>> {
+  const parsed = CloseBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const path = issue === undefined || issue.path.length === 0 ? "body" : issue.path.join(".");
+    throw agentXError("CONFIG_INVALID", `${path}: ${issue === undefined || issue.code === "unrecognized_keys" ? "has a field this route does not take" : issue.message}`);
+  }
+  const input = parsed.data;
+  const access: SessionAccess = await requireSessionLevel(deps, caller, sessionId, "edit", "close it");
+  const { session } = access;
+  if (session.subject.kind !== "task" || session.kind === "local" || session.where.kind !== "cloud") throw agentXError("RUNTIME_UNAVAILABLE", CLOSE_NOT_A_TASK);
+  if (deps.control?.closeTask === undefined) throw agentXError("RUNTIME_UNAVAILABLE", CLOSE_UNAVAILABLE);
+  const task = await taskOfSession(deps, session);
+  if (task === undefined) throw agentXError("NOT_FOUND", "session not found");
+  const closed = await deps.control.closeTask(task, { requestId: input.requestId, discardUnpublished: input.discardUnpublished === true });
+  await afterControl(deps, session, caller.developerId, access.effectiveOwner.developerId);
+  const { session: view } = await answerOf(deps, caller, session.sessionId);
+  return {
+    session: view, closed: closed.closed,
+    ...(closed.discardedUnpublished === undefined ? {} : { discardedUnpublished: closed.discardedUnpublished }),
+    ...(closed.unpublished === undefined ? {} : { unpublished: closed.unpublished }),
+    ...(closed.message === undefined ? {} : { message: closed.message }),
+  };
 }
 
 // ---- a session on a Mac

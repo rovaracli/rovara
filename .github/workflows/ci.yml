@@ -479,7 +479,23 @@ jobs:
           # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
           NODE_OPTIONS: --max-old-space-size=6144
       - run: npm run build:web
-      - run: npx playwright install --with-deps chromium firefox webkit
+      # The browsers are ~500 MB each run; they only change with the Playwright version, which package-lock pins, so the key is that version. The system packages (apt) are not in the cache:
+      # a hit runs `install-deps` for them, a miss runs the full `install --with-deps`.
+      - name: Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('./package-lock.json').packages['node_modules/playwright-core'].version")" >> "$GITHUB_OUTPUT"
+      - name: Playwright browsers cache
+        id: playwright-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+      - name: Install Playwright browsers and system packages
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Install Playwright system packages
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium firefox webkit
       - run: npx playwright test -c tests/web-e2e/playwright.config.ts
         env:
           ROVARA_E2E_ALL_BROWSERS: "1"

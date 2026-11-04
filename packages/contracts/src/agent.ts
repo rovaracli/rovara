@@ -74,4 +74,4 @@ export function principalKey(principal: z.infer<typeof AgentPrincipalSchema>): s
 }
 
 /** Available picker models after company/project routing and guardrails. */
-export const ModelListSchema = z.object({ models: z.array(z.object({ provider: z.string(), modelId: z.string(), label: z.string(), company: ModelCompanySchema, sources: z.array(ModelSourceIdSchema) }).strict()) }).strict();
+export const ModelListSchema = z.object({ models: z.array(z.object({ provider: z.string(), modelId: z.string(), label: z.string(), company: ModelCompanySchema, sources: z.array(ModelSourceIdSchema), unusableReason: z.string().min(1).max(300).optional() }).strict()) }).strict();

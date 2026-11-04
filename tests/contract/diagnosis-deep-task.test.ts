@@ -11,6 +11,7 @@ import { SETUP_DRAFT_PREAMBLE } from "../../packages/broker/src/rovara-code/setu
 import { admitDiagnosis, settleDiagnosis } from "../../packages/broker/src/diagnosis/store.js";
 import { heldPreparationOptions } from "../../packages/broker/src/aws/developer-tasks/continue.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
+import type { ChatGptConnections } from "../../packages/broker/src/chatgpt/connections.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -45,7 +46,7 @@ function seedInstallation(db: FakeDynamoDb): void {
 }
 
 /** A cloud install with agents and the project `web`, whose setup check ran on revision 0 (so "outdated" is the error the app shows), and Omar as an org owner (a maintainer of every project). */
-async function setup() {
+async function setup(options: { chatgpt?: ChatGptConnections } = {}) {
   const access = fakeModelAccess();
   const agents: Record<string, unknown> = { modelRouting: {} };
   const h = await createDeveloperTaskBroker({
@@ -55,6 +56,7 @@ async function setup() {
       githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit: vi.fn(), getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
       checkRepositoryAccess: vi.fn(async () => undefined),
       modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" },
+      ...(options.chatgpt === undefined ? {} : { chatgpt: options.chatgpt }),
     },
   });
   // The real source store over the broker's table, for the test that plays the route (the others play the answer).
@@ -128,6 +130,36 @@ describe("the deep tier on the real broker", () => {
     expect(run.invocation.payload).toMatchObject({ model: SONNET, modelRoute: { alias, api: "anthropic-messages" } });
     expect(run.invocation.payload).not.toHaveProperty("chatgpt");
     expect(JSON.stringify(run.invocation.payload)).not.toContain("personal-chatgpt");
+  });
+
+  it("DG-7: a turn decision that chose the owner's personal ChatGPT plan still gives a deep diagnosis no chatgpt in its payload: the plan is dropped and the run goes to the company's route", async () => {
+    provider.real = true;
+    // The owner has a working plan that serves a catalog model, so the turn's own decision is the plan (positive control below).
+    const chatgpt = {
+      settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }),
+      view: async () => ({ connected: true, connectedAt: "2026-10-01T00:00:00.000Z", status: "connected", models: ["gpt-6.1-sol"] }),
+      accessToken: async () => ({ access: "token", expiresAt: Date.now() + 3_600_000, models: [] }),
+      markStatus: async () => undefined,
+      refreshModels: async () => undefined,
+    } as unknown as ChatGptConnections;
+    const t = await setup({ chatgpt });
+    const SRC = "src_aaaaaaaaaaaaaaaaaaaa";
+    const SONNET = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
+    t.db.set({
+      ...modelSourcesKey(TEST_ORG), entityType: "MODEL_SOURCES", sources: [ModelSourceSchema.parse({ kind: "anthropic", sourceId: SRC, label: "Anthropic", models: [{ catalog: SONNET }] })],
+      order: ["personal-chatgpt", SRC, "rovara"], credentials: [SRC], removing: [], revision: 1,
+    });
+    const light = await t.lightDiagnosis();
+    const reply = await t.dev(OMAR, "POST", `/v1/app/diagnoses/${light}/deep`, { requestId: randomUUID() });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const request = t.db.get(diagnosisKey(TEST_ORG, String(reply.body.diagnosisId), "REQUEST")) as { taskId: string };
+    const run = await t.prepared(request.taskId);
+    // Positive control: the turn's own decision was the plan's model (the operation records it), so the drop below is the diagnosis rule and not an absent plan.
+    expect(run.own).toMatchObject({ model: { provider: "openai", modelId: "gpt-6.1-sol" }, modelPolicy: { stage: "plan" } });
+    expect(run.invocation.payload).not.toHaveProperty("chatgpt");
+    expect(JSON.stringify(run.invocation.payload)).not.toContain("gpt-6.1-sol");
+    expect(run.invocation.payload).toMatchObject({ model: SONNET });
+    expect((run.own as unknown as { modelRoute: { sourceId: string } }).modelRoute.sourceId).toBe(SRC);
   });
 
   it("the order personal-chatgpt, rovara, then its own Anthropic follows the project's order onto Rovara's METERED source (never the plan), and is billed to the person like any task (never a Rovara-paid key)", async () => {

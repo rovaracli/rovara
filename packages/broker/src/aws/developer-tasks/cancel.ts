@@ -41,8 +41,8 @@ const actingDeps = (deps: DeveloperTaskRouteDependencies, actor: TaskActor): Dev
  * Stops a task's running work exactly as `POST /v1/dev/tasks/{id}/cancel` does (same path, same fences, same idempotency item), for the owner or for the session actor. Idempotent by
  * `requestId`: a repeat writes nothing and answers the task as it is.
  */
-export function cancelTaskFor(deps: DeveloperTaskRouteDependencies, task: Pick<DeveloperTaskRecord, "taskId">, input: { requestId: string; actor: TaskActor }): Promise<{ task: DeveloperTaskView }> {
-  return cancelTask(actingDeps(deps, input.actor), input.actor.caller, task.taskId, { requestId: input.requestId });
+export function cancelTaskFor(deps: DeveloperTaskRouteDependencies, task: Pick<DeveloperTaskRecord, "taskId">, input: { requestId: string; actor: TaskActor }): Promise<{ task: DeveloperTaskView; nothingRunning: boolean }> {
+  return cancelTaskWithOutcome(actingDeps(deps, input.actor), input.actor.caller, task.taskId, { requestId: input.requestId });
 }
 
 /** What a retry from a session tells the coder: the person's own words are not asked for. */
@@ -62,6 +62,11 @@ export function retryTaskWorkflowFor(deps: DeveloperTaskRouteDependencies, task:
 const CANCEL_PAYLOAD_HASH = hashJson({ action: "cancel" });
 
 export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
+  return { task: (await cancelTaskWithOutcome(deps, caller, taskId, value)).task };
+}
+
+/** The cancel and whether it found nothing to stop (the answer a session's Stop button needs: "Stop requested" is only true when something was running or was ended). */
+async function cancelTaskWithOutcome(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView; nothingRunning: boolean }> {
   const request = parse(DeveloperTaskActionRequestSchema, value, deps, "cancel");
   const access = await authorizeLegacyTaskAction(deps, caller, taskId, "control");
   const { task } = access;
@@ -78,7 +83,7 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
     if (previous.payloadHash !== CANCEL_PAYLOAD_HASH) throw agentXError("IDEMPOTENCY_CONFLICT", "this request_id was already used for another action on this task; use a new request_id");
     return true;
   };
-  const current = async () => ({ task: await taskView(deps, task, { events: 0, details: false }) });
+  const current = async () => ({ task: await taskView(deps, task, { events: 0, details: false }), nothingRunning: false });
   // A repeated cancel answers with the task as it is now and writes nothing.
   if (await repeated()) return current();
   // Stop & redirect: a Stop pressed after a redirect wins; the redirect that is still stopping is ended so its restart never starts the step again (the redirect's own cancel is not a Stop).
@@ -91,6 +96,8 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
   }));
   let handled = false;
   let planReviewEnded = false;
+  // Set when the cancel found nothing running AND ended nothing either: a stop that did not stop anything.
+  let nothingRunning = false;
   const pointer = await get<DeveloperTaskPointerRecord>(deps, taskPointerKey(task.workspaceId));
   if (pointer?.pendingPrompt !== undefined) {
     // R16, P45: before the instructions run, removing them is the whole cancel. Only the pointer
@@ -170,20 +177,25 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
     // Fix for v0.4.6 staging: a session stopped while its plan waits for approval has nothing running to cancel, so the stop would answer 200 and leave the plan on offer. The
     // session actor's stop ends that step as a rejected plan does (the workflow closes complete and the task gives back its slot and workspace), in the same transaction as the
     // idempotency item so a repeat cannot find the cancel recorded and the plan still open. The task's own cancel route is unchanged.
-    const planReview = deps.sessionActor !== undefined && task.closedAt === undefined && task.workflow?.stage === "PLAN_REVIEW" && task.workflow.state === "WAITING" ? task.workflow : undefined;
+    // The same for a workflow that is BLOCKED (a failed step, a review that did not pass, a pause): nothing runs, so the stop would answer "Nothing was running" and leave the session on its
+    // Retry. The session actor's Stop is the person ending it, so the workflow closes the same way and the task gives back its slot and workspace.
+    const planReview = deps.sessionActor !== undefined && task.closedAt === undefined && task.workflow !== undefined
+      && ((task.workflow.stage === "PLAN_REVIEW" && task.workflow.state === "WAITING") || task.workflow.state === "BLOCKED") ? task.workflow : undefined;
     if (outcome === "NOTHING_RUNNING") {
       // R12's one exception (ruling F15): nothing ran, so there is no action transaction for the
       // record to join. It is written with the cancel's idempotency item in its own transaction.
       // A failed write is counted and logged, and never hides the answer.
       try {
         await deps.actions.transact([
-          marker, record(stoppedRevision ? "Stopped the automatic second planning run before it started." : planReview === undefined ? "Nothing was running." : "Stopped while the plan waited for approval."), accessFence(deps, access),
+          marker, record(stoppedRevision ? "Stopped the automatic second planning run before it started." : planReview === undefined ? "Nothing was running." : planReview.state === "BLOCKED" ? "Stopped while the work was blocked." : "Stopped while the plan waited for approval."), accessFence(deps, access),
           ...(planReview === undefined ? [] : [stopPlanReviewItem(deps.tableName, task.taskId, planReview, receivedAt)]),
         ]);
         planReviewEnded = planReview !== undefined;
+        nothingRunning = planReview === undefined && !stoppedRevision;
       } catch (error) {
         if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "control");
         if (!isConditional(error)) turnRecordFailed(deps, error);
+        nothingRunning = !stoppedRevision;
       }
     }
     // An agent-step run that waits (for a person, or between two steps) has nothing running for the cancel to stop: the run itself ends (Plan 3, Task 22).
@@ -191,6 +203,7 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
     if (outcome === "NOTHING_RUNNING" && task.agent !== undefined && task.workflow === undefined && deps.agentEngine !== undefined) {
       try {
         await cancelAgentRun(deps.agentEngine, task.taskId, "Cancelled by the person who started it.");
+        nothingRunning = false;
       } catch (error) {
         log(deps, { event: "agent_run.cancel_failed", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
       }
@@ -200,17 +213,22 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
   if (planReviewEnded) await releaseFinishedTaskQuietly(deps, task.taskId);
   const view = await taskView(deps, task, { events: 0, details: false });
   await syncIndex(deps, task, view.status, view.updatedAt);
-  return { task: view };
+  return { task: view, nothingRunning };
 }
 
-/** The task update that ends a plan waiting for approval because its session was stopped: the workflow closes complete (the stage a rejected plan reaches) and no decision is offered. */
+/**
+ * The task update that ends a plan waiting for approval, or a blocked workflow, because its session was stopped: the workflow closes complete (the stage a rejected plan reaches) and no
+ * decision or retry is offered. The write is conditional on the revision, stage and state that were read.
+ */
 function stopPlanReviewItem(tableName: string, taskId: string, workflow: WorkflowSnapshot, now: string): TransactItems[number] {
-  const closed = WorkflowSnapshotSchema.parse({ ...workflow, revision: workflow.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED", updatedAt: now });
+  const { blockReason: _blockReason, ...rest } = workflow;
+  void _blockReason;
+  const closed = WorkflowSnapshotSchema.parse({ ...rest, revision: workflow.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED", updatedAt: now });
   return { Update: {
     TableName: tableName, Key: taskKey(taskId),
     UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
     ConditionExpression: "attribute_not_exists(closedAt) AND workflow.revision = :revision AND workflow.#stage = :review AND workflow.#state = :waiting",
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-    ExpressionAttributeValues: { ":workflow": closed, ":now": now, ":revision": workflow.revision, ":review": "PLAN_REVIEW", ":waiting": "WAITING" },
+    ExpressionAttributeValues: { ":workflow": closed, ":now": now, ":revision": workflow.revision, ":review": workflow.stage, ":waiting": workflow.state },
   } };
 }

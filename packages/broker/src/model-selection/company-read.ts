@@ -1,6 +1,6 @@
 import {budgetActorChecks} from "../agents/budget-authority.js";
 import {GetCommand} from "@aws-sdk/lib-dynamodb";
-import {ModelSelectionPolicyResponseSchema,STAGE_IDS,agentXError,forbiddenModelMatcher,modelCompany,orgMemberKey,developerOrgKey,orgMetaKey,type OrgId,type ModelIdentifier} from "@agentx/contracts";
+import {ModelSelectionPolicyResponseSchema,STAGE_IDS,agentXError,editionFromEnvironment,forbiddenModelMatcher,modelCompany,modelNotEnabledSentence,orgMemberKey,developerOrgKey,orgMetaKey,type OrgId,type ModelIdentifier} from "@agentx/contracts";
 import {bedrockClaudeModelIds,catalogModel} from "@agentx/model-runtime/catalog";
 import {readGuardrails} from "../agents/guardrails.js";
 import {effectiveSources} from "../model-sources/routing.js";
@@ -34,9 +34,9 @@ export async function getCompanyModelSelectionPolicy(deps:Deps,caller:StageModel
  if(stored!==undefined&&evidence.sourcesRevision!==stored.stored.revision)throw unavailable();
  const guardrails=await readGuardrails(deps,orgId);const denied=forbiddenModelMatcher(guardrails.forbiddenModels);
  const candidates=[...pool.values()].map(model=>{
-  const blocked=denied(model);const verified=evidence.candidates.some(candidate=>candidate.model.provider===model.provider&&candidate.model.modelId===model.modelId);
+  const blocked=denied(model);const found=evidence.candidates.find(candidate=>candidate.model.provider===model.provider&&candidate.model.modelId===model.modelId);const verified=found!==undefined;
   const name=catalogModel(model)?.name??model.modelId;const label=[...name.replace(/[\p{Cc}\p{Cf}]/gu,"")].slice(0,64).join("")||"Model";
-  return {model,label,provider:model.provider,company:modelCompany(model),status:blocked?"denied" as const:verified?"verified" as const:"unverified" as const,...(blocked?{blockedReason:"MODEL_FORBIDDEN" as const}:verified?{}:{blockedReason:"MODEL_NOT_VERIFIED" as const})};
+  return {model,label,provider:model.provider,company:modelCompany(model),status:blocked?"denied" as const:verified?"verified" as const:"unverified" as const,...(blocked?{blockedReason:"MODEL_FORBIDDEN" as const}:verified?{}:{blockedReason:"MODEL_NOT_VERIFIED" as const}),...(found?.accountCannotUse===true?{unusableReason:modelNotEnabledSentence(undefined,editionFromEnvironment())}:{})};
  });
  await requireCompanyModelPolicyAuthority(deps,caller);
  // Owner decision 2026-11-02: which checking steps default to a different company's model, from the same rule the resolver applies (nothing set for the step: no model and no different-from rule at any level of the saved policy).
