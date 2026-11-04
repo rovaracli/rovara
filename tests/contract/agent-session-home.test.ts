@@ -889,3 +889,34 @@ describe("Home retires the kinds decision cards carry (Decisions Q5)", () => {
   });
 });
 
+
+describe("S3 (C59): no email address in the words of a card", () => {
+  const mail = (local: string) => `${local}${String.fromCharCode(64)}example.test`;
+
+  it("a plan, pull request and failure card name the session without an address in the title or the reason", async () => {
+    const w = world();
+    const title = `Reply to ${mail("omar.diaz")} about the invoice`;
+    w.plan({ title });
+    w.pullRequest({ title });
+    w.failed({ title, step: `Failed: could not reach ${mail("omar.diaz")}` });
+    const cards = (await w.home(PRIYA)).cards;
+    expect(cards.map((card) => card.kind).sort()).toEqual(["failure", "plan", "pull_request"]);
+    expect(JSON.stringify(cards)).not.toContain(String.fromCharCode(64));
+    expect(cards.find((card) => card.kind === "plan")!.title).toBe("Reply to [email removed] about the invoice");
+  });
+
+  it("a write approval's card hides an address in what the agent wants to do", async () => {
+    const w = world();
+    await w.blocking("apr_mailaaaaaaaaaaaaaaaa", 1, { approvers: [ARJUN], summary: `Use Gmail to send an email to ${mail("omar.diaz")}` });
+    const [card] = (await w.home(ARJUN)).cards;
+    expect(card).toMatchObject({ kind: "approval" });
+    expect(JSON.stringify(card)).not.toContain(String.fromCharCode(64));
+  });
+
+  it("a card with no address reads as it did", async () => {
+    const w = world();
+    w.plan({ title: "Bump the SDK" });
+    const [card] = (await w.home(PRIYA)).cards;
+    expect(card).toMatchObject({ kind: "plan", title: "Bump the SDK", reason: 'Your plan for "Bump the SDK" is ready to review' });
+  });
+});

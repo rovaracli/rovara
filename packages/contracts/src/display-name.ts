@@ -56,6 +56,30 @@ export function withoutEmailAddresses(text: string): string {
   return (raw ? text : text.normalize("NFKC")).replace(new RegExp(EMAIL_ADDRESS_SOURCE, "gu"), " ").replace(/<\s*>|\(\s*\)|\[\s*\]/gu, " ").replace(/<\s*|\s*>/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
+/** What stands where an address was hidden from a text. */
+export const EMAIL_HIDDEN = "[email removed]";
+
+/**
+ * The text with every email address replaced by `EMAIL_HIDDEN`, for free text that reaches other people (a session card, a Slack message, a pull request, a decision card).
+ * Unlike `withoutEmailAddresses` (which makes a name), this keeps the layout: line breaks, indentation, code fences and every other character stay as they were, so a code block still renders
+ * and a text with no address comes back as the very same string. A link with no address is not touched, and neither is a path that merely has an at sign (`example.test/@maya/post.html`).
+ * It uses the same address rule as `containsEmailAddress`, a fullwidth spelling included (a text that is only an address in its compatibility form is read in that form).
+ */
+export function hideEmailAddresses(text: string): string {
+  if (typeof text !== "string" || !text.includes("@") && !text.includes("\uFF20")) return text;
+  const hide = (value: string) => value.replace(new RegExp(EMAIL_ADDRESS_SOURCE, "gu"), (match) => {
+    // A slash before the at sign means a path (`/@maya/post.html`, `//host/user@host.test`): only what follows the last slash can be an address.
+    const local = match.slice(0, match.indexOf("@"));
+    const slash = local.lastIndexOf("/");
+    if (slash < 0) return EMAIL_HIDDEN;
+    return local.length === slash + 1 ? match : `${match.slice(0, slash + 1)}${EMAIL_HIDDEN}`;
+  });
+  const raw = hide(text);
+  if (raw !== text) return raw;
+  const folded = text.normalize("NFKC");
+  return folded === text ? text : hide(folded) === folded ? text : hide(folded);
+}
+
 /**
  * A person's name as others may see it (release 0.4.16): `cleanDisplayName`, and when the name holds an email address, the name without it; undefined when
  * nothing with a letter or a number is left (the sign-in email-code names a person by their address). Callers show a placeholder for undefined.

@@ -25,9 +25,9 @@ export interface LinearReplyPort {
    */
   reply(input: { orgId: OrgId; issueKey: string; text: string; commentKey?: string | undefined; workspace?: string | undefined }): Promise<{ commentId: string } | void>;
   /** Rewrites a comment Rovara posted (an erased person's name taken out). Refuses a comment that is not Rovara's own. Absent: such comments are not rewritten. */
-  update?(input: { orgId: OrgId; commentId: string; text: string }): Promise<void>;
+  update?(input: { orgId: OrgId; commentId: string; text: string; workspace?: string | undefined }): Promise<void>;
   /** Deletes a comment Rovara posted. Refuses a comment that is not Rovara's own. Absent: such comments are not deleted. */
-  remove?(input: { orgId: OrgId; commentId: string }): Promise<void>;
+  remove?(input: { orgId: OrgId; commentId: string; workspace?: string | undefined }): Promise<void>;
   /** Linear's user id of the account Rovara writes as in this org (so a comment Rovara wrote is never read as a person's). Undefined when it cannot be known. */
   ownActorId(orgId: OrgId): Promise<string | undefined>;
 }

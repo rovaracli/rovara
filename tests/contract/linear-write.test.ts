@@ -344,3 +344,55 @@ describe("S4: Linear's rate limits are waited out as it asks, a bounded number o
     expect(linear.comments.size).toBe(1);
   });
 });
+
+describe("AL-1: a comment is gone only when a connection in the posting workspace says so", () => {
+  const CON_3 = "con_cccccccccccccccccccc";
+  const KEY_3 = "lin_api_THREE_SECRET_0123456789";
+  const OTHER_ACCOUNT = "linear-user-other";
+
+  /** Rovara posts in "acme" through CON_1; CON_2 is a connection to another workspace, "other", which knows no such comment. */
+  async function twoWorkspaces() {
+    const acme = fakeLinear({ workspace: "acme" });
+    const other = fakeLinear({ workspace: "other", viewer: OTHER_ACCOUNT });
+    const t = await world([{ id: CON_1, key: KEY_1, linear: acme }, { id: CON_2, key: KEY_2, linear: other }]);
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "It is blocked.", commentKey: "ask:al1", workspace: "acme" });
+    return { t, acme, other, posted };
+  }
+
+  it("with the posting connection removed and another workspace's connection left, remove is NOT done: nothing is read as gone", async () => {
+    const { t, acme, posted } = await twoWorkspaces();
+    await t.store.remove({ orgId: ORG_A, connectionId: CON_1, by: "dev-admin" });
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId, workspace: "acme" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(t.port.update({ orgId: ORG_A, commentId: posted.commentId, text: "x", workspace: "acme" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    // The comment is still on Linear, untouched.
+    expect(acme.comments.has(posted.commentId)).toBe(true);
+  });
+
+  it("with both connections present, the posting workspace's connection finds and deletes it", async () => {
+    const { t, acme, posted } = await twoWorkspaces();
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId, workspace: "acme" })).resolves.toBeUndefined();
+    expect(acme.comments.has(posted.commentId)).toBe(false);
+  });
+
+  it("a connection of the posting workspace that answers not-found makes it gone, even when another workspace's connection is also asked", async () => {
+    const { t, acme, posted } = await twoWorkspaces();
+    acme.comments.delete(posted.commentId);
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId, workspace: "acme" })).resolves.toBeUndefined();
+    await expect(t.port.update({ orgId: ORG_A, commentId: posted.commentId, text: "x", workspace: "acme" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("a second connection to the posting workspace can still answer for it when the first is removed", async () => {
+    const acme = fakeLinear({ workspace: "acme" });
+    const t = await world([{ id: CON_1, key: KEY_1, linear: acme }, { id: CON_3, key: KEY_3, linear: acme }]);
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "It is blocked.", commentKey: "ask:al1b", workspace: "acme" });
+    await t.store.remove({ orgId: ORG_A, connectionId: CON_1, by: "dev-admin" });
+    acme.comments.delete(posted.commentId);
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId, workspace: "acme" })).resolves.toBeUndefined();
+  });
+
+  it("without a recorded workspace the pass is what it was (every connection must say not-found)", async () => {
+    const { t, acme, posted } = await twoWorkspaces();
+    acme.comments.delete(posted.commentId);
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId })).resolves.toBeUndefined();
+  });
+});

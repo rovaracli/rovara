@@ -1,6 +1,7 @@
 import {
   attributionBodyLines,
   workflowReviewsSawPartialDiff,
+  hideEmailAddresses,
   redactText,
   type WorkflowSnapshot,
   workflowIsReviewOnly,
@@ -11,6 +12,7 @@ import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST
 import type { DeveloperTaskRecord, OperationFacts } from "../../developer/task-records.js";
 import { loadWorkflowDocument, type LoadedDocument } from "../../developer/plan-artifacts.js";
 import { documentSummaryLines } from "../../developer/workflow-messages.js";
+import { breakLinearKeys } from "../../rovara-code/linear-close.js";
 import { inertPlanLine } from "../../rovara-code/inert-text.js";
 import { reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
 import { secondReviewPullRequestLines } from "../../rovara-code/second-review-store.js";
@@ -31,6 +33,19 @@ const WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED = 20;
  * 30,000 bytes.
  */
 export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, plan: LoadedDocument | string | undefined, pageUrl: string | undefined, context?: PullRequestBodyContext, proofLines: readonly string[] = []): string {
+  // S3 (C59): the description is read by everyone who can see the repository, and the plan, the findings and the title are a model's and a person's words. No email address is written on GitHub; layout is kept, so a code block still renders.
+  const body = hideEmailAddresses(buildWorkflowPullRequestBody(task, workflow, plan, pageUrl, context, proofLines));
+  if (Buffer.byteLength(body, "utf8") <= WORKFLOW_PULL_REQUEST_BODY_MAX_BYTES) return body;
+  return Buffer.from(body, "utf8").subarray(0, WORKFLOW_PULL_REQUEST_BODY_MAX_BYTES).toString("utf8").replace(/\uFFFD+$/u, "");
+}
+
+/** The title of the pull request Rovara opens: the task's title made inert, without an email address, and (for Rovara Code) without a Linear issue key. At most 256 characters. */
+export function pullRequestTitle(taskTitle: string, rovaraV2: boolean): string {
+  const inert = inertTaskTitle(hideEmailAddresses(taskTitle));
+  return `${rovaraV2 ? "Rovara" : "AgentX"}: ${rovaraV2 ? breakLinearKeys(inert) : inert}`.slice(0, 256);
+}
+
+function buildWorkflowPullRequestBody(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, plan: LoadedDocument | string | undefined, pageUrl: string | undefined, context?: PullRequestBodyContext, proofLines: readonly string[] = []): string {
   // SH34: the second review of this code (switch `cr`; none for a shadow opinion, none while `cr` is off), kept beside the workflow and never part of the first review's lines. Both versions show it.
   const secondLines = secondReviewPullRequestLines(task, workflow.candidate?.digest, workflow.acceptedFindings);
   // Rovara Code version 2 has its own description (sections, test results and a risk level); a version 1 task's is exactly as it was.

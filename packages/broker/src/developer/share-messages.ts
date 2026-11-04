@@ -1,6 +1,6 @@
 // Spec 025 FR-032, C8: what the notifier posts in a shared thread. Every value from a record is
 // escaped; free text from the worker is redacted and capped first. No em dashes.
-import { DEVELOPER_SHARE_SUMMARY_MAX, emailSafeName, redactAndCap, redactText } from "@agentx/contracts";
+import { DEVELOPER_SHARE_SUMMARY_MAX, emailSafeName, hideEmailAddresses, redactAndCap, redactText } from "@agentx/contracts";
 import { escapeSlack, fitEscaped } from "../aws/slack-details-view.js";
 
 export interface StartMessageInput {
@@ -26,7 +26,7 @@ export function startMessage(input: StartMessageInput): string {
   const name = who(input);
   return [
     // The client is one of four fixed names (R25), so it needs no escaping.
-    `${name} started a task from ${input.client}: *${escapeSlack(input.title)}*`,
+    `${name} started a task from ${input.client}: *${escapeSlack(hideEmailAddresses(input.title))}*`,
     `Project: \`${escapeSlack(input.project)}\`. Status: ${input.status}.`,
     input.mode === "view" ? MODE_SENTENCE.view(name) : MODE_SENTENCE.continue(),
     ...(input.sharedReason === "required" ? ["This project shares every task started from an AI tool."] : []),
@@ -35,7 +35,7 @@ export function startMessage(input: StartMessageInput): string {
 
 /** Redacts, then escapes and fits within `limit`, quote marks included (F21); a cut by either ends with the marker. */
 function fitRedacted(text: string, limit: number, quoted = false): string {
-  const redacted = redactAndCap(text, limit);
+  const redacted = redactAndCap(hideEmailAddresses(text), limit);
   return fitEscaped(redacted.text, limit, { quoteLines: quoted, cut: redacted.truncated });
 }
 
@@ -63,7 +63,7 @@ export function setupFailedReply(error: string | undefined): string {
  * last line too long by itself keeps its end, after "...", where an error usually is.
  */
 function quotedTail(text: string, limit: number): string {
-  const lines = redactText(text).split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim() !== "");
+  const lines = hideEmailAddresses(redactText(text)).split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim() !== "");
   const kept: string[] = [];
   let size = 0;
   for (const line of lines.reverse()) {
