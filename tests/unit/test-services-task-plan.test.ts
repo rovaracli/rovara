@@ -52,7 +52,7 @@ describe("which dependencies a plan starts", () => {
   it("refuses, in fixed words, whatever it cannot pin", () => {
     const refusal = (over: Parameters<typeof taskDependencyPlansOf>[0]) => { const result = taskDependencyPlansOf(over); return result.ok ? "ok" : result.reason; };
     expect(refusal({ body: body(), catalog: undefined, edition: "public" })).toBe("no_catalog");
-    expect(refusal({ body: body(), catalog: verifiedCatalog(unpinnedCatalog()), edition: "public" })).toBe("not_pinned");
+    expect(refusal({ body: body(), catalog: verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION)), edition: "public" })).toBe("not_pinned");
     expect(refusal({ body: body(), catalog: verifiedCatalog(pinnedCatalog((entries) => { for (const entry of entries) if (entry["id"] === "postgres@16") entry["status"] = "retired"; })), edition: "public" })).toBe("retired");
     expect(refusal({ body: body({ dependencies: [postgres({ backing: { kind: "local", catalogId: "postgres@99", config: {} } })] }), catalog: catalog(), edition: "public" })).toBe("not_in_catalog");
     expect(refusal({ body: body({ dependencies: [postgres({ family: "mysql", kind: "database", connect: { env: [], hostAliases: [] } })] }), catalog: catalog(), edition: "public" })).toBe("not_in_catalog");
@@ -199,7 +199,7 @@ describe("the plan of a run with dependencies", () => {
   it("refuses the run, in fixed words, when the catalog cannot pin a dependency (never a plan without it)", async () => {
     const h = await pinned();
     await expect(planOf(h)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.no_catalog);
-    h.deps.serviceCatalog = async () => verifiedCatalog(unpinnedCatalog());
+    h.deps.serviceCatalog = async () => verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION));
     await expect(planOf(h)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.not_pinned);
     h.deps.serviceCatalog = async () => { throw new Error("boom: secret-looking text"); };
     await expect(planOf(h)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.no_catalog);
@@ -259,7 +259,7 @@ describe("the plan a coding run is sent (the working sandbox gets the dependenci
   it("refuses the run, in fixed words, when the catalog cannot pin it or the project has a dev container", async () => {
     const h = await harnessWith();
     await expect(implementPlan(h)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.no_catalog);
-    h.deps.serviceCatalog = async () => verifiedCatalog(unpinnedCatalog());
+    h.deps.serviceCatalog = async () => verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION));
     await expect(implementPlan(h)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.not_pinned);
     h.deps.serviceCatalog = async () => catalog();
     h.db.set(projectRow(true));

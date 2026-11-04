@@ -27,7 +27,17 @@ function pinnedCatalog(change: (entries: ReturnType<typeof rawCatalog>["entries"
   change(raw.entries);
   return ServiceCatalogSchema.parse(raw);
 }
-const unpinnedCatalog = () => ServiceCatalogSchema.parse(rawCatalog());
+/** An explicit UNPINNED fixture: the shipped file's entries with every pin taken off, so this does not change when an operator pins an entry in the shipped file. */
+const unpinnedCatalog = () => {
+  const raw = rawCatalog();
+  raw.pinned = false;
+  for (const entry of raw.entries) {
+    delete entry.image.digest;
+    delete entry["sbomRef"];
+    delete entry["scan"];
+  }
+  return ServiceCatalogSchema.parse(raw);
+};
 
 const approval = (by: string) => ({ by: person(by), at: "2026-11-02T10:00:00.000Z", freshSignIn: true, kind: "approver", approvedDigest: "" });
 function account(over: Record<string, unknown> = {}): TestAccount {

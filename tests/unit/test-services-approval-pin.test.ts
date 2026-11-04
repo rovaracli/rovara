@@ -1,7 +1,7 @@
 // Test services, slice 1 (L1) and slice 2 (pre-pull of every pinned local entry): at approval, a `local` dependency whose catalog entry has no pinned digest gets the same fixed "not available yet" words as any backing slice 1 cannot start.
 import { describe, expect, it } from "vitest";
 import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
-import { isPrepulledEntry, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
+import { TEST_SERVICES_MIN_CATALOG_REVISION, isPrepulledEntry, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { proposeTestEnvironment, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
 import { digestOfId, pinnedCatalog, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
@@ -71,7 +71,7 @@ describe("a pinned entry and the worker's pre-pull list", () => {
 
 describe("a local dependency without a pinned digest at approval", () => {
   it("is refused with the fixed 'not available yet' words when the catalog does not pin it", async () => {
-    await expect(propose(deps(async () => verifiedCatalog(unpinnedCatalog())))).rejects.toThrow(/not available yet/u);
+    await expect(propose(deps(async () => verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION))))).rejects.toThrow(/not available yet/u);
   });
   it("is proposed when the catalog pins it, and when no catalog is at hand (the task's plan then judges it)", async () => {
     await expect(propose(deps(async () => verifiedCatalog(pinnedCatalog())))).resolves.toMatchObject({ digest: expect.stringMatching(/^[a-f0-9]{64}$/u) as string });

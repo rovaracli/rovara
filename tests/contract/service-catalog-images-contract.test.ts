@@ -28,7 +28,7 @@ import {
   type SubstituteApprovalPort,
   type SubstituteApprovalRecord,
 } from "@agentx/contracts";
-import { digestOfId, pinnedCatalog, sha, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
+import { digestOfId, pinnedCatalog, sha, shippedCatalog, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 
 const catalog = verifiedCatalog(pinnedCatalog());
 const digest = (id: string): string => digestOfId(id);
@@ -102,7 +102,13 @@ describe("the worker pre-pull list", () => {
     expect(PrepullListSchema.safeParse({ ...good, images: [first, first] }).success).toBe(false);
   });
   it("is the file that ships in the worker image (regenerate it with scripts/catalog-build.ts, which writes it)", () => {
-    expect(JSON.parse(readFileSync("packages/worker/service-catalog/prepull.json", "utf8"))).toEqual(catalogPrepullList(unpinnedCatalog()));
+    const shipped = JSON.parse(readFileSync("packages/worker/service-catalog/prepull.json", "utf8")) as ReturnType<typeof catalogPrepullList>;
+    expect(shipped).toEqual(catalogPrepullList(shippedCatalog()));
+    // The shipped state itself: revision 2, and exactly the two pinned images (postgres@16 for both platforms, the emulator for arm64).
+    expect(shipped.catalogRevision).toBe(2);
+    expect(shipped.images.map((image) => [image.id, image.repository, image.platforms])).toEqual([["local-aws@r1", "svc/local-aws", ["linux/arm64"]], ["postgres@16", "svc/postgres", ["linux/arm64", "linux/amd64"]]]);
+    // An unpinned catalog (revision 1) pre-pulls nothing.
+    expect(catalogPrepullList(unpinnedCatalog())).toEqual({ schemaVersion: 1, catalogRevision: 1, images: [] });
   });
 });
 

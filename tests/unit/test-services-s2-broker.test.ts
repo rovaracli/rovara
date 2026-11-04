@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { TestEnvRegionSchema, TestEnvironmentBodySchema, TestEnvTaskPlanSchema, TaskDependencyPlanSchema, WORKER_INVOCATION_FEATURES, TEST_SERVICES_AWS_PLAN_FEATURE, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@agentx/contracts";
 import { sanitizeTestEnvDraft } from "../../packages/broker/src/test-env/draft.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
-import { DEPENDENCY_PLAN_REFUSAL_WORDS, EMULATED_TASK_SERVICES, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
+import { DEPENDENCY_PLAN_REFUSAL_WORDS, EMULATED_TASK_SERVICES, TEST_SERVICES_MIN_CATALOG_REVISION, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { EMULATED_DEFAULT_REGION, proposeDependencies } from "../../packages/broker/src/test-env/dependency-proposal.js";
 import { dependencyCardLines } from "../../packages/broker/src/test-env/dependency-card-lines.js";
 import { evidenceEnvironmentOf } from "../../packages/broker/src/test-env/evidence-line.js";
@@ -135,8 +135,8 @@ describe("the plan of Rovara local AWS", () => {
   it("keeps the catalog rules of slice 1: no catalog, an unpinned catalog, a retired entry, an edition", () => {
     expect(reason(plansOf(threeAws(), null))).toBe("no_catalog");
     // An unpinned catalog has no pinned local-aws: "not available yet" for a project that asks for local AWS alone, slice 1's words beside real software.
-    expect(reason(plansOf(threeAws(), verifiedCatalog(unpinnedCatalog())))).toBe("not_available_yet");
-    expect(reason(plansOf([postgres(), ...threeAws()], verifiedCatalog(unpinnedCatalog())))).toBe("not_pinned");
+    expect(reason(plansOf(threeAws(), verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION))))).toBe("not_available_yet");
+    expect(reason(plansOf([postgres(), ...threeAws()], verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION))))).toBe("not_pinned");
     const retired = catalog((entries) => { for (const entry of entries) if (entry["id"] === "local-aws@r1") entry["status"] = "retired"; });
     expect(reason(plansOf(threeAws(), retired))).toBe("retired");
     const enterpriseOnly = catalog((entries) => { for (const entry of entries) if (entry["id"] === "local-aws@r1") entry["editions"] = ["enterprise"]; });
@@ -219,7 +219,7 @@ describe("approval", () => {
   });
   it("refuses emulated without a pinned local-aws, and one the emulator does not list as supported", async () => {
     await expect(approved(body(), catalog(withoutLocalAws))).rejects.toThrow(/not available yet/iu);
-    await expect(approved(body(), verifiedCatalog(unpinnedCatalog()))).rejects.toThrow(/not available yet/iu);
+    await expect(approved(body(), verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION)))).rejects.toThrow(/not available yet/iu);
     const unsupported = catalog((entries) => {
       for (const entry of entries) if (entry["id"] === "local-aws@r1") {
         const services = (entry["emulator"] as { services: { supported: string[]; available: string[] } }).services;
@@ -321,7 +321,7 @@ describe("the proposal from detector candidates", () => {
 
   it("proposes no emulated dependency without a pinned local-aws, and not one the tests fake themselves", () => {
     expect(proposeDependencies([candidate("aws:s3")], context(catalog(withoutLocalAws))).dependencies).toEqual([]);
-    expect(proposeDependencies([candidate("aws:s3")], context(verifiedCatalog(unpinnedCatalog()))).dependencies).toEqual([]);
+    expect(proposeDependencies([candidate("aws:s3")], context(verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION)))).dependencies).toEqual([]);
     expect(proposeDependencies([candidate("aws:s3", {}, { fakedByTests: true })], context()).dependencies).toEqual([]);
   });
 

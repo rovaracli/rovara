@@ -733,7 +733,11 @@ describe("the run's limits", () => {
     expect(started.helpers).toHaveLength(12);
   });
   it("refuses an entry that is not pinned, retired, or not offered in this edition", async () => {
-    const unpinned = catalog.entries.find((entry) => entry.id === "postgres@16")!;
+    // An explicit unpinned copy (the shipped entry is pinned since revision 2).
+    const unpinned = structuredClone(catalog.entries.find((entry) => entry.id === "postgres@16")!);
+    delete unpinned.image.digest;
+    delete unpinned.sbomRef;
+    delete unpinned.scan;
     const cases: Array<[CatalogEntry, "public" | "enterprise"]> = [
       [unpinned, "public"],
       [pinned("postgres@16", (entry) => { entry.status = "retired"; }), "public"],
