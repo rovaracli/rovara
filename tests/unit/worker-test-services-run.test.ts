@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, type ProjectCommand, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/contracts";
-import { withDetachedWorking } from "../../packages/worker/src/check-sandbox.js";
+import { SEALED_DNS_READY_TIMEOUT_MS, withDetachedWorking } from "../../packages/worker/src/check-sandbox.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 import {
@@ -464,8 +464,12 @@ describe("a sealed check round", () => {
     expect(connects.filter((call) => call.includes(roundNetwork))).toEqual([]);
     expect(connects.filter((call) => call.includes(h.sandbox.name))).toHaveLength(1);
     expect(connects.find((call) => call.includes(h.sandbox.name))).not.toContain(roundNetwork);
-    const readRecord = h.fake.calls.findIndex((call) => call[0] === "exec" && call.includes("cat") && call.some((arg) => arg.endsWith("-dns")));
-    expect(readRecord).toBeGreaterThan(-1);
+    // The readiness poll is the same `exec <dns> cat`, so the record read is the one AFTER the check sandbox started (the poll comes before it).
+    const dnsCats = h.fake.calls.flatMap((call, index) => (call[0] === "exec" && call.includes("cat") && call.some((arg) => arg.endsWith("-dns")) ? [index] : []));
+    const checkStart = h.fake.calls.findIndex((call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-check"));
+    expect(checkStart).toBeGreaterThan(-1);
+    expect(dnsCats.filter((index) => index < checkStart).length).toBeGreaterThan(0);
+    expect(dnsCats.filter((index) => index > checkStart).length).toBeGreaterThan(0);
     await run.dispose();
   });
 
@@ -544,6 +548,35 @@ describe("a sealed check round", () => {
 });
 
 describe("with s1-sealed's real round and usage record", () => {
+  it("a name server that never listens fails the round before any check sandbox starts: setup_failed, every check not_run, the helper removed, nothing run unsealed", async () => {
+    const neverListens = (args: readonly string[]) => (args.includes("cat") && args.some((arg) => arg.endsWith("-dns")) ? 1 : 0);
+    const h = await harness({ realSealed: true, docker: { execExit: neverListens } });
+    // A fake clock that moves only when the run waits, so the readiness limit passes without real time.
+    let clock = 1_800_000_000_000;
+    h.config.now = () => clock;
+    h.config.sleep = (ms) => { clock += ms; return Promise.resolve(); };
+    const run = await h.start();
+    const execsBefore = h.fake.execs.length;
+    const started = clock;
+    const round = await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    expect(round.entries.map((entry) => entry.after)).toEqual(["not_run"]);
+    const names = (verb: string) => h.fake.calls.filter((call) => call[0] === verb && call.includes("--detach")).map((call) => call[call.indexOf("--name") + 1]!);
+    expect(names("run").some((name) => name.endsWith("-dns"))).toBe(true);
+    expect(names("run").some((name) => name.endsWith("-check"))).toBe(false);
+    // It did wait (more than one poll) and then removed the round's name server.
+    expect(h.fake.calls.filter((call) => call[0] === "exec" && call.includes("cat") && call.some((arg) => arg.endsWith("-dns"))).length).toBeGreaterThan(1);
+    expect(h.fake.left().containers.filter((name) => name.endsWith("-dns"))).toEqual([]);
+    // No unsealed fallback: during the round nothing ran in the working sandbox or in any check sandbox (only the round's own helper health and readiness polls ran).
+    const roundExecs = h.fake.execs.slice(execsBefore).map((exec) => exec.args);
+    expect(roundExecs.filter((args) => args.includes(h.sandbox.name) || args.some((arg) => arg.endsWith("-check")))).toEqual([]);
+    await run.dispose();
+    await nothingLeft(h);
+    // The reason is recorded as setup_failed (the round's name server), wherever the run reports it.
+    // It failed on the readiness limit (the clock reached it while polling), not on anything earlier.
+    expect(clock - started).toBeGreaterThanOrEqual(SEALED_DNS_READY_TIMEOUT_MS);
+    expect(round.entries[0]!.output).toContain("could not be put back");
+  });
+
   it("runs the check by docker exec --env-file in the check sandbox, redacts what it printed, and writes a usage record the contract accepts", async () => {
     const h = await harness({ realSealed: true });
     const run = await h.start();

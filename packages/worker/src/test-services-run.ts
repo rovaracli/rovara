@@ -874,7 +874,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       const dns = await docker.run(plan.dnsHelperRunArgs, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
       if (dns === undefined || dns.exitCode !== 0) throw new TestServicesError("setup_failed");
       // The check sandbox starts only once the name server listens: before that, every lookup in the round would fail at once, unrecorded.
-      await waitForSealedDnsHelper(docker, plan.dnsHelperName, { signal }).catch(() => { throw new TestServicesError("setup_failed"); });
+      await waitForSealedDnsHelper(docker, plan.dnsHelperName, { signal, now, ...(config.sleep === undefined ? {} : { sleep: config.sleep }) }).catch(() => { throw new TestServicesError("setup_failed"); });
       check();
 
       // The sealed round: the working sandbox was never on this network; the check sandbox starts inside `withSealedCheckRound`.
