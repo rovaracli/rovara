@@ -4,6 +4,7 @@
 // sees the origin with its title and link; everyone else, and everyone once the session is deleted or past retention, sees `{ kind: "session", visible: false }`. The session view says whether the
 // caller may do this (`you.actions` holds `make_agent`), worked out by the same check as the route. Drafts and versions made before this still parse.
 import { randomUUID } from "node:crypto";
+import { fixtureActor } from "../support/money-authority.js";
 import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { describe, expect, it } from "vitest";
 import {
@@ -124,6 +125,7 @@ describe("saying whether the session's agent was copied (Step 0 ruling)", () => 
     expect(await state("A2")).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
     await t.agents(PRIYA, "PUT", `/v1/app/agents/${custom.agentId}/shares`, { requestId: randomUUID(), shares: [{ principal: { kind: "member", developerId: MAX }, level: "use" }] });
     expect(await state("A3")).toEqual({ copied: true, reason: undefined });
+    fixtureActor(t.w.db, ORG_A, PRIYA); // archiving holds the person to their company access in its own transaction
     await t.agents(PRIYA, "POST", `/v1/app/agents/${custom.agentId}/archive`, { requestId: randomUUID() });
     expect(await state("A4")).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
   });
@@ -348,6 +350,7 @@ describe("making an agent from a session", () => {
     expect(await extendsOf("A2")).toBeUndefined();
     await t.agents(PRIYA, "PUT", `/v1/app/agents/${custom.agentId}/shares`, { requestId: randomUUID(), shares: [{ principal: { kind: "member", developerId: MAX }, level: "use" }] });
     expect(await extendsOf("A3")).toBe(custom.agentId);
+    fixtureActor(t.w.db, ORG_A, PRIYA); // archiving holds the person to their company access in its own transaction
     await t.agents(PRIYA, "POST", `/v1/app/agents/${custom.agentId}/archive`, { requestId: randomUUID() });
     expect(await extendsOf("A4")).toBeUndefined();
   });

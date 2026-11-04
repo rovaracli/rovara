@@ -586,7 +586,10 @@ async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, ag
   const { mark, replay } = await markRequest(deps, caller, archive ? "archive" : "unarchive", agentId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: customView(replay.result as AgentRecord, access) };
   if (archive) {
-    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark, guard === undefined ? undefined : { checks: guard });
+    // Archiving holds the person to the access this route checked, at the commit: still a member in this role, the company open, and the agent still the one they could manage.
+    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark, {
+      actor: { developerId: caller.developerId, role: caller.orgRole }, ...("owner" in agent ? { manageSnapshot: agent } : {}), ...(guard === undefined ? {} : { checks: guard }),
+    });
     // An archived agent starts nothing, so its triggers go off with it. Unarchiving turns none back on: a person does that.
     await deps.triggerHooks?.disableTriggersForTarget(caller.orgId, { kind: "agent", agentId });
     return { agent: customView(archived, access) };
@@ -630,7 +633,8 @@ async function putOwner(deps: AgentRouteDependencies, caller: AgentCaller, agent
   const change: OwnerCapChange = { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
   const updated = await holdingCap(deps, caller, agentId, agent, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, change, mark, (options) => deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: agent }));
   if (updated instanceof StatusReply) return updated;
-  return { agent: customView(updated, access) };
+  // A custom agent runs as its owner, so its triggers are looked at again for the new one: those they can't run are turned off, and the answer says which.
+  return withDisabled({ agent: customView(updated, access) }, await recheck(deps, caller.orgId, agentId));
 }
 
 async function putAccountable(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown | StatusReply> {

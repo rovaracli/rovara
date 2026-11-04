@@ -9,6 +9,7 @@ import { recheckTriggersForTarget } from "../../packages/broker/src/triggers/lif
 import { triggerProblems } from "../../packages/broker/src/triggers/requirements.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { CARL, DANA, MAX, ORG_A, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
+import { fixtureActor } from "../support/money-authority.js";
 
 afterEach(disposeGateWorlds);
 
@@ -102,6 +103,7 @@ describe("a change to a chain that takes away what its trigger needs", () => {
     const chain = await v.budgetedChain(ONE_STEP({ steps: [{ kind: "agent", id: "look", name: "Look", agent: { agentId: agent.agentId, version: "current" }, next: { kind: "end" } }], limits: { maxRunUsd: 5 } }));
     const trigger = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, createdBy: DANA });
     expect(await triggerProblems(v.routeDeps, trigger)).toEqual([]);
+    fixtureActor(v.db, ORG_A, DANA); // archiving holds the admin to their company access in its own transaction
     expect((await v.agentCall(DANA, "POST", `/v1/app/agents/${agent.agentId}/archive`, {})).status).toBe(200);
     const [problem] = await triggerProblems(v.routeDeps, trigger);
     expect(problem).toMatchObject({ code: "CHAIN_UNAVAILABLE" });

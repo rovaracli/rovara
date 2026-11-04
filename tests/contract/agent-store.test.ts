@@ -272,7 +272,7 @@ describe("pinned bases", () => {
     const draftOnly = await make("Draft only", scratch("a"));
     expect(await code(make("X", layer("x"), { extends: draftOnly.agentId }))).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("no published version") as string });
     await publish(draftOnly.agentId);
-    await store.archive(ORG_A, draftOnly.agentId, ALICE);
+    await store.archive(ORG_A, draftOnly.agentId, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     expect(await code(make("Y", layer("y"), { extends: draftOnly.agentId }))).toEqual({ code: "AGENT_UNAVAILABLE", message: "Draft only is archived, so it can't start new work." });
     expect(await code(make("Z", layer("z"), { extends: "agt_zzzzzzzzzzzzzzzzzzzz" }))).toMatchObject({ code: "NOT_FOUND" });
   });
@@ -420,7 +420,7 @@ describe("layers, cycles, archived bases and problems", () => {
     await publish(b.agentId);
     const c = await make("C", layer("C"), { extends: b.agentId });
     await publish(c.agentId);
-    await store.archive(ORG_A, b.agentId, ALICE);
+    await store.archive(ORG_A, b.agentId, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     const expected = { code: "AGENT_UNAVAILABLE", message: "C builds on B, which is archived. Ask C's owner to pick another base." };
     expect(await code(resolveAgent(store, ORG_A, c.agentId, "current"))).toEqual(expected);
     expect(await code(resolveAgent(store, ORG_A, c.agentId, "draft"))).toEqual(expected);
@@ -478,8 +478,8 @@ describe("archive, budget, owner, accountable and events", () => {
     await publish(b.agentId);
     const project: AgentOwner = { kind: "project", project: "web" };
     const c = await store.create({ orgId: ORG_A, name: "C", owner: project, accountable: { developerId: ALICE }, extends: b.agentId, overlay: layer("C"), createdBy: ALICE });
-    await store.archive(ORG_A, c.agentId, ALICE);
-    await store.archive(ORG_A, c.agentId, ALICE); // already archived: no write, no event
+    await store.archive(ORG_A, c.agentId, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
+    await store.archive(ORG_A, c.agentId, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) }); // already archived: no write, no event
     await store.unarchive(ORG_A, c.agentId, BOB, undefined, { actor: fixtureActor(store, ORG_A, BOB) });
     await store.setBudget(ORG_A, c.agentId, { monthlyUsd: 30, maxPerRunUsd: 5 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
     await store.setAccountable(ORG_A, c.agentId, { developerId: BOB }, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
@@ -534,6 +534,7 @@ describe("archive, budget, owner, accountable and events", () => {
     expect(await code(store.setAccountable(ORG_A, member.agentId, { developerId: BOB }, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) }))).toMatchObject({ code: "CONFIG_INVALID" });
     const project: AgentOwner = { kind: "project", project: "web" };
     expect(await code(store.setOwner(ORG_A, member.agentId, project, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) }))).toMatchObject({ code: "CONFIG_INVALID" });
+    fixtureActor(store, ORG_A, BOB); // the new accountable maintainer is a real member now: the write holds them to that in its own transaction
     const moved = await store.setOwner(ORG_A, member.agentId, project, ALICE, { developerId: BOB }, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     expect(moved).toMatchObject({ owner: project, accountable: { developerId: BOB } });
     await store.setAccountable(ORG_A, member.agentId, { developerId: ALICE }, BOB, undefined, { actor: fixtureActor(store, ORG_A, BOB) });
