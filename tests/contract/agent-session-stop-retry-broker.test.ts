@@ -352,11 +352,19 @@ describe("a Rovara Code task, through the real broker", () => {
     const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "a".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
     const evidence = {
       // The earlier code's candidate stays when a plan is sent back.
-      candidate: async (_t: Awaited<ReturnType<typeof setup>>, _task: { workspaceId: string }) => ({ candidate }),
+      candidate: async () => ({ candidate }),
       // Code ran in the workspace (an implement step), whatever the workflow still carries.
       "an earlier implement step": async (t: Awaited<ReturnType<typeof setup>>, task: { workspaceId: string }) => {
         const earlier = t.steps(task.workspaceId)[0]!;
         t.db.set({ ...earlier, sk: `${String(earlier.sk)}-implement`, id: randomUUID(), workflowMode: "IMPLEMENT", status: "SUCCEEDED", fence: 99 });
+        return {};
+      },
+      // A legacy coding turn carries no workflowMode at all (review 2026-11-03): it still counts as code.
+      "a legacy coding turn with no mode": async (t: Awaited<ReturnType<typeof setup>>, task: { workspaceId: string }) => {
+        const earlier = t.steps(task.workspaceId)[0]!;
+        const legacy: Record<string, unknown> = { ...earlier };
+        delete legacy.workflowMode;
+        t.db.set({ ...legacy, sk: `${String(earlier.sk)}-legacy`, id: randomUUID(), status: "SUCCEEDED", fence: 98 });
         return {};
       },
     };

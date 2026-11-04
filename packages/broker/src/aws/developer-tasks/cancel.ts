@@ -57,6 +57,7 @@ export const BLOCKED_NOT_RUNNING = "This task is blocked, not running. To end it
 export const WAITING_NOT_RUNNING = "This task is waiting for a decision, not running, and it may hold unpublished code. To end it, use Close task (it checks for unpublished work first).";
 
 /** The modes of a task step that are planning only: every other mode (implement, review, checks, ...) ran, or may have run, on code. */
+// A task operation with no workflowMode is a legacy coding turn, and a publish pushed code: both count as code (review 2026-11-03).
 const PLANNING_MODES: ReadonlySet<string> = new Set(["UNDERSTAND", "PLAN", "PLAN_CRITIQUE"]);
 const SENT_BACK_FROM_CODE_REASONS: readonly string[] = [WORKFLOW_REVISE_PLAN_DECISION_REASON, WORKFLOW_REDIRECT_PLAN_DECISION_REASON, WORKFLOW_SPEC_REPLAN_DECISION_REASON];
 
@@ -70,7 +71,7 @@ async function mayHoldCode(deps: DeveloperTaskRouteDependencies, task: Developer
   if (workflow.candidate !== undefined || workflow.reviewBase !== undefined || workflow.verification !== undefined || (workflow.reviews?.length ?? 0) > 0
     || (workflow.verificationRetries?.length ?? 0) > 0 || (workflow.pullRequests?.length ?? 0) > 0 || workflow.feedbackReview !== undefined || workflow.program !== undefined) return true;
   if (workflow.decisions.some((decision) => SENT_BACK_FROM_CODE_REASONS.includes(decision.reason ?? ""))) return true;
-  return (await deps.actions.operations(task.workspaceId)).some((operation) => operation.kind === "task" && operation.workflowMode !== undefined && !PLANNING_MODES.has(operation.workflowMode));
+  return (await deps.actions.operations(task.workspaceId)).some((operation) => operation.kind === "publish" || (operation.kind === "task" && (operation.workflowMode === undefined || !PLANNING_MODES.has(operation.workflowMode))));
 }
 
 /** What a retry from a session tells the coder: the person's own words are not asked for. */
