@@ -413,9 +413,9 @@ describe("a trigger check that fails after the change was made", () => {
       expect(budget.status, JSON.stringify(budget.body)).toBe(200);
       expect(budget.body.disabledTriggers).toEqual([]);
       expect((await state(chainId)).monthlyBudgetUsd).toBe(5);
-      const lines = log.mock.calls.map(call => String(call[0])).filter(line => line.includes("chain.trigger_recheck_failed"));
+      const lines = log.mock.calls.map(call => String(call[0])).filter(line => line.includes("trigger_recheck.failed"));
       expect(lines).toHaveLength(2);
-      expect(JSON.parse(lines[0]!)).toMatchObject({ level: "warn", event: "chain.trigger_recheck_failed", chainId, error: "ThrottlingException" });
+      expect(JSON.parse(lines[0]!)).toMatchObject({ component: "broker", event: "trigger_recheck.failed", targetKind: "chain", targetId: chainId, error: "ThrottlingException" });
       expect(lines.join("")).not.toContain("secret detail");
     } finally {
       log.mockRestore();

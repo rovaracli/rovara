@@ -30,7 +30,7 @@ import {
 } from "../agents/approvals.js";
 import { orgAdmins } from "../agents/changes.js";
 import { lessSafeChanges } from "../agents/less-safe.js";
-import { holdingOwnerCap, jsonBody, markRequest, parseBody, waitingReplay, type AgentRouteDependencies } from "../agents/routes.js";
+import { holdingOwnerCap, jsonBody, logRecheckFailed, markRequest, parseBody, waitingReplay, type AgentRouteDependencies } from "../agents/routes.js";
 import { resolveAgent, type RecipeProblemsError } from "../agents/store.js";
 import {
   chainAccess, listVisibleChains, requireChainAccess, requireChainAccountable, requireChainBudgetAllowed, requireChainOwnerAllowed, setChainShares,
@@ -298,7 +298,7 @@ async function recheck(deps: ChainRouteDependencies, chain: ChainRecord): Promis
   try {
     return await deps.chainTriggers?.recheckTriggersForTarget(chain.orgId, { kind: "chain", chainId: chain.chainId }) ?? [];
   } catch (error) {
-    console.log(JSON.stringify({ component: "broker", level: "warn", event: "chain.trigger_recheck_failed", chainId: chain.chainId, error: error instanceof Error ? error.name : "unknown" }));
+    logRecheckFailed(deps, { kind: "chain", id: chain.chainId }, error);
     return [];
   }
 }

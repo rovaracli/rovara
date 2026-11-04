@@ -101,8 +101,9 @@ export function hideEmailAddresses(text: string): string {
     }
     const character = String.fromCodePoint(text.codePointAt(index)!);
     const next = index + character.length;
-    // A zero-width or format character right after an at sign is how a pull request text makes a mention inert (`user@\u200Dexample.test`): it is part of the spelling, not of the text around it.
-    if (folded.endsWith("@") && /^\p{Cf}$/u.test(character)) { index = next; continue; }
+    // A zero-width or other format character is invisible, so it is no part of what a person reads as an address: a pull request text makes a mention inert with one after the at sign
+    // (`user@\u200Dexample.test`), and one placed inside the domain would otherwise split the address. The folded text leaves them out; the replaced span still covers them.
+    if (/^\p{Cf}$/u.test(character)) { index = next; continue; }
     for (const piece of character.normalize("NFKC")) {
       for (let unit = 0; unit < piece.length; unit += 1) { starts.push(index); ends.push(next); }
       folded += piece;

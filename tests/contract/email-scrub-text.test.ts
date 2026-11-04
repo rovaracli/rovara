@@ -117,6 +117,20 @@ describe("hideEmailAddresses: an address made inert for GitHub", () => {
     expect(hideEmailAddresses(`maya${at}\u2060example.test and x${at}${zwj}y.test`)).toBe(`${EMAIL_HIDDEN} and ${EMAIL_HIDDEN}`);
   });
 
+  // F1: a format character anywhere in the address (the domain too) is part of its spelling.
+  it("hides an address with a zero-width character inside its domain, and all of it", () => {
+    expect(hideEmailAddresses(`user${at}exa${zwj}mple.test`)).toBe(EMAIL_HIDDEN);
+    expect(hideEmailAddresses(`user${at}example${zwj}.test`)).toBe(EMAIL_HIDDEN);
+    expect(hideEmailAddresses(`user${at}example.te${zwj}st`)).toBe(EMAIL_HIDDEN);
+    expect(hideEmailAddresses(`user${zwj}${at}example.test, u${at}\u00ADexample.test and x${at}y${zwj}.z${zwj}z.test.`)).toBe(`${EMAIL_HIDDEN}, ${EMAIL_HIDDEN} and ${EMAIL_HIDDEN}.`);
+  });
+
+  it("leaves text with format characters that is not an address alone", () => {
+    for (const text of [`react${at}18.${zwj}3.1`, `git${at}github${zwj}.com:org/repo.git`, `a${zwj}${at}${zwj}b`, `image${at}sha${zwj}256:abc123`, `emoji \u{1F468}${zwj}\u{1F469} and ${at}octo${zwj}cat`, `x ${at}${zwj} y.test`]) {
+      expect(hideEmailAddresses(text), text).toBe(text);
+    }
+  });
+
   it("leaves the inert forms of things that are not addresses alone", () => {
     for (const text of [`${at}${zwj}octocat and ${at}${zwj}scope/pkg`, `npm i react${at}${zwj}18.3.1`, `git clone git${at}${zwj}github.com:org/repo.git`, `see https://${zwj}example.test/${at}${zwj}maya/posts.html`, `a${at}${zwj}b`]) {
       expect(hideEmailAddresses(text), text).toBe(text);

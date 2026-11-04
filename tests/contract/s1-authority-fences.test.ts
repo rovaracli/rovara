@@ -98,6 +98,28 @@ for (const kind of ["agent", "chain"] as const) {
       });
     }
 
+    // F4: the access is lost in the race window of an archive of something already archived: there is no transaction to race, so the answer is the same 200 and nothing is written.
+    for (const loss of ACTOR_LOSSES) {
+      it(`an already archived ${kind} answers 200 and writes nothing when the archiving person loses access (${loss}) between the route and the store`, async () => {
+        const f = await fixture(kind, { archived: true });
+        const before = f.state();
+        const send = f.t.db.send.bind(f.t.db);
+        let written = 0, lost = false;
+        f.t.db.send = async command => {
+          // The first read of the resource after the route's own is the store's; the access is lost just before it.
+          if (command instanceof TransactWriteCommand) written += 1;
+          const reply = await send(command);
+          if (!lost && (command as { input?: { Key?: { pk?: string; sk?: string } } }).input?.Key?.pk === f.key.pk && (command as { input?: { Key?: { sk?: string } } }).input?.Key?.sk === f.key.sk) { lost = true; lose(f.t, loss); }
+          return reply;
+        };
+        const reply = await f.t.api(DEB, "POST", f.path + "/archive", { requestId: randomUUID() });
+        expect(lost).toBe(true);
+        expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+        expect(written).toBe(0);
+        expect(f.state()).toEqual(before);
+      });
+    }
+
     // L6: an archive of something already archived changes nothing, so it writes nothing: no update, no receipt, no event, and no transaction to refuse.
     it(`an archive of an already archived ${kind} writes nothing at all, with or without a request`, async () => {
       const f = await fixture(kind, { archived: true });
@@ -482,21 +504,21 @@ for (const kind of ["agent", "chain"] as const) {
 }
 
 describe("an agent's trigger check that fails after the change was made (L5)", () => {
-  it("answers the change that was made, not a 500, and logs a fixed event without the error's text", async () => {
+  it("answers the change that was made, not a 500, and logs a fixed event through the route dependencies' logger, without the error's text", async () => {
     const v = setupTriggerWorld();
     const agent = await v.triggerAgent("Triage bot", [{ kind: "person" }, { kind: "event" as const, source: "github" as const, type: "issues.opened" }], { budgetUsd: 20 });
     for (const who of [DANA, MAX]) fixtureActor(v.db, ORG_A, who);
     vi.spyOn(v.routeDeps.triggerHooks!, "recheckTriggersForTarget").mockRejectedValue(Object.assign(new Error("secret detail the log must not carry"), { name: "ThrottlingException" }));
-    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const logged: Array<{ event: string; detail: Record<string, unknown> }> = [];
+    v.routeDeps.log = (event, detail) => { logged.push({ event, detail }); };
     try {
       const moved = await v.agentCall(DANA, "PUT", `/v1/app/agents/${agent.agentId}/owner`, { owner: { kind: "member", developerId: MAX } });
       expect(moved.status, JSON.stringify(moved.body)).toBe(200);
       expect(moved.body["disabledTriggers"]).toBeUndefined();
       expect((await v.routeDeps.store.get(ORG_A, agent.agentId))?.owner).toEqual({ kind: "member", developerId: MAX });
-      const lines = log.mock.calls.map(call => String(call[0])).filter(line => line.includes("agent.trigger_recheck_failed"));
-      expect(lines).toHaveLength(1);
-      expect(JSON.parse(lines[0]!)).toMatchObject({ level: "warn", event: "agent.trigger_recheck_failed", agentId: agent.agentId, error: "ThrottlingException" });
-      expect(lines.join("")).not.toContain("secret detail");
+      const failed = logged.filter(entry => entry.event === "trigger_recheck.failed");
+      expect(failed).toEqual([{ event: "trigger_recheck.failed", detail: { targetKind: "agent", targetId: agent.agentId, error: "ThrottlingException" } }]);
+      expect(JSON.stringify(logged)).not.toContain("secret detail");
     } finally {
       vi.restoreAllMocks();
     }
