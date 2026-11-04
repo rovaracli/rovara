@@ -1,6 +1,7 @@
 // Part of the broker (split out of ../broker.ts): limits, the setup capture policy, the record and dependency types, route keys.
 
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
+import type { FixtureReadPort } from "../../test-env/fixture-lookup.js";
 import type { LinearReplyPort } from "../../rovara-code/linear-comments.js";
 import type { SlackAskDependencies } from "./ask-service.js";
 import type { DiagnosisCoreDependencies } from "../../diagnosis/light.js";
@@ -369,6 +370,8 @@ export interface AwsBrokerDependencies {
   agentTools?: { configure?: (base: AgentToolsDependencies) => AgentToolsDependencies };
   /** Test services (slice 1): the release's signed service image catalog (`releaseServiceCatalogSource`). Absent while the switch `tx` is off: nothing reads it. */
   serviceCatalog?: ServiceCatalogSource;
+  /** Test services (slice 3): the fixture store, read side (`FixtureStore` of test-env/fixture-store.ts over the S3 and DynamoDB adapters). Absent: no fake is approved, so a plan with a fake is refused and nothing is delivered. */
+  fixtureStore?: FixtureReadPort;
   /** Lane E: the MCP context sources' servers, Team record hooks and result keeper (`/v1/internal/context-tools*`). Absent: the routes answer that no sources are set up. */
   contextSources?: ContextSourcesRuntime;
   /** Learning v2 wiring (WA-2): the terminal-task hook's dependencies. Absent (the pilot default): no hook is registered and learning reads and writes nothing at a task's end. */

@@ -11,7 +11,7 @@
 //   - test services (slice 1): a proposal with DEPENDENCIES is proved only with the usage record the candidate check reported (the worker started them and ran the test checks sealed). The two steps `dependencies`
 //     ("start dependencies") and `dependency_usage` ("dependency usage check") are derived from that record by the broker; a check with no record proves nothing about them.
 // A report is never read from a worker for this: the worker's word is not asked, so it cannot be forged.
-import { TestEnvProveReportSchema, testServicesAwsUsageVerdict, testServicesUnknownCallCount, type AppProjectSummary, type ProjectCommand, type TestEnvProveReport, type TestEnvRefusal, type TestEnvironmentBody, type TestServicesUsageRecord, testEnvDigest } from "@agentx/contracts";
+import { TestEnvProveReportSchema, testServicesAwsUsageVerdict, testServicesFakeUsageVerdict, testServicesUnknownCallCount, type AppProjectSummary, type ProjectCommand, type TestEnvProveReport, type TestEnvRefusal, type TestEnvironmentBody, type TestServicesUsageRecord, testEnvDigest } from "@agentx/contracts";
 
 /** How old a passing setup check may be and still prove a proposal: the proposal's own life. */
 export const SETUP_CHECK_MAX_AGE_MS = 7 * 86_400_000;
@@ -136,9 +136,13 @@ export function dependencyStepsOf(environment: Pick<TestEnvironmentBody, "depend
   // FAILS the usage step: "could not be checked" is never a pass.
   const emulated = planned.filter((dependency) => dependency.backing.kind === "emulated");
   const awsClean = emulated.length === 0 || testServicesAwsUsageVerdict(usage, emulated.flatMap((dependency) => (dependency.backing.kind === "emulated" ? dependency.backing.awsServices : []))).ok;
+  // Slice 3: with a fake in the plan its ledger must have been read and clean too: a request the fake had no recording for (the tests asked for something the set does not hold), a call from anything but the check sandbox, or a
+  // ledger that could not be read FAILS the usage step.
+  const fakeIds = planned.filter((dependency) => dependency.backing.kind === "fake").map((dependency) => dependency.id);
+  const fakesClean = fakeIds.length === 0 || testServicesFakeUsageVerdict(usage, fakeIds).ok;
   return [
     started ? { step: "dependencies", status: "passed", durationMs: startMs } : { step: "dependencies", status: "failed", durationMs: startMs, failure: "dependency_start_failed" },
-    unknown === 0 && awsClean ? { step: "dependency_usage", status: "passed", durationMs: 0 } : { step: "dependency_usage", status: "failed", durationMs: 0, failure: "dependency_unexpected_call" },
+    unknown === 0 && awsClean && fakesClean ? { step: "dependency_usage", status: "passed", durationMs: 0 } : { step: "dependency_usage", status: "failed", durationMs: 0, failure: "dependency_unexpected_call" },
   ];
 }
 

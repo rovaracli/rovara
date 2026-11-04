@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): agent steps, the task operation parts, application selection, agent skills and tools.
 
+import { fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
 import { prepareSecondReview } from "../../rovara-code/second-review-start.js";
 import { learnedContextForOperation } from "./lessons-dispatch.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
@@ -528,10 +529,13 @@ export async function taskOperationParts(
   if (contextToolsOn && dependencies.contextSources?.prewarm !== undefined) await prewarmStageServers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, prewarm: dependencies.contextSources.prewarm }, orgId, workspace.projectName, input.workflowMode);
   // Test environment (wire-testenv): the plan of the environment this task pinned, for a verification run whose first commands are the environment's checks. Nothing while the switch is off.
   const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
-    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness })
+    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog, fixtureStore: dependencies.fixtureStore }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness })
     // Test services: a coding run is sent the plan too, but only when the task's environment has dependencies (the working sandbox gets them while the agent codes); nothing otherwise and nothing with `tx` off.
     : input.workflowMode === "IMPLEMENT" && task !== undefined
-      ? await testEnvImplementPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog }, { orgId, project: workspace.projectName, taskId: task.taskId }) : undefined;
+      ? await testEnvImplementPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog, fixtureStore: dependencies.fixtureStore }, { orgId, project: workspace.projectName, taskId: task.taskId }) : undefined;
+  // Test services (slice 3): the fixture sets the plan names are kept on the operation, so the `fixture-set` callback delivers those and no other set (and the capability has the action only then).
+  const fixtureDigests = fixtureDigestsOfPlan(testEnvironment);
+  if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;
   // SH30 + SR-3 (switch `sp`): the company recipes a setup draft is offered, recorded on this operation (id and revision) so the run's reported recipe sources are intersected with what was sent. Nothing while `sp` is off.
   const recipeOffers = input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? await setupRecipeOffersFor(dependencies, orgId, workspace.projectName) : [];
   if (recipeOffers.length > 0) operation.setupRecipeOffers = recordedOffersOf(recipeOffers);
@@ -558,6 +562,7 @@ export async function taskOperationParts(
       setupAgent: input.workflowMode === "SETUP_AGENT",
       // NH-1: the nightly run's one action, granted only to the verification operation of a nightly task.
       nightlyResult: isNightlyOperation(task, input.workflowMode),
+      fixtureDelivery: fixtureDigests.length > 0,
     }),
     payload: {
       conversationId: input.conversationId,

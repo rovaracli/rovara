@@ -30,7 +30,7 @@ export async function keepEvidenceAfterChecks(
   if (orgId === undefined) return undefined;
   let late = false;
   // Test environment (wire-testenv): the environment the task pinned, named in the pack (nothing while that switch is off). Inside the same bound as the rest.
-  const run = evidenceEnvironmentOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input.task, env).then((chosen) => keepEvidence({
+  const run = evidenceEnvironmentOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.fixtureStore === undefined ? {} : { fixtureStore: dependencies.fixtureStore }) }, input.task, env).then((chosen) => keepEvidence({
     actions: developerTaskActions(dependencies as AwsBrokerDependencies), store: { s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName }, markStored: (orgId) => markEvidenceStored({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, orgId), late: () => late,
     log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, taskId: input.task.taskId, operationId: input.operation.id, ...fields })),
   }, {

@@ -1,4 +1,5 @@
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
+import type { FixtureReadPort } from "../../test-env/fixture-lookup.js";
 import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { EvidenceErase } from "../../rovara-code/evidence-erase.js";
 import type { CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
@@ -123,6 +124,8 @@ export interface DeveloperApiConfiguration {
 export interface DeveloperRouteDependencies {
   /** Test services (slice 1): the release's signed service image catalog (`serviceCatalogSourceOf`). The setup draft's dependency candidates become proposed dependencies only with it; without it none are proposed. */
   serviceCatalog?: ServiceCatalogSource;
+  /** Test services (slice 3): the fixture store, read side. A fake is approved and planned only for a set it says is approved for the caller's company; without it none is. */
+  fixtureStore?: FixtureReadPort;
   /** Saved project images: the registry (store, sessions, ECR), only where the install's `sv` switch is on and it was installed. Without it the project's Environment panel routes do not exist. */
   savedEnv?: SavedEnvDeps;
   /**

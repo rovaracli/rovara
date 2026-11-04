@@ -274,7 +274,7 @@ export const EvidenceDependencySchema = z
     /** Tests that did not run because nothing backed this dependency. */
     testsNotRun: CountSchema.optional(),
     /** The backing this run used instead of the pinned one: the label and the other facts above describe what actually ran. */
-    fellBack: z.object({ from: z.enum(["local", "project_image", "emulated", "test_account"]), reason: z.enum(EVIDENCE_FALLBACK_REASONS) }).strict().optional(),
+    fellBack: z.object({ from: z.enum(["local", "project_image", "emulated", "test_account", "fake"]), reason: z.enum(EVIDENCE_FALLBACK_REASONS) }).strict().optional(),
     startedMs: z.number().int().min(0).max(86_400_000).optional(),
     usage: z.object({ requests: CountSchema, unmatched: CountSchema, faults: CountSchema }).strict().optional(),
   })

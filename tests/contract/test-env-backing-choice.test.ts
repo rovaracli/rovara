@@ -19,6 +19,8 @@ const rawCatalog = () => JSON.parse(readFileSync("environments/service-catalog/c
 function pinnedCatalog(change: (entries: ReturnType<typeof rawCatalog>["entries"]) => void = () => undefined): ServiceCatalog {
   const raw = rawCatalog();
   for (const entry of raw.entries) {
+    // Slice 3: a helper that runs from the worker's own image has no image to pin.
+    if ((entry as { workerImage?: boolean }).workerImage === true) continue;
     entry.image.digest = sha("a");
     entry.sbomRef = sha("b");
     entry.scan = { scannedAt: "2026-11-02T00:00:00.000Z", criticalOpen: 0, highOpen: 0 };
