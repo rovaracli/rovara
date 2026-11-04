@@ -33,7 +33,7 @@ import {
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { safeDisplayName } from "../developer/person-name.js";
 import { anchorTargetsOf } from "./anchors.js";
-import { newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
+import { closableSession, newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
 import { viewingNow } from "./followers.js";
 import { chosenOwnerNames, withChosenOwnerName } from "./owner-names.js";
 import type { AuditRuntime } from "../audit/outbox.js";
@@ -263,7 +263,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
     followers: session.followerCount,
     viewingNow: await viewingNow(deps, session, deps.now()),
-    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status, workflowBlocked }), ...(canMakeAgent ? ["make_agent" as const] : [])],
+    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status, workflowBlocked, closable: closableSession(session) }), ...(canMakeAgent ? ["make_agent" as const] : [])],
       // Merge's rule (pressMerge): the effective owner, a maintainer of the project (granted or inherited) or an org admin. A reader at `view` who is one of the last two still presses it (C59).
       ...(session.subject.kind === "task" && levelOf(access) === "view" && (access.projectRole === "maintainer" || access.orgAdmin) ? { mayMerge: true as const } : {}) },
     link: sessionLink(deps.origin, session.sessionId),

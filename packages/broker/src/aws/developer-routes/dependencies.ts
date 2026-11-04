@@ -37,6 +37,7 @@ import {
   CLOSED_TASK,
   cancelTask,
   cancelTaskFor,
+  closeTask,
   decideTaskWorkflow,
   loadOwnedTask,
   retryTaskWorkflowFor,
@@ -359,6 +360,11 @@ export function sessionReadDependencies(deps: DeveloperRouteDependencies, caller
     control: {
       cancelTask: async (task, requestId) => { const { nothingRunning } = await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); return { nothingRunning }; },
       retryWorkflow: async (task, requestId) => { await retryTaskWorkflowFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      // The task's own close, as the Slack button and the AI-tool close run it: the caller must be the task's owner (checked there), and the discard confirmation and the request id are the task's.
+      closeTask: async (task, input) => {
+        const closed = await closeTask(taskDeps, caller, task.taskId, { requestId: input.requestId, ...(input.discardUnpublished ? { discard_unpublished: true } : {}) });
+        return { closed: closed.closed, ...(closed.discardedUnpublished === undefined ? {} : { discardedUnpublished: closed.discardedUnpublished }), ...(closed.unpublished === undefined ? {} : { unpublished: closed.unpublished }), ...(closed.message === undefined ? {} : { message: closed.message }) };
+      },
       // Stop & redirect while the plan waits for approval: the caller's own request for changes, through the task's decision (their authority as a task owner is checked there).
       requestPlanChanges: async (task, input) => {
         // The decision keeps its own bound (500 characters); the planner is told the whole instruction (LR-2).

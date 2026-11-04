@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
-import { screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
@@ -22,7 +22,7 @@ function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor
  if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
  if (request.path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
  if (request.path.endsWith("/follow")) { session = sessionFixture({ you: { ...session.you, following: true } });return { status: 200, body: { following: true } }; }
- if (request.method === "POST" && /\/(stop|retry|take-over|agent)$/.test(request.path) && actionReply) return actionReply(request);
+ if (request.method === "POST" && /\/(stop|retry|close|take-over|agent)$/.test(request.path) && actionReply) return actionReply(request);
  return { status: 200, body: { session } };
  });
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
@@ -138,6 +138,26 @@ it("never says a stop was requested when the broker answered that nothing was ru
  expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/stop"))).toHaveLength(1);f.close();
 });
 
+it("closes the task only after a confirmation, asks again before discarding unpublished work, and says it is closed", async () => {
+ const base = sessionFixture(), answers = [
+  { status: 200, body: { session: sessionFixture(), closed: false, unpublished: [{ repository: "demo", reasons: ["worktree_changes"] }], message: "not closed" } },
+  { status: 200, body: { session: sessionFixture(), closed: true, discardedUnpublished: true } },
+ ];
+ const f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["close"] } }), async () => answers.shift()!);
+ fireEvent.click(await screen.findByRole("button", { name: "Close task" }));
+ expect(await screen.findByRole("dialog", { name: "Close this task?" })).toBeTruthy();
+ expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/close"))).toBe(false);
+ fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close task" }));
+ // Unpublished work: the list is shown and nothing was discarded.
+ expect(await screen.findByRole("dialog", { name: "Discard unpublished work?" })).toBeTruthy();
+ expect(screen.getByText("demo: worktree_changes")).toBeTruthy();
+ const closes = () => f.request.mock.calls.map(([request]) => request).filter(request => request.path.endsWith("/close"));
+ expect(closes()).toHaveLength(1);expect(closes()[0]!.body).not.toHaveProperty("discardUnpublished");
+ fireEvent.click(screen.getByRole("button", { name: "Discard it and close" }));
+ await screen.findByText("Task closed.");
+ expect(closes()).toHaveLength(2);expect(closes()[1]!.body).toMatchObject({ discardUnpublished: true });
+ expect((closes()[1]!.body as { requestId: string }).requestId).not.toBe((closes()[0]!.body as { requestId: string }).requestId);f.close();
+});
 it("does not carry a pending takeover into a different already-cached session", async () => {
  const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, owner: false, actions: ["take_over"] } }), async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["You will own this session."] } }));
  fireEvent.click(await screen.findByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");

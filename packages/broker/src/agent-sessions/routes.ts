@@ -29,7 +29,7 @@ import "../learning/home-source.js";
 import { changeAnywayOnSession } from "../rovara-code/change-anyway.js";
 import { pressMerge, registerMergeApprovals } from "../rovara-code/merge.js";
 import { registerCodeSettingsApprovals } from "../rovara-code/code-settings.js";
-import { stopSession } from "./stop.js";
+import { closeSession, stopSession } from "./stop.js";
 import { redirectSession } from "./redirect.js";
 import { askStatusFor, submitAsk, type AskDependencies } from "./ask.js";
 import { askTakeOver, registerSessionTakeOverApprovals } from "./take-over.js";
@@ -64,7 +64,7 @@ export interface SessionRouteDependencies extends SessionReadDependencies, Pick<
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|redirect|handoff|answers|change-anyway|merge))?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|close|redirect|handoff|answers|change-anyway|merge))?)?$/;
 const LOCAL_REGISTER_PATH = "/v1/app/sessions/local";
 const LOCAL_UPDATE_PATH = /^\/v1\/app\/sessions\/([^/]+)\/local\/updates$/;
 /** Plan 6 Task 20: `POST …/bindings` links a session to a Linear issue and `DELETE …/bindings/linear` lets it go (a path of its own, beside the local-session ones). */
@@ -289,6 +289,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     }
     // Rovara Code: a task that ended Answered, followed by a new task that makes the change anyway (202, like the app's start).
     if (control === "change-anyway") return new StatusReply(202, await changeAnywayOnSession(read, caller, sessionId, jsonBody(request)));
+    if (control === "close") return closeSession(read, caller, sessionId, jsonBody(request));
     return control === "stop" ? stopSession(read, caller, sessionId, jsonBody(request)) : retrySession(read, caller, sessionId, jsonBody(request));
   }
   if (messages !== undefined) {

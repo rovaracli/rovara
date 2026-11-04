@@ -99,6 +99,20 @@ export const SessionResponseSchema = z.object({
 
 export const SessionResponseReaderSchema = forwardReader(SessionResponseSchema);
 
+/**
+ * `POST /v1/app/sessions/{id}/close`: the task's own close (the one the Slack button and the AI-tool close run), as the page needs it. `closed: false` with `unpublished` means the workspace holds work that
+ * was never published and a close that discards it must be asked for again (`discardUnpublished: true`); `message` says why a task is not closed yet and what to do next.
+ */
+export const SessionCloseResponseSchema = z.object({
+  session: SessionViewSchema,
+  closed: z.boolean(),
+  discardedUnpublished: z.boolean().optional(),
+  unpublished: z.array(z.object({ repository: z.string(), reasons: z.array(z.string()) }).strict()).optional(),
+  message: z.string().optional(),
+}).strict();
+
+export const SessionCloseResponseReaderSchema = forwardReader(SessionCloseResponseSchema);
+
 /** `GET /v1/app/sessions/{id}/sections/{seq}/task`: a chain step's task, as the task view shows it. */
 export const SessionStepTaskResponseSchema = z.object({ task: DeveloperTaskViewSchema }).strict();
 
