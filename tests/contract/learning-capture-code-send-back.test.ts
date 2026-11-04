@@ -623,10 +623,10 @@ describe("code send-back needs the project access starting a task needs (0.4.27)
       const refused = await takenBy("none", { findings: true });
       await expectRefusedUnchanged(refused, () => refused.fixWith(tasksOff(denied), refused.who), noAccess);
     });
-    it("accepting every finding is not a send-back: no access is not asked for", async () => {
+    it("accepting every finding starts the next step, so it needs the same access (S2, any path; this replaces 'no access is not asked for')", async () => {
       const t = await takenBy("none", { findings: true });
       const runs = codingRuns(t.harness, t.workspaceId).length;
-      await t.fixWith(denied, t.who, "ACCEPT").catch((error: unknown) => { expect(error).not.toMatchObject({ code: "PROJECT_ACCESS_DENIED" }); });
+      await expect(t.fixWith(denied, t.who, "ACCEPT")).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
       expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs);
     });
   });

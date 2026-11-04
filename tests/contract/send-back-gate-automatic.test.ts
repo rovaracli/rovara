@@ -269,3 +269,76 @@ describe.each([["planning", "PLAN"], ["checks", "CHECKS"], ["reviews", "REVIEW"]
     expect(t.meta(round.taskId).workflow.blockReason ?? "").not.toContain("Rovara didn't start");
   });
 });
+
+describe("review fixes: a refusal can be recovered, parked rows are not resumed, a Slack outage defers", () => {
+  const review = (t: Awaited<ReturnType<typeof world>>, taskId: string, body: Record<string, unknown>) => t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/review`, { requestId: randomUUID(), instructions: "Review.", ...body });
+  const codeOf = (reply: { body: Record<string, unknown> }) => (reply.body.error as { code?: string } | undefined)?.code;
+
+  it("H3: a parked REVIEW row is not resumed by a presser who has no project access: refused first, nothing starts", async () => {
+    const t = await world();
+    const round = await t.stepRound("REVIEW");
+    const row = t.rows(round.taskId)[0]!;
+    t.h.db.set({ ...row, taskAccessPausedAt: "2026-10-25T12:00:00.000Z" });
+    t.notAMember();
+    const before = t.operations(round.workspaceId).length;
+    const reply = await review(t, round.taskId, { expectedRevision: t.meta(round.taskId).workflow.revision, candidateDigest: candidate.digest });
+    expect(codeOf(reply)).toBe("PROJECT_ACCESS_DENIED");
+    expect(t.operations(round.workspaceId)).toHaveLength(before);
+    expect(t.rows(round.taskId)[0]).toMatchObject({ taskAccessPausedAt: "2026-10-25T12:00:00.000Z" });
+  });
+
+  it("H4: a CI-fix round refused while waiting for the merge has a way back: once access returns, Retry puts the task back to waiting and wakes tracking", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    t.notAMember();
+    await t.sweep();
+    const blocked = t.meta(round.taskId).workflow;
+    expect(blocked).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED" });
+    expect(blocked.blockReason).toContain("Retry");
+    // Access returns.
+    t.h.channelMembers.mockImplementation(async (request) => ({ ok: true, memberOf: request.slackUserId === MAYA.slackUserId ? request.channelIds : [] }));
+    const retried = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${round.taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Go on.", expectedRevision: blocked.revision });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(t.meta(round.taskId).workflow).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", revision: blocked.revision + 1 });
+    expect(t.meta(round.taskId).workflow.blockReason).toBeUndefined();
+  });
+
+  it("H4: while access is still missing, that Retry is refused and the task stays blocked", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    t.notAMember();
+    await t.sweep();
+    const blocked = t.meta(round.taskId).workflow;
+    const retried = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${round.taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Go on.", expectedRevision: blocked.revision });
+    expect(codeOf(retried)).toBe("PROJECT_ACCESS_DENIED");
+    expect(t.meta(round.taskId).workflow.state).toBe("BLOCKED");
+  });
+
+  it("M6: when Slack cannot be reached, a queued step is deferred without using up its tries, and runs once Slack answers", async () => {
+    const t = await world();
+    const round = await t.stepRound("PLAN");
+    t.h.channelMembers.mockImplementation(async () => ({ ok: false } as never));
+    const before = t.operations(round.workspaceId).length;
+    await t.sweep();
+    expect(t.operations(round.workspaceId)).toHaveLength(before);
+    const row = t.rows(round.taskId)[0]!;
+    expect(row.attempts ?? 0).toBe(0);
+    expect(row.taskAccessPausedAt).toBeUndefined();
+    expect(t.meta(round.taskId).workflow.state).toBe("READY");
+    expect(t.refused()).toEqual([]);
+  });
+
+  it("M4: a plan-grounding check that is already running is not cut off when the owner loses access; one that has not started is not started", async () => {
+    const t = await world();
+    const round = await t.stepRound("PLAN");
+    // A held plan whose check has not started: refused, and the hold ends as a plan that could not be checked, with the row removed.
+    const task = t.meta(round.taskId);
+    const running = { ...task.workflow, state: "RUNNING" as const, revision: task.workflow.revision + 1 };
+    t.h.db.set({ ...task, workflow: running, planGrounding: { artifactId: "plan-v1", version: 1, artifactSha256: "a".repeat(64), artifactCreatedAt: NOW, planOperationId: randomUUID(), attempt: 1 } });
+    t.h.db.set((workflowDispatchItem("state", round.taskId, running.revision, "GROUNDING", "a".repeat(64), NOW) as { Put: { Item: Record<string, unknown> } }).Put.Item);
+    t.notAMember();
+    await t.sweep();
+    expect(t.meta(round.taskId).planGrounding).toBeUndefined();
+    expect(t.refused().some((event) => (event.facts as { path?: string }).path === "queued_dispatch")).toBe(true);
+  });
+});

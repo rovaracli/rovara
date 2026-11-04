@@ -14,13 +14,18 @@ import { keptProposedIds } from "./workflow-inputs.js";
 import { startTaskWorkflowReviewFromSystem } from "./workflow-review.js";
 import { startTaskWorkflowPlanFromSystem, startTaskWorkflowUnderstandFromSystem } from "./workflow-starts.js";
 import { startTaskWorkflowPublicationFromSystem } from "./publication.js";
+import { requireProjectSendBackRole } from "../../developer/task-access.js";
 
 export async function resumeParkedTaskDispatch(
   deps: DeveloperTaskRouteDependencies,
   caller: DeveloperCaller,
   access: AuthorizedTask,
   request: { requestId: string; expectedRevision?: number | undefined; candidateDigest?: string | undefined },
+  /** False only for Rovara's own AUTOFIX retry, which is stopped by its own owner check (OWN) instead of a person's press. */
+  personPressed = true,
 ): Promise<{ task: DeveloperTaskView } | undefined> {
+  // S2 (review H3): resuming a parked dispatch starts work for this person, so the send-back's project access rule and the archive check come first, whoever calls this.
+  if (personPressed) await requireProjectSendBackRole(deps, access.task, caller);
   // A task with no People sidecar is paused at revision 0 (only a project viewer's creator is, Plan 2, Task 21).
   {
     const resumed = await resumeTaskDispatch(deps, {

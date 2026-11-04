@@ -16,6 +16,7 @@ export async function stopIfOwnerRefused(deps: DeveloperTaskRouteDependencies, t
   const refusal = await ownerWorkRefusal(deps, task);
   if (refusal === undefined) return false;
   const at = iso(deps);
+  // Audited before the write, so a race that someone else wins still leaves the refusal on record (nothing ran from this path either way).
   await recordWorkRefused(deps.learningAudit, (entry) => log(deps, entry), { orgId: String(task.orgId), taskId: task.taskId, path, reason: refusal.reason, occurrence: `${path}#${String(workflow.revision)}`, now: at });
   try {
     await deps.actions.transact([{ Update: {

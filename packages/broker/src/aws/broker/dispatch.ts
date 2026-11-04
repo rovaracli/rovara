@@ -322,7 +322,9 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
     // S2 (any path): every other queued step runs as the task's owner, so it meets the send-back's project access rule and the archive check now. A step the owner may not have started is not
     // started: the task blocks where it stands with a plain reason, the row goes (nothing retries it), and the refusal is audited. IMPLEMENT asks the same inside its own start (its path names the round).
-    if (item.kind !== "IMPLEMENT" && await stopIfOwnerRefused(routeDependencies, task, workflow, "queued_dispatch")) { await remove(); return "STALE"; }
+    // GROUNDING asks inside its own start (a check already running is not cut off: `runGroundingStep`), and CHECKS after a round was admitted goes on with it.
+    const underway = item.kind === "GROUNDING" || (item.kind === "CHECKS" && workflow.e2e?.currentRoundId !== undefined);
+    if (item.kind !== "IMPLEMENT" && !underway && await stopIfOwnerRefused(routeDependencies, task, workflow, "queued_dispatch")) { await remove(); return "STALE"; }
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.
     let outcome: "STARTED" | "DUPLICATE" | "STALE" | "WAITING";
     if (item.kind === "CHECKS") {
@@ -423,6 +425,13 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
         }
       }
       return "RETRY";
+    }
+    // S2 (review M6): the owner's access is checked live, and for an owner whose access comes from a Slack channel that needs Slack. When Slack cannot be reached nothing is started (fail closed) and the row is
+    // looked at again later without using up its tries, as a row waiting for its machine is: an outage must not block the task with "could not start".
+    if (error instanceof AgentXError && error.code === "SLACK_UNAVAILABLE") {
+      console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_deferred_slack", taskId: item.taskId, kind: item.kind }));
+      await waitForMachine(dependencies, item);
+      return "DISPATCHED";
     }
     // Plan 3, Task 16: the company or the project no longer allows the model this step needs. Trying again cannot change that, so the task is
     // blocked at once with the refusal's own words, which the owner can read.

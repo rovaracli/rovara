@@ -17,19 +17,21 @@ Status: GATED (SB or OWN), NEW-WORK (a start by a live person; the start's own r
 |---|---|
 | Send back to coding (`sendTaskWorkflowBackToCoding`, workflow-coding.ts) | SB (f93233d52, 6068a38f2) |
 | Fix on findings (`resolveTaskWorkflowFindings` FIX) | SB |
-| Accept all findings, next step is coding (`resolveTaskWorkflowFindings`) | SB + CG (F27-5) |
+| Accept all findings, whatever the next step is: coding, a review, the pull request push (`resolveTaskWorkflowFindings`, `startAcceptedStep`) | SB + CG at the press (F27-5, review H2); the start itself asks OWN for the owner (`direct_start`) |
 | Approve fix of PR review comments (`submitWorkflowFeedbackDecision` APPROVE, feedback-review.ts) | SB + CG (SB-2) |
 | Retry review of a failed PR-feedback review (`retryTaskWorkflowFeedbackReview`, feedback-capture.ts) | SB |
 | Any person's Retry of any step (`retryTaskWorkflow`, workflow-retry.ts: plan, understand, plan check, verify, review, publication, CI fix and branch sync, coding, design resolve; also the page's application-round retry and the session Retry) | SB + CG at the one entry (skipped only for Rovara's own AUTOFIX retry, row C) |
 | CI-fix / branch-sync Retry (`retryCiFix`); Retry of coding (`retryWorkflowImplementation`, also reached by redirect restart) | SB (direct, as well as via the entry) |
 | Plan decision: approve, or request changes (`decideTaskWorkflow`, decide.ts) | SB at the point a run would start; a decision that only ends the task (reject, answered) starts nothing and is not gated |
-| Continue a task (`continueTask`, continue.ts) | SB |
+| Continue a task (`continueTask`), go on as a normal task (`continueAsTask`, review M2) (continue.ts) | SB |
 | Open a pull request for a plain task (`openPullRequest`, close.ts) | SB |
 | Start the code review by hand (`startTaskWorkflowReview`) | SB |
 | Publication retry (`retryTaskWorkflowPublication`) | SB, ahead of the step's own state checks |
+| Resuming a parked dispatch from any person's press (`resumeParkedTaskDispatch`, access-resume.ts; manual review start, Retry, publication retry) | SB first, inside the function (review H3), so no caller can resume a parked row ahead of the gate |
 | Revise the plan from a live message (`reviseTaskPlan`, live-steer-revise.ts) | SB |
 | Spec change replan (`replanForSpecChange`, spec-replan.ts) | SB |
 | Stop & redirect: planning restart, plan revision, coding restart, send-back (redirect-restart.ts, `currentTask`) | SB for all four, plus the phase-1 check at redirect-runtime.ts:109 (SB-1) |
+| Recovery after a refusal: Retry at the merge wait (`retryCiFix` accepts a "Rovara didn't start" block, review H4) | SB, then back to WAITING and tracking woken (a PR-feedback critic that was still collecting starts again) |
 | Retry canvas closeout (`retryTaskCanvasCloseout`) | N/A: re-drives the archive of a finished task; no agent work |
 
 ## B. A person starts a new task or run: NEW-WORK (the start is the gate)
@@ -51,9 +53,16 @@ Status: GATED (SB or OWN), NEW-WORK (a start by a live person; the start's own r
 | IMPLEMENT dispatch: CI, conflict and review-comment fix rounds, and a custom sequence's next coding step (`startTaskWorkflowImplementationFromSystem`) | CG, OWN (paths `ci_fix_round`, `conflict_round`, `feedback_round`, `program_step`) |
 | PR-feedback critic run from a GitHub event (`startTaskWorkflowFeedbackReviewFromWebhook`) | CG, OWN (path `feedback_review`) |
 | Rovara's own look, send-back and retry on a blocked step (AUTOFIX: `runAutofixDispatch`) | CG, OWN (path `autofix`): the blocked step stands for a person with the ask "only a person can fix this"; the row goes; audited. This replaces the 0.4.27 rule that Rovara's own send-back still ran for an owner who lost access |
-| Starts that follow a human's yes and run as the owner: `resumeTaskAfterSpendApproval`, `resumeAfterRunLimitApproval`, `startAcceptedStep` after a gated decision | CG + the approver's own authority. The step they resume is one the gated paths above already admitted; a lost-access owner is stopped at the next queued dispatch (row 1) and at the model-key mint. Kept out of this change on purpose: they sit in the spend and budget-authority flows other lanes (S1, admin-v11) are editing |
+| Understand started straight from a person's answer to its questions (`startTaskWorkflowUnderstandFromSystem`, via `startUnderstanding`), the plan check after a plan decision, the reviews and the push after a gated press (`startAcceptedStep`) | OWN inside each start (path `direct_start`), judged by the OWNER's access (`ownerCheckAccess`), not the presser's (review H1, H2, M3) |
+| Resume after a spend approval (`resumeTaskAfterSpendApproval`, continue.ts; held first dispatch, run-limit start, budget retry, agent advance, plain continue) | CG + one read-only OWN check at the top (path `spend_resume`, review M1): the approval stands, the task keeps its pause, nothing runs for an owner without access. Flagged hunk in the spend flow: 7 lines |
+| Each step of an agent run (roster, chain, process runs; `agentRunHostOf.requireCreator`, model-access.ts) | CG + OWN per step (path `agent_step`, review M5): the engine ends the run FAILED with the plain reason; the person's session Retry is the way on |
+| Plan grounding (`runGroundingStep`) | OWN before the check starts only (review M4); a check already running is not cut off; a refusal ends the hold as a plan that could not be checked |
 | Model key mint (`model-access.ts`: `requireOrgOpenFor`, `requireCreatorStillMember`, the task's work authority) | Per model call: a removed owner or a closed company is refused (defence in depth under every row) |
 | Sweeps that only read, end or release (operation_end, release, milestones, reconcile) | N/A: start nothing |
+
+Slack dependency (review M6): an owner whose access comes from a Slack channel needs Slack for the check. If Slack cannot be reached, a queued dispatch is deferred without using its tries (`workflow.dispatch_deferred_slack`) and runs when Slack answers; a direct start or a person's press gets the retryable SLACK_UNAVAILABLE; AUTOFIX looks again each minute (its own bounded count).
+
+Operator path (review L3): the admin E2E replay runs as the task's owner for a project administrator who pressed it; it carries the administrator's authority and is not gated by the owner's project access. Left as is.
 
 ## D. Behaviour changes this replaces (tests updated; each says "this replaces")
 

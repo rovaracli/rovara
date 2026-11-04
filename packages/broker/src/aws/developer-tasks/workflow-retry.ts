@@ -27,6 +27,7 @@ import {
   type E2EApplicationSelectionRecord,
   workflowVerificationPosition,
   isCiFixBlockReason,
+  isStepNotRunReason,
   isBranchConflictAskReason,
   isBranchSyncGiveUpReason,
 } from "@agentx/contracts";
@@ -142,7 +143,7 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
     if (priorCiFixRetry.actorId !== access.actorId) throw agentXError("IDEMPOTENCY_CONFLICT", "this retry request ID was already used by someone else");
     return { task: await taskView(deps, task, { events: 0, details: false }) };
   }
-  const resumed = await resumeParkedTaskDispatch(deps, caller, access, request);
+  const resumed = await resumeParkedTaskDispatch(deps, caller, access, request, automatic === undefined);
   if (resumed !== undefined) return resumed;
   if (priorRecovery !== undefined) {
     return { task: await taskView(deps, task, { events: 0, details: false }) };
@@ -381,7 +382,7 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
   // An archived project takes no new work: a CI fix or branch sync Retry starts agent work, so it is refused before that branch is taken (not only after it).
   if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   // Plan 6 Task 15: a CI fix that waited for a person (suggest), ran out of rounds or changed nothing goes on at the owner's Retry.
-  if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED" && (isCiFixBlockReason(task.workflow.blockReason) || isBranchConflictAskReason(task.workflow.blockReason) || isBranchSyncGiveUpReason(task.workflow.blockReason))) return retryCiFix(deps, caller, access, request);
+  if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED" && (isCiFixBlockReason(task.workflow.blockReason) || isBranchConflictAskReason(task.workflow.blockReason) || isBranchSyncGiveUpReason(task.workflow.blockReason) || isStepNotRunReason(task.workflow.blockReason))) return retryCiFix(deps, caller, access, request);
   // A lifecycle restart is new agent work, unlike Continue or an existing workflow decision.
   // Contributor intentionally checks only archive here; authorizeTaskAction owns the live role check.
   await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");

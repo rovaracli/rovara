@@ -281,6 +281,8 @@ export async function startTaskWorkflowReviewFromSystem(
     || (workflow.verification.results.length === 0 && !(workflow.verification.reviewOnly === true && workflowIsReviewOnly(workflow.checkPolicy)))
     || workflow.verification.results.some((result) => result.status !== "PASS")) return "STALE";
   await creatorGuard(deps, task);
+  // S2: the reviews also start straight after a gated press (`startAcceptedStep`, access-resume), so the owner's access is asked at the start itself.
+  if (await stopIfOwnerRefused(deps, task, workflow, "direct_start")) return "STALE";
   // Plan 6 Task 16: a review of a round Rovara decided itself is paid work, so the autonomy is read again first.
   if (await stoppedByLoweredAutonomy(deps, task, workflow)) return "STALE";
   const dispatchAccess = await systemTaskAccess(deps, task);

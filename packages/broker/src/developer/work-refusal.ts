@@ -14,20 +14,20 @@ import { effectiveTaskOwner, type DeveloperTaskRecord } from "./task-records.js"
 /** Why work was refused, as a fixed word for the audit event. */
 export type WorkRefusalReason = "owner_removed" | "no_project_access" | "viewer" | "project_archived" | "project_inactive" | "other_org";
 /** Where it was refused, as a fixed word for the audit event. */
-export type WorkRefusalPath = "ci_fix_round" | "feedback_round" | "conflict_round" | "program_step" | "feedback_review" | "queued_dispatch" | "autofix";
+export type WorkRefusalPath = "ci_fix_round" | "feedback_round" | "conflict_round" | "program_step" | "feedback_review" | "queued_dispatch" | "direct_start" | "agent_step" | "spend_resume" | "autofix";
 
 export interface WorkRefusal { reason: WorkRefusalReason; message: string }
 
 /** What a task shows when a step was not started because its owner may no longer run work in the project. No names. */
-export const FIX_NOT_RUN_NO_ACCESS = `${WORKFLOW_NOT_RUN_PREFIX} this step: the person this task runs as no longer has the project access starting a task needs, so nothing was run. Someone with access can go on from here.`;
-export const FIX_NOT_RUN_ARCHIVED = `${WORKFLOW_NOT_RUN_PREFIX} this step: the project is archived, so nothing was run. Restore the project, or take over on GitHub.`;
+export const FIX_NOT_RUN_NO_ACCESS = `${WORKFLOW_NOT_RUN_PREFIX} this step: the person this task runs as no longer has the project access starting a task needs, so nothing was run. When someone with project access presses Retry, Rovara goes on.`;
+export const FIX_NOT_RUN_ARCHIVED = `${WORKFLOW_NOT_RUN_PREFIX} this step: the project is archived, so nothing was run. Restore the project, then press Retry.`;
 
 /**
  * Whether the task's owner may still have Rovara start work for them: the same rule a person's send-back meets (a company owner or admin, or a role that may start tasks, in a project that is
  * not archived). Undefined when they may. A refusal answers for access and archive only; a read that fails or Slack being unreachable throws, and the caller's own retry (bounded) goes on.
  * `checkAccess` of `deps` is the owner's own project check.
  */
-export async function ownerWorkRefusal(deps: Pick<DeveloperTaskRouteDependencies, "checkAccess" | "documentClient" | "tableName" | "orgId">, task: DeveloperTaskRecord): Promise<WorkRefusal | undefined> {
+export async function ownerWorkRefusal(deps: Pick<DeveloperTaskRouteDependencies, "checkAccess" | "ownerCheckAccess" | "documentClient" | "tableName" | "orgId">, task: DeveloperTaskRecord): Promise<WorkRefusal | undefined> {
   const owner = effectiveTaskOwner(task);
   // A project's system owner is no person with a role: its standing is the creator check's (`systemOwnerStands`).
   if (isSystemOwnerId(owner.developerId) || task.orgId === undefined) return undefined;
@@ -36,7 +36,9 @@ export async function ownerWorkRefusal(deps: Pick<DeveloperTaskRouteDependencies
   const role = response.Item?.role;
   const orgRole: OrgRole = role === "owner" || role === "admin" || role === "auditor" ? role : "member";
   try {
-    await requireProjectSendBackRole(deps, task, { developerId: owner.developerId, orgId: task.orgId, orgRole });
+    // The OWNER's own project access: `ownerCheckAccess` when the dependencies know how to ask as the owner (a person pressing a button is not the owner), else the call's own check (dispatch dependencies are the owner's already).
+    const asOwner = deps.ownerCheckAccess === undefined ? deps : { ...deps, checkAccess: deps.ownerCheckAccess(task) };
+    await requireProjectSendBackRole(asOwner, task, { developerId: owner.developerId, orgId: task.orgId, orgRole });
     return undefined;
   } catch (error) {
     if (!(error instanceof AgentXError)) throw error;

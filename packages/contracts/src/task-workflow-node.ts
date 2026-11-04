@@ -1285,6 +1285,20 @@ export function stopWorkflowStepNotRun(currentInput: unknown, reason: string, no
 }
 
 /**
+ * S2 (review H4): the way back from `stopWorkflowStepNotRun` at the merge wait. A person with access presses Retry: WAIT_FOR_MERGE/BLOCKED with a "Rovara didn't start" reason becomes WAITING again, so the next CI,
+ * conflict or review-comment event drives Rovara as before (the rounds already used stay counted). Refused for any other block.
+ */
+export function resumeWorkflowAfterNotRun(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "BLOCKED" || !isStepNotRunReason(current.blockReason)) {
+    throw new WorkflowTransitionError("the workflow is not waiting for a step that was not started to be retried");
+  }
+  const { blockReason: _blockReason, ...rest } = current;
+  void _blockReason;
+  return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", updatedAt: now });
+}
+
+/**
  * A CI fix round stops with a plain reason a person has to act on: Rovara was told to wait (suggest), the rounds are used up, or the round changed nothing. WAIT_FOR_MERGE/WAITING (or the fix
  * itself, IMPLEMENT/RUNNING) becomes WAIT_FOR_MERGE/BLOCKED with `reason`, which must be one of the CI fix texts; the fix's marks are dropped. The pull requests stay followed.
  */
