@@ -521,7 +521,7 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
         return exported.success && exported.data.status === "READY";
       },
       readArtifactText: async (key) => { const bytes = await readStoredBytes(dependencies, key, 64 * 1024 + 1); return bytes?.toString("utf8"); },
-      recycleWorker: (current) => recycleDriftedWorker(ec2Sessions, current.workspaceId),
+      recycleWorker: (current) => recycleDriftedWorker(ec2Sessions(), current.workspaceId),
       // Setup and test health (SH28): undefined while the `nh` switch is off.
       ...(blockedByEnvironment === undefined ? {} : { blockedByEnvironment }),
       ...fixSetupDependencies(dependencies),
