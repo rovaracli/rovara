@@ -125,7 +125,7 @@ export interface FakeSlackUser { userId: string; teamId?: string; name: string; 
 /** Slack's OpenID Connect and Web API, as far as the sign-in uses them. */
 /** `channelInfo`: what conversations.info answers per channel ID (no `isPrivate` leaves is_private out); any other ID is channel_not_found.
  * conversations.list lists the same channels in one page, each with is_private (false when `isPrivate` is left out). */
-export function fakeSlack(options: { users: FakeSlackUser[]; channels?: Record<string, string[]>; channelInfo?: Record<string, { name: string; isPrivate?: boolean }>; scopes?: string[]; now?: () => number }) {
+export function fakeSlack(options: { users: FakeSlackUser[]; channels?: Record<string, string[]>; channelInfo?: Record<string, { name: string; isPrivate?: boolean; /** Extra fields of Slack's channel object (is_im, is_ext_shared, ...); `name` may be dropped for a DM. */ raw?: Record<string, unknown> }>; scopes?: string[]; now?: () => number }) {
   const issuedAt = () => Math.floor((options.now ?? Date.now)() / 1000);
   const signer = signingKey();
   const codes = new Map<string, { user: FakeSlackUser; nonce: string; redirectUri: string; teamId: string; idToken?: string }>();
@@ -185,7 +185,7 @@ export function fakeSlack(options: { users: FakeSlackUser[]; channels?: Record<s
       const id = url.searchParams.get("channel") ?? "";
       const info = options.channelInfo?.[id];
       if (info === undefined) return Response.json({ ok: false, error: "channel_not_found" });
-      return Response.json({ ok: true, channel: { id, name: info.name, ...(info.isPrivate === undefined ? {} : { is_private: info.isPrivate }) } });
+      return Response.json({ ok: true, channel: { id, name: info.name, ...(info.isPrivate === undefined ? {} : { is_private: info.isPrivate }), ...(info.raw ?? {}) } });
     }
     return undefined;
   };
@@ -398,7 +398,7 @@ export function identityHarness(options: {
   /** GitHub sign-in (cloud installs only): the fake GitHub's users; unlocking the trial is wired as the Lambda wires it. */
   github?: { users: FakeGithubUser[] };
   slackUsers?: FakeSlackUser[]; oidcUsers?: FakeOidcUser[]; channels?: Record<string, string[]>;
-  channelInfo?: Record<string, { name: string; isPrivate?: boolean }>;
+  channelInfo?: Record<string, { name: string; isPrivate?: boolean; raw?: Record<string, unknown> }>;
   slackCredentials?: { clientId?: string; clientSecret?: string };
   /** The State table, where orgs and membership live; a fresh one when absent. */
   state?: FakeDynamoDb;

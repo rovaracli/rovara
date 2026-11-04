@@ -28,7 +28,8 @@ import type { SecondPersonPort } from "../org/test-environment.js";
 import {
   allowedRetention, checkRetentionChange, slackScopeAllowed, type CompanyLocks, type RecordSourceKind, type SlackScope, type TeamRecordEdition,
 } from "./edition.js";
-import { retentionRefusal } from "./retention.js";
+import { exceedsRetention, retentionRefusal } from "./retention.js";
+import { classifySlack, parseSlackScope, type SlackFacts, type TrackerPlaceCheck } from "./source-places.js";
 import { auditRecordSourceAdded, auditRecordSourceChangeDecided, auditRecordSourceChangeProposed, auditRecordSourceChanged, auditRecordSourceRemoved } from "./audit.js";
 import { closeScope } from "./item-head.js";
 import { DEFAULT_WORK_BUDGET, tombstoneRows } from "./scope-work.js";
@@ -48,6 +49,10 @@ export interface SourceRouteDependencies {
   projectRepositories(orgId: OrgId, project: string): Promise<readonly number[] | undefined>;
   /** The company's retention ceiling. Absent: none is set. A read that throws refuses the write. */
   locks?(orgId: OrgId): Promise<CompanyLocks | undefined>;
+  /** Whether this Slack workspace is bound to the company (the same binding the Slack tap resolves). Absent or a throw: a Slack place cannot be checked, so nothing is added. */
+  slackTeamBound?: (orgId: OrgId, teamId: string) => Promise<boolean>;
+  /** Whether a connected Linear or Jira app of the company lists the place, read live. Absent (the install has no connections): such a place is never accepted. */
+  trackerPlace?: TrackerPlaceCheck;
   /** The source keys the learning loop paused (for the admin view). */
   pausedSources?(orgId: OrgId, project: string): Promise<readonly string[]>;
   newId?(): string;
@@ -70,6 +75,8 @@ export interface SourceWriteContext {
   secondPerson?: SecondPersonPort;
   /** Who may approve now. Absent: a less-safe change cannot be made. */
   roster?(scope: { orgId: OrgId; project: string }): Promise<ApproverRoster>;
+  /** What Slack says a channel is, read fresh: its facts, `"none"` when Slack does not know it, `undefined` (or a throw) when it could not be read. Absent: no Slack place can be checked. */
+  slackChannel?: (teamId: string, channelId: string) => Promise<SlackFacts | "none" | undefined>;
   /** Throws REAUTH_REQUIRED unless the caller signed in within the last ten minutes. */
   freshSignIn(): Promise<void>;
 }
@@ -88,6 +95,8 @@ const WORDS = {
   notOffered: "That retention isn't offered for this source.",
   ceiling: "Your company doesn't allow that much retention for this source.",
   second: "A different eligible person has to approve this.",
+  connect: "Slack Connect channels can't be used as a source.",
+  directMessages: "Direct messages and group messages can't be used as a source in this edition.",
   rejecter: "Only the person who made this change, or someone who can approve it, can reject it.",
   eligibility: "Rovara could not check who may approve this. Try again.",
   audit: "This change needs the audit ledger.",
@@ -96,12 +105,15 @@ const WORDS = {
 } as const;
 /** An add is refused while the deletion of the same place is still queued: answered with its own code (route-local, like the two above). */
 class RemovalRunning extends Error {}
+/** A place the edition's rules never allow (Slack Connect; a DM in Public): answered 422 with its own route-local code, like the two above. */
+class NotAllowed extends Error {}
 const removalRunningReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This place is still being cleared. Try again in an hour." } });
+const notAllowedReply = (error: NotAllowed): RecordRouteReply => ({ status: 422, body: { code: "SOURCE_NOT_ALLOWED", message: error.message } });
 const invalid = (message: string = WORDS.invalid) => agentXError("CONFIG_INVALID", message);
 const stale = (message: string = WORDS.stale) => agentXError("CHANGE_STALE", message);
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", WORDS.unavailable);
 
-const KINDS_WRITABLE = new Set<string>(["github", "rovara"]);
+const KINDS_WRITABLE = new Set<string>(["github", "rovara", "slack", "linear", "jira"]);
 const OFFERED_KINDS: readonly RecordSourceKind[] = ["slack", "github", "codehost", "linear", "jira", "mcp", "rovara"];
 const GITHUB_SCOPE = /^github:repo\/([1-9][0-9]{0,14})$/u;
 
@@ -113,7 +125,7 @@ export function mayEditSources(caller: { projectRole: string | undefined }, writ
   return isWriterOrgRole(write.orgRole) && caller.projectRole === "maintainer";
 }
 
-/** The reasons a Slack place needs a second person, from its kind (none is reachable until Slack places are accepted here; the list is generic). */
+/** The reasons a Slack place needs a second person, from its kind (from the server's own reading of the channel). */
 export function scopeReasons(edition: TeamRecordEdition, kind: SlackScope | undefined): SourceChangeReason[] {
   if (kind === undefined || !slackScopeAllowed(edition, kind).needsSecondPerson) return [];
   return kind === "private_channel" ? ["private_channel"] : kind === "dm" ? ["dm"] : kind === "mpim" ? ["mpim"] : [];
@@ -158,6 +170,7 @@ export async function handleSourceWrite(deps: RecordQueryDependencies, request: 
     }
   } catch (error) {
     if (error instanceof RemovalRunning) return removalRunningReply();
+    if (error instanceof NotAllowed) return notAllowedReply(error);
     throw error;
   }
 }
@@ -166,11 +179,16 @@ const notYet = (): RecordRouteReply => ({ status: 422, body: { code: "SOURCE_KIN
 
 // ---- the place
 
-async function checkScope(run: Run, source: string, scope: string): Promise<void> {
+/** What checking a place found out: for a Slack channel, its class (the server's reading, never the body's). */
+interface Place { slack?: SlackScope }
+
+async function checkScope(run: Run, source: string, scope: string): Promise<Place> {
   if (source === "rovara") {
     if (scope !== rovaraScope(run.project)) throw invalid(WORDS.place);
-    return;
+    return {};
   }
+  if (source === "slack") return { slack: await checkSlackPlace(run, scope) };
+  if (source === "linear" || source === "jira") { await checkTrackerPlace(run, source, scope); return {}; }
   const match = GITHUB_SCOPE.exec(scope);
   if (match === null) throw invalid(WORDS.place);
   // Read live on every write: a repository that left the project is no longer its place.
@@ -178,6 +196,39 @@ async function checkScope(run: Run, source: string, scope: string): Promise<void
   try { ids = await run.sources.projectRepositories(run.orgId, run.project); } catch { ids = undefined; }
   if (ids === undefined) throw unavailable();
   if (!ids.includes(Number(match[1]))) throw invalid(WORDS.place);
+  return {};
+}
+
+/**
+ * A Slack place: the workspace is this company's (the binding the tap resolves), the channel is read LIVE and classified here, and the edition's rules apply. A workspace of another company answers as a
+ * missing place and Slack is never asked; a channel that cannot be read fails closed. Slack Connect, and a DM or group DM in Public, are refused with their own code.
+ */
+async function checkSlackPlace(run: Run, scope: string): Promise<SlackScope> {
+  const parsed = parseSlackScope(scope);
+  if (parsed === undefined) throw invalid(WORDS.place);
+  const bound = run.sources.slackTeamBound;
+  if (bound === undefined || run.ctx.slackChannel === undefined) throw unavailable();
+  let mine: boolean;
+  try { mine = await bound(run.orgId, parsed.teamId); } catch { throw unavailable(); }
+  if (!mine) throw invalid(WORDS.place);
+  let facts: SlackFacts | "none" | undefined;
+  try { facts = await run.ctx.slackChannel(parsed.teamId, parsed.channelId); } catch { facts = undefined; }
+  if (facts === undefined) throw unavailable();
+  if (facts === "none") throw invalid(WORDS.place);
+  const place = classifySlack(facts);
+  if (!slackScopeAllowed(run.sources.edition, place).allowed) throw new NotAllowed(place === "slack_connect" ? WORDS.connect : WORDS.directMessages);
+  return place;
+}
+
+/** A Linear team or Jira project: one the company's connected app lists, read live. No app of that kind (or an install without connections) is a missing place; a listing that cannot be read fails closed. */
+async function checkTrackerPlace(run: Run, kind: "linear" | "jira", scope: string): Promise<void> {
+  if (!scope.startsWith(kind === "linear" ? "linear:team/" : "jira:project/")) throw invalid(WORDS.place);
+  const check = run.sources.trackerPlace;
+  if (check === undefined) throw invalid(WORDS.place);
+  let answer: "found" | "absent" | undefined;
+  try { answer = await check(run.orgId, kind, scope); } catch { answer = undefined; }
+  if (answer === undefined) throw unavailable();
+  if (answer === "absent") throw invalid(WORDS.place);
 }
 
 // ---- retention
@@ -257,7 +308,7 @@ async function saveAdd(run: Run, body: Extract<SourceWriteBody, { action: "add" 
   const hash = bodyHashOf(body);
   const again = await replayed(run, body.requestId, hash);
   if (again !== undefined) return again;
-  await checkScope(run, body.source, body.scope);
+  const place = await checkScope(run, body.source, body.scope);
   if (body.notesOptIn !== undefined && body.source !== "slack") throw invalid();
   const needsSecond = await needsSecondPersonForRetention(run, body.source, undefined, body.retention, body.notesOptIn === true);
   const table = run.deps.table;
@@ -273,7 +324,7 @@ async function saveAdd(run: Run, body: Extract<SourceWriteBody, { action: "add" 
     workspaceId: run.orgId, project: run.project, source: body.source, scope: body.scope, enabled: body.enabled, retention: body.retention, exclude: body.exclude ?? [],
     audienceDefault: body.audienceDefault, ...(body.notesOptIn === true ? { notesOptIn: true as const } : {}), health: "unknown", addedBy: run.me,
   };
-  const reasons = orderedReasons([...scopeReasons(run.sources.edition, undefined), ...(needsSecond ? (["retention_raise"] as const) : [])]);
+  const reasons = orderedReasons([...scopeReasons(run.sources.edition, place.slack), ...(needsSecond ? (["retention_raise"] as const) : [])]);
   if (reasons.length > 0) return propose(run, { kind: "add", row, reasons, againstRevision: null, requestId: body.requestId, hash });
 
   const reply: Reply = { status: 200, body: { status: "saved", revision } };
@@ -317,6 +368,10 @@ async function saveChange(run: Run, body: Extract<SourceWriteBody, { action: "ch
   // The starting point of a retention change is the STORED row, never anything the caller says.
   const needsSecond = body.retention !== undefined && body.retention !== current.retention
     ? await needsSecondPersonForRetention(run, body.source, current.retention, body.retention, notesOptIn === true) : false;
+  // Turning a Slack row on or widening it (more kept, a wider audience) looks at the channel again: it may have become Slack Connect since. Turning off or keeping less never asks Slack.
+  if (body.source === "slack" && ((body.enabled === true && !current.enabled) || (body.retention !== undefined && exceedsRetention(body.retention, current.retention)) || (body.audienceDefault === "project" && current.audienceDefault !== "project"))) {
+    await checkScope(run, body.source, body.scope);
+  }
   const next = {
     retention, audienceDefault: body.audienceDefault ?? current.audienceDefault, enabled: body.enabled ?? current.enabled, exclude: body.exclude ?? current.exclude,
     ...(notesOptIn === undefined ? {} : { notesOptIn }),
@@ -485,7 +540,9 @@ async function approveChange(run: Run, changeId: string): Promise<Reply> {
   // The people who can approve are the ones the change was made for.
   if (digestOf(await rosterOf(run)) !== proposal.membershipDigest) throw stale(WORDS.members);
   if (proposal.kind === "add") {
-    await checkScope(run, source, scope);
+    const place = await checkScope(run, source, scope);
+    // What the place needs is read again too: a channel that now needs more care than the waiting change was made for is made again, not applied.
+    if (scopeReasons(run.sources.edition, place.slack).some((reason) => !proposal.reasons.includes(reason))) throw stale();
     await refuseWhileRemoving(run, scope);
     const holder = await readScopeClaim(table, run.orgId, source, scope);
     if (holder !== undefined && holder !== run.project) throw invalid(WORDS.taken);

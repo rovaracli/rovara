@@ -8,6 +8,7 @@ import { teamRecordPk, type OrgId } from "@agentx/contracts";
 import { isErasedActor } from "./erased.js";
 import { AUTOLINK_LINKED_WHY, autoLinkRefusal, exactAutoLinkEmail, type AutoLinkReason, type CompanyControl, type VerifiedDomainsPort } from "./tracker-autolink.js";
 import { clearUnmatchedTrackerUser, developerOfTrackerAuthor, isAutoLinkSuppressed, noteUnmatchedTrackerUser, pruneUnmatchedTrackerUsers, shownName } from "./identity-links.js";
+import { jiraScope, linearScope } from "./source-places.js";
 import type { RecordLog, TeamRecordTable } from "./types.js";
 
 /**
@@ -24,7 +25,13 @@ export interface ConnectedTracker {
   system: string;
   kind: "linear" | "jira";
   readUsers(input: { after?: string | undefined; limit: number }): Promise<TrackerUserPage>;
+  /**
+   * The places the connection can see as source scopes (`linear:team/<id>`, `jira:project/<KEY>`), a page at a time. Absent: the tool cannot list its places, and a place is then never accepted.
+   * Used live by the source write route; nothing is stored.
+   */
+  readPlaces?(input: { after?: string | undefined; limit: number }): Promise<TrackerPlacePage>;
 }
+export interface TrackerPlacePage { scopes: string[]; /** An opaque cursor for the next page; absent on the last. */ next?: string | undefined }
 
 /** The org's connected trackers. A connection that is not Linear or Jira, or has no saved secret, is not offered. */
 export interface ConnectedTrackersPort {
@@ -158,6 +165,48 @@ export function jiraUsersReader(input: { fetch: typeof fetch; siteUrl: string; e
     });
     // Jira pages by position, over everyone it lists (apps included), so a full page means there may be more.
     return { users, ...(parsed.data.length >= size ? { next: String(startAt + parsed.data.length) } : {}) };
+  };
+}
+
+const LinearTeams = z.object({ data: z.object({ teams: z.object({
+  nodes: z.array(z.unknown()).max(250),
+  pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().max(500).nullish() }).passthrough(),
+}).passthrough() }).passthrough() }).passthrough();
+const JiraProjects = z.object({ values: z.array(z.unknown()).max(1_000), isLast: z.boolean().nullish() }).passthrough();
+const JIRA_PROJECT_KEY = /^[A-Z][A-Z0-9_]{1,49}$/u;
+
+/** Linear: the workspace's teams (the key can see), a page at a time, as source scopes. A node without a string id is skipped. */
+export function linearPlacesReader(input: { fetch: typeof fetch; graphqlUrl: string; apiKey: string }): NonNullable<ConnectedTracker["readPlaces"]> {
+  return async ({ after, limit }) => {
+    const response = await input.fetch(input.graphqlUrl, {
+      method: "POST", headers: { authorization: input.apiKey, "content-type": "application/json" }, redirect: "error", signal: AbortSignal.timeout(READ_TIMEOUT_MS),
+      body: JSON.stringify({ query: "query($first:Int!,$after:String){ teams(first:$first, after:$after){ nodes{ id } pageInfo{ hasNextPage endCursor } } }", variables: { first: Math.min(limit, 250), ...(after === undefined ? {} : { after }) } }),
+    });
+    if (!response.ok) throw new Error("linear refused the read");
+    const text = await cappedText(response);
+    const parsed = text === undefined ? undefined : LinearTeams.safeParse(JSON.parse(text));
+    if (parsed === undefined || !parsed.success) throw new Error("linear answered with something unreadable");
+    const { nodes, pageInfo } = parsed.data.data.teams;
+    const scopes = nodes.flatMap((node) => { const id = (node as { id?: unknown } | null)?.id; return typeof id === "string" && id !== "" && id.length <= 100 ? [linearScope(id)] : []; });
+    return { scopes, ...(pageInfo.hasNextPage && typeof pageInfo.endCursor === "string" && pageInfo.endCursor !== "" ? { next: pageInfo.endCursor } : {}) };
+  };
+}
+
+/** Jira Cloud: the projects the connection's account can see, by position, as source scopes. Only well-formed project keys are listed. */
+export function jiraPlacesReader(input: { fetch: typeof fetch; siteUrl: string; email: string; apiToken: string }): NonNullable<ConnectedTracker["readPlaces"]> {
+  return async ({ after, limit }) => {
+    const startAt = after === undefined ? 0 : Number.parseInt(after, 10);
+    if (!Number.isInteger(startAt) || startAt < 0 || startAt > 100_000) throw new Error("bad cursor");
+    const size = Math.min(limit, 100);
+    const response = await input.fetch(`${input.siteUrl}/rest/api/3/project/search?startAt=${String(startAt)}&maxResults=${String(size)}`, {
+      method: "GET", headers: { authorization: `Basic ${Buffer.from(`${input.email}:${input.apiToken}`).toString("base64")}`, accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(READ_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error("jira refused the read");
+    const text = await cappedText(response);
+    const parsed = text === undefined ? undefined : JiraProjects.safeParse(JSON.parse(text));
+    if (parsed === undefined || !parsed.success) throw new Error("jira answered with something unreadable");
+    const scopes = parsed.data.values.flatMap((value) => { const key = (value as { key?: unknown } | null)?.key; return typeof key === "string" && JIRA_PROJECT_KEY.test(key) ? [jiraScope(key)] : []; });
+    return { scopes, ...(parsed.data.isLast === true || parsed.data.values.length === 0 ? {} : { next: String(startAt + parsed.data.values.length) }) };
   };
 }
 

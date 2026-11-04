@@ -182,9 +182,9 @@ describe("the place is resolved on the server", () => {
     expect(sourceRows(h)).toHaveLength(1);
   });
 
-  it("Slack, Linear, Jira, MCP and plug-in code hosts are not available yet: a fixed code, nothing written", async () => {
+  it("MCP and plug-in code hosts are not available yet: a fixed code, nothing written (Slack, Linear and Jira are covered in source-routes-slack-tickets.test.ts)", async () => {
     const h = harness();
-    for (const [source, scope] of [["slack", "slack:T1/C9"], ["linear", "linear:team/ENG"], ["jira", "jira:project/ENG"], ["mcp", "mcp:srv/x"], ["codehost:gitfarm", "codehost:gitfarm:repo/1"]] as const) {
+    for (const [source, scope] of [["mcp", "mcp:srv/x"], ["codehost:gitfarm", "codehost:gitfarm:repo/1"]] as const) {
       const reply = await post(h, WHO.owner, add({ source, scope }));
       expect(reply, source).toEqual({ status: 422, body: { code: "SOURCE_KIND_NOT_YET", message: "That kind of source can't be added yet." } });
     }

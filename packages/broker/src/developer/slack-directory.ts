@@ -7,6 +7,7 @@ import {
   cleanDisplayName,
   redactAndCap,
   type ChannelByNameResponse,
+  type ChannelClassResponse,
   type ChannelInfoResponse,
   type ChannelMembersResponse,
   type SlackAuthCheckResponse,
@@ -36,6 +37,11 @@ export interface SlackDirectory {
    * the per-request call budget or after Slack fails midway, which the caller lists by ID.
    */
   channelInfo(channelIds: readonly string[]): Promise<ChannelInfoResponse>;
+  /**
+   * Team record source rows: what one channel IS (public, private, DM, group DM) and whether it is shared with another organisation, read fresh. Only for this install's own team; any other team, or any
+   * failure to reach Slack, is unavailable (the caller fails closed). A channel Slack does not know is `{ ok: true }` without a channel.
+   */
+  channelClass(teamId: string, channelId: string): Promise<ChannelClassResponse>;
   /** A13: whether the bot token works, with the team Slack says it belongs to. Never the token. */
   authTest(): Promise<SlackAuthCheckResponse>;
   /** E12 (Q8): a public channel of the team by its exact name, or none. A private channel is never found by name. */
@@ -435,6 +441,22 @@ export function slackDirectory(input: {
       }
       if (failed && channels.length === 0) return { ok: false, error: "slack_unavailable" };
       return { ok: true, channels };
+    },
+    async channelClass(teamId, channelId) {
+      if (input.teamId === undefined || input.teamId !== teamId) return { ok: false, error: "slack_unavailable" };
+      const reply = await get("conversations.info", { channel: channelId });
+      if (reply === undefined) return { ok: false, error: "slack_unavailable" };
+      const channel = reply.body.channel as Record<string, unknown> | undefined;
+      if (reply.body.ok !== true || channel === undefined || channel === null || typeof channel !== "object") {
+        if (reply.body.error === "channel_not_found") return { ok: true };
+        refused("conversations.info", reply);
+        return { ok: false, error: "slack_unavailable" };
+      }
+      // Fail closed: a kind Slack did not state plainly is unavailable, never guessed, and a channel is public only when Slack says it is a channel and not private.
+      const kind = channel.is_im === true ? "im" as const : channel.is_mpim === true ? "mpim" as const
+        : channel.is_private === true || channel.is_group === true ? "private" as const : channel.is_channel === true && channel.is_private === false ? "public" as const : undefined;
+      if (channel.id !== channelId || kind === undefined) return { ok: false, error: "slack_unavailable" };
+      return { ok: true, channel: { kind, extShared: channel.is_ext_shared === true || channel.is_pending_ext_shared === true } };
     },
     async authTest() {
       const reply = await get("auth.test", {});

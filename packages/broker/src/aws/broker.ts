@@ -343,6 +343,7 @@ import { awsClientConfiguration, documentClient, ec2Sessions, stepFunctions } fr
 import { learningEraseHook, learningWalkDeps } from "../learning/cleanup.js";
 import { DeveloperSignInStore } from "../developer/store.js";
 import { createTeamRecordRuntime } from "../team-record/runtime.js";
+import { channelClassThroughLambda } from "./developer-routes/identity-lambda.js";
 import { connectedTrackersOf } from "../team-record/tracker-connections.js";
 import { linearWriteOf } from "../rovara-code/linear-write.js";
 import { companyDomainsPort } from "../org/company-domains/port.js";
@@ -433,6 +434,7 @@ function developerConfiguration(inviteTaskPerson?: DeveloperApiConfiguration["in
     taskChannelPeople: taskChannelPeopleThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     taskPeopleDisplayRead: taskPeopleDisplayReadThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     channelInfo: channelInfoThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
+    channelClass: channelClassThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     slackUserByEmail: slackUserByEmailThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     slackAuthCheck: slackAuthCheckThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     endDeveloperSessions: endDeveloperSessionsThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),

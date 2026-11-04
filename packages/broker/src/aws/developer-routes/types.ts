@@ -19,6 +19,8 @@ import type { SlackRequestQueue } from "../../developer/page-comments.js";
 import type {
   ChannelByNameRequest,
   ChannelByNameResponse,
+  ChannelClassRequest,
+  ChannelClassResponse,
   ChannelInfoRequest,
   ChannelInfoResponse,
   ChannelMembersRequest,
@@ -97,6 +99,8 @@ export interface DeveloperApiConfiguration {
   inviteTaskPerson?: DeveloperTaskRouteDependencies["inviteTaskPerson"];
   /** R10: bound channels' names and privacy, read by DeveloperIdentity. Optional: without it channels are listed by ID. */
   channelInfo?: (request: ChannelInfoRequest) => Promise<ChannelInfoResponse>;
+  /** Team record source rows: what one Slack channel is (public, private, DM, group DM, shared), read fresh by DeveloperIdentity. Optional: without it a Slack source cannot be added. */
+  channelClass?: (request: ChannelClassRequest) => Promise<ChannelClassResponse>;
   /** How long one request waits for channel names in all; the rest stay unnamed. Default 5 seconds. */
   channelInfoDeadlineMs?: number;
   /** Spec 025 A12: FR-012's email lookup, for an admin's Slack link. */

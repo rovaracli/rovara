@@ -380,6 +380,18 @@ export type ChannelInfoResponse =
   | { ok: false; error: "slack_unavailable" }
   | { ok: false; error: "invalid_request" };
 
+/**
+ * Team record source rows (lane task 7): what Slack says a channel IS, read fresh (never cached) by DeveloperIdentity with the bot token. Unlike `channel-info` it also answers for a DM and a group DM
+ * (ids starting with D), says whether another organisation shares the channel (Slack Connect), and only answers for the team the bot token belongs to. `{ ok: true }` without a channel: Slack does not know it.
+ */
+export const ChannelClassRequestSchema = z.object({ kind: z.literal("channel-class"), teamId: SlackTeamIdSchema, channelId: z.string().regex(/^[CGD][A-Z0-9]{2,31}$/) }).strict();
+export type ChannelClassRequest = z.infer<typeof ChannelClassRequestSchema>;
+export type ChannelClassResponse =
+  | { ok: true; channel: { kind: "public" | "private" | "im" | "mpim"; extShared: boolean } }
+  | { ok: true }
+  | { ok: false; error: "slack_unavailable" }
+  | { ok: false; error: "invalid_request" };
+
 /** Spec 025 A12: the broker asks DeveloperIdentity which Slack user owns a verified email (FR-012's lookup). */
 export const SlackUserByEmailRequestSchema = z.object({ kind: z.literal("slack-user-by-email"), email: z.string().email().max(254) }).strict();
 export type SlackUserByEmailRequest = z.infer<typeof SlackUserByEmailRequestSchema>;

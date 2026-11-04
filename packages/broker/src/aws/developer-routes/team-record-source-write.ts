@@ -9,6 +9,13 @@ import { jsonBody } from "./organization.js";
 import { requireFreshSignIn } from "./test-environment-wizard.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
+type ChannelClassRead = NonNullable<NonNullable<DeveloperRouteDependencies["developer"]>["channelClass"]>;
+const slackChannelOf = (read: ChannelClassRead): NonNullable<SourceWriteContext["slackChannel"]> => async (teamId, channelId) => {
+  const answer = await read({ kind: "channel-class", teamId, channelId });
+  if (!answer.ok) return undefined;
+  return "channel" in answer ? answer.channel : "none";
+};
+
 export function recordWriteContextOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest): SourceWriteContext {
   const signInTableName = deps.developer?.signInTableName;
   const evidence = signInTableName === undefined || signInTableName === "" ? undefined : { documentClient: deps.documentClient, tableName: deps.tableName, signInTableName, now: deps.now };
@@ -21,6 +28,8 @@ export function recordWriteContextOf(deps: DeveloperRouteDependencies, caller: D
       secondPerson: secondPersonFromRecords({ ...evidence, soleOwnerTable: deps.teamRecord?.table }),
       roster: (scope) => readApproverRoster(evidence, scope),
     }),
+    // What a Slack channel is, read fresh through DeveloperIdentity (it holds the bot token). Absent where the install has no such route: a Slack source then cannot be added.
+    ...(deps.developer?.channelClass === undefined ? {} : { slackChannel: slackChannelOf(deps.developer.channelClass) }),
     freshSignIn: async () => { await requireFreshSignIn(deps, caller); },
   };
 }
