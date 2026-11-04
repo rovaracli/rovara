@@ -28,7 +28,7 @@ import { isConditional } from "../broker-shared.js";
 import type { LoadedDocument } from "../../developer/plan-artifacts.js";
 import type { DeveloperTaskActions, TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
-import type { TaskAccess } from "../../developer/task-access.js";
+import { requireProjectSendBackRole, type TaskAccess } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { branchSyncRequestId } from "../../rovara-code/branch-sync.js";
 import { inertPlanLine } from "../../rovara-code/inert-text.js";
@@ -49,6 +49,7 @@ import { withSpecLink } from "../../spec/link.js";
 import { loadTestingView } from "./testing-view.js";
 import { type WorkflowPublicationAuthority, approvedPlanForPullRequest, proofContextOfTask, pullRequestTitle, workflowPullRequestBody } from "./pull-request-body.js";
 import { recordPublishedCandidateOutcomes } from "./decide.js";
+import { stopIfOwnerRefused } from "./owner-stop.js";
 
 type LoadedPublicationProject = NonNullable<Awaited<ReturnType<DeveloperTaskActions["latestProject"]>>>;
 
@@ -186,6 +187,8 @@ export async function startTaskWorkflowPublicationFromSystem(
     || workflow.candidate === undefined || workflow.candidate.digest !== expected.candidateDigest) return "STALE";
   // Ruling R60: a removed creator's task opens or updates no pull request; this is before the E2E proof, the access check and any token.
   await creatorGuard(deps, task);
+  // S2: the push also starts straight after a gated press (`startAcceptedStep`), so the owner's access is asked at the start itself; a person's own Retry was gated by the send-back rule already.
+  if (!ownerRetry && await stopIfOwnerRefused(deps, task, workflow, "direct_start")) return "STALE";
   let currentE2EChecks: TransactItems = [];
   if (workflow.e2e?.required === true) {
     if (deps.workflowE2EPresentation === undefined) return "STALE";
@@ -491,6 +494,8 @@ export async function startTaskWorkflowBranchSyncFromSystem(
 export async function retryTaskWorkflowPublication(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(WorkflowPublishRetryRequestSchema, value, deps, "workflow-publish-retry");
   const access = await authorizeTaskAction(deps, caller, taskId, "publish");
+  // S2 (any path): opening the pull request again is a worker run started for this person, so it meets the send-back's project access rule and the archive check.
+  await requireProjectSendBackRole(deps, access.task, caller);
   const resumed = await resumeParkedTaskDispatch(deps, caller, access, request);
   if (resumed !== undefined) return resumed;
   const { task } = access;

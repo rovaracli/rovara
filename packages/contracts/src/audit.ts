@@ -286,6 +286,8 @@ export const AUDIT_ACTIONS = [
   // Live interaction part 2 (Stop & redirect, Ask, Fix with agent): ids, fixed words and counts only. An instruction, a question, an answer and a diagnosis's text never go in.
   "session.redirected",
   "task.asked",
+  // S2 (send-back gate): work a task would have started was refused because the person it runs as lost their place (removed, or no longer allowed in the project). Fixed words only: `path`, `cause`.
+  "task.work_refused",
   // Lane ask-linear: a Linear comment an erase meant to rewrite could not be (given up after the bounded tries). Ids, a fixed reason word and a count only.
   "ask.linear_comment_kept",
   "diagnosis.started",
@@ -606,6 +608,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   // Live interaction. `mode` is keep_plan or change_plan, `outcome` a redirect outcome word, `audience` web, slack or linear (or `all` on a daily count), `scope` each or daily, `tier` light or deep.
   "session.redirected": ["mode", "step", "outcome"],
   "task.asked": ["audience", "scope", "count", "contextBytes", "model"],
+  // `path` is a fixed word for the place work was refused (`ci_fix_round`, `feedback_round`, `conflict_round`, `program_step`, `feedback_review`, `queued_dispatch`, `direct_start`, `agent_step`, `spend_resume`, `autofix`); `cause` is `owner_removed`, `no_project_access`, `viewer`, `project_archived`, `project_inactive`, `other_org` or `slack_unavailable`.
+  "task.work_refused": ["path", "cause"],
   "ask.linear_comment_kept": ["cause", "attempts"],
   "diagnosis.started": ["errorKind", "errorCode", "tier"],
   "diagnosis.proposed": ["total", "dropped", "explain", "retryWithNote", "redirect", "settingsChange", "newTask", "adminSteps", "contactSupport"],

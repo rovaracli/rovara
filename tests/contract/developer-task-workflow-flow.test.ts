@@ -1386,7 +1386,8 @@ describe("native developer task workflow", () => {
 
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot };
     const workflow = record.workflow;
-    const routeDeps = { documentClient: harness.db, tableName: "state", orgId: TEST_ORG, actions: harness.actions, now: () => Date.now() };
+    const routeDeps = { documentClient: harness.db, tableName: "state", orgId: TEST_ORG, actions: harness.actions, now: () => Date.now(),
+      checkAccess: async () => ({ revision: 1, policy: {}, access: "granted", channelIds: [], role: "contributor" }) };
     const expected = { workflowRevision: workflow.revision, candidateDigest: candidate.digest };
     const origin = { taskPageUrl: taskPageUrl(DEV_ISSUER, taskId), ownerAccess: { peopleRevision: 1 } };
     await expect(startTaskWorkflowPublicationFromSystem(routeDeps as never, taskId, expected, origin)).resolves.toBe("DUPLICATE");

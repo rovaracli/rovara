@@ -24,6 +24,7 @@ import { feedbackNoticeToDecisionMeasure, feedbackRecommendationMeasure } from "
 import { withTestRule } from "../../rovara-code/verification-report.js";
 import { ciOutputBlock, readCiEvidence } from "../../rovara-code/ci-fix.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
+import { requireProjectSendBackRole } from "../../developer/task-access.js";
 import { FEEDBACK_REPORT_MAX_BYTES, creatorGuard, iso, log, taskBaseOption } from "./common.js";
 import { accessFence, authorizeTaskAction, authorizeTaskActor } from "./access.js";
 import { actionableWorkspace } from "./task-window.js";
@@ -211,6 +212,8 @@ export async function submitWorkflowFeedbackDecision(
     if (!same) throw agentXError("IDEMPOTENCY_CONFLICT", "this decision request ID was already used");
     return { status: prior.decision === "APPROVE" ? "APPROVED" : prior.decision === "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : "DISMISSED", nextAction: prior.decision === "APPROVE" ? "implementation" : "owner_review" };
   }
+  // S2 (SB-2): approving a fix of the review comments restarts coding, so it needs the project access a send-back needs; dismissing or asking for changes does not. A replay above is unaffected.
+  if (input.decision === "APPROVE") await requireProjectSendBackRole(deps, task, caller);
   if (input.decision === "APPROVE" && current.workflowDependenciesApproval !== undefined && !workflowDependenciesAllowed(deps, current)) {
     throw agentXError("CONFIG_INVALID", "this task has an approved ordered work plan, but this broker is not enabled to apply PR feedback through that plan; request changes or dismiss the proposal");
   }

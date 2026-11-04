@@ -23,7 +23,7 @@ import { advanceAgentRun } from "../../agents/run-engine.js";
 import { onTaskResumed } from "../../agents/task-end.js";
 import { openQuestions } from "../../rovara-code/question-answers.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
-import { creatorGuard, get, iso, parse, partyOfTaskActor, putNew, turnTable } from "./common.js";
+import { creatorGuard, get, iso, log, parse, partyOfTaskActor, putNew, turnTable } from "./common.js";
 import { accessFence, authorizeLegacyTaskAction, authorizeTaskAction } from "./access.js";
 import { taskView } from "./task-view.js";
 import { chargeFailure, limitError } from "./start.js";
@@ -56,6 +56,9 @@ import { taskRecipeKey } from "../../developer/task-records.js";
 import { taskStartAgentAuthorityChecks } from "../../org/task-start-agent-authority.js";
 import { taskStartProjectAuthorityChecks } from "../../org/task-start-project-authority.js";
 import { usdToWholeMicrodollars } from "../../org/budget-amount.js";
+import { requireProjectSendBackRole } from "../../developer/task-access.js";
+import { ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
+import { stopIfOwnerRefused } from "./owner-stop.js";
 
 export async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "continue");
@@ -70,6 +73,8 @@ export async function continueTask(deps: DeveloperTaskRouteDependencies, caller:
   if (task.workflow !== undefined && openQuestions(task.workflow).length > 0) throw agentXError("WORKSPACE_BUSY", waitingForAnswersTurnRefusal(task.sessionId));
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
   if (task.agent !== undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) throw agentXError("WORKSPACE_BUSY", AGENT_RUN_TURN_REFUSAL);
+  // S2 (any path): another instruction to the agent is work started for this person: it meets the send-back's project access rule and the archive check.
+  await requireProjectSendBackRole(deps, task, caller);
   await requireMayGoOn(deps, caller, task);
   // A plain task whose dispatch was parked (its creator was a project viewer) comes back by continuing it now that they may work again.
   const resumed = await resumeTaskDispatch(deps, {
@@ -284,6 +289,18 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   if (task === undefined || task.orgId !== deps.orgId || task.orgId !== input.orgId || task.closedAt !== undefined) return;
   // Ruling R60, first: a task whose creator was removed is not resumed, nor a held start dispatched.
   await creatorGuard(deps, task);
+  // S2 (review M1): the approval raised the limit; it does not give a lost-access owner (or an archived project) a coding run. Nothing of the spend is touched: the approval stands, and the task keeps
+  // its pause but says why it did not go on (a workflow task's block reason; any other task has the audit event and the notice to the others only).
+  if (task.workflow !== undefined) {
+    if (await stopIfOwnerRefused(deps, task, task.workflow, "spend_resume")) return "STALE";
+  } else {
+    const refusal = await ownerWorkRefusal(deps, task);
+    if (refusal !== undefined) {
+      await recordWorkRefused(deps.learningAudit, (entry) => log(deps, entry), { orgId: String(task.orgId), taskId: task.taskId, path: "spend_resume", reason: refusal.reason, occurrence: `spend_resume#${input.spendRequestId}`, now: iso(deps) },
+        { documentClient: deps.documentClient, tableName: deps.tableName, task });
+      return "STALE";
+    }
+  }
   if (input.spendingAdmission !== undefined) {
     if (deps.agentRuns === undefined) throw budgetActorRefused();
     const reference = input.spendingAdmission;
@@ -426,6 +443,8 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   if (task === undefined || task.orgId !== deps.orgId || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
   await creatorGuard(deps, task);
+  // S2 (review M2): going on as a normal task starts work for this person, so it meets the send-back's project access rule and the archive check.
+  await requireProjectSendBackRole(deps, task, caller);
   const identity = { orgId: deps.orgId, taskId, requestId: request.requestId, actorId: caller.developerId,
     intentHash: hashJson({ taskId, actorId: caller.developerId, action: "continue-as-task", request }), project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID };
   const recover = async (receipt: TaskStopTransition): Promise<{ task: DeveloperTaskView }> => {

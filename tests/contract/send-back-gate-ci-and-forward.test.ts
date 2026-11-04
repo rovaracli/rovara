@@ -1,0 +1,656 @@
+// S2 (register SB-2 and F27-5): the CI-fix Retry, forward onto a coding step, a custom sequence's automatic next coding step and the PR-feedback critic run (every finding accepted, the sequence's next step is coding) start agent work for a person, so they meet the
+// send-back access gate (`requireProjectSendBackRole`): a member with no project access, a viewer, an archived project and another company are refused; an allowed person still goes on.
+import { createHash, randomUUID } from "node:crypto";
+import { describe, expect, it } from "vitest";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, agentXError, resolveWorkflowReviewFindings, retryWorkflowFeedbackReview, ciFixAskMessage, createCandidateManifest, orgMemberKey, orgRemovedKey, projectMetaKey, type WorkflowSnapshot } from "@agentx/contracts";
+import { resolveTaskWorkflowFindings, retryTaskWorkflowFeedbackReview, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
+import { continueAsTask, resumeTaskAfterSpendApproval } from "../../packages/broker/src/aws/developer-tasks/continue.js";
+import { startTaskWorkflowUnderstandFromSystem } from "../../packages/broker/src/aws/developer-tasks/workflow-starts.js";
+import { retryTaskWorkflow } from "../../packages/broker/src/aws/developer-tasks/workflow-retry.js";
+import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
+import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
+import { viewerCannotStartTasksMessage } from "../../packages/broker/src/developer/project-roles.js";
+import { openReviewFindings } from "../../packages/contracts/src/task-workflow-node.js";
+import { MAYA, createDeveloperTaskBroker, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
+import { seedReview } from "../support/rovara-code-feedback.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
+import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
+import { validatingDocumentClient } from "../support/validating-document-client.js";
+import { TEST_ORG } from "../support/orgs.js";
+
+type CheckAccess = DeveloperTaskRouteDependencies["checkAccess"];
+const grantedAs = (role: "maintainer" | "contributor" | "viewer"): CheckAccess => async () => ({ revision: 1, policy: {} as never, access: "granted", channelIds: [], role });
+const denied: CheckAccess = async () => { throw agentXError("PROJECT_ACCESS_DENIED", "no access"); };
+const OWNER: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member", developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+const OTHER_ORG = "org_aaaaaaaaaaaaaaaaaaaa" as never;
+const NOW = "2026-10-25T12:00:00.000Z";
+const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
+const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
+const PR = { repositoryId: "demo", number: 7, headSha: "a".repeat(40), headTreeSha: "b".repeat(40), candidateDigest: candidate.digest, required: true, state: "OPEN" as const, url: "https://github.com/example/demo/pull/7" };
+const archive = (db: { set(item: Record<string, unknown>): void }) => db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "archived", createdAt: NOW, createdBy: "x" });
+const removeMaya = (db: { set(item: Record<string, unknown>): void; delete(key: { pk: string; sk: string }): void }) => {
+  db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+  db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", removedAt: new Date().toISOString() });
+};
+
+/** The refusal is PROJECT_ACCESS_DENIED and carries the send-back gate's words (it may add a hint after them). */
+async function expectRefused(promise: Promise<unknown>, text: string): Promise<void> {
+  const error = await promise.then(() => undefined, (caught: unknown) => caught) as { code?: string; message?: string } | undefined;
+  expect(error?.code).toBe("PROJECT_ACCESS_DENIED");
+  expect(error?.message).toContain(text);
+}
+
+const routeDeps = (harness: { db: never; actions: never }, checkAccess: CheckAccess, audit?: ReturnType<typeof capturingAuditDeps>, ownerCheck?: CheckAccess): DeveloperTaskRouteDependencies => ({
+  documentClient: validatingDocumentClient(harness.db), tableName: "state", actions: harness.actions, orgId: TEST_ORG, checkAccess,
+  projectChannelIds: async () => [], now: () => Date.now(), log: () => undefined, ...(audit === undefined ? {} : { learningAudit: audit.audit }),
+  ...(ownerCheck === undefined ? {} : { ownerCheckAccess: () => ownerCheck }),
+});
+
+type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
+const meta = (h: Harness, taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as unknown as Record<string, unknown> & { workflow: WorkflowSnapshot; workspaceId: string };
+const operations = (h: Harness, workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
+
+describe("the CI-fix Retry meets the send-back gate", () => {
+  /** A real task with its planning cancelled, put where tracking leaves it when Rovara was set to suggest and CI is red: waiting for the merge, blocked with the CI-fix ask. */
+  async function blocked() {
+    const h = await createDeveloperTaskBroker({});
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test", workflow: true, workflowPath: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = meta(h, taskId).workspaceId;
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.workflowMode === "PLAN")!.id), "CANCELLED");
+    const waiting = WorkflowSnapshotSchema.parse({
+      ...meta(h, taskId).workflow, revision: 30, stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: ciFixAskMessage("test"), candidate,
+      reviewBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }],
+      verification: { candidateDigest: candidate.digest, producer: "broker", environmentId: "test", recordedAt: NOW, results: [], reviewOnly: true },
+      reviews: ["CRITIC", "SECURITY"].map((role) => ({ operationId: randomUUID(), candidateDigest: candidate.digest, role, provider: "scripted", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: NOW })),
+      pullRequests: [PR],
+    });
+    h.db.set({ ...meta(h, taskId), workflow: waiting });
+    const retry = (checkAccess: CheckAccess, caller: DeveloperCaller = OWNER) =>
+      retryTaskWorkflow(routeDeps(h as never, checkAccess), caller, taskId, { requestId: randomUUID(), instructions: "Fix CI.", expectedRevision: waiting.revision });
+    return { h, taskId, waiting, retry };
+  }
+
+  it("golden: an allowed contributor's Retry lets Rovara go on", async () => {
+    const t = await blocked();
+    await t.retry(grantedAs("contributor"));
+    expect(meta(t.h, t.taskId).workflow).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", ciFixApproved: [PR.headSha] });
+  });
+
+  it("a member who lost project access is refused with the send-back's words, and the task stays blocked", async () => {
+    const t = await blocked();
+    await expectRefused(t.retry(denied), sendBackNoAccessMessage("payments"));
+    expect(meta(t.h, t.taskId).workflow).toMatchObject({ state: "BLOCKED", revision: t.waiting.revision });
+  });
+
+  it("a demoted project viewer is refused with the viewer message", async () => {
+    const t = await blocked();
+    await expectRefused(t.retry(grantedAs("viewer")), viewerCannotStartTasksMessage("payments"));
+    expect(meta(t.h, t.taskId).workflow.state).toBe("BLOCKED");
+  });
+
+  it("an archived project is refused, a maintainer's Retry included", async () => {
+    const t = await blocked();
+    archive(t.h.db);
+    await expect(t.retry(grantedAs("maintainer"))).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(meta(t.h, t.taskId).workflow.state).toBe("BLOCKED");
+  });
+
+  it("a removed member is refused, and the task ends creator_removed", async () => {
+    const t = await blocked();
+    removeMaya(t.h.db);
+    await expect(t.retry(grantedAs("contributor"))).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(meta(t.h, t.taskId)).toMatchObject({ outcome: "creator_removed" });
+    expect(meta(t.h, t.taskId).workflow.state).toBe("BLOCKED");
+  });
+
+  it("another company's caller reads it as no task", async () => {
+    const t = await blocked();
+    await expect(t.retry(grantedAs("maintainer"), { ...OWNER, orgId: OTHER_ORG })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+    expect(meta(t.h, t.taskId).workflow.state).toBe("BLOCKED");
+  });
+});
+
+/** A task whose reviews block on one finding, in a sequence whose next step after the review is a second coding step. */
+async function plannedTask() {
+  const audit = capturingAuditDeps();
+  const harness = await createSingleAnswerPlanBroker({ audit, brokerExtra: { planSelfCheck: false } });
+  const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Retry failed payments", client: "test", workflow: true, workflowPath: "QUICK" });
+  const taskId = String((started.body.task as { taskId: string }).taskId);
+  const workspaceId = meta(harness, taskId).workspaceId;
+  const record = meta(harness, taskId);
+  harness.db.set({ ...record, workflow: { ...record.workflow, checkPolicy: { required: [{ id: "required-1", label: "npm test", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 } }], optional: [], selectedOptionalIds: [] } } });
+  await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
+  const plan = "# Plan\n\n1. Fix retry handling.\n";
+  await finishPlanningWithMarkdown(harness, workspaceId, String(operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN")!.id), plan);
+  const decision = (kind: "APPROVE" | "REQUEST_CHANGES" = "APPROVE") => ({ requestId: randomUUID(), expectedRevision: meta(harness, taskId).workflow.revision, decision: kind, reason: kind === "APPROVE" ? "Approved" : "Please also cover timeouts.",
+    artifactDigest: createHash("sha256").update(plan).digest("hex") });
+  return { audit, harness, taskId, workspaceId, decision };
+}
+
+/** A task whose plan is approved and whose coding step is running. */
+async function approvedPlanTask() {
+  const { audit, harness, taskId, workspaceId, decision } = await plannedTask();
+  expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, decision())).status).toBe(200);
+  const coding = () => operations(harness, workspaceId).filter((item) => item.workflowMode === "IMPLEMENT").at(-1)!;
+  return { audit, harness, taskId, workspaceId, coding };
+}
+
+/** A task whose reviews block on one finding. */
+async function blockedOnFinding() {
+  const { audit, harness, taskId, workspaceId, coding } = await approvedPlanTask();
+  const passing = { status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: [{ id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }], extraTry: "not_needed", agentClaim: "success" };
+  await harness.finish(workspaceId, String(coding().id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: passing } });
+  const review = operations(harness, workspaceId).filter((item) => item.workflowMode === "REVIEW").at(-1)!;
+  const at = new Date().toISOString();
+  await harness.finish(workspaceId, String(review.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowReviews: [
+    { operationId: String(review.id), candidateDigest: candidate.digest, role: "CRITIC", provider: "t", version: "1", status: "FINDINGS", findings: [{ text: "The new parser drops the last line.", origin: "INTRODUCED", severity: "HIGH", file: "src/parse.ts", line: 40 }], readOnly: true, recordedAt: at },
+    { operationId: String(review.id), candidateDigest: candidate.digest, role: "SECURITY", provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: at },
+  ] } });
+  const row = meta(harness, taskId);
+  expect(row.workflow).toMatchObject({ stage: "REVIEW", state: "BLOCKED" });
+  const program = { steps: [{ id: "plan", kind: "plan" }, { id: "code", kind: "build" }, { id: "check", kind: "check" },
+    { id: "review", kind: "review", reviewers: ["code", "security"], onFindings: { backTo: "code", maxRounds: 3 } }, { id: "code_two", kind: "build" }, { id: "check_two", kind: "check" },
+    { id: "review_two", kind: "review", reviewers: ["code", "security"], onFindings: { backTo: "code_two", maxRounds: 3 } }, { id: "pull_request", kind: "pull_request" }] };
+  harness.db.set({ ...row, workflow: { ...row.workflow, program, programStepId: "review" } });
+  const accept = (checkAccess: CheckAccess, caller: DeveloperCaller = OWNER) => {
+    const workflow = meta(harness, taskId).workflow;
+    return resolveTaskWorkflowFindings(routeDeps(harness as never, checkAccess), caller, taskId, { requestId: randomUUID(), expectedRevision: workflow.revision, candidateDigest: workflow.candidate!.digest,
+      resolutions: openReviewFindings(workflow).map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: "Accepted for now." })) });
+  };
+  return { harness, taskId, accept, audit };
+}
+
+describe("forward onto a coding step after every finding is accepted meets the send-back gate", () => {
+  it("golden: an allowed contributor accepts and the sequence goes on to its next coding step", async () => {
+    const t = await blockedOnFinding();
+    await t.accept(grantedAs("contributor"));
+    expect(meta(t.harness, t.taskId).workflow).toMatchObject({ programStepId: "code_two" });
+    expect(meta(t.harness, t.taskId).workflow.stage).toBe("IMPLEMENT");
+  });
+
+  it("a member with no project access is refused with the send-back's words, and the findings stay open", async () => {
+    const t = await blockedOnFinding();
+    await expectRefused(t.accept(denied), sendBackNoAccessMessage("payments"));
+    expect(meta(t.harness, t.taskId).workflow).toMatchObject({ stage: "REVIEW", state: "BLOCKED" });
+  });
+
+  it("a demoted project viewer is refused with the viewer message", async () => {
+    const t = await blockedOnFinding();
+    await expectRefused(t.accept(grantedAs("viewer")), viewerCannotStartTasksMessage("payments"));
+    expect(meta(t.harness, t.taskId).workflow.state).toBe("BLOCKED");
+  });
+
+  it("an archived project is refused", async () => {
+    const t = await blockedOnFinding();
+    archive(t.harness.db);
+    await expect(t.accept(grantedAs("maintainer"))).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(meta(t.harness, t.taskId).workflow.state).toBe("BLOCKED");
+  });
+
+  it("accepting when the sequence goes on to publication is gated too (S2 review H2: every next step; this replaces 'forward onto coding only')", async () => {
+    const t = await blockedOnFinding();
+    const row = meta(t.harness, t.taskId);
+    t.harness.db.set({ ...row, workflow: { ...row.workflow, program: { steps: row.workflow.program!.steps.filter((step) => !["code_two", "check_two", "review_two"].includes(step.id)) } } });
+    await expectRefused(t.accept(denied), sendBackNoAccessMessage("payments"));
+    expect(meta(t.harness, t.taskId).workflow).toMatchObject({ stage: "REVIEW", state: "BLOCKED" });
+  });
+
+  it("a removed member is refused, and the task ends creator_removed", async () => {
+    const t = await blockedOnFinding();
+    removeMaya(t.harness.db);
+    await expect(t.accept(grantedAs("contributor"))).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(meta(t.harness, t.taskId)).toMatchObject({ outcome: "creator_removed" });
+  });
+
+  it("another company's caller reads it as no task", async () => {
+    const t = await blockedOnFinding();
+    await expect(t.accept(grantedAs("maintainer"), { ...OWNER, orgId: OTHER_ORG })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+  });
+});
+
+/** The task as the accepted finding leaves it (next step: a second coding step) with its dispatch row, before anything has started it. */
+async function readyForNextStep() {
+  const t = await blockedOnFinding();
+  const row = meta(t.harness, t.taskId);
+  const workflow = row.workflow;
+  const next = resolveWorkflowReviewFindings(workflow, { requestId: randomUUID(), expectedRevision: workflow.revision, candidateDigest: workflow.candidate!.digest,
+    resolutions: openReviewFindings(workflow).map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: "Accepted for now." })) }, { actorId: String(row.ownerKey) }, { now: NOW });
+  t.harness.db.set({ ...row, workflow: next });
+  const start = (checkAccess: CheckAccess) => startTaskWorkflowImplementationFromSystem(routeDeps(t.harness as never, checkAccess, t.audit), t.taskId, { workflowRevision: next.revision });
+  return { ...t, next, start };
+}
+describe("a custom sequence's next coding step, started automatically, meets the send-back gate", () => {
+  const reasonOf = (h: Harness, taskId: string) => meta(h, taskId).workflow;
+
+  it("golden: an allowed owner's next coding step starts", async () => {
+    const t = await readyForNextStep();
+    await expect(t.start(grantedAs("contributor"))).resolves.toBe("STARTED");
+    expect(reasonOf(t.harness, t.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+  });
+
+  it("an owner who lost project access: no run, the task blocks with a plain reason", async () => {
+    const t = await readyForNextStep();
+    await expect(t.start(denied)).resolves.toBe("STALE");
+    expect(reasonOf(t.harness, t.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    expect(reasonOf(t.harness, t.taskId).blockReason).toContain("Rovara didn't start");
+    expect(operations(t.harness, meta(t.harness, t.taskId).workspaceId).filter((op) => op.workflowMode === "IMPLEMENT")).toHaveLength(1);
+    expect(t.audit.recordedBy("task.work_refused")).toHaveLength(1);
+    expect(t.audit.recordedBy("task.work_refused")[0]).toMatchObject({ target: { kind: "task", id: t.taskId }, facts: { path: "program_step", cause: "no_project_access" } });
+  });
+
+  it("an archived project: no run", async () => {
+    const t = await readyForNextStep();
+    archive(t.harness.db);
+    await expect(t.start(grantedAs("maintainer"))).resolves.toBe("STALE");
+    expect(reasonOf(t.harness, t.taskId)).toMatchObject({ state: "BLOCKED" });
+  });
+
+  it("a removed owner is refused by the creator check, as before", async () => {
+    const t = await readyForNextStep();
+    removeMaya(t.harness.db);
+    await expect(t.start(grantedAs("contributor"))).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(meta(t.harness, t.taskId)).toMatchObject({ outcome: "creator_removed" });
+  });
+});
+
+describe("the read-only feedback-review critic meets the send-back gate", () => {
+  const PREPARED_BASE = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
+  /** A task with a ready workspace and a stored PR-feedback review that FAILED, so a critic run can be (re)started. */
+  async function failedReview() {
+    const audit = capturingAuditDeps();
+    const h = await createDeveloperTaskBroker({ audit });
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Handle retries", client: "test", workflow: true, workflowPath: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = meta(h, taskId).workspaceId;
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED_BASE);
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.workflowMode === "PLAN")!.id), "CANCELLED");
+    const seeded = seedReview(h, taskId, { extra: { definitionVersion: "1.1.0" } });
+    const review = seeded.workflow.feedbackReview!;
+    if (review.status !== "PENDING") throw new Error("expected a pending review");
+    const failed = WorkflowSnapshotSchema.parse({ ...seeded.workflow, feedbackReview: { ...review, reviewRef: { ...review.reviewRef, status: "FAILED", blockReason: "The review failed." } } });
+    const row = meta(h, taskId);
+    h.db.set({ ...row, workflow: failed });
+    return { h, audit, taskId, workspaceId, failed, reviewDigest: review.reviewRef.sha256, ownerId: String(row.ownerKey) };
+  }
+  const critics = (h: Harness, workspaceId: string) => operations(h, workspaceId).filter((op) => op.workflowMode === "FEEDBACK_REVIEW");
+
+  describe("started by a GitHub event (as the task's owner)", () => {
+    async function collecting() {
+      const t = await failedReview();
+      const collectingWorkflow = retryWorkflowFeedbackReview(t.failed, { reviewDigest: t.reviewDigest, actor: { actorId: t.ownerId, role: "TASK_OWNER" }, now: NOW });
+      t.h.db.set({ ...meta(t.h, t.taskId), workflow: collectingWorkflow });
+      return { ...t, start: (checkAccess: CheckAccess) => startTaskWorkflowFeedbackReviewFromWebhook(routeDeps(t.h as never, checkAccess, t.audit), t.taskId) };
+    }
+
+    it("golden: an allowed owner's critic starts", async () => {
+      const t = await collecting();
+      await expect(t.start(grantedAs("contributor"))).resolves.toBe(true);
+      expect(critics(t.h, t.workspaceId)).toHaveLength(1);
+    });
+
+    it("an owner who lost project access: no critic run, the task blocks with a plain reason, and the refusal is audited", async () => {
+      const t = await collecting();
+      await expect(t.start(denied)).resolves.toBe(false);
+      expect(critics(t.h, t.workspaceId)).toEqual([]);
+      expect(meta(t.h, t.taskId).workflow).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED" });
+      expect(meta(t.h, t.taskId).workflow.blockReason).toContain("Rovara didn't start");
+      expect(t.audit.recordedBy("task.work_refused")).toHaveLength(1);
+      expect(t.audit.recordedBy("task.work_refused")[0]).toMatchObject({ target: { kind: "task", id: t.taskId }, facts: { path: "feedback_review", cause: "no_project_access" } });
+    });
+
+    it("an archived project: no critic run", async () => {
+      const t = await collecting();
+      archive(t.h.db);
+      await expect(t.start(grantedAs("maintainer"))).resolves.toBe(false);
+      expect(critics(t.h, t.workspaceId)).toEqual([]);
+      expect(meta(t.h, t.taskId).workflow.state).toBe("BLOCKED");
+    });
+
+    it("a removed owner: refused by the creator check, no critic run", async () => {
+      const t = await collecting();
+      removeMaya(t.h.db);
+      await expect(t.start(grantedAs("contributor"))).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+      expect(critics(t.h, t.workspaceId)).toEqual([]);
+    });
+  });
+
+  describe("the owner's Retry review", () => {
+    const retry = (t: Awaited<ReturnType<typeof failedReview>>, checkAccess: CheckAccess, caller: DeveloperCaller = OWNER) =>
+      retryTaskWorkflowFeedbackReview(routeDeps(t.h as never, checkAccess), caller, t.taskId, { reviewDigest: t.reviewDigest });
+
+    it("golden: an allowed owner's retry starts the critic", async () => {
+      const t = await failedReview();
+      await expect(retry(t, grantedAs("contributor"))).resolves.toMatchObject({ started: true });
+      expect(critics(t.h, t.workspaceId)).toHaveLength(1);
+    });
+
+    it("a member with no project access is refused with the send-back's words", async () => {
+      const t = await failedReview();
+      await expectRefused(retry(t, denied), sendBackNoAccessMessage("payments"));
+      expect(critics(t.h, t.workspaceId)).toEqual([]);
+    });
+
+    it("a demoted project viewer is refused with the viewer message", async () => {
+      const t = await failedReview();
+      await expectRefused(retry(t, grantedAs("viewer")), viewerCannotStartTasksMessage("payments"));
+      expect(critics(t.h, t.workspaceId)).toEqual([]);
+    });
+
+    it("an archived project is refused", async () => {
+      const t = await failedReview();
+      archive(t.h.db);
+      await expect(retry(t, grantedAs("maintainer"))).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
+      expect(critics(t.h, t.workspaceId)).toEqual([]);
+    });
+
+    it("a removed member is refused, and the task ends creator_removed", async () => {
+      const t = await failedReview();
+      removeMaya(t.h.db);
+      await expect(retry(t, grantedAs("contributor"))).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+      expect(critics(t.h, t.workspaceId)).toEqual([]);
+    });
+
+    it("another company's caller reads it as no task", async () => {
+      const t = await failedReview();
+      await expect(retry(t, grantedAs("maintainer"), { ...OWNER, orgId: OTHER_ORG })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+    });
+  });
+});
+
+/** A task whose coding run stopped (FAILED), so its IMPLEMENT step is blocked and the owner can Retry it. */
+async function blockedCoding() {
+  const { audit, harness, taskId, workspaceId, coding } = await approvedPlanTask();
+  await harness.finish(workspaceId, String(coding().id), "FAILED", { error: "the model stopped" });
+  expect(meta(harness, taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+  const revision = meta(harness, taskId).workflow.revision;
+  const retry = (checkAccess: CheckAccess, caller: DeveloperCaller = OWNER) =>
+    retryTaskWorkflow(routeDeps(harness as never, checkAccess), caller, taskId, { requestId: randomUUID(), instructions: "Try again.", expectedRevision: revision });
+  return { audit, harness, taskId, workspaceId, retry, revision, runs: () => operations(harness, workspaceId).filter((item) => item.workflowMode === "IMPLEMENT").length };
+}
+
+describe("the owner's Retry of a blocked coding step meets the send-back gate", () => {
+  it("golden: an allowed contributor's Retry starts coding again", async () => {
+    const t = await blockedCoding();
+    const before = t.runs();
+    await t.retry(grantedAs("contributor"));
+    expect(t.runs()).toBe(before + 1);
+    expect(meta(t.harness, t.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+  });
+
+  it("a member who lost project access is refused with the send-back's words, and nothing starts", async () => {
+    const t = await blockedCoding();
+    const before = t.runs();
+    await expectRefused(t.retry(denied), sendBackNoAccessMessage("payments"));
+    expect(t.runs()).toBe(before);
+    expect(meta(t.harness, t.taskId).workflow).toMatchObject({ state: "BLOCKED", revision: t.revision });
+  });
+
+  it("a demoted project viewer is refused with the viewer message", async () => {
+    const t = await blockedCoding();
+    await expectRefused(t.retry(grantedAs("viewer")), viewerCannotStartTasksMessage("payments"));
+    expect(meta(t.harness, t.taskId).workflow.state).toBe("BLOCKED");
+  });
+
+  it("an archived project is refused", async () => {
+    const t = await blockedCoding();
+    archive(t.harness.db);
+    await expect(t.retry(grantedAs("maintainer"))).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(meta(t.harness, t.taskId).workflow.state).toBe("BLOCKED");
+  });
+
+  it("a removed member is refused, and the task ends creator_removed", async () => {
+    const t = await blockedCoding();
+    removeMaya(t.harness.db);
+    await expect(t.retry(grantedAs("contributor"))).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(meta(t.harness, t.taskId)).toMatchObject({ outcome: "creator_removed" });
+  });
+
+  it("another company's caller reads it as no task", async () => {
+    const t = await blockedCoding();
+    await expect(t.retry(grantedAs("maintainer"), { ...OWNER, orgId: OTHER_ORG })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+  });
+});
+
+describe("the owner's Retry of a blocked planning step meets the send-back gate (every human Retry is gated at its one entry)", () => {
+  /** A real task whose planning was cancelled: PLAN is blocked and the workspace is free. */
+  async function blockedPlanning() {
+    const h = await createDeveloperTaskBroker({});
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test", workflow: true, workflowPath: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = meta(h, taskId).workspaceId;
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.workflowMode === "PLAN")!.id), "CANCELLED");
+    expect(meta(h, taskId).workflow).toMatchObject({ stage: "PLAN", state: "BLOCKED" });
+    const revision = meta(h, taskId).workflow.revision;
+    const retry = (checkAccess: CheckAccess, caller: DeveloperCaller = OWNER) =>
+      retryTaskWorkflow(routeDeps(h as never, checkAccess), caller, taskId, { requestId: randomUUID(), instructions: "Plan again.", expectedRevision: revision });
+    return { h, taskId, workspaceId, retry, revision, plans: () => operations(h, workspaceId).filter((item) => item.workflowMode === "PLAN").length };
+  }
+
+  it("golden: an allowed contributor's Retry plans again", async () => {
+    const t = await blockedPlanning();
+    const before = t.plans();
+    await t.retry(grantedAs("contributor"));
+    expect(t.plans()).toBe(before + 1);
+  });
+
+  it("a member who lost project access is refused with the send-back's words, and nothing starts", async () => {
+    const t = await blockedPlanning();
+    const before = t.plans();
+    await expectRefused(t.retry(denied), sendBackNoAccessMessage("payments"));
+    expect(t.plans()).toBe(before);
+    expect(meta(t.h, t.taskId).workflow).toMatchObject({ state: "BLOCKED", revision: t.revision });
+  });
+
+  it("an archived project is refused", async () => {
+    const t = await blockedPlanning();
+    archive(t.h.db);
+    await expect(t.retry(grantedAs("maintainer"))).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
+  });
+});
+
+describe("the remaining person-pressed paths meet the send-back gate (S2, any path)", () => {
+  const lostAccess = (h: Harness) => h.channelMembers.mockImplementation(async () => ({ ok: true, memberOf: [] }));
+  const codeOf = (reply: { body: Record<string, unknown> }) => (reply.body.error as { code?: string } | undefined)?.code;
+
+  describe("plan decision", () => {
+    it("golden: an allowed owner approves the plan and coding starts", async () => {
+      const t = await plannedTask();
+      expect((await t.harness.dev(MAYA, "POST", `/v1/dev/tasks/${t.taskId}/workflow/decision`, t.decision())).status).toBe(200);
+      expect(operations(t.harness, t.workspaceId).filter((op) => op.workflowMode === "IMPLEMENT")).toHaveLength(1);
+    });
+
+    it("an owner who lost project access cannot approve the plan: refused, no coding run, the plan still waits", async () => {
+      const t = await plannedTask();
+      lostAccess(t.harness);
+      const reply = await t.harness.dev(MAYA, "POST", `/v1/dev/tasks/${t.taskId}/workflow/decision`, t.decision());
+      expect(codeOf(reply)).toBe("PROJECT_ACCESS_DENIED");
+      expect(operations(t.harness, t.workspaceId).filter((op) => op.workflowMode === "IMPLEMENT")).toEqual([]);
+      expect(meta(t.harness, t.taskId).workflow.decisions).toEqual([]);
+    });
+
+    it("an owner who lost project access cannot ask for plan changes (it restarts planning)", async () => {
+      const t = await plannedTask();
+      lostAccess(t.harness);
+      const plansBefore = operations(t.harness, t.workspaceId).filter((op) => op.workflowMode === "PLAN").length;
+      const reply = await t.harness.dev(MAYA, "POST", `/v1/dev/tasks/${t.taskId}/workflow/decision`, t.decision("REQUEST_CHANGES"));
+      expect(codeOf(reply)).toBe("PROJECT_ACCESS_DENIED");
+      expect(operations(t.harness, t.workspaceId).filter((op) => op.workflowMode === "PLAN")).toHaveLength(plansBefore);
+    });
+
+    it("an archived project cannot have its plan approved", async () => {
+      const t = await plannedTask();
+      archive(t.harness.db);
+      const reply = await t.harness.dev(MAYA, "POST", `/v1/dev/tasks/${t.taskId}/workflow/decision`, t.decision());
+      expect(codeOf(reply)).toBe("PROJECT_ARCHIVED");
+      expect(operations(t.harness, t.workspaceId).filter((op) => op.workflowMode === "IMPLEMENT")).toEqual([]);
+    });
+  });
+
+  describe("manual review start and publication retry", () => {
+    const review = (t: Awaited<ReturnType<typeof blockedOnFinding>>) => {
+      const workflow = meta(t.harness, t.taskId).workflow;
+      return t.harness.dev(MAYA, "POST", `/v1/dev/tasks/${t.taskId}/workflow/review`, { requestId: randomUUID(), instructions: "Review again.", expectedRevision: workflow.revision, candidateDigest: workflow.candidate!.digest });
+    };
+    const reviews = (t: Awaited<ReturnType<typeof blockedOnFinding>>) => operations(t.harness, meta(t.harness, t.taskId).workspaceId).filter((op) => op.workflowMode === "REVIEW").length;
+
+    it("golden: an allowed owner can start the review again", async () => {
+      const t = await blockedOnFinding();
+      const before = reviews(t);
+      expect((await review(t)).status).toBe(200);
+      expect(reviews(t)).toBe(before + 1);
+    });
+
+    it("an owner who lost project access is refused, and no review starts", async () => {
+      const t = await blockedOnFinding();
+      lostAccess(t.harness);
+      const before = reviews(t);
+      expect(codeOf(await review(t))).toBe("PROJECT_ACCESS_DENIED");
+      expect(reviews(t)).toBe(before);
+    });
+
+    it("publication retry: an owner who lost project access is refused before anything else is said; an allowed owner gets the step's own answer", async () => {
+      const t = await blockedOnFinding();
+      const body = () => ({ requestId: randomUUID(), expectedRevision: meta(t.harness, t.taskId).workflow.revision });
+      expect(codeOf(await t.harness.dev(MAYA, "POST", `/v1/dev/tasks/${t.taskId}/workflow/publish-retry`, body()))).toBe("CONFIG_INVALID");
+      lostAccess(t.harness);
+      expect(codeOf(await t.harness.dev(MAYA, "POST", `/v1/dev/tasks/${t.taskId}/workflow/publish-retry`, body()))).toBe("PROJECT_ACCESS_DENIED");
+    });
+  });
+
+  describe("continue on a plain task", () => {
+    /** A task with no workflow whose first run has finished, so it takes another instruction. */
+    async function plainTask() {
+      const h = await createDeveloperTaskBroker({});
+      const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Look at the retry code", client: "test" });
+      const taskId = String((started.body.task as { taskId: string }).taskId);
+      const workspaceId = meta(h, taskId).workspaceId;
+      await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+      await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "task")!.id), "SUCCEEDED", { result: {} });
+      const cont = () => h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "Now fix it." });
+      return { h, taskId, workspaceId, cont, runs: () => operations(h, workspaceId).filter((item) => item.kind === "task").length };
+    }
+
+    it("golden: an allowed owner can continue", async () => {
+      const t = await plainTask();
+      const before = t.runs();
+      const reply = await t.cont();
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      expect(t.runs()).toBe(before + 1);
+    });
+
+    it("an owner who lost project access cannot continue: refused, no run", async () => {
+      const t = await plainTask();
+      lostAccess(t.h);
+      const before = t.runs();
+      expect(codeOf(await t.cont())).toBe("PROJECT_ACCESS_DENIED");
+      expect(t.runs()).toBe(before);
+    });
+
+    it("an archived project cannot be continued", async () => {
+      const t = await plainTask();
+      archive(t.h.db);
+      expect(codeOf(await t.cont())).toBe("PROJECT_ARCHIVED");
+    });
+
+    it("opening its pull request is gated the same way: allowed owner yes, lost access and archived no", async () => {
+      const open = (t: Awaited<ReturnType<typeof plainTask>>) => t.h.dev(MAYA, "POST", `/v1/dev/tasks/${t.taskId}/pull-requests`, { requestId: randomUUID(), title: "x" });
+      const allowed = await plainTask();
+      expect((await open(allowed)).status).toBe(200);
+      const lost = await plainTask();
+      lostAccess(lost.h);
+      expect(codeOf(await open(lost))).toBe("PROJECT_ACCESS_DENIED");
+      const archived = await plainTask();
+      archive(archived.h.db);
+      expect(codeOf(await open(archived))).toBe("PROJECT_ARCHIVED");
+    });
+  });
+});
+
+describe("review fixes: the owner is judged by the owner's own access, and every direct start is gated", () => {
+  const ADMIN: DeveloperCaller = { ...OWNER, developerId: "a".repeat(64), orgRole: "admin" };
+
+  it("H2/M3: an admin who may press accepts every finding, but the owner lost access: the next step (publication) is not started, and the task says why", async () => {
+    const t = await blockedOnFinding();
+    const row = meta(t.harness, t.taskId);
+    t.harness.db.set({ ...row, workflow: { ...row.workflow, program: { steps: row.workflow.program!.steps.filter((step) => !["code_two", "check_two", "review_two"].includes(step.id)) } } });
+    const workflow = meta(t.harness, t.taskId).workflow;
+    const deps = routeDeps(t.harness as never, grantedAs("maintainer"), t.audit, denied);
+    const publishes = () => operations(t.harness, meta(t.harness, t.taskId).workspaceId).filter((op) => op.workflowMode === "PUBLISH" || op.kind === "pull_request").length;
+    const before = publishes();
+    await resolveTaskWorkflowFindings(deps, { ...ADMIN, developerId: String(row.developerId) }, t.taskId, { requestId: randomUUID(), expectedRevision: workflow.revision, candidateDigest: workflow.candidate!.digest,
+      resolutions: openReviewFindings(workflow).map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: "Accepted." })) }).catch(() => undefined);
+    expect(publishes()).toBe(before);
+    expect(meta(t.harness, t.taskId).workflow.state).toBe("BLOCKED");
+    expect(meta(t.harness, t.taskId).workflow.blockReason).toContain("Rovara didn't start");
+    expect(t.audit.recordedBy("task.work_refused")[0]).toMatchObject({ facts: { cause: "no_project_access" } });
+  });
+
+  it("M3: the next coding step asks the OWNER's access (ownerCheckAccess), not the access of whoever pressed", async () => {
+    const t = await readyForNextStep();
+    const deps = routeDeps(t.harness as never, grantedAs("maintainer"), t.audit, denied);
+    await expect(startTaskWorkflowImplementationFromSystem(deps, t.taskId, { workflowRevision: t.next.revision })).resolves.toBe("STALE");
+    expect(meta(t.harness, t.taskId).workflow).toMatchObject({ state: "BLOCKED" });
+  });
+
+  it("M3: an owner whose own access is fine is not stopped because the presser has none", async () => {
+    const t = await readyForNextStep();
+    const deps = routeDeps(t.harness as never, denied, t.audit, grantedAs("contributor"));
+    await expect(startTaskWorkflowImplementationFromSystem(deps, t.taskId, { workflowRevision: t.next.revision })).resolves.toBe("STARTED");
+  });
+
+  it("H1: answering Understand's questions starts Understand only for an owner who may still have work started", async () => {
+    const h = await createDeveloperTaskBroker({ audit: capturingAuditDeps() });
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test", workflow: true, workflowPath: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = meta(h, taskId).workspaceId;
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.workflowMode === "PLAN")!.id), "CANCELLED");
+    const row = meta(h, taskId);
+    const ready = WorkflowSnapshotSchema.parse({ ...row.workflow, definitionVersion: "1.1.0", stage: "UNDERSTAND", state: "READY", revision: row.workflow.revision + 1 });
+    h.db.set({ ...row, workflow: ready });
+    const understands = () => operations(h, workspaceId).filter((op) => op.workflowMode === "UNDERSTAND").length;
+    const before = understands();
+    await expect(startTaskWorkflowUnderstandFromSystem(routeDeps(h as never, denied), taskId, { workflowRevision: ready.revision })).resolves.toBe("STALE");
+    expect(understands()).toBe(before);
+    expect(meta(h, taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED" });
+    expect(meta(h, taskId).workflow.blockReason).toContain("Rovara didn't start");
+  });
+
+  it("M1: the resume after a spend approval starts nothing for an owner who lost access", async () => {
+    const h = await createDeveloperTaskBroker({});
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Look at the retry code", client: "test" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = meta(h, taskId).workspaceId;
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "task")!.id), "SUCCEEDED", { result: {} });
+    const runs = () => operations(h, workspaceId).filter((item) => item.kind === "task").length;
+    const input = { orgId: TEST_ORG, taskId, spendRequestId: randomUUID(), resetRunWindow: false, firstDispatch: false };
+    const before = runs();
+    await expect(resumeTaskAfterSpendApproval(routeDeps(h as never, denied), OWNER, input)).resolves.toBe("STALE");
+    expect(runs()).toBe(before);
+    await resumeTaskAfterSpendApproval(routeDeps(h as never, grantedAs("contributor")), OWNER, { ...input, spendRequestId: randomUUID() });
+    expect(runs()).toBe(before + 1);
+  });
+
+  it("M1: the refused resume leaves a plain reason on the task, not only the audit event", async () => {
+    const t = await blockedCoding();
+    const workflow = meta(t.harness, t.taskId).workflow;
+    t.harness.db.set({ ...meta(t.harness, t.taskId), workflow: { ...workflow, blockReason: WORKFLOW_BLOCK_REASONS.budgetPaused } });
+    const input = { orgId: TEST_ORG, taskId: t.taskId, spendRequestId: randomUUID(), resetRunWindow: false, firstDispatch: false };
+    await expect(resumeTaskAfterSpendApproval(routeDeps(t.harness as never, denied, t.audit), OWNER, input)).resolves.toBe("STALE");
+    const after = meta(t.harness, t.taskId).workflow;
+    expect(after).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    expect(after.blockReason).toContain("Rovara didn't start");
+    expect(t.audit.recordedBy("task.work_refused")[0]).toMatchObject({ facts: { path: "spend_resume" } });
+  });
+
+  it("M2: continue-as-task is gated like any other press", async () => {
+    const h = await createDeveloperTaskBroker({});
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Look at the retry code", client: "test" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    await expectRefused(continueAsTask(routeDeps(h as never, denied), OWNER, taskId, { requestId: randomUUID() }), sendBackNoAccessMessage("payments"));
+  });
+});

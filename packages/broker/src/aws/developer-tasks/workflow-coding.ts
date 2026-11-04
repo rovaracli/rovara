@@ -24,6 +24,8 @@ import {
   isBranchSyncGiveUpReason,
   retryWorkflowBranchSync,
   retryWorkflowCiFix,
+  resumeWorkflowAfterNotRun,
+  isStepNotRunReason,
   workflowIsDesignReviewing,
 } from "@agentx/contracts";
 import { resumeBlockedCheck } from "../../design-review/check-ends.js";
@@ -83,6 +85,7 @@ import { fedThroughUpdate, promptTagId, sendBackProblemsPromptSection, withCurre
 import { checkedTaskStopSnapshot } from "../../org/task-stop-window.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 import { usdToWholeMicrodollars } from "../../org/budget-amount.js";
+import { startTaskWorkflowFeedbackReviewFromWebhook } from "./feedback-capture.js";
 
 /**
  * Accept a coding run for the task: the workflow moves from its exact current revision, stage and state to `next`
@@ -282,12 +285,15 @@ export async function retryCiFix(
   if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
+  // S2 (SB-2): a Retry that lets Rovara fix CI (or sync the branch) starts agent work for this person, so it meets the send-back's project access rule and the archive check.
+  await requireProjectSendBackRole(deps, task, caller);
   await requireMayGoOn(deps, caller, task);
   const receivedAt = iso(deps);
   let next: WorkflowSnapshot;
   try {
     // Plan 6 Task 17: the same Retry answers the ask about a conflict (Rovara is set to suggest).
-    next = isBranchConflictAskReason(workflow.blockReason) || isBranchSyncGiveUpReason(workflow.blockReason) ? retryWorkflowBranchSync(workflow, receivedAt) : retryWorkflowCiFix(workflow, receivedAt);
+    next = isStepNotRunReason(workflow.blockReason) ? resumeWorkflowAfterNotRun(workflow, receivedAt)
+      : isBranchConflictAskReason(workflow.blockReason) || isBranchSyncGiveUpReason(workflow.blockReason) ? retryWorkflowBranchSync(workflow, receivedAt) : retryWorkflowCiFix(workflow, receivedAt);
   } catch (error) {
     if (error instanceof WorkflowTransitionError) throw agentXError("CONFIG_INVALID", error.message);
     throw error;
@@ -310,6 +316,8 @@ export async function retryCiFix(
   }
   // The fix starts at the next tracking pass; the row is woken so that is soon (a failure here only means the pass comes at its own time).
   await wakeTrackingRow({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task.taskId).catch(() => undefined);
+  // S2 (review H4): a PR-feedback critic that was refused while waiting is still collecting; with access back it starts now (it asks the owner's access itself, and never throws here).
+  if (isStepNotRunReason(workflow.blockReason) && workflow.feedbackReview?.status === "COLLECTING") await startTaskWorkflowFeedbackReviewFromWebhook(deps, task.taskId).catch(() => undefined);
   const fresh = (await authorizeTaskAction(deps, caller, task.taskId, "retry")).task;
   const view = await taskView(deps, fresh, { events: 0, details: false });
   await syncIndex(deps, fresh, view.status, view.updatedAt);
@@ -327,6 +335,8 @@ export async function retryWorkflowImplementation(
   if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
+  // S2 (any path): a Retry that restarts coding for this person meets the send-back's project access rule and the archive check, like a send-back does.
+  await requireProjectSendBackRole(deps, task, caller);
   await requireMayGoOn(deps, caller, task);
   await actionableWorkspace(deps, task);
   // Plan 6 Task 15: a CI fix that stopped before it finished is told again what CI said, so the run that goes on has it in its own prompt, not only in the conversation (and needs no plan text).
@@ -514,6 +524,11 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
     : undefined;
   // Accepting findings may make a custom sequence's new agent run due, rather than publication.
   if (due === "IMPLEMENT" || due === "REVIEW") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
+  // S2 (F27-5, review H2): moving forward onto the next step (coding, a review, the pull request) starts work for this person, so a removed owner is stopped and the send-back's project access applies.
+  if (due !== undefined) {
+    await creatorGuard(deps, task);
+    await requireProjectSendBackRole(checked, task, caller);
+  }
   const dueDigest = next.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST;
   try {
     await deps.actions.transact([{ Update: {

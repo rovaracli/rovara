@@ -92,6 +92,8 @@ import { requireGithubRecord } from "../../plugins/code-host/github-only.js";
 import { diagnosisEnabled, diagnosisTagKeyOf } from "../../diagnosis/switch.js";
 import type { DiagnosisRouteDependencies } from "../../diagnosis/routes.js";
 import { putProjectSettingsChecked } from "./settings-proof.js";
+import { personOwnerOf } from "../../developer/system-owner.js";
+import { effectiveTaskOwner } from "../../developer/task-records.js";
 
 /** What the setup-draft routes (Plan 6 Task 10) need, from the developer API's dependencies and for one caller. */
 export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDependencies {
@@ -562,6 +564,13 @@ export function developerTaskRouteDependencies(
     ...(deps.refreshTaskFeedback === undefined ? {} : { refreshTaskFeedback: deps.refreshTaskFeedback.bind(deps) }),
     ...(initialSlackThread === undefined ? {} : { initialSlackThread }),
     checkAccess: (project, options) => checkProjectAccess(deps, caller, project, undefined, options),
+    // S2: the same project check, asked as the task's owner (their grant and their Slack channels), whoever is calling.
+    ownerCheckAccess: (task) => {
+      const owner = personOwnerOf(effectiveTaskOwner(task));
+      const ownerCaller: DeveloperCaller = { developerId: owner.developerId, sessionId: "owner-access-check", amr: owner.provider, name: owner.name, orgId: caller.orgId, orgRole: "member",
+        ...(owner.slackUserId === undefined ? {} : { slackUserId: owner.slackUserId }) };
+      return (project, options) => checkProjectAccess(deps, ownerCaller, project, undefined, options);
+    },
     channelMember: async (slackUserId, channelId) => {
       const answer = await safeChannelMembers(deps)({ kind: "channel-members", slackUserId, channelIds: [channelId] });
       if (!answer.ok) throw agentXError("SLACK_UNAVAILABLE", "Slack could not be reached to check your membership of that channel; try again shortly");

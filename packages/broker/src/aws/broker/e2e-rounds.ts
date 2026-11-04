@@ -47,6 +47,7 @@ import { evaluateWorkflowE2EApplicationSelectionNow, type ApplicationSelectionNo
 import { reconcileWorkflowTrackingTask } from "./terminal-and-github-events.js";
 import { loadApplicationEvidenceInputs, settleBaselineRound } from "./workflow-e2e-verification.js";
 import { attachInlineEvidence, loadWorkflowCandidateSourceExport, startPlanEvidenceJobs } from "./workflow-items.js";
+import { ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
 
 /**
  * Ruling AL, dispatch half: derives the approved application selection again from the approved setup and the runtime rows READY right now, and refuses
@@ -872,6 +873,14 @@ export async function runGroundingStep(dependencies: AwsBrokerDependencies, rout
   // Only a read or the finish itself can fail outside the start; those errors go to the row's retry (bounded, and at its end the give-up finishes the hold), never into the round.
   const record = abandoned ? undefined : await readWorkflowE2EGroundingRecord(store, { taskId: task.taskId, planArtifactSha256: hold.artifactSha256, attempt: hold.attempt });
   if (!abandoned && (record === undefined || record.state === "REQUESTED")) {
+    // S2 (review M4): the owner's access is asked before the check starts, never while it runs: a refusal ends the hold as a plan that could not be checked (the plan goes on to its owner as it does then).
+    const refusal = await ownerWorkRefusal(routeDependencies, task);
+    if (refusal !== undefined) {
+      await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
+        orgId: String(task.orgId), taskId: task.taskId, path: "queued_dispatch", reason: refusal.reason, occurrence: `grounding#${hold.artifactSha256}`, now: new Date().toISOString() },
+        { documentClient: dependencies.documentClient, tableName: dependencies.tableName, task });
+      return await finishThenWait(dependencies, item, task.taskId, "start-failed");
+    }
     const entry = { id: hold.artifactId, type: "plan" as const, version: hold.version, sha256: hold.artifactSha256, producer: "agentx-worker-untrusted" as const,
       objectKey: `private/${task.ownerKey}/${task.workspaceId}/plan-documents/${hold.artifactId}.json`, createdAt: hold.artifactCreatedAt, format: "structured" as const };
     let plan: PlanDocument | undefined;

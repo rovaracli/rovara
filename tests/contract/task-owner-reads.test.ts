@@ -203,6 +203,7 @@ const ROWS: readonly Row[] = [
   ["aws/activity-index.ts", "contextOf", "principal", ".ownerKey"],
   ["aws/slack-interactivity.ts", "workflowSlackHandlers>requireOwnerAction", "authority", ".slackUserId"],
   ["aws/developer-task-notifier.ts", "deliverPeopleNotification", "other-record", ".slackUserId*3"],
+  ["aws/developer-task-notifier.ts", "deliverOwnerStopped", "other-record", ".slackUserId*3"],
   ["aws/developer-task-notifier.ts", "recordThread", "principal", ".ownerKey"],
   ["aws/developer-task-notifier.ts", "recordThread", "history", ".developerId", ".developerName"],
   ["aws/developer-task-notifier.ts", "deliverRefusal", "other-record", ".slackUserId*2"],

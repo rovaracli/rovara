@@ -7,6 +7,7 @@ import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/de
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { editedSpecTask } from "../support/spec-replan-world.js";
 
 const stand: { who?: "commenter" | "co-owner" | undefined } = {};
@@ -33,6 +34,8 @@ async function replanAs(who: "commenter" | "co-owner") {
   const t = await editedSpecTask();
   const input = t.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
   const deps = developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: t.actions, ...({ readMetaFile: async (_t: unknown, _u: string, path: string) => t.fileText(path) } as object) }, OMAR_CALLER);
+  // The co-owner starts planning for themselves, so they meet the send-back's project access rule (S2): they hold a project grant.
+  t.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", role: "developer" });
   stand.who = who;
   const { specOwnerChoice } = await import("../../packages/broker/src/aws/developer-tasks/spec-wiring.js");
   return { t, run: () => specOwnerChoice(deps, OMAR_CALLER, t.taskId, "replan") };

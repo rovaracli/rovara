@@ -72,7 +72,8 @@ async function readyToPublish(harness: Harness) {
   await passReviews(harness, flow.workspaceId, flow.candidate);
   expect(publications(harness, flow.workspaceId)).toHaveLength(0);
   expect(taskWorkflow(harness, flow.taskId)).toMatchObject({ stage: "PULL_REQUEST", state: "READY" });
-  const routeDeps = { documentClient: harness.db, tableName: "state", actions: harness.actions, now: () => Date.now(), orgId: TEST_ORG };
+  // The owner holds a project role (S2: a publication start asks the owner's project access).
+  const routeDeps = { documentClient: harness.db, tableName: "state", actions: harness.actions, now: () => Date.now(), orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {}, access: "granted", channelIds: [], role: "contributor" }) };
   const expected = { workflowRevision: taskWorkflow(harness, flow.taskId).revision, candidateDigest: flow.candidate.digest };
   const origin = { taskPageUrl: taskPageUrl(DEV_ISSUER, flow.taskId) };
   const start = () => startTaskWorkflowPublicationFromSystem(routeDeps as never, flow.taskId, expected, origin);

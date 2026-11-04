@@ -210,14 +210,9 @@ describe("send-back capture: I1b, the decider is an outsider (review Critical 1)
       seedPerson(t.harness.db, OMAR_CALLER, grant);
       t.takeOver(OMAR_CALLER);
       const answer = await t.api(OMAR, NOTE);
-      // The API refuses a viewer outright (403), so nothing reaches capture; a person with no grant gets through and is an outsider.
-      if (grant === "none") {
-        expect(answer.status).toBe(200);
-        expect(corrections(t.harness)).toMatchObject([{ source: "send_back", standing: "outsider", author: OMAR.developerId }]);
-      } else {
-        expect(answer.status).toBe(403);
-        expect(corrections(t.harness)).toEqual([]);
-      }
+      // S2 (owner decision 2026-11-04; this replaces letting a person with no grant through): asking for plan changes restarts planning, so the API refuses a viewer and a person with no grant alike (403), and nothing reaches capture.
+      expect(answer.status).toBe(403);
+      expect(corrections(t.harness)).toEqual([]);
     });
 
     it(`on Slack: the task's owner who is ${label} is stored as outsider`, async () => {

@@ -190,7 +190,7 @@ describe("the event catalog", () => {
       "mcp_server.installed", "mcp_server.probed", "mcp_server.changed_needs_review", "mcp_server.task_started", "mcp_server.task_stopped", "mcp_server.egress_updated", "mcp_server.secret_replaced",
       "context_source.proposed", "context_source.applied", "context_source.rejected",
       // Live interaction part 2
-      "session.redirected", "task.asked", "ask.linear_comment_kept", "diagnosis.started", "diagnosis.proposed", "diagnosis.proposal_raised", "diagnosis.support_escalated", "diagnosis.bundle_prepared", "setup.host_asked", "setup.host_refused", "setup.limits_changed", "setup.locks_changed", "setup.locks_change_proposed", "setup.locks_change_approved",
+      "session.redirected", "task.asked", "task.work_refused", "ask.linear_comment_kept", "diagnosis.started", "diagnosis.proposed", "diagnosis.proposal_raised", "diagnosis.support_escalated", "diagnosis.bundle_prepared", "setup.host_asked", "setup.host_refused", "setup.limits_changed", "setup.locks_changed", "setup.locks_change_proposed", "setup.locks_change_approved",
       "sso.sign_in", "sso.sign_in_refused", "sso.break_glass_used", "sso.group_mapping_changed", "sso.break_glass_changed", "sso.saml_changed",
       // v1.2 learning loop (B7)
       "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.withdrawn", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
@@ -264,6 +264,7 @@ describe("the event catalog", () => {
     "company.second_review_replay_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["runId", "cases", "passed"], sample: { runId: "run-1", cases: 50, passed: true } },
     "company.second_review_verdict_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model", "runId", "days", "findings", "agreed"], sample: { model: "openrouter:openai/gpt-5.5", runId: "run-1", days: 14, findings: 40, agreed: 20 } },
     "company.second_review_verdict_withdrawn": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model"], sample: { model: "openrouter:openai/gpt-5.5" } },
+    "task.work_refused": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["path", "cause"], sample: { path: "ci_fix_round", cause: "no_project_access" } },
     "task.second_review_acknowledged": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["cause"], sample: { cause: "no-answer" } },
     "task.design_sole_owner_exception": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["tier", "openBlockers"], sample: { tier: "high", openBlockers: 0 } },
     "project.second_review_narrowed": { target: { kind: "project", name: "web" }, keys: ["change", "count"], sample: { change: "choose", count: 1 } },

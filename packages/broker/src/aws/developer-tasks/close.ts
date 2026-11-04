@@ -36,6 +36,7 @@ import { type WorkspaceReads, taskView, unpublishedOf, workspaceReads } from "./
 import { ownerIndexRowOf, syncIndex } from "./task-index.js";
 import { actionableWorkspace, busy, busyOrClosing } from "./task-window.js";
 import { outcomeDepsOf, settleTaskOutcomes } from "../../rovara-code/outcome-hooks.js";
+import { requireProjectSendBackRole } from "../../developer/task-access.js";
 
 /**
  * R22. A repeated requestId returns the same operation, except once the task is closed: the closed
@@ -61,6 +62,8 @@ export async function openPullRequest(deps: DeveloperTaskRouteDependencies, call
     if (repositories.length === 0) throw agentXError("CONFIG_INVALID", `project \`${task.project}\` has no repositories; ask an admin`);
     repository = repositories[0]!;
   }
+  // S2 (any path): opening the pull request is a worker run started for this person, so it meets the send-back's project access rule and the archive check.
+  await requireProjectSendBackRole(deps, task, caller);
   const receivedAt = iso(deps);
   let accepted: Awaited<ReturnType<DeveloperTaskActions["acceptPullRequest"]>>;
   try {

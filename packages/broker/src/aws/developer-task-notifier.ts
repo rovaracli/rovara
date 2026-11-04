@@ -33,6 +33,7 @@ import { runTaskCanvasCloseout, type CanvasCloseoutStore, type TaskCanvasCloseou
 import { SlackPostError, chatPostEphemeral, chatPostMessage, chatUpdate, createTaskPlanCanvas, deleteTaskPlanCanvas, postMayHaveLanded } from "./slack-web.js";
 import { readWorkflowE2ENotifierProjection } from "./workflow-e2e-notifier-projection.js";
 import { renderE2ENotifierSlackBlocks, renderE2EUnavailableSlackBlock } from "../e2e-presentation.js";
+import { canTakeOverNow } from "../developer/take-over-eligible.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
@@ -82,7 +83,7 @@ class CanvasCloseoutPending extends Error {
 /** 30, 60, 120, 240, 480, then 900 seconds, by the delivery attempt that failed. */
 export const retryDelaySeconds = (attempt: number): number => Math.min(900, 30 * 2 ** Math.max(0, Math.min(attempt - 1, 5)));
 
-const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report", "spec_changed", "spec_hold", "settings_proof", "design_wait"]);
+const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report", "spec_changed", "spec_hold", "settings_proof", "design_wait", "owner_stopped_dm"]);
 
 class PeopleDeliveryRetry extends Error {
   constructor(readonly attempt: number) { super("People notification delivery should retry"); this.name = "PeopleDeliveryRetry"; }
@@ -170,6 +171,65 @@ async function deliverPeopleNotification(deps: NotifierDependencies, notice: Not
   } catch (error) {
     const uncertain = postMayHaveLanded(error);
     await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :next REMOVE claimUntil", ConditionExpression: "#status = :sending AND attempts = :attempt", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":next": uncertain ? "UNKNOWN" : "FAILED", ":sending": "SENDING", ":attempt": attempt } })).catch(() => undefined);
+    if (uncertain || attempt >= 3) return uncertain ? "unknown" : "failed";
+    throw new PeopleDeliveryRetry(attempt);
+  }
+}
+
+/**
+ * S2: tells one person who could take a task over that Rovara stopped a step because its owner lost access, once, with the task page link where Take over is. Read from the stored row, never from the
+ * notice. It names nobody (not the owner who lost access). Dropped when the person has since left the company or is no longer on the task as a co-owner or commenter. Same claim, receipt and retry rules as
+ * the Task People message.
+ */
+async function deliverOwnerStopped(deps: NotifierDependencies, notice: Notice): Promise<string> {
+  if (notice.taskId === undefined || notice.ownerStopKey === undefined) return "invalid";
+  const key = { pk: `DEVTASK#${notice.taskId}`, sk: notice.ownerStopKey };
+  const row = await getItem<Record<string, unknown>>(deps, key);
+  if (row === undefined || row.entityType !== "TASK_OWNER_STOPPED_NOTIFICATION" || row.taskId !== notice.taskId || typeof row.slackUserId !== "string" || typeof row.targetDeveloperId !== "string"
+    || typeof row.attempts !== "number" || typeof row.status !== "string") return "invalid";
+  if (row.status === "SENT" || row.status === "UNKNOWN" || row.status === "CANCELLED") return row.status.toLowerCase();
+  const cancel = async () => {
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :cancelled", ConditionExpression: "#status = :status",
+      ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":cancelled": "CANCELLED", ":status": row.status } }));
+    return "cancelled";
+  };
+  const task = await getItem<DeveloperTaskRecord>(deps, { pk: `DEVTASK#${notice.taskId}`, sk: "META" });
+  const people = await getItem<{ people?: Array<{ developerId?: string; role?: string }> }>(deps, { pk: `DEVTASK#${notice.taskId}`, sk: "PEOPLE" });
+  // Still a co-owner (a commenter cannot Take over), still able to (company role and project role read now), and the task still open and still the same owner's (not taken over or closed since).
+  if (task === undefined || !Array.isArray(people?.people) || !people.people.some((person) => person.developerId === row.targetDeveloperId && person.role === "owner")) return cancel();
+  if (task.closedAt !== undefined || task.workflow?.stage === "CLOSED" || task.workflow?.stage === "MERGED") return cancel();
+  if (typeof row.ownerAtStop === "string" && tryEffectiveTaskOwner(task)?.developerId !== row.ownerAtStop) return cancel();
+  if (!await canTakeOverNow(deps, task, row.targetDeveloperId)) return cancel();
+  if (row.status === "SENDING") {
+    if (typeof row.claimUntil === "number" && row.claimUntil >= deps.now()) return "claimed";
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :unknown", ConditionExpression: "#status = :sending", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":unknown": "UNKNOWN", ":sending": "SENDING" } }));
+    return "unknown";
+  }
+  const attempt = row.attempts + 1;
+  if (attempt > 3) return "failed";
+  await deps.documentClient.send(new UpdateCommand({
+    TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sending, attempts = :attempt, claimUntil = :until", ConditionExpression: "#status = :expected AND attempts = :previous",
+    ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sending": "SENDING", ":expected": row.status, ":attempt": attempt, ":previous": row.attempts, ":until": deps.now() + 30_000 },
+  }));
+  const base = deps.reviewUrlBase;
+  const taskUrl = base === undefined ? undefined : new URL(`/review/${notice.taskId}/task`, base).href;
+  const title = typeof task?.title === "string" && task.title !== "" ? escapedLine(task.title, 80) : "a task you are on";
+  const text = `Rovara stopped ${title} because its owner no longer has access. You can take it over to continue.${taskUrl === undefined ? "" : ` ${taskUrl}`}`;
+  try {
+    const posted = await deps.post({ channel: row.slackUserId, text });
+    try {
+      await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sent, postedTs = :ts, postedChannel = :channel REMOVE claimUntil",
+        ConditionExpression: "#status = :sending AND attempts = :attempt", ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":sent": "SENT", ":sending": "SENDING", ":attempt": attempt, ":ts": posted.ts, ":channel": posted.channel ?? row.slackUserId } }));
+      return "sent";
+    } catch {
+      await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :unknown REMOVE claimUntil", ConditionExpression: "#status = :sending", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":unknown": "UNKNOWN", ":sending": "SENDING" } }));
+      return "unknown";
+    }
+  } catch (error) {
+    const uncertain = postMayHaveLanded(error);
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :next REMOVE claimUntil", ConditionExpression: "#status = :sending AND attempts = :attempt",
+      ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":next": uncertain || attempt >= 3 ? (uncertain ? "UNKNOWN" : "FAILED") : "PENDING", ":sending": "SENDING", ":attempt": attempt } }));
     if (uncertain || attempt >= 3) return uncertain ? "unknown" : "failed";
     throw new PeopleDeliveryRetry(attempt);
   }
@@ -374,6 +434,7 @@ function parseNotice(body: string): Notice | undefined {
     return typeof value.id === "string" && typeof value.at === "string" && !Number.isNaN(Date.parse(value.at)) && typeof value.kind === "string" && NOTICE_KINDS.has(value.kind)
       && (value.kind !== "canvas_closeout" || (value.manifestDigest === undefined || /^[a-f0-9]{64}$/.test(value.manifestDigest))
         && (value.expectedWorkflowRevision === undefined || Number.isSafeInteger(value.expectedWorkflowRevision) && value.expectedWorkflowRevision > 0))
+      && (value.kind !== "owner_stopped_dm" || (typeof value.ownerStopKey === "string" && value.ownerStopKey.startsWith("OWNER_STOP_NOTIFY#") && value.ownerStopKey.length <= 400))
       && (value.workflowRevision === undefined || Number.isSafeInteger(value.workflowRevision) && value.workflowRevision > 0)
       && (value.kind !== "design_wait" || (value.workflowRevision !== undefined && (value.designWaitStep === "24h" || value.designWaitStep === "72h" || value.designWaitStep === "parked" || value.designWaitStep === "closed")))
       ? value as Notice
@@ -1778,6 +1839,7 @@ export function createNotifierHandler(deps: NotifierDependencies) {
       }
       try {
         const outcome = notice.kind === "people_dm" ? await deliverPeopleNotification(deps, notice)
+          : notice.kind === "owner_stopped_dm" ? await deliverOwnerStopped(deps, notice)
           : notice.kind === "settings_proof" ? await deliverSettingsProof(deps, notice)
           : notice.kind === "agent_report" ? await deliverAgentReport(deps, notice)
           : notice.kind === "design_wait" ? await deliverDesignWait(deps, notice)

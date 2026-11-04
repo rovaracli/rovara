@@ -15,7 +15,8 @@ import {
 import { aiToolTurn, developerTaskIdentity, partyOfTask, taskKey, taskOwnerKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional } from "../broker-shared.js";
 import type { DeveloperCaller } from "../developer-routes.js";
-import type { TaskAccess } from "../../developer/task-access.js";
+import { requireProjectSendBackRole, type TaskAccess } from "../../developer/task-access.js";
+import { stopIfOwnerRefused } from "./owner-stop.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { creatorGuard, get, iso, partyOfTaskActor, taskBaseOption, turnTable } from "./common.js";
 import { accessFence, authorizeTaskAction, authorizeTaskActor, systemTaskAccess } from "./access.js";
@@ -32,6 +33,8 @@ export async function startTaskWorkflowFeedbackReviewFromWebhook(
     || workflow.state !== "WAITING" || workflow.candidate === undefined || workflow.feedbackReview?.status !== "COLLECTING") return false;
   await creatorGuard(deps, task);
   const access = await systemTaskAccess(deps, task);
+  // S2: the critic run spends model money for the task's owner, so it meets the send-back's project access rule too; refused, it is not started, the task says why, and it is audited.
+  if (await stopIfOwnerRefused(deps, task, workflow, "feedback_review")) return false;
   return acceptFeedbackReview(deps, task, workflow, workflow, access);
 }
 
@@ -112,6 +115,8 @@ export async function retryTaskWorkflowFeedbackReview(
 ): Promise<{ started: boolean; note?: string }> {
   const access = await authorizeTaskAction(deps, caller, taskId, "feedback");
   const { task } = access;
+  // S2: Retry review starts a model run for this person, so it meets the send-back's project access rule and the archive check.
+  await requireProjectSendBackRole(deps, task, caller);
   const current = task.workflow;
   if (current === undefined) throw agentXError("CONFIG_INVALID", FEEDBACK_REVIEW_RETRY_STALE);
   const workspace = await actionableWorkspace(deps, task);

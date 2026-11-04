@@ -52,6 +52,7 @@ import { queueWorkflowCoding } from "./workflow-coding.js";
 import { queueWorkflowReview, understandWatchdogDueAt } from "./workflow-review.js";
 import { fedThroughUpdate, promptTagId, sendBackProblemsPromptSection, withCurrentThreadNotes } from "./thread-notes.js";
 import type { ShareAdmin } from "./share.js";
+import { stopIfOwnerRefused } from "./owner-stop.js";
 
 /**
  * Plan 6 Task 4: starts (or starts again) the Understand step of a version 2 task: READY (the task's start, or a person's answers) or BLOCKED (the owner's retry) becomes RUNNING, the
@@ -107,6 +108,8 @@ export async function startTaskWorkflowUnderstandFromSystem(
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.definitionVersion !== "1.1.0"
     || workflow.revision !== expected.workflowRevision || workflow.stage !== "UNDERSTAND" || workflow.state !== "READY") return "STALE";
   await creatorGuard(deps, task);
+  // S2: Understand also starts straight from a person's answer to its questions (not only from the dispatch row), so the owner's access is asked here, at the start itself.
+  if (await stopIfOwnerRefused(deps, task, workflow, "direct_start")) return "STALE";
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
@@ -191,6 +194,8 @@ export async function startTaskWorkflowPlanCritiqueFromSystem(
   // Design review (switch `dr`, off: no task has a `designReview`, so this never runs): the design form of this stage is started by its own module.
   if (workflowIsDesignReviewing(workflow)) return startDesignReviewRound(deps, { task, workflow, stepId: step.id, conversationId: planCheckConversationId, ...(actor === undefined ? {} : { actor }), ...(expected.costApprovedBy === undefined ? {} : { costApprovedBy: expected.costApprovedBy }) });
   await creatorGuard(deps, task);
+  // S2: the plan check also starts straight after a plan decision (`startAcceptedStep`), so the owner's access is asked at the start itself.
+  if (await stopIfOwnerRefused(deps, task, workflow, "direct_start")) return "STALE";
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";

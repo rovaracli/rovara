@@ -558,7 +558,8 @@ describe("an approval step", () => {
     const agentId = await t.agentOf(WITH_GATE);
     const run = await t.start(agentId);
     await run.finishPrepare();
-    // Omar takes the task over before the draft step ends.
+    // Omar takes the task over before the draft step ends; as the owner now he holds a project grant (S2: a later step meets the send-back's project access rule).
+    grantProject(t.db, OMAR);
     t.db.set({ ...t.db.get(`DEVTASK#${run.taskId}`, "META")!, currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: OMAR.provider, since: "2026-10-22T11:00:00.000Z" } });
     await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The draft.");
     const deps = t.routeDeps();
@@ -718,6 +719,17 @@ describe("the end of a run", () => {
     expect(t.runItem(run.taskId)!.endReason).toContain("is no longer a member");
     expect(events).toEqual([expect.objectContaining({ outcome: "creator_removed", taskId: run.taskId })]);
     expect(t.meta(run.taskId).releasedAt).toBeDefined();
+  });
+
+  it("ends the run at the next step when its owner has lost the project's access (S2, any path: an agent run's later steps meet the send-back's rule too)", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    t.channelMembers.mockImplementation(async () => ({ ok: true, memberOf: [] }));
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Found it.");
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.runItem(run.taskId)!.endReason).toContain("Rovara didn't start");
   });
 
   it("refuses the next step with the exact words when the company has forbidden its model since the run started", async () => {

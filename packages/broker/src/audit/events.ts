@@ -1019,3 +1019,11 @@ export type TestAccountAuditAction = "test_account.added" | "test_account.approv
 export function auditTestAccountChange(input: AuditBuilderBase & { action: TestAccountAuditAction; accountId: string; facts: Record<string, Fact> }): AuditEventInput {
   return build(input.action, input, { kind: "test_account", id: input.accountId }, input.facts);
 }
+
+/**
+ * S2 (send-back gate): work a task would have started was refused because the person it runs as lost their place. The target is the task; `path` and `cause` are fixed words
+ * (see `AUDIT_FACT_KEYS`). `occurrence` is the task and the step it was refused at, so a retried refusal is the same event. Never a name, a message or a project's name.
+ */
+export function auditTaskWorkRefused(input: AuditBuilderBase & { taskId: string; path: string; reason: string }): AuditEventInput {
+  return build("task.work_refused", input, { kind: "task", id: input.taskId }, { path: input.path, cause: input.reason });
+}

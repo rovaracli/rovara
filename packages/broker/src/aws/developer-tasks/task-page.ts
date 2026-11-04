@@ -111,6 +111,10 @@ export function taskPageStage(
   // Ruling R60: the creator was removed from the org, so the task ended; no step is waiting.
   if (removedReason !== undefined && workflow?.stage !== "MERGED") return { status: removedReason, nextStep: "Nothing; this task has ended." };
   if (workflow === undefined) return { status: "In progress", nextStep: "Follow the task where it was started." };
+  // S2: a queued step waits for Slack to answer the access check (an outage); the dispatcher sets the note and tries again, and stops it after 30 minutes with a Retry.
+  if (workflow.accessCheckWaitSince?.revision === workflow.revision && (workflow.state === "READY" || workflow.state === "WAITING")) {
+    return { status: "Waiting for Slack", nextStep: "Rovara could not reach Slack to check who may start work, and tries again by itself. After 30 minutes it stops and offers Retry." };
+  }
   const name = workflowDocumentName(workflow);
   const inSlack = "in the task's Slack thread";
   // After approved PR feedback the pull requests are already open: the fix is pushed to them.

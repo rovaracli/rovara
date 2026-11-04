@@ -35,6 +35,7 @@ import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { reapprovalMessageIds } from "./live-steer-reapproval.js";
 import { markSteerRevised, readSteerMessage } from "./steer.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
+import { requireProjectSendBackRole } from "../developer/task-access.js";
 
 /** What a press carries: the same two values every owner button sends (the request's id, the revision the owner saw). Nothing else rides along. */
 export const RevisePlanRequestSchema = z.object({ requestId: z.string().uuid(), expectedRevision: z.number().int().positive() }).strict();
@@ -162,6 +163,8 @@ export async function reviseTaskPlan<A extends RevisePlanAccess>(deps: Developer
   await host.requireMayGoOn(deps, caller, task);
   // An archived project takes no new work: revising the plan restarts planning (as a plan change request does in decide.ts).
   await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
+  // S2 (any path): revising the plan restarts planning for this person, so it meets the send-back's project access rule too.
+  await requireProjectSendBackRole(deps, task, caller);
   if (!workflowReviseOffered(workflow)) throw agentXError("CONFIG_INVALID", REVISE_PLAN_REFUSALS.notOffered);
   const recorded = await recordItem();
   const messageIds = idsOf(recorded);

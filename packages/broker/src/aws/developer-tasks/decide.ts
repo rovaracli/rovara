@@ -37,7 +37,7 @@ import { planDocumentKindName } from "../broker-shared.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import type { TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
-import { can, type resolveTaskAccess } from "../../developer/task-access.js";
+import { can, requireProjectSendBackRole, type resolveTaskAccess } from "../../developer/task-access.js";
 import { commentKey, counterTouch, listTaskComments, openCommentsFor } from "../../developer/page-comments.js";
 import {
   APPROVED_COMMENT_ANSWERS_INSTRUCTION,
@@ -363,6 +363,8 @@ export async function decideTaskWorkflow(
     const fresh = (await authorizeTaskActor(deps, caller, taskId, "decide")).task;
     return { task: await taskView(deps, fresh, { events: 0, details: false }) };
   }
+  // S2 (any path): from here a run starts: approving a plan starts coding and asking for changes restarts planning, so the send-back's project access rule and the archive check apply (a decision that ends the task, above, starts nothing).
+  await requireProjectSendBackRole(deps, task, caller);
   await actionableWorkspace(deps, task);
   const currentArtifactType = workflow.path === "FULL" && workflow.reviewPhase === "REQUIREMENTS" ? "requirements"
     : workflow.path === "FULL" && workflow.reviewPhase === "DESIGN" ? "design" : "plan";
