@@ -3,6 +3,7 @@
 import {
   ProjectPlaybookBodySchema,
   agentXError,
+  designReviewSettingOf,
   featureEnabled,
   projectAllows,
   type AgentId,

@@ -3,6 +3,7 @@
 // turn, and writes the answer back. Nothing in a message, a request or an answer can name a tool, a budget, a role or an approval: every schema here is strict.
 import { z } from "zod";
 import { ASK_LIMITS, ASK_QUESTION_MAX_CHARS } from "./live-interaction.js";
+import { forwardReader } from "./forward-reader.js";
 import { ModelIdentifierSchema } from "./models.js";
 import { OrgIdSchema } from "./org.js";
 
@@ -73,6 +74,8 @@ export const AskStatusSchema = z.object({
   answer: z.string().max(ASK_ANSWER_MAX_CHARS * 2).optional(),
 }).strict();
 export type AskStatus = z.infer<typeof AskStatusSchema>;
+/** The web app reads an Ask's status with this (a newer server's extra fields and states do not break an older page). */
+export const AskStatusReaderSchema = forwardReader(AskStatusSchema);
 
 /** The rules the turn's context starts with. The text below them is data; the person who wants the agent to act is pointed to "Tell the agent". */
 export const ASK_TURN_RULES = [

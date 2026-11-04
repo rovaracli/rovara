@@ -158,6 +158,18 @@ it("closes the task only after a confirmation, asks again before discarding unpu
  expect(closes()).toHaveLength(2);expect(closes()[1]!.body).toMatchObject({ discardUnpublished: true });
  expect((closes()[1]!.body as { requestId: string }).requestId).not.toBe((closes()[0]!.body as { requestId: string }).requestId);f.close();
 });
+it("says the task is closing while its workspace is checked, and does not ask the person to press again", async () => {
+ const base = sessionFixture(), cloud = (closing: boolean) => sessionFixture({ kind: "task", where: { kind: "cloud" }, you: { ...base.you, actions: ["close"] }, body: { kind: "task", task: taskFixture(closing ? { closing: true } : {}) } });
+ const f = setup([], undefined, cloud(false), async () => ({ status: 200, body: { session: cloud(true), closed: false, message: "checking" } }));
+ await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(screen.queryByText("Closing…")).toBeNull();
+ fireEvent.click(await screen.findByRole("button", { name: "Close task" }));
+ f.setSession(cloud(true));
+ fireEvent.click(within(await screen.findByRole("dialog", { name: "Close this task?" })).getByRole("button", { name: "Close task" }));
+ await screen.findByText("Closing…");
+ expect(within(screen.getByRole("dialog")).getByRole("status").textContent).toContain("Checking this task for unpublished work… this usually takes 1–3 minutes");
+ expect(screen.queryByText(/Press the button again/)).toBeNull();
+ fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close this window" }));f.close();
+});
 it("shows the broker's own words when a stop of a blocked task left it as it was", async () => {
  const base = sessionFixture(), words = "This task is blocked, not running. To end it, use Close task (it checks for unpublished work first).";
  const f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["stop"] } }), async () => ({ status: 200, body: { session: sessionFixture(), stop: "NOTHING_RUNNING", message: words } }));

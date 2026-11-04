@@ -117,6 +117,15 @@ it("says plainly, without an alert, when the setting cannot be read, and shows n
  missing.unmount();
 });
 
+it("shows no card where design review is off for the project: the playbook answer has no designReview field (QA-04)", async () => {
+ const f = setup({});
+ await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.method === "GET" && request.path.endsWith("/playbook"))).toBe(true));
+ await waitFor(() => expect(f.container.querySelector("section, [id=hww-stage-design-review]")).toBeNull());
+ expect(screen.queryByText("Design review")).toBeNull();
+ expect(screen.queryByLabelText("When it runs")).toBeNull();
+ f.close();
+});
+
 it("gives a person who cannot edit the card and no editor", async () => {
  const f = setup({}, false);
  await screen.findByRole("region", { name: "Design review" });

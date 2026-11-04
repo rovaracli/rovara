@@ -1,6 +1,7 @@
 import { AdminBudgetSettingsSchema, OrgIdSchema, type AdminBudgetSettings } from "@agentx/contracts/web";
 import type { AppHost, ApiResponse } from "../host.js";
 import { ApiError } from "./errors.js";
+import { withoutRequestId } from "./without-request-id.js";
 const unavailable = "Monthly base budgets could not be checked. Try again.";
 export function createBudgetSettingsApi(host: AppHost, orgId: string) {
  let active = true, epoch = 0, redirected = false;
@@ -19,7 +20,7 @@ export function createBudgetSettingsApi(host: AppHost, orgId: string) {
     if (response.status === 401 && !redirected) { redirected = true;host.signIn(host.currentPath(), { automatic: true }); }
     throw new ApiError(response.status, response.status === 403 ? "FORBIDDEN" : response.status === 429 ? "TOO_MANY_REQUESTS" : "RUNTIME_UNAVAILABLE", unavailable);
    }
-   const parsed = AdminBudgetSettingsSchema.safeParse(response.body);
+   const parsed = AdminBudgetSettingsSchema.safeParse(withoutRequestId(response.body));
    if (!parsed.success || parsed.data.orgId !== orgId) throw new ApiError(502, "INVALID_RESPONSE", unavailable);
    return parsed.data;
   },

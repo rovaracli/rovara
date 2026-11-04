@@ -68,6 +68,15 @@ describe("an old playbook", () => {
   });
 });
 
+describe("where the stage is off (QA-04)", () => {
+  it("answers 200 with no designReview at all, so a client shows no card; it never sends the defaults there", async () => {
+    process.env.DESIGN_REVIEW_ENABLED = "0";
+    const w = world();
+    w.db.set({ ...projectPlaybookKey(ORG_A, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG_A, revision: 3, defaultProcess: { kind: "builtin" }, designReview: SETTING, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAX });
+    expect(await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web")).toEqual({ playbook: { revision: 3, defaultProcess: { kind: "builtin" } } });
+  });
+});
+
 describe("saving the setting", () => {
   it("lets a maintainer save it, returns it, and records playbook.design_review_changed in the same transaction (fixed words and counts only)", async () => {
     const w = world();

@@ -21,7 +21,7 @@ const ROVARA = "linear-user-rovara";
 const PERSON = "linear-user-person";
 
 /** A Linear that holds issues and comments, enforces the key, and dedupes a comment by the id the client chose. */
-function fakeLinear(options: { workspace?: string; viewer?: string; issueKey?: string; failCreateOnce?: boolean } = {}) {
+function fakeLinear(options: { workspace?: string; viewer?: string; issueKey?: string; failCreateOnce?: boolean; unkeyed?: boolean } = {}) {
   const workspace = options.workspace ?? "acme";
   const issueKey = options.issueKey ?? "ENG-142";
   const comments = new Map<string, { id: string; body: string; userId: string; issue: string }>([["person-comment-1", { id: "person-comment-1", body: "a person wrote this", userId: PERSON, issue: issueKey }]]);
@@ -41,7 +41,7 @@ function fakeLinear(options: { workspace?: string; viewer?: string; issueKey?: s
     }
     const json = (data: unknown, errors?: unknown) => new Response(JSON.stringify({ data, ...(errors === undefined ? {} : { errors }) }), { status: 200 });
     const v = body.variables ?? {};
-    if (/viewer/u.test(body.query)) return json({ viewer: { id: options.viewer ?? ROVARA, organization: { urlKey: workspace } } });
+    if (/viewer/u.test(body.query)) return json({ viewer: { id: options.viewer ?? ROVARA, organization: options.unkeyed === true ? null : { urlKey: workspace } } });
     if (/commentCreate/u.test(body.query)) {
       const input = v["input"] as { id: string; issueId: string; body: string };
       if (options.failCreateOnce === true && !failed) { failed = true; comments.set(input.id, { id: input.id, body: input.body, userId: options.viewer ?? ROVARA, issue: issueKey }); return json(null, [{ message: "network lost after the write" }]); }
@@ -108,7 +108,7 @@ describe("posting an answer", () => {
     const t = await world([{ id: CON_1, key: KEY_1, linear }]);
     linear.calls.length = 0;
     const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "It is blocked on a check.", commentKey: "ask:ask_1" });
-    expect(posted).toEqual({ commentId: linearCommentIdFor(ORG_A, "ask:ask_1") });
+    expect(posted).toEqual({ workspace: "acme", commentId: linearCommentIdFor(ORG_A, "ask:ask_1") });
     expect(linear.calls.map((call) => call.url)).toEqual([LINEAR_GRAPHQL, LINEAR_GRAPHQL]);
     expect(linear.calls.every((call) => call.auth === KEY_1 && call.redirect === "error")).toBe(true);
     expect(linear.comments.get(posted.commentId)).toMatchObject({ body: "It is blocked on a check.", userId: ROVARA, issue: "ENG-142" });
@@ -342,5 +342,82 @@ describe("S4: Linear's rate limits are waited out as it asks, a bounded number o
     expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(LINEAR_RATE_WAIT_TOTAL_MS);
     expect(linear.state.rateHits).toBe(LINEAR_RATE_ATTEMPTS);
     expect(linear.comments.size).toBe(1);
+  });
+});
+
+describe("AL-1: a comment is gone only when a connection in the posting workspace says so", () => {
+  const CON_3 = "con_cccccccccccccccccccc";
+  const KEY_3 = "lin_api_THREE_SECRET_0123456789";
+  const OTHER_ACCOUNT = "linear-user-other";
+
+  /** Rovara posts in "acme" through CON_1; CON_2 is a connection to another workspace, "other", which knows no such comment. */
+  async function twoWorkspaces() {
+    const acme = fakeLinear({ workspace: "acme" });
+    const other = fakeLinear({ workspace: "other", viewer: OTHER_ACCOUNT });
+    const t = await world([{ id: CON_1, key: KEY_1, linear: acme }, { id: CON_2, key: KEY_2, linear: other }]);
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "It is blocked.", commentKey: "ask:al1", workspace: "acme" });
+    return { t, acme, other, posted };
+  }
+
+  it("with the posting connection removed and another workspace's connection left, remove is NOT done: nothing is read as gone", async () => {
+    const { t, acme, posted } = await twoWorkspaces();
+    await t.store.remove({ orgId: ORG_A, connectionId: CON_1, by: "dev-admin" });
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId, workspace: "acme" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(t.port.update({ orgId: ORG_A, commentId: posted.commentId, text: "x", workspace: "acme" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    // The comment is still on Linear, untouched.
+    expect(acme.comments.has(posted.commentId)).toBe(true);
+  });
+
+  it("with both connections present, the posting workspace's connection finds and deletes it", async () => {
+    const { t, acme, posted } = await twoWorkspaces();
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId, workspace: "acme" })).resolves.toBeUndefined();
+    expect(acme.comments.has(posted.commentId)).toBe(false);
+  });
+
+  it("a connection of the posting workspace that answers not-found makes it gone, even when another workspace's connection is also asked", async () => {
+    const { t, acme, posted } = await twoWorkspaces();
+    acme.comments.delete(posted.commentId);
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId, workspace: "acme" })).resolves.toBeUndefined();
+    await expect(t.port.update({ orgId: ORG_A, commentId: posted.commentId, text: "x", workspace: "acme" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("a second connection to the posting workspace can still answer for it when the first is removed", async () => {
+    const acme = fakeLinear({ workspace: "acme" });
+    const t = await world([{ id: CON_1, key: KEY_1, linear: acme }, { id: CON_3, key: KEY_3, linear: acme }]);
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "It is blocked.", commentKey: "ask:al1b", workspace: "acme" });
+    await t.store.remove({ orgId: ORG_A, connectionId: CON_1, by: "dev-admin" });
+    acme.comments.delete(posted.commentId);
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId, workspace: "acme" })).resolves.toBeUndefined();
+  });
+
+  it("the reply tells which workspace it posted in (the connection's own, checked, workspace)", async () => {
+    const { posted } = await twoWorkspaces();
+    expect(posted).toMatchObject({ workspace: "acme" });
+  });
+
+  it("a connection whose workspace was never read still confirms \"gone\" when no connection is known to be in the posting workspace (as before AL-1)", async () => {
+    const unkeyed = fakeLinear({ workspace: "acme", unkeyed: true });
+    const t = await world([{ id: CON_1, key: KEY_1, linear: unkeyed }]);
+    expect([...await connectionWorkspaceKeys(t.deps, ORG_A)]).toEqual([]);
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "It is blocked.", commentKey: "ask:al1c", workspace: "acme" });
+    unkeyed.comments.delete(posted.commentId);
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId, workspace: "acme" })).resolves.toBeUndefined();
+  });
+
+  it("but not when a connection known to be in the posting workspace is there and did not say so: the unkeyed one's not-found is no proof then", async () => {
+    const acme = fakeLinear({ workspace: "acme" });
+    const unkeyed = fakeLinear({ workspace: "acme", unkeyed: true, viewer: "linear-user-unkeyed" });
+    const t = await world([{ id: CON_1, key: KEY_1, linear: acme }, { id: CON_3, key: KEY_3, linear: unkeyed }]);
+    const posted = await t.port.reply({ orgId: ORG_A, issueKey: "ENG-142", text: "It is blocked.", commentKey: "ask:al1d", workspace: "acme" });
+    // The keyed connection fails (not "not found"): only the unkeyed one says not found, which proves nothing while the posting workspace's own connection could not answer.
+    acme.state.commentReadErrors = [{ message: "boom" }];
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId, workspace: "acme" })).rejects.toBeDefined();
+    expect(acme.comments.has(posted.commentId)).toBe(true);
+  });
+
+  it("without a recorded workspace the pass is what it was (every connection must say not-found)", async () => {
+    const { t, acme, posted } = await twoWorkspaces();
+    acme.comments.delete(posted.commentId);
+    await expect(t.port.remove({ orgId: ORG_A, commentId: posted.commentId })).resolves.toBeUndefined();
   });
 });

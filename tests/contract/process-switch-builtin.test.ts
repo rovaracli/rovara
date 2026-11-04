@@ -1,5 +1,6 @@
 // Follow-up M2: switching a project back to the built-in Rovara Code is a "less safe" change when the project's process layer is stricter than the built-in. It then waits for a second
 // person (the process layer's approvers, with the process self-confirm rules and the sole-owner exception) instead of applying at once. Nothing lost, or pointing at the layer, stays immediate.
+import { fixtureActor } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type OrgRole } from "../../packages/contracts/src/index.js";
@@ -244,7 +245,7 @@ describe("switching back to the built-in when nothing is lost stays immediate", 
     const w = world();
     const layer = await layerWith(w, STRICT);
     // The route refuses to archive the current default now; a layer archived before that rule is still held to the compare.
-    await w.store.archive(ORG_A, layer, MAX);
+    await w.store.archive(ORG_A, layer, MAX, undefined, { actor: fixtureActor(w.store, ORG_A, MAX) });
     expect((await toBuiltin(w)).statusCode).toBe(202);
   });
 
