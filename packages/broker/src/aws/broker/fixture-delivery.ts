@@ -12,7 +12,7 @@
 //   - the store (`deliver`) hands out a set only while it is APPROVED for that organisation, its stored bytes still hash to the digest and it still passes the scan against the project\'s production list as it is NOW, and a withdrawn set stops here: the next phase gets nothing.
 // The reply is the digest, the address and its expiry, and nothing else. The address is not logged, kept or sent on by this module.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { FixtureSetCallbackReplySchema, FixtureSetCallbackRequestSchema, agentXError, type FixtureSetCallbackReply, type OrgId, type TestEnvProdDeny } from "@agentx/contracts";
+import { FixtureSetCallbackReplySchema, FixtureSetCallbackRequestSchema, agentXError, type FixtureSetCallbackReply, type TestEnvProdDeny } from "@agentx/contracts";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { readApprovedTestEnvironment } from "../../org/test-environment.js";
 import type { FixtureStoreFactory } from "../../test-env/fixture-lookup.js";
@@ -62,7 +62,7 @@ async function preparedProjectOf(deps: FixtureDeliveryDeps, operation: FixtureDe
 
 /** The production list the project's approved environment has (the store scans a set against it before it hands one out), or an empty list for a project with no approved environment. A read that fails throws: it is never an empty list. */
 async function denyOf(deps: FixtureDeliveryDeps, orgId: string, project: string): Promise<TestEnvProdDeny> {
-  const approved = await readApprovedTestEnvironment({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now ?? Date.now }, orgId as OrgId, project);
+  const approved = await readApprovedTestEnvironment({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now ?? Date.now }, orgId, project);
   return approved?.environment.prodDeny ?? { accountIds: [], hosts: [], arnPrefixes: [] };
 }
 

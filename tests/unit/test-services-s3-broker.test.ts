@@ -498,7 +498,7 @@ describe("the install's store is a factory over the production list", () => {
     expect(found.get(digest)?.origin).toBe("hand_written");
     expect(asked).toEqual([]);
     expect(recordsOf(undefined)).toBeUndefined();
-    const reader = recordsOf((_denyFor) => factory(() => Promise.reject(new Error("no list"))));
+    const reader = recordsOf(() => factory(() => Promise.reject(new Error("no list"))));
     expect((await reader!.record(ORG, digest)).ok).toBe(true);
   });
 });

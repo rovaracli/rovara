@@ -8,7 +8,6 @@ import { testEnvironmentEnabled } from "./switch.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import type { EvidenceEnvironment, EvidenceNotTested, OrgId, TestEnvProdDeny } from "@agentx/contracts";
 import type { PinnedDependency } from "../rovara-code/dependency-evidence.js";
-import type { FixtureStoreFactory } from "./fixture-lookup.js";
 
 export interface EvidenceEnvironmentChoice {
   environment?: EvidenceEnvironment | undefined;
