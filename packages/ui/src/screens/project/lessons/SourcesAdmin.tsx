@@ -41,6 +41,10 @@ export default function SourcesAdmin({ project, view }: { project: string; view:
   {view.sources.length === 0 ? <p className="rv-muted">{T.SOURCES_NONE}</p> : <ul className="rv-lessons-list" aria-label={T.SOURCES_TITLE}>{view.sources.map(row => <SourceRow key={row.kind + "|" + row.scope} project={project} row={row} offered={view.offered} skipped={view.skippedUnlinked?.[row.kind] ?? 0} notify={setNotice} />)}</ul>}
   {view.otherPaused > 0 && <p className="rv-muted">{String(view.otherPaused)} {T.SOURCE_PAUSED_OTHER}</p>}
   {view.pending.length > 0 && <section aria-label={T.SRC_PENDING} className="rv-lessons-section"><h3>{T.SRC_PENDING}</h3><ul className="rv-lessons-cards" aria-label={T.SRC_PENDING}>{view.pending.map(change => <PendingCard key={change.changeId} project={project} change={change} soleApprover={view.soleApprover} now={now} notify={setNotice} />)}</ul></section>}
+  {view.clearing !== undefined && view.clearing.length > 0 && <section aria-label={T.SRC_CLEARING} className="rv-lessons-section"><h3>{T.SRC_CLEARING}</h3><ul className="rv-lessons-list" aria-label={T.SRC_CLEARING}>{view.clearing.map(place => <li key={place.source + "|" + place.scope} className="rv-lessons-source rv-muted">
+   <p><strong>{kindWords(place.source)}</strong> <VisibleText text={place.scope} /></p>
+   <p>{T.SRC_CLEARING_ROW}</p>
+  </li>)}</ul></section>}
   <SourceAdd project={project} view={view} notify={setNotice} />
  </section>;
 }

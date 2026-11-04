@@ -106,7 +106,7 @@ describe("adding a source", () => {
   expect(f.posts[0]).toMatchObject({ action: "add", source: "slack", scope: "slack:T1/C9", retention: "B", audienceDefault: "maintainers" });
   expect(document.body.textContent).not.toMatch(/\b(public|private)\b/iu);
  });
- it("says what the server's refusal means in fixed words: a place that cannot be used, a kind not yet supported, unavailable", async () => {
+ it("says what the server's refusal means in fixed words: a source that cannot be used, a kind not yet supported, unavailable", async () => {
   let answer = flat("SOURCE_NOT_ALLOWED", "Direct messages can't be a source in Public.", 422);
   const f = await openEditor({ write: () => answer });
   const form = screen.getByRole("region", { name: "Add a source" });
@@ -115,7 +115,7 @@ describe("adding a source", () => {
   pick("How long Rovara keeps it", "A", form);
   const send = () => fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
   send();
-  expect(await within(form).findByText("That place can't be used as a source here.")).toBeTruthy();
+  expect(await within(form).findByText("That source can't be used here.")).toBeTruthy();
   expect(document.body.textContent).not.toContain("Direct messages");
   answer = flat("SOURCE_KIND_NOT_YET", "That kind of source can't be added yet.", 422);
   send();
@@ -213,12 +213,14 @@ describe("removing a source", () => {
   for (const dialog of dialogs) expect(dialog).not.toHaveBeenCalled();
   await waitFor(() => { expect(screen.queryByRole("region", { name: /GitHub/u })).toBeNull(); });
  });
- it("says the place is still being cleared, in the server's fixed sentence, when a flat refusal says so", async () => {
-  await openEditor({ write: () => flat("SOURCE_REMOVAL_RUNNING", "This place is still being cleared. Try again in an hour.", 409) });
+ it("says the source was just removed and is still being deleted, in the UI's fixed sentence (never the server's text), when a flat refusal says so", async () => {
+  await openEditor({ write: () => flat("SOURCE_REMOVAL_RUNNING", "server words that must not show", 409) });
   const github = row(/GitHub/u);
   fireEvent.click(within(github).getByRole("button", { name: "Remove" }));
   fireEvent.click(within(github).getByRole("button", { name: "Yes, remove it" }));
-  expect(await within(github).findByText("This place is still being cleared. Try again in an hour.")).toBeTruthy();
+  expect(await within(github).findByText("This source was just removed and its stored data is still being deleted. You can add it again in about an hour.")).toBeTruthy();
+  expect(document.body.textContent).not.toContain("server words that must not show");
+  expect(document.body.textContent).not.toMatch(/\bcleared\b/u);
  });
 });
 
@@ -292,3 +294,60 @@ describe("accessibility", () => {
  });
 });
 
+
+const REMOVING = "Removing \u2014 deleting its stored data. You can add it again when this finishes (about an hour).";
+const clearing = (over: Record<string, unknown> = {}) => ({ source: "github", scope: "github:repo/9", since: "2026-10-30T10:00:00.000Z", ...over });
+
+describe("T8: a source that was removed and is still being cleared", () => {
+ it("shows a muted row with its kind, its place and the fixed sentence, and no controls", async () => {
+  await openEditor({ view: adminView({ sources: [], clearing: [clearing(), clearing({ source: "slack", scope: "slack:T1/C9" })] }) });
+  const list = screen.getByRole("list", { name: "Being removed" });
+  const items = within(list).getAllByRole("listitem");
+  expect(items).toHaveLength(2);
+  expect(items[0]!.textContent).toContain("GitHub");
+  expect(items[0]!.textContent).toContain("github:repo/9");
+  expect(items[1]!.textContent).toContain("Slack");
+  expect(items[1]!.textContent).toContain("slack:T1/C9");
+  for (const item of items) { expect(within(item).getByText(REMOVING)).toBeTruthy();expect(within(item).queryByRole("button")).toBeNull();expect(within(item).queryByRole("switch")).toBeNull();expect(item.querySelector("input,select,textarea")).toBeNull(); }
+  expect(screen.queryByRole("region", { name: /GitHub/u })).toBeNull(); // it is not an editable source row
+ });
+ it("shows nothing when the view has no clearing list", async () => {
+  await openEditor();
+  expect(screen.queryByRole("list", { name: "Being removed" })).toBeNull();
+  expect(document.body.textContent).not.toContain("Removing");
+ });
+ it("does not offer a repository that is still clearing, and offers no repository kind when every one is", async () => {
+  await openEditor({ view: adminView({ sources: [], clearing: [clearing()] }) });
+  pick("What to add", "repository");
+  expect(values(optionsOf("Repository", screen.getByRole("region", { name: "Add a source" })))).toEqual(["github:repo/12"]);
+ });
+ it("offers no repository kind when every repository is still clearing", async () => {
+  await openEditor({ view: adminView({ sources: [], clearing: [clearing(), clearing({ scope: "github:repo/12" })] }) });
+  expect(values(optionsOf("What to add"))).not.toContain("repository");
+ });
+ it("refuses a typed place that is still clearing up front, with the same sentence, and sends nothing", async () => {
+  const f = await openEditor({ view: adminView({ sources: [], clearing: [clearing({ source: "slack", scope: "slack:T1/C9" })] }) });
+  const form = screen.getByRole("region", { name: "Add a source" });
+  pick("What to add", "slack");
+  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "  slack:T1/C9 " } });
+  pick("How long Rovara keeps it", "B", form);
+  expect(within(form).getByText("This source was just removed and its stored data is still being deleted. You can add it again in about an hour.")).toBeTruthy();
+  const send = within(form).getByRole<HTMLButtonElement>("button", { name: "Add source" });
+  expect(send.disabled).toBe(true);
+  fireEvent.click(send);
+  expect(f.posts).toHaveLength(0);
+  // Another channel of the same kind is not refused; a clearing place of another kind does not block it either.
+  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "slack:T1/C10" } });
+  expect(within(form).queryByText(/was just removed/u)).toBeNull();
+  expect(send.disabled).toBe(false);
+ });
+});
+
+describe("T8: nothing in the source error sentences says place or scope", () => {
+ it("every fixed sentence the screen shows for a refusal uses source or the kind's name", async () => {
+  const { T } = await import("../../packages/ui/src/screens/project/lessons/lessons-text.js");
+  const sentences = Object.entries(T).filter(([key]) => key.startsWith("SRC_ERR_")).map(([, text]) => text);
+  expect(sentences.length).toBeGreaterThanOrEqual(10);
+  for (const sentence of sentences) expect(sentence, sentence).not.toMatch(/\b(place|places|scope|scopes)\b/iu);
+ });
+});

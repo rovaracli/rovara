@@ -202,8 +202,20 @@ describe("approving", () => {
     await seed(s.store, pending());
     expect((await refused(approve(s, "ann"))).code).toBe("NOT_FOUND");
     expect((await refused(s.call(callerOf("ann"), "GET", base))).code).toBe("NOT_FOUND");
-    expect((await refused(s.call(callerOf("ann"), "GET", `${base}/sources`))).code).toBe("NOT_FOUND");
     expect((await s.store.get(KEY, "les_pend0001"))!.status).toBe("pending");
+  });
+
+  it("T8: with learning off the Sources read answers its own fixed code (still a 404), so the page can say learning is off and not that the record is not set up; with learning on it reads", async () => {
+    const off = setup({ value: { mode: "Off" } });
+    const error = await refused(off.call(callerOf("ann"), "GET", `${base}/sources`));
+    expect(error.code).toBe("LEARNING_OFF");
+    expect(error.statusCode).toBe(404);
+    expect(error.message).toBe("LEARNING_OFF: Learning is off for this project.");
+    // A member (no maintainer role in the call) is told the same; the other lessons routes keep answering not found.
+    expect((await refused(off.call(callerOf("bob"), "GET", `${base}/sources`))).code).toBe("LEARNING_OFF");
+    expect((await refused(off.call(callerOf("ann"), "GET", `${base}/digest`))).code).toBe("NOT_FOUND");
+    const on = setup();
+    expect(await on.call(callerOf("ann"), "GET", `${base}/sources`)).toMatchObject({ sources: expect.any(Array) as unknown });
   });
 
   it("a write needs a live browser session and a writer role: a token and the Auditor are refused and nothing changes", async () => {

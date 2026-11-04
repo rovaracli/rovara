@@ -354,6 +354,8 @@ export interface ScopeWork {
   type: "tombstone" | "principals" | "audience" | "replaced";
   system: string;
   scope?: string;
+  /** A tombstone queued by removing a source row: the project that removed it, so that project's editors see the place as "being removed" until the worker is done. Work queued any other way has none. */
+  project?: string;
   sourceIds?: string[];
   /** `replaced`: the rows of the versions a newer version replaced (hidden already); the worker removes them, their vectors and the notes made from them. */
   rowKeys?: Array<{ pk: string; sk: string }>;

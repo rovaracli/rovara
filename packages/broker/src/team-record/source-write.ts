@@ -109,7 +109,7 @@ const WORDS = {
 class RemovalRunning extends Error {}
 /** A place the edition's rules never allow (Slack Connect; a DM in Public): answered 422 with its own route-local code, like the two above. */
 class NotAllowed extends Error {}
-const removalRunningReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This place is still being cleared. Try again in an hour." } });
+const removalRunningReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This source was just removed and its stored data is still being deleted. You can add it again in about an hour." } });
 const notAllowedReply = (error: NotAllowed): RecordRouteReply => ({ status: 422, body: { code: "SOURCE_NOT_ALLOWED", message: error.message } });
 const invalid = (message: string = WORDS.invalid) => agentXError("CONFIG_INVALID", message);
 const stale = (message: string = WORDS.stale) => agentXError("CHANGE_STALE", message);
@@ -448,7 +448,7 @@ async function saveRemove(run: Run, body: Extract<SourceWriteBody, { action: "re
   const at = nowIso(run);
   const textOnly = body.source === "rovara";
   const work: ScopeWork = {
-    requestId: randomUUID(), type: "tombstone", system: body.source, scope: body.scope, cause: "excluded", hidePending: true, at, queuedAtSeconds: Math.floor(run.now() / 1000), hidden: 0,
+    requestId: randomUUID(), type: "tombstone", system: body.source, scope: body.scope, project: run.project, cause: "excluded", hidePending: true, at, queuedAtSeconds: Math.floor(run.now() / 1000), hidden: 0,
     ...(textOnly ? { textOnly: true } : { childPending: true }),
   };
   const reply: Reply = { status: 200, body: { status: "removed" } };
@@ -624,6 +624,20 @@ async function rejectChange(run: Run, changeId: string): Promise<Reply> {
 
 // ---- the admin read
 
+/**
+ * The places this project removed whose deletion is still queued (the same queue `refuseWhileRemoving` reads), oldest first and at most 100: what an editor sees as "being removed". Work that only strips Rovara text,
+ * and work queued without a project (a tap, an erasure), is not listed. A queue that cannot be read lists nothing (the add is still refused by the server).
+ */
+async function clearingPlaces(deps: RecordQueryDependencies, orgId: OrgId, project: string): Promise<Array<{ source: string; scope: string; since: string }>> {
+  let queue: Awaited<ReturnType<typeof listScopeWork>>;
+  try { queue = await listScopeWork(deps.table, orgId, QUEUE_READ); } catch { return []; }
+  return queue
+    .filter((work) => work.type === "tombstone" && work.textOnly !== true && work.project === project && work.scope !== undefined && (work.cause === "excluded" || work.cause === "source_deleted"))
+    .map((work) => ({ source: work.system, scope: work.scope!, since: work.at }))
+    .sort((a, b) => a.since.localeCompare(b.since))
+    .slice(0, 100);
+}
+
 /** What a person who may edit sees on the Sources tab (`SourcesAdminViewSchema`). Anyone else keeps the older reply of the route. */
 export async function sourcesAdminView(deps: RecordQueryDependencies, request: RecordRouteRequest, project: string): Promise<unknown> {
   const sources = deps.sources;
@@ -653,6 +667,7 @@ export async function sourcesAdminView(deps: RecordQueryDependencies, request: R
   const skippedUnlinked = await Promise.resolve(deps.skipped?.read(orgId, project)).catch(() => undefined);
   const repositoryNames = await Promise.resolve(sources.repositoryNames?.(orgId, project)).catch(() => undefined);
   const roster = await Promise.resolve(ctx.roster?.({ orgId, project })).catch(() => undefined);
+  const clearing = await clearingPlaces(deps, orgId, project);
   const soleApprover = roster !== undefined && roster.complete && roster.eligibleIds.length === 1 && roster.eligibleIds[0] === request.caller.developerId;
   return SourcesAdminViewSchema.parse({
     sources: shown, otherPaused: paused.filter((key) => !matched.has(key)).length,
@@ -660,6 +675,7 @@ export async function sourcesAdminView(deps: RecordQueryDependencies, request: R
       changeId: change.id, source: change.source, scope: change.scope, kind: change.kind, reasons: change.reasons, proposedByYou: change.proposedBy === request.caller.developerId, expiresAt: change.expiresAt,
     })),
     canEdit: true, soleApprover, offered, ...(skippedUnlinked === undefined ? {} : { skippedUnlinked }),
+    ...(clearing.length === 0 ? {} : { clearing }),
     ...(repositoryNames === undefined || repositoryNames.length === 0 ? {} : { repositories: repositoryNames.slice(0, 100).map((repository) => ({ name: repository.name, scope: `github:repo/${String(repository.id)}` })) }),
   });
 }

@@ -12,7 +12,7 @@ import { eraseProject } from "../../../packages/broker/src/team-record/erase.js"
 import { DEFAULT_DELETE_BUDGET, runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { hiddenByPending } from "../../../packages/broker/src/team-record/acl.js";
 import { advanceItemHead, isScopeClosed } from "../../../packages/broker/src/team-record/item-head.js";
-import { listScopeWork, pendingHidesOf, sourceRowItem } from "../../../packages/broker/src/team-record/store.js";
+import { listScopeWork, pendingHidesOf, putScopeWork, sourceRowItem } from "../../../packages/broker/src/team-record/store.js";
 import type { CompanyLocks } from "../../../packages/broker/src/team-record/edition.js";
 import { AUDIT_CAPTURE_TABLE, capturingAuditDeps } from "../../support/audit-capture.js";
 import type { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -465,7 +465,7 @@ describe("ingest after a removal", () => {
     await seeded(h);
     await post(h, WHO.owner, remove(1));
     const again = await post(h, WHO.owner, add());
-    expect(again).toEqual({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This place is still being cleared. Try again in an hour." } });
+    expect(again).toEqual({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This source was just removed and its stored data is still being deleted. You can add it again in about an hour." } });
     expect(JSON.stringify(again.body)).not.toContain("repo/9");
     expect(sourceRows(h)).toHaveLength(0);
     expect(marker(h)).toBeDefined();
@@ -775,5 +775,98 @@ describe("the Rovara row", () => {
     expect(runs).toBeGreaterThanOrEqual(2);
     expect(queue(h)).toHaveLength(0);
     expect(events(h).map((row) => (row.sourceRef as { id: string }).id).sort()).toEqual(["m-1", "m-2", "m-3", "m-4"]);
+  });
+});
+
+// ---- task 8: what an editor sees while a removed source is still being cleared
+async function view(h: Harness, who: Who, options: { org?: OrgId; project?: string; withContext?: boolean } = {}) {
+  return await handleRecordRoute(dependencies(h), {
+    method: "GET", path: PATH(options.project ?? "web"), query: {}, caller: caller({ orgId: options.org ?? ORG_A, developerId: who.id, projectRole: who.projectRole }),
+    ...(options.withContext === false ? {} : { write: contextOf(h, who, undefined) }),
+  }) as { status: number; body: Record<string, unknown> };
+}
+
+describe("T8: the editors' view lists a removed source while its data is still being deleted", () => {
+  it("clearing is absent before a removal, present after it (source, place, since), and gone once the worker has finished", async () => {
+    const h = harness();
+    await seeded(h);
+    const before = await view(h, WHO.owner);
+    expect(before.status).toBe(200);
+    expect(before.body).not.toHaveProperty("clearing");
+    expect(before.body.sources).toHaveLength(1);
+    const removedAt = new Date(h.w.clock.ms).toISOString();
+    await post(h, WHO.owner, remove(1));
+    const during = await view(h, WHO.owner);
+    expect(during.body.sources).toEqual([]);
+    expect(during.body.clearing).toEqual([{ source: "github", scope: GITHUB_SCOPE, since: removedAt }]);
+    // A maintainer of the project sees it too.
+    expect((await view(h, WHO.maint)).body.clearing).toEqual([{ source: "github", scope: GITHUB_SCOPE, since: removedAt }]);
+    h.w.clock.ms += 59 * 60_000;
+    await worker(h);
+    expect(queue(h)).toHaveLength(0);
+    const after = await view(h, WHO.owner);
+    expect(after.status).toBe(200);
+    expect(after.body).not.toHaveProperty("clearing");
+  });
+
+  it("members and callers without a live browser session get the old reply, with no clearing field", async () => {
+    const h = harness();
+    await seeded(h);
+    const memberBefore = await view(h, WHO.contrib);
+    expect(memberBefore.status).toBe(200);
+    await post(h, WHO.owner, remove(1));
+    for (const reply of [await view(h, WHO.contrib), await view(h, WHO.viewer), await view(h, { ...WHO.owner, browser: false }), await view(h, WHO.maint, { withContext: false })]) {
+      expect(reply.status).toBe(200);
+      expect(reply.body).not.toHaveProperty("clearing");
+      expect(reply.body).not.toHaveProperty("canEdit");
+      expect(JSON.stringify(reply.body)).not.toContain("repo/9");
+    }
+    // Byte-for-byte the reply a member had before there was a clearing list (the row is gone either way).
+    expect(JSON.stringify((await view(h, WHO.contrib)).body)).toBe(JSON.stringify({ sources: [] }));
+    expect(memberBefore.body.sources).toHaveLength(1);
+  });
+
+  it("another company, and another project of the same company, never see it", async () => {
+    const h = harness();
+    await seeded(h);
+    const other = { id: OTHER_ORG_MAINT, orgRole: "member", projectRole: "maintainer" } as const;
+    await post(h, WHO.owner, remove(1));
+    expect((await view(h, WHO.owner)).body.clearing).toHaveLength(1); // positive control: the view does list it for the project
+    const ownerOfB = { id: OTHER_ORG_OWNER, orgRole: "owner", projectRole: "maintainer" } as const;
+    for (const reply of [await view(h, other, { org: ORG_B }), await view(h, ownerOfB, { org: ORG_B }), await view(h, WHO.owner, { project: "api" })]) {
+      expect(reply.status).toBe(200);
+      expect(reply.body).not.toHaveProperty("clearing");
+    }
+    // Company B's own removal shows only B's place, and A's view is unchanged by it.
+    expect(await post(h, other, add({ retention: "C" }), { org: ORG_B })).toMatchObject({ status: 200 });
+    expect(await post(h, other, remove(1), { org: ORG_B })).toEqual({ status: 200, body: { status: "removed" } });
+    expect((await view(h, other, { org: ORG_B })).body.clearing).toHaveLength(1);
+    expect((await view(h, WHO.owner)).body.clearing).toHaveLength(1);
+  });
+
+  it("a Rovara row's removal is not a clearing place (the place stays open and can be added at once)", async () => {
+    const h = harness();
+    expect(await post(h, WHO.owner, add({ source: "rovara", scope: "rovara:project/web", retention: "C" }))).toMatchObject({ status: 200 });
+    expect(await post(h, WHO.owner, remove(1, { source: "rovara", scope: "rovara:project/web" }))).toEqual({ status: 200, body: { status: "removed" } });
+    expect(queue(h)).toHaveLength(1); // positive control: work is queued
+    expect((await view(h, WHO.owner)).body).not.toHaveProperty("clearing");
+  });
+
+  it("queue work that carries no project (a tap or an erasure) is not listed, and the list is bounded at 100", async () => {
+    const h = harness();
+    const base = { type: "tombstone", system: "github", cause: "excluded", hidePending: true, hidden: 0, childPending: true } as const;
+    await putScopeWork(h.w.table, ORG_A, { ...base, requestId: randomUUID(), scope: "github:repo/700", at: AT, queuedAtSeconds: 1 });
+    for (let index = 0; index < 120; index += 1) await putScopeWork(h.w.table, ORG_A, { ...base, requestId: randomUUID(), scope: `github:repo/${String(1000 + index)}`, project: "web", at: new Date(Date.parse(AT) + index * 1000).toISOString(), queuedAtSeconds: 1 + index });
+    const reply = await view(h, WHO.owner);
+    const clearing = reply.body.clearing as Array<{ scope: string }>;
+    expect(clearing).toHaveLength(100);
+    expect(clearing.some((entry) => entry.scope === "github:repo/700")).toBe(false);
+  });
+
+  it("the queue item carries the project that removed the place, nothing else new", async () => {
+    const h = harness();
+    await seeded(h);
+    await post(h, WHO.owner, remove(1));
+    expect(queue(h)[0]).toMatchObject({ project: "web", scope: GITHUB_SCOPE, cause: "excluded" });
   });
 });

@@ -58,9 +58,10 @@ async function takeBudget(deps: LessonRouteDependencies, caller: DeveloperCaller
 }
 
 /** Lessons answer only where learning is on for the project: with the project's mode Off (or no setting that reads), every lesson route answers "not found", as it did before lessons existed. */
-async function requireLearningOn(deps: LessonRouteDependencies, caller: DeveloperCaller, project: string): Promise<void> {
+async function requireLearningOn(deps: LessonRouteDependencies, caller: DeveloperCaller, project: string, sources = false): Promise<void> {
   const resolved = await resolveLearning(deps.lessons.settings, caller.orgId, project);
-  if (resolved.mode === "Off") throw agentXError("NOT_FOUND", "Lessons are not available for this project.");
+  // The Sources read says so in its own fixed code (still a 404): the page can tell "learning is off" from "the team record is not set up here" (that one has no lessons routes at all). The other routes are unchanged.
+  if (resolved.mode === "Off") throw sources ? agentXError("LEARNING_OFF", "Learning is off for this project.") : agentXError("NOT_FOUND", "Lessons are not available for this project.");
 }
 
 function strictBody<T>(schema: ZodType<T>, raw: unknown): T {
@@ -111,7 +112,7 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
     const known = id === undefined || (action === undefined && (id === "digest" || id === "sources")) || action === "history";
     if (!known) return undefined;
     const { name } = await deps.projectFor(caller, rawProject!);
-    await requireLearningOn(deps, caller, name);
+    await requireLearningOn(deps, caller, name, action === undefined && id === "sources");
     if (id === undefined) return buildLessonsView(deps.lessons, who, name);
     await takeBudget(deps, caller, "read");
     if (action === undefined && id === "digest") return buildLessonsDigest(deps.lessons, who, name);

@@ -54,3 +54,29 @@ describe("the Sources tab for a person who cannot edit", () => {
   expect(chunk.loads).toBe(0);
  });
 });
+
+describe("T8: learning is off for the project", () => {
+ const LEARNING_OFF = "Learning is off for this project, so Rovara isn't recording anything from these sources. Turn learning on to add or change sources.";
+ it("a member sees the learning-off line, not 'isn't set up'", async () => {
+  const f = openSources({ canEdit: false, lessonsSources: refusal("LEARNING_OFF", "Learning is off for this project.", 404) });
+  expect(await screen.findByText(LEARNING_OFF)).toBeTruthy();
+  expect(screen.queryByText(/isn't set up/u)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Add source" })).toBeNull();
+  expect(f.recordCalls()).toHaveLength(0);
+  expect(chunk.loads).toBe(0);
+ });
+ it("an editor sees the same line, and the editing screen is not loaded or asked for", async () => {
+  const f = openSources({ lessonsSources: refusal("LEARNING_OFF", "Learning is off for this project.", 404) });
+  expect(await screen.findByText(LEARNING_OFF)).toBeTruthy();
+  expect(screen.queryByText(/isn't set up/u)).toBeNull();
+  expect(screen.queryByText("Add a source")).toBeNull();
+  expect(f.recordCalls()).toHaveLength(0);
+  expect(chunk.loads).toBe(0);
+ });
+ it("the team record switch off (plain not found) still says the record isn't set up and makes no record request", async () => {
+  const f = openSources({ lessonsSources: refusal("NOT_FOUND", "The team record isn't set up here.", 404) });
+  expect(await screen.findByText("The team record isn't set up here yet.")).toBeTruthy();
+  expect(screen.queryByText(/Learning is off/u)).toBeNull();
+  expect(f.recordCalls()).toHaveLength(0);
+ });
+});

@@ -161,6 +161,8 @@ export const SourcesAdminViewSchema = z.object({
   skippedUnlinked: z.record(z.string().min(1).max(60), z.number().int().min(0)).optional(),
   /** The project's repositories and the place each is (`github:repo/<id>`), read live, so the screen offers exactly these when adding a repository. Absent when the list cannot be read. */
   repositories: z.array(z.object({ name: z.string().min(1).max(200), scope: SourceScopeSchema }).strict()).max(100).optional(),
+  /** Sources that were removed and whose stored data the delete worker has not finished clearing yet (oldest first). The screen shows each as a row with no controls and does not offer to add it again. Absent when none (or when the queue cannot be read). */
+  clearing: z.array(z.object({ source: RecordSystemSchema, scope: SourceScopeSchema, since: z.string().datetime() }).strict()).max(100).optional(),
 }).strict();
 export type SourcesAdminView = z.infer<typeof SourcesAdminViewSchema>;
 export const SourcesAdminViewReaderSchema = forwardReader(SourcesAdminViewSchema);
