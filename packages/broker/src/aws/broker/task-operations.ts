@@ -65,6 +65,7 @@ import { SETUP_DRAFT_PREAMBLE } from "../../rovara-code/setup-draft.js";
 import { setupAgentWireOf } from "../../rovara-code/setup-agent.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { designReviewCapability } from "../../design-review/capability.js";
+import { chatgptPlanUse } from "../../design-review/chatgpt-plan.js";
 import { designTemplateInstructions } from "../../design-review/template.js";
 import type { DesignReviewDispatch } from "../../design-review/round-ports.js";
 import { recordedOffersOf, setupRecipeOffersFor } from "../../org/setup-recipe-dispatch.js";
@@ -366,10 +367,11 @@ export async function taskOperationParts(
   if(resolvedModel.selectionUnavailable===true&&(applied?.modelDecision===undefined||applied.modelDecision.reason==="PROJECT_SELECTION")&&input.workflowMode!=="CHECKS"&&input.agentRun===undefined)throw agentXError("MODEL_NOT_ALLOWED","The project model selection is unavailable. Check How we work.");
   // A step that picks a model of its own which the person's plan does not serve runs on the model proxy, not on the plan. An agent step of a run never
   // uses a person's ChatGPT plan: the run is the agent's work (it may be started by an event or paid for by a project), not the person's own coding turn.
-  let chatgpt = applied?.dropChatgpt === true || input.agentRun !== undefined || input.designReview !== undefined ? undefined : planSelection;
+  const planUse = chatgptPlanUse({ dropChatgpt: applied?.dropChatgpt === true, agentRun: input.agentRun !== undefined, designReview: input.designReview !== undefined, governedPersonal: applied?.modelDecision?.sourceId === "personal-chatgpt" });
+  let chatgpt = planUse.selection ? planSelection : undefined;
   // Governed personal plans execute the exact verified resolver tuple, never the connection's preferred model.
   // A design review never runs on a person's ChatGPT plan (B-m5): the plan stays undefined, and the round is not run for want of a route with an alias.
-  if(input.designReview===undefined&&applied?.modelDecision?.sourceId==="personal-chatgpt") {
+  if(planUse.governed) {
     if((turnPolicy===undefined&&task?.payer?.kind!=="member")||applied.model===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's verified personal model is unavailable.");
     chatgpt={developerId:turnPolicy?.frozen.payerDeveloperId??(task!.payer as {developerId:string}).developerId,model:applied.model};
   }

@@ -19,6 +19,7 @@ import { DesignReviewRoundStop, prepareDesignReviewRound, slotOf, type RoundInpu
 import type { DesignReviewRoundPorts, RoundSourceReaders } from "../../packages/broker/src/design-review/round-ports.js";
 import type { PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import { designReviewKeyIds, putSlotKey } from "../../packages/broker/src/design-review/slot-keys.js";
+import { chatgptPlanUse } from "../../packages/broker/src/design-review/chatgpt-plan.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const NOW = "2026-11-03T12:00:00.000Z";
@@ -484,5 +485,17 @@ describe("the preparation of a round", () => {
     expect(await stopOf(prepareDesignReviewRound(inputs(p.value, { workflow }), resolved))).toEqual({ kind: "at_cap" });
     expect(p.sourceReaders).not.toHaveBeenCalled();
     void agentXError;
+  });
+});
+
+describe("B-m5: a design review never runs on a person's ChatGPT plan, however the stage is governed", () => {
+  // Every input the operation builder can have, exhaustively: the plan is used only when it is not a design review.
+  it("keeps the plan for no design review round, whether the task's selection or a governed stage's personal source asked for it, and keeps today's answer for every other step", () => {
+    for (const dropChatgpt of [false, true]) for (const agentRun of [false, true]) for (const governedPersonal of [false, true]) {
+      const review = chatgptPlanUse({ dropChatgpt, agentRun, designReview: true, governedPersonal });
+      expect(review, JSON.stringify({ dropChatgpt, agentRun, governedPersonal })).toEqual({ selection: false, governed: false });
+      const other = chatgptPlanUse({ dropChatgpt, agentRun, designReview: false, governedPersonal });
+      expect(other).toEqual({ selection: !dropChatgpt && !agentRun, governed: governedPersonal });
+    }
   });
 });
