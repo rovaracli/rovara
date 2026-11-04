@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -12,10 +12,56 @@ const scripts = { "boot.sh": read("boot.sh"), "boot-legacy.sh": read("boot-legac
 const firewallOf = (script: string) => /cat >\/usr\/local\/libexec\/rovara-container-firewall <<'FIREWALL'\n([\s\S]*?)\nFIREWALL/.exec(script)?.[1] ?? "";
 const mentionsRvi = (line: string) => /\brvi\b/u.test(line);
 
+// Every bash run in this file is hermetic, so it behaves the same on a macOS laptop and a Linux CI runner. PATH is the case's fakes plus ONE directory of links to the basic tools below (the host's own, GNU on
+// Linux as on a worker), never /usr/bin, /sbin or /usr/sbin: a runner's real ip6tables, iptables, sysctl or systemctl can never be found. Code that reads /proc reads a fake one (fakeProc), never the host's.
+const BASIC_TOOLS = ["awk", "basename", "cat", "chmod", "cp", "dirname", "grep", "head", "ln", "mkdir", "mktemp", "mv", "paste", "rm", "sed", "sort", "sync", "tail", "touch", "tr", "wc"];
+/** Host tools that must never be reachable from a case: each is either faked in the case's own bin directory or deliberately absent. */
+const HOST_ONLY_TOOLS = ["ip6tables", "iptables", "nft", "sysctl", "systemctl", "docker", "modprobe"];
+let basicToolsDirectory: string | undefined;
+const basicTools = () => {
+  if (basicToolsDirectory !== undefined) return basicToolsDirectory;
+  const directory = join(mkdtempSync(join(tmpdir(), "rovara-walls-tools-")), "bin");
+  mkdirSync(directory);
+  for (const tool of BASIC_TOOLS) {
+    const found = ["/usr/bin", "/bin"].map((system) => join(system, tool)).find((path) => existsSync(path));
+    if (found !== undefined) symlinkSync(found, join(directory, tool));
+  }
+  basicToolsDirectory = directory;
+  return directory;
+};
+/** PATH for a case: its fakes first (if any), then the basic tools, and nothing else. */
+const hermeticPath = (bin?: string) => (bin === undefined ? basicTools() : `${bin}:${basicTools()}`);
+/** A fake /proc as ipv6_active reads it: IPv6 on (an AL2023 worker) or off. */
+const fakeProc = (ipv6: boolean) => {
+  const proc = mkdtempSync(join(tmpdir(), "rovara-walls-proc-"));
+  for (const scope of ["all", "default"]) {
+    mkdirSync(join(proc, "sys/net/ipv6/conf", scope), { recursive: true });
+    writeFileSync(join(proc, "sys/net/ipv6/conf", scope, "disable_ipv6"), ipv6 ? "0\n" : "1\n");
+  }
+  mkdirSync(join(proc, "net"));
+  if (ipv6) writeFileSync(join(proc, "net/if_inet6"), "00000000000000000000000000000001 01 80 10 80       lo\n");
+  return proc;
+};
+/** Points stage 2 text that reads /proc at a fake one. */
+const onFakeProc = (code: string, proc = fakeProc(true)) => code.replaceAll("/proc/", `${proc}/`);
+/** True when bash code still names the host's /proc (an absolute /proc/ path, not one under a fake directory). */
+const readsHostProc = (code: string) => /(?:^|[\s"'`$(<=])\/proc\//mu.test(code);
+
 describe("the run network adds no firewall rule", () => {
   it("finds the firewall rules in the boot scripts", () => {
     expect(firewallOf(scripts["boot.sh"]).length).toBeGreaterThan(200);
     expect(firewallOf(scripts["boot-legacy.sh"]).length).toBeGreaterThan(200);
+  });
+
+  it("runs every case hermetically: the PATH the cases use finds the basic tools but no host firewall or system tool (a Linux runner has a real ip6tables in /usr/sbin), and no case reads the host's /proc", () => {
+    const found = (tool: string) => spawnSync("/bin/bash", ["-c", `command -v ${tool}`], { env: { PATH: hermeticPath() }, encoding: "utf8" }).stdout.trim();
+    for (const tool of HOST_ONLY_TOOLS) expect(found(tool), `${tool} is reachable from the cases' PATH`).toBe("");
+    // the positive control: the same lookup does find what the cases need
+    for (const tool of BASIC_TOOLS) expect(found(tool), `${tool} is missing from the cases' PATH`).not.toBe("");
+    expect(readsHostProc(fn("ipv6_active"))).toBe(true);
+    expect(readsHostProc(onFakeProc(fn("ipv6_active")))).toBe(false);
+    // No case writes "a file" to /dev/stdout: spawnSync's stdout is a socket, which Linux will not reopen through /proc/self/fd (it passes on macOS only).
+    expect(readFileSync(new URL(import.meta.url), "utf8")).not.toMatch(/WORKER_ENV_FILE=\/dev\//u);
   });
 
   const INPUT_LOOP = 'for i in rvb+ rvi+; do f iptables INPUT -i $i -j DROP; ! command -v ip6tables >/dev/null || f ip6tables INPUT -i $i -j DROP || echo "ip6tables $i rule failed" >&2; done';
@@ -95,8 +141,10 @@ esac
     const bin = join(directory, "bin");
     spawnSync("mkdir", ["-p", bin]);
     writeFileSync(join(bin, "iptables"), FAKE); chmodSync(join(bin, "iptables"), 0o755);
-    const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory };
-    const unit = spawnSync("/bin/bash", ["-c", firewallOf(scripts[name])], { env, encoding: "utf8" });
+    // The firewall unit reads the resolver addresses from resolv.conf: a fake one, not the runner's.
+    writeFileSync(join(directory, "resolv.conf"), "nameserver 10.42.0.2\n");
+    const env = { PATH: hermeticPath(bin), FAKE_DIR: directory };
+    const unit = spawnSync("/bin/bash", ["-c", firewallOf(scripts[name]).replaceAll("/etc/resolv.conf", join(directory, "resolv.conf")).replaceAll("/run/systemd/resolve/resolv.conf", join(directory, "missing.conf"))], { env, encoding: "utf8" });
     expect(unit.status, unit.stderr).toBe(0);
     // Stage 2, in its own order: the wall (stage2_main), then the launcher's block_imds (every worker start).
     for (const step of stage2Steps) {
@@ -144,7 +192,7 @@ esac
     // Inserted at the top, rvb+ first and rvi+ second, so the file lists rvi+ above rvb+.
     const RVI = "INPUT -i rvi+ -j DROP";
     const RVB = "INPUT -i rvb+ -j DROP";
-    const ipv6Function = () => `${/^ipv6_active\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? ""}\n${fn("wall_ipv6_into_host")}`;
+    const ipv6Function = (proc = fakeProc(true)) => `${onFakeProc(/^ipv6_active\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? "", proc)}\n${fn("wall_ipv6_into_host")}`;
     /** Runs the step with a fake ip6tables (or none, or one that cannot be used) and says whether IPv6 is active on the pretend host. */
     const wallIpv6 = (options: { ip6tables: "works" | "missing" | "unusable"; ipv6Active: boolean; times?: number; before?: string[] }) => {
       const directory = mkdtempSync(join(tmpdir(), "rovara-ipv6-"));
@@ -155,10 +203,10 @@ esac
         writeFileSync(join(bin, tool), body); chmodSync(join(bin, tool), 0o755);
       }
       if (options.before !== undefined) writeFileSync(join(directory, "ip6tables.rules"), `${options.before.join("\n")}\n`);
-      // /usr/bin and /bin hold the real tools the step needs (cat); a real ip6tables there would only be found if the fake is missing, so the missing case runs with a PATH that cannot reach it.
-      const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory };
+      // The hermetic PATH holds the basic tools the step needs and no real ip6tables, so "missing" is missing on Linux too.
+      const env = { PATH: hermeticPath(bin), FAKE_DIR: directory };
       const code = `${ipv6Function()}\nipv6_active() { ${options.ipv6Active ? "true" : "false"}; }\n${Array.from({ length: options.times ?? 1 }, () => "wall_ipv6_into_host").join("\n")}\n`;
-      const ran = spawnSync("/bin/bash", ["-c", options.ip6tables === "missing" ? `command() { [ "$1" = -v ] && [ "$2" = ip6tables ] && return 1; builtin command "$@"; }\n${code}` : code], { env, encoding: "utf8" });
+      const ran = spawnSync("/bin/bash", ["-c", code], { env, encoding: "utf8" });
       let rules: string[] = [];
       try { rules = readFileSync(join(directory, "ip6tables.rules"), "utf8").split("\n").filter(Boolean); } catch { /* no rule file: nothing was inserted */ }
       return { status: ran.status, rules };
@@ -185,7 +233,7 @@ esac
         spawnSync("mkdir", ["-p", bin]);
         writeFileSync(join(bin, "ip6tables"), `#!/bin/bash\nif [ "$1" = -S ]; then exit 0; fi\nif [ "$1" = -C ]; then exit 1; fi\ncase "$*" in *"${bridge}"*) exit 1 ;; esac\nexit 0\n`);
         chmodSync(join(bin, "ip6tables"), 0o755);
-        return spawnSync("/bin/bash", ["-c", `${ipv6Function()}\nwall_ipv6_into_host`], { env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: "utf8" }).status;
+        return spawnSync("/bin/bash", ["-c", `${ipv6Function()}\nwall_ipv6_into_host`], { env: { PATH: hermeticPath(bin) }, encoding: "utf8" }).status;
       };
       expect(failing("rvb+")).not.toBe(0);
       expect(failing("rvi+")).not.toBe(0);
@@ -198,7 +246,8 @@ esac
         if (input.all !== undefined) writeFileSync(join(proc, "sys/net/ipv6/conf/all/disable_ipv6"), `${input.all}\n`);
         if (input.default !== undefined) writeFileSync(join(proc, "sys/net/ipv6/conf/default/disable_ipv6"), `${input.default}\n`);
         const code = (/^ipv6_active\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? "").replaceAll("/proc/", `${proc}/`);
-        return spawnSync("/bin/bash", ["-c", `${code}\nipv6_active`], { encoding: "utf8" }).status === 0;
+        expect(readsHostProc(code)).toBe(false);
+        return spawnSync("/bin/bash", ["-c", `${code}\nipv6_active`], { env: { PATH: hermeticPath() }, encoding: "utf8" }).status === 0;
       };
       expect(state({ inet6: true, all: "0", default: "0" })).toBe(true);
       expect(state({ inet6: true, all: "1", default: "0" })).toBe(true);
@@ -214,11 +263,11 @@ esac
       const bin = join(directory, "bin");
       spawnSync("mkdir", ["-p", bin, join(directory, "libexec"), join(directory, "systemd")]);
       for (const tool of ["iptables", "ip6tables"]) { writeFileSync(join(bin, tool), FAKE.replace('op=$1; shift; rule="$*"', 'op=$1; shift; rule="$*"\n[ "$op" = -S ] && exit 0')); chmodSync(join(bin, tool), 0o755); }
-      const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory };
+      const env = { PATH: hermeticPath(bin), FAKE_DIR: directory };
       const get = (name: string) => /^\w+\(\) \{\n[\s\S]*?^\}$/mu.exec("")?.[0] ?? name;
       void get;
       const unit = (/^install_run_walls_unit\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? "").replaceAll("/usr/local/libexec", join(directory, "libexec")).replaceAll("/etc/systemd/system", join(directory, "systemd"));
-      const helpers = ["ipv6_active", "wall_between_run_networks", "wall_ipv6_into_host"].map((name) => new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "mu").exec(scripts["boot-stage2.sh"])?.[0] ?? "").join("\n");
+      const helpers = onFakeProc(["ipv6_active", "wall_between_run_networks", "wall_ipv6_into_host"].map((name) => new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "mu").exec(scripts["boot-stage2.sh"])?.[0] ?? "").join("\n"));
       const setup = `FIREWALL_UNIT=rovara-container-firewall.service\nWORKER_UNIT=agentx-worker.service\nRUN_WALLS_UNIT=rovara-run-walls.service\ninstall() { mkdir -p "\${@: -1}"; }\nsystemctl() { echo "systemctl $*" >> "${directory}/systemctl.log"; }\n${helpers}\nipv6_active() { true; }\n${unit}\ninstall_run_walls_unit`;
       const installed = spawnSync("/bin/bash", ["-c", setup], { env, encoding: "utf8" });
       expect(installed.status, installed.stderr).toBe(0);
@@ -262,9 +311,9 @@ esac
       tool("systemctl", `#!/bin/bash\necho "$* :: $(grep -c '^AGENTX_TEST_SERVICES_NOT_PULLED=all$' "${envFile}") withheld" >> "${join(directory, "systemctl.log")}"\nexit 5\n`);
       const facts = '{"metadataBlocked":true,"runWalls":true,"ipv6Drops":true,"prepull":"ok","prepulled":1,"loggedOut":true,"dockerVersion":"25.0.5"}';
       writeFileSync(envFile, `AGENTX_FOO=1\nAGENTX_TEST_SERVICES_NOT_PULLED=svc/postgres\nAGENTX_TEST_SERVICES_BOOT_FACTS=${facts}\nAGENTX_BAR=2\n`);
-      const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory };
+      const env = { PATH: hermeticPath(bin), FAKE_DIR: directory };
       const names = ["install_run_walls_unit", "ipv6_active", "wall_between_run_networks", "wall_ipv6_into_host", "withhold_test_services_for_ipv6"];
-      const code = names.map((name) => new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "mu").exec(scripts["boot-stage2.sh"])?.[0] ?? "").join("\n")
+      const code = onFakeProc(names.map((name) => new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "mu").exec(scripts["boot-stage2.sh"])?.[0] ?? "").join("\n"))
         .replaceAll("/usr/local/libexec", join(directory, "libexec")).replaceAll("/etc/systemd/system", join(directory, "systemd"));
       const setup = `FIREWALL_UNIT=f.service\nWORKER_UNIT=w.service\nRUN_WALLS_UNIT=r.service\nWORKER_ENV_FILE=${envFile}\ninstall() { mkdir -p "\${@: -1}"; }\nsystemctl() { :; }\n${code}\nipv6_active() { true; }\ninstall_run_walls_unit`;
       expect(spawnSync("/bin/bash", ["-c", setup], { env, encoding: "utf8" }).status).toBe(0);
@@ -300,14 +349,14 @@ esac
       expect(body).toContain('mv -f "$tmp" "$file"');
       expect(body).not.toMatch(/>\s*"\$file"/u);
       const directory = mkdtempSync(join(tmpdir(), "rovara-withhold-"));
-      const run = (file: string) => spawnSync("/bin/bash", ["-c", `log() { :; }\n${body}\nWORKER_ENV_FILE=${file}\nwithhold_test_services_for_ipv6 ip6tables-unusable`], { encoding: "utf8" });
+      const run = (file: string) => spawnSync("/bin/bash", ["-c", `log() { :; }\n${body}\nWORKER_ENV_FILE=${file}\nwithhold_test_services_for_ipv6 ip6tables-unusable`], { env: { PATH: hermeticPath() }, encoding: "utf8" });
       writeFileSync(join(directory, "worker.env"), "A=1\n");
       expect(run(join(directory, "worker.env")).status).toBe(0);
       expect(readFileSync(join(directory, "worker.env"), "utf8")).toBe("A=1\nAGENTX_TEST_SERVICES_NOT_PULLED=all\n");
       expect(run(join(directory, "missing-dir", "worker.env")).status).not.toBe(0);
     });
     it("the wall records why it failed in IPV6_WALL_REASON (a fixed word), and nothing when it succeeded", () => {
-      const reasonOf = (bin: string, active: boolean) => spawnSync("/bin/bash", ["-c", `${ipv6Function()}\nipv6_active() { ${active ? "true" : "false"}; }\nwall_ipv6_into_host; echo "status=$? reason=$IPV6_WALL_REASON"`], { env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: "utf8" }).stdout.trim();
+      const reasonOf = (bin: string, active: boolean) => spawnSync("/bin/bash", ["-c", `${ipv6Function()}\nipv6_active() { ${active ? "true" : "false"}; }\nwall_ipv6_into_host; echo "status=$? reason=$IPV6_WALL_REASON"`], { env: { PATH: hermeticPath(bin) }, encoding: "utf8" }).stdout.trim();
       const bin = (body: string | undefined) => {
         const directory = mkdtempSync(join(tmpdir(), "rovara-ipv6-reason-"));
         spawnSync("mkdir", ["-p", join(directory, "bin")]);
@@ -320,7 +369,14 @@ esac
       expect(reasonOf(bin("#!/bin/bash\nexit 3\n"), false)).toBe("status=0 reason=");
     });
     it("the boot facts reuse the wall's result instead of probing ip6tables a second time", () => {
-      const facts = (reason: string) => spawnSync("/bin/bash", ["-c", `WORKER_ENV_FILE=/dev/stdout\nPREPULL_RESULT=none PREPULL_COUNT=0 PREPULL_LOGGED_OUT=false\nmetadata_blocked() { true; }\niptables() { return 0; }\ndocker() { echo 25.0.5; }\nip6tables() { echo "PROBED" >&2; return 0; }\nIPV6_WALL_REASON=${reason}\n${fn("write_test_services_boot_facts")}\nwrite_test_services_boot_facts`], { encoding: "utf8" });
+      // The facts go to a real file, as on a worker. Not /dev/stdout: spawnSync's stdout is a socket, and on Linux bash opens /dev/stdout as /proc/self/fd/1, which a socket refuses (ENXIO), so nothing was written there.
+      const facts = (reason: string) => {
+        const directory = mkdtempSync(join(tmpdir(), "rovara-boot-facts-"));
+        const envFile = join(directory, "worker.env");
+        const ran = spawnSync("/bin/bash", ["-c", `WORKER_ENV_FILE=${envFile}\nPREPULL_RESULT=none PREPULL_COUNT=0 PREPULL_LOGGED_OUT=false\nmetadata_blocked() { true; }\niptables() { return 0; }\ndocker() { echo 25.0.5; }\nip6tables() { echo "PROBED" >&2; return 0; }\nIPV6_WALL_REASON=${reason}\n${fn("write_test_services_boot_facts")}\nwrite_test_services_boot_facts`], { env: { PATH: hermeticPath() }, encoding: "utf8" });
+        expect(ran.status, ran.stderr).toBe(0);
+        return { stdout: existsSync(envFile) ? readFileSync(envFile, "utf8") : "", stderr: ran.stderr };
+      };
       const failed = facts("rule-not-added");
       expect(failed.stdout).toContain('"ipv6Drops":false,"ipv6DropsReason":"rule-not-added"');
       expect(failed.stderr).not.toContain("PROBED");
@@ -335,7 +391,7 @@ esac
       writeFileSync(target, "A=1\nAGENTX_TEST_SERVICES_NOT_PULLED=svc/postgres\n");
       // mktemp is replaced by a symlink to /dev/full (every write fails with ENOSPC); rm -f removes the link, never /dev/full.
       const code = `log() { :; }\nmktemp() { ln -s /dev/full "${directory}/full"; echo "${directory}/full"; }\nmv() { echo MOVED >> "${directory}/mv.log"; command mv "$@"; }\n${fn("withhold_test_services_for_ipv6")}\nWORKER_ENV_FILE=${target}\nwithhold_test_services_for_ipv6 rule-not-added`;
-      const ran = spawnSync("/bin/bash", ["-c", code], { encoding: "utf8" });
+      const ran = spawnSync("/bin/bash", ["-c", code], { env: { PATH: hermeticPath() }, encoding: "utf8" });
       expect(ran.status).not.toBe(0);
       expect(existsSync(join(directory, "mv.log"))).toBe(false);
       expect(readFileSync(target, "utf8")).toBe("A=1\nAGENTX_TEST_SERVICES_NOT_PULLED=svc/postgres\n");
@@ -373,7 +429,7 @@ esac
     writeFileSync(join(bin, "systemctl"), `#!/bin/bash\necho "systemctl $*" >>"${log}"\ncat "${directory}/daemon.json" >>"${log}"\n`); chmodSync(join(bin, "systemctl"), 0o755);
     const text = (/^set_docker_address_pools\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? "")
       .replaceAll("/etc/docker/daemon.json", join(directory, "daemon.json")).replace("bash /usr/local/libexec/rovara-container-firewall", `echo firewall-script >>"${log}"`);
-    const ran = spawnSync("/bin/bash", ["-c", `DOCKER_DATA_ROOT=/data\n${text}\nset_docker_address_pools`], { env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: "utf8" });
+    const ran = spawnSync("/bin/bash", ["-c", `DOCKER_DATA_ROOT=/data\n${text}\nset_docker_address_pools`], { env: { PATH: hermeticPath(bin) }, encoding: "utf8" });
     expect(ran.status, ran.stderr).toBe(0);
     const daemon = JSON.parse(readFileSync(join(directory, "daemon.json"), "utf8")) as { "data-root": string; "default-address-pools": Array<{ base: string; size: number }> };
     expect(daemon["data-root"]).toBe("/data");
