@@ -35,6 +35,25 @@ describe("rule 1: a review nobody has set defaults to the strongest usable model
   });
 });
 
+describe("the fallback note names the model that was asked for, never the model that ran (QA-06)", () => {
+  const unusableOpus = { ...row(opus), accountCannotUse: true as const };
+  for (const stage of REVIEWS) {
+    it(`${stage}: the preferred other model is not callable on this account, so the builder's model checks and the note says the preferred model was unavailable`, () => {
+      const result = resolveStageModel(input(stage, [sonnet], { candidates: [row(sonnet), unusableOpus] }));
+      expect(result).toMatchObject({ kind: "resolved", model: sonnet, fallback: { used: "anthropic/claude-sonnet-4", wanted: "anthropic/claude-opus-4", reasonCode: "DEFAULT_MODEL_UNAVAILABLE" } });
+    });
+  }
+  it("the same model on a source that cannot serve it, replaced by the same model on one that can: the note names no model", () => {
+    const source = { model: sonnet, sourceId: "src_aaaaaaaaaaaaaaaaaaaa", enabled: true, inEffectiveOrder: true, evidence: { orgId: "org_a", sourcesRevision: 2, kind: "tested_bedrock_role" as const } };
+    const result = resolveStageModel({ ...input("build", [sonnet]), referenceModel: undefined, candidates: [{ ...row(sonnet), accountCannotUse: true as const }, source] });
+    expect(result).toMatchObject({ kind: "resolved", model: sonnet, sourceId: "src_aaaaaaaaaaaaaaaaaaaa", fallback: { used: "anthropic/claude-sonnet-4", wanted: null } });
+  });
+  it("with no other model asked for at all, the note names none (the page says \"the preferred model\") rather than the model that ran", () => {
+    const result = resolveStageModel(input("code_review", [sonnet]));
+    expect(result).toMatchObject({ kind: "resolved", model: sonnet, fallback: { used: "anthropic/claude-sonnet-4", wanted: null } });
+  });
+});
+
 describe("rule 2: no other company's model is usable, so today's behaviour stands and says so", () => {
   for (const stage of REVIEWS) {
     it(`${stage}: the same company's other model, marked noOtherCompany, never a refusal`, () => {
