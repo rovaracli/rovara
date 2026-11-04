@@ -480,6 +480,33 @@ export async function readSealedDnsRecord(docker: DockerCli, dnsHelperName: stri
   return read.exitCode === 0 ? parseSealedDnsRecord(read.stdout) : { unknown: [], dropped: 0, unrecorded: 0 };
 }
 
+/** How long the sealed DNS helper may take to listen after its `docker run` returned. Its node loads the worker's modules under a 0.5 CPU limit, which takes seconds on a busy worker. */
+export const SEALED_DNS_READY_TIMEOUT_MS = 30_000;
+const SEALED_DNS_READY_POLL_MS = 250;
+
+/**
+ * Waits until the sealed DNS helper LISTENS. `docker run --detach` returns when the container has started, not when its program has bound .2:53: until then the helper's address answers a query with "port unreachable",
+ * so a lookup in a check sandbox started at once fails at once (EAI_AGAIN) instead of reaching the sinkhole, and nothing is recorded. The helper's program writes its state file only AFTER it has bound UDP and TCP
+ * (sealed-dns-helper.ts `main`: `await helper.start()`, then the first flush), so the file being readable through the same fixed `docker exec <helper> cat` is the proof it listens. A helper that exited (the exec fails)
+ * or never binds within `timeoutMs` throws RUNTIME_UNAVAILABLE: the round must not start without its name server. The caller starts the check sandbox only after this returns.
+ */
+export async function waitForSealedDnsHelper(
+  docker: DockerCli, dnsHelperName: string,
+  options: { timeoutMs?: number; pollMs?: number; signal?: AbortSignal; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<void> {
+  if (!SEALED_HELPER_NAME.test(dnsHelperName)) throw agentXError("CONFIG_INVALID", "not a sealed DNS helper's name");
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }));
+  const deadline = now() + (options.timeoutMs ?? SEALED_DNS_READY_TIMEOUT_MS);
+  for (;;) {
+    if (options.signal?.aborted === true) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed DNS helper's start was cancelled");
+    const read = await docker.run(["exec", dnsHelperName, "cat", SEALED_DNS_STATE_FILE], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+    if (read !== undefined && read.exitCode === 0) return;
+    if (now() >= deadline) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed DNS helper is not listening, so the sealed round did not start");
+    await sleep(options.pollMs ?? SEALED_DNS_READY_POLL_MS);
+  }
+}
+
 // ---- The working sandbox is off the services network for the whole check round (review H1) ----
 
 /** What `detachWorkingSandbox` proved: the working sandbox was not on the services network when it looked. Only that function makes one. */
