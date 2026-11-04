@@ -82,7 +82,7 @@ async function world(options: { slack?: boolean; modelAccess?: boolean; budgetUs
   const started = options.slack === true
     ? await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread: SLACK_THREAD, userId: MAYA.slackUserId, instructions: "Retry timed-out payments", workflowPath: "QUICK", requestId: randomUUID() })
     : await harness.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Retry timed-out payments" }, path: "QUICK" });
-  const taskId = options.slack === true ? String((JSON.parse((started as { body: string }).body) as { taskId: string }).taskId) : String(((started as { body: { task: { taskId: string } } }).body.task).taskId);
+  const taskId = "statusCode" in started ? String((JSON.parse(started.body) as { taskId: string }).taskId) : String((started.body.task as { taskId: string }).taskId);
   const workspaceId = (harness.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId;
   const active = () => String((harness.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId?: string }).activeOperationId ?? "");
   await harness.finish(workspaceId, active(), "SUCCEEDED", { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } });
