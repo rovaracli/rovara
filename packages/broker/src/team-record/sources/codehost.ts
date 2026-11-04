@@ -116,6 +116,8 @@ export interface CodeHostTapDependencies extends GateDependencies {
   log?: TapLog;
   /** S2: lets a comment edited by its own author, with no earlier text from the host, keep that author's whole text when nobody else edited it before. Absent: such an edit keeps no words. */
   priorEdits?: PriorEditsPort;
+  /** A repository deleted or transferred marks its source row's health `failing` (after the place is tombstoned). Absent: the row is left as it is (tests). */
+  sourceHealth?: { markFailing(input: { workspaceId: string; source: SourceSystem; scope: string }): Promise<void> };
 }
 
 export interface TapResult {
@@ -123,6 +125,8 @@ export interface TapResult {
   duplicates: number;
   refused: number;
   failed: number;
+  /** True when a DELETE at the source could not be accepted by any durable path (table, queue, event invoke). The webhook answer is then retryable, so the host can send it again. */
+  removalFailed?: boolean;
 }
 
 export const HUMAN_EDIT_MAX_FILES = 40;
@@ -149,20 +153,31 @@ function audienceOf(repo: CodeHostRepo, at: string): Audience {
 
 const prId = (repo: CodeHostRepo, number: number): string => `${repo.fullName}#pr${number}`;
 
-export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event: CodeHostEvent): Promise<TapResult> } {
+export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event: CodeHostEvent, hooks?: { removalStarted?: () => void }): Promise<TapResult> } {
   const log: TapLog = deps.log ?? (() => undefined);
 
-  async function handle(event: CodeHostEvent): Promise<TapResult> {
+  async function handle(event: CodeHostEvent, hooks: { removalStarted?: () => void } = {}): Promise<TapResult> {
     const result: TapResult = { written: 0, duplicates: 0, refused: 0, failed: 0 };
     // A delete at the source is always honoured, before any mode or source-row check: what was recorded must go whatever the settings say now.
     if (event.type === "repository" || (event.type === "comment" && event.action === "deleted")) {
+      // The webhook is told first that a removal began, so one still running at its budget is answered retryable.
+      try { hooks.removalStarted?.(); } catch { /* a caller's callback never fails the removal */ }
       try {
         await deps.sink.tombstone(event.type === "repository"
           ? { workspaceId: event.repo.workspaceId, system: event.repo.host, scope: repoScope(event.repo), cause: "source_deleted" }
           : { workspaceId: event.repo.workspaceId, system: event.repo.host, sourceIds: [commentId(event)], cause: "source_deleted" });
       } catch {
         result.failed += 1;
+        result.removalFailed = true;
         log("record.tombstone_failed", { host: event.repo.host });
+      }
+      // The place is gone at its source: its source row (if any) reads as failing. Never fails the delivery.
+      if (event.type === "repository" && deps.sourceHealth !== undefined) {
+        try {
+          await deps.sourceHealth.markFailing({ workspaceId: event.repo.workspaceId, source: sourceOf(event.repo), scope: repoScope(event.repo) });
+        } catch {
+          log("record.health_failed", { host: event.repo.host });
+        }
       }
       return result;
     }

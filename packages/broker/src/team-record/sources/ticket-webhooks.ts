@@ -189,7 +189,7 @@ export interface TicketWebhookTapDependencies {
 }
 
 /** Called by the hook ingress after a delivery is verified. Never throws; the delivery is answered whatever happens here. */
-export function createTicketWebhookTap(deps: TicketWebhookTapDependencies): (input: TicketWebhookInput & { orgId: string; project: string }) => Promise<void> {
+export function createTicketWebhookTap(deps: TicketWebhookTapDependencies): (input: TicketWebhookInput & { orgId: string; project: string; removalStarted?: () => void }) => Promise<void> {
   return async (input) => {
     try {
       const result = ticketsOfWebhook(input);
@@ -197,7 +197,8 @@ export function createTicketWebhookTap(deps: TicketWebhookTapDependencies): (inp
       const context: TicketContext = { workspaceId: deps.workspaceOf?.(input.orgId) ?? input.orgId, project: input.project };
       if (result.removed.length > 0) {
         // A delete is the one thing that must not be lost (TRW-5 S2): the sink has already tried the table, the queue and an Event invoke of the broker. If it still failed, this is thrown so the hook
-        // ingress answers 503 and the provider (Linear, Jira) sends the delivery again.
+        // ingress answers 503 and the provider (Linear, Jira) sends the delivery again. The ingress is told first that a removal began, so a removal still running at its budget is answered 503 too.
+        try { input.removalStarted?.(); } catch { /* a callback of the caller never fails the removal */ }
         try { await deps.recorder.remove(context, { source: input.source, system: result.system, ids: result.removed }); } catch { throw Object.assign(new Error("the record could not take the delete"), { name: "RecordRemovalNotAccepted" }); }
       }
       for (const item of result.changes) await deps.recorder.record(context, item);
@@ -209,14 +210,15 @@ export function createTicketWebhookTap(deps: TicketWebhookTapDependencies): (inp
 }
 
 /** The adapter the hook ingress calls (`HookIngressDeps.recordTap`): only Linear and Jira hooks reach the record; every other source is left alone. */
-export function createHookRecordTap(deps: TicketWebhookTapDependencies): (input: { orgId: string; hook: { source: string; project: string; tenant: unknown }; body: unknown }) => Promise<void> {
+export function createHookRecordTap(deps: TicketWebhookTapDependencies): (input: { orgId: string; hook: { source: string; project: string; tenant: unknown }; body: unknown; removalStarted?: () => void }) => Promise<void> {
   const tap = createTicketWebhookTap(deps);
-  return async ({ orgId, hook, body }) => {
+  return async ({ orgId, hook, body, removalStarted }) => {
+    const started = removalStarted === undefined ? {} : { removalStarted };
     const tenant = (hook.tenant ?? {}) as Record<string, unknown>;
     if (hook.source === "linear" && typeof tenant.organizationId === "string" && typeof tenant.teamId === "string") {
-      await tap({ source: "linear", orgId, project: hook.project, body, tenant: { organizationId: tenant.organizationId, teamId: tenant.teamId } });
+      await tap({ source: "linear", orgId, project: hook.project, body, tenant: { organizationId: tenant.organizationId, teamId: tenant.teamId }, ...started });
     } else if (hook.source === "jira" && typeof tenant.siteHost === "string") {
-      await tap({ source: "jira", orgId, project: hook.project, body, tenant: { siteHost: tenant.siteHost, ...(typeof tenant.projectKey === "string" ? { projectKey: tenant.projectKey } : {}) } });
+      await tap({ source: "jira", orgId, project: hook.project, body, tenant: { siteHost: tenant.siteHost, ...(typeof tenant.projectKey === "string" ? { projectKey: tenant.projectKey } : {}) }, ...started });
     }
   };
 }

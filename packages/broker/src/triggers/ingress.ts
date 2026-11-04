@@ -167,7 +167,7 @@ export interface HookIngressDeps {
    * Team record (R7): offered a verified delivery's body after the hook's own provider read it and did not refuse its tenant (`createHookRecordTap`). It decides for
    * itself what to keep (a Linear or Jira change, comment or deletion that no trigger uses) and never throws. Absent: nothing is offered, as before.
    */
-  recordTap?: (input: { orgId: OrgId; hook: HookRecord; body: unknown }) => Promise<unknown>;
+  recordTap?: (input: { orgId: OrgId; hook: HookRecord; body: unknown; removalStarted?: () => void }) => Promise<unknown>;
   /**
    * Live interaction L1: offered a verified Linear delivery's body after the tenant check (`handleLinearComment`): a comment on an issue a session follows may be an Ask. It decides for itself what to do
    * and never changes what the delivery is answered. Absent: nothing is offered.
@@ -510,7 +510,11 @@ async function receive(deps: HookIngressDeps, delivery: HookDelivery): Promise<H
     return forbidden();
   }
   // Team record (R7): after the tenant check, before events are dispatched; a tap that throws or is slow changes nothing about the answer.
-  if (deps.recordTap !== undefined && !("tenantMismatch" in normalized)) await offerToRecord(deps.recordTap, { orgId, hook, body }, () => log("hook.record_tap_failed", { hookId: hook.hookId }), (name) => log("hook.record_tap_late_failure", { hookId: hook.hookId, error: name }));
+  // A delivery that carries a REMOVAL which the tap has not finished by the budget is answered 503 (the vendor sends it again); a put keeps the answer it always had.
+  if (deps.recordTap !== undefined && !("tenantMismatch" in normalized)) {
+    const watch = { removalStarted: false };
+    await offerToRecord(deps.recordTap, { orgId, hook, body, removalStarted: () => { watch.removalStarted = true; } }, () => log("hook.record_tap_failed", { hookId: hook.hookId }), (name) => log("hook.record_tap_late_failure", { hookId: hook.hookId, error: name }), watch);
+  }
   if (deps.commentIntake !== undefined && hook.source === "linear" && !("tenantMismatch" in normalized)) await offerToRecord(deps.commentIntake, { orgId, hook, body }, () => log("hook.comment_intake_failed", { hookId: hook.hookId }), (name) => log("hook.comment_intake_late_failure", { hookId: hook.hookId, error: name }));
   return deliverEvents(deps, orgId, hook, normalized, now);
 }
@@ -565,15 +569,16 @@ async function deliverEvents(deps: HookIngressDeps, orgId: OrgId, hook: HookReco
 /** Longest the Team record tap may hold a hook delivery's answer. */
 export const HOOK_RECORD_TAP_BUDGET_MS = 1_500;
 
-async function offerToRecord<T>(tap: (input: T) => Promise<unknown>, input: T, onFailure: () => void, onLateFailure: (name: string) => void): Promise<void> {
+async function offerToRecord<T>(tap: (input: T) => Promise<unknown>, input: T, onFailure: () => void, onLateFailure: (name: string) => void, watch?: { removalStarted: boolean }): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let answered = false;
+  let removalTimedOut = false;
   // The tap keeps running after the budget. Whatever it does then is caught HERE, so that a rejection after the answer is never unhandled (in Node on Lambda that fails whatever invocation is running at the time,
   // possibly another request's after a freeze and thaw). A removal the record could not take at all (table, queue and Event invoke all failed) after the answer cannot be answered 503 any more: it is logged.
   const running = (async () => tap(input))();
   running.catch((error: unknown) => { if (answered) onLateFailure(errorName(error)); });
   try {
-    await Promise.race([running, new Promise<void>((resolve) => { timer = setTimeout(() => { answered = true; onFailure(); resolve(); }, HOOK_RECORD_TAP_BUDGET_MS); })]);
+    await Promise.race([running, new Promise<void>((resolve) => { timer = setTimeout(() => { answered = true; removalTimedOut = watch?.removalStarted === true; onFailure(); resolve(); }, HOOK_RECORD_TAP_BUDGET_MS); })]);
   } catch (error) {
     answered = true;
     onFailure();
@@ -582,6 +587,8 @@ async function offerToRecord<T>(tap: (input: T) => Promise<unknown>, input: T, o
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+  // A removal still running at the budget cannot be counted as done: it goes on in the background (it is repeatable), and the answer is retryable so the vendor sends the delivery again.
+  if (removalTimedOut) throw Object.assign(new Error("the record had not finished the delete in time"), { name: "RecordRemovalNotAccepted" });
 }
 
 /** What a delivery to `/v1/hooks/{source}/{hookId}` is answered. A fault of ours answers 503 with nothing in it, so that the vendor tries again. */

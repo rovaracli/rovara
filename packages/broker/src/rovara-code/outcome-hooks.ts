@@ -18,6 +18,7 @@ import type { TestProofRead } from "../developer/test-proof-lines.js";
 import { readCi, readReviews } from "./merge-tracking.js";
 import { OUTCOME_WRITE_FAILED_METRIC, recordOutcomeSample, scoreOutcomeSample, type OutcomeDependencies } from "./outcomes.js";
 import { approvalReviewsOf } from "./host-port.js";
+import { announcePlanOutcome, announceReviewOutcome } from "../lessons/record-events.js";
 
 type Permission = "admin" | "write" | "read" | "none";
 
@@ -61,6 +62,8 @@ function noteFailure(deps: OutcomeDependencies, what: string, error: unknown): v
   }
 }
 
+const recordLog = (deps: OutcomeDependencies): { log: (event: string, fields: Record<string, unknown>) => void } => ({ log: (event, fields) => deps.log?.(event, fields) });
+
 const agentOf = (task: OutcomeTask): OutcomeSample["agent"] => ({
   id: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, version: String(task.agent?.version ?? 0), digest: task.agent?.digest ?? "none",
 });
@@ -87,6 +90,8 @@ export async function recordPlanOutcome(
       orgId: task.orgId, project: task.project, stage: "plan_critic", taskId: task.taskId, claim: "plan_ready", round: String(input.revision),
       state, reason, agent: agentOf(task), model: `${last.model.provider}/${last.model.modelId}`.slice(0, 300), createdAt: input.at, scoredAt: input.at,
     });
+    // The Team record (where it is on): the decision is the outcome of one claim. Bounded and never failing.
+    await announcePlanOutcome(task, { planId: String(input.revision), outcome: reason, claims: 1, claimsHeld: state === "held" ? 1 : 0, at: input.at }, recordLog(deps));
   } catch (error) {
     noteFailure(deps, "plan", error);
   }
@@ -200,6 +205,9 @@ export async function recordPublicationOutcomes(
     if (unreadable) {
       await recordOutcomeSample(deps, { ...base, stage: "check", claim: "proves_change", state: "no_outcome", reason: "proof_unavailable", model: "test-proof", scoredAt: createdAt });
     }
+    // The Team record (where it is on): what the publication claimed. All of it is still pending, so none is held yet. Bounded and never failing.
+    const claims = reviews.length + (risk ? 1 : 0) + (proves ? 1 : 0) + (unreadable ? 1 : 0);
+    await announceReviewOutcome(task, { publicationId: round, outcome: "published", claims, claimsHeld: 0, at: input.now }, recordLog(deps));
   } catch (error) {
     noteFailure(deps, "publication", error);
   }

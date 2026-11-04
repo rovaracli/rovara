@@ -28,7 +28,7 @@ import { homeFixture } from "../../web/support/fixtures.js";
 import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/support/fixtures.js";
 import { scenario } from "./scenarios.js";
 import { howWeWorkMock, resetHowWeWork } from "./how-we-work-mock.js";
-import { lessonsMock, resetLessons } from "./lessons-mock.js";
+import { lessonsMock, resetLessons, setSourceEditing } from "./lessons-mock.js";
 import { resetTestEnvironment, testEnvironmentMock } from "./test-environment-mock.js";
 import { learningMock, learningSettingsMock, lockLearning, resetLearning, overviewLearning, homeSuggestionCards } from "./learning-mock.js";
 import { companyPolicyMock, resetCompanyPolicy } from "./company-policy-mock.js";
@@ -70,6 +70,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  const url = new URL(request.url ?? "/", origin), method = request.method ?? "GET", headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(",") : value]));
  function json(status: number, body: unknown) { response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });response.end(JSON.stringify(body)); }
  try {
+ if (url.pathname === "/__mock/source-editing" && method === "POST") { setSourceEditing(true);json(200, { ok: true });return; }
  if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);adminMemberName = "Maya";adminDirectory = createAdminDirectory();if (current.name === "admin") adminDirectory.seedLaneB();adminLoseCreateAck = false;adminFailAfterWrite = false;adminReadFailures = 0;resetHowWeWork();resetLearning();resetLessons();resetCompanyPolicy();taskPage.reset();onboardingConnected=false;onboardingProject=undefined;onboardingDraft="none";resetTestEnvironment();revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/learning-lock" && method === "POST") { lockLearning();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/task-learning" && method === "POST") { taskPage.learn();json(200, { ok: true });return; }

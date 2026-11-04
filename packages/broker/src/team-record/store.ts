@@ -37,7 +37,7 @@ import {
   type SourceConfig,
 } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item } from "../agents/table-writes.js";
-import { reopenScope } from "./item-head.js";
+import { recordHeadIndexValue, reopenScope } from "./item-head.js";
 import { retentionRefusal } from "./retention.js";
 import type { Edition, PendingHides, TeamRecordTable } from "./types.js";
 
@@ -158,8 +158,9 @@ export interface ScopeCursor { phase: "own" | "below"; key?: Record<string, unkn
  * returns a cursor to resume from, so a busy place is walked over several calls and never given up on. The sort value is the place itself, so a sibling that only starts the
  * same (`slack:T1/C90` for `slack:T1/C9`) is never matched.
  */
-export async function scopePage(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number, options: { exact?: boolean; cursor?: ScopeCursor } = {}): Promise<{ items: Item[]; cursor?: ScopeCursor }> {
-  const value = recordScopeIndexValue(orgId, scope);
+export async function scopePage(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number, options: { exact?: boolean; cursor?: ScopeCursor; heads?: boolean } = {}): Promise<{ items: Item[]; cursor?: ScopeCursor }> {
+  // `heads`: the item heads of the place (and of the places under it) instead of its rows; they are indexed apart so a walk over rows never reads them.
+  const value = options.heads === true ? recordHeadIndexValue(orgId, scope) : recordScopeIndexValue(orgId, scope);
   const items: Item[] = [];
   let phase: ScopeCursor["phase"] = options.cursor?.phase ?? "own";
   let key = options.cursor?.key;
@@ -323,19 +324,21 @@ export async function putSourceConfig(table: TeamRecordTable, config: SourceConf
   if (elsewhere) return { status: "refused", reason: "scope_in_other_project" };
   // An admin saving a source row for a place opens it again (a repository transferred back, a channel brought back): the closed-place marker goes.
   await reopenScope(table, parsed.data.workspaceId, parsed.data.scope);
-  await table.documentClient.send(new PutCommand({
-    TableName: table.tableName,
-    Item: withoutUndefined({
-      ...recordSourceKey(parsed.data.workspaceId, parsed.data.project, parsed.data.source, parsed.data.scope),
-      entityType: "TEAM_RECORD_SOURCE",
-      ...parsed.data,
-      [TEAM_RECORD_GSI1.partition]: recordSourceConfigIndexValue(parsed.data.workspaceId, parsed.data.source, parsed.data.scope),
-      // The place is indexed under its own partition value (the sparse "places" list), so a tombstone of a place above it finds every place with a source row, even one with nothing stored yet, without reading any item row.
-      [TEAM_RECORD_GSI3.partition]: recordPlaceIndexValue(parsed.data.workspaceId, parsed.data.scope),
-      [TEAM_RECORD_GSI3.sort]: parsed.data.scope,
-    }),
-  }));
+  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: sourceRowItem(parsed.data) }));
   return { status: "saved" };
+}
+
+/** A source row as it is stored: its key, its type and its two index values. `putSourceConfig` and the source write route (`source-write.ts`) store exactly this. */
+export function sourceRowItem(config: SourceConfig): Item {
+  return withoutUndefined({
+    ...recordSourceKey(config.workspaceId, config.project, config.source, config.scope),
+    entityType: "TEAM_RECORD_SOURCE",
+    ...config,
+    [TEAM_RECORD_GSI1.partition]: recordSourceConfigIndexValue(config.workspaceId, config.source, config.scope),
+    // The place is indexed under its own partition value (the sparse "places" list), so a tombstone of a place above it finds every place with a source row, even one with nothing stored yet, without reading any item row.
+    [TEAM_RECORD_GSI3.partition]: recordPlaceIndexValue(config.workspaceId, config.scope),
+    [TEAM_RECORD_GSI3.sort]: config.scope,
+  });
 }
 
 export async function listSourceConfigs(table: TeamRecordTable, orgId: OrgId, project: string, maxItems = 200): Promise<SourceConfig[]> {
@@ -351,6 +354,8 @@ export interface ScopeWork {
   type: "tombstone" | "principals" | "audience" | "replaced";
   system: string;
   scope?: string;
+  /** A tombstone queued by removing a source row: the project that removed it, so that project's editors see the place as "being removed" until the worker is done. Work queued any other way has none. */
+  project?: string;
   sourceIds?: string[];
   /** `replaced`: the rows of the versions a newer version replaced (hidden already); the worker removes them, their vectors and the notes made from them. */
   rowKeys?: Array<{ pk: string; sk: string }>;
@@ -364,6 +369,8 @@ export interface ScopeWork {
   /** Audience and member changes walk a big place a budget at a time: where the last run stopped (the changes are idempotent, so a repeated page is harmless). */
   walkCursor?: ScopeCursor;
   cause?: "source_deleted" | "person_erased" | "project_archived" | "excluded";
+  /** A tombstone of a place that hides and deletes only the rows that hold free text (and the facts made from them); the place stays open and its other rows stay (a removed Rovara source row). */
+  textOnly?: boolean;
   add?: string[];
   remove?: string[];
   audience?: unknown;
@@ -378,8 +385,13 @@ export interface ScopeWork {
   queuedAtSeconds: number;
 }
 
+/** A queue item as it is stored: `putScopeWork` writes it, and a transaction that must queue work with its own change (`source-remove.ts`) puts exactly this. */
+export function scopeWorkItem(orgId: OrgId, work: ScopeWork): Item {
+  return withoutUndefined({ ...recordDeleteQueueKey(orgId, work.at, work.requestId), entityType: "TEAM_RECORD_SCOPE_WORK", ...work });
+}
+
 export async function putScopeWork(table: TeamRecordTable, orgId: OrgId, work: ScopeWork): Promise<void> {
-  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: withoutUndefined({ ...recordDeleteQueueKey(orgId, work.at, work.requestId), entityType: "TEAM_RECORD_SCOPE_WORK", ...work }) }));
+  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: scopeWorkItem(orgId, work) }));
 }
 
 export function scopeWorkFromItem(item: Item): (ScopeWork & { pk: string; sk: string }) | undefined {
@@ -448,34 +460,82 @@ export async function scrubTier0Developer(table: TeamRecordTable, orgId: OrgId, 
   return changed;
 }
 
+/** How many times a scrub of a source row looks again when another writer changed the row under it. */
+const SCRUB_ATTEMPTS = 3;
+
+/**
+ * One scrub of a source row: `plan` says, from the row as read, what to set and what the row must still hold for that to be right. The write is conditional on those values and moves the
+ * row's `revision` (and `updatedAt`), so an editor who loaded the row before the scrub can no longer write the scrubbed value back through the source route's revision fence. A row that changed
+ * meanwhile is read again and planned again, within a small bound; past it the scrub throws and the erase step is resumed by the next run. Returns whether the row was written.
+ */
+async function scrubRow(table: TeamRecordTable, config: SourceConfig, plan: (row: SourceConfig) => { set: Array<{ path: string[]; value: unknown }>; expect: Array<{ path: string[]; value: unknown }> } | undefined): Promise<boolean> {
+  const key = recordSourceKey(config.workspaceId, config.project, config.source, config.scope);
+  let row: SourceConfig | undefined = config;
+  for (let attempt = 0; attempt < SCRUB_ATTEMPTS; attempt += 1) {
+    const change = row === undefined ? undefined : plan(row);
+    if (change === undefined) return false;
+    const aliases = new Aliases();
+    const at = (path: string[]): string => path.map((part) => aliases.name(part)).join(".");
+    const sets = [...change.set.map((entry) => `${at(entry.path)} = ${aliases.value(entry.value)}`), `${aliases.name("revision")} = if_not_exists(${aliases.name("revision")}, ${aliases.value(0)}) + ${aliases.value(1)}`, `${aliases.name("updatedAt")} = ${aliases.value(new Date().toISOString())}`];
+    try {
+      await table.documentClient.send(new UpdateCommand({
+        TableName: table.tableName, Key: key, UpdateExpression: `SET ${sets.join(", ")}`,
+        ConditionExpression: [`attribute_exists(${aliases.name("pk")})`, ...change.expect.map((entry) => `${at(entry.path)} = ${aliases.value(entry.value)}`)].join(" AND "),
+        ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
+      }));
+      return true;
+    } catch (error) {
+      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      const again = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item };
+      row = sourceConfigFromItem(again.Item);
+    }
+  }
+  throw new Error("the source row kept changing");
+}
+
+/**
+ * A place that is gone at its source (a repository deleted or transferred): the source row's `health` becomes `failing`. The write touches ONLY `health`. It never moves `revision` or `updatedAt`, so
+ * an editor who loaded the row at revision N can still write at N (the source route's fence), and the route's own writes set only the five editable fields, so a change never undoes the health.
+ * It is conditional on the revision it read (a missing revision reads as 0, like everywhere), so a row removed and added again, or changed, between the read and the write is read again (three
+ * attempts, then `busy`: the caller logs a fixed code; the place is already closed either way). `no_row`: nothing to mark. `already`: nothing to write.
+ */
+export async function markSourceFailing(table: TeamRecordTable, orgId: OrgId, source: RecordSystem, scope: string): Promise<"marked" | "already" | "no_row" | "busy"> {
+  for (let attempt = 0; attempt < SCRUB_ATTEMPTS; attempt += 1) {
+    const row = await getSourceConfigByScope(table, orgId, source, scope);
+    if (row === undefined) return "no_row";
+    if (row.health === "failing") return "already";
+    const aliases = new Aliases();
+    const revision = aliases.name("revision");
+    try {
+      await table.documentClient.send(new UpdateCommand({
+        TableName: table.tableName, Key: recordSourceKey(orgId, row.project, source, scope), UpdateExpression: `SET ${aliases.name("health")} = ${aliases.value("failing")}`,
+        ConditionExpression: row.revision === undefined ? `attribute_exists(${aliases.name("pk")}) AND attribute_not_exists(${revision})` : `attribute_exists(${aliases.name("pk")}) AND ${revision} = ${aliases.value(row.revision)}`,
+        ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
+      }));
+      return "marked";
+    } catch (error) {
+      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+    }
+  }
+  return "busy";
+}
+
 export async function scrubConfigDeveloper(table: TeamRecordTable, config: SourceConfig, developerId: string): Promise<boolean> {
-  const addedBy = config.addedBy === developerId;
-  const approved = config.approval?.by === developerId;
-  if (!addedBy && !approved) return false;
-  const aliases = new Aliases();
-  const sets = [...(addedBy ? [`${aliases.name("addedBy")} = ${aliases.value(ERASED_DEVELOPER_ID)}`] : []), ...(approved ? [`${aliases.name("approval")}.${aliases.name("by")} = ${aliases.value(ERASED_DEVELOPER_ID)}`] : [])];
-  await table.documentClient.send(new UpdateCommand({
-    TableName: table.tableName,
-    Key: recordSourceKey(config.workspaceId, config.project, config.source, config.scope),
-    UpdateExpression: `SET ${sets.join(", ")}`,
-    ConditionExpression: `attribute_exists(${aliases.name("pk")})`,
-    ExpressionAttributeNames: aliases.names,
-    ExpressionAttributeValues: aliases.values,
-  }));
-  return true;
+  return scrubRow(table, config, (row) => {
+    const addedBy = row.addedBy === developerId;
+    const approved = row.approval?.by === developerId;
+    if (!addedBy && !approved) return undefined;
+    return {
+      set: [...(addedBy ? [{ path: ["addedBy"], value: ERASED_DEVELOPER_ID }] : []), ...(approved ? [{ path: ["approval", "by"], value: ERASED_DEVELOPER_ID }] : [])],
+      expect: [...(addedBy ? [{ path: ["addedBy"], value: developerId }] : []), ...(approved ? [{ path: ["approval", "by"], value: developerId }] : [])],
+    };
+  });
 }
 
 export async function removeFromExclude(table: TeamRecordTable, config: SourceConfig, sourceIds: ReadonlySet<string>): Promise<boolean> {
-  if (!config.exclude.some((id) => sourceIds.has(id))) return false;
-  const aliases = new Aliases();
-  const key = recordSourceKey(config.workspaceId, config.project, config.source, config.scope);
-  await table.documentClient.send(new UpdateCommand({
-    TableName: table.tableName,
-    Key: key,
-    UpdateExpression: `SET ${aliases.name("exclude")} = ${aliases.value(config.exclude.filter((id) => !sourceIds.has(id)))}`,
-    ConditionExpression: `attribute_exists(${aliases.name("pk")})`,
-    ExpressionAttributeNames: aliases.names,
-    ExpressionAttributeValues: aliases.values,
-  }));
-  return true;
+  return scrubRow(table, config, (row) => {
+    if (!row.exclude.some((id) => sourceIds.has(id))) return undefined;
+    // Conditional on the list it was worked out from: an editor's change meanwhile is read again, not overwritten.
+    return { set: [{ path: ["exclude"], value: row.exclude.filter((id) => !sourceIds.has(id)) }], expect: [{ path: ["exclude"], value: row.exclude }] };
+  });
 }

@@ -18,6 +18,7 @@ import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { commentKey, withoutKeys } from "../developer/page-comments.js";
 import { can, resolveTaskAccess } from "../developer/task-access.js";
+import { announceRemembered } from "../lessons/record-events.js";
 import { flushLearningEvents, learningEvents, memberActor, rememberedEvent } from "./audit.js";
 import { forgetCorrection } from "./grouping.js";
 import { learningScopeChecked, learningScopeOf, learningSalt, readProjectRole, readStanding, readStandingChecked } from "./standing.js";
@@ -29,6 +30,8 @@ export type CaptureCommentDeps = DeveloperTaskRouteDependencies;
 type ForgetDeps = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "now">;
 /** `audit`: the Audit Ledger of the install, when there is one (the task route dependencies do not carry it). */
 interface AuditOption { audit?: LearningDeps["audit"] | undefined }
+/** `origin`: "slack" when the note came from a Slack thread; it follows the words into the Team record (the Slack rule). */
+interface OriginOption { origin?: "slack" | undefined }
 
 /** A comment is made on the requirements, design or plan of a task, so a correction from one is about the plan step. Accept lets a person choose another stage. */
 export const COMMENT_STAGE = "plan";
@@ -65,7 +68,7 @@ const view = (correction: LearningCorrection): RememberAnswer => ({ correction: 
  * Remembers one comment of a task. The caller is the signed-in person; `options.project` (the React route) must be the task's own project. Refuses, storing nothing, when the person
  * may not comment on the task, is not a member of its project, or the comment is not a correction.
  */
-export async function rememberTaskComment(deps: CaptureCommentDeps, caller: DeveloperCaller, taskId: string, commentId: string, options: { project?: string } & AuditOption = {}): Promise<RememberAnswer> {
+export async function rememberTaskComment(deps: CaptureCommentDeps, caller: DeveloperCaller, taskId: string, commentId: string, options: { project?: string } & AuditOption & OriginOption = {}): Promise<RememberAnswer> {
   const access = await resolveTaskAccess(deps, caller, taskId);
   if (access.source === "session" || !can(access.role, "comment")) throw notAllowed("You can read this task but not comment on it.");
   const project = access.task.project;
@@ -102,6 +105,8 @@ export async function rememberTaskComment(deps: CaptureCommentDeps, caller: Deve
   if (result.ok) {
     if (result.created) {
       await flushLearningEvents(learning, audited.events);
+      // The Team record (where it is on): the words are their author's. Bounded and never failing: see lessons/record-events.ts.
+      await announceRemembered({ ...access.task, orgId: caller.orgId }, { noteId: correctionId, text: prepared.text, actorDeveloperId: authorId, at: new Date(deps.now()).toISOString(), origin: options.origin }, { log: (event, fields) => deps.log?.({ event, ...fields }) });
       return view(result.correction);
     }
     const existing = parseCorrection(await getLearningItem(learning, scope, result.correctionSk));

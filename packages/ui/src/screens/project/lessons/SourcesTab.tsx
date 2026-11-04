@@ -1,4 +1,7 @@
+import { lazy, Suspense } from "react";
 import { useLessonSources } from "../../../api/lessons.js";
+import { useProject } from "../../../api/projects.js";
+import { useSourcesAdmin } from "../../../api/record-sources.js";
 import { ApiError } from "../../../api/errors.js";
 import { Banner } from "../../../design/Banner.js";
 import { Button } from "../../../design/Button.js";
@@ -7,17 +10,29 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { T, healthWords, kindWords, retentionWords } from "./lessons-text.js";
 import "./lessons.css";
 
-/** "Sources": what feeds the team record for this project, how long Rovara keeps it, and how each source is doing. Read-only here. A source kept for maintainers is named only to a maintainer. */
+// The editing screen is its own chunk: it loads only when the record route returned the editors' view (a maintainer of this project, or an owner or admin, in a live browser session).
+const SourcesAdmin = lazy(() => import("./SourcesAdmin.js"));
+
+/** "Sources": what feeds the team record for this project, how long Rovara keeps it, and how each source is doing. Members read it here; a person who may edit gets the editing screen. A source kept for maintainers is named only to a maintainer. */
 export function SourcesTab({ project }: { project: string }) {
- const read = useLessonSources(project);
+ const read = useLessonSources(project), person = useProject(project);
+ // Only a maintainer of the project is asked for the editors' view, and only once the lessons sources read has answered: that route exists only where the team record is on, so with the switch off nothing extra is requested and the tab is what it was before (the server still decides what the editors' view says).
+ const maintainer = person.data?.you.role === "maintainer" && read.isSuccess, admin = useSourcesAdmin(project, maintainer);
+ if (maintainer && admin.isPending) return <section className="rv-lessons" aria-label={T.SOURCES_TITLE}><Skeleton label={T.SOURCES_LOADING} /></section>;
+ if (admin.data?.canEdit === true) return <Suspense fallback={<section className="rv-lessons" aria-label={T.SOURCES_TITLE}><Skeleton label={T.SOURCES_LOADING} /></section>}><SourcesAdmin project={project} view={admin.data} /></Suspense>;
  if (read.isPending) return <section className="rv-lessons" aria-label={T.SOURCES_TITLE}><Skeleton label={T.SOURCES_LOADING} /></section>;
  if (read.isError || read.data === undefined) {
-  const gone = read.error instanceof ApiError && read.error.code === "NOT_FOUND";
-  return <section className="rv-lessons" aria-label={T.SOURCES_TITLE}><p role="alert">{gone ? T.SOURCES_UNAVAILABLE : "Couldn't load the sources. Try again."}</p>{!gone && <Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button>}</section>;
+  // Learning explicitly Off for the project has its own code (a 404 as well); a plain not found means the team record is not set up here at all.
+  const learningOff = read.error instanceof ApiError && read.error.code === "LEARNING_OFF";
+  // The company's lock has its own code; a setting that could not be read is a 503 and gets the retry line below.
+  const locked = read.error instanceof ApiError && read.error.code === "LEARNING_LOCKED";
+  const gone = learningOff || locked || (read.error instanceof ApiError && read.error.code === "NOT_FOUND");
+  return <section className="rv-lessons" aria-label={T.SOURCES_TITLE}><p role="alert">{learningOff ? T.SOURCES_LEARNING_OFF : locked ? T.SOURCES_LEARNING_LOCKED : gone ? T.SOURCES_UNAVAILABLE : "Couldn't load the sources. Try again."}</p>{!gone && <Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button>}</section>;
  }
  const data = read.data;
  return <section className="rv-lessons" aria-label={T.SOURCES_TITLE}>
   <Banner title={T.SOURCES_BANNER} tone="info" />
+  {admin.isError && !(admin.error instanceof ApiError && admin.error.code === "NOT_FOUND") && <p className="rv-muted">{T.SRC_NO_EDIT}</p>}
   {data.sources.length === 0 ? <p className="rv-muted">{T.SOURCES_NONE}</p> : <ul className="rv-lessons-list" aria-label={T.SOURCES_TITLE}>{data.sources.map((source, index) => <li key={index} className="rv-lessons-source">
    <h3>{kindWords(source.kind)}{source.scope !== undefined ? <> <span className="rv-muted"><VisibleText text={source.scope} /></span></> : <span className="rv-muted"> · {T.SOURCE_HIDDEN}</span>}</h3>
    <p>{T.KEEPS}: <strong>{retentionWords(source.retention)}</strong>{source.notesOptIn === true && <span className="rv-muted"> (notes with links, switched on by your admin)</span>}</p>

@@ -13,11 +13,23 @@ const PHONE = /(?<![\w.])\+?\d(?:[\s().-]{0,2}\d){9,14}(?![\w])/g;
 const ACCOUNT_ID = /(?<![\d])\d{12}(?![\d])/g;
 
 // A mention of a person by id: Slack `<@U123>` / `<@U123|name>`, Jira `[~accountid:abc]` / `[~name]`. A person erased later must not stay in other people's words, so the id (and the
-// display name Slack puts after the bar) never reaches storage: every mention reads `@member`.
-const MENTION = /<@[A-Z0-9]+(?:\|[^>]*)?>|\[~(?:accountid:)?[^\]\s]+\]/g;
+// display name Slack puts after the bar) never reaches storage: every mention reads `@member`. A Jira form right after a word character or bracket is code (`a[~i]`), not a mention.
+const MENTION = /<@[A-Z0-9]+(?:\|[^>]*)?>|(?<![\w)\]])\[~(?:accountid:)?[^\]\s]+\]/g;
+// A Linear mention is a link to the person's profile, as a markdown link (`[@Jane](https://linear.app/ws/profiles/jane)`) or bare.
+const LINEAR_MENTION = /\[@?[^\]\n]*\]\(https?:\/\/linear\.app\/[^\s)]*\/profiles?\/[^\s)]+\)|https?:\/\/linear\.app\/[^\s)]*\/profiles?\/[^\s)]+/g;
+// A GitHub `@login` (1 to 39 letters, digits and hyphens): not inside an email or a word, and not a team (`@org/team`) or a package scope (`@angular/core`).
+// An inline code span (`@Transactional`) is skipped whole, and so are the group words @here, @channel and @everyone.
+const LOGIN_MENTION = /(`[^`\n]*`)|(?<![\w@./-])@(?!(?:here|channel|everyone)(?![\w-]))[A-Za-z0-9][A-Za-z0-9-]{0,38}(?![\w/])/g;
 
-export function scrubPersonalDetails(text: string): string {
-  return text.replace(MENTION, "@member").replace(EMAIL, "[email]").replace(ACCOUNT_ID, "[account-id]").replace(PHONE, (match) => (/^\d{4}-\d{2}-\d{2}/.test(match) ? match : "[phone]"));
+export interface ScrubOptions {
+  /** Kept code (a human edit's hunks) holds decorators and annotations such as `@Injectable`; the `@login` rule leaves it alone. Slack and Jira mentions are always scrubbed. */
+  keepCode?: boolean;
+}
+
+export function scrubPersonalDetails(text: string, options: ScrubOptions = {}): string {
+  let clean = text.replace(MENTION, "@member").replace(LINEAR_MENTION, "@member");
+  if (options.keepCode !== true) clean = clean.replace(LOGIN_MENTION, (match, span: string | undefined) => (span === undefined ? "@member" : match));
+  return clean.replace(EMAIL, "[email]").replace(ACCOUNT_ID, "[account-id]").replace(PHONE, (match) => (/^\d{4}-\d{2}-\d{2}/.test(match) ? match : "[phone]"));
 }
 
 export function cutToBytes(text: string, maxBytes: number): string {
@@ -47,7 +59,7 @@ export function cleanRecordText(text: string | undefined, options: CleanTextOpti
   // Hidden characters are removed before redaction, so one cannot split a secret to slip through it.
   clean = redactText(clean);
   if (options.keepCode !== true) clean = clean.replace(FENCED_CODE, (_whole, lead: string) => `${lead}[code omitted]`);
-  clean = scrubPersonalDetails(clean).trim();
+  clean = scrubPersonalDetails(clean, { keepCode: options.keepCode === true }).trim();
   clean = cutToBytes(clean, RECORD_TEXT_MAX_BYTES).trim();
   return clean.length === 0 ? undefined : clean;
 }

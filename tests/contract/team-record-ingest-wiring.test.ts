@@ -29,7 +29,7 @@ describe("GitHub webhook: record tap", () => {
   it("offers a verified delivery that the task path does not follow, and still refuses it as before", async () => {
     const seen: unknown[] = [];
     await expect(deliver("push", { ref: "refs/heads/main" }, async (verified) => { seen.push(verified); })).rejects.toBeInstanceOf(GithubWebhookRefusal);
-    expect(seen).toEqual([{ eventName: "push", deliveryId: "6a0b3c52-0000-4000-8000-000000000001", payload: { ref: "refs/heads/main" } }]);
+    expect(seen).toEqual([{ eventName: "push", deliveryId: "6a0b3c52-0000-4000-8000-000000000001", payload: { ref: "refs/heads/main" }, removalStarted: expect.any(Function) as unknown }]);
   });
 
   it("offers nothing for a bad signature, and a tap that fails changes nothing", async () => {

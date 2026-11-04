@@ -6,6 +6,7 @@ export { createGithubRecordTap, createGithubDiffReader, githubEventsOf, type Git
 export * from "./rovara.js";
 export * from "./slack.js";
 export * from "./tickets.js";
+export * from "./parent-lookup.js";
 export * from "./ticket-webhooks.js";
 export * from "./mcp-poller.js";
 export * from "./existence-sweep.js";

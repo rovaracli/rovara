@@ -564,8 +564,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company.second_review_verdict_withdrawn": ["model"],
   // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
   // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
-  "record.source_added": ["source", "retention", "restricted"],
-  "record.source_changed": ["source", "fromRetention", "toRetention", "enabled"],
+  // Owner decision 2026-11-04: no second person for a source change; it applies at once. `widened` (only when the write widened something, in either edition) is the fixed words `retention_raise`, `private_channel`, `dm`, `mpim`
+  // joined with commas, in that order: what an auditor looks for. The place (scope) and the person's words never go in: the target names the source row.
+  "record.source_added": ["source", "retention", "restricted", "widened"],
+  "record.source_changed": ["source", "fromRetention", "toRetention", "enabled", "widened"],
   "record.source_removed": ["source"],
   "record.tombstoned": ["source", "cause", "count"],
   "record.erased": ["cause", "rows", "facts", "lessons", "vectors"],

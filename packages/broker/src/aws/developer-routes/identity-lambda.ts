@@ -6,6 +6,11 @@ import {
   agentXError,
   type ChannelByNameRequest,
   type ChannelByNameResponse,
+  type ChannelClassRequest,
+  type ChannelClassResponse,
+  type ChannelListEntry,
+  type ChannelListRequest,
+  type ChannelListResponse,
   type ChannelInfoRequest,
   type ChannelInfoResponse,
   type ChannelMembersRequest,
@@ -48,7 +53,7 @@ type IdentityRefusal = typeof SLACK_UNAVAILABLE | { ok: false; error: "invalid_r
  */
 async function identityInvoke<T>(
   invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>,
-  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
+  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
   readReply: (reply: Record<string, unknown>) => T | undefined,
   event: string,
 ): Promise<T | IdentityRefusal> {
@@ -162,6 +167,44 @@ export function channelInfoThroughLambda(invoke: (payload: Uint8Array) => Promis
   return (request) => identityInvoke(invoke, request, (reply) => (reply.ok === true && Array.isArray(reply.channels)
     ? { ok: true as const, channels: reply.channels.filter(isChannelEntry).map(({ channelId, name, isPrivate }) => ({ channelId, name, isPrivate })) }
     : undefined), "developer.channel_info");
+}
+
+const CLASS_KINDS = new Set(["public", "private", "im", "mpim"]);
+/** Team record source rows: what one channel is, read fresh by the DeveloperIdentity function. A reply that is not understood is unavailable (fail closed); `{ ok: true }` alone means Slack does not know the channel. */
+export function channelClassThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: ChannelClassRequest) => Promise<ChannelClassResponse> {
+  return (request) => identityInvoke(invoke, request, (reply) => {
+    if (reply.ok !== true) return undefined;
+    if (reply.channel === undefined) return { ok: true as const };
+    const channel: { kind?: unknown; extShared?: unknown } | null = reply.channel;
+    return typeof channel === "object" && channel !== null && typeof channel.kind === "string" && CLASS_KINDS.has(channel.kind) && typeof channel.extShared === "boolean"
+      ? { ok: true as const, channel: { kind: channel.kind as "public" | "private" | "im" | "mpim", extShared: channel.extShared } }
+      : undefined;
+  }, "developer.channel_class");
+}
+
+// Public only: a private channel in a reply is left out here too (the directory never asks for one).
+const LIST_KINDS = new Set(["public"]);
+const isListEntry = (entry: unknown): entry is ChannelListEntry => {
+  const candidate = entry as Partial<Record<keyof ChannelListEntry, unknown>> | null;
+  return typeof candidate === "object" && candidate !== null && typeof candidate.id === "string" && typeof candidate.name === "string"
+    && typeof candidate.kind === "string" && LIST_KINDS.has(candidate.kind) && typeof candidate.extShared === "boolean" && typeof candidate.joined === "boolean";
+};
+/**
+ * Team record source pickers: a page of the channels the Slack bot sees, read fresh by the DeveloperIdentity function. Entries without the shape are left out; a reply that is not understood is unavailable
+ * (fail closed). `missing_scope` passes through (the Slack app was installed without the listing scopes). An identity function that has no `channel-list` answers invalid_request, which is unavailable here too.
+ */
+export function channelListThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: ChannelListRequest) => Promise<ChannelListResponse> {
+  return async (request) => {
+    let refusal: "missing_scope" | undefined;
+    const answer = await identityInvoke(invoke, request, (reply) => {
+      if (reply.ok === false && reply.error === "missing_scope") { refusal = "missing_scope"; return undefined; }
+      if (reply.ok !== true || !Array.isArray(reply.channels)) return undefined;
+      const channels = reply.channels.filter(isListEntry).map(({ id, name, kind, extShared, joined }) => ({ id, name, kind, extShared, joined }));
+      return { ok: true as const, channels, ...(typeof reply.next === "string" && reply.next !== "" ? { next: reply.next } : {}) };
+    }, "developer.channel_list");
+    if (!answer.ok && refusal !== undefined) return { ok: false, error: refusal };
+    return answer;
+  };
 }
 
 /** A12: who owns a verified email, through DeveloperIdentity; fails closed as slack_unavailable. */

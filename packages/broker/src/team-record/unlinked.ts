@@ -9,9 +9,11 @@ export const SKIPPED_PREFIX = "SKIPPED#";
 const keyPart = (value: string | undefined): string => (value === undefined || value === "" ? "_" : value.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 100));
 
 /** Whether a draft's author must be a linked person. Rovara's own rows name the person who acted in Rovara; a bot (trust `system`) has no person to erase. Everything else (Slack, GitHub and other code hosts, Linear, Jira, MCP sources) needs a linked author. */
-export function needsLinkedAuthor(draft: { source: string; actor?: { developerId?: string | undefined; trust: string } | undefined }): boolean {
+export function needsLinkedAuthor(draft: { source: string; actor?: { developerId?: string | undefined; trust: string } | undefined; trust?: string | undefined; text?: string | undefined; kind?: string | undefined }): boolean {
   if (draft.source === "rovara") return false;
   if (draft.actor?.trust === "system") return false;
+  // A code host's CI verdict (kind github.ci, for every host) has no author and no words: nothing of a person's to erase. No other kind is exempt.
+  if (draft.kind === "github.ci" && draft.actor === undefined && draft.trust === "system" && draft.text === undefined) return false;
   return draft.actor?.developerId === undefined;
 }
 

@@ -202,8 +202,45 @@ describe("approving", () => {
     await seed(s.store, pending());
     expect((await refused(approve(s, "ann"))).code).toBe("NOT_FOUND");
     expect((await refused(s.call(callerOf("ann"), "GET", base))).code).toBe("NOT_FOUND");
-    expect((await refused(s.call(callerOf("ann"), "GET", `${base}/sources`))).code).toBe("NOT_FOUND");
     expect((await s.store.get(KEY, "les_pend0001"))!.status).toBe("pending");
+  });
+
+  it("T8: with learning off the Sources read answers its own fixed code (still a 404), so the page can say learning is off and not that the record is not set up; with learning on it reads", async () => {
+    const off = setup({ value: { mode: "Off" } });
+    const error = await refused(off.call(callerOf("ann"), "GET", `${base}/sources`));
+    expect(error.code).toBe("LEARNING_OFF");
+    expect(error.statusCode).toBe(404);
+    expect(error.message).toBe("LEARNING_OFF: Learning is off for this project.");
+    // A member (no maintainer role in the call) is told the same; the other lessons routes keep answering not found.
+    expect((await refused(off.call(callerOf("bob"), "GET", `${base}/sources`))).code).toBe("LEARNING_OFF");
+    expect((await refused(off.call(callerOf("ann"), "GET", `${base}/digest`))).code).toBe("NOT_FOUND");
+    const on = setup();
+    expect(await on.call(callerOf("ann"), "GET", `${base}/sources`)).toMatchObject({ sources: expect.any(Array) as unknown });
+  });
+
+  it("T8 round 1: the Sources read says why learning is off, each in a fixed code: the project's own Off, the company's lock, a setting that cannot be read", async () => {
+    const codeOf = async (value: Parameters<typeof settings>[0]) => { const s = setup({ value }); const error = await refused(s.call(callerOf("ann"), "GET", `${base}/sources`)); return [error.code, error.statusCode, error.message] as const; };
+    expect(await codeOf({ mode: "Off" })).toEqual(["LEARNING_OFF", 404, "LEARNING_OFF: Learning is off for this project."]);
+    // The company's lock forces Off while the project's own choice is on.
+    expect(await codeOf({ mode: "On", companyLock: "Off" })).toEqual(["LEARNING_LOCKED", 404, "LEARNING_LOCKED: Learning is off for this project because of a company setting."]);
+    expect((await codeOf({ companyLock: "Off" }))[0]).toBe("LEARNING_LOCKED"); // the project's own choice is the default
+    // T9 (Minor B of the T8 re-review): the project's own choice is Off AND the company lock is Off: turning the project's switch on would change nothing, so the person is told about the lock.
+    expect((await codeOf({ mode: "Off", companyLock: "Off" }))[0]).toBe("LEARNING_LOCKED");
+    // A setting that does not parse (a mode, a lock, an expiry) is not "off": the person is asked to retry.
+    expect((await codeOf({ mode: "Sometimes" as never }))[0]).toBe("RUNTIME_UNAVAILABLE");
+    expect((await codeOf({ companyLock: "Sometimes" as never }))[0]).toBe("RUNTIME_UNAVAILABLE");
+    expect(await codeOf({ expiryDays: 0 })).toEqual(["RUNTIME_UNAVAILABLE", 503, "RUNTIME_UNAVAILABLE: The learning setting for this project could not be read."]);
+    // A reader that throws gives the same.
+    const broken = setup();
+    broken.deps.lessons.settings = { read: async () => { throw new Error("dynamodb down: secret detail"); } };
+    const error = await refused(routeLessons(broken.deps, callerOf("ann"), "GET", url(`${base}/sources`), () => ({})));
+    expect([error.code, error.statusCode]).toEqual(["RUNTIME_UNAVAILABLE", 503]);
+    expect(error.message).not.toContain("secret detail");
+    // The other routes keep answering plain not found whatever the reason.
+    const locked = setup({ value: { mode: "On", companyLock: "Off" } });
+    expect((await refused(locked.call(callerOf("ann"), "GET", base))).code).toBe("NOT_FOUND");
+    // Positive controls: learning on reads.
+    expect(await setup({ value: { mode: "On", companyLock: "Collect" } }).call(callerOf("ann"), "GET", `${base}/sources`)).toMatchObject({ sources: expect.any(Array) as unknown });
   });
 
   it("a write needs a live browser session and a writer role: a token and the Auditor are refused and nothing changes", async () => {

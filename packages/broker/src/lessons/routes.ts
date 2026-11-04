@@ -22,7 +22,7 @@ import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { requireWriterCaller } from "../org/auditor.js";
 import { approveLesson, rejectLesson, retireByPerson, type ApprovalFailure, type ApproveDeps } from "./approve.js";
 import { recordFeedback, type CounterDeps } from "./counters.js";
-import { resolveLearning } from "./policy.js";
+import { resolveLearning, whyLearningOff } from "./policy.js";
 import { rollbackLessonSetSettled } from "./rollback.js";
 import type { ProcessDeps } from "./process.js";
 import { buildLessonHistory, buildLessonSources, buildLessonsDigest, buildLessonsView, buildLoadedLessons, SNAPSHOTS_MAX, type LessonViewDeps } from "./view.js";
@@ -58,9 +58,16 @@ async function takeBudget(deps: LessonRouteDependencies, caller: DeveloperCaller
 }
 
 /** Lessons answer only where learning is on for the project: with the project's mode Off (or no setting that reads), every lesson route answers "not found", as it did before lessons existed. */
-async function requireLearningOn(deps: LessonRouteDependencies, caller: DeveloperCaller, project: string): Promise<void> {
+async function requireLearningOn(deps: LessonRouteDependencies, caller: DeveloperCaller, project: string, sources = false): Promise<void> {
   const resolved = await resolveLearning(deps.lessons.settings, caller.orgId, project);
-  if (resolved.mode === "Off") throw agentXError("NOT_FOUND", "Lessons are not available for this project.");
+  if (resolved.mode !== "Off") return;
+  if (!sources) throw agentXError("NOT_FOUND", "Lessons are not available for this project.");
+  // The Sources read tells the person why, each in a fixed code: the project's own Off (404 LEARNING_OFF), the company's lock (404 LEARNING_LOCKED), or a setting that could not be read (503, so the page asks to retry).
+  // The other routes are unchanged, and the team record's switch off never reaches here (no lessons routes at all).
+  const why = await whyLearningOff(deps.lessons.settings, caller.orgId, project);
+  if (why === "locked") throw agentXError("LEARNING_LOCKED", "Learning is off for this project because of a company setting.");
+  if (why === "unreadable") throw agentXError("RUNTIME_UNAVAILABLE", "The learning setting for this project could not be read.");
+  throw agentXError("LEARNING_OFF", "Learning is off for this project.");
 }
 
 function strictBody<T>(schema: ZodType<T>, raw: unknown): T {
@@ -111,7 +118,7 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
     const known = id === undefined || (action === undefined && (id === "digest" || id === "sources")) || action === "history";
     if (!known) return undefined;
     const { name } = await deps.projectFor(caller, rawProject!);
-    await requireLearningOn(deps, caller, name);
+    await requireLearningOn(deps, caller, name, action === undefined && id === "sources");
     if (id === undefined) return buildLessonsView(deps.lessons, who, name);
     await takeBudget(deps, caller, "read");
     if (action === undefined && id === "digest") return buildLessonsDigest(deps.lessons, who, name);

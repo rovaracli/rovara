@@ -8,13 +8,14 @@ import {
   ACL_PRINCIPALS_MAX,
   AudienceSchema,
   OrgIdSchema,
+  TEAM_RECORD_GSI1,
   recordDeletedMarkerKey,
   recordFactKey,
   type Audience,
   type OrgId,
 } from "@agentx/contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
-import { bySource, putScopeWork, scopePage, tombstoneItem, type ScopeCursor, type ScopeWork } from "./store.js";
+import { bySource, putScopeWork, queryIndex, scopePage, tombstoneItem, type ScopeCursor, type ScopeWork } from "./store.js";
 import { clearSupersedes } from "./item-head.js";
 import { erasedAccessIds, withoutErasedPrincipals } from "./access.js";
 import type { TeamRecordTable, TombstoneCause } from "./types.js";
@@ -63,7 +64,7 @@ function clock(dependencies: WorkDependencies): { now: () => number; at: () => s
  * Hides the rows of source items (by `sourceIds`) or of a whole scope at once, and the facts distilled from them. Hidden means `tombstone` set and the text removed;
  * the delete worker then removes the rows, vectors, lake rows and facts. A source item's marker stops a late retry of its create from bringing it back.
  */
-export async function tombstoneRows(dependencies: WorkDependencies, orgId: OrgId, request: { system: string; scope?: string; sourceIds?: readonly string[]; cause: TombstoneCause }, budget: WorkBudget = DEFAULT_WORK_BUDGET, resume?: ScopeCursor): Promise<WorkResult> {
+export async function tombstoneRows(dependencies: WorkDependencies, orgId: OrgId, request: { system: string; scope?: string; sourceIds?: readonly string[]; cause: TombstoneCause; textOnly?: boolean }, budget: WorkBudget = DEFAULT_WORK_BUDGET, resume?: ScopeCursor): Promise<WorkResult> {
   const { at, deadline, now } = clock(dependencies);
   const expired = deadline(budget);
   const when = at();
@@ -71,19 +72,25 @@ export async function tombstoneRows(dependencies: WorkDependencies, orgId: OrgId
   let changed = 0;
   let complete = true;
 
-  const hideItems = async (items: readonly Item[]): Promise<void> => {
+  // `textOnly` (a removed Rovara source row): only the rows that hold free text go, and the facts made from them. The index lists only part of a row, so the row is read.
+  const textOnly = request.textOnly === true;
+  const hideItems = async (items: readonly Item[]): Promise<boolean> => {
     for (const item of items) {
       if (typeof item.pk !== "string" || typeof item.sk !== "string") continue;
+      if (textOnly && expired()) return false;
       const key = { pk: item.pk, sk: item.sk };
       if (item.entityType === "TEAM_RECORD_EVENT") {
+        if (textOnly && !(await holdsText(dependencies.table, key))) continue;
         if (await tombstoneItem(dependencies.table, key, tombstone)) changed += 1;
       } else if (item.entityType === "TEAM_RECORD_DERIVATION") {
+        if (textOnly && !(await madeFromText(dependencies.table, item, request.scope))) continue;
         await tombstoneItem(dependencies.table, key, tombstone);
         if (typeof item.factId === "string") {
           if (await tombstoneItem(dependencies.table, recordFactKey(orgId, projectOfPk(item.pk), item.factId), tombstone)) changed += 1;
         }
       }
     }
+    return true;
   };
 
   // The deleted-at-source markers first: they are cheap and bounded, and they stop a late retry of a create. Whatever the budget does next, the items are named in
@@ -107,11 +114,32 @@ export async function tombstoneRows(dependencies: WorkDependencies, orgId: OrgId
   if (request.scope !== undefined && !expired()) {
     // The place and every place under it, a budget's worth at a time. The cursor says where to go on, so a busy place is walked to its end over several runs.
     const page = await scopePage(dependencies.table, orgId, request.scope, budget.maxItems, { ...(resume === undefined ? {} : { cursor: resume }) });
-    await hideItems(page.items);
+    if (!(await hideItems(page.items))) return { changed, complete: false, ...(resume === undefined ? {} : { cursor: resume }) };
     cursor = page.cursor;
     if (page.cursor !== undefined) complete = false;
   } else if (request.scope !== undefined) complete = false;
   return { changed, complete, ...(complete || cursor === undefined ? {} : { cursor }) };
+}
+
+/** Whether the stored row still holds free text (a row hidden already holds none: it is hidden, so it needs nothing more). */
+async function holdsText(table: TeamRecordTable, key: { pk: string; sk: string }): Promise<boolean> {
+  const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item };
+  return response.Item !== undefined && response.Item.tombstone === undefined && response.Item.text !== undefined;
+}
+
+/** Whether a derivation link rests on a text row of the place: any row of its source item, in this place, that holds text or was hidden as a text row. */
+async function madeFromText(table: TeamRecordTable, link: Item, scope: string | undefined): Promise<boolean> {
+  const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: link.pk as string, sk: link.sk as string }, ConsistentRead: true })) as { Item?: Item };
+  const index = response.Item?.[TEAM_RECORD_GSI1.partition];
+  if (typeof index !== "string") return false;
+  const { items } = await queryIndex(table, TEAM_RECORD_GSI1, index, ITEMS_PER_SOURCE_MAX);
+  for (const item of items) {
+    if (item.entityType !== "TEAM_RECORD_EVENT" || typeof item.pk !== "string" || typeof item.sk !== "string") continue;
+    const row = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: item.pk, sk: item.sk }, ConsistentRead: true })) as { Item?: Item }).Item;
+    if (row === undefined || (scope !== undefined && row.scope !== scope)) continue;
+    if (row.text !== undefined || (row.tombstone as { cause?: unknown } | undefined)?.cause === "excluded") return true;
+  }
+  return false;
 }
 
 /** Whether a source item was deleted at its source recently (the create of a late retry is refused). */

@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { learningEraseHook, learningWalkDeps } from "../../../packages/broker/src/learning/cleanup.js";
 import { clearArchivedProjectLearning } from "../../../packages/broker/src/aws/developer-routes/project-archive-setup.js";
-import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
+import { announceHumanSendBack, sendBackToRecord } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { installTeamRecordEmitter, teamRecordEmitterInstalled, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { ORG_A } from "../../support/team-record-core.js";
@@ -48,13 +48,25 @@ describe("a human send-back", () => {
 
   it("is written to the record through the Rovara emitter, naming the person, once the record is on; and by nobody when it is off", async () => {
     const sent: unknown[] = [];
-    const teamRecord = { emitter: { sendBack: async (input: unknown) => { sent.push(input); } } };
+    const asked: unknown[] = [];
+    // Who may read the row is the task's Plan 5 visibility, read from the runtime when the row is written; the event's own `shared` (the Slack-channel flag) is not it.
+    const teamRecord = { emitter: { sendBack: async (input: unknown) => { sent.push(input); } }, taskVisibility: async (orgId: string, taskId: string) => { asked.push([orgId, taskId]); return { kind: "shared_with", developerIds: [DEV, "e".repeat(64)] }; } };
     installTeamRecordEmitter({ teamRecord: teamRecord as never });
     await announceHumanSendBack(event);
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ workspaceId: ORG_A, project: "web", taskId: "t1", origin: "human", actorDeveloperId: DEV, visibility: { kind: "shared" } });
+    expect(asked).toEqual([[ORG_A, "t1"]]);
+    expect(sent[0]).toMatchObject({ workspaceId: ORG_A, project: "web", taskId: "t1", origin: "human", actorDeveloperId: DEV, visibility: { kind: "shared_with", developerIds: [DEV, "e".repeat(64)] } });
     uninstallTeamRecordEmitter();
     await announceHumanSendBack(event);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("with no visibility reader the row is the owner's alone, whatever the event's Slack-channel flag says; a task the reader cannot place is not written", async () => {
+    const sent: unknown[] = [];
+    const emitter = { sendBack: async (input: unknown) => { sent.push(input); } };
+    await sendBackToRecord(emitter)(event);
+    expect(sent[0]).toMatchObject({ visibility: { kind: "private", ownerDeveloperId: DEV } });
+    await sendBackToRecord(emitter, async () => undefined)(event);
     expect(sent).toHaveLength(1);
   });
 

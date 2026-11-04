@@ -12,9 +12,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { STSClient } from "@aws-sdk/client-sts";
-import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, teamRecordPk, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, repositoryHostOf, githubMemberKey, teamRecordPk, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
 import { companyIsOpen, readProjectRole, readStanding } from "../learning/standing.js";
 import { readProjectMeta } from "../developer/project-roles.js";
+import { latestRevision } from "../org/project-settings.js";
 import { OrgStore } from "../org/store.js";
 import { resolveSlackOrg } from "../org/resolve.js";
 import { orgOfInstallation, projectsOf as projectsOfRepository } from "../triggers/github-events.js";
@@ -29,6 +30,8 @@ import type { RecordAuditSink } from "./audit.js";
 import { callRecordTool, recordToolsFor, type RecordToolContext } from "./agent-tools.js";
 import { runDeleteWorker, type DeleteBudget } from "./delete-worker.js";
 import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition.js";
+import { markSourceFailing } from "./store.js";
+import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
@@ -38,6 +41,7 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { tableModeReader, type LearningModeReader } from "./mode.js";
 import { buildRecordCaller, handleRecordRoute, type RecordRouteReply } from "./routes.js";
 import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
+import type { SourceRouteDependencies, SourceWriteContext } from "./source-write.js";
 import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
@@ -47,7 +51,8 @@ import { markSyncDue, syncIsDue, syncTrackerUsers, type ConnectedTrackersPort, t
 import { auditOccurrence, auditRecordTrackerAutolinkChanged, auditRecordTrackerPersonMapped, auditRecordTrackerPersonUnmapped } from "../audit/events.js";
 import { needsLinkedAuthor, unlinkedCounter } from "./unlinked.js";
 import { priorEditsPort } from "./prior-edits.js";
-import { createGithubRecordTap, createHookRecordTap, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
+import { trackerPlaceCheck, trackerPlaceOptions } from "./source-places.js";
+import { createGithubRecordTap, createHookRecordTap, createRecordParentLookup, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type TaskVisibility, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
 import { runStats, type StatsDeps } from "./stats-templates.js";
 import { expireRawText } from "./text-expiry.js";
 import { createTransientDistiller } from "./transient-distiller.js";
@@ -154,10 +159,12 @@ export interface TeamRecordRuntime {
     syncConnection(orgId: OrgId, connectionId: string, options?: { maxMs?: number }): Promise<SyncResult | undefined>;
   };
   readonly emitter: RovaraEmitter;
+  /** Who may read the rows about a task: its Plan 5 visibility, read from the State table when a row is written (`lessons/task-visibility.ts`). `undefined`: nothing is recorded for the task. */
+  taskVisibility(orgId: string, taskId: string): Promise<TaskVisibility | undefined>;
   readonly actors: ActorResolverPort;
   readonly modes: LearningModeReader;
   /** `/v1/app/projects/{project}/record/...` (the caller's project role already found by the broker). `undefined` for any other path. */
-  routes(request: { method: string; path: string; query: Readonly<Record<string, string | undefined>>; caller: TeamRecordCallerInput }): Promise<RecordRouteReply | undefined>;
+  routes(request: { method: string; path: string; query: Readonly<Record<string, string | undefined>>; caller: TeamRecordCallerInput; /** What a source write needs from the broker's request (`source-write.ts`); absent: reads only. */ write?: SourceWriteContext }): Promise<RecordRouteReply | undefined>;
   /** The record tools an agent step may be offered, and one call of them. */
   tools: {
     list(context: Pick<RecordToolContext, "memory">): ReadonlyArray<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
@@ -503,10 +510,18 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   };
   const priorEdits = priorEditsPort(table, now);
   // Per-editor rows: every change is its own row under the person who made it, and the sink counts a change whose person is not linked (`author_not_linked`).
-  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits });
-  const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog, priorEdits });
+  // A repository deleted or transferred also marks its source row `failing` (health only: no new revision, see `markSourceFailing`).
+  const sourceHealth = {
+    async markFailing({ workspaceId, source, scope }: { workspaceId: string; source: string; scope: string }): Promise<void> {
+      const org = OrgIdSchema.safeParse(workspaceId);
+      if (org.success && await markSourceFailing(table, org.data, source, scope) === "busy") log("record.health_busy", {});
+    },
+  };
+  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits, sourceHealth });
+  // A comment names only its ticket: the ticket must already be recorded under the same place (Linear), and takes its restriction from how it was recorded (Jira). Read from the record, not from the tracker.
+  const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog, priorEdits, parents: createRecordParentLookup(table) });
   const hook = createHookRecordTap({ recorder });
-  const emitter = createRovaraEmitter({ sink, actors, mode, config, log: tapLog });
+  const emitter = createRovaraEmitter({ sink, actors, mode, config, log: tapLog, defaultRetention: defaultRetention(edition, "rovara") });
 
   // ---- the query API
   async function queryFor(orgId: OrgId): Promise<RecordQueryDependencies> {
@@ -523,13 +538,32 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     };
   }
 
-  const routes: TeamRecordRuntime["routes"] = async ({ method, path, query, caller }) => {
+  /** The source write route's dependencies: this install's edition, the project's repositories read live from its latest revision, and the learning loop's paused sources. No company retention ceiling is stored anywhere yet, so none is read. */
+  const sourceRoutes: SourceRouteDependencies = {
+    edition,
+    projectRepositories: async (orgId, project) => {
+      const latest = await latestRevision(state, orgId, project);
+      if (latest === undefined) return undefined;
+      return latest.definition.repositories.flatMap((repository) => { const host = repositoryHostOf(repository); return host.kind === "github" && "repositoryId" in host && host.repositoryId !== undefined ? [host.repositoryId] : []; });
+    },
+    repositoryNames: async (orgId, project) => {
+      const latest = await latestRevision(state, orgId, project);
+      if (latest === undefined) return undefined;
+      return latest.definition.repositories.flatMap((repository) => { const host = repositoryHostOf(repository); return host.kind === "github" && "repositoryId" in host && host.repositoryId !== undefined ? [{ id: host.repositoryId, name: repository.name }] : []; });
+    },
+    // Slack: the workspace must be the one the company bound (the binding the tap resolves); the channel itself is read live through the request's own context. Linear and Jira: the connected apps list the place.
+    slackTeamBound: async (orgId, teamId) => (await new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId)) === orgId,
+    ...(input.trackers === undefined ? {} : { trackerPlace: trackerPlaceCheck(input.trackers, { now }), trackerOptions: trackerPlaceOptions(input.trackers) }),
+    pausedSources: async (orgId, project) => Object.keys((await new DynamoLessonStore(table, now).flags({ workspaceId: orgId, project })).pausedSources ?? {}),
+  };
+
+  const routes: TeamRecordRuntime["routes"] = async ({ method, path, query, caller, write }) => {
     // The org is the caller's session's. The route handler never reads one from the path or the query.
     const orgId = OrgIdSchema.parse(caller.orgId);
     const identities = { identitiesOf: async (org: OrgId, developerId: string) => identitiesOf(org, developerId) };
     const built = await buildRecordCaller(identities, { orgId, developerId: caller.developerId, projectRole: caller.projectRole });
     try {
-      return await handleRecordRoute(await queryFor(orgId), { method, path, query, caller: built });
+      return await handleRecordRoute({ ...(await queryFor(orgId)), sources: sourceRoutes }, { method, path, query, caller: built, ...(write === undefined ? {} : { write }) });
     } catch (error) {
       // A project segment that is not valid percent-encoding is a project that does not exist.
       if (error instanceof URIError) return { status: 404, body: { code: "PROJECT_NOT_FOUND", message: "No such project." } };
@@ -802,7 +836,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           const projectsSwept = await sweepArchivedProjects(orgId, Math.max(1_000, budgetMs / 4));
           // Lane team-record-links: the org's connected Linear and Jira users, read again once a day.
           const trackersSynced = await trackerSync.run(orgId, Math.max(1_000, budgetMs / 4)).catch(() => 0);
-          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced };
+          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, sweepFailed: done.sweepFailed, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced };
         }, JOB_BUDGET_MS - (now() - startedAt));
         summary.details.deadLetterTextDeleted = swept;
         return summary;
@@ -986,5 +1020,5 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return synced;
   }
   trackerSync.run = syncDueTrackers;
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
 }

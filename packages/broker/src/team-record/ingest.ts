@@ -172,11 +172,13 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   let ceiling: RetentionMode;
   let excluded: readonly string[] = [];
   let notesOptIn = false;
-  if (scope === undefined) {
+  // Rovara's own events: the project's `rovara:project/<p>` row decides, also for a private task's event (its access snapshot names the task's place, which has no row of its own).
+  const rowScope = draft.source === "rovara" && project !== undefined ? `rovara:project/${project}` : scope;
+  if (rowScope === undefined) {
     if (draft.source !== "rovara") return refused("no_scope");
     ceiling = deps.rovaraDefaultRetention;
   } else {
-    const config = await getSourceConfigByScope(deps.table, orgId, draft.source, scope);
+    const config = await getSourceConfigByScope(deps.table, orgId, draft.source, rowScope);
     if (config === undefined) {
       if (draft.source !== "rovara") return refused("no_source_row");
       ceiling = deps.rovaraDefaultRetention;
@@ -229,7 +231,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
       if (clean === undefined || transientScope === undefined) return refused("invalid");
       if (await isScopeClosed(deps.table, orgId, transientScope)) return refused("scope_closed");
       // Versions are ordered by source time here too, and a newer version clears the notes made from the older one.
-      const moved: AdvanceOutcome = change ? { status: "advanced", lowestTrust: trust, previous: undefined } : await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt: versionTimeOf(draft), trust, indexExpiresAt: plan.indexExpiresAt });
+      const moved: AdvanceOutcome = change ? { status: "advanced", lowestTrust: trust, previous: undefined } : await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt: versionTimeOf(draft), trust, indexExpiresAt: plan.indexExpiresAt, scope: transientScope });
       if (moved.status === "stale") return refused("stale_version");
       const owedRows = moved.status === "advanced" ? (moved.previous === undefined ? undefined : [moved.previous.row, moved.previous.supersedes?.row]) : moved.owed === undefined ? undefined : [moved.owed.row];
       // The trust of the author's OWN words: every reason the row was lowered except the quote terms (those are applied span by span, where the splitter finds the quote). The tap's
@@ -247,7 +249,9 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   // No actor id rides in a structured field (`ACTOR_STRUCTURED_FIELDS`): a row is found for an erase by its actor only.
   const structured = withoutActorFields(cleanStructured(draft.structured, trust, deps.edition === "public" && draft.origin === "slack"));
   // Every row carries the place it came from. Rovara's own rows without one belong to the project's own place.
-  const eventScope = scope ?? (draft.source === "rovara" && project !== undefined ? `rovara:project/${project}` : undefined);
+  // A Rovara row's place is always its project's, also for a private task's event (whose access snapshot names the task's own scope): removing the project's Rovara row, a project erase and the lake all
+  // reach the rows by that place.
+  const eventScope = draft.source === "rovara" && project !== undefined ? `rovara:project/${project}` : (scope ?? undefined);
   if (eventScope === undefined) return refused("no_scope");
   const id = deterministicEventId(orgId, draft.source, draft.sourceRef.system, draft.sourceRef.id, draft.sourceRef.version);
   const candidate = {
@@ -289,7 +293,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
 
   // 6. Versions are ordered by the source's own time. A version older than the one stored changes nothing (it only lowers the item's remembered trust).
   const versionAt = versionTimeOf(draft);
-  const moved: AdvanceOutcome = change ? { status: "advanced", lowestTrust: trust, previous: undefined } : await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt, trust, row: recordEventKey(orgId, project, occurredAt, id), indexExpiresAt: plan.indexExpiresAt });
+  const moved: AdvanceOutcome = change ? { status: "advanced", lowestTrust: trust, previous: undefined } : await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt, trust, row: recordEventKey(orgId, project, occurredAt, id), indexExpiresAt: plan.indexExpiresAt, scope: eventScope });
   if (moved.status === "stale") return { status: "duplicate" };
 
   // 7. The idempotent write; then the older version it replaces (text, vector and notes) is hidden and queued for removal. If this version's row was already there

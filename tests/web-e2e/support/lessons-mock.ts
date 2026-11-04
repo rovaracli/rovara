@@ -1,6 +1,6 @@
 // The project's lessons routes for the Lessons tab journey: the view, approve, reject, remove and the sources. State lives for one scenario. Bodies are parsed by the contract's strict schemas,
 // as the real routes do, and the one-tap / two-person rules are applied here the way the broker applies them (a second person is a different one; a stale version is refused).
-import { LessonApproveBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema } from "@agentx/contracts";
+import { LessonApproveBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts";
 import type { MockExchange } from "./how-we-work-mock.js";
 
 const NOW = Date.parse("2026-11-01T12:00:00.000Z");
@@ -12,7 +12,34 @@ function fresh() { return { lessons: [
  { id: "les_thr00001", version: 1, title: "Skip flaky integration tests on branches", body: "Branch builds may skip the flaky integration suite.", tier: 2, status: "pending" },
  { id: "les_act00001", version: 3, title: "Prefer small pull requests", body: "Keep pull requests under 400 lines.", tier: 1, status: "active" },
 ] as Mock[] }; }
-export function resetLessons(): void { state = fresh(); }
+export function resetLessons(): void { state = fresh();sources = freshSources(); }
+
+// The Team record's source rows (source-row lane T5): the editors' view and the writes of `/record/sources`. Off until a test switches editing on; until then the route is absent (404) and the Sources tab is the read-only list.
+interface SourceMock { kind: string; scope: string; retention: string; audience: string; enabled: boolean; revision: number; exclude: string[] }
+const SOURCE_REPOS = [{ name: "payments-api", scope: "github:repo/9" }, { name: "web-app", scope: "github:repo/12" }];
+function freshSources() { return { editing: false, rows: [{ kind: "github", scope: "github:repo/9", retention: "C", audience: "project", enabled: true, revision: 1, exclude: [] }] as SourceMock[] }; }
+let sources = freshSources();
+export function setSourceEditing(on: boolean): void { sources.editing = on; }
+const sourcesView = () => SourcesAdminViewSchema.parse({
+ sources: sources.rows.map(row => ({ kind: row.kind, scope: row.scope, enabled: row.enabled, retention: row.retention, health: "ok", audience: row.audience, excluded: row.exclude.length, updatedAt: "2026-10-30T10:00:00.000Z", paused: false, revision: row.revision, addedBy: "a".repeat(64), exclude: row.exclude })),
+ otherPaused: 0, canEdit: true, offered: { github: ["A", "B", "C", "D"], rovara: ["A", "B", "C", "D"], slack: ["A", "B"], linear: ["A", "B", "C"], jira: ["A", "B", "C"] }, repositories: SOURCE_REPOS,
+});
+async function sourcesRoute({ method, body, json, record }: MockExchange): Promise<void> {
+ if (!sources.editing) { json(404, { error: { code: "NOT_FOUND", message: "Not found." } });return; }
+ if (method === "GET") { json(200, sourcesView());return; }
+ const input = await body();record(input);
+ const parsed = SourceWriteBodySchema.parse(input);
+ if (parsed.action === "add") { sources.rows.push({ kind: parsed.source, scope: parsed.scope, retention: parsed.retention, audience: parsed.audienceDefault, enabled: parsed.enabled, revision: 1, exclude: parsed.exclude ?? [] });json(200, { status: "saved", revision: 1 });return; }
+ const found = sources.rows.find(row => row.kind === parsed.source && row.scope === parsed.scope);
+ if (found === undefined) { json(404, { error: { code: "NOT_FOUND", message: "Not found." } });return; }
+ if (found.revision !== parsed.expectedRevision) { json(409, { error: { code: "CHANGE_STALE", message: "Someone changed this source." } });return; }
+ if (parsed.action === "remove") { sources.rows = sources.rows.filter(row => row !== found);json(200, { status: "removed" });return; }
+ if (parsed.retention !== undefined) found.retention = parsed.retention;
+ if (parsed.audienceDefault !== undefined) found.audience = parsed.audienceDefault;
+ if (parsed.enabled !== undefined) found.enabled = parsed.enabled;
+ if (parsed.exclude !== undefined) found.exclude = parsed.exclude;
+ found.revision += 1;json(200, { status: "saved", revision: found.revision });
+}
 const person = (name: string) => ({ name, ...(name === "You" ? { you: true as const } : {}) });
 const lesson = (item: Mock) => LessonViewSchema.parse({
  id: item.id, version: item.version, type: item.tier === 2 ? "review_check" : "convention", stages: item.tier === 2 ? ["REVIEW"] : ["IMPLEMENT"], title: item.title, description: "", body: item.body,
@@ -34,6 +61,7 @@ const stale = { error: { code: "CHANGE_STALE", message: "This lesson changed whi
 /** Answers the lessons routes of the `project` scenario; false when the request is not one of them. */
 export async function lessonsMock({ url, method, body, json, record }: MockExchange): Promise<boolean> {
  const base = "/v1/web/projects/payments/lessons";
+ if (url.pathname === "/v1/web/projects/payments/record/sources") { await sourcesRoute({ url, method, body, json, record });return true; }
  if (url.pathname === base && method === "GET") { json(200, view());return true; }
  if (url.pathname === base + "/digest" && method === "GET") { json(200, LessonsDigestSchema.parse({ since: NOW - 7 * 86_400_000, top: [{ id: "les_act00001", title: "Prefer small pull requests", type: "convention", tier: 1, links: [] }], needsReview: [], autoApplied: [], waiting: [], retired: [], staleOrRetireProposed: [], queued: 2, pausedSources: [], pausedSourcesHidden: 0, hidden: 0 }));return true; }
  if (url.pathname === base + "/sources" && method === "GET") { json(200, LessonSourcesSchema.parse({ sources: [{ kind: "github", scope: "github:acme/api", enabled: true, retention: "D", health: "ok", audience: "project", updatedAt: "2026-10-30T10:00:00.000Z", paused: false }, { kind: "slack", enabled: true, retention: "B", health: "ok", audience: "maintainers", updatedAt: "2026-10-30T10:00:00.000Z", paused: true }], otherPaused: 0 }));return true; }

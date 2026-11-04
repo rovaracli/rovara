@@ -1,0 +1,61 @@
+import { useId, useMemo, useState } from "react";
+import type { SourcePickerKind } from "@agentx/contracts/web";
+import { ApiError } from "../../../api/errors.js";
+import { useSourceOptions, type SourceOptionsPage } from "../../../api/record-source-options.js";
+import { Button } from "../../../design/Button.js";
+import { TextField } from "../../../design/TextField.js";
+import { visibleText } from "../../../design/VisibleText.js";
+import { T } from "./lessons-text.js";
+
+const WORDS: Readonly<Record<SourcePickerKind, { pick: string; find: string; none: string; partial: string; cut: string; typed: string; hint: string }>> = {
+ slack: { pick: T.SRC_PICK_SLACK, find: T.SRC_FIND_SLACK, none: T.SRC_NO_MATCH_SLACK, partial: T.SRC_PARTIAL_SLACK, cut: T.SRC_CUT_SLACK, typed: T.SRC_PLACE_SLACK, hint: T.SRC_HINT_SLACK },
+ linear: { pick: T.SRC_PICK_LINEAR, find: T.SRC_FIND_LINEAR, none: T.SRC_NO_MATCH_LINEAR, partial: T.SRC_PARTIAL_LINEAR, cut: T.SRC_CUT_LINEAR, typed: T.SRC_PLACE_LINEAR, hint: T.SRC_HINT_LINEAR },
+ jira: { pick: T.SRC_PICK_JIRA, find: T.SRC_FIND_JIRA, none: T.SRC_NO_MATCH_JIRA, partial: T.SRC_PARTIAL_JIRA, cut: T.SRC_CUT_JIRA, typed: T.SRC_PLACE_JIRA, hint: T.SRC_HINT_JIRA },
+};
+const SHOWN_MAX = 100;
+const REASON: Readonly<Record<string, string>> = { added: T.SRC_OPT_ADDED, taken: T.SRC_OPT_TAKEN, slack_connect: T.SRC_OPT_CONNECT, clearing: T.SRC_OPT_CLEARING };
+
+/**
+ * Where the person picks the place of a Slack, Linear or Jira source: a searchable list read from the server (the company's channels, teams or projects), with the typed id kept as "Enter an ID instead" and as the
+ * fall back when the list cannot be read or is empty. An option that is already a source, held by another project, a Slack Connect channel, or still being cleared is shown disabled with its reason. The server
+ * checks the place again on save; this only helps choosing. Names are shown as plain text, with hidden control characters spelled out. Only the first page is read; the next one when the person asks ("Show more"). A list
+ * that is cut (the server's bound, or a page that failed) says so and never claims to be complete.
+ */
+export function PlacePicker({ project, kind, value, onChange, unavailable }: { project: string; kind: SourcePickerKind; value: string; onChange: (scope: string) => void; unavailable: (scope: string) => boolean }) {
+ const words = WORDS[kind], group = useId(), query = useSourceOptions(project, kind, true), [typing, setTyping] = useState(false), [search, setSearch] = useState("");
+ const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = query;
+ const options = useMemo(() => {
+  const seen = new Set<string>(), all: Array<SourceOptionsPage["options"][number]> = [];
+  for (const page of query.data?.pages ?? []) for (const option of page.options) if (!seen.has(option.scope)) { seen.add(option.scope);all.push(option); }
+  return all;
+ }, [query.data]);
+ const needle = search.trim().toLowerCase(), matching = needle === "" ? options : options.filter(option => option.name.toLowerCase().includes(needle) || option.scope.toLowerCase().includes(needle));
+ const loading = query.data === undefined && !query.isError, done = query.data !== undefined && !hasNextPage && !isFetchingNextPage;
+ const failed = query.data === undefined && query.isError, empty = done && options.length === 0;
+ // Cut: the server stopped at its bound, or a later page could not be read. More to read: the person may ask. Either way the list is not complete, and a search must not say it is.
+ const cut = query.data?.pages.at(-1)?.truncated === true || isFetchNextPageError, more = hasNextPage && !cut, partial = cut || hasNextPage;
+ const canList = !failed && !empty;
+ const typedField = typing || failed || empty;
+ const toggle = (next: boolean) => { setTyping(next);setSearch("");onChange(""); };
+ const failure = failed ? (kind === "slack" && query.error instanceof ApiError && query.error.code === "SLACK_SCOPE_MISSING" ? T.SRC_LIST_SCOPE : T.SRC_LIST_FAIL) : empty ? T.SRC_LIST_EMPTY : undefined;
+ return <div className="rv-lessons-edit">
+  {failure !== undefined && <p className="rv-muted">{failure}</p>}
+  {typedField
+   ? <TextField label={words.typed} hint={words.hint} value={value} maxLength={300} autoComplete="off" onChange={event => { onChange(event.target.value); }} />
+   : <fieldset className="rv-lessons-picker"><legend>{words.pick}</legend>
+     {loading ? <p role="status" className="rv-muted">{T.SRC_LIST_LOADING}</p> : <>
+      <TextField label={words.find} value={search} autoComplete="off" onChange={event => { setSearch(event.target.value); }} />
+      {matching.length === 0 ? <p className="rv-muted">{partial ? words.partial : words.none}</p>
+       : <ul>{matching.slice(0, SHOWN_MAX).map(option => {
+          const blocked = option.state !== "available" || unavailable(option.scope), reason = option.state !== "available" ? REASON[option.state] : blocked ? T.SRC_CLEARING : undefined;
+          return <li key={option.scope}><label className="rv-lessons-option" data-unavailable={blocked}><input type="radio" name={group} value={option.scope} checked={value === option.scope} disabled={blocked} onChange={() => { if (!blocked) onChange(option.scope); }} />
+           <span>{visibleText(option.name)}</span>{reason !== undefined && <span className="rv-muted">{reason}</span>}{option.joined === false && option.state === "available" && <span className="rv-muted">{T.SRC_NOT_JOINED}</span>}</label></li>;
+         })}</ul>}
+      {matching.length > SHOWN_MAX && <p className="rv-muted">{T.SRC_LIST_MORE}</p>}
+      {cut && <p className="rv-muted">{words.cut}</p>}
+      {more && <div className="rv-lessons-actions"><Button variant="secondary" busy={isFetchingNextPage} onClick={() => { void fetchNextPage(); }}>{T.SRC_SHOW_MORE}</Button></div>}
+     </>}
+    </fieldset>}
+  {canList && <div className="rv-lessons-actions"><Button variant="secondary" onClick={() => { toggle(!typing); }}>{typing ? T.SRC_PICK_INSTEAD : T.SRC_TYPE_INSTEAD}</Button></div>}
+ </div>;
+}

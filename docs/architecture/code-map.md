@@ -93,7 +93,7 @@ instead: give it a one-line header comment when you next edit it.
 | Feature | Where |
 |---|---|
 | Money: budgets, reservations, settlement | `packages/broker/src/spend/` (routes: `packages/broker/src/spend/routes.ts#routeSpendRequest`) |
-| Team record (switch `tn`) | `packages/broker/src/team-record/` (routes: `packages/broker/src/team-record/routes.ts#handleRecordRoute`; wiring: `packages/broker/src/aws/broker/team-record-wiring.ts`) |
+| Team record (switch `tn`) | `packages/broker/src/team-record/` (routes: `packages/broker/src/team-record/routes.ts#handleRecordRoute`; wiring: `packages/broker/src/aws/broker/team-record-wiring.ts`; source rows added, changed and removed from the app (every editor's change applies at once, audited, no second person; a removal queues the place's deletion for the delete worker): `packages/broker/src/team-record/source-write.ts`, `packages/broker/src/team-record/source-store.ts` and `packages/broker/src/team-record/source-places.ts` (what a Slack, Linear or Jira place is: the live Slack channel class, the connected app's places); the pickers' read, `GET .../record/sources/options` (the Slack channels of the company's bound workspace through the identity function's `channel-list`, the connected Linear teams and Jira projects; editors only): `packages/broker/src/team-record/source-options.ts`, its screen `packages/ui/src/screens/project/lessons/PlacePicker.tsx` (reads in `packages/ui/src/api/record-source-options.ts`); Rovara's own events (remembered note, plan outcome, review outcome, task end) announced to the record: `packages/broker/src/lessons/record-events.ts`; the editing screen of the project's Sources tab (a lazy chunk, loaded only when the route returned the editors' view): `packages/ui/src/screens/project/lessons/SourcesAdmin.tsx`, its calls in `packages/ui/src/api/record-sources.ts`; who may read a task's rows, its Plan 5 visibility: `packages/broker/src/lessons/task-visibility.ts`; whether a ticket a comment names is recorded under the place (Linear comments), read from the record's rows: `packages/broker/src/team-record/sources/parent-lookup.ts`) |
 | Track record (per-step stats in the playbook) | `packages/broker/src/playbook/track-record.ts`. Not the same thing as the Team record. |
 | Lessons (learning v2, switch `ll`) | `packages/broker/src/lessons/`. Loaded into a run by `packages/broker/src/aws/broker/lessons-dispatch.ts#learnedContextForOperation`. Learning capture is in `packages/broker/src/learning/`. |
 | Test environment, nightly run, saved images (`ev`, `nh`, `sv`) | `packages/broker/src/test-env/`. Routes: `packages/broker/src/aws/developer-routes/test-environment.ts`. Contracts: `packages/contracts/src/test-environment.ts`. |
@@ -316,11 +316,11 @@ No single test lists every broker read.
 |---|---|
 | `access-resume.ts` | (No header comment.) Exports `resumeParkedTaskDispatch`. |
 | `access.ts` | (No header comment.) Exports `refuse`, `loadOwnedTask`, `AuthorizedTask`. |
-| `cancel.ts` | (No header comment.) Exports `TaskActor`, `cancelTaskFor`, `retryTaskWorkflowFor`. |
+| `cancel.ts` | (No header comment.) Exports `TaskActor`, `cancelTaskFor`, `BLOCKED_NOT_RUNNING`. |
 | `close.ts` | (No header comment.) Exports `openPullRequest`, `finishTaskClose`, `workflowTaskFinished`. |
 | `common.ts` | (No header comment.) Exports `creatorGuard`, `TASK_ID`, `iso`. |
 | `continue.ts` | (No header comment.) Exports `continueTask`, `heldPreparationOptions`, `heldSavedEnvPin`. |
-| `decide.ts` | (No header comment.) Exports `recordPublishedCandidateOutcomes`, `decideTaskWorkflow`. |
+| `decide.ts` | (No header comment.) Exports `recordPublishedCandidateOutcomes`, `DESIGN_CARD_ONLY_MESSAGE`, `decideTaskWorkflow`. |
 | `design-decision.ts` | Design review stage, DR7 slice C (money W2): the COMMIT PORT of `designApproveHandler`. |
 | `design-proof.ts` | Design review stage, DR7 slice C (DR12 wiring): the two ports `loadProofDesignContext` reads, built from what the broker holds. |
 | `design-resolve-retry.ts` | Design review stage, DR7 slice B2: the owner's Retry of a planner run that BLOCKED while it was answering a design review's findings (a rule file that could not be verified, a leftover program, a run that failed). |
@@ -397,6 +397,7 @@ No single test lists every broker read.
 | `setup-recipes.ts` | Setup and test health SH29 wiring (switch `sp`): company setup recipes, as routes. |
 | `spec-routes.ts` | Meta repo lane D: the task owner's choices on a held spec. |
 | `sso.ts` | Enterprise foundations I1: the admin routes for company group sign-in. |
+| `team-record-source-write.ts` | What a Team record source write needs from the broker's own request (`team-record/source-write.ts`): the caller's company role and whether the session is a live browser one, the body (read only when a write asks for i... |
 | `test-environment-candidate.ts` | TE-2: a test-environment proposal's candidate check, as the routes use it. |
 | `test-environment-wizard.ts` | Setup wizard (E4), the parts of the test-environment routes that go beyond propose / prove / approve: edit a maintainer's EDITED proposal body: validated like any environment, then stored as a proposal (never approved... |
 | `test-environment.ts` | Test environment (wire-testenv, setup wizard E4): the setup routes. |
