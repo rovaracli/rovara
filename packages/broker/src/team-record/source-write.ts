@@ -82,7 +82,8 @@ export interface SourceWriteContext {
   slackMemberChannels?: (input: { teamId: string; userId: string; cursor?: string }) => Promise<SlackChannelPage>;
 }
 
-const WORDS = {
+/** The route's fixed sentences (the Slack add reads them to tell its own apart from anything else). */
+export const WORDS = {
   browser: "Use a live browser session to change this project's sources.",
   notEditor: "Only a maintainer of this project, or a company admin, can change its sources.",
   invalid: "The request is not valid.",

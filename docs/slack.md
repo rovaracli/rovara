@@ -168,9 +168,13 @@ Then configure the Slack app:
   request URL. The app-level `xapp-` token is no longer used and can be revoked.
 - Under **Event Subscriptions**, enable events and set the request URL to the `SlackEventsUrl`
   output. Slack verifies the URL immediately, which succeeds only after the secret is stored.
-- Subscribe to the bot events `app_mention`, `message.channels` and `message.groups`. The two
-  message events deliver replies in the thread of a task started in Slack, which are saved as input
-  for the task's next step; Rovara ignores, and does not store, any other channel message.
+- Subscribe to the bot events `app_mention`, `message.channels`, `message.groups` and
+  `member_joined_channel`. The two message events deliver replies in the thread of a task started in
+  Slack, which are saved as input for the task's next step; Rovara ignores, and does not store, any
+  other channel message. `member_joined_channel` needs no new scope (`channels:read` and `groups:read`
+  already cover it): when a person invites Rovara into a private channel and the Team record is on,
+  the inviter alone is offered a private "Add to project" prompt. An app made before this event was
+  listed must subscribe to it by hand; where the Team record is off Rovara ignores the event.
 - Bot token scopes: `app_mentions:read`, `channels:history`, `groups:history`, `chat:write` and
   `users:read` (`channels:history` and `groups:history` go with the message events). The manifest
   `agentx init` generates (`packages/cli/src/init/slack-app.ts`) lists every scope and event AgentX

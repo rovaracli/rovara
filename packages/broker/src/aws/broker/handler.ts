@@ -88,7 +88,7 @@ import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
 import { installLearningTaskEnd } from "./learning-wiring.js";
 import { designReviewPortsOf } from "../../design-review/wiring.js";
-import { applyTeamRecordRemoval, drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordRemovalEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
+import { answerSlackAdd, applyTeamRecordRemoval, drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordRemovalEvent, isTeamRecordSlackAddEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
 import { installLessons, recordAndLessonRouteDependencies } from "./lessons-wiring.js";
 import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
 import { runWokenTrackingPass, trackingPassDependencies } from "./e2e-rounds.js";
@@ -354,6 +354,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         // THROWN, not answered: a handler that returns is never run again. Lambda retries an asynchronous invoke that errors (twice); the ingress's request/response invoke sees the error.
         throw error;
       }
+    }
+    // Start from inside Slack (task 12): the ingress's private "Add to project" prompt and its Add press, for a verified Slack user. Answers "off" where the record is off.
+    if (isTeamRecordSlackAddEvent(event)) {
+      try { return json(await answerSlackAdd(dependencies, event), "team-record-slack-add"); }
+      catch (error) { console.log(JSON.stringify({ component: "broker", event: "team_record.slack_add_failed", error: error instanceof Error ? error.name : "unknown" })); return json({ error: "unavailable" }, "team-record-slack-add", 500); }
     }
     // The record's durable queue (removals and edits that could not be applied at once): the partial-batch answer SQS reads, so only the messages that failed come back.
     if (isTeamRecordQueueEvent(event)) return await drainTeamRecordQueue(dependencies, event, context) as never;

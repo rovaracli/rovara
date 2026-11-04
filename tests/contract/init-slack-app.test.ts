@@ -66,7 +66,7 @@ describe("Slack app manifest", () => {
         },
       },
       settings: {
-        event_subscriptions: { request_url: EVENTS, bot_events: ["app_mention", "message.channels", "message.groups"] },
+        event_subscriptions: { request_url: EVENTS, bot_events: ["app_mention", "message.channels", "message.groups", "member_joined_channel"] },
         interactivity: { is_enabled: true, request_url: INTERACTIONS },
         org_deploy_enabled: false,
         socket_mode_enabled: false,

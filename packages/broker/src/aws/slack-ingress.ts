@@ -1,4 +1,5 @@
 import { sqsOpsQueue } from "../team-record/ops-queue.js";
+import { askThroughBroker, botInvite, isLearnFromChannel, offerLearnPrompt, type LearnIngress } from "../team-record/slack-add.js";
 import { createSlackForwarder, removalPayload } from "../team-record/slack-forward.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -148,6 +149,11 @@ export interface SlackIngressDependencies {
   /** A message only `user` sees in the thread (chat.postEphemeral). Absent: such acknowledgements are skipped. */
   postEphemeral?: (input: { channel: string; threadTs: string; user: string; text: string; blocks?: Array<Record<string, unknown>> }) => Promise<void>;
   /**
+   * Team record (task 12): `@Rovara learn from this channel`, and Rovara added to a private channel by a person, are answered privately with an "Add to project" prompt (`team-record/slack-add.ts`).
+   * Absent (the record's switch is off): the phrase is an ordinary mention and a membership event is ignored, exactly as before.
+   */
+  recordLearn?: LearnIngress["recordLearn"];
+  /**
    * #340: `connect chatgpt`, `chatgpt status` and `disconnect chatgpt`, answered by the broker for the Slack user.
    * Handled here, like stop, so they never wait behind a running task. Absent: they are ordinary requests.
    */
@@ -293,6 +299,13 @@ export function createSlackIngressHandler(dependencies: SlackIngressDependencies
     }
     if (payload.type !== "event_callback") return ignore(log, "not_event_callback");
     if (dependencies.recordTap !== undefined) recording.done = offerToRecord(dependencies.recordTap, payload, log);
+    // Team record (task 12): a person adding Rovara to a private channel is offered the private prompt (the inviter only). Any other event falls through.
+    const learn = dependencies.recordLearn === undefined ? undefined : { ...dependencies, recordLearn: dependencies.recordLearn, log };
+    const invite = learn === undefined ? undefined : botInvite(payload);
+    if (learn !== undefined && invite !== undefined) {
+      await offerLearnPrompt(learn, { eventId: invite.eventId, ask: { teamId: invite.teamId, userId: invite.inviterId, channelId: invite.channelId, trigger: "invite" }, claimUntilSeconds: Math.floor(now() / 1_000) + EVENT_RETENTION_SECONDS });
+      return respond(200, { ok: true });
+    }
 
     const mention = parseMention(payload);
     if ("reason" in mention) return ignore(log, mention.reason);
@@ -305,6 +318,11 @@ export function createSlackIngressHandler(dependencies: SlackIngressDependencies
     } catch (error) {
       if (error instanceof AgentXError && error.code === "SLACK_TEAM_NOT_BOUND") return ignore(log, "slack_team_not_bound", { teamId: thread.teamId });
       throw error;
+    }
+    // Team record (task 12): the exact phrase is answered privately, in any channel (no project needs to be bound to it). Any other text goes on as before.
+    if (learn !== undefined && mention.kind === "mention" && !mention.appPosted && isLearnFromChannel(slackRequestText(mention.text, mention.botUserId))) {
+      await offerLearnPrompt(learn, { eventId: mention.eventId, ask: { teamId: thread.teamId, userId: mention.userId, channelId: thread.channelId, trigger: "phrase" }, threadTs: thread.threadTs, claimUntilSeconds: Math.floor(now() / 1_000) + EVENT_RETENTION_SECONDS });
+      return respond(200, { ok: true });
     }
     const binding = await dependencies.getBinding(orgId, thread.teamId, thread.channelId);
     if (!binding) return ignore(log, "channel_not_bound", { channelId: thread.channelId });
@@ -1164,6 +1182,8 @@ function createAwsSlackIngressHandler() {
   return createSlackIngressHandler({
     secrets,
     ...(recordTap === undefined ? {} : { recordTap }),
+    // Team record (task 12): "learn from this channel" and the private-channel invite, where the record's switch is on.
+    ...(process.env.TEAM_RECORD_ENABLED !== "1" || brokerFunctionName === undefined ? {} : { recordLearn: { ask: askThroughBroker(invokeBroker), postEphemeral: async (input: Parameters<LearnIngress["recordLearn"]["postEphemeral"]>[0]) => { await chatPostEphemeral((await secrets()).botToken, input); } } }),
     appPosted: { accept: settings.acceptAppPosted, checkMember },
     turnLimit: {
       perMinute: settings.turnsPerMinute,

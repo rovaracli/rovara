@@ -7,7 +7,7 @@ import { jsonBody } from "./organization.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
 type ChannelClassRead = NonNullable<NonNullable<DeveloperRouteDependencies["developer"]>["channelClass"]>;
-const slackChannelOf = (read: ChannelClassRead): NonNullable<SourceWriteContext["slackChannel"]> => async (teamId, channelId) => {
+export const slackChannelOf = (read: ChannelClassRead): NonNullable<SourceWriteContext["slackChannel"]> => async (teamId, channelId) => {
   const answer = await read({ kind: "channel-class", teamId, channelId });
   if (!answer.ok) return undefined;
   return "channel" in answer ? answer.channel : "none";

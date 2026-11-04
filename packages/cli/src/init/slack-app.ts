@@ -32,8 +32,12 @@ export function slackBotScopes(input: { publicInvitations?: boolean; privateInvi
     ...(input.privateInvitations === true ? ["groups:write.invites"] : []),
   ];
 }
-/** The Events API subscriptions: mentions, and messages in public and private channels the bot is in. */
-export const SLACK_BOT_EVENTS: readonly string[] = ["app_mention", "message.channels", "message.groups"];
+/**
+ * The Events API subscriptions: mentions, messages in public and private channels the bot is in, and `member_joined_channel` (task 12 of the Team record source rows: when a person invites Rovara into a private
+ * channel, the inviter alone is offered the private "Add to project" prompt; where the Team record is off the ingress ignores the event). It needs no new scope: `channels:read` and `groups:read` are already requested.
+ * An app created before this was added must subscribe to the event by hand (Event Subscriptions, bot events); nothing breaks until it does, the invite prompt just does not appear.
+ */
+export const SLACK_BOT_EVENTS: readonly string[] = ["app_mention", "message.channels", "message.groups", "member_joined_channel"];
 /** Sign in with Slack (OpenID Connect). */
 export const SLACK_USER_SCOPES: readonly string[] = ["email", "openid", "profile"];
 /** What developer sign-in needs of the bot token: users.info, users.lookupByEmail, conversations.members, and 25e's DMs. */

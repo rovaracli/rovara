@@ -53,6 +53,7 @@ import { needsLinkedAuthor, unlinkedCounter } from "./unlinked.js";
 import { priorEditsPort } from "./prior-edits.js";
 import { trackerPlaceCheck, trackerPlaceOptions } from "./source-places.js";
 import { createGithubRecordTap, createHookRecordTap, createRecordParentLookup, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type TaskVisibility, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
+import { createSlackAdd, type SlackAddService } from "./slack-add.js";
 import { runStats, type StatsDeps } from "./stats-templates.js";
 import { expireRawText } from "./text-expiry.js";
 import { createTransientDistiller } from "./transient-distiller.js";
@@ -165,6 +166,8 @@ export interface TeamRecordRuntime {
   readonly modes: LearningModeReader;
   /** `/v1/app/projects/{project}/record/...` (the caller's project role already found by the broker). `undefined` for any other path. */
   routes(request: { method: string; path: string; query: Readonly<Record<string, string | undefined>>; caller: TeamRecordCallerInput; /** What a source write needs from the broker's request (`source-write.ts`); absent: reads only. */ write?: SourceWriteContext }): Promise<RecordRouteReply | undefined>;
+  /** Start from inside Slack (task 12): the private "Add to project" prompt and its Add press, through the same source route as the web (`slack-add.ts`). The Slack reads it needs are handed in per call. */
+  readonly slackAdd: SlackAddService;
   /** The record tools an agent step may be offered, and one call of them. */
   tools: {
     list(context: Pick<RecordToolContext, "memory">): ReadonlyArray<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
@@ -1021,5 +1024,11 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return synced;
   }
   trackerSync.run = syncDueTrackers;
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
+  // Start from inside Slack (task 12): the company a Slack team is bound to, the person a Slack user is linked to, and the record's own source route.
+  const slackAdd = createSlackAdd({
+    edition, table, state, now, projectsOf, limiter: dynamoRateLimiter(table, now), route: routes,
+    orgOfSlackTeam: (teamId) => new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId),
+    developerOfSlackUser: async (slackUserId) => (input.developerOfSlackUser === undefined ? undefined : await input.developerOfSlackUser(slackUserId)),
+  });
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
 }
