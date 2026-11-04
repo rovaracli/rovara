@@ -10,6 +10,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createStepApproval, expireApprovals, registerApprovalSubjectHandler, registerApproverRule } from "../../packages/broker/src/agents/approvals.js";
 import { registerChainRunner } from "../../packages/broker/src/chains/index.js";
 import { ChainStore } from "../../packages/broker/src/chains/store.js";
+import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { GATE_DEFAULT_TIMEOUT_HOURS, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import { openChainRunKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { createAgentXMcpServer, type ControlPlaneClient, type ToolContext } from "../../packages/mcp/src/index.js";
@@ -250,6 +251,7 @@ describe("who may decide a gate (checked when they decide)", () => {
     const w = setupGateWorld();
     const { chain, approvalId } = await w.runAtGate(PRIYA, gated([{ kind: "chain_owner" }]));
     expect(chain.owner).toEqual({ kind: "member", developerId: PRIYA });
+    fixtureActor(w.db, ORG_A, CARL); // S1 (0.5.4): the new owner's member row and pointer are held in the owner change's transaction
     await w.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: CARL }, MAX, undefined, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) });
     expect(await refusal(w.decideRoute(PRIYA, approvalId))).toMatchObject({ code: "FORBIDDEN" });
     expect((await w.decideAs(PRIYA, approvalId)).statusCode).toBe(403);
@@ -261,6 +263,8 @@ describe("who may decide a gate (checked when they decide)", () => {
   it("follows a move to a project too: the old member owner is refused and the new project's maintainer decides", async () => {
     const w = setupGateWorld();
     const { chain, approvalId } = await w.runAtGate(PRIYA, gated([{ kind: "chain_owner" }]));
+    // S1 (0.5.4): the new accountable maintainer is held to a real grant row in the owner change's transaction.
+    w.db.set({ ...projectMemberKey(ORG_A, MAX, "web"), entityType: "MEMBERSHIP", role: "developer", projectRole: "maintainer" });
     await w.chains.setOwner(ORG_A, chain.chainId, { kind: "project", project: "web" }, MAX, { developerId: MAX }, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) });
     expect(await refusal(w.decideRoute(PRIYA, approvalId))).toMatchObject({ code: "FORBIDDEN" });
     expect(await refusal(w.decideRoute(CARL, approvalId))).toMatchObject({ code: "FORBIDDEN" });
@@ -283,6 +287,7 @@ describe("who may decide a gate (checked when they decide)", () => {
     const w = setupGateWorld();
     const chain = await w.publish(gated([{ kind: "chain_owner" }]));
     const run = await w.start(chain.chainId, PRIYA);
+    fixtureActor(w.db, ORG_A, CARL); // S1 (0.5.4): the new owner's member row and pointer are held in the owner change's transaction
     await w.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: CARL }, MAX, undefined, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) });
     await w.endLatest();
     const gate = w.attempts(run.runId).find((attempt) => attempt.kind === "gate")!;
