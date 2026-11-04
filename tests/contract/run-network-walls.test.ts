@@ -45,7 +45,13 @@ describe("the run network adds no firewall rule", () => {
     const ipv6 = fn("wall_ipv6_into_host");
     expect(ipv6).toContain("for bridge in rvb+ rvi+; do");
     expect(ipv6).toContain("ip6tables -I INPUT -i $bridge -j DROP");
-    expect(stage2.split("\n").filter(mentionsRvi)).toEqual([...wall.split("\n").filter(mentionsRvi), ...ipv6.split("\n").filter(mentionsRvi)]);
+    // The boot facts (reported to CloudWatch) only READ the two walls with `-C` checks; they add no rule.
+    const facts = fn("write_test_services_boot_facts").split("\n").filter(mentionsRvi);
+    for (const line of facts) {
+      expect(line, line).toMatch(/\b(?:ip6tables|iptables) -C /u);
+      expect(line, line).not.toMatch(/\b(?:ip6tables|iptables) -[AI] /u);
+    }
+    expect(stage2.split("\n").filter(mentionsRvi)).toEqual([...wall.split("\n").filter(mentionsRvi), ...ipv6.split("\n").filter(mentionsRvi), ...facts]);
     const block = fn("block_imds");
     expect(block).toContain("rvbs+");
     expect(block).not.toMatch(/\brvi\b/u);
@@ -126,7 +132,8 @@ esac
     expect(at("install_run_walls_unit")).toBeLessThan(at("write_worker_unit"));
     expect(at("write_worker_unit")).toBeLessThan(at("systemctl enable --now"));
     expect(at("systemctl enable --now")).toBeLessThan(at("start_e2e_qualification"));
-    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+write_test_services_environment \|\| log [^\n]*\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+wall_ipv6_into_host \|\| fail [^\n]*\n\s+install_run_walls_unit \|\| fail [^\n]*\n\s+fi/u);
+    // Pulling the catalog images and writing the test services settings is not fatal; every wall step is.
+    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+if pull_catalog_images "\$region"; then\n\s+write_test_services_environment \|\| log [^\n]*\n\s+else\n\s+log [^\n]*\n\s+fi\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+wall_ipv6_into_host \|\| fail [^\n]*\n\s+install_run_walls_unit \|\| fail [^\n]*\n\s+write_test_services_boot_facts \|\| log [^\n]*\n\s+fi/u);
   });
 
   // TS-SEAL-2: the IPv6 INPUT drop for the run bridges, run for real against fake iptables and ip6tables that keep their rules in files.
