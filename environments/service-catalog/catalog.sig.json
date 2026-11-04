@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "algorithm": "ecdsa-p256-sha256",
+  "keyId": "b5692ea756e1449b14fa9370dd0ccad495d9b61709103724742bdd87d6aa8b9c",
+  "catalogSha256": "435a75d908dce2a7a59a038f5d31efd4d1bfd613fc9e770d0253f66715d62aca",
+  "signature": "MEYCIQDXy++/maBfw1U2oht2EbI8+Gnsig4SGTCLl7Jv16pNNAIhAM1qRdYjU6ZhCH489jHUdNYB407/PEorzSY3eicleqxo"
+}

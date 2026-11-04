@@ -1,0 +1,7 @@
+[
+  {
+    "keyId": "b5692ea756e1449b14fa9370dd0ccad495d9b61709103724742bdd87d6aa8b9c",
+    "publicKey": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEp87KHVIDMdawHFcwW45L1rhteLcc\naAlAjFuDpVaCqIFAVuRyizeeez1f8L/wxupdHug4WBVdleVhdb9e4FQCDg==\n-----END PUBLIC KEY-----\n",
+    "algorithm": "ECDSA_SHA_256"
+  }
+]
