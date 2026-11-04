@@ -1469,7 +1469,8 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
     async handler(context, input) {
       const sessionId = sessionIdOf(input.session_id);
       const session = await context.client.stopSession(sessionId, (input.request_id as string | undefined) ?? context.newRequestId());
-      return { structured: sessionOutput(session), text: `Stop requested. ${sessionText(session)}` };
+      const first = typeof session.nothingRunning === "string" ? plainText(session.nothingRunning, "Nothing was running to stop.") : "Stop requested.";
+      return { structured: sessionOutput(session), text: `${first} ${sessionText(session)}` };
     },
   },
 ];

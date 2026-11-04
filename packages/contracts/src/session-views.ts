@@ -95,6 +95,8 @@ export const SessionResponseSchema = z.object({
   session: SessionViewSchema,
   /** Only on a Stop's answer: `NOTHING_RUNNING` when the stop found nothing to stop, so the page does not say "Stop requested". */
   stop: z.literal("NOTHING_RUNNING").optional(),
+  /** With `stop`: why nothing was stopped, when the page should say more than "Nothing was running" (a blocked task is ended by Close task, not Stop). */
+  message: z.string().max(500).optional(),
 }).strict();
 
 export const SessionResponseReaderSchema = forwardReader(SessionResponseSchema);

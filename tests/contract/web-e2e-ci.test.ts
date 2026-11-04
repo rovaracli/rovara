@@ -1,4 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import YAML from "yaml";
 import { expect, it } from "vitest";
 import { needsVerdict } from "../../scripts/ci-gate.js";
@@ -16,6 +20,10 @@ it("caches the Playwright browsers by the version package-lock pins, installs th
  const cache = caches[0]!;expect(cache.uses).toMatch(/^actions\/cache@[0-9a-f]{40}( #.*)?$/);expect(cache.with?.path).toBe("~/.cache/ms-playwright");
  // The key is the version the lock file pins, read by an earlier step; the version the test sees there is the one the lock holds.
  const version = steps.find(step => step.id === "playwright-version");expect(version?.run).toContain("package-lock.json");expect(version?.run).toContain("node_modules/playwright-core");
+ // A version that cannot be read fails the step: no constant cache key. The step's own script is run against a lockfile with and without the entry.
+ const script = version!.run!, readIn = (lock: object) => { const directory = mkdtempSync(join(tmpdir(), "pw-version-")), output = join(directory, "output");writeFileSync(join(directory, "package-lock.json"), JSON.stringify(lock));return { ...spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], { cwd: directory, env: { ...process.env, GITHUB_OUTPUT: output }, encoding: "utf8" }), output: existsSync(output) ? readFileSync(output, "utf8") : "" }; };
+ expect(readIn({ packages: { "node_modules/playwright-core": { version: "1.58.2" } } })).toMatchObject({ status: 0, output: "version=1.58.2\n" });
+ for (const lock of [{ packages: {} }, { packages: { "node_modules/playwright-core": {} } }, { packages: { "node_modules/playwright-core": { version: "" } } }]) { const failed = readIn(lock);expect(failed.status).not.toBe(0);expect(failed.output).toBe("");expect(failed.stdout).toContain("::error::") }
  expect(steps.indexOf(version!)).toBeLessThan(steps.indexOf(cache));expect(cache.with?.key).toContain("${{ steps.playwright-version.outputs.version }}");expect(cache.with?.key).toContain("${{ runner.os }}");
  expect(lock.packages["node_modules/playwright-core"]?.version).toMatch(/^\d+\.\d+\.\d+$/);
  expect(lock.packages["node_modules/playwright-core"]?.version).toBe(lock.packages["node_modules/@playwright/test"]?.version);

@@ -109,6 +109,7 @@ const routes = [
   { method: "POST", tail: "/change-anyway", level: "use" },
   { method: "POST", tail: "/retry", level: "edit" },
   { method: "POST", tail: "/stop", level: "edit" },
+  { method: "POST", tail: "/close", level: "edit" },
   { method: "POST", tail: "/messages", level: "use", body: { kind: "steer", text: "What should happen next?" } },
   { method: "POST", tail: "/messages", level: "view", body: { kind: "comment", text: "Please keep this comment for the team." } },
   { method: "POST", tail: "/take-over", level: "edit" },

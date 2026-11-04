@@ -244,6 +244,13 @@ describe("agentx_stop_session", () => {
     expect(structured(result)).toMatchObject({ id: SES, status: "stopped", link: LINK });
   });
 
+  it("says nothing was running, with the server's words, and never Stop requested, when the stop found nothing to stop", async () => {
+    const stopSession = vi.fn(async () => ({ ...sessionView({ status: "needs_person" }), nothingRunning: "This task is blocked, not running. To end it, use Close task (it checks for unpublished work first)." }));
+    const text = (await (await connect({ stopSession })).callTool({ name: "agentx_stop_session", arguments: { session_id: SES } })).content as Array<{ text: string }>;
+    expect(text[0]!.text).toMatch(/^This task is blocked, not running\. To end it, use Close task/u);
+    expect(text[0]!.text).not.toContain("Stop requested");
+  });
+
   it("a second stop after the session was continued is a new request, not the first one's stored outcome", async () => {
     const stopSession = vi.fn<ControlPlaneClient["stopSession"]>(async () => sessionView({ status: "stopped" }));
     const made = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];

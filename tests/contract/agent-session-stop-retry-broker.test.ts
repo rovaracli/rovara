@@ -6,7 +6,7 @@ import { agentSessionKey, openAgentSessionKey } from "../../packages/contracts/s
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
 import { retryRunRequestId } from "../../packages/broker/src/agent-sessions/retry.js";
-import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, seedMembership } from "../support/developer-task-broker.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -285,6 +285,67 @@ describe("a Rovara Code task, through the real broker", () => {
     expect(second.status, JSON.stringify(second.body)).toBe(200);
     expect(second.body).toMatchObject({ closed: false, unpublished: [{ repository: "demo", reasons: ["worktree_changes"] }] });
     expect(t.meta(task.taskId).closedAt).toBeUndefined();
+  });
+
+  it("ends a plan-blocked session the same way for the owner, a share holder with edit and an org admin, frees its workspace, and audits each (blocked at PLAN)", async () => {
+    for (const who of ["owner", "share holder", "admin"] as const) {
+      const audit = capturingAuditDeps();
+      const t = await setup({ audit });
+      const task = await startWorkflow(t);
+      grantProject(t.db, OMAR);
+      expect((await t.share(task.sessionId, who === "admin" ? "view" : "edit")).status).toBe(200);
+      await t.finish(task.workspaceId, t.steps(task.workspaceId)[0]!.id, "FAILED", { error: "the planner stopped" });
+      expect(t.meta(task.taskId)).toMatchObject({ workflow: { stage: "PLAN", state: "BLOCKED" } });
+      await refreshSessionSummary({ documentClient: t.db, tableName: "state", now: Date.now }, TEST_ORG, task.sessionId);
+      if (who === "admin") seedMembership(t.db, OMAR.developerId, { orgId: TEST_ORG, role: "admin" });
+      const stopped = await t.dev(who === "owner" ? MAYA : OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId: randomUUID() });
+      expect(stopped.status, `${who}: ${JSON.stringify(stopped.body)}`).toBe(200);
+      expect(stopped.body.stop, who).toBeUndefined();
+      expect(t.meta(task.taskId), who).toMatchObject({ workflow: { stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED" } });
+      // The slot and the workspace went back.
+      expect(t.meta(task.taskId).releasedAt, who).toBeDefined();
+      expect(audit.recordedBy("session.stopped"), who).toHaveLength(1);
+      expect(t.events(task.sessionId).filter((event) => event.type === "stopped"), who).toHaveLength(1);
+    }
+  });
+
+  it("does not end, close or release a task that is blocked after the plan stages (IMPLEMENT, VERIFY, REVIEW, WAIT_FOR_MERGE): Stop answers that it is blocked and points to Close task, for the owner, a share holder and an org admin", async () => {
+    for (const stage of ["IMPLEMENT", "VERIFY", "REVIEW", "WAIT_FOR_MERGE"] as const) {
+      for (const who of ["owner", "share holder", "admin"] as const) {
+        const audit = capturingAuditDeps();
+        const t = await setup({ audit });
+        const task = await startWorkflow(t);
+        grantProject(t.db, OMAR);
+        expect((await t.share(task.sessionId, who === "admin" ? "view" : "edit")).status).toBe(200);
+        if (who === "admin") seedMembership(t.db, OMAR.developerId, { orgId: TEST_ORG, role: "admin" });
+        // The planning step ends, then the task is made blocked part-way through the work, where commits that were never pushed may exist.
+        await t.finish(task.workspaceId, t.steps(task.workspaceId)[0]!.id, "FAILED", { error: "the planner stopped" });
+        const workflow = { ...(t.meta(task.taskId) as unknown as { workflow: Item }).workflow, stage, state: "BLOCKED", blockReason: "the step failed" };
+        await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${task.taskId}`, sk: "META" }, UpdateExpression: "SET workflow = :workflow", ExpressionAttributeValues: { ":workflow": workflow } }));
+        const workspaceBefore = JSON.stringify(t.db.get(`WORKSPACE#${task.workspaceId}`, "META"));
+        const operationsBefore = t.operations(task.workspaceId).length;
+        const label = `${stage} ${who}`;
+        const requestId = randomUUID();
+        const stopped = await t.dev(who === "owner" ? MAYA : OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
+        expect(stopped.status, `${label}: ${JSON.stringify(stopped.body)}`).toBe(200);
+        expect(stopped.body, label).toMatchObject({ stop: "NOTHING_RUNNING", message: "This task is blocked, not running. To end it, use Close task (it checks for unpublished work first)." });
+        // Nothing was closed, released or deleted, and nothing says the person stopped it.
+        const after = t.meta(task.taskId);
+        expect(after, label).toMatchObject({ workflow: { stage, state: "BLOCKED" } });
+        expect(after.closedAt, label).toBeUndefined();
+        expect(after.releasedAt, label).toBeUndefined();
+        expect(after.releaseClaimedAt, label).toBeUndefined();
+        expect(JSON.stringify(t.db.get(`WORKSPACE#${task.workspaceId}`, "META")), label).toBe(workspaceBefore);
+        expect(t.operations(task.workspaceId), label).toHaveLength(operationsBefore);
+        expect(t.events(task.sessionId).filter((event) => event.type === "stopped"), label).toEqual([]);
+        expect(audit.recordedBy("session.stopped"), label).toHaveLength(0);
+        expect(t.session(task.sessionId), label).toMatchObject({ open: true });
+        // The same request again answers the same words and still changes nothing.
+        const again = await t.dev(who === "owner" ? MAYA : OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
+        expect(again.body, label).toMatchObject({ stop: "NOTHING_RUNNING", message: stopped.body.message });
+        expect(t.meta(task.taskId).releasedAt, label).toBeUndefined();
+      }
+    }
   });
 
   it("fences the stop on the task's People revision: a task with a People list is stopped at the revision the list has", async () => {
