@@ -45,7 +45,7 @@ describe("the fallback note names the model that was asked for, never the model 
   }
   it("the same model on a source that cannot serve it, replaced by the same model on one that can: the note names no model", () => {
     const source = { model: sonnet, sourceId: "src_aaaaaaaaaaaaaaaaaaaa", enabled: true, inEffectiveOrder: true, evidence: { orgId: "org_a", sourcesRevision: 2, kind: "tested_bedrock_role" as const } };
-    const result = resolveStageModel({ ...input("build", [sonnet]), referenceModel: undefined, candidates: [{ ...row(sonnet), accountCannotUse: true as const }, source] });
+    const result = resolveStageModel({ ...input("code_review", [sonnet]), stage: "build" as const, referenceModel: undefined, candidates: [{ ...row(sonnet), accountCannotUse: true as const }, source] });
     expect(result).toMatchObject({ kind: "resolved", model: sonnet, sourceId: "src_aaaaaaaaaaaaaaaaaaaa", fallback: { used: "anthropic/claude-sonnet-4", wanted: null } });
   });
   it("with no other model asked for at all, the note names none (the page says \"the preferred model\") rather than the model that ran", () => {
