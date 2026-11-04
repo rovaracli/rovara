@@ -14,7 +14,7 @@ import { effectiveTaskOwner, type DeveloperTaskRecord } from "./task-records.js"
 /** Why work was refused, as a fixed word for the audit event. */
 export type WorkRefusalReason = "owner_removed" | "no_project_access" | "viewer" | "project_archived" | "project_inactive" | "other_org";
 /** Where it was refused, as a fixed word for the audit event. */
-export type WorkRefusalPath = "ci_fix_round" | "feedback_round" | "conflict_round" | "queued_dispatch";
+export type WorkRefusalPath = "ci_fix_round" | "feedback_round" | "conflict_round" | "program_step" | "feedback_review" | "queued_dispatch";
 
 export interface WorkRefusal { reason: WorkRefusalReason; message: string }
 

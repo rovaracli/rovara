@@ -1261,13 +1261,21 @@ export function stopWorkflowFeedbackRound(currentInput: unknown, reason: string,
 }
 
 /**
- * S2: a fix round (CI, conflict or review comments) that has not started its coding run is refused because the person it runs as lost their place in the project (or the project was archived):
- * IMPLEMENT/READY becomes WAIT_FOR_MERGE/BLOCKED with `reason`, the fix's marks gone, the round still counted. Nothing is run or paid for; a person takes over.
+ * S2: a step Rovara was about to start for the task's owner is refused because that person lost their place in the project (or the project was archived). Nothing is run or paid for, and the
+ * task says why. IMPLEMENT/READY of a fix round (CI, conflict or review comments) becomes WAIT_FOR_MERGE/BLOCKED with the fix's marks gone (the round stays counted); IMPLEMENT/READY of a
+ * custom sequence's next coding step becomes IMPLEMENT/BLOCKED; WAIT_FOR_MERGE/WAITING (a PR-feedback critic that was about to start) becomes WAIT_FOR_MERGE/BLOCKED. A person takes over.
  */
-export function stopWorkflowFixNotRun(currentInput: unknown, reason: string, now: string): WorkflowSnapshot {
+export function stopWorkflowStepNotRun(currentInput: unknown, reason: string, now: string): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
-  if (current.stage !== "IMPLEMENT" || current.state !== "READY" || current.fixSource === undefined) throw new WorkflowTransitionError("no fix is waiting to start");
-  return WorkflowSnapshotSchema.parse({ ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: reason.slice(0, 500), updatedAt: now });
+  const text = reason.slice(0, 500);
+  if (current.stage === "IMPLEMENT" && current.state === "READY") {
+    if (current.fixSource !== undefined) return WorkflowSnapshotSchema.parse({ ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: text, updatedAt: now });
+    return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, state: "BLOCKED", blockReason: text, updatedAt: now });
+  }
+  if (current.stage === "WAIT_FOR_MERGE" && current.state === "WAITING") {
+    return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, state: "BLOCKED", blockReason: text, updatedAt: now });
+  }
+  throw new WorkflowTransitionError("no step is waiting to start");
 }
 
 /**

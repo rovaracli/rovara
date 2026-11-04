@@ -30,12 +30,11 @@ import {
   type WorkflowDependencyInvocation,
   workflowReviewRoles,
   abandonWorkflowFix,
-  stopWorkflowFixNotRun,
 } from "@agentx/contracts";
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { aiToolTurn, developerTaskIdentity, partyOfTask, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional } from "../broker-shared.js";
-import { ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
+import { stopIfOwnerRefused } from "./owner-stop.js";
 import { shortenMarkdown } from "../../developer/plan-artifacts.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import type { TaskAccess } from "../../developer/task-access.js";
@@ -48,7 +47,6 @@ import {
   creatorGuard,
   get,
   iso,
-  log,
   parse,
   partyOfTaskActor,
   putNew,
@@ -316,9 +314,10 @@ export async function startTaskWorkflowImplementationFromSystem(
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.program === undefined || workflow.programStepId === undefined
     || workflow.revision !== expected.workflowRevision || workflow.stage !== "IMPLEMENT" || workflow.state !== "READY") return "STALE";
   await creatorGuard(deps, task);
-  // S2 (SB-2): a CI, conflict or review-comment fix round runs as the task's owner, so it meets the send-back's project access rule (and the archive check) now; a round the owner may not start is
-  // not started, says why on the task, and is audited. Nothing retries it: the row goes.
-  if (workflow.fixSource !== undefined && await stopFixRoundForOwner(deps, task, workflow)) return "STALE";
+  // S2 (SB-2): a CI, conflict or review-comment fix round, and a custom sequence's next coding step, run as the task's owner, so they meet the send-back's project access rule (and the archive
+  // check) now; a step the owner may not start is not started, says why on the task, and is audited. Nothing retries it: the row goes.
+  const pathOfStep = workflow.fixSource === "ci" ? "ci_fix_round" : workflow.fixSource === "feedback" ? "feedback_round" : workflow.fixSource === "conflict" ? "conflict_round" : "program_step";
+  if (await stopIfOwnerRefused(deps, task, workflow, pathOfStep)) return "STALE";
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
@@ -409,31 +408,6 @@ export async function startTaskWorkflowImplementationFromSystem(
     // A CI or feedback fix starts from the head the pull request has (Plan 6 Task 17), so an abandoned conflict round's files are not what it begins on.
     ...(workflow.fixSource === undefined ? {} : { workflowFix: { source: workflow.fixSource, ...(fixStartHead(workflow) === undefined ? {} : { startFrom: fixStartHead(workflow)! }) } }) });
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
-}
-
-/**
- * S2 (SB-2): before a fix round's coding run starts, asks whether the task's owner may still have Rovara start work for them (`ownerWorkRefusal`: the send-back's project access rule and the archive
- * check, read live). When not, the round is blocked where it stands with a plain reason, in one conditional write; the refusal is audited with fixed words; and the answer is true (do not start).
- * A lost race leaves the task to whoever moved it. A read that fails throws, and the dispatch's own bounded retry goes on.
- */
-async function stopFixRoundForOwner(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot): Promise<boolean> {
-  const refusal = await ownerWorkRefusal(deps, task);
-  if (refusal === undefined) return false;
-  const source = workflow.fixSource;
-  const path = source === "ci" ? "ci_fix_round" : source === "feedback" ? "feedback_round" : "conflict_round";
-  const at = iso(deps);
-  await recordWorkRefused(deps.learningAudit, (entry) => log(deps, entry), { orgId: String(task.orgId), taskId: task.taskId, path, reason: refusal.reason, occurrence: `${path}#${String(workflow.revision)}`, now: at });
-  try {
-    await deps.actions.transact([{ Update: {
-      TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
-      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :ready AND attribute_not_exists(closedAt)",
-      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-      ExpressionAttributeValues: { ":workflow": stopWorkflowFixNotRun(workflow, refusal.message, at), ":now": at, ":revision": workflow.revision, ":implement": "IMPLEMENT", ":ready": "READY" },
-    } }]);
-  } catch (error) {
-    if (!isConditional(error)) throw error;
-  }
-  return true;
 }
 
 /** Whether the workflow program is past its first build step: a work breakdown the plan approved belongs to that first build. */

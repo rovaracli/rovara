@@ -430,7 +430,7 @@ const STEPS: Record<string, { name: string; start: () => Promise<StartedStep>; r
     workflow = collectWorkflowFeedbackBundles(workflow, { bundleRefs: [{ ...metadata, sha256: bundleDigest, objectKey: bundleKey, comments }], threadObservations: [] }, now);
     harness.db.set({ ...task, workflow, updatedAt: now });
     const routeDeps = { documentClient: harness.db, tableName: "state", actions: harness.actions, orgId: TEST_ORG,
-      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.parse(now) };
+      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.parse(now) };
     expect(await startTaskWorkflowFeedbackReviewFromWebhook(routeDeps as never, taskId)).toBe(true);
     const critic = operationOf(harness, workspaceId, "FEEDBACK_REVIEW");
     const running = taskWorkflow(harness, taskId);
