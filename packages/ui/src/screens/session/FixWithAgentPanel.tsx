@@ -43,7 +43,8 @@ export function FixWithAgentPanel({ errorRef }: { errorRef: NonNullable<ReadSess
   if (sending) return;
   // The same press is the same diagnosis (same request id) unless the last one failed: the server replays a failed diagnosis for its request id, so a retry needs a new id.
   if (requestId.current === undefined || status.data?.state === "failed") requestId.current = crypto.randomUUID();
-  setSending(true);setError(undefined);
+  // Forget the shown diagnosis before asking, so a lost reply leaves no old "failed" state behind that would give the next press yet another id (the server may already have started this one).
+  setSending(true);setError(undefined);setDiagnosisId(undefined);
   try { setDiagnosisId((await api.start({ requestId: requestId.current, errorRef })).diagnosisId); }
   catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't diagnose this now."); }
   finally { setSending(false); }

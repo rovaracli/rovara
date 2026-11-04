@@ -235,10 +235,16 @@ it("sends a new request id after a failed diagnosis, and keeps it after a lost r
  press();
  await screen.findByText("Couldn't diagnose this now.");
  await waitFor(() => expect(screen.getByRole("button", { name: "Fix with agent" }).hasAttribute("disabled")).toBe(false));
+ // After a failed diagnosis the retry gets a new id; when that retry's reply is lost, the next press keeps it (the server may already have started it).
+ lost = true;
  press();
  await waitFor(() => expect(bodies(s.f, "POST", "/v1/app/diagnoses")).toHaveLength(4));
  const all = bodies(s.f, "POST", "/v1/app/diagnoses");
  expect(all[3]!.requestId).not.toBe(all[2]!.requestId);
+ await waitFor(() => expect(screen.getByRole("button", { name: "Fix with agent" }).hasAttribute("disabled")).toBe(false));
+ press();
+ await waitFor(() => expect(bodies(s.f, "POST", "/v1/app/diagnoses")).toHaveLength(5));
+ expect(bodies(s.f, "POST", "/v1/app/diagnoses")[4]!.requestId).toBe(all[3]!.requestId);
  s.close();
 }, 20000);
 
