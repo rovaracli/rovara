@@ -104,6 +104,19 @@ export const SessionResponseSchema = z.object({
 export const SessionResponseReaderSchema = forwardReader(SessionResponseSchema);
 
 /**
+ * What a not-closed close answer's `message` says in the cases the page acts on (the broker writes them, the web page compares with them, so a change of wording moves both): `checking` while the worker looks
+ * for unpublished work, `computePending` once it found none and only the workspace's release is left, `discardPending` the same after a discard was asked for, and `checkFailed` / `stillOpen` when the check
+ * ended without closing the task and only a NEW request id starts it again (the old id keeps answering with the old, ended check).
+ */
+export const CLOSE_MESSAGES = {
+  checking: "AgentX is checking the task's workspace for unpublished work before closing it; check back with agentx_get_task",
+  computePending: "the workspace has no unpublished work, but its compute is not removed yet; try agentx_close_task again shortly",
+  discardPending: "AgentX recorded your request to discard unpublished work, but could not finish releasing the workspace; try agentx_close_task again shortly",
+  checkFailed: "the check for unpublished work did not finish; try agentx_close_task again with a new request_id",
+  stillOpen: "the task is still open; try agentx_close_task again with a new request_id",
+} as const;
+
+/**
  * `POST /v1/app/sessions/{id}/close`: the task's own close (the one the Slack button and the AI-tool close run), as the page needs it. `closed: false` with `unpublished` means the workspace holds work that
  * was never published and a close that discards it must be asked for again (`discardUnpublished: true`); `message` says why a task is not closed yet and what to do next.
  */
