@@ -6,7 +6,7 @@ import { ORG_A, ORG_B, addSource, rows, world } from "../../support/team-record-
 import { world as fakes } from "../../support/team-record-ingest-fakes.js";
 
 const SCOPE = "linear:team/t1";
-const ticket = (over: Partial<TicketItem> = {}): TicketItem => ({ source: "linear", system: "linear", id: "issue:1", kind: "ticket.created", scope: SCOPE, title: "Fix login", authorId: "u1", occurredAt: "2026-10-30T10:00:00.000Z", version: "v1", ...over }) as TicketItem;
+const ticket = (over: Partial<TicketItem> = {}): TicketItem => ({ source: "linear", system: "linear", id: "issue:1", kind: "ticket.created", scope: SCOPE, title: "Fix login", authorId: "u1", occurredAt: "2026-10-30T10:00:00.000Z", version: "v1", ...over });
 
 describe("TR-W1 ParentLookupPort.isOpen", () => {
   it("is false for a ticket nobody recorded, in a lookup that cannot read, and for a bad workspace id", async () => {
@@ -15,7 +15,7 @@ describe("TR-W1 ParentLookupPort.isOpen", () => {
     expect(await parents.isRecorded({ workspaceId: ORG_A, system: "linear", id: "issue:1", scope: SCOPE })).toBe(false);
     expect(await parents.isOpen!({ workspaceId: ORG_A, system: "linear", id: "issue:1", scope: SCOPE })).toBe(false);
     expect(await parents.isOpen!({ workspaceId: "not-an-org", system: "linear", id: "issue:1", scope: SCOPE })).toBe(false);
-    const broken = createRecordParentLookup({ ...w.table, documentClient: { send: async () => { throw new Error("down"); } } as never });
+    const broken = createRecordParentLookup({ ...w.table, documentClient: { send: async () => { throw new Error("down"); } } });
     await expect(broken.isOpen!({ workspaceId: ORG_A, system: "linear", id: "issue:1", scope: SCOPE })).rejects.toThrow(); // callers catch and fail closed
   });
   it("reads a recorded ticket: open when every row says not restricted, restricted when any row says so; another place and another org see nothing", async () => {
@@ -52,7 +52,7 @@ describe("TR-W1 ParentLookupPort.isOpen", () => {
     f.config.set("linear", SCOPE, { retention: "C" });
     f.config.set("jira", "jira:site/acme/project/ENG", { retention: "C", audienceDefault: "project" });
     const recorder = createTicketRecorder({ sink: w.sink, actors: f.actors, mode: f.mode, config: f.config, parents: createRecordParentLookup(w.table) });
-    const comment = ticket({ id: "comment:9", kind: "ticket.comment", parentId: "issue:1", needsParentProof: true, body: "see this", title: undefined, version: "c1", occurredAt: "2026-10-30T11:00:00.000Z" });
+    const comment = ticket({ id: "comment:9", kind: "ticket.comment", parentId: "issue:1", needsParentProof: true, body: "see this", version: "c1", occurredAt: "2026-10-30T11:00:00.000Z" });
     expect(await recorder.record({ workspaceId: ORG_A, project: "web" }, comment)).toBe("skipped"); // the issue is not recorded yet
     expect(await recorder.record({ workspaceId: ORG_A, project: "web" }, ticket())).toBe("stored");
     expect(await recorder.record({ workspaceId: ORG_A, project: "web" }, comment)).toBe("stored");
@@ -60,7 +60,7 @@ describe("TR-W1 ParentLookupPort.isOpen", () => {
     const jira = (id: string, over: Partial<TicketItem>) => ticket({ source: "jira", system: "acme.atlassian.net", scope: JIRA, id, ...over });
     await recorder.record({ workspaceId: ORG_A, project: "web" }, jira("issue:5", {}));
     await recorder.record({ workspaceId: ORG_A, project: "web" }, jira("issue:6", { restricted: true }));
-    const note = (id: string, parentId: string) => jira(id, { kind: "ticket.comment", parentId, inheritsRestriction: true, body: "note", title: undefined, version: "n1", occurredAt: "2026-10-30T11:00:00.000Z" });
+    const note = (id: string, parentId: string) => jira(id, { kind: "ticket.comment", parentId, inheritsRestriction: true, body: "note", version: "n1", occurredAt: "2026-10-30T11:00:00.000Z" });
     await recorder.record({ workspaceId: ORG_A, project: "web" }, note("comment:1", "issue:5"));
     await recorder.record({ workspaceId: ORG_A, project: "web" }, note("comment:2", "issue:6"));
     await recorder.record({ workspaceId: ORG_A, project: "web" }, note("comment:3", "issue:77"));

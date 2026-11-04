@@ -14,7 +14,7 @@ describe("TR-E2b a failing sweep step is reported, not swallowed", () => {
     let fail = true;
     const broken = { ...d.deps, table: { ...w.table, documentClient: { send: async (command: unknown) => {
       if (fail && command instanceof QueryCommand && JSON.stringify((command as { input?: unknown }).input).includes("ERASESWEEP#")) throw new Error("secret detail from the table");
-      return (real as unknown as { send(c: unknown): Promise<unknown> }).send(command);
+      return (real).send(command);
     } } as never } };
     const run = await runDeleteWorker(broken, ORG_A);
     expect(run.sweepFailed).toBe(1);
