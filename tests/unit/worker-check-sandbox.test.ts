@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CHECK_SANDBOX_HOSTNAME, RESERVED_RUN_ALIASES, SEALED_DNS_HELPER_ENTRY, SEALED_DNS_STATE_FILE, SINKHOLE_ALIAS,
-  checkSandboxArgProblems, checkSandboxHostsFile, detachWorkingSandbox, reattachWorkingSandbox, startCheckSandbox, withDetachedWorking, checkSandboxNames, checkSandboxPlan, checkSandboxResolvConf, checkSandboxRunArgs, parseSealedDnsRecord, readSealedDnsRecord, sealedDnsHelperRunArgs, writeCheckSandboxFiles,
+  checkSandboxArgProblems, checkSandboxHostsFile, detachWorkingSandbox, reattachWorkingSandbox, startCheckSandbox, withDetachedWorking, checkSandboxNames, checkSandboxPlan, checkSandboxResolvConf, checkSandboxRunArgs, parseSealedDnsRecord, readSealedDnsRecord, sealedDnsHelperRunArgs, waitForSealedDnsHelper, writeCheckSandboxFiles,
   type CheckSandboxInput, type CheckSandboxNetwork,
 } from "../../packages/worker/src/check-sandbox.js";
 import { RUN_NETWORK_CREATED_LABEL, RUN_NETWORK_EXPIRES_LABEL, RUN_NETWORK_LABEL, RUN_NETWORK_WORKSPACE_LABEL, runNetworkAddresses, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName } from "../../packages/worker/src/run-network.js";
@@ -333,6 +333,32 @@ describe("the helper's record of unknown names", () => {
     expect(await readSealedDnsRecord({ run: () => Promise.reject(new Error("boom")) }, helperName)).toEqual({ unknown: [], dropped: 0, unrecorded: 0 });
     await expect(readSealedDnsRecord(docker({ exitCode: 0, stdout: "{}" }), "some-other-container")).rejects.toThrow(config("CONFIG_INVALID"));
     await expect(readSealedDnsRecord(docker({ exitCode: 0, stdout: "{}" }), "--all")).rejects.toThrow(config("CONFIG_INVALID"));
+  });
+
+  it("waits until the helper listens: its state file exists only after the bind, so the round never starts against a helper that is still loading (L3 on Linux: EAI_AGAIN, nothing recorded)", async () => {
+    const helperName = `${runNetworkName(RUN)}-dns`;
+    const calls: string[][] = [];
+    let clock = 0;
+    const answers = [1, 1, 1, 0];
+    const docker: DockerCli = { run: (args) => { calls.push([...args]); return Promise.resolve({ exitCode: answers.shift() ?? 0, stdout: "", stderr: "" }); } };
+    await waitForSealedDnsHelper(docker, helperName, { sleep: async (ms) => { clock += ms; }, now: () => clock, pollMs: 250, timeoutMs: 10_000 });
+    expect(calls).toEqual(Array.from({ length: 4 }, () => ["exec", helperName, "cat", SEALED_DNS_STATE_FILE]));
+    expect(clock).toBe(750);
+  });
+
+  it("refuses to start the round when the helper never listens (exited, or still not bound at the limit), when the wait is cancelled, and for a name that is not a sealed helper's", async () => {
+    const helperName = `${runNetworkName(RUN)}-dns`;
+    let clock = 0;
+    const never: DockerCli = { run: () => Promise.resolve({ exitCode: 1, stdout: "", stderr: "No such container" }) };
+    await expect(waitForSealedDnsHelper(never, helperName, { sleep: async (ms) => { clock += ms; }, now: () => clock, timeoutMs: 2_000 })).rejects.toThrow(/not listening/u);
+    expect(clock).toBeGreaterThanOrEqual(2_000);
+    const failing: DockerCli = { run: () => Promise.reject(new Error("docker gone")) };
+    clock = 0;
+    await expect(waitForSealedDnsHelper(failing, helperName, { sleep: async (ms) => { clock += ms; }, now: () => clock, timeoutMs: 1_000 })).rejects.toThrow(/not listening/u);
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(waitForSealedDnsHelper(never, helperName, { signal: aborted.signal })).rejects.toThrow(/cancelled/u);
+    await expect(waitForSealedDnsHelper(never, "--all")).rejects.toThrow(config("CONFIG_INVALID"));
   });
 });
 

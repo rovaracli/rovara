@@ -1,5 +1,6 @@
 // "How we work" (H5): the effective view. `GET /v1/app/projects/{p}/how-we-work` shows a project's process as stages with six rows each, every value marked with where it comes from
 // (Rovara's built-in process, the company's guardrails or the project) and whether it is locked. Anyone who can see the project reads it; nothing is written.
+import { fixtureActor } from "../support/money-authority.js";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AGENT_GUARDRAILS, E2E_DEFAULT_LIMITS, HOW_WE_WORK_REVIEWER_NOTE, HowWeWorkViewReaderSchema, HowWeWorkViewSchema, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, agentXError, projectRevisionKey,
@@ -270,7 +271,7 @@ describe("a process layer", () => {
     expect(v.process).toEqual({ kind: "builtin", agentId: ROVARA_CODE_AGENT_ID, draftLayer: { agentId: layer.agentId, draftRevision: layer.draftRevision, currentVersion: 1 } });
     expect(HowWeWorkViewSchema.parse(v)).toEqual(v);
     // An archived layer's version can't be chosen, so it is not offered.
-    await w.store.archive(ORG_A, layer.agentId, MAX);
+    await w.store.archive(ORG_A, layer.agentId, MAX, undefined, { actor: fixtureActor(w.store, ORG_A, MAX) });
     expect((await view(w)).process.draftLayer).not.toHaveProperty("currentVersion");
   });
 
@@ -281,7 +282,7 @@ describe("a process layer", () => {
     expect((await view(w)).process).toEqual({ kind: "builtin", agentId: ROVARA_CODE_AGENT_ID, draftLayer: { agentId: layer.agentId, draftRevision: layer.draftRevision } });
     await w.store.publish({ orgId: ORG_A, agentId: layer.agentId, expectedDraftRevision: layer.draftRevision, digest: "a".repeat(64), by: MAX });
     await writeProjectPlaybook(deps(w), { orgId: ORG_A, project: "web", developerId: MAX, expectedRevision: 0, defaultProcess: { kind: "project_process", agentId: layer.agentId } });
-    await w.store.archive(ORG_A, layer.agentId, MAX);
+    await w.store.archive(ORG_A, layer.agentId, MAX, undefined, { actor: fixtureActor(w.store, ORG_A, MAX) });
     expect(await failure(view(w))).toEqual({ code: "PROCESS_UNAVAILABLE", status: 400 });
   });
 });

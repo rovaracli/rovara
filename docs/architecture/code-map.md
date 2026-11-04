@@ -252,6 +252,8 @@ No single test lists every broker read.
 | `decision-press.ts` | a decision card's button pressed in Slack (wire-proof). |
 | `definitions.ts` | limits, the setup capture policy, the record and dependency types, route keys. |
 | `dependency-wiring.ts` | builds the dependency objects handed to the agent, chain, admin, plan and developer-task routes. |
+| `design-review-packet-route.ts` | Part of the broker, DR7 slice A: `GET /v1/internal/design-review/packet?slot=<key slot>`, the one route a design-review worker reads a reviewer's packet from. |
+| `design-review-slot-access.ts` | Part of the broker, DR7 slice A: what `GET /v1/internal/model-access?slot=` does differently for a design-review operation (model-access.ts calls into this; an operation WITHOUT a stored binding never does). |
 | `diagnosis-service.ts` | Live interaction F2: the broker's wiring for Fix with agent's light tier, and the three service routes the chat service calls (`/v1/service/diagnoses/*`, the orchestrator role only). |
 | `dispatch.ts` | agent run, workflow and autofix dispatch. |
 | `e2e-rounds.ts` | application E2E rounds (baseline, replay, grounding) and their dispatch. |
@@ -319,6 +321,10 @@ No single test lists every broker read.
 | `common.ts` | (No header comment.) Exports `creatorGuard`, `TASK_ID`, `iso`. |
 | `continue.ts` | (No header comment.) Exports `continueTask`, `heldPreparationOptions`, `heldSavedEnvPin`. |
 | `decide.ts` | (No header comment.) Exports `recordPublishedCandidateOutcomes`, `decideTaskWorkflow`. |
+| `design-decision.ts` | Design review stage, DR7 slice C (money W2): the COMMIT PORT of `designApproveHandler`. |
+| `design-proof.ts` | Design review stage, DR7 slice C (DR12 wiring): the two ports `loadProofDesignContext` reads, built from what the broker holds. |
+| `design-resolve-retry.ts` | Design review stage, DR7 slice B2: the owner's Retry of a planner run that BLOCKED while it was answering a design review's findings (a rule file that could not be verified, a leftover program, a run that failed). |
+| `design-spec.ts` | Design review stage, DR7 slice C (DR12 wiring): the spec step's view of the design. |
 | `error-ref.ts` | Live interaction F1: the ErrorRef a task view carries, so the app can offer "Fix with agent" for an error it shows. |
 | `evidence-port.ts` | Proof and evidence (wire-proof): what the task routes need to show a task's evidence: the pack kept for the task's current code (rovara-code/evidence-keep.ts), as the pull request shows it (counts, a link) and as the... |
 | `evidence-risk-input.ts` | Proof and evidence P4: the evidence's part of a pull request's risk, read where the risk is judged (publication, a pushed fix, a description rewrite). |
@@ -367,6 +373,7 @@ No single test lists every broker read.
 | `company-domains.ts` | Company domain verification (owner decision 2026-11-02): the owner-only "Company domains" routes. |
 | `decisions.ts` | Decision cards (wire-proof, setup wizard E4): what the card routes (`decisions/routes.ts`) need for one caller, built from the developer route dependencies. |
 | `dependencies.ts` | (No header comment.) Exports `setupDraftDepsOf`, `diagnosisRouteDepsOf`, `agentRunStarterOf`. |
+| `design-review.ts` | Design review stage, DR7 slice C: the routes and the decision cards of a design under review, and the ports the design review's handlers need. |
 | `fixtures.ts` | Test services, slice 3 (s3-fakes-store): the routes for a hand-written fake (a FixtureSet v2) and its review. |
 | `identity-lambda.ts` | (No header comment.) Exports `errorName`, `SLACK_UNAVAILABLE`, `channelMembersThroughLambda`. |
 | `install.ts` | Enterprise foundations E2: GET /v1/app/install. |

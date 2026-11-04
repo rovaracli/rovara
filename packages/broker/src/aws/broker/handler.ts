@@ -88,6 +88,7 @@ import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2ERepla
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
 import { installLearningTaskEnd } from "./learning-wiring.js";
+import { designReviewPortsOf } from "../../design-review/wiring.js";
 import { applyTeamRecordRemoval, drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordRemovalEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
 import { installLessons, recordAndLessonRouteDependencies } from "./lessons-wiring.js";
 import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
@@ -104,6 +105,7 @@ import { nightlyRunsOf, sweepAutomaticRunsOf } from "./nightly-run-wiring.js";
 import { SESSION_EVENT_BUDGET_MS, auditModelKeys, isAuditDrainEvent, isChainScheduleEvent, isChainSweepEvent, isEgressDomainsSyncEvent, isIntakePollEvent, isGithubInstallRequestReminderEvent, isGithubWebhookRecoveryEvent, isSessionSweepEvent, isSpendSettlementEvent, isWorkflowMergeRecoveryEvent, ledgerOf, modelSourceSweepOf } from "./sweeps-and-readiness.js";
 import { handleAgentSkills, handleAgentTools } from "./task-operations.js";
 import { handleContextTools } from "./context-tools.js";
+import { handleDesignReviewPacket } from "./design-review-packet-route.js";
 import { SWEEP_EVENT_BUDGET_MS, headEventDependencies, processGithubWorkflowEvent, reconcileWorkflowMergeRecoveryTask, retryDueGithubWebhookEvents, retryGithubWebhookAsAdministrator } from "./terminal-and-github-events.js";
 import { completeThreadWorkspaceClose, ensureThreadWorkspace, markCommentAnswered, markThreadNoteAnswered, prepareThreadWorkspace, startThreadWorkspaceClose } from "./thread-workspaces.js";
 import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
@@ -181,6 +183,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           }),
           // DG-1 S2: "Apply this change" checks a proposed dev container file against the default branch's head (wiring: the three GitHub reads, one line).
           ...diagnosisDefaultBranchFileRoute(dependencies),
+          // Design review: the round's ports for the owner's Retry (a pure object; nothing is read until a round starts).
+          designReview: designReviewPortsOf(dependencies),
           // Closing an org clears its connections whether or not the agent routes are set up (Task 12b).
           ...(orgConnections === undefined ? {} : { orgConnections }),
           ...repositoriesGateRoute(dependencies),
@@ -748,6 +752,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Internal worker routes authenticate with operation-scoped capabilities; user JWT auth starts below them.
       // Ruling R29: a task's model proxy key, authorized by the operation's capability, which names the task's operation.
       if (request.method === "GET" && url.pathname === "/v1/internal/model-access") return await handleModelAccess(dependencies, request);
+      // DR7: a design-review reviewer's stored packet, authorized by the operation's own `design-review-packet` capability.
+      if (request.method === "GET" && url.pathname === "/v1/internal/design-review/packet") return await handleDesignReviewPacket(dependencies, request);
       // Plan 3 Task 9: the pinned skills of the operation's task snapshot, authorized by the operation's `agent-skills` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/agent-skills") return await handleAgentSkills(dependencies, request);
       // Plan 3 Task 19: the connector tools an agent step is granted, and one call of them; authorized by the operation's `agent-tools` capability.

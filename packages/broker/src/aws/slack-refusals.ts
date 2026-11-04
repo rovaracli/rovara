@@ -1,4 +1,5 @@
-import { FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED } from "./developer-tasks.js";
+import { FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED } from "./developer-tasks/feedback-capture.js";
+import { FEEDBACK_CHANGED_SINCE_CARD } from "./developer-tasks/feedback-review.js";
 import { PROJECT_RECORD_NEEDS_ADMIN } from "./broker-shared.js";
 import { WORKFLOW_ACTIONABLE_REFUSALS } from "../developer/workflow-actions.js";
 

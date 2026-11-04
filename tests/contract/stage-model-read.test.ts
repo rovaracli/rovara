@@ -1,4 +1,4 @@
-import { AgentXError } from "@agentx/contracts";
+import { AgentXError, modelNotEnabledSentence } from "@agentx/contracts";
 import { expect, it } from "vitest";
 import { validateStageChoices, getStageModels, validateProjectModelSelection, requireSafeProjectModelSelection } from "../../packages/broker/src/model-selection/read.js";
 import type { StageModelsReadDependencies, StageModelSnapshot } from "../../packages/broker/src/model-selection/read.js";
@@ -198,4 +198,12 @@ it("does not attribute inherited recipe models to company policy",async()=>{
 it("preserves a structured split-lock refusal from its snapshot",async()=>{
  const f=fixture();const {ProcessModelRefusal}=await import("../../packages/broker/src/model-selection/process-refusal.js");f.deps.snapshot=async()=>{throw new ProcessModelRefusal("LOCK_UNSATISFIABLE","code_review","/app/admin/how-we-work");};
  await expect(getStageModels(f.deps,caller,"web",{})).rejects.toMatchObject({code:"LOCK_UNSATISFIABLE",stage:"code_review",fixHref:"/app/admin/how-we-work"});
+});
+it("marks a candidate the account cannot call with the broker's words, and marks no other",async()=>{
+ const f=fixture();for(const stage of f.snapshot.stages)stage.candidates=stage.candidates.map(candidate=>candidate.model.modelId===other.modelId?{...candidate,accountCannotUse:true as const}:candidate);
+ const result=await getStageModels(f.deps,caller,"web",{});
+ for(const row of result.stages){
+  expect(row.candidates.find(candidate=>candidate.model.modelId===other.modelId)?.unusableReason).toBe(modelNotEnabledSentence(undefined,undefined));
+  expect(row.candidates.filter(candidate=>candidate.model.modelId!==other.modelId).every(candidate=>candidate.unusableReason===undefined)).toBe(true);
+ }
 });

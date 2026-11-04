@@ -4,6 +4,8 @@ import { DECISION_REJECT_REASONS, type DecisionRejectReason, type DecisionTabId 
 import { useAppHost } from "../host.js";
 import { ApiError } from "../api/errors.js";
 import { decisionOpenTarget, mayApproveHere, type DecisionResult, type ReadDecision } from "../api/decisions.js";
+import { spendChoiceOf } from "../api/design-review.js";
+import { APPROVE_REASON_HINT, cleanApproveReason, openBlockersOnCard } from "./design-review-card.js";
 import { Button } from "./Button.js";
 import { Tabs } from "./Tabs.js";
 import { VisibleText } from "./VisibleText.js";
@@ -23,10 +25,15 @@ export const SWIPE_APPROVE_PX = 120;
 export interface DecisionCardActions {
  /** Records on the server that the evidence of what was SHOWN (the decision's digest) was opened; resolves when it is recorded. */
  onOpenEvidence(tab?: DecisionTabId): Promise<void>;
- onApprove(tab?: DecisionTabId): Promise<DecisionResult>;
+ /** `reason` is the one plain line an approve_design card with an open blocker asks for (owner Q8); it is sent only there. */
+ onApprove(tab?: DecisionTabId, reason?: string): Promise<DecisionResult>;
  onReject(reason: DecisionRejectReason): Promise<DecisionResult>;
  /** The server said what was shown is out of date: load the cards again. */
  onStale(): void;
+ /** A choice on a design review's cost card (raise the limit, run a lower tier, run it unpriced, skip): the card's own action. */
+ onChoose?(action: ReadDecision["card"]["actions"][number]): Promise<void>;
+ /** On an approve_plan card: the Design first action and whether the task's plan may need design (a hint, never automatic: owner Q4). */
+ design?: { hint: boolean; onDesignFirst(): Promise<void> };
 }
 
 function Chips({ chips }: { chips: ReadDecision["card"]["evidence"] }) {
@@ -43,7 +50,7 @@ function Chips({ chips }: { chips: ReadDecision["card"]["evidence"] }) {
 export function DecisionCard({ decision, actions }: { decision: ReadDecision; actions: DecisionCardActions }) {
  const { card, tabs, details, digest } = decision, host = useAppHost();
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [opened, setOpened] = useState<Record<string, string>>({}), [tab, setTab] = useState<DecisionTabId>("requirements");
- const [note, setNote] = useState<ReactNode>(null), [confirming, setConfirming] = useState<Confirming>();
+ const [note, setNote] = useState<ReactNode>(null), [confirming, setConfirming] = useState<Confirming>(), [reason, setReason] = useState("");
  const touch = useRef<{ x: number; y: number } | undefined>(undefined);
  const target = decisionOpenTarget(card, host.origin);
  const canApprove = mayApproveHere(card);
@@ -69,7 +76,10 @@ export function DecisionCard({ decision, actions }: { decision: ReadDecision; ac
   else setNote(<p role="status">Nothing is decided yet. Open the decision to confirm it.</p>);
  };
  const open = (which: DecisionTabId | undefined) => run(async () => { await actions.onOpenEvidence(which);setOpened(current => ({ ...current, [which ?? "card"]: digest })); });
- const approve = (which: DecisionTabId | undefined) => run(async () => { settle(await actions.onApprove(which)); });
+ /** An approve_design card with an open blocker asks for one plain line before it approves (owner Q8). On a card with tabs the line belongs to the design tab. */
+ const blockers = (which: DecisionTabId | undefined) => card.kind === "approve_design" || which === "design" ? openBlockersOnCard(which === undefined ? card.evidence : tabs?.find(item => item.id === which)?.evidence ?? card.evidence) : 0;
+ const reasonOf = (which: DecisionTabId | undefined) => blockers(which) > 0 ? cleanApproveReason(reason) : undefined;
+ const approve = (which: DecisionTabId | undefined) => run(async () => { settle(await actions.onApprove(which, reasonOf(which))); });
  const link: ReactNode = target === undefined ? null : target.kind === "internal" ? <Link className="rv-decision-open" to={target.to}>{card.risk === "high" ? "Open to decide" : "Open the details"}</Link> : <Button variant="quiet" onClick={() => host.openExternal(target.href)}>{card.risk === "high" ? "Open to decide" : "Open the details"}</Button>;
  const swipe = card.risk === "low" && canApprove && tabs === undefined ? {
   onTouchStart: (event: TouchEvent) => { const point = event.touches[0];touch.current = point === undefined || event.touches.length !== 1 ? undefined : { x: point.clientX, y: point.clientY }; },
@@ -86,7 +96,12 @@ export function DecisionCard({ decision, actions }: { decision: ReadDecision; ac
    {link}
   </details>;
  };
- const approveButton = (which: DecisionTabId | undefined) => canApprove && <Button variant="primary" busy={busy} disabled={(needsEvidence && !isOpened(which)) || designBlocked(which)} onClick={() => { void approve(which); }}>{which === undefined ? "Approve" : "Approve " + (which === "requirements" ? "requirements" : "design")}</Button>;
+ const reasonField = (which: DecisionTabId | undefined) => canApprove && blockers(which) > 0 && <div className="rv-decision-reason"><label htmlFor={"reason-" + card.id}>Why approve with an open blocker?</label><input id={"reason-" + card.id} type="text" maxLength={200} value={reason} onChange={event => setReason(event.target.value)} aria-describedby={"reason-hint-" + card.id} /><p id={"reason-hint-" + card.id} className="rv-muted">{APPROVE_REASON_HINT}</p></div>;
+ const approveButton = (which: DecisionTabId | undefined) => canApprove && <>{reasonField(which)}<Button variant="primary" busy={busy} disabled={(needsEvidence && !isOpened(which)) || designBlocked(which) || (blockers(which) > 0 && reasonOf(which) === undefined)} onClick={() => { void approve(which); }}>{which === undefined ? (blockers(which) > 0 ? "Approve with a reason" : "Approve") : "Approve " + (which === "requirements" ? "requirements" : "design")}</Button></>;
+ const choices = card.kind === "approve_spend" && card.risk !== "high" && actions.onChoose !== undefined ? card.actions.filter(action => spendChoiceOf(card, action) !== undefined) : [];
+ const choiceButtons = choices.map(action => <Button key={action.href} variant={action.kind === card.recommended.action ? "primary" : "secondary"} busy={busy} disabled={needsEvidence && !isOpened(undefined)} onClick={() => { void run(async () => { await actions.onChoose!(action);setNote(<p role="status">Done. Rovara goes on from here.</p>); }); }}><VisibleText text={action.label} /></Button>);
+ const design = card.kind === "approve_plan" ? actions.design : undefined;
+ const designBox = design !== undefined && <div className="rv-decision-design">{design.hint && <p className="rv-design-hint" role="status">This may need design review.</p>}<Button busy={busy} onClick={() => { void run(async () => { await design.onDesignFirst();setNote(<p role="status">Asked for design review first. Rovara reviews the design before it builds.</p>); }); }}>Design first</Button></div>;
  const confirmPage = target?.kind === "external";
  return <article className="rv-decision" data-risk={card.risk} aria-label={card.title} {...swipe}>
   <header><h2><VisibleText text={card.title} /></h2><p className="rv-decision-risk">{RISK_WORDS[card.risk] ?? "Risk unknown"}</p></header>
@@ -97,7 +112,7 @@ export function DecisionCard({ decision, actions }: { decision: ReadDecision; ac
   {tabs === undefined && needsEvidence && evidencePanel(undefined)}
   {card.risk === "high" && <p className="rv-decision-high">{confirmPage ? "This decision is made on its own page, after you sign in again." : "This decision is made on its own page."}</p>}
   <div className="rv-decision-actions">
-   {card.risk === "high" ? link : <>{approveButton(activeTab)}{canReject && <details className="rv-decision-reject"><summary>Not now</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
+   {card.risk === "high" ? <>{link}{designBox}</> : <>{approveButton(activeTab)}{choiceButtons}{designBox}{canReject && <details className="rv-decision-reject"><summary>Not now</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
   </div>
   {confirming && <div role="group" aria-label="Confirm merge" className="rv-decision-confirm"><p><VisibleText text={mergeQuestion(confirming.merging)} /></p>
    <div className="rv-actions"><Button variant="primary" onClick={() => { const url = confirming.url;setConfirming(undefined);setNote(<p role="status">Nothing is merged until you confirm on the next page.</p>);host.openExternal(url); }}>Confirm</Button><Button onClick={() => { setConfirming(undefined);setNote(<p role="status">Nothing was merged.</p>); }}>Cancel</Button></div></div>}

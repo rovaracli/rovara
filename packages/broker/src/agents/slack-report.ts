@@ -5,7 +5,7 @@
 //   - and if what is left reads as a command to a bot or a chat-ops tool (a slash command, `!deploy`, `deploy api to production`, `rollback`,
 //     `restart`, an org's own command word), nothing of the report is posted: only a link to the task, where the whole report stays.
 // A pure function of its input.
-import { cleanText, commentLines, commentSignal, stripMentions, type OrgId } from "@agentx/contracts";
+import { cleanText, commentLines, commentSignal, hideEmailAddresses, stripMentions, type OrgId } from "@agentx/contracts";
 
 /**
  * Chat-ops commands that a channel's bots and automations act on, matched case-insensitively against each LINE of the normalized report
@@ -136,7 +136,8 @@ export function prepareSlackReport(report: string, options: SlackReportOptions):
   // Folded first (NFKC, invisible characters out), so a form written with fullwidth brackets is the form it will be read as before it is looked for; once more
   // after the mention strip, which folds again; and every `<`, `>` and `&` that is left is escaped, so nothing the folding makes live can reach Slack.
   const unmentioned = plainSlackForms(stripMentions(plainSlackForms(cleanText(report))).args as string);
-  const text = flattenLinks(unmentioned, allowed);
+  // S3: a mailto link is already flattened to its host here; any other address is hidden.
+  const text = hideEmailAddresses(flattenLinks(unmentioned, allowed));
   const command = commentSignal(text, { allowMentions: false, labelPaths: [], extraCommandWords: options.extraCommandWords }).consequential
     || commentLines(text).some((line) => CHATOPS_PATTERNS.some((pattern) => pattern.test(line)));
   return command ? { kind: "link_only", text: `Report available in Rovara: ${options.taskUrl}` } : { kind: "text", text: escapeForSlack(text) };

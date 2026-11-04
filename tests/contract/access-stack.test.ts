@@ -164,7 +164,8 @@ describe("access stack", () => {
     // The service role's own boundary Deny actions (DeleteRolePermissionsBoundary, and the IamKeepBoundaryPolicy actions of ruling
     // M2's review) are never needed as allows.
     const denyOnly = new Set(["iam:DeleteRolePermissionsBoundary", "iam:SetDefaultPolicyVersion"]);
-    expect(namedActions.filter((a) => !denyOnly.has(a) && !allowed.has(a) && !allowedServices.has(a.split(":")[0]))).toEqual([]);
+    // 2026-11-03: the boundary names the instance profile actions with one pattern (`iam:*InstanceProfile`), so "allowed" is by name or by pattern.
+    expect(namedActions.filter((a) => !denyOnly.has(a) && ![...allowed].some((pattern) => globMatches(pattern, a)) && !allowedServices.has(a.split(":")[0]))).toEqual([]);
     // Nothing the roles never use: every wildcard service is a resource type's service or used by an action.
     const used = new Set([...neededServices, ...[...actions].map((a) => a.split(":")[0]!)]);
     expect([...allowedServices].filter((service) => !used.has(service!))).toEqual([]);
@@ -176,10 +177,13 @@ describe("access stack", () => {
     const profileStatement = (statements: Statement[]) => statements.find((st) => st.Sid === "IamInstanceProfiles");
     const service = profileStatement(roleStatements(template.toJSON().Resources as Record<string, Resource>))!;
     const boundary = profileStatement(boundaryWithSids((boundaryPolicies[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement))!;
+    // 2026-11-03: the boundary's one pattern covers the actions the service role names (tests/contract/access-policies.test.ts pins it to exactly the seven INSTANCE_PROFILE_ACTIONS).
+    const permitted = (statement: Statement, action: string) => [statement.Action].flat().some((pattern) => globMatches(pattern, action));
     for (const statement of [service, boundary]) {
-      expect(statement.Action).toEqual(expect.arrayContaining(["iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:DeleteInstanceProfile"]));
+      for (const action of ["iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:DeleteInstanceProfile"]) expect(permitted(statement, action), action).toBe(true);
       expect(JSON.stringify(statement.Resource)).toContain("instance-profile/agentx/staging/*");
     }
+    for (const action of [service.Action].flat()) expect(permitted(boundary, action), `boundary allows ${action}`).toBe(true);
   }, 240_000);
 
   it("gives the CloudFormation service role and the boundary no cloudfront:*", () => {

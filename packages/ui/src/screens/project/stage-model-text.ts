@@ -64,6 +64,8 @@ export const STAGE_NAMES: Readonly<Partial<Record<StageId, string>>> = { underst
 /** Why a candidate cannot be chosen, in the fixed words; undefined when it is verified and not blocked (the only kind that can be chosen). */
 export function candidateBlock(candidate: StageCandidate): string | undefined {
  if (candidate.blockedReason !== undefined) return refusalText(candidate.blockedReason);
+ // The account behind the route cannot call this model (the broker's usability record): the broker's own words, by edition.
+ if (candidate.unusableReason !== undefined) return candidate.unusableReason;
  if (candidate.status === "verified") return undefined;
  return candidate.status === "unverified" ? NOT_VERIFIED_TEXT : candidate.status === "stale" ? REFUSAL_TEXT.MODEL_STALE : REFUSAL_TEXT.MODEL_FORBIDDEN;
 }

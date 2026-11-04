@@ -24,7 +24,9 @@ import {
   isBranchSyncGiveUpReason,
   retryWorkflowBranchSync,
   retryWorkflowCiFix,
+  workflowIsDesignReviewing,
 } from "@agentx/contracts";
+import { resumeBlockedCheck } from "../../design-review/check-ends.js";
 import type { z } from "zod";
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { aiToolTurn, developerTaskIdentity, partyOfTask, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -237,7 +239,8 @@ export async function retryPlanCritique(
   const { blockReason: _blockReason, ...unblocked } = workflow;
   void _blockReason;
   const receivedAt = iso(deps);
-  const next: WorkflowSnapshot = { ...unblocked, revision: workflow.revision + 1, state: "READY", updatedAt: receivedAt };
+  // Design review (switch `dr`, off: no task has one): the design form of this stage resumes with its own move, and what the blocked round cost is added to the total.
+  const next: WorkflowSnapshot = workflowIsDesignReviewing(workflow) ? await resumeBlockedCheck(deps, task.workspaceId, workflow, receivedAt) : { ...unblocked, revision: workflow.revision + 1, state: "READY", updatedAt: receivedAt };
   try {
     await deps.actions.transact([{ Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),

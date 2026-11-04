@@ -467,9 +467,14 @@ export class FakeDynamoDb {
         : whole.filter((item) => compareKeys(item.sk as string, String(start.sk)) * (input.ScanIndexForward === false ? -1 : 1) > 0);
       return after.map((item) => this.readClone(item));
     }
+    const partitionOnly = /^pk = :pk$/.test(String(input.KeyConditionExpression));
     const match = /^pk = :pk AND begins_with\(sk, (:[a-zA-Z]+)\)$/.exec(String(input.KeyConditionExpression));
-    if (!match) throw new Error(`FakeDynamoDb does not support the key condition ${String(input.KeyConditionExpression)}`);
-    const prefix = values[match[1]!] as string;
+    if (!match && !partitionOnly) throw new Error(`FakeDynamoDb does not support the key condition ${String(input.KeyConditionExpression)}`);
+    const prefix = match ? (values[match[1]!] as string) : "";
+    // DynamoDB: begins_with needs a non-empty value ("Invalid KeyConditionExpression: ... empty"). A caller that means "everything" must query on the partition key alone.
+    if (match && prefix === "") {
+      throw Object.assign(new Error("One or more parameter values are not valid: A value provided cannot be empty"), { name: "ValidationException", $metadata: {} });
+    }
     const items = this.find((item) => item.pk === values[":pk"] && (item.sk as string).startsWith(prefix))
       .sort((left, right) => compareKeys(left.sk as string, right.sk as string));
     if (input.ScanIndexForward === false) items.reverse();

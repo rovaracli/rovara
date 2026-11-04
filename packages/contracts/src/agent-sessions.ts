@@ -121,8 +121,8 @@ export const SESSION_STATUS_WORDS: Record<(typeof SESSION_STATUSES)[number], str
 
 export const LEVEL_WORDS = { view: "can view", use: "can use", edit: "can edit" } as const;
 
-/** What a person may do on a session (`sessionActionsFor` in the broker decides who gets which; `make_agent` is added when the person may create agents in the session's project, checked live as the route checks it). */
-export const SESSION_ACTIONS = ["watch", "comment", "steer", "stop", "retry", "take_over", "share", "handoff", "make_agent"] as const;
+/** What a person may do on a session (`sessionActionsFor` in the broker decides who gets which; `make_agent` is added when the person may create agents in the session's project, checked live as the route checks it; `close` is the task owner's, on a task session that is still open). */
+export const SESSION_ACTIONS = ["watch", "comment", "steer", "stop", "retry", "take_over", "share", "handoff", "make_agent", "close"] as const;
 
 export const SessionActionSchema = z.enum(SESSION_ACTIONS);
 

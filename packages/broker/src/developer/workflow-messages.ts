@@ -1,9 +1,10 @@
 // Gaps 5, 12 and 10g: the one place a workflow task's thread post is worded. Each (stage, state) has one brief,
 // plain message (at most 1,200 visible characters), and every blocked step carries its ways out as buttons. Every
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
+import { designClassificationNoteOf } from "../design-review/mode.js";
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  answeredMessage, formatMinutes, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isNoCodeChangedReason, isRunLimitBlockReason, workflowAnswer, NO_CODE_CHANGED_LEGACY_REASONS, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, workflowReviseOffered, type RunEstimate, type WorkflowSnapshot, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, feedbackDecidedByText,
+  answeredMessage, formatMinutes, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isNoCodeChangedReason, isRunLimitBlockReason, workflowAnswer, NO_CODE_CHANGED_LEGACY_REASONS, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, hideEmailAddresses, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, workflowReviseOffered, type RunEstimate, type WorkflowSnapshot, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, feedbackDecidedByText,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { critiqueLines } from "../rovara-code/critique-lines.js";
@@ -223,7 +224,7 @@ const plainPublishFailure = (category: string) => PUBLISH_FAILURES[category] ?? 
  * zero-width joiner follows each `://` and the `www` of `www.`, so Slack does not turn a bare address into one.
  */
 export function cleanLine(text: string, limit: number): string {
-  const line = redactText(text).replace(/\s+/g, " ").trim()
+  const line = hideEmailAddresses(redactText(text)).replace(/\s+/g, " ").trim()
     .replaceAll("://", "://‍")
     .replace(/\bwww\./giu, (match) => `${match.slice(0, 3)}‍.`);
   return slackText(line.length > limit ? `${line.slice(0, limit - 3).trimEnd()}...` : line);
@@ -249,7 +250,7 @@ export function documentSummaryLines(markdown: string, max = 3): string[] {
       .replace(/\s+/g, " ")
       .trim();
     if (plain === "") continue;
-    const redacted = redactText(plain);
+    const redacted = hideEmailAddresses(redactText(plain));
     lines.push(redacted.length > SUMMARY_LINE_MAX ? `${redacted.slice(0, SUMMARY_LINE_MAX - 3).trimEnd()}...` : redacted);
     if (lines.length >= max) break;
   }
@@ -1089,7 +1090,9 @@ export function workflowMessage(context: WorkflowMessageContext): WorkflowMessag
   const copy = copyOf(context);
   if (copy === undefined) return undefined;
   const replies = laterRepliesLine(context);
-  const text = replies === undefined ? copy.text : `${copy.text}\n${replies}`;
+  // Design review (DR11): the first card of a task whose design is reviewed says so, and why, in plain text. Nothing is added for a task with no design review.
+  const classification = designClassificationNoteOf(context.workflow);
+  const text = [copy.text, replies, classification].filter((line): line is string => line !== undefined).join("\n");
   const buttons = context.peopleEnabled === true
     ? [...copy.buttons, { type: "button", action_id: "agentx_task_people", text: { type: "plain_text", text: "People" }, value: JSON.stringify({ taskId: context.taskId }) }]
     : copy.buttons;

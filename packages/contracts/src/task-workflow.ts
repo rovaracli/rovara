@@ -8,6 +8,7 @@ import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
 import { WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema } from "./workflow-dependencies.js";
 import { NO_CODE_CHANGED_REASON, NoChangeFindingsSchema } from "./no-change-findings.js";
 import { CheckKindSchema } from "./evidence.js";
+import { WorkflowDesignReviewSchema } from "./design-review.js";
 
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -868,6 +869,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
   intent: WorkflowIntentSchema.optional(),
   /** Rovara Code v2 (1.1.0 only): the plan critic's points. */
   critique: WorkflowCritiqueSchema.optional(),
+  /** Design review stage (DR6; 1.1.0 and the Full path only): the fresh-context reviewers' record for the task's design, beside `critique`. Absent when design review is off. */
+  designReview: WorkflowDesignReviewSchema.optional(),
   /** Rovara Code v2 (1.1.0 only): the risk level of the pull request's code. */
   risk: RiskAssessmentSchema.optional(),
   /** Both versions: how many fix rounds of each kind ran, and which kind the round now running is. */
@@ -910,13 +913,17 @@ export const WorkflowSnapshotShapeSchema = z.object({
     }
     if (workflow.outcome === "ANSWERED") context.addIssue({ code: "custom", path: ["outcome"], message: "this outcome needs definition version 1.1.0" });
     if (workflow.artifacts.some((artifact) => artifact.type === "answer")) context.addIssue({ code: "custom", path: ["artifacts"], message: "an answer needs definition version 1.1.0" });
-    for (const field of ["intent", "critique", "risk"] as const) {
+    for (const field of ["intent", "critique", "risk", "designReview"] as const) {
       if (workflow[field] !== undefined) context.addIssue({ code: "custom", path: [field], message: `${field} needs definition version 1.1.0` });
     }
     if (workflow.program?.steps.some((step) => step.kind === "plan_critic") === true) {
       context.addIssue({ code: "custom", path: ["program"], message: "a plan check step needs definition version 1.1.0" });
     }
     if (workflow.reviews?.some((review) => review.risk !== undefined) === true) context.addIssue({ code: "custom", path: ["reviews"], message: "a review's risk level needs definition version 1.1.0" });
+  }
+  if (workflow.designReview !== undefined) {
+    if (workflow.path !== "FULL") context.addIssue({ code: "custom", path: ["designReview"], message: "design review runs on the Full path" });
+    if (new TextEncoder().encode(JSON.stringify(workflow.designReview)).length > 150_000) context.addIssue({ code: "custom", path: ["designReview"], message: "the design review record is too large to keep" });
   }
   if (workflow.fixProblems !== undefined && workflow.fixSource === undefined) {
     context.addIssue({ code: "custom", path: ["fixProblems"], message: "the problems a fix is for need the fix's source" });

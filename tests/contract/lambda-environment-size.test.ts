@@ -29,12 +29,12 @@ const DERIVE_DONT_ADD = [
 const LONGEST_ENVIRONMENT = "a1234567890123456789";
 const ENVIRONMENTS = [LONGEST_ENVIRONMENT, "staging"] as const;
 
-function environmentsOf(env: string | undefined, context: Record<string, unknown>): Array<LambdaEnvironment & { stack: string }> {
+function environmentsOf(env: string | undefined, context: Record<string, unknown>, parameterValues: Record<string, string> = DEPLOY_PARAMETER_VALUES): Array<LambdaEnvironment & { stack: string }> {
   const app = buildAgentXApp({ ...(env === undefined ? {} : { agentxEnv: env }), ...context });
   const found: Array<LambdaEnvironment & { stack: string }> = [];
   for (const stack of app.node.children.filter((child): child is Stack => Stack.isStack(child))) {
     const template = Template.fromStack(stack).toJSON() as ResolvableTemplate;
-    for (const environment of lambdaEnvironments(template, { env: env ?? "production", stackName: stack.stackName, parameterValues: DEPLOY_PARAMETER_VALUES })) found.push({ ...environment, stack: stack.stackName });
+    for (const environment of lambdaEnvironments(template, { env: env ?? "production", stackName: stack.stackName, parameterValues })) found.push({ ...environment, stack: stack.stackName });
   }
   return found;
 }
@@ -72,6 +72,19 @@ describe("the broker keeps room (ENV-ROOM)", () => {
       });
     }
   }
+});
+
+describe("B2-m2: the broker's environment is measured with the design review's project list at its longest", () => {
+  const brokerBytes = (values: Record<string, string>): number => environmentsOf(LONGEST_ENVIRONMENT, { agentxCloud: true }, values).find((entry) => /^Broker[0-9A-F]{8}$/.test(entry.logicalId))!.bytes;
+
+  it("gives `dp` its 20 characters, so the headroom the gate reports is the worst case (an empty `dp` would hide 20 bytes)", () => {
+    expect(DEPLOY_PARAMETER_VALUES.DesignReviewProjects).toHaveLength(20);
+    expect(DEPLOY_PARAMETER_VALUES.DesignReviewProjects).toMatch(/^[a-z][a-z0-9-]{0,62}(:[a-z][a-z0-9-]{0,62})*$/u);
+    const worst = brokerBytes(DEPLOY_PARAMETER_VALUES);
+    const empty = brokerBytes({ ...DEPLOY_PARAMETER_VALUES, DesignReviewProjects: "" });
+    expect(worst - empty).toBeGreaterThanOrEqual(20);
+    expect(CEILING_BYTES - worst).toBeGreaterThanOrEqual(BROKER_HEADROOM_BYTES);
+  });
 });
 
 describe("the legacy install (no environment name), whose templates this fix leaves as they were", () => {

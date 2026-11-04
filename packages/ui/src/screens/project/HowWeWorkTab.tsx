@@ -12,6 +12,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { failureText } from "../agents/agent-context.js";
 import { HowWeWorkCard, stageDomId } from "./HowWeWorkCard.js";
 import { HowWeWorkHistory } from "./HowWeWorkHistory.js";
+import { DesignReviewCard } from "./DesignReviewCard.js";
 import { LearningSection } from "./LearningSection.js";
 import { EDITABLE_KINDS, REVIEWING_KINDS, hasChanged, type Filter } from "./how-we-work-rows.js";
 import { EMPTY_RULES, UNUSED_STAGE_ID, applyRuleEdits, ruleValues, type RuleEdits } from "./how-we-work-draft.js";
@@ -140,7 +141,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   {canEdit ? <section className="rv-hww-rules" aria-label="Project rules">
    <RuleField label="Project rules" hint="These apply to every stage that plans or builds. Reviewing stages only follow rules written for them." value={rulesValue} onChange={text => { setSaved(false);setEdits(current => ({ ...current, rules: text })); }} disabled={saving} />
   </section> : data.rules.length > 0 && <section className="rv-hww-rules" aria-label="Project rules"><h2>Project rules</h2><ul>{data.rules.map((rule, index) => <li key={index}><VisibleText text={rule.value} /></li>)}</ul></section>}
-  <div className="rv-hww-cards">{data.stages.map(stage => <HowWeWorkCard key={stage.id} stage={stage} view={data} filter={filter} showUnchanged={showUnchanged} {...modelsProp(stage)} {...(canEdit && stage.id === UNUSED_STAGE_ID && (baseline.stages[stage.id] ?? "") !== "" ? { action: <Button busy={saving} aria-label="Remove rules from the pull request stage" onClick={() => { void removeUnusedStage(); }}>Remove</Button> } : {})} {...(canEdit && EDITABLE_KINDS.has(stage.kind) ? { editor: <RuleField label="Instructions for this stage" {...(REVIEWING_KINDS.has(stage.kind) ? { hint: LESS_SAFE_HINT } : {})} value={stageValue(stage.id)} onChange={text => setStage(stage.id, text)} disabled={saving} /> } : {})} />)}</div>
+  <div className="rv-hww-cards">{data.stages.map(stage => <HowWeWorkCard key={stage.id} stage={stage} view={data} filter={filter} showUnchanged={showUnchanged} {...modelsProp(stage)} {...(canEdit && stage.id === UNUSED_STAGE_ID && (baseline.stages[stage.id] ?? "") !== "" ? { action: <Button busy={saving} aria-label="Remove rules from the pull request stage" onClick={() => { void removeUnusedStage(); }}>Remove</Button> } : {})} {...(canEdit && EDITABLE_KINDS.has(stage.kind) ? { editor: <RuleField label="Instructions for this stage" {...(REVIEWING_KINDS.has(stage.kind) ? { hint: LESS_SAFE_HINT } : {})} value={stageValue(stage.id)} onChange={text => setStage(stage.id, text)} disabled={saving} /> } : {})} />)}<DesignReviewCard project={project} canEdit={canEdit} filter={filter} /></div>
   {canEdit && <div className="rv-hww-actions">
    <Button variant="primary" busy={saving} disabled={!dirty || tooLong} onClick={() => { void save(); }}>Save draft</Button>
    <ReviewChangesDialog project={project} agentId={layerId ?? ""} from={published ?? "base"} revision={draft.data?.draft.revision ?? 0} disabled={layerId === undefined || draft.data === undefined || dirty} notInUse={savedVersion !== undefined} openRequest={reviewRequest} onPublished={refresh} />

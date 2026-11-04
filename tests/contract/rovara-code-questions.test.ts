@@ -667,6 +667,18 @@ describe("Home's question cards", () => {
     expect((await homeOf(t, MAX)).filter((card) => card.kind === "question")).toEqual([]);
   });
 
+  it("S3 (N6): the card's title is the owner's own words for the owner, and carries no email address for a person who can only use the session", async () => {
+    const t = await world();
+    const run = await t.waitingTask();
+    await t.member(ARJUN, "developer");
+    expect((await t.share(run.sessionId, ARJUN, "use")).status).toBe(200);
+    const written = `Reply to omar${String.fromCharCode(64)}example.test`;
+    t.db.set({ ...(t.db.get(agentSessionKey(TEST_ORG, run.sessionId, "META")) as Record<string, unknown>), title: written });
+    const cardOf = async (who: Developer) => ((await t.dev(who, "GET", "/v1/app/home")).body.cards as Array<{ kind: string; title: string }>).find((card) => card.kind === "question")!;
+    expect((await cardOf(MAYA)).title).toBe(written);
+    expect((await cardOf(ARJUN)).title).toBe("Reply to [email removed]");
+  });
+
   it("are not made for a session that needs its owner for anything else: a plan to review, a step that stopped", async () => {
     const t = await world();
     const stopped = await t.understanding();

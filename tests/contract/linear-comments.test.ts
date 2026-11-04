@@ -348,6 +348,21 @@ describe("an answer is posted once, under a key that does not change, and what w
     expect([...rec.comments.keys()]).toEqual([linearCommentIdFor(ORG_A, `ask:${t.askId}`)]);
   });
 
+  it("AL-1: a binding that names no workspace still records the workspace of the connection that posted, so an erase asks in that workspace", async () => {
+    const rec = recordingPort();
+    const reply = rec.port.reply.bind(rec.port);
+    rec.port.reply = async (input) => { const posted = await reply(input); return posted === undefined ? posted : { ...posted, workspace: "beta" }; };
+    const t = await askedWorld({ port: rec.port });
+    // Take the workspace the comment's own link supplied off the Ask and its request, as an Ask from before the link carried one would be.
+    for (const item of t.w.db.find((entry) => entry.entityType === "ASK_REQUEST" || entry.entityType === "ASK") as Array<Record<string, unknown>>) {
+      const { workspace: _workspace, ...rest } = item; // eslint-disable-line @typescript-eslint/no-unused-vars -- taken off on purpose
+      t.w.db.set(rest);
+    }
+    await completeAsk(t.ask, { ...t.ref, outcome: "ANSWERED", text: "It is blocked on a check.", question: QUESTION });
+    const stored = (t.w.db.find((item) => item.entityType === "ASK") as Array<Record<string, unknown>>)[0]!;
+    expect(stored["linearComment"]).toEqual({ issueKey: ISSUE, commentId: linearCommentIdFor(ORG_A, `ask:${t.askId}`), workspace: "beta" });
+  });
+
   it("a post that fails is tried again in the same call, with the same key, and lands once", async () => {
     const rec = recordingPort({ fail: 2 });
     const t = await askedWorld({ port: rec.port });

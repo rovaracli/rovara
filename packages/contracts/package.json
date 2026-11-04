@@ -6,7 +6,8 @@
   "exports": {
     ".": "./dist/index.js",
     "./web": "./dist/web.js",
-    "./testing": "./dist/testing.js"
+    "./testing": "./dist/testing.js",
+    "./dns-helper": "./dist/dns-helper.js"
   },
   "types": "./dist/index.d.ts",
   "dependencies": {

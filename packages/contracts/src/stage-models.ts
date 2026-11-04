@@ -39,6 +39,8 @@ export const StageModelCandidateSchema = z.object({
   company: ModelCompanySchema,
   status: z.enum(["verified", "unverified", "stale", "denied"]), checkedAt: Instant.optional(),
   blockedReason: StageModelRefusalCodeSchema.optional(),
+  /** Set only on a Rovara catalog model the account is known not to be able to call (`MODEL_USABILITY`): the picker shows it disabled, with these words (by edition). Advice only; the server refuses nothing because of it. */
+  unusableReason: Line.max(300).optional(),
 }).strict();
 export const EffectiveStageModelSchema = z.object({
   model: ModelIdentifierSchema, sourceId: SourceId, thinkingLevel: ThinkingLevelSchema.nullable(),

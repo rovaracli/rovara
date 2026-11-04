@@ -12,3 +12,6 @@
 .rv-hww-models{display:grid;gap:var(--rv-space-3);min-width:0}.rv-hww-models p{margin:0;overflow-wrap:anywhere}.rv-hww-result{display:grid;gap:var(--rv-space-1)}.rv-hww-pickers{display:grid;gap:var(--rv-space-3);max-width:32rem}.rv-hww-pickers .rv-field,.rv-hww-pickers select{min-width:0;max-width:100%}
 
 .rv-hww-record{display:grid;gap:var(--rv-space-3);margin:var(--rv-space-4) 0 0;padding-top:var(--rv-space-3);border-top:1px solid var(--rv-border)}.rv-hww-record-item{display:grid;gap:var(--rv-space-1);min-width:0}.rv-hww-record p{margin:0;overflow-wrap:anywhere}.rv-hww-record-title{font-weight:600}.rv-hww-record-inline{margin:var(--rv-space-2) 0 0;padding-top:var(--rv-space-2);font-size:var(--rv-font-sm)}
+
+/* Design review (DR11): the stage card's settings editor. */
+.rv-design-setting{display:grid;gap:var(--rv-space-4);margin-top:var(--rv-space-5);padding-top:var(--rv-space-4);border-top:1px solid var(--rv-border)}.rv-design-setting h4{margin:0}.rv-design-field{display:grid;gap:var(--rv-space-2);min-width:0}.rv-design-people{border:0;margin:0;padding:0;display:grid;gap:var(--rv-space-2);min-width:0}.rv-design-people legend{padding:0;margin-bottom:var(--rv-space-2);font-size:var(--rv-font-sm);color:var(--rv-text-muted)}

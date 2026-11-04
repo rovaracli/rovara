@@ -164,6 +164,16 @@ describe("agentx session stop and retry", () => {
     expect(h.stdout()).toContain(LINK);
   });
 
+  it("says nothing was running, with the server's words, and never Stop requested, when the stop found nothing to stop", async () => {
+    const plain = await agentsCli({ [`POST /v1/app/sessions/${SES}/stop`]: Response.json({ ...view(), stop: "NOTHING_RUNNING" }) });
+    expect(await plain.run(["session", "stop", SES])).toBe(0);
+    expect(plain.stdout()).toContain("Nothing was running to stop.");expect(plain.stdout()).not.toContain("Stop requested");
+    const words = "This task is blocked, not running. To end it, use Close task (it checks for unpublished work first).";
+    const blocked = await agentsCli({ [`POST /v1/app/sessions/${SES}/stop`]: Response.json({ ...view(), stop: "NOTHING_RUNNING", message: words }) });
+    expect(await blocked.run(["session", "stop", SES])).toBe(0);
+    expect(blocked.stdout()).toContain(words);expect(blocked.stdout()).not.toContain("Stop requested");
+  });
+
   it("retries a session and prints the link of the new one when a new run started", async () => {
     const fresh = `${CELL}/s/${SES2}`;
     const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/retry`]: Response.json(view({ sessionId: SES2, link: fresh, retryOf: SES })) });

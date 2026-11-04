@@ -1,0 +1,675 @@
+{
+ "staging": {
+  "scope": {
+   "env": "staging",
+   "partition": "aws",
+   "region": "us-east-1",
+   "account": "123456789012",
+   "cloudFormationRoleName": "agentx-staging-cloudformation"
+  },
+  "statements": [
+   {
+    "Sid": "Services",
+    "Effect": "Allow",
+    "Action": [
+     "apigateway:*",
+     "cloudformation:*",
+     "cloudwatch:*",
+     "cognito-idp:*",
+     "dynamodb:*",
+     "ec2:*",
+     "ecr:*",
+     "ecs:*",
+     "elasticloadbalancing:*",
+     "kms:*",
+     "lambda:*",
+     "logs:*",
+     "rds:*",
+     "route53resolver:*",
+     "s3:*",
+     "scheduler:*",
+     "secretsmanager:*",
+     "sns:*",
+     "sqs:*",
+     "ssm:*",
+     "states:*",
+     "bedrock:*",
+     "budgets:*",
+     "codebuild:*",
+     "execute-api:*",
+     "xray:*",
+     "cloudfront:*Distribution*",
+     "cloudfront:*OriginAccessControl*",
+     "cloudfront:*Polic*",
+     "cloudfront:*Tag*"
+    ],
+    "Resource": "*"
+   },
+   {
+    "Sid": "EcsFailureEventsRule",
+    "Effect": "Allow",
+    "Action": [
+     "events:*"
+    ],
+    "Resource": "arn:aws:events:us-east-1:123456789012:rule/agentx-staging-*-service-failures"
+   },
+   {
+    "Sid": "AppSyncEvents",
+    "Effect": "Allow",
+    "Action": [
+     "appsync:GetApi",
+     "appsync:UpdateApi",
+     "appsync:DeleteApi",
+     "appsync:CreateChannelNamespace",
+     "appsync:GetChannelNamespace",
+     "appsync:UpdateChannelNamespace",
+     "appsync:DeleteChannelNamespace",
+     "appsync:TagResource",
+     "appsync:UntagResource",
+     "appsync:ListTagsForResource"
+    ],
+    "Resource": "arn:aws:appsync:us-east-1:123456789012:apis/*"
+   },
+   {
+    "Sid": "AppSyncEventsCreate",
+    "Effect": "Allow",
+    "Action": [
+     "appsync:CreateApi",
+     "appsync:ListApis"
+    ],
+    "Resource": "*",
+    "Condition": {
+     "StringEquals": {
+      "aws:RequestedRegion": "us-east-1"
+     }
+    }
+   },
+   {
+    "Sid": "AppSyncEventsPublish",
+    "Effect": "Allow",
+    "Action": [
+     "appsync:EventPublish"
+    ],
+    "Resource": "arn:aws:appsync:us-east-1:123456789012:apis/*/channelNamespace/rovara"
+   },
+   {
+    "Sid": "CallerIdentity",
+    "Effect": "Allow",
+    "Action": [
+     "sts:GetCallerIdentity"
+    ],
+    "Resource": "*"
+   },
+   {
+    "Sid": "SesSendNotice",
+    "Effect": "Allow",
+    "Action": [
+     "ses:SendEmail"
+    ],
+    "Resource": "arn:aws:ses:*:123456789012:identity/*"
+   },
+   {
+    "Sid": "ConnectorSecretsRole",
+    "Effect": "Allow",
+    "Action": [
+     "sts:AssumeRole",
+     "sts:TagSession"
+    ],
+    "Resource": [
+     "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets*",
+     "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-img-*"
+    ]
+   },
+   {
+    "Sid": "AssumeOrgRoles",
+    "Effect": "Allow",
+    "Action": [
+     "sts:AssumeRole"
+    ],
+    "Resource": "arn:aws:iam::*:role/*",
+    "Condition": {
+     "ArnLike": {
+      "aws:PrincipalArn": [
+       "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role",
+       "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-model-proxy-task",
+       "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-model-access-probe"
+      ]
+     },
+     "StringNotEquals": {
+      "aws:ResourceAccount": "123456789012"
+     },
+     "StringLike": {
+      "sts:ExternalId": "rovara-org_*"
+     }
+    }
+   },
+   {
+    "Sid": "Quotas",
+    "Effect": "Allow",
+    "Action": [
+     "servicequotas:GetServiceQuota"
+    ],
+    "Resource": "*"
+   },
+   {
+    "Sid": "IamRoles",
+    "Effect": "Allow",
+    "Action": [
+     "iam:CreateRole",
+     "iam:DeleteRole",
+     "iam:GetRole",
+     "iam:UpdateRole",
+     "iam:UpdateRoleDescription",
+     "iam:TagRole",
+     "iam:UntagRole",
+     "iam:PutRolePolicy",
+     "iam:DeleteRolePolicy",
+     "iam:GetRolePolicy",
+     "iam:AttachRolePolicy",
+     "iam:DetachRolePolicy",
+     "iam:UpdateAssumeRolePolicy",
+     "iam:PutRolePermissionsBoundary",
+     "iam:ListRolePolicies",
+     "iam:ListAttachedRolePolicies"
+    ],
+    "Resource": [
+     "arn:aws:iam::123456789012:role/agentx/staging/*",
+     "arn:aws:iam::123456789012:role/agentx-staging-img-create"
+    ]
+   },
+   {
+    "Sid": "IamFixedNameRolesNotYetCreated",
+    "Effect": "Allow",
+    "Action": [
+     "iam:GetRole",
+     "iam:GetRolePolicy",
+     "iam:ListRolePolicies",
+     "iam:ListAttachedRolePolicies",
+     "iam:DeleteRolePolicy",
+     "iam:DetachRolePolicy",
+     "iam:DeleteRole"
+    ],
+    "Resource": [
+     "arn:aws:iam::123456789012:role/agentx-staging-broker-role",
+     "arn:aws:iam::123456789012:role/agentx-staging-model-proxy-task",
+     "arn:aws:iam::123456789012:role/agentx-staging-model-access-probe",
+     "arn:aws:iam::123456789012:role/agentx-staging-chain-schedule",
+     "arn:aws:iam::123456789012:role/agentx-staging-img-push",
+     "arn:aws:iam::123456789012:role/agentx-staging-img-pull",
+     "arn:aws:iam::123456789012:role/agentx-staging-img-manage",
+     "arn:aws:iam::123456789012:role/agentx-staging-connector-secrets*"
+    ]
+   },
+   {
+    "Sid": "IamInstanceProfiles",
+    "Effect": "Allow",
+    "Action": [
+     "iam:CreateInstanceProfile",
+     "iam:DeleteInstanceProfile",
+     "iam:GetInstanceProfile",
+     "iam:AddRoleToInstanceProfile",
+     "iam:RemoveRoleFromInstanceProfile",
+     "iam:TagInstanceProfile",
+     "iam:UntagInstanceProfile"
+    ],
+    "Resource": "arn:aws:iam::123456789012:instance-profile/agentx/staging/*"
+   },
+   {
+    "Sid": "IamManagedPolicies",
+    "Effect": "Allow",
+    "Action": [
+     "iam:CreatePolicy",
+     "iam:DeletePolicy",
+     "iam:CreatePolicyVersion",
+     "iam:DeletePolicyVersion",
+     "iam:GetPolicy",
+     "iam:GetPolicyVersion",
+     "iam:ListPolicyVersions",
+     "iam:TagPolicy",
+     "iam:UntagPolicy",
+     "iam:ListEntitiesForPolicy"
+    ],
+    "Resource": "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*"
+   },
+   {
+    "Sid": "PassRoles",
+    "Effect": "Allow",
+    "Action": [
+     "iam:PassRole"
+    ],
+    "Resource": [
+     "arn:aws:iam::123456789012:role/agentx/staging/*",
+     "arn:aws:iam::123456789012:role/agentx-staging-img-create",
+     "arn:aws:iam::123456789012:role/agentx-staging-cloudformation"
+    ]
+   },
+   {
+    "Sid": "ServiceLinkedRoles",
+    "Effect": "Allow",
+    "Action": [
+     "iam:CreateServiceLinkedRole"
+    ],
+    "Resource": "arn:aws:iam::123456789012:role/aws-service-role/*",
+    "Condition": {
+     "StringLike": {
+      "iam:AWSServiceName": [
+       "ecs.amazonaws.com",
+       "elasticloadbalancing.amazonaws.com",
+       "rds.amazonaws.com",
+       "route53resolver.amazonaws.com"
+      ]
+     }
+    }
+   },
+   {
+    "Sid": "CognitoEmailServiceLinkedRole",
+    "Effect": "Allow",
+    "Action": [
+     "iam:CreateServiceLinkedRole"
+    ],
+    "Resource": "arn:aws:iam::123456789012:role/aws-service-role/email.cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdpEmailService",
+    "Condition": {
+     "StringEquals": {
+      "iam:AWSServiceName": "email.cognito-idp.amazonaws.com"
+     }
+    }
+   },
+   {
+    "Sid": "SesIdentityCheck",
+    "Effect": "Allow",
+    "Action": [
+     "ses:GetEmailIdentity"
+    ],
+    "Resource": "arn:aws:ses:us-east-1:123456789012:identity/*"
+   },
+   {
+    "Sid": "SesAccountCheck",
+    "Effect": "Allow",
+    "Action": [
+     "ses:GetAccount"
+    ],
+    "Resource": "*",
+    "Condition": {
+     "StringEquals": {
+      "aws:RequestedRegion": "us-east-1"
+     }
+    }
+   },
+   {
+    "Sid": "DenyAccountChanges",
+    "Effect": "Deny",
+    "Action": [
+     "organizations:*",
+     "account:*"
+    ],
+    "Resource": "*"
+   },
+   {
+    "Sid": "DenyUsersAndGroups",
+    "Effect": "Deny",
+    "Action": [
+     "iam:*User*",
+     "iam:*Group*"
+    ],
+    "Resource": "*"
+   },
+   {
+    "Sid": "DenyPolicyManagement",
+    "Effect": "Deny",
+    "Action": [
+     "iam:CreatePolicy*",
+     "iam:*PolicyVersion*",
+     "iam:DeletePolicy",
+     "iam:SetDefaultPolicyVersion"
+    ],
+    "NotResource": "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*"
+   },
+   {
+    "Sid": "DenyBoundaryChanges",
+    "Effect": "Deny",
+    "Action": [
+     "iam:*Policy*"
+    ],
+    "Resource": "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary"
+   }
+  ]
+ },
+ "agentxlivetest123-org": {
+  "scope": {
+   "env": "agentxlivetest123",
+   "partition": "aws",
+   "region": "us-east-1",
+   "account": "123456789012",
+   "cloudFormationRoleName": "agentx-agentxlivetest123-cloudformation",
+   "rovaraOrganizationId": "o-abcdefghij123"
+  },
+  "statements": [
+   {
+    "Sid": "Services",
+    "Effect": "Allow",
+    "Action": [
+     "apigateway:*",
+     "cloudformation:*",
+     "cloudwatch:*",
+     "cognito-idp:*",
+     "dynamodb:*",
+     "ec2:*",
+     "ecr:*",
+     "ecs:*",
+     "elasticloadbalancing:*",
+     "kms:*",
+     "lambda:*",
+     "logs:*",
+     "rds:*",
+     "route53resolver:*",
+     "s3:*",
+     "scheduler:*",
+     "secretsmanager:*",
+     "sns:*",
+     "sqs:*",
+     "ssm:*",
+     "states:*",
+     "bedrock:*",
+     "budgets:*",
+     "codebuild:*",
+     "execute-api:*",
+     "xray:*",
+     "cloudfront:*Distribution*",
+     "cloudfront:*OriginAccessControl*",
+     "cloudfront:*Polic*",
+     "cloudfront:*Tag*"
+    ],
+    "Resource": "*"
+   },
+   {
+    "Sid": "EcsFailureEventsRule",
+    "Effect": "Allow",
+    "Action": [
+     "events:*"
+    ],
+    "Resource": "arn:aws:events:us-east-1:123456789012:rule/agentx-agentxlivetest123-*-service-failures"
+   },
+   {
+    "Sid": "AppSyncEvents",
+    "Effect": "Allow",
+    "Action": [
+     "appsync:GetApi",
+     "appsync:UpdateApi",
+     "appsync:DeleteApi",
+     "appsync:CreateChannelNamespace",
+     "appsync:GetChannelNamespace",
+     "appsync:UpdateChannelNamespace",
+     "appsync:DeleteChannelNamespace",
+     "appsync:TagResource",
+     "appsync:UntagResource",
+     "appsync:ListTagsForResource"
+    ],
+    "Resource": "arn:aws:appsync:us-east-1:123456789012:apis/*"
+   },
+   {
+    "Sid": "AppSyncEventsCreate",
+    "Effect": "Allow",
+    "Action": [
+     "appsync:CreateApi",
+     "appsync:ListApis"
+    ],
+    "Resource": "*",
+    "Condition": {
+     "StringEquals": {
+      "aws:RequestedRegion": "us-east-1"
+     }
+    }
+   },
+   {
+    "Sid": "AppSyncEventsPublish",
+    "Effect": "Allow",
+    "Action": [
+     "appsync:EventPublish"
+    ],
+    "Resource": "arn:aws:appsync:us-east-1:123456789012:apis/*/channelNamespace/rovara"
+   },
+   {
+    "Sid": "CallerIdentity",
+    "Effect": "Allow",
+    "Action": [
+     "sts:GetCallerIdentity"
+    ],
+    "Resource": "*"
+   },
+   {
+    "Sid": "SesSendNotice",
+    "Effect": "Allow",
+    "Action": [
+     "ses:SendEmail"
+    ],
+    "Resource": "arn:aws:ses:*:123456789012:identity/*"
+   },
+   {
+    "Sid": "ConnectorSecretsRole",
+    "Effect": "Allow",
+    "Action": [
+     "sts:AssumeRole",
+     "sts:TagSession"
+    ],
+    "Resource": [
+     "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/agentx-agentxlivetest123-connector-secrets*",
+     "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/agentx-agentxlivetest123-img-*"
+    ]
+   },
+   {
+    "Sid": "AssumeOrgRoles",
+    "Effect": "Allow",
+    "Action": [
+     "sts:AssumeRole"
+    ],
+    "Resource": "arn:aws:iam::*:role/*",
+    "Condition": {
+     "ArnLike": {
+      "aws:PrincipalArn": [
+       "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/agentx-agentxlivetest123-broker-role",
+       "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/agentx-agentxlivetest123-model-proxy-task",
+       "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/agentx-agentxlivetest123-model-access-probe"
+      ]
+     },
+     "StringNotEquals": {
+      "aws:ResourceAccount": "123456789012",
+      "aws:ResourceOrgID": "o-abcdefghij123"
+     },
+     "StringLike": {
+      "sts:ExternalId": "rovara-org_*"
+     }
+    }
+   },
+   {
+    "Sid": "Quotas",
+    "Effect": "Allow",
+    "Action": [
+     "servicequotas:GetServiceQuota"
+    ],
+    "Resource": "*"
+   },
+   {
+    "Sid": "IamRoles",
+    "Effect": "Allow",
+    "Action": [
+     "iam:CreateRole",
+     "iam:DeleteRole",
+     "iam:GetRole",
+     "iam:UpdateRole",
+     "iam:UpdateRoleDescription",
+     "iam:TagRole",
+     "iam:UntagRole",
+     "iam:PutRolePolicy",
+     "iam:DeleteRolePolicy",
+     "iam:GetRolePolicy",
+     "iam:AttachRolePolicy",
+     "iam:DetachRolePolicy",
+     "iam:UpdateAssumeRolePolicy",
+     "iam:PutRolePermissionsBoundary",
+     "iam:ListRolePolicies",
+     "iam:ListAttachedRolePolicies"
+    ],
+    "Resource": [
+     "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/*",
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-img-create"
+    ]
+   },
+   {
+    "Sid": "IamFixedNameRolesNotYetCreated",
+    "Effect": "Allow",
+    "Action": [
+     "iam:GetRole",
+     "iam:GetRolePolicy",
+     "iam:ListRolePolicies",
+     "iam:ListAttachedRolePolicies",
+     "iam:DeleteRolePolicy",
+     "iam:DetachRolePolicy",
+     "iam:DeleteRole"
+    ],
+    "Resource": [
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-broker-role",
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-model-proxy-task",
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-model-access-probe",
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-chain-schedule",
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-img-push",
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-img-pull",
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-img-manage",
+     "arn:aws:iam::123456789012:role/agentxlivetest123-task-person-proof",
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-connector-secrets*"
+    ]
+   },
+   {
+    "Sid": "IamInstanceProfiles",
+    "Effect": "Allow",
+    "Action": [
+     "iam:CreateInstanceProfile",
+     "iam:DeleteInstanceProfile",
+     "iam:GetInstanceProfile",
+     "iam:AddRoleToInstanceProfile",
+     "iam:RemoveRoleFromInstanceProfile",
+     "iam:TagInstanceProfile",
+     "iam:UntagInstanceProfile"
+    ],
+    "Resource": "arn:aws:iam::123456789012:instance-profile/agentx/agentxlivetest123/*"
+   },
+   {
+    "Sid": "IamManagedPolicies",
+    "Effect": "Allow",
+    "Action": [
+     "iam:CreatePolicy",
+     "iam:DeletePolicy",
+     "iam:CreatePolicyVersion",
+     "iam:DeletePolicyVersion",
+     "iam:GetPolicy",
+     "iam:GetPolicyVersion",
+     "iam:ListPolicyVersions",
+     "iam:TagPolicy",
+     "iam:UntagPolicy",
+     "iam:ListEntitiesForPolicy"
+    ],
+    "Resource": "arn:aws:iam::123456789012:policy/agentx/agentxlivetest123/agentx-agentxlivetest123-broker-*"
+   },
+   {
+    "Sid": "PassRoles",
+    "Effect": "Allow",
+    "Action": [
+     "iam:PassRole"
+    ],
+    "Resource": [
+     "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/*",
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-img-create",
+     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-cloudformation"
+    ]
+   },
+   {
+    "Sid": "ServiceLinkedRoles",
+    "Effect": "Allow",
+    "Action": [
+     "iam:CreateServiceLinkedRole"
+    ],
+    "Resource": "arn:aws:iam::123456789012:role/aws-service-role/*",
+    "Condition": {
+     "StringLike": {
+      "iam:AWSServiceName": [
+       "ecs.amazonaws.com",
+       "elasticloadbalancing.amazonaws.com",
+       "rds.amazonaws.com",
+       "route53resolver.amazonaws.com"
+      ]
+     }
+    }
+   },
+   {
+    "Sid": "CognitoEmailServiceLinkedRole",
+    "Effect": "Allow",
+    "Action": [
+     "iam:CreateServiceLinkedRole"
+    ],
+    "Resource": "arn:aws:iam::123456789012:role/aws-service-role/email.cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdpEmailService",
+    "Condition": {
+     "StringEquals": {
+      "iam:AWSServiceName": "email.cognito-idp.amazonaws.com"
+     }
+    }
+   },
+   {
+    "Sid": "SesIdentityCheck",
+    "Effect": "Allow",
+    "Action": [
+     "ses:GetEmailIdentity"
+    ],
+    "Resource": "arn:aws:ses:us-east-1:123456789012:identity/*"
+   },
+   {
+    "Sid": "SesAccountCheck",
+    "Effect": "Allow",
+    "Action": [
+     "ses:GetAccount"
+    ],
+    "Resource": "*",
+    "Condition": {
+     "StringEquals": {
+      "aws:RequestedRegion": "us-east-1"
+     }
+    }
+   },
+   {
+    "Sid": "DenyAccountChanges",
+    "Effect": "Deny",
+    "Action": [
+     "organizations:*",
+     "account:*"
+    ],
+    "Resource": "*"
+   },
+   {
+    "Sid": "DenyUsersAndGroups",
+    "Effect": "Deny",
+    "Action": [
+     "iam:*User*",
+     "iam:*Group*"
+    ],
+    "Resource": "*"
+   },
+   {
+    "Sid": "DenyPolicyManagement",
+    "Effect": "Deny",
+    "Action": [
+     "iam:CreatePolicy*",
+     "iam:*PolicyVersion*",
+     "iam:DeletePolicy",
+     "iam:SetDefaultPolicyVersion"
+    ],
+    "NotResource": "arn:aws:iam::123456789012:policy/agentx/agentxlivetest123/agentx-agentxlivetest123-broker-*"
+   },
+   {
+    "Sid": "DenyBoundaryChanges",
+    "Effect": "Deny",
+    "Action": [
+     "iam:*Policy*"
+    ],
+    "Resource": "arn:aws:iam::123456789012:policy/agentx/agentxlivetest123/agentx-agentxlivetest123-boundary"
+   }
+  ]
+ }
+}

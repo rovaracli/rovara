@@ -1,4 +1,5 @@
 import { logDeveloperEvent } from "../../developer/log.js";
+import { designActionsFor } from "./design-review.js";
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -37,6 +38,7 @@ import {
   CLOSED_TASK,
   cancelTask,
   cancelTaskFor,
+  closeTask,
   decideTaskWorkflow,
   loadOwnedTask,
   retryTaskWorkflowFor,
@@ -357,8 +359,13 @@ export function sessionReadDependencies(deps: DeveloperRouteDependencies, caller
     }),
     // Plan 5 Task 13: Plan 3's cancel, workflow retry and run start, bound to this person. They are called only after the session routes read the person's level on the session.
     control: {
-      cancelTask: async (task, requestId) => { await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      cancelTask: async (task, requestId) => { const { nothingRunning, message } = await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); return { nothingRunning, ...(message === undefined ? {} : { message }) }; },
       retryWorkflow: async (task, requestId) => { await retryTaskWorkflowFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      // The task's own close, as the Slack button and the AI-tool close run it: the caller must be the task's owner (checked there), and the discard confirmation and the request id are the task's.
+      closeTask: async (task, input) => {
+        const closed = await closeTask(taskDeps, caller, task.taskId, { requestId: input.requestId, ...(input.discardUnpublished ? { discard_unpublished: true } : {}) });
+        return { closed: closed.closed, ...(closed.discardedUnpublished === undefined ? {} : { discardedUnpublished: closed.discardedUnpublished }), ...(closed.unpublished === undefined ? {} : { unpublished: closed.unpublished }), ...(closed.message === undefined ? {} : { message: closed.message }) };
+      },
       // Stop & redirect while the plan waits for approval: the caller's own request for changes, through the task's decision (their authority as a task owner is checked there).
       requestPlanChanges: async (task, input) => {
         // The decision keeps its own bound (500 characters); the planner is told the whole instruction (LR-2).
@@ -491,6 +498,8 @@ export function developerTaskRouteDependencies(
     ...(deps.publishSpecFiles === undefined ? {} : { publishSpecFiles: deps.publishSpecFiles }),
     ...(deps.currentBaseCommit === undefined ? {} : { currentBaseCommit: deps.currentBaseCommit }),
     ...(deps.taskAutonomyNow === undefined ? {} : { taskAutonomyNow: deps.taskAutonomyNow }),
+    ...(deps.designReview === undefined ? {} : { designReview: deps.designReview }),
+    designActions: designActionsFor(deps, caller),
     ...(deps.workflowE2EScenarioResults === undefined ? {} : { workflowE2EScenarioResults: deps.workflowE2EScenarioResults }),
     ...(deps.workflowE2EArtifact === undefined ? {} : { workflowE2EArtifact: deps.workflowE2EArtifact }),
     ...(deps.evidence === undefined ? {} : { evidence: deps.evidence }),

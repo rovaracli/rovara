@@ -21,6 +21,8 @@ import { SLACK_SEND_BACK_INSTRUCTIONS, captureWorkflowFeedbackNote, confirmTaskP
 import { ownerKeyForSubject } from "../lambda.js";
 import { stopSwebenchRun } from "../swebench.js";
 import { startCodeIntent } from "../../rovara-code/intent.js";
+import { designFirstRequestOf, markDesignFirst } from "../../design-review/design-first.js";
+import { parseWorkflowStartRequest } from "../slack-workflow-choice.js";
 import { WORK_ACTIONS, can, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { cancelRunningTask, type TaskCancellation } from "./acceptance.js";
@@ -268,11 +270,18 @@ export async function startSlackWorkflow(dependencies: AwsBrokerDependencies, ta
   const thread = SlackThreadSchema.parse(event.thread);
   const userId = SlackRequesterSchema.shape.userId.parse(event.userId);
   const requestId = randomUUIDSchema.parse(event.requestId);
-  const instructions = event.instructions.trim();
+  let instructions = event.instructions.trim();
   if (!instructions || Buffer.byteLength(instructions, "utf8") > RUN_INPUT_TEXT_MAX_BYTES) throw agentXError("CONFIG_INVALID", "workflow request is empty or too long");
   if (dependencies.developer.slackTeamId !== thread.teamId) throw agentXError("FORBIDDEN", "Slack workspace is not enabled for developer tasks");
   const binding = await getSlackBinding(dependencies, await slackTeamOrg(dependencies, thread.teamId), thread.teamId, thread.channelId);
   if (binding === undefined) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
+  // `design first:` (DR11) is read HERE, where the project is known, and only while the design review runs for it (`dr` on and the project in `dp`). With the stage off the text is exactly what the person typed.
+  const first = designFirstRequestOf(binding.projectName, instructions);
+  if (first.designFirst) {
+    const nested = parseWorkflowStartRequest(first.rest);
+    instructions = (nested.kind === "start" ? nested.instructions : first.rest).trim();
+    if (!instructions) throw agentXError("CONFIG_INVALID", "workflow request is empty or too long");
+  }
   const existingWorkflowThread = await getItem(dependencies, sharedTaskKey(thread));
   const threadOwnerKey = ownerKeyForSubject(SLACK_THREAD_OWNER_ISSUER, slackThreadSubject(thread));
   const existingThreadTask = await getItem<{ workspaceId?: string; closedAt?: string }>(dependencies, await resolveSlackThreadKey(dependencies, await slackTeamOrg(dependencies, thread.teamId), threadOwnerKey));
@@ -291,6 +300,8 @@ export async function startSlackWorkflow(dependencies: AwsBrokerDependencies, ta
     requestId, project: binding.projectName, input: { text: instructions }, path: event.workflowPath, source: "slack",
     binding: { kind: "slack_thread", teamId: thread.teamId, channelId: thread.channelId, threadTs: thread.threadTs },
   });
+  // `design first:` (DR11): recorded on the task for the Understand step's mode resolution, which only turns it on while the switch is on for the project.
+  if (first.designFirst) await markDesignFirst(dependencies, started.task.taskId, caller.developerId);
   return { task: started.task };
 }
 

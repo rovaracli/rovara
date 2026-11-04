@@ -14,6 +14,7 @@ import {
   diffStat,
   lastAssistantResponse,
   redactAndCap,
+  hideEmailAddresses,
   redactText,
   type DeveloperCloseResponse,
   type DeveloperTaskFailure,
@@ -324,6 +325,8 @@ export async function taskView(
   const reviewRound = rovaraCodeV2 && task.workflow !== undefined && workflow?.state !== "BLOCKED" ? workflowReviewRound(task.workflow) : undefined;
   // Playbook P3: the proof table of the approved plan's requirements, as the pull request's Proof section has it (full reads only). Informational: a fault in any input leaves it out. A blocked task keeps it:
   // a failed requirement matters most there. (A plan whose document could not be verified is blocked only while it waits for approval, when no plan is approved and the table is absent anyway.)
+  // Design review (DR11): the Design first and Skip buttons for this caller; absent while design review is not offered for the task.
+  const designActions = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.designActions !== undefined ? await deps.designActions(task).catch(() => undefined) : undefined;
   const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
   // Proof and evidence (wire-proof): the evidence kept for the task's current code (full reads only, like the proof table), with each stored artifact as a link. Present only while the proof switch is on (`deps.evidence`); a fault leaves it out.
   const evidence = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.evidence !== undefined && await mayReadEvidence(deps, task) ? await deps.evidence.view(task, task.workflow.candidate?.digest).catch(() => undefined) : undefined;
@@ -348,12 +351,14 @@ export async function taskView(
   return {
     modelFallbacks:modelFallbacks.data,
     taskId: task.taskId,
-    title: task.title,
+    // S3: a reader who is not the owner reads the title (a person's request) without an email address.
+    title: options.actor === "viewer" ? hideEmailAddresses(task.title) : task.title,
     project: task.project,
     status: derived.status,
     ...(workflow === undefined ? {} : { workflow }),
     ...(verification === undefined ? {} : { verificationReport: verification }),
     ...(proofTable === undefined ? {} : { proofTable }),
+    ...(designActions === undefined ? {} : { designActions }),
     ...(evidence === undefined ? {} : { evidence }),
     ...(testing === undefined ? {} : { testing }),
     ...(modelLines.length === 0 ? {} : { reviewModelLines: modelLines }),
@@ -380,7 +385,8 @@ export async function taskView(
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.
     updatedAt,
-    events,
+    // S3: a reader who is not the owner reads the events (a model's and a worker's words) without an email address.
+    events: options.actor === "viewer" ? events.map((event) => ({ ...event, text: hideEmailAddresses(event.text) })) : events,
     ...details,
     ...(channelTurns === undefined ? {} : { channelTurns }),
     ...(unpublished === undefined ? {} : { unpublished }),

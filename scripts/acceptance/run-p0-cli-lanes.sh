@@ -13,7 +13,7 @@ if [ -z "${TMPDIR:-}" ] || [ ! -d "$TMPDIR" ] || [ -L "$TMPDIR" ] || [ -n "$(fin
   echo "UNAVAILABLE: TMPDIR must be an existing, empty, non-symlink directory before Vitest starts" >&2
   exit 2
 fi
-TMP_OWNER=$(stat -f '%u' "$TMPDIR" 2>/dev/null || stat -c '%u' "$TMPDIR")
+TMP_OWNER=$(stat -c '%u' "$TMPDIR" 2>/dev/null || stat -f '%u' "$TMPDIR")
 if [ "$TMP_OWNER" != "$(id -u)" ]; then
   echo "UNAVAILABLE: TMPDIR is not owned by the current user" >&2
   exit 2

@@ -255,6 +255,10 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // 2026-11-03 (fix/ecr-template-slr): the agentx-staging-access snapshot was re-recorded for one added statement in the CloudFormation service role, EcrTemplateServiceLinkedRole
 // (iam:CreateServiceLinkedRole for exactly AWSServiceRoleForECRTemplate, condition iam:AWSServiceName = ecr.amazonaws.com). The 0.5.1 staging upgrade rolled back without it.
 // No other snapshot moved.
+// 2026-11-03 (fix/boundary-tighten): the agentx-staging-access snapshot was re-recorded again, for the DEFAULT BOUNDARY only (the managed policy), which was cut by about 460 characters to make room without allowing anything new:
+// sts:GetCallerIdentity and servicequotas:GetServiceQuota moved into the Services statement, iam:PassRole into IamRoles (the service role's own PassRole stays a statement), the two Denies on "*" became one,
+// iam:SetDefaultPolicyVersion left DenyPolicyManagement (iam:*PolicyVersion* matches it), and the instance profile actions became iam:*InstanceProfile. tests/contract/default-boundary-equivalence.test.ts proves the same
+// (action, resource) pairs are permitted and refused as v0.5.2's boundary did. The service role's policy and every other stack's snapshot are unchanged.
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {

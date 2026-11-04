@@ -62,6 +62,7 @@ import {
   retiredClaimIdList,
 } from "./workflow-inputs.js";
 import { ciFixRetryKey, planCheckRetryKey, queueWorkflowCoding, retryCiFix, retryPlanCritique, retryWorkflowImplementation } from "./workflow-coding.js";
+import { designResolveBlocked, retryDesignResolve } from "./design-resolve-retry.js";
 import { REDIRECT_DROPPED_RETRY_NOTE, carriedRedirect } from "./redirect-carry.js";
 import { framedPlanningInstruction } from "./redirect-frame.js";
 import { type AutomaticRetry, automaticRetryDecision, queueWorkflowUnderstand } from "./workflow-starts.js";
@@ -389,6 +390,8 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
   }
   if (task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "BLOCKED") return retryWorkflowUnderstand(deps, caller, access, request);
   if (task.workflow?.stage === "PLAN_CRITIQUE" && task.workflow.state === "BLOCKED") return retryPlanCritique(deps, caller, access, request);
+  // Design review: a blocked planner run that was answering the reviewers' findings resumes the review (`resumeBlockedDesignReview`) and runs again; it is never restarted as a plain planning run.
+  if (designResolveBlocked(task.workflow)) return retryDesignResolve(deps, caller, access, request);
   if (task.workflow === undefined || task.workflow.state !== "BLOCKED" || task.workflow.stage !== "PLAN") {
     throw agentXError("CONFIG_INVALID", "this action can retry blocked planning or coding, or run selected checks for blocked verification or a change ready to publish");
   }

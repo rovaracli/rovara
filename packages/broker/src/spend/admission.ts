@@ -214,6 +214,8 @@ export interface MintOperationKeyInput {
    * touched and this key competes with the winner's hold.
    */
   keepEarlierKeys?: boolean | undefined;
+  /** DR7: a ceiling on this key's cap, for work whose share of the money is fixed before it starts (a design-review reviewer's key). The cap is the least of this and every room above; it never raises it. */
+  budgetCeilingUsd?: number | undefined;
   /** The keys the task has minted so far (their spend is the run's), and those of this operation (the step's). */
   taskKeyIds: readonly string[];
   operationKeyIds?: readonly string[] | undefined;
@@ -326,8 +328,19 @@ async function planCap(deps: MintOperationDependencies, input: MintOperationKeyI
     left(stopAtUsd, windowSpent), smallestRoom(read.levels),
     input.testCapUsd === undefined ? Infinity : left(input.testCapUsd, taskSpent),
     input.stepBudgetUsd === undefined ? Infinity : left(input.stepBudgetUsd, stepSpent),
+    input.budgetCeilingUsd === undefined ? Infinity : clean(Math.max(0, input.budgetCeilingUsd)),
   ));
   return { capUsd, levels: read.levels };
+}
+
+/**
+ * DR7: what is left of a task's run limit for model spend, the figure a design-review round's slot ceilings are held under (`allocateSlotBudgets`). It is the same arithmetic as `planCap`'s run limits: the stop-at limit
+ * (the lower of the run limit and the agent's max per run) less what the task's keys have spent in this window, and a test run's cap less what the task's keys have spent. It counts SPENT, as the cap of any key does.
+ */
+export async function taskRunRoomUsd(deps: Pick<MintOperationDependencies, "access">, input: Pick<MintOperationKeyInput, "taskKeyIds" | "runLimitUsd" | "stopAtUsd" | "testCapUsd" | "budgetBaselineUsd">): Promise<number> {
+  const spent = await viaProxy(() => deps.access.keySpend(input.taskKeyIds));
+  const left = (limitUsd: number, spentUsd: number) => clean(Math.max(0, limitUsd - spentUsd));
+  return clean(Math.min(left(Math.min(input.stopAtUsd, input.runLimitUsd), clean(Math.max(0, spent - (input.budgetBaselineUsd ?? 0)))), input.testCapUsd === undefined ? Infinity : left(input.testCapUsd, spent)));
 }
 
 /** A key that was minted but could not be reserved: revoked at the proxy, and whatever of its reservation was written is taken back. */

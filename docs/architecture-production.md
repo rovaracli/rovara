@@ -282,6 +282,9 @@ roles need.
 That includes `ses:SendEmail` on the sign-in sender identity (the `CloudSignInEmailSourceArn` identity,
 in whichever region it lives): without it the new-sign-in-method notice fails quietly, because a
 failed notice never fails a sign-in.
+It also includes `bedrock:GetFoundationModelAvailability` on `*` (the action has no resource type) next to `bedrock:InvokeModel`: the broker's
+usable-models check calls it, and without it in a company-supplied boundary the check is refused and cannot tell which models the account has enabled. The default boundary
+allows it already, through its `bedrock:*`.
 It also includes creating, reading, versioning and deleting the environment's own broker managed policies
 (`iam:CreatePolicy`, `iam:DeletePolicy`, `iam:CreatePolicyVersion`, `iam:DeletePolicyVersion`,
 `iam:GetPolicy`, `iam:GetPolicyVersion`, `iam:ListPolicyVersions`, `iam:TagPolicy`, `iam:UntagPolicy`,

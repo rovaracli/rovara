@@ -76,6 +76,8 @@ export async function handleCallback(
   if (action !== "result" && TERMINAL.has(operation.status)) {
     throw agentXError("STALE_FENCE", "terminal operations cannot publish more output");
   }
+  // DR7: a design-review operation is keyed by slot (model-access) and never falls back or borrows a person's ChatGPT plan; the fixed refusal says nothing more.
+  if (operation.designReview !== undefined && (action === "model-fallback" || action === "chatgpt-token" || action === "chatgpt-status")) throw agentXError("CALLBACK_FORBIDDEN", "A design review cannot use this action.");
   if(action==="model-fallback") {
     if(cancelClaims!==undefined||operation.orgId===undefined||(operation.modelTaskId===undefined&&operation.modelTurnPin===undefined))throw agentXError("CALLBACK_FORBIDDEN","This operation cannot authorize a model fallback.");
     const signInTableName=dependencies.developer?.signInTableName;

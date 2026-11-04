@@ -3,6 +3,8 @@
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@agentx/contracts";
+import { withDesignReviewPorts } from "../../design-review/wiring.js";
+import { designResolveDue } from "../../design-review/resolve-run.js";
 import { StoredBaselineSourceSchema } from "../baseline-source.js";
 import { queryAllItems } from "../admin-reads.js";
 import { z } from "zod";
@@ -245,8 +247,8 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       : item.kind === "REVIEW" ? workflow?.stage === "REVIEW" && workflow.state === "WAITING"
       : item.kind === "IMPLEMENT" ? workflow?.stage === "IMPLEMENT" && workflow.state === "READY" && workflow.program !== undefined
       // Plan 6 Task 8: the plan check of a version 2 plan, and the one revision a blocking point of it asks for.
-      : item.kind === "CRITIQUE" ? workflow?.stage === "PLAN_CRITIQUE" && workflow.state === "READY"
-      : item.kind === "CRITIC_REPLAN" ? workflow?.stage === "PLAN" && workflow.state === "READY" && workflow.critique !== undefined
+      : item.kind === "CRITIQUE" ? workflow?.stage === "PLAN_CRITIQUE" && (workflow.state === "READY" || (item.costApprovedBy !== undefined && workflow.state === "WAITING" && workflow.designReview?.status === "waiting_cost"))
+      : item.kind === "CRITIC_REPLAN" ? workflow?.stage === "PLAN" && workflow.state === "READY" && (workflow.critique !== undefined || designResolveDue(workflow))
       // Plan 6 Task 17: the merge of the base branch the tracking pass queued.
       : item.kind === "SYNC" ? workflow?.stage === "WAIT_FOR_MERGE" && (workflow.state === "READY" || workflow.state === "RUNNING") && workflow.branchSync !== undefined
       : item.kind === "REPLAN" ? workflow?.stage === "PLAN" && workflow.state === "RUNNING"
@@ -267,7 +269,7 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
     // Plan 6 Task 17: a merge of the base whose machine was lost (the row names its operation): judged from what GitHub shows.
     if (item.kind === "SYNC" && workflow.state === "RUNNING") return await settleLostBranchSync(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
     const caller = await ownerCallerOf(dependencies, task, "workflow-dispatch");
-    const routeDependencies = developerTaskRouteDependencies({
+    const routeDependencies = withDesignReviewPorts(dependencies, developerTaskRouteDependencies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
       now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
       workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
@@ -289,7 +291,7 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       },
       // Plan 6 Task 17: the commit the pull request's base branch is at now, which is the commit a merge of the base takes.
       currentBaseCommit: currentBaseCommitOf(dependencies),
-    }, caller, undefined, null);
+    }, caller, undefined, null));
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.
     let outcome: "STARTED" | "DUPLICATE" | "STALE" | "WAITING";
@@ -328,7 +330,7 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
         ? await startTaskWorkflowPublicationFromSystem(routeDependencies, item.taskId, expected, { taskPageUrl: taskPageUrl(dependencies.developer.issuer, item.taskId) })
         : item.kind === "IMPLEMENT" ? await startTaskWorkflowImplementationFromSystem(routeDependencies, item.taskId, expected)
         : item.kind === "SYNC" ? await startTaskWorkflowBranchSyncFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
-        : item.kind === "CRITIQUE" ? await startTaskWorkflowPlanCritiqueFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
+        : item.kind === "CRITIQUE" ? await startTaskWorkflowPlanCritiqueFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision, ...(item.costApprovedBy === undefined ? {} : { costApprovedBy: item.costApprovedBy }) })
         : item.kind === "CRITIC_REPLAN" ? await startTaskWorkflowCriticRevisionFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
         : await startTaskWorkflowReviewFromSystem(routeDependencies, item.taskId, expected);
     }
@@ -399,7 +401,7 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       // Plan 6 Task 8: only a model the company chose for the plan check blocks it. Rovara's own recommendation that no source can serve is no one's fault: the plan goes on, unchecked.
       // ... and a plan check whose every usable model was tried (the account could not use them) is no one's refusal either.
       if (item.kind === "CRITIQUE" && (error instanceof PlanCheckUnavailableError || !await companyChoseCriticModel(dependencies, item.taskId).catch(() => true))) {
-        await closeUncheckedPlanCheck(dependencies, item);
+        await closeUncheckedPlanCheck(dependencies, item, "no_model_source");
         return "STALE";
       }
       await recordWorkflowDispatchFailure(dependencies, item, refusalText(error));
@@ -519,7 +521,7 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
         return exported.success && exported.data.status === "READY";
       },
       readArtifactText: async (key) => { const bytes = await readStoredBytes(dependencies, key, 64 * 1024 + 1); return bytes?.toString("utf8"); },
-      recycleWorker: (current) => recycleDriftedWorker(ec2Sessions, current.workspaceId),
+      recycleWorker: (current) => recycleDriftedWorker(ec2Sessions(), current.workspaceId),
       // Setup and test health (SH28): undefined while the `nh` switch is off.
       ...(blockedByEnvironment === undefined ? {} : { blockedByEnvironment }),
       ...fixSetupDependencies(dependencies),

@@ -26,3 +26,12 @@ export function assessmentForTask(input: { assessment: IntentAssessment; workflo
   if (assessment.kind !== "answer" || !(input.followsAnswer || isExplicitPath(workflow))) return assessment;
   return { kind: "ready", path: workflow.path, restatement: assessment.restatement, assumptions: [input.followsAnswer ? EARLIER_ANSWER_ASSUMPTION : explicitPathAssumption(workflow.path)] };
 }
+
+/**
+ * The `design first:` prefix of a request (Slack and Linear intake, beside `quick:` and `full:`): the person asks for the design to be reviewed before any code, whatever the project's setting says. It may be
+ * followed by `quick:` or `full:` (design first runs Full either way: the design review forces it). `rest` is the request without the prefix. Case and spacing are the person's.
+ */
+export function parseDesignFirstPrefix(text: string): { designFirst: boolean; rest: string } {
+  const match = /^\s*design[\s_-]+first\s*:\s*([\s\S]*)$/iu.exec(text);
+  return match === null ? { designFirst: false, rest: text } : { designFirst: true, rest: match[1]! };
+}

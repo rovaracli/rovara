@@ -1,4 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import YAML from "yaml";
 import { expect, it } from "vitest";
 import { needsVerdict } from "../../scripts/ci-gate.js";
@@ -8,6 +12,27 @@ it("runs all browser engines in a dedicated guarded job required by the final ga
  const job = workflow.jobs["web-e2e"];expect(job).toBeDefined();expect(job?.needs).toEqual(["scope", "checks"]);expect(job?.if).toBe("needs.scope.outputs.docs_only != 'true'");
  const commands = job!.steps.map(step => step.run ?? "").join("\n");expect(commands).toContain("npm ci");expect(commands).toContain("npm run build:web");expect(commands).toContain("npx playwright install --with-deps chromium firefox webkit");expect(commands).toContain("npx playwright test -c tests/web-e2e/playwright.config.ts");
  expect(job!.steps.some(step => step.env?.ROVARA_E2E_ALL_BROWSERS === "1")).toBe(true);expect(workflow.jobs.local?.needs).toContain("web-e2e");
+});
+it("caches the Playwright browsers by the version package-lock pins, installs them only on a miss, and keeps the system packages on a hit", async () => {
+ const workflow = YAML.parse(await readFile(".github/workflows/ci.yml", "utf8")) as { jobs: Record<string, { steps: Array<{ id?: string; if?: string; run?: string; uses?: string; with?: Record<string, string> }> }> };
+ const steps = workflow.jobs["web-e2e"]!.steps, lock = JSON.parse(await readFile("package-lock.json", "utf8")) as { packages: Record<string, { version?: string }> };
+ const caches = steps.filter(step => step.uses?.startsWith("actions/cache@"));expect(caches).toHaveLength(1);
+ const cache = caches[0]!;expect(cache.uses).toMatch(/^actions\/cache@[0-9a-f]{40}( #.*)?$/);expect(cache.with?.path).toBe("~/.cache/ms-playwright");
+ // The key is the version the lock file pins, read by an earlier step; the version the test sees there is the one the lock holds.
+ const version = steps.find(step => step.id === "playwright-version");expect(version?.run).toContain("package-lock.json");expect(version?.run).toContain("node_modules/playwright-core");
+ // A version that cannot be read fails the step: no constant cache key. The step's own script is run against a lockfile with and without the entry.
+ const script = version!.run!, readIn = (lock: object) => { const directory = mkdtempSync(join(tmpdir(), "pw-version-")), output = join(directory, "output");writeFileSync(join(directory, "package-lock.json"), JSON.stringify(lock));return { ...spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], { cwd: directory, env: { ...process.env, GITHUB_OUTPUT: output }, encoding: "utf8" }), output: existsSync(output) ? readFileSync(output, "utf8") : "" }; };
+ expect(readIn({ packages: { "node_modules/playwright-core": { version: "1.58.2" } } })).toMatchObject({ status: 0, output: "version=1.58.2\n" });
+ for (const lock of [{ packages: {} }, { packages: { "node_modules/playwright-core": {} } }, { packages: { "node_modules/playwright-core": { version: "" } } }]) { const failed = readIn(lock);expect(failed.status).not.toBe(0);expect(failed.output).toBe("");expect(failed.stdout).toContain("::error::") }
+ expect(steps.indexOf(version!)).toBeLessThan(steps.indexOf(cache));expect(cache.with?.key).toContain("${{ steps.playwright-version.outputs.version }}");expect(cache.with?.key).toContain("${{ runner.os }}");
+ expect(lock.packages["node_modules/playwright-core"]?.version).toMatch(/^\d+\.\d+\.\d+$/);
+ expect(lock.packages["node_modules/playwright-core"]?.version).toBe(lock.packages["node_modules/@playwright/test"]?.version);
+ // The browsers are downloaded only on a miss (with their system packages); a hit still installs the system packages.
+ const cacheId = `steps.${cache.id}.outputs.cache-hit`, miss = steps.find(step => step.run === "npx playwright install --with-deps chromium firefox webkit"), hit = steps.find(step => step.run === "npx playwright install-deps chromium firefox webkit");
+ expect(cache.id).toBe("playwright-cache");expect(miss?.if).toBe(`${cacheId} != 'true'`);expect(hit?.if).toBe(`${cacheId} == 'true'`);
+ expect(steps.indexOf(cache)).toBeLessThan(steps.indexOf(miss!));expect(steps.indexOf(cache)).toBeLessThan(steps.indexOf(hit!));
+ const test = steps.findIndex(step => step.run?.startsWith("npx playwright test"));expect(steps.indexOf(miss!)).toBeLessThan(test);expect(steps.indexOf(hit!)).toBeLessThan(test);
+ for (const [name, job] of Object.entries(workflow.jobs)) if (name !== "web-e2e") expect(job.steps.some(step => step.uses?.startsWith("actions/cache@")), name).toBe(false);
 });
 it("keeps the Playwright traces and report of a failed browser run for seven days", async () => {
  const workflow = YAML.parse(await readFile(".github/workflows/ci.yml", "utf8")) as { jobs: Record<string, { steps: Array<{ if?: string; uses?: string; with?: Record<string, unknown> }> }> };

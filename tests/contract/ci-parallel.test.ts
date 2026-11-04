@@ -11,7 +11,7 @@ interface Job {
   if?: string;
   "timeout-minutes"?: number | string;
   strategy?: { "fail-fast"?: boolean; matrix?: { shard?: number[] } };
-  steps: Array<{ name?: string; run?: string; uses?: string; env?: Record<string, string> }>;
+  steps: Array<{ id?: string; name?: string; if?: string; run?: string; uses?: string; env?: Record<string, string> }>;
 }
 interface Workflow {
   on?: unknown;
@@ -33,6 +33,17 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
     const { jobs } = await workflow();
     expect(jobs.checks!.needs).toBe("scope");
     for (const name of ["lint", "test", "release", "linux-runtime", "mcp-runner-linux", "web-e2e"]) expect(jobs[name], name).toBeDefined();
+  });
+
+  it("downloads the browsers in the browser job only, from a cache keyed on the Playwright version, and pins the cache action by commit", async () => {
+    const { jobs } = await workflow();
+    const e2e = jobs["web-e2e"]!.steps;
+    const cache = e2e.find((step) => step.uses?.startsWith("actions/cache@"));
+    expect(cache?.uses).toMatch(/^actions\/cache@[0-9a-f]{40}( #.*)?$/);
+    // The install is skipped on a hit and runs in full on a miss; neither can be the only install a job without the cache has.
+    const installs = e2e.filter((step) => /playwright install/.test(step.run ?? ""));
+    expect(installs.map((step) => step.if)).toEqual([`steps.${cache?.id}.outputs.cache-hit != 'true'`, `steps.${cache?.id}.outputs.cache-hit == 'true'`]);
+    for (const [name, job] of Object.entries(jobs)) if (name !== "web-e2e") expect(job.steps.some((step) => /playwright install/.test(step.run ?? "") || step.uses?.startsWith("actions/cache@")), name).toBe(false);
   });
 
   // Owner decision "CI cost" (2026-11-02): lint and type checks first, the expensive jobs only if they pass. `checks` is the type check alone (a few minutes), so the shards are not held back

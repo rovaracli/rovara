@@ -49,6 +49,8 @@ export interface ProofRow {
   requirement: string;
   evidence: ProofEvidence[];
   result: ProofResult;
+  /** Design review (DR12): the `§3.N` subsections of the approved design that name this requirement. Present only when there are some; absent when design review is off or no section names the claim. */
+  designSections?: string[];
 }
 
 /** What was not tested, in fixed words: `reason` is one of a short list, never model text. */
@@ -77,6 +79,8 @@ export interface ProofTableInput {
    * Absent or empty, or a different number than the proof's checks: the proof marks nothing proven.
    */
   recordedCheckIds?: readonly string[] | undefined;
+  /** Design review (DR12): claim id to the existing `§3.N` subsections of the approved design that name it (`designLinksByClaim`). Absent: rows are exactly as before. */
+  designLinks?: ReadonlyMap<string, readonly string[]> | undefined;
 }
 
 const READINESS_ID = /^readiness:(0|[1-9]\d{0,5})$/u;
@@ -225,7 +229,8 @@ export function buildProofTable(input: ProofTableInput): ProofTable {
     const linkedDidNotRun = has("not_checked");
     const result: ProofResult = (base === "proven" || base === "passed") && (partChildren.length > 0 || linkedDidNotRun) ? "partly_tested" : base;
     const requirement = oneLine(claim.text, CLAIM_TEXT_MAX);
-    rows.push({ claimId: claim.id, requirement, evidence, result });
+    const designSections = input.designLinks?.get(claim.id);
+    rows.push({ claimId: claim.id, requirement, evidence, result, ...(designSections === undefined || designSections.length === 0 ? {} : { designSections: [...designSections] }) });
     if (result === "not_tested") {
       notTested.push({
         kind: "claim", id: claim.id, text: requirement,

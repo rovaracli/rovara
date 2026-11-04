@@ -65,7 +65,9 @@ export const SessionViewSchema = z
     followers: CountSchema,
     viewingNow: z.array(SessionOwnerSchema).max(PRESENCE_VIEWERS_MAX),
     // `mayMerge`: set (true) only where the level alone would hide Merge from someone the server lets press it: a task's effective project maintainer or an org admin who reads it at `view`.
-    you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length), mayMerge: z.literal(true).optional() }).strict(),
+    you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length), mayMerge: z.literal(true).optional(),
+      /** Live buttons: `ask` / `fix` are present (true) only when the install's switch is on AND the reader may use the feature on this session (the routes' own gate). Both absent: the key is left out. */
+      live: z.object({ ask: z.literal(true).optional(), fix: z.literal(true).optional() }).strict().optional() }).strict(),
     link: LinkSchema,
     bindings: z.array(z.object({ kind: z.enum(["slack_thread", "linear_issue", "tracker_item"]), url: LinkSchema }).strict()).max(3),
     legs: z.array(SessionLegSchema).max(SESSION_LEGS_MAX),
@@ -91,9 +93,29 @@ export type SessionView = z.infer<typeof SessionViewSchema>;
 export const SessionViewReaderSchema = forwardReader(SessionViewSchema);
 
 /** `GET /v1/app/sessions/{id}`. */
-export const SessionResponseSchema = z.object({ session: SessionViewSchema }).strict();
+export const SessionResponseSchema = z.object({
+  session: SessionViewSchema,
+  /** Only on a Stop's answer: `NOTHING_RUNNING` when the stop found nothing to stop, so the page does not say "Stop requested". */
+  stop: z.literal("NOTHING_RUNNING").optional(),
+  /** With `stop`: why nothing was stopped, when the page should say more than "Nothing was running" (a blocked task is ended by Close task, not Stop). */
+  message: z.string().max(500).optional(),
+}).strict();
 
 export const SessionResponseReaderSchema = forwardReader(SessionResponseSchema);
+
+/**
+ * `POST /v1/app/sessions/{id}/close`: the task's own close (the one the Slack button and the AI-tool close run), as the page needs it. `closed: false` with `unpublished` means the workspace holds work that
+ * was never published and a close that discards it must be asked for again (`discardUnpublished: true`); `message` says why a task is not closed yet and what to do next.
+ */
+export const SessionCloseResponseSchema = z.object({
+  session: SessionViewSchema,
+  closed: z.boolean(),
+  discardedUnpublished: z.boolean().optional(),
+  unpublished: z.array(z.object({ repository: z.string(), reasons: z.array(z.string()) }).strict()).optional(),
+  message: z.string().optional(),
+}).strict();
+
+export const SessionCloseResponseReaderSchema = forwardReader(SessionCloseResponseSchema);
 
 /** `GET /v1/app/sessions/{id}/sections/{seq}/task`: a chain step's task, as the task view shows it. */
 export const SessionStepTaskResponseSchema = z.object({ task: DeveloperTaskViewSchema }).strict();

@@ -76,3 +76,6 @@ button:disabled{cursor:default;opacity:.65}
 @media(max-width:767px){.rv-page-header{flex-direction:column}
 .rv-dialog{padding:var(--rv-space-4)}}
 .rv-page-header>div{min-width:0}.rv-page-header h1{overflow-wrap:anywhere}.rv-dialog-heading h2{min-width:0;overflow-wrap:anywhere}.rv-dialog-heading>button{flex-shrink:0}
+
+/* Design review (DR11): the one-line reason an approve_design card with an open blocker asks for, and the Design first row on a plan card. */
+.rv-decision-reason{display:grid;gap:var(--rv-space-2);min-width:0;flex:1 1 100%}.rv-decision-reason input{width:100%}.rv-decision-design{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3)}.rv-decision-design .rv-design-hint{margin:0;padding:var(--rv-space-1) var(--rv-space-3);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);font-size:var(--rv-font-sm)}

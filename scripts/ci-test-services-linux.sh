@@ -105,6 +105,9 @@ main() {
   work=$(mktemp -d /var/tmp/tsl-work.XXXXXX) || return 1
   chmod 0755 "$work"
   cleanup_labelled
+  # agentx-task, the working sandbox's network (L2): on a worker the worker makes it, a plain bridge, when it starts its first task sandbox (packages/worker/src/task-sandbox.ts ensureNetwork). CI has no worker, so it is
+  # made here with the same arguments, after the address pools are set, and stays for the checker's L2.egress-network.
+  docker network inspect agentx-task >/dev/null 2>&1 || docker network create --driver bridge agentx-task >/dev/null || { log "could not create the agentx-task network"; return 1; }
   live_out="$RUNNER_TEMP/tsl-live.out"
   log "running the live driver in the worker image ($image_id), postgres $digest"
   timeout --foreground --kill-after=30s 2400s docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,nosuid,size=64m \

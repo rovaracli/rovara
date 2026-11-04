@@ -66,10 +66,10 @@ it("is refused by the strict task view when an entry is malformed, so the screen
 });
 it("shows hostile model text as plain text: no markup", async () => {
  const hostile = "x<img src=x onerror=window.__pwned=1>y";
- const f = setup(withFallbacks([{ stage: "build", used: hostile, wanted: hostile, reasonCode: "MODEL_STALE" }]));
+ const f = setup(withFallbacks([{ stage: "build", used: hostile, wanted: "w" + hostile, reasonCode: "MODEL_STALE" }]));
  const region = await screen.findByRole("region", { name: "Model changes" });
  expect(region.querySelector("img,b,script")).toBeNull();
- expect(region.textContent).toContain("Used " + hostile + " because " + hostile + " was unavailable.");
+ expect(region.textContent).toContain("Used " + hostile + " because w" + hostile + " was unavailable.");
  expect("__pwned" in window).toBe(false);
  f.close();
 });

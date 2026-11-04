@@ -7,6 +7,9 @@ import {
   type WorkflowSnapshot,
   WorkflowSnapshotSchema,
   blockWorkflow,
+  WORKFLOW_REDIRECT_PLAN_DECISION_REASON,
+  WORKFLOW_REVISE_PLAN_DECISION_REASON,
+  WORKFLOW_SPEC_REPLAN_DECISION_REASON,
 } from "@agentx/contracts";
 import {
   aiToolTurn,
@@ -41,8 +44,34 @@ const actingDeps = (deps: DeveloperTaskRouteDependencies, actor: TaskActor): Dev
  * Stops a task's running work exactly as `POST /v1/dev/tasks/{id}/cancel` does (same path, same fences, same idempotency item), for the owner or for the session actor. Idempotent by
  * `requestId`: a repeat writes nothing and answers the task as it is.
  */
-export function cancelTaskFor(deps: DeveloperTaskRouteDependencies, task: Pick<DeveloperTaskRecord, "taskId">, input: { requestId: string; actor: TaskActor }): Promise<{ task: DeveloperTaskView }> {
-  return cancelTask(actingDeps(deps, input.actor), input.actor.caller, task.taskId, { requestId: input.requestId });
+export function cancelTaskFor(deps: DeveloperTaskRouteDependencies, task: Pick<DeveloperTaskRecord, "taskId">, input: { requestId: string; actor: TaskActor }): Promise<{ task: DeveloperTaskView; nothingRunning: boolean; message?: string }> {
+  return cancelTaskWithOutcome(actingDeps(deps, input.actor), input.actor.caller, task.taskId, { requestId: input.requestId });
+}
+
+/** The stages before any code exists: only a workflow blocked at one of these may be ended by a Stop. */
+const PLAN_STAGES: ReadonlySet<string> = new Set(["UNDERSTAND", "PLAN", "PLAN_CRITIQUE", "PLAN_REVIEW"]);
+/** What a Stop answers for a task blocked after the plan stages: it neither closes nor releases anything. */
+export const BLOCKED_NOT_RUNNING = "This task is blocked, not running. To end it, use Close task (it checks for unpublished work first).";
+
+/** What a Stop answers for a plan that waits for approval after code was written (a re-plan): it neither closes nor releases anything. */
+export const WAITING_NOT_RUNNING = "This task is waiting for a decision, not running, and it may hold unpublished code. To end it, use Close task (it checks for unpublished work first).";
+
+/** The modes of a task step that are planning only: every other mode (implement, review, checks, ...) ran, or may have run, on code. */
+// A task operation with no workflowMode is a legacy coding turn, and a publish pushed code: both count as code (review 2026-11-03).
+const PLANNING_MODES: ReadonlySet<string> = new Set(["UNDERSTAND", "PLAN", "PLAN_CRITIQUE"]);
+const SENT_BACK_FROM_CODE_REASONS: readonly string[] = [WORKFLOW_REVISE_PLAN_DECISION_REASON, WORKFLOW_REDIRECT_PLAN_DECISION_REASON, WORKFLOW_SPEC_REPLAN_DECISION_REASON];
+
+/**
+ * Whether the task's workspace may hold code that was never published, which only Close (its check for unpublished work runs on the workspace by a worker, so a Stop cannot wait for it) may
+ * discard. Any one of these says yes: the workflow carries a candidate, checks, reviews or a pull request of earlier code (they stay when a plan is sent back); it was sent back to planning from
+ * code by a redirect, a live message or a changed spec; or a coding, review or checks step ever ran in the workspace (a stage of IMPLEMENT or later in its history). Only a task that never got
+ * past planning answers no.
+ */
+async function mayHoldCode(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot): Promise<boolean> {
+  if (workflow.candidate !== undefined || workflow.reviewBase !== undefined || workflow.verification !== undefined || (workflow.reviews?.length ?? 0) > 0
+    || (workflow.verificationRetries?.length ?? 0) > 0 || (workflow.pullRequests?.length ?? 0) > 0 || workflow.feedbackReview !== undefined || workflow.program !== undefined) return true;
+  if (workflow.decisions.some((decision) => SENT_BACK_FROM_CODE_REASONS.includes(decision.reason ?? ""))) return true;
+  return (await deps.actions.operations(task.workspaceId)).some((operation) => operation.kind === "publish" || (operation.kind === "task" && (operation.workflowMode === undefined || !PLANNING_MODES.has(operation.workflowMode))));
 }
 
 /** What a retry from a session tells the coder: the person's own words are not asked for. */
@@ -62,6 +91,11 @@ export function retryTaskWorkflowFor(deps: DeveloperTaskRouteDependencies, task:
 const CANCEL_PAYLOAD_HASH = hashJson({ action: "cancel" });
 
 export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
+  return { task: (await cancelTaskWithOutcome(deps, caller, taskId, value)).task };
+}
+
+/** The cancel and whether it found nothing to stop (the answer a session's Stop button needs: "Stop requested" is only true when something was running or was ended). */
+async function cancelTaskWithOutcome(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView; nothingRunning: boolean; message?: string }> {
   const request = parse(DeveloperTaskActionRequestSchema, value, deps, "cancel");
   const access = await authorizeLegacyTaskAction(deps, caller, taskId, "control");
   const { task } = access;
@@ -78,7 +112,7 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
     if (previous.payloadHash !== CANCEL_PAYLOAD_HASH) throw agentXError("IDEMPOTENCY_CONFLICT", "this request_id was already used for another action on this task; use a new request_id");
     return true;
   };
-  const current = async () => ({ task: await taskView(deps, task, { events: 0, details: false }) });
+  const current = async () => ({ task: await taskView(deps, task, { events: 0, details: false }), nothingRunning: false });
   // A repeated cancel answers with the task as it is now and writes nothing.
   if (await repeated()) return current();
   // Stop & redirect: a Stop pressed after a redirect wins; the redirect that is still stopping is ended so its restart never starts the step again (the redirect's own cancel is not a Stop).
@@ -91,6 +125,10 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
   }));
   let handled = false;
   let planReviewEnded = false;
+  // Set when the cancel found nothing running AND ended nothing either: a stop that did not stop anything.
+  let nothingRunning = false;
+  // Said to the person when the stop found a blocked task that only Close may end.
+  let message: string | undefined;
   const pointer = await get<DeveloperTaskPointerRecord>(deps, taskPointerKey(task.workspaceId));
   if (pointer?.pendingPrompt !== undefined) {
     // R16, P45: before the instructions run, removing them is the whole cancel. Only the pointer
@@ -170,20 +208,34 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
     // Fix for v0.4.6 staging: a session stopped while its plan waits for approval has nothing running to cancel, so the stop would answer 200 and leave the plan on offer. The
     // session actor's stop ends that step as a rejected plan does (the workflow closes complete and the task gives back its slot and workspace), in the same transaction as the
     // idempotency item so a repeat cannot find the cancel recorded and the plan still open. The task's own cancel route is unchanged.
-    const planReview = deps.sessionActor !== undefined && task.closedAt === undefined && task.workflow?.stage === "PLAN_REVIEW" && task.workflow.state === "WAITING" ? task.workflow : undefined;
+    // The same for a workflow that is BLOCKED at a plan stage (Understand, Plan, its critique, its review): when no code was ever written, ending it frees nothing but the slot and the empty
+    // workspace. A workflow blocked at any later stage (implement, verify, review, wait for merge) may hold commits that were never pushed, and so may one sent BACK to a plan stage after
+    // coding (Stop & redirect, a live message that revises the plan, a spec re-plan: the earlier code stays). Ending either would delete that code with no check and no owner test: that is
+    // the task's Close (which asks about unpublished work), never a Stop. Such a Stop closes nothing, releases nothing, and says so.
+    let planReview = deps.sessionActor !== undefined && task.closedAt === undefined && task.workflow !== undefined
+      && ((task.workflow.stage === "PLAN_REVIEW" && task.workflow.state === "WAITING") || (task.workflow.state === "BLOCKED" && PLAN_STAGES.has(task.workflow.stage))) ? task.workflow : undefined;
+    let blockedLater = deps.sessionActor !== undefined && task.closedAt === undefined && planReview === undefined && task.workflow?.state === "BLOCKED" ? BLOCKED_NOT_RUNNING : undefined;
+    if (outcome === "NOTHING_RUNNING" && planReview !== undefined && await mayHoldCode(deps, task, planReview)) {
+      blockedLater = planReview.state === "BLOCKED" ? BLOCKED_NOT_RUNNING : WAITING_NOT_RUNNING;
+      planReview = undefined;
+    }
     if (outcome === "NOTHING_RUNNING") {
       // R12's one exception (ruling F15): nothing ran, so there is no action transaction for the
       // record to join. It is written with the cancel's idempotency item in its own transaction.
       // A failed write is counted and logged, and never hides the answer.
       try {
         await deps.actions.transact([
-          marker, record(stoppedRevision ? "Stopped the automatic second planning run before it started." : planReview === undefined ? "Nothing was running." : "Stopped while the plan waited for approval."), accessFence(deps, access),
+          marker, record(stoppedRevision ? "Stopped the automatic second planning run before it started." : planReview === undefined ? (blockedLater === undefined ? "Nothing was running." : "Nothing was running: the task is blocked or waiting, and may hold code, so a Stop left it as it was.") : planReview.state === "BLOCKED" ? "Stopped while the work was blocked." : "Stopped while the plan waited for approval."), accessFence(deps, access),
           ...(planReview === undefined ? [] : [stopPlanReviewItem(deps.tableName, task.taskId, planReview, receivedAt)]),
         ]);
         planReviewEnded = planReview !== undefined;
+        nothingRunning = planReview === undefined && !stoppedRevision;
+        if (nothingRunning && blockedLater !== undefined) message = blockedLater;
       } catch (error) {
         if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "control");
         if (!isConditional(error)) turnRecordFailed(deps, error);
+        nothingRunning = !stoppedRevision;
+        if (nothingRunning && blockedLater !== undefined) message = blockedLater;
       }
     }
     // An agent-step run that waits (for a person, or between two steps) has nothing running for the cancel to stop: the run itself ends (Plan 3, Task 22).
@@ -191,6 +243,8 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
     if (outcome === "NOTHING_RUNNING" && task.agent !== undefined && task.workflow === undefined && deps.agentEngine !== undefined) {
       try {
         await cancelAgentRun(deps.agentEngine, task.taskId, "Cancelled by the person who started it.");
+        nothingRunning = false;
+        message = undefined;
       } catch (error) {
         log(deps, { event: "agent_run.cancel_failed", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
       }
@@ -200,17 +254,22 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
   if (planReviewEnded) await releaseFinishedTaskQuietly(deps, task.taskId);
   const view = await taskView(deps, task, { events: 0, details: false });
   await syncIndex(deps, task, view.status, view.updatedAt);
-  return { task: view };
+  return { task: view, nothingRunning, ...(message === undefined ? {} : { message }) };
 }
 
-/** The task update that ends a plan waiting for approval because its session was stopped: the workflow closes complete (the stage a rejected plan reaches) and no decision is offered. */
+/**
+ * The task update that ends a plan waiting for approval, or a blocked workflow, because its session was stopped: the workflow closes complete (the stage a rejected plan reaches) and no
+ * decision or retry is offered. The write is conditional on the revision, stage and state that were read.
+ */
 function stopPlanReviewItem(tableName: string, taskId: string, workflow: WorkflowSnapshot, now: string): TransactItems[number] {
-  const closed = WorkflowSnapshotSchema.parse({ ...workflow, revision: workflow.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED", updatedAt: now });
+  const { blockReason: _blockReason, ...rest } = workflow;
+  void _blockReason;
+  const closed = WorkflowSnapshotSchema.parse({ ...rest, revision: workflow.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED", updatedAt: now });
   return { Update: {
     TableName: tableName, Key: taskKey(taskId),
     UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
     ConditionExpression: "attribute_not_exists(closedAt) AND workflow.revision = :revision AND workflow.#stage = :review AND workflow.#state = :waiting",
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-    ExpressionAttributeValues: { ":workflow": closed, ":now": now, ":revision": workflow.revision, ":review": "PLAN_REVIEW", ":waiting": "WAITING" },
+    ExpressionAttributeValues: { ":workflow": closed, ":now": now, ":revision": workflow.revision, ":review": workflow.stage, ":waiting": workflow.state },
   } };
 }

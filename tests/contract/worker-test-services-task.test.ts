@@ -19,6 +19,10 @@ import { SEALED_ROUND_PORTS, TEST_SERVICES_USAGE_ARTIFACT, type TestServicesConf
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { fakeServicesDocker } from "../support/fake-services-docker.js";
 
+// The sandbox's --cpus and --memory follow the host (task-sandbox.ts: availableParallelism and totalmem), so the golden docker calls pin the host
+// these goldens were recorded on (18 CPUs, 48 GiB) instead of reading the machine the test runs on; a CI runner differs from the Mac.
+vi.mock("node:os", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), availableParallelism: () => 18, totalmem: () => 48 * 2 ** 30 }));
+
 const run = promisify(execFile);
 const IMAGE = `registry.example.test/agentx/worker@sha256:${"b".repeat(64)}`;
 const DIGEST = "a".repeat(64);

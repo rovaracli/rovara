@@ -51,7 +51,7 @@ import { releaseIfFinished } from "./terminal-and-github-events.js";
 import { askForPausedTask, blockEndedOperationKeys } from "./terminal-result.js";
 import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole, sharedThread, sharedThreadOpen, slackRequesterProjectAccess } from "./workspace-preparation.js";
 import { viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
-import { AuditEventInputSchema, auditEventId, canonicalJson } from "@agentx/contracts";
+import { AuditEventInputSchema, addDesignUsd, auditEventId, canonicalJson } from "@agentx/contracts";
 import { TaskFundingProofSchema, actualCompanyFunding, fundingAuditItems, fundingRevisionCheck } from "../../org/task-stop-funding.js";
 import { type TransactItem, failedIndexes, isTransactionConflict } from "../../agents/table-writes.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -63,6 +63,8 @@ import { SYSTEM_OWNER_REFUSAL, isSystemOwned } from "../../developer/system-owne
 import { requireTaskStopWindowContext, taskStopKeyActorChecks, withAdmittedTaskSource } from "../../org/task-stop-window.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { taskRecipeKey } from "../../developer/task-records.js";
+import { designReviewSlotOf, isSlotRefusal, resolveSlotAsk } from "./design-review-slot-access.js";
+import { plannerRunRoomUsd } from "../../design-review/resolve-budget.js";
 
 /**
  * Task 21's write gate runtime, built from Task 19's own pieces: what an approved write needs to be classified, re-granted and sent, long after the step's request
@@ -256,15 +258,20 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
     if(companyPolicy.sourceOrder!==undefined&&!companyPolicy.sourceOrder.includes("personal-chatgpt"))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/models/sources");
     if(companyPolicy.locked&&companyPolicy.model!==undefined&&(operation.model===undefined||canonicalModelName(companyPolicy.model)!==canonicalModelName(operation.model)))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/how-we-work");
   }
-  const liveRoute = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
+  // DR7: a design-review operation (one with a stored binding) is keyed by slot only, with a key limited to that slot's model. Any other operation is untouched by this.
+  const designSlot = designReviewSlotOf(operation, request.path);
+  const slotAsk = designSlot === undefined ? undefined : await resolveSlotAsk(dependencies, operation, designSlot);
+  const liveRoute = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined || slotAsk !== undefined ? undefined
     : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
   // SR-1: the key of a review that carries a second reviewer may also call the aliases the broker chose for it, and no others. An unscoped key (no route) stays unscoped.
-  const route = liveRoute === undefined || (operation.secondReviewPlan?.aliases ?? []).length === 0 ? liveRoute : { ...liveRoute, extraAliases: operation.secondReviewPlan!.aliases };
+  const route = slotAsk !== undefined ? slotAsk.route : liveRoute === undefined || (operation.secondReviewPlan?.aliases ?? []).length === 0 ? liveRoute : { ...liveRoute, extraAliases: operation.secondReviewPlan!.aliases };
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {
     const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
     if (current.fence !== claims.fence || TERMINAL.has(current.status) || current.id !== claims.operationId || current.workspaceId !== claims.workspaceId
       || current.entityType !== "OPERATION" || current.orgId !== operation.orgId || current.kind !== operation.kind
-      || canonicalJson({ route: current.modelRoute }) !== canonicalJson({ route: operation.modelRoute })) throw agentXError("STALE_FENCE", "The operation can no longer ask for model access.");
+      || canonicalJson({ route: current.modelRoute }) !== canonicalJson({ route: operation.modelRoute })
+      // DR7: the binding the slot was resolved from must still be the one stored.
+      || canonicalJson({ designReview: current.designReview }) !== canonicalJson({ designReview: operation.designReview })) throw agentXError("STALE_FENCE", "The operation can no longer ask for model access.");
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
     const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
     if ((current.spendingTaskId !== undefined || current.spendingAdmission !== undefined) && (pointer === undefined || task === undefined)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The admitted operation lost its task binding.");
@@ -339,9 +346,23 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
       const chainRun = payment === undefined || task.chain === undefined ? undefined
         : await unreadable("chain_run", () => getItem<{ chainId?: string }>(dependencies, chainRunKey(taskOrg, task.chain!.chainRunId, "META")));
       const chainTag = chainRun?.chainId === undefined || task.chain === undefined ? undefined : { chainId: chainRun.chainId, chainRunId: task.chain.chainRunId };
+      // B2-M1: the planner's resolve run for a design review is held to what is left under the review's cap (its measured spend is added to the review's total when it ends). No room, no key.
+      let plannerRoomUsd = plannerRunRoomUsd(task.workflow, current);
+      // ON-10: ONE budget for the whole run, not one per key. A key minted again for the same run first closes the run's earlier keys (the proxy counts what it had admitted) and is given the room less what they measured,
+      // so the keys together stay inside the cap. A meter or a block that cannot answer is the retryable answer: nothing is minted on a guess.
+      if (plannerRoomUsd !== undefined && (current.modelKeyIds ?? []).length > 0) {
+        const earlier = [...new Set(current.modelKeyIds)];
+        const spentSoFar = await unreadable("planner_earlier_keys", async () => {
+          for (const keyId of earlier) await modelAccess.access.blockKey(keyId);
+          return modelAccess.access.keySpend(earlier);
+        });
+        plannerRoomUsd = Math.max(0, addDesignUsd(plannerRoomUsd, -spentSoFar));
+      }
+      if (plannerRoomUsd !== undefined && !(plannerRoomUsd > 0)) throw agentXError("BUDGET_EXCEEDED", "The design review has no budget left for the planner's answer.");
       return {
         orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,
         ...(route === undefined ? {} : { route }),
+        ...(plannerRoomUsd === undefined ? {} : { budgetCeilingUsd: plannerRoomUsd }),
         ...(task.spendingStop === undefined ? {} : { guardRecord: items => [...guardModelKeyOperation(current, withAdmittedTaskSource(dependencies.tableName, task, items).items), ...keyAuthority] }),
         ...(funding === undefined ? {} : { taskStopExempt: true, guardRecord: (items: readonly TransactItem[]) => {
           const guarded = guardModelKeyOperation(current, [...items]), key = taskKey(task.taskId);
@@ -405,21 +426,28 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
   const ledger = ledgerOf(dependencies);
   let scope = await loadScope();
   if (scope === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
+  // DR7: a slot's key is ONE-SHOT: a slot that already has a key is refused (after every check above has run again), and fails closed.
+  await slotAsk?.claim();
   try {
     // Two attempts: a mint that races another for the same task finds the record changed under it, gives its key back and
     // counts again with the other's key included, so concurrent mints cannot each take the task's whole remainder.
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    // The slots of a round ask together and each records its key on the same task: a slot gets more tries than the one race an ordinary mint expects.
+    for (let attempt = 0; attempt < (slotAsk === undefined ? 2 : 5); attempt += 1) {
       if (attempt > 0) scope = await loadScope();
       if (scope === undefined) throw new Error("the operation lost its organisation");
       // Ruling R30 and Task 31: the key's cap is the least of what the run's limits, the step, the member, the org and every budget the task counts against
       // have left; it is reserved before it is handed out, and recorded on the task and the operation.
-      const minted = await mintOperationKey({ ...budgets, ledger }, { ...scope, ttlSeconds: MODEL_KEY_TTL_SECONDS, ...(attempt > 0 ? { keepEarlierKeys: true } : {}) });
-      if (minted.outcome === "minted") return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
+      const minted = await mintOperationKey({ ...budgets, ledger }, { ...scope, ttlSeconds: MODEL_KEY_TTL_SECONDS, ...(attempt > 0 ? { keepEarlierKeys: true } : {}), ...(slotAsk === undefined ? {} : await slotAsk.mintInput(scope)) });
+      if (minted.outcome === "minted") {
+        const answer = slotAsk === undefined ? { apiKey: minted.key, expiresAt: minted.expiresAt } : await slotAsk.keep(minted);
+        return json({ baseUrl: modelAccess.proxyUrl, apiKey: answer.apiKey, expiresAt: answer.expiresAt }, request.requestId);
+      }
     }
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   } catch (error) {
     // A spent budget is the member's to know about (402); every other failure is the proxy's, and says nothing of it.
     if (error instanceof AgentXError && ADMISSION_REFUSALS.has(error.code)) throw error;
+    if (isSlotRefusal(error)) throw error;
     console.log(JSON.stringify({ component: "broker", event: "model_access.mint_failed", operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }

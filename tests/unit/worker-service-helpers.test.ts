@@ -195,7 +195,7 @@ describe("the arguments of a helper (snapshot)", () => {
       "--network", runNetworkName(RUN), "--ip", "172.30.153.16", "--network-alias", "postgres",
       "--user", "999:999", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
       "--memory", "512m", "--memory-swap", "512m", "--cpus", "1", "--pids-limit", "256",
-      "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=1",
+      "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=1", "--log-opt", "compress=false",
       "--tmpfs", "/var/lib/postgresql/data:rw,nosuid,nodev,noexec,size=256m,uid=999,gid=999",
       "--tmpfs", "/run/postgresql:rw,nosuid,nodev,noexec,size=8m,uid=999,gid=999",
       "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=32m,uid=999,gid=999",

@@ -1,11 +1,17 @@
 // "How we work" (H2): `GET` and `PUT /v1/app/projects/{p}/playbook`. Anyone who can see the project reads it; the PUT needs `edit_settings` (a maintainer), as the project's code
 // settings do, and the revision the caller read. The project is found through `projectFor`, so another org's project and one the caller has no role in answer the same 404.
 import {
+  DESIGN_REVIEW_LOCKED_FIELDS,
   ProjectPlaybookBodySchema,
   agentXError,
+  designReviewSettingOf,
+  featureEnabled,
   projectAllows,
   type AgentId,
+  type EditionPolicy,
   type HowWeWorkView,
+  type OrgId,
+  type ProjectPlaybook,
   type ProjectPlaybookResponse,
   type ProjectRole,
 } from "@agentx/contracts";
@@ -14,9 +20,11 @@ import { assertStoredVersionModelsResolvable, pointerModelGuards } from "../agen
 import type { AuditRuntime, TransactItem } from "../audit/outbox.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
+import { designReviewEnabledFor } from "../design-review/switch.js";
+import { checkDesignReviewWrite, effectiveDesignReviewSetting, lockedFields, readDesignReviewLock, type DesignReviewLockRead } from "../design-review/lock.js";
 import { computeHowWeWork, type HowWeWorkDependencies } from "./effective.js";
 import { postProjectProcess } from "./process-layer.js";
-import { readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
+import { DESIGN_REVIEW_GROUP_EDITION, DESIGN_REVIEW_LOCKED, DESIGN_REVIEW_LOCK_UNREADABLE, readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
 import { registerPlaybookApprovals } from "./process-switch-approval.js";
 import { holdBuiltinSwitch, type SwitchAgentStore } from "./process-switch.js";
 import { requireProcessLayer } from "./project-process.js";
@@ -41,16 +49,47 @@ export interface ProjectPlaybookDependencies {
   audit?: AuditRuntime | undefined;
   /** The approvals: a switch back to the built-in that loses something waits for a second person (process-switch.ts). Absent where agents are not set up. */
   approvals?: ApprovalDependencies | undefined;
+  /**
+   * The install's edition policy. The design review setting may name a group as its high-risk approver only where the edition has groups (Enterprise); absent, groups are refused (fail closed).
+   * Wiring pending: the dependency builder (a hot file) passes the install's policy.
+   */
+  edition?: EditionPolicy | undefined;
+  /**
+   * Who may be named as the high-risk approver in a project: its maintainers and members whose role can approve, never an Auditor or a viewer. When present, a setting that names anyone else is refused
+   * (store). Wiring pending: the dependency builder (a hot file) passes it.
+   */
+  namedApproverCandidates?: ((orgId: OrgId, project: string) => Promise<readonly string[]>) | undefined;
   /** The caller's role in the project: the project's name, or the one `PROJECT_NOT_FOUND` for no access, no such project and another org's. */
   projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }>;
 }
 
 const MAINTAINERS_ONLY = "only a project maintainer can change how the project works";
 
+/**
+ * The playbook as a person is shown it, for GET and for the answer to PUT alike (money N7): the design review setting the project RUNS with, held to the company's lock, with the locked fields named. A lock that
+ * cannot be read (or a read that fails) is never "no lock". The stored document is untouched by this; a client that saves again sends only the fields it changed.
+ */
+async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, playbook: ProjectPlaybook, project: string): Promise<ProjectPlaybookResponse> {
+  // OFF reading (the safer one): where the design review does not run for this project (`dr` off, or the project not named in `dp`) the answer is exactly what it was before the stage existed: the playbook without a
+  // design review setting, no lock list and no groups flag. The stored setting is kept untouched; it shows again when the stage is on for the project.
+  if (!designReviewEnabledFor(project)) {
+    const { designReview: _kept, ...plain } = playbook;
+    void _kept;
+    return { playbook: plain };
+  }
+  const lock: DesignReviewLockRead = await readDesignReviewLock(deps, orgId).catch((): DesignReviewLockRead => ({ kind: "unreadable" }));
+  // Groups can be named as the high-risk approver only where the edition has them (Enterprise): the page offers the choice from this flag alone.
+  const groups = deps.edition !== undefined && featureEnabled(deps.edition, "groups") ? { designReviewGroups: true as const } : {};
+  // ON reading: the answer always carries the setting the project runs with (the owner's defaults where none is stored), so a client reads an absent `designReview` as "off" and shows no design review card.
+  if (lock.kind === "none") return { playbook: { ...playbook, designReview: designReviewSettingOf(playbook) }, ...groups };
+  const held = effectiveDesignReviewSetting(playbook, lock);
+  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewLocked: lock.kind === "lock" ? lockedFields(lock.lock) : [...DESIGN_REVIEW_LOCKED_FIELDS], ...groups };
+}
+
 /** `GET /v1/app/projects/{p}/playbook`: to anyone who can see the project. */
 export async function getProjectPlaybook(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, rawProject: string): Promise<ProjectPlaybookResponse> {
   const { name } = await deps.projectFor(caller, rawProject);
-  return { playbook: await readProjectPlaybook(deps, caller.orgId, name, { lenient: true }) };
+  return playbookView(deps, caller.orgId, await readProjectPlaybook(deps, caller.orgId, name, { lenient: true }), name);
 }
 
 /**
@@ -68,7 +107,21 @@ export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, call
     const path = issue === undefined || issue.path.length === 0 ? "body" : issue.path.join(".");
     throw agentXError("CONFIG_INVALID", `${path}: ${issue === undefined || issue.code === "unrecognized_keys" ? "has a field this route does not take" : issue.message}`);
   }
-  const { expectedRevision, defaultProcess } = parsed.data;
+  const { expectedRevision, defaultProcess, designReview } = parsed.data;
+  // Where the design review does not run for the project, the route takes no design review setting, as before the stage existed (the same words as any field it does not take).
+  if (designReview !== undefined && !designReviewEnabledFor(found.name)) throw agentXError("CONFIG_INVALID", "designReview: has a field this route does not take");
+  // A design review setting is held to the company's lock BEFORE anything is written: a project can never loosen it (a stricter value is fine). A lock that is there but unreadable refuses the write.
+  if (designReview !== undefined) {
+    const check = checkDesignReviewWrite(designReview, await readDesignReviewLock(deps, caller.orgId), deps.edition);
+    if (!check.ok) {
+      if (check.reason === "locked") throw agentXError("CONFIG_INVALID", `${check.fields.join(", ")}: ${DESIGN_REVIEW_LOCKED}`);
+      throw agentXError("CONFIG_INVALID", `designReview: ${check.reason === "group_not_available" ? DESIGN_REVIEW_GROUP_EDITION : DESIGN_REVIEW_LOCK_UNREADABLE}`);
+    }
+  }
+  // A switch back to the built-in can wait for a second person (below), and what waits is only the switch: a design review setting riding on it would be lost. Said at once, nothing is written or opened.
+  if (designReview !== undefined && defaultProcess.kind === "builtin" && (await readProjectPlaybook(deps, caller.orgId, found.name, { lenient: true })).defaultProcess.kind !== "builtin") {
+    throw agentXError("CONFIG_INVALID", "designReview: change the process first, then save the design review setting");
+  }
   let ifLayer: { agentId: AgentId; version: number } | undefined;
   let guards: readonly TransactItem[] | undefined;
   if (defaultProcess.kind === "project_process") {
@@ -83,8 +136,8 @@ export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, call
     if (decision.held !== undefined) return decision.held;
     ifLayer = decision.ifLayer;
   }
-  const playbook = await writeProjectPlaybook(deps, { orgId: caller.orgId, project: found.name, developerId: caller.developerId, expectedRevision, defaultProcess, ...(ifLayer === undefined ? {} : { ifLayer }), ...(guards === undefined ? {} : { guards }) });
-  return new StatusReply(200, { playbook } satisfies ProjectPlaybookResponse);
+  const playbook = await writeProjectPlaybook(deps, { orgId: caller.orgId, project: found.name, developerId: caller.developerId, expectedRevision, defaultProcess, ...(designReview === undefined ? {} : { designReview }), ...(ifLayer === undefined ? {} : { ifLayer }), ...(guards === undefined ? {} : { guards }) });
+  return new StatusReply(200, await playbookView(deps, caller.orgId, playbook, found.name) satisfies ProjectPlaybookResponse);
 }
 
 /** `POST /v1/app/projects/{p}/playbook/process`: 200 with the project's process layer (made now, or the one it already had). */

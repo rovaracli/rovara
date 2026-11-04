@@ -12,6 +12,7 @@ import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
   AgentPrincipalSchema,
+  ENDED_SESSION_STATUSES,
   OrgRoleSchema,
   isWriterOrgRole,
   SessionIdSchema,
@@ -406,7 +407,7 @@ const BLOCKED_STATUSES: readonly SessionStatus[] = ["needs_person", "paused"];
  * What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, takes over and shares, and retries a session that failed or was
  * cancelled, or whose workflow is blocked (`state` is the session's summary now). Handing off is the owner's.
  */
-export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined }): SessionAction[] {
+export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined; closable?: true | undefined }): SessionAction[] {
   if (access.level === "none") return [];
   if (!access.owner && access.projectRole === "viewer") return ["watch"];
   const actions: SessionAction[] = ["watch", "comment"];
@@ -418,5 +419,13 @@ export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" 
   }
   if (access.orgAdmin && !actions.includes("stop")) actions.push("stop");
   if (access.owner) actions.push("handoff");
+  // Close is the task owner's (the route checks that on the task), and only where it has a task to close.
+  if (access.owner && state.closable === true) actions.push("close");
   return actions;
+}
+
+/** Whether a session has a cloud task still open to close: a task session that has not ended (a chain run, a session on a Mac and an ended session have none). */
+export function closableSession(session: Pick<AgentSessionRecord, "subject" | "kind" | "where" | "endedAt" | "summary">): true | undefined {
+  if (session.subject.kind !== "task" || session.kind === "local" || session.where.kind !== "cloud" || session.endedAt !== undefined) return undefined;
+  return (ENDED_SESSION_STATUSES as readonly string[]).includes(session.summary.status) ? undefined : true;
 }

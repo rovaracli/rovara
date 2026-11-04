@@ -279,7 +279,7 @@ export function createSlackIngressHandler(dependencies: SlackIngressDependencies
     );
     const secrets = await dependencies.secrets();
     if (!validSignature(secrets.signingSecret, headers["x-slack-request-timestamp"], headers["x-slack-signature"], rawBody, now())) {
-      log("request.rejected", { reason: "invalid_signature" });
+      log("request.rejected", { reason: "invalid_signature", ...unverifiedRequestFacts(rawBody, headers, now()) });
       return respond(401, { error: "invalid Slack signature" });
     }
     let payload: Record<string, unknown>;
@@ -578,6 +578,44 @@ async function queueRequest(
     await post(dependencies, log, thread, "Got it. I'm on it and will reply in this thread.");
   }
   return respond(200, { ok: true });
+}
+
+/** A Slack id read from a request nobody has verified: kept only when it is, whole, 1 to 32 characters of A-Z and 0-9 (the first 32 of anything longer are looked at, so a long value is dropped, not cut). */
+function unverifiedSlackId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const head = value.slice(0, 33);
+  return /^[A-Z0-9]{1,32}$/.test(head) ? head : undefined;
+}
+
+/**
+ * What a rejected request may say about itself in the log, to tell a wrong signing secret from a replay or a clock that is off: the app and team ids the body claims (read only when the body
+ * is JSON or a form, and NOT verified, so only short upper-case ids are kept), Slack's retry number, and the seconds between our clock and the request's timestamp (ours minus theirs).
+ * The body, the signature and the timestamp header text are never logged.
+ */
+export function unverifiedRequestFacts(rawBody: string, headers: Readonly<Record<string, string | undefined>>, nowMilliseconds: number): Record<string, string | number> {
+  const facts: Record<string, string | number> = {};
+  let claimed: { api_app_id?: unknown; team_id?: unknown } = {};
+  const trimmed = rawBody.trimStart();
+  try {
+    if (trimmed.startsWith("{")) {
+      const parsed: unknown = JSON.parse(rawBody);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) claimed = parsed;
+    } else if (rawBody.includes("=")) {
+      const form = new URLSearchParams(rawBody);
+      claimed = { api_app_id: form.get("api_app_id") ?? undefined, team_id: form.get("team_id") ?? undefined };
+    }
+  } catch {
+    // Not JSON after all: no ids.
+  }
+  const appId = unverifiedSlackId(claimed.api_app_id);
+  const teamId = unverifiedSlackId(claimed.team_id);
+  if (appId !== undefined) facts.unverifiedApiAppId = appId;
+  if (teamId !== undefined) facts.unverifiedTeamId = teamId;
+  const retry = headers["x-slack-retry-num"];
+  if (retry !== undefined && /^\d{1,3}$/.test(retry)) facts.slackRetryNum = Number(retry);
+  const timestamp = headers["x-slack-request-timestamp"];
+  if (timestamp !== undefined && /^\d{1,12}$/.test(timestamp)) facts.clockSkewSeconds = Math.floor(nowMilliseconds / 1_000) - Number(timestamp);
+  return facts;
 }
 
 export function validSignature(

@@ -81,7 +81,8 @@ export function dynamoDecisionStore(deps: DynamoDecisionStoreDependencies): Deci
       const kind = text("kind"), risk = text("risk"), cardId = text("cardId"), createdAt = text("createdAt"), decidedAt = text("decidedAt");
       if ((outcome !== "approved" && outcome !== "rejected") || kind === undefined || risk === undefined || cardId === undefined || createdAt === undefined || decidedAt === undefined) return undefined;
       const tab = text("tab");
-      return { orgId: who.orgId, developerId: who.developerId, cardId, kind: kind as DecisionKind, risk: risk as DecisionRisk, outcome, requestId, createdAt, decidedAt, ...(tab === "requirements" || tab === "design" ? { tab } : {}) };
+      const reason = text("reason");
+      return { orgId: who.orgId, developerId: who.developerId, cardId, kind: kind as DecisionKind, risk: risk as DecisionRisk, outcome, requestId, createdAt, decidedAt, ...(reason === undefined ? {} : { reason }), ...(tab === "requirements" || tab === "design" ? { tab } : {}) };
     },
     async recordDecision(record) {
       try {

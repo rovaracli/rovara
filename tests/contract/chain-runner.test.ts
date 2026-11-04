@@ -607,7 +607,7 @@ describe("startChainRun refusals", () => {
   it("says an archived chain can't start runs, and a chain with no published version the same way", async () => {
     const w = setupWorld();
     const chain = await w.publish(ONE_STEP, { name: "Triage" });
-    await w.chains.archive(ORG_A, chain.chainId, PRIYA);
+    await w.chains.archive(ORG_A, chain.chainId, PRIYA, undefined, { actor: fixtureActor(w.chains, ORG_A, PRIYA) });
     expect(await fail(startAs(w, PRIYA, chain.chainId))).toEqual({ code: "CHAIN_UNAVAILABLE", message: "Triage is archived, so it can't start new runs." });
     const draft = await w.chains.create({ orgId: ORG_A, name: "Draft only", owner: { kind: "member", developerId: PRIYA }, definition: ONE_STEP, createdBy: PRIYA });
     expect(await fail(startAs(w, PRIYA, draft.chainId))).toEqual({ code: "CHAIN_UNAVAILABLE", message: "Draft only has no published version yet, so it can't start new runs." });
@@ -630,7 +630,7 @@ describe("startChainRun refusals", () => {
     const w = setupWorld();
     const reviewer = await w.customAgent("Reviewer", PRIYA);
     const chain = await w.publish({ ...TWO_STEPS, steps: [TWO_STEPS.steps[0]!, agentStep("review", "Review it", reviewer.agentId, { kind: "end" })] }, { name: "Triage" });
-    await w.agents.archive(ORG_A, reviewer.agentId, PRIYA);
+    await w.agents.archive(ORG_A, reviewer.agentId, PRIYA, undefined, { actor: fixtureActor(w.agents, ORG_A, PRIYA) });
     expect(await fail(startAs(w, PRIYA, chain.chainId))).toEqual({
       code: "CHAIN_UNAVAILABLE",
       message: "Triage's step \"Review it\" uses Reviewer version 1, which can't run now: Reviewer is archived, so it can't start new work. Ask Triage's owner to publish a new version.",
@@ -643,7 +643,7 @@ describe("startChainRun refusals", () => {
     const reviewer = await w.customAgent("Reviewer", DANA);
     const chain = await w.publish({ ...TWO_STEPS, steps: [TWO_STEPS.steps[0]!, agentStep("review", "Review it", reviewer.agentId, { kind: "end" })] }, { name: "Triage", owner: { kind: "member", developerId: DANA }, by: DANA });
     await setChainShares({ ...w.deps, store: w.chains }, { orgId: ORG_A, chainId: chain.chainId, shares: [{ principal: { kind: "member", developerId: PRIYA }, level: "use" }], by: DANA });
-    await w.agents.archive(ORG_A, reviewer.agentId, DANA);
+    await w.agents.archive(ORG_A, reviewer.agentId, DANA, undefined, { actor: fixtureActor(w.agents, ORG_A, DANA) });
     expect(await fail(startAs(w, PRIYA, chain.chainId))).toMatchObject({ code: "CHAIN_UNAVAILABLE", message: expect.stringContaining("Reviewer is archived") as string });
   });
 
@@ -834,7 +834,7 @@ describe("startChainRun replays (R18)", () => {
     const requestId = randomUUID();
     const first = await startAs(w, PRIYA, chain.chainId, { requestId });
     await endTask(w, "task-1", { finalReport: "done" });
-    await w.chains.archive(ORG_A, chain.chainId, PRIYA);
+    await w.chains.archive(ORG_A, chain.chainId, PRIYA, undefined, { actor: fixtureActor(w.chains, ORG_A, PRIYA) });
     const again = await startAs(w, PRIYA, chain.chainId, { requestId });
     expect(again.runId).toBe(first.runId);
     expect(again.status).toBe("succeeded");
@@ -1717,7 +1717,7 @@ describe("a change that lands between a read and the write is never overwritten"
   it("says the chain is archived when it was archived between the checks and the write", async () => {
     const w = setupWorld();
     const chain = await w.publish(ONE_STEP, { name: "Triage" });
-    w.beforeTransaction("CHAIN_RUN", async () => { await w.chains.archive(ORG_A, chain.chainId, PRIYA); });
+    w.beforeTransaction("CHAIN_RUN", async () => { await w.chains.archive(ORG_A, chain.chainId, PRIYA, undefined, { actor: fixtureActor(w.chains, ORG_A, PRIYA) }); });
     expect(await fail(startAs(w, PRIYA, chain.chainId))).toEqual({ code: "CHAIN_UNAVAILABLE", message: "Triage is archived, so it can't start new runs." });
     expect(w.db.find((item) => item.entityType === "CHAIN_RUN")).toEqual([]);
   });
@@ -2063,7 +2063,7 @@ describe("startChainRun: the rest of the checks", () => {
     const w = setupWorld();
     const chain = await w.publish(ONE_STEP, { name: "Triage", owner: { kind: "member", developerId: DANA }, by: DANA });
     await setChainShares({ ...w.deps, store: w.chains }, { orgId: ORG_A, chainId: chain.chainId, shares: [{ principal: { kind: "member", developerId: PRIYA }, level: "use" }], by: DANA });
-    await w.chains.archive(ORG_A, chain.chainId, DANA);
+    await w.chains.archive(ORG_A, chain.chainId, DANA, undefined, { actor: fixtureActor(w.chains, ORG_A, DANA) });
     expect(await fail(startAs(w, PRIYA, chain.chainId))).toEqual({ code: "CHAIN_UNAVAILABLE", message: "Triage is archived, so it can't start new runs." });
   });
 

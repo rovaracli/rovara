@@ -157,7 +157,7 @@ export async function sessionControl(deps: DeveloperSessionDeps, env: string | u
   const answer = await appRequest(deps, env, sessionPath(id, `/${action}`), { method: "POST", body: { requestId: randomUUID() } });
   const view = (answer.body.session ?? {}) as Body;
   const fresh = typeof view.sessionId === "string" && view.sessionId !== id;
-  const first = action === "stop" ? "Stop requested." : fresh ? "Started a new session." : "Retrying.";
+  const first = action === "stop" ? (answer.body.stop === "NOTHING_RUNNING" ? (typeof answer.body.message === "string" && answer.body.message !== "" ? answer.body.message : "Nothing was running to stop.") : "Stop requested.") : fresh ? "Started a new session." : "Retrying.";
   return result(answer, answer.body, `${[first, ...headline(answer.url, view, id)].join("\n")}\n`);
 }
 

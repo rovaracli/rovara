@@ -6,8 +6,8 @@ import { chainRunViewOf } from "../support/chain-run-view.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { agentSessionKey, agentXError, changesKey, runRequestKey, sessionChannel, sessionEventId, userChannel, type OrgId, type Payer } from "@agentx/contracts";
-import { SessionResponseReaderSchema, SessionEventSchema } from "../../packages/contracts/src/index.js";
-import { stopSession, type ChainControl, type SessionControlHost } from "../../packages/broker/src/agent-sessions/stop.js";
+import { SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionEventSchema } from "../../packages/contracts/src/index.js";
+import { closeSession, stopSession, type ChainControl, type SessionControlHost } from "../../packages/broker/src/agent-sessions/stop.js";
 import { RUN_RECORD_MEMORY_DAYS } from "../../packages/broker/src/agents/runs.js";
 import { retryRunRequestId, retrySession } from "../../packages/broker/src/agent-sessions/retry.js";
 import type { SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
@@ -28,14 +28,15 @@ function world(options: { audit?: boolean } = {}) {
   const w = sessionWorld();
   const audit = options.audit === true ? capturingAuditDeps({ db: w.db, now: () => w.clock.now }) : undefined;
   const calls = {
-    cancel: [] as Array<{ taskId: string; requestId: string }>, workflow: [] as Array<{ taskId: string; requestId: string }>, start: [] as Array<Record<string, unknown>>,
+    cancel: [] as Array<{ taskId: string; requestId: string }>, workflow: [] as Array<{ taskId: string; requestId: string }>, close: [] as Array<{ taskId: string; requestId: string; discardUnpublished: boolean }>, start: [] as Array<Record<string, unknown>>,
     chainCancel: [] as Array<{ orgId: string; actor: unknown; runId: string; requestId: string }>, chainRetry: [] as Array<{ orgId: string; actor: unknown; runId: string; requestId: string }>,
     admissions: [] as Array<{ payer: Payer; project: string }>, paths: [] as string[], published: [] as Array<{ channel: string; events: string[] }>,
   };
-  const live = { budgetRefusal: undefined as string | undefined, startFailure: undefined as Error | undefined, cancelFailure: undefined as Error | undefined };
+  const live = { budgetRefusal: undefined as string | undefined, startFailure: undefined as Error | undefined, cancelFailure: undefined as Error | undefined, nothingRunning: false, closeAnswer: { closed: true } as { closed: boolean; unpublished?: Array<{ repository: string; reasons: string[] }>; message?: string } };
   const started = new Map<string, StartedRun>();
   const control: SessionControlHost = {
-    cancelTask: async (task, requestId) => { calls.cancel.push({ taskId: task.taskId, requestId }); if (live.cancelFailure !== undefined) throw live.cancelFailure; },
+    cancelTask: async (task, requestId) => { calls.cancel.push({ taskId: task.taskId, requestId }); if (live.cancelFailure !== undefined) throw live.cancelFailure; return { nothingRunning: live.nothingRunning }; },
+    closeTask: async (task, input) => { calls.close.push({ taskId: task.taskId, ...input }); return live.closeAnswer; },
     retryWorkflow: async (task, requestId) => { calls.workflow.push({ taskId: task.taskId, requestId }); },
     // Plan 3's start, as far as a retry sees it: one run per request id, another owner's use of the id is a conflict, and the start writes the new task and its session.
     startAgentRun: async (request) => {
@@ -82,6 +83,7 @@ function world(options: { audit?: boolean } = {}) {
   const patchTask = (taskId: string, fields: Record<string, unknown>) => w.db.set({ ...taskOf(taskId), ...fields });
   const patchSession = (sessionId: string, fields: Record<string, unknown>) => w.db.set({ ...meta(sessionId), ...fields });
   const stop = (who: string, sessionId: string, requestId: string = randomUUID(), orgId: OrgId = ORG_A) => stopSession(deps, w.caller(who, orgId), sessionId, { requestId });
+  const close = (who: string, sessionId: string, body: Record<string, unknown> = { requestId: randomUUID() }, orgId: OrgId = ORG_A) => closeSession(deps, w.caller(who, orgId), sessionId, body);
   const retry = (who: string, sessionId: string, requestId: string = randomUUID(), orgId: OrgId = ORG_A) => retrySession(deps, w.caller(who, orgId), sessionId, { requestId });
   /** A Rovara Code task whose workflow is blocked, with the people who may act: Max holds a maintainer grant. */
   const blocked = () => {
@@ -107,8 +109,36 @@ function world(options: { audit?: boolean } = {}) {
     return seeded;
   };
   const feed = (developerId: string) => w.db.find((item) => item.pk === changesKey(ORG_A, developerId, "2026-10-22T09:00:00.000Z", 0).pk);
-  return { ...w, audit, calls, live, started, control, deps, events, eventTexts, meta, taskOf, patchTask, patchSession, stop, retry, blocked, agentRun, feed };
+  return { ...w, audit, calls, live, started, control, deps, events, eventTexts, meta, taskOf, patchTask, patchSession, stop, close, retry, blocked, agentRun, feed };
 }
+
+describe("closing a session's task", () => {
+  it("asks the task's own close with the request id, and passes the person's answer about unpublished work on only when they gave it", async () => {
+    const w = world();
+    const { sessionId, taskId } = w.blocked();
+    const first = randomUUID();
+    const reply = await w.close(MAX, sessionId, { requestId: first });
+    expect(SessionCloseResponseReaderSchema.safeParse(reply).success).toBe(true);
+    expect(reply).toMatchObject({ closed: true, session: { sessionId } });
+    expect(w.calls.close).toEqual([{ taskId, requestId: first, discardUnpublished: false }]);
+    w.live.closeAnswer = { closed: false, unpublished: [{ repository: "demo", reasons: ["worktree_changes"] }], message: "not closed" };
+    expect(await w.close(MAX, sessionId)).toMatchObject({ closed: false, unpublished: [{ repository: "demo", reasons: ["worktree_changes"] }], message: "not closed" });
+    const discard = randomUUID();
+    await w.close(MAX, sessionId, { requestId: discard, discardUnpublished: true });
+    expect(w.calls.close.at(-1)).toEqual({ taskId, requestId: discard, discardUnpublished: true });
+  });
+
+  it("needs 'can edit' on the session, and refuses a body it does not take, a bad request id and a chain run, before the task is asked", async () => {
+    const w = world();
+    const { sessionId } = w.blocked();
+    expect(await code(w.close(OLA, sessionId))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(await code(w.close(MAX, sessionId, { requestId: randomUUID(), extra: true }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(w.close(MAX, sessionId, { requestId: "not-a-uuid" }))).toMatchObject({ code: "CONFIG_INVALID" });
+    const chain = w.seedSession({ kind: "chain", owner: PRIYA });
+    expect(await code(w.close(MAX, chain.sessionId))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.calls.close).toEqual([]);
+  });
+});
 
 describe("stopping a session", () => {
   it("cancels the task through Plan 3, leaves the session open, writes the exact event and the request, and answers the session", async () => {
@@ -159,6 +189,20 @@ describe("stopping a session", () => {
     expect(again.session.sessionId).toBe(sessionId);
     // The same id for a retry is another action.
     expect(await code(w.retry(MAX, sessionId, requestId))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+  });
+
+  it("says NOTHING_RUNNING in the answer when the cancel found nothing to stop, and answers the same to a repeat of the request; a stop that stopped something says nothing of the kind", async () => {
+    const w = world();
+    const { sessionId } = w.blocked();
+    const requestId = randomUUID();
+    expect((await w.stop(MAX, sessionId, randomUUID())).stop).toBeUndefined();
+    w.live.nothingRunning = true;
+    const idle = await w.stop(MAX, sessionId, requestId);
+    expect(idle.stop).toBe("NOTHING_RUNNING");
+    expect(SessionResponseReaderSchema.safeParse(idle).success).toBe(true);
+    const again = await w.stop(MAX, sessionId, requestId);
+    expect(again.stop).toBe("NOTHING_RUNNING");
+    expect(w.calls.cancel).toHaveLength(2);
   });
 
   it("answers a repeat after the stop ended the session with the stored answer, and a new request on an ended session with SESSION_ENDED", async () => {

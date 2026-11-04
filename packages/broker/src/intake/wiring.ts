@@ -12,6 +12,7 @@ import type { AgentRunStarter } from "../agents/runs.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { memberForGithubUser } from "../rovara-code/github-members.js";
+import { designFirstRequestOf, markDesignFirst } from "../design-review/design-first.js";
 import { startCodeIntent, type CodeIntentDependencies } from "../rovara-code/intent.js";
 import type { IntakePorts } from "./engine.js";
 
@@ -64,7 +65,11 @@ export function intakePortsOf(wiring: IntakeWiring): IntakePorts {
     start: async (orgId, developerId, request: CodeIntentRequest) => {
       const caller = await wiring.starter.callerFor(orgId, developerId);
       if (caller === undefined) throw agentXError("FORBIDDEN", "The person this run is for isn't a member of the organization.");
-      return startCodeIntent(wiring.intentDependenciesFor(caller), caller, request);
+      // `design first:` at the start of the ticket's text (DR11): the prefix is the person's ask, not part of the request; it is recorded on the task once it exists.
+      const first = request.input.text === undefined ? { designFirst: false, rest: "" } : designFirstRequestOf(request.project, request.input.text);
+      const started = await startCodeIntent(wiring.intentDependenciesFor(caller), caller, first.designFirst ? { ...request, input: { ...request.input, text: first.rest } } : request);
+      if (first.designFirst) await markDesignFirst(table, started.task.taskId, developerId);
+      return started;
     },
     sessionOfTicket: async (orgId, binding) => {
       const session = await sessionForSurface(table, orgId, binding);

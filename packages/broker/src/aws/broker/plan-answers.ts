@@ -1,9 +1,12 @@
 // Part of the broker (split out of ../broker.ts): plan critique, plan answers, CI checks and planner replies.
 
 import { criticFailures } from "../../model-selection/task-failures.js";
+import { designReviewOutcome } from "../../design-review/outcome.js";
+import { storeDesignTemplate } from "../../design-review/template-store.js";
+import { designTemplateRetryPrompt } from "../../design-review/template.js";
 import { createHash } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { submitWorkflowArtifact, submitPlanCritique, closePlanCritique, retryPlanCritique, readPlanCritique, parsePlanDocument, planAnswerMissingParts, withCiChecks, groundingScenarioIds, parseCommentAnswers, commentRefInAuthor, commentIdInAuthor, COMMENT_AUTHOR_PREFIX, UNPLACED_COMMENT_AUTHOR, plainPageRefs, type PlanQualityFinding, type CommentAnswer, type PlanClaim, type WorkflowDecisionDetail, retiredClaimIds, canonicalPlanJson, type PlanDocument, type PlanEvidenceBundle, blockWorkflow, WorkflowSnapshotSchema, validateTaskGraph, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_BLOCK_REASONS, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type OperationStatus, type WorkflowSnapshot, WORKFLOW_PLAN_MAX_BYTES, PLAN_DRY_RUN_FEATURE, type PlanDryRunClass, ROVARA_CODE_AGENT_ID, type RunEstimate } from "@agentx/contracts";
+import { submitWorkflowArtifact, submitPlanCritique, closePlanCritique, retryPlanCritique, readPlanCritique, parsePlanDocument, planAnswerMissingParts, withCiChecks, groundingScenarioIds, parseCommentAnswers, commentRefInAuthor, commentIdInAuthor, COMMENT_AUTHOR_PREFIX, UNPLACED_COMMENT_AUTHOR, plainPageRefs, type PlanQualityFinding, type CommentAnswer, type PlanClaim, type WorkflowDecisionDetail, retiredClaimIds, canonicalPlanJson, type PlanDocument, type PlanEvidenceBundle, blockWorkflow, WorkflowSnapshotSchema, validateTaskGraph, workflowIsDesignReviewing, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_BLOCK_REASONS, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type OperationStatus, type WorkflowSnapshot, WORKFLOW_PLAN_MAX_BYTES, PLAN_DRY_RUN_FEATURE, type PlanDryRunClass, ROVARA_CODE_AGENT_ID, type RunEstimate } from "@agentx/contracts";
 import { queryAllItems } from "../admin-reads.js";
 import { decisionComments, pageCommentsPrompt, promptComments, readDecisionDetail } from "../../developer/owner-answers.js";
 import { writePlannerReplies } from "../../developer/page-comments.js";
@@ -58,8 +61,12 @@ const PLAN_CRITIQUE_ANSWER_MAX_BYTES = 65_536;
  */
 export async function planCritiqueOutcome(
   dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }, operation: OperationRecord, terminalStatus: OperationStatus, terminalError: string | undefined, now: string,
+  /** Design review (B-M2): collects the Delete items that release the round's packets with the commit that records it. */
+  release?: unknown[],
 ): Promise<WorkflowSnapshot> {
   const workflow = task.workflow;
+  // Design review (switch `dr`, off: no task has one): the design form of this stage ends with its own moves, which the plan check's would refuse.
+  if (workflowIsDesignReviewing(workflow)) return designReviewOutcome(dependencies, task, operation, terminalStatus, terminalError, now, undefined, release);
   // The check is advice: whatever goes wrong with it, the plan goes on to the person, who is told it was not checked (or that the check stopped at a limit).
   if (terminalStatus !== "SUCCEEDED") {
     if (terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE) {
@@ -175,6 +182,15 @@ export async function storePlanAnswer(
   const answer = await dependencies.s3.send(new GetObjectCommand({ Bucket: dependencies.artifactBucketName, Key: String(artifact.objectKey), Range: `bytes=0-${WORKFLOW_PLAN_MAX_BYTES}` }));
   const content = answer.Body ? await answer.Body.transformToString("utf8") : "";
   if (Buffer.byteLength(content, "utf8") > WORKFLOW_PLAN_MAX_BYTES) return unreadable(["the answer is too long"]);
+  // Design review (off: no task has a `designReview`): the DESIGN phase wrote the Rovara template, read strictly and stored as Markdown; one that does not read is asked for again (or blocks), as an unreadable plan is.
+  if (artifactType === "design" && workflow.designReview !== undefined) {
+    const stored = await storeDesignTemplate({
+      workflow, ownerKey: task.ownerKey, workspaceId: task.workspaceId, artifact: { id: String(artifact.id), createdAt: String(artifact.createdAt) }, content, now,
+      put: async (key, body) => { await dependencies.s3.send(new PutObjectCommand({ Bucket: dependencies.artifactBucketName, Key: key, Body: body, ContentType: "text/markdown; charset=utf-8" })); },
+    });
+    if (!stored.ok) return revisionLeft ? askAgain(designTemplateRetryPrompt(stored.errors)) : unreadable(stored.errors);
+    return { next: stored.next, planUnreadable: null };
+  }
 
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   // Claim numbers an earlier structured document of this task had and its latest dropped may not come back. A document

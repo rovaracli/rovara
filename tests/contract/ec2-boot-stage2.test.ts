@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ec2WorkerBootScript, type Ec2WorkerBootConfig } from "../../packages/contracts/src/session.js";
 
 // Task 10: a named environment's boot is two files. boot.sh is user data and stops after it pulls the worker image; the rest, boot-stage2.sh, is
@@ -227,6 +227,20 @@ case "$op" in
 esac
 `,
   // Runs the transient unit's command in the background, as systemd would, so the failure responder can be asked for /ping.
+  // ip6tables as an AL2023 host has it (iptables-nft): INPUT is a built-in chain, so -S INPUT answers; Docker made no IPv6 DOCKER-USER chain here (no ip6tables in its daemon settings), so -S DOCKER-USER fails as "no chain".
+  // IP6T_UNUSABLE=1 is an ip6tables that is on PATH but cannot list the filter table (no kernel support, no permission): every call fails.
+  // Without this fake the runner's real /usr/sbin/ip6tables (non-root: permission denied) would be found, and the boot would fall through to the host's real IPv6 state.
+  ip6tables: `#!/bin/bash
+echo "ip6tables $*" >>"$LOG"
+[[ -z "\${IP6T_UNUSABLE:-}" ]] || { echo "ip6tables v1.8.8 (nf_tables): Could not fetch rule set generation id: Permission denied" >&2; exit 4; }
+op=$1; shift
+case "$op" in
+  -C) grep -qxF -- "$*" "$IP6T_STATE" ;;
+  -I) { printf '%s\\n' "$*"; cat "$IP6T_STATE"; } >"$IP6T_STATE.new"; mv "$IP6T_STATE.new" "$IP6T_STATE" ;;
+  -S) [ "$1" = INPUT ] || { echo "ip6tables: No chain/target/match by that name." >&2; exit 1; }; echo "-P INPUT ACCEPT"; sed 's/^/-A /' "$IP6T_STATE"; exit 0 ;;
+  *) exit 0 ;;
+esac
+`,
   "systemd-run": `#!/bin/bash
 options=""
 while [[ "$1" == --* ]]; do options="$options $1"; shift; done
@@ -284,11 +298,15 @@ function liveResponders(dirs: string[]): number[] {
 function reapResponders(dirs: string[], pidFiles: string[]): number[] {
   // The pid file lives in the run's directory, so it has to be read before the directory is removed.
   for (const pidFile of pidFiles) {
-    try { process.kill(Number(readFileSync(pidFile, "utf8").trim())); } catch { /* never started, or already gone */ }
+    try {
+      // An empty pid file reads as 0, and kill(0) signals the whole process group (the test runner included); 1 is init. Only a real child's pid is signalled.
+      const pid = Number(readFileSync(pidFile, "utf8").trim());
+      if (Number.isInteger(pid) && pid > 1) process.kill(pid);
+    } catch { /* never started, or already gone */ }
   }
   const found = liveResponders(dirs);
   for (const pid of found) {
-    try { process.kill(pid, "SIGKILL"); } catch { /* gone already */ }
+    try { if (Number.isInteger(pid) && pid > 1) process.kill(pid, "SIGKILL"); } catch { /* gone already */ }
   }
   return found;
 }
@@ -339,12 +357,38 @@ interface Run {
  * Runs boot.sh, as cloud-init would run the rendered user data, with the worker image holding `served(directory)` as its boot-stage2.sh.
  * `expected` is the hash the control plane launched the worker with; by default, that of what the image holds.
  */
-async function boot(options: { served: (directory: string) => string; expected?: string; cpFails?: boolean; noHash?: boolean; cpLinks?: boolean; flushOnRestart?: boolean; firewallRestores?: boolean; firewallRule?: string }): Promise<Run> {
+async function boot(options: { served: (directory: string) => string; expected?: string; cpFails?: boolean; noHash?: boolean; cpLinks?: boolean; flushOnRestart?: boolean; firewallRestores?: boolean; firewallRule?: string;
+  /** "usable" (the default, as on AL2023), "unusable" (on PATH, every call fails) or "missing" (on no PATH directory at all). */
+  ip6tables?: "usable" | "unusable" | "missing";
+  /** The host's IPv6, as the fake /proc under the run's directory shows it: on by default (an AL2023 worker has it on). The real /proc is never read. */
+  ipv6?: boolean }): Promise<Run> {
   const directory = mkdtempSync(join(tmpdir(), "boot-stage2-"));
   directories.push(directory);
   const bin = join(directory, "bin");
   mkdirSync(bin);
-  for (const [name, body] of Object.entries(FAKES)) { writeFileSync(join(bin, name), body); chmodSync(join(bin, name), 0o755); }
+  const ip6tables = options.ip6tables ?? "usable";
+  for (const [name, body] of Object.entries(FAKES)) {
+    if (name === "ip6tables" && ip6tables === "missing") continue;
+    writeFileSync(join(bin, name), body); chmodSync(join(bin, name), 0o755);
+  }
+  // "missing": the system's sbin directories are on PATH only through links to what they hold, minus any ip6tables (a Linux runner has a real one there).
+  const sbin = join(directory, "sbin");
+  mkdirSync(sbin);
+  if (ip6tables === "missing") {
+    for (const system of ["/usr/sbin", "/sbin"]) {
+      let names: string[];
+      try { names = readdirSync(system); } catch { names = []; }
+      for (const name of names) if (!name.startsWith("ip6tables") && !existsSync(join(sbin, name))) symlinkSync(join(system, name), join(sbin, name));
+    }
+  }
+  // The host's IPv6 state, as boot-stage2.sh's ipv6_active reads it (placedStage2 points its /proc/ here).
+  const ipv6 = options.ipv6 ?? true;
+  for (const scope of ["all", "default"]) {
+    mkdirSync(join(directory, "proc", "sys", "net", "ipv6", "conf", scope), { recursive: true });
+    writeFileSync(join(directory, "proc", "sys", "net", "ipv6", "conf", scope, "disable_ipv6"), ipv6 ? "0\n" : "1\n");
+  }
+  mkdirSync(join(directory, "proc", "net"), { recursive: true });
+  if (ipv6) writeFileSync(join(directory, "proc", "net", "if_inet6"), "00000000000000000000000000000001 01 80 10 80       lo\n");
   const port = await freePort();
   // The paths a real boot writes as root are the test's own; nothing else of either file changes.
   const place = (text: string) => text
@@ -378,12 +422,14 @@ wall_off_containers() { echo "wall_off_containers" >>"$LOG"; echo "DOCKER-USER -
   const log = join(directory, "calls.log");
   writeFileSync(log, "");
   writeFileSync(join(directory, "iptables.state"), "");
+  writeFileSync(join(directory, "ip6tables.state"), "");
   const pid = join(directory, "responder.pid");
   responders.push(pid);
   const ran = spawnSync("bash", [script], {
     encoding: "utf8",
     env: {
-      PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG: log, IPT_STATE: join(directory, "iptables.state"),
+      PATH: ip6tables === "missing" ? `${bin}:/usr/bin:/bin:${sbin}` : `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG: log, IPT_STATE: join(directory, "iptables.state"), IP6T_STATE: join(directory, "ip6tables.state"),
+      ...(ip6tables === "unusable" ? { IP6T_UNUSABLE: "1" } : {}),
       ...(options.flushOnRestart ? { FLUSH_ON_RESTART: "1" } : {}), ...(options.firewallRestores === false ? { FW_RESTORES: "0" } : {}), ...(options.firewallRule ? { FW_RULE: options.firewallRule } : {}), IMAGE_STAGE2: image, RESPONDER_PID: pid, AGENTX_TEST_LOG: log,
       ...(options.cpFails ? { CP_FAILS: "1" } : {}),
       ...(options.cpLinks ? { CP_LINKS: "1" } : {}),
@@ -397,8 +443,9 @@ wall_off_containers() { echo "wall_off_containers" >>"$LOG"; echo "DOCKER-USER -
   };
 }
 
-/** The real stage 2, with the paths a root boot writes to moved under the run's directory in the same way boot.sh's are. */
+/** The real stage 2, with the paths a root boot writes to moved under the run's directory in the same way boot.sh's are, and /proc read from the run's fake one (never the host's). */
 const placedStage2 = (directory: string) => stage2
+  .replaceAll("/proc/", `${directory}/proc/`)
   .replaceAll("/etc/docker", `${directory}/etc/docker`)
   .replaceAll("/etc/agentx", `${directory}/etc/agentx`)
   .replaceAll("/etc/systemd/system", `${directory}/etc/systemd`)
@@ -425,6 +472,23 @@ describe("the failure responder does not outlive its test", () => {
     expect(liveResponders([run.directory])).toHaveLength(1);
     expect(reapResponders([run.directory], [])).toHaveLength(1);
     expect(survivors([run.directory])).toEqual([]);
+  });
+
+  it("signals no process for an empty, zero, one or unreadable pid file (kill(0) would signal the whole process group)", () => {
+    const directory = mkdtempSync(join(tmpdir(), "boot-stage2-"));
+    directories.push(directory);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      const files = Object.entries({ empty: "", zero: "0\n", one: "1\n", words: "not a pid", negative: "-5" }).map(([name, body]) => { const file = join(directory, name); writeFileSync(file, body); return file; });
+      reapResponders([], [...files, join(directory, "missing")]);
+      expect(kill).not.toHaveBeenCalled();
+      const real = join(directory, "real");
+      writeFileSync(real, "424242\n");
+      reapResponders([], [real]);
+      expect(kill).toHaveBeenCalledExactlyOnceWith(424242);
+    } finally {
+      kill.mockRestore();
+    }
   });
 
   it("finds a stray BootFailed server by the run's failure file even with no pid file", () => {
@@ -551,6 +615,35 @@ describe("stage 1 runs stage 2 from the worker image", () => {
     expect(statSync(staged).isFile()).toBe(true);
     expect(statSync(staged).mode & 0o777).toBe(0o400);
   });
+
+  // TS-SEAL-2 on a host with IPv6 on (an AL2023 worker): the INPUT drops go in through ip6tables, or the boot stops. Only a host with no IPv6 at all may boot without them.
+  const ip6Rules = (run: Run) => readFileSync(join(run.directory, "ip6tables.state"), "utf8").split("\n").filter(Boolean);
+  it("with IPv6 on and a usable ip6tables, drops rvb+ and rvi+ into the host over IPv6 before the worker unit is written", async () => {
+    const run = await boot({ served: placedStage2 });
+    expect(run.failure, run.stderr).toBeUndefined();
+    expect(ip6Rules(run)).toEqual(expect.arrayContaining(["INPUT -i rvb+ -j DROP", "INPUT -i rvi+ -j DROP"]));
+    const at = (needle: string) => run.calls.findIndex((call) => call.includes(needle));
+    expect(at("ip6tables -I INPUT -i rvb+ -j DROP")).toBeGreaterThan(-1);
+    expect(at("ip6tables -I INPUT -i rvi+ -j DROP")).toBeLessThan(at("systemctl daemon-reload"));
+    expect(readFileSync(join(run.directory, "etc", "agentx", "worker.env"), "utf8")).toContain('"ipv6Drops":true');
+  });
+
+  for (const ip6tables of ["missing", "unusable"] as const) {
+    it(`with IPv6 on and ip6tables ${ip6tables}, the boot stops with the exact message and starts no worker unit`, async () => {
+      const run = await boot({ served: placedStage2, ip6tables, ipv6: true });
+      expect(run.status).not.toBe(0);
+      expect(run.failure).toBe("could not drop IPv6 from run networks into the host");
+      expect(run.calls.some((call) => call.startsWith("systemctl enable --now"))).toBe(false);
+      expect(run.calls.some((call) => call.startsWith("systemctl daemon-reload"))).toBe(false);
+    });
+
+    it(`with IPv6 off on the host and ip6tables ${ip6tables}, the boot goes on (there is no IPv6 to drop)`, async () => {
+      const run = await boot({ served: placedStage2, ip6tables, ipv6: false });
+      expect(run.failure, run.stderr).toBeUndefined();
+      expect(run.status, run.stderr).toBe(0);
+      expect(readFileSync(join(run.directory, "etc", "agentx", "worker.env"), "utf8")).toContain('"ipv6Drops":true');
+    });
+  }
 
   it("fails when the launch carries no stage 2 hash, before it creates a container", async () => {
     const run = await boot({ served: placedStage2, noHash: true });
