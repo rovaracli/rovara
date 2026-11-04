@@ -31,7 +31,7 @@ const INVITE_LINE = "Rovara can only read channels it's in. For a private channe
 const ONLY_YOU = "Only you see this list: these are private channels you're in.";
 const NOT_LINKED = "Link your Slack account to see your private channels here. You can still paste a channel link below.";
 const HELP = "To get a link: in Slack, right-click the channel and choose Copy link. To find the ID: open the channel, click its name at the top, and the Channel ID is at the bottom of the About tab.";
-const INVITE_NEEDED = "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again.";
+const INVITE_NEEDED = "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara.";
 const WRONG_WORKSPACE = "That link is for a different Slack workspace.";
 
 describe("A: your private channels", () => {

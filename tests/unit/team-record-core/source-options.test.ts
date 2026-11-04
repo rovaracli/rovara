@@ -708,6 +708,17 @@ describe("the broker's own request builds the Slack listing from the identity fu
     expect(await ctx.slackChannels!({ teamId: TEAM_A })).toEqual({ ok: false, error: "unavailable" }); // an identity function without channel-list
   });
 
+  it("the editor's channel membership is read through channel-members for exactly the user and channel asked (final review 3, I1); an install without it offers none", async () => {
+    const asked: unknown[] = [];
+    const replies: unknown[] = [{ ok: true, memberOf: ["C0PRIVATE"] }, { ok: true, memberOf: [] }, { ok: false, error: "slack_unavailable" }];
+    const ctx = contextWith({ channelMembers: async (input: unknown) => { asked.push(input); return replies.shift(); } });
+    expect(await ctx.slackMember!("U0MAINT001", "C0PRIVATE")).toBe(true);
+    expect(await ctx.slackMember!("U0MAINT001", "C0PRIVATE")).toBe(false);
+    expect(await ctx.slackMember!("U0MAINT001", "C0PRIVATE")).toBeUndefined();
+    expect(asked[0]).toEqual({ kind: "channel-members", slackUserId: "U0MAINT001", channelIds: ["C0PRIVATE"] });
+    expect(recordWriteContextOf({} as never, callerOf, request).slackMember).toBeUndefined();
+  });
+
   it("an install with no such read, or no Slack team, offers neither (the picker then falls back to typing)", () => {
     expect(contextWith({ slackTeamId: TEAM_A }).slackChannels).toBeUndefined();
     expect(contextWith({ channelList: async () => ({ ok: true, channels: [] }) }).slackTeamId).toBeUndefined();

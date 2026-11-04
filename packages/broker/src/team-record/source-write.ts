@@ -79,6 +79,8 @@ export interface SourceWriteContext {
   audit?: AuditDeps;
   /** What Slack says a channel is, read fresh: its facts, `"none"` when Slack does not know it, `undefined` (or a throw) when it could not be read. Absent: no Slack place can be checked. */
   slackChannel?: (teamId: string, channelId: string) => Promise<SlackFacts | "none" | undefined>;
+  /** Whether the Slack user `userId` is in the channel, read fresh (`channel-members` through DeveloperIdentity): `undefined` (or a throw) when it could not be read. `userId` is always one of the editor's own linked Slack ids, chosen by the server. Absent: a private place cannot be added from the web. */
+  slackMember?: (userId: string, channelId: string) => Promise<boolean | undefined>;
   /** The Slack team of this install (the one whose bot token DeveloperIdentity holds). The pickers list only this team, and only for the company it is bound to. Absent: the Slack picker cannot be read. */
   slackTeamId?: string;
   /** One page of the channels the bot can see, read fresh through DeveloperIdentity (`channel-list`). `missing_scope`: the Slack app lacks the listing scopes. Absent: the Slack picker cannot be read. */
@@ -111,12 +113,15 @@ class ClearingElsewhere extends Error {}
 class RemovalBusy extends Error {}
 /** A place the edition's rules never allow (Slack Connect; a DM in Public): answered 422 with its own route-local code, like the two above. */
 class NotAllowed extends Error {}
-/** Slack could not show the bot the channel (channel_not_found, not_in_channel: Rovara is not in it, or it does not exist, and which is never said): answered with its own route-local code and one fixed sentence (task 11, C). */
+/**
+ * Slack could not show the bot the channel (channel_not_found, not_in_channel: Rovara is not in it, or it does not exist), OR the channel is not public and the editor adding it is not in it (or has no linked Slack account): one
+ * answer for all of them, so a channel's existence is never told. Its own route-local code and one fixed sentence (task 11, C; final review 3, I1).
+ */
 class InviteNeeded extends Error {}
 /** A pasted link (or place) for a Slack workspace other than this install's: its own route-local code and one fixed sentence (task 11, B). */
 class WrongWorkspace extends Error {}
 const wrongWorkspaceReply = (): RecordRouteReply => ({ status: 422, body: { code: "SLACK_WRONG_WORKSPACE", message: "That link is for a different Slack workspace." } });
-const inviteNeededReply = (): RecordRouteReply => ({ status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again." } });
+const inviteNeededReply = (): RecordRouteReply => ({ status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara." } });
 const removalRunningReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This source was just removed and its stored data is still being deleted. You can add it again in about an hour." } });
 const clearingElsewhereReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_CLEARING", message: "This source is still being cleared after a recent removal. You can add it again in about an hour." } });
 const removalBusyReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_BUSY", message: "Rovara is still deleting data from recently removed sources. Try again in an hour." } });
@@ -203,12 +208,12 @@ const notYet = (): RecordRouteReply => ({ status: 422, body: { code: "SOURCE_KIN
 /** What checking a place found out: for a Slack channel, its class (the server's reading, never the body's). */
 interface Place { slack?: SlackScope }
 
-async function checkScope(run: Run, source: string, scope: string): Promise<Place> {
+async function checkScope(run: Run, source: string, scope: string, options: { editorInChannel?: boolean } = {}): Promise<Place> {
   if (source === "rovara") {
     if (scope !== rovaraScope(run.project)) throw invalid(WORDS.place);
     return {};
   }
-  if (source === "slack") return { slack: await checkSlackPlace(run, scope) };
+  if (source === "slack") return { slack: await checkSlackPlace(run, scope, options.editorInChannel === true) };
   if (source === "linear" || source === "jira") { await checkTrackerPlace(run, source, scope); return {}; }
   const match = GITHUB_SCOPE.exec(scope);
   if (match === null) throw invalid(WORDS.place);
@@ -237,7 +242,7 @@ function slackPlaceOf(ctx: SourceWriteContext, scope: string): string {
  * A Slack place: the workspace is this company's (the binding the tap resolves), the channel is read LIVE and classified here, and the edition's rules apply. A workspace of another company answers as a
  * missing place and Slack is never asked; a channel that cannot be read fails closed. Slack Connect, and a DM or group DM in Public, are refused with their own code.
  */
-async function checkSlackPlace(run: Run, scope: string): Promise<SlackScope> {
+async function checkSlackPlace(run: Run, scope: string, editorInChannel: boolean): Promise<SlackScope> {
   const parsed = parseSlackScope(scope);
   if (parsed === undefined) throw invalid(WORDS.place);
   const bound = run.sources.slackTeamBound;
@@ -252,9 +257,32 @@ async function checkSlackPlace(run: Run, scope: string): Promise<SlackScope> {
   if (facts === undefined) throw unavailable();
   // Slack does not show the bot this channel: it is not in it, or there is no such channel. Never said which.
   if (facts === "none") throw new InviteNeeded();
+  // Adding a channel that is not public from the web: the editor must be in it, by one of their own linked Slack ids (as the Slack-side Add checks), BEFORE anything else is said about the channel (Slack Connect, a DM). The Slack
+  // interaction has already checked the person who pressed. A person not in it, with no linked id, answers exactly as "Rovara is not in that channel": the channel's existence is never told.
+  if (editorInChannel && run.ctx.actor !== "slack_interaction" && facts.kind !== "public") await requireEditorIn(run, parsed.channelId);
   const place = classifySlack(facts);
   if (!slackScopeAllowed(run.sources.edition, place).allowed) throw new NotAllowed(place === "slack_connect" ? WORDS.connect : WORDS.directMessages);
   return place;
+}
+
+const SLACK_USER_ID = /^[UW][A-Z0-9]{2,31}$/u;
+const LINKED_IDS_MAX = 5;
+/** The editor's own linked Slack ids (the sign-in store's, read by the server from the session's developer, never from the request) and whether one of them is in the channel. Unreadable fails closed as unavailable. */
+async function requireEditorIn(run: Run, channelId: string): Promise<void> {
+  const linksOf = run.sources.slackUserIdsOf, memberOf = run.ctx.slackMember;
+  if (linksOf === undefined || memberOf === undefined) throw unavailable();
+  let ids: string[];
+  try { ids = [...new Set(await linksOf(run.me))].filter((id) => SLACK_USER_ID.test(id)).sort().slice(0, LINKED_IDS_MAX); } catch { throw unavailable(); }
+  if (ids.length === 0) throw new InviteNeeded();
+  let unreadable = false;
+  for (const id of ids) {
+    let answer: boolean | undefined;
+    try { answer = await memberOf(id, channelId); } catch { answer = undefined; }
+    if (answer === true) return;
+    if (answer === undefined) unreadable = true;
+  }
+  if (unreadable) throw unavailable();
+  throw new InviteNeeded();
 }
 
 /** A Linear team or Jira project: one the company's connected app lists, read live. No app of that kind (or an install without connections) is a missing place; a listing that cannot be read fails closed. */
@@ -336,7 +364,7 @@ async function saveAdd(run: Run, body: Extract<SourceWriteBody, { action: "add" 
   const hash = bodyHashOf(body);
   const again = await replayed(run, body.requestId, hash);
   if (again !== undefined) return again;
-  const place = await checkScope(run, body.source, body.scope);
+  const place = await checkScope(run, body.source, body.scope, { editorInChannel: true });
   if (body.notesOptIn !== undefined && body.source !== "slack") throw invalid();
   const raises = await retentionWidens(run, body.source, undefined, body.retention, body.notesOptIn === true);
   const table = run.deps.table;

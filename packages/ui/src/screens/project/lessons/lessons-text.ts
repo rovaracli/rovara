@@ -50,7 +50,7 @@ export const T = {
  SRC_PRIVATE_NOT_LINKED: "Link your Slack account to see your private channels here. You can still paste a channel link below.",
  SRC_PRIVATE_FAIL: "Rovara can't load your private channels right now. You can still paste a channel link below.",
  SRC_PRIVATE_EMPTY: "None yet. A private channel shows here once you and Rovara are both in it.",
- SRC_ERR_INVITE: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again.", SRC_ERR_WORKSPACE: "That link is for a different Slack workspace.",
+ SRC_ERR_INVITE: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara.", SRC_ERR_WORKSPACE: "That link is for a different Slack workspace.",
  SRC_SHOW_MORE: "Show more", SRC_NOT_JOINED: "Invite Rovara to this channel so it can read it.",
  SRC_LIST_LOADING: "Loading the list\u2026", SRC_LIST_FAIL: "Rovara can't load the list right now. Enter an ID instead.", SRC_LIST_SCOPE: "Rovara can't list channels. Ask an admin to reinstall the Slack app.", SRC_LIST_EMPTY: "There is nothing to pick from yet. Enter an ID instead.",
  SRC_LIST_MORE: "Showing the first 100. Type to narrow the list.", SRC_TYPE_INSTEAD: "Enter an ID instead", SRC_PICK_INSTEAD: "Pick from the list instead",

@@ -58,6 +58,8 @@ interface Harness {
   /** The company's bound Slack teams. */ teams: Map<OrgId, Set<string>>;
   /** What the live Slack read answers per channel; `reads` lists what was asked. */ channels: Map<string, Lookup>; reads: string[];
   apps: Map<OrgId, App[]>; trackersOn: boolean; slackOn: boolean; lookupOn: boolean;
+  /** The Slack ids each person signed in with (the sign-in store's links), and who is in which channel (`channel-members`): `memberAsks` lists what was asked, as `<slack id>@<channel>`. */
+  linked: Map<string, string[]>; members: Map<string, Set<string>>; memberAsks: string[]; memberRead: "ok" | "unreadable" | "throws"; memberOn: boolean; linksOn: boolean;
 }
 function harness(options: { edition?: "enterprise" | "public" } = {}): Harness {
   const w = world({ edition: options.edition ?? "enterprise" });
@@ -73,6 +75,10 @@ function harness(options: { edition?: "enterprise" | "public" } = {}): Harness {
       [ORG_B, [{ kind: "linear", scopes: [linearScope(LINEAR_B)], reads: 0 }]],
     ]),
     trackersOn: true, slackOn: true, lookupOn: true,
+    // By default every editor is linked and is in every channel that is not public (so the older tests are about what they say); the new ones change these.
+    linked: new Map([[OWNER, ["U0OWNER001"]], [ADMIN, ["U0ADMIN001"]], [MAINT, ["U0MAINT001"]]]),
+    members: new Map([CH.priv, CH.dm, CH.mpim, CH.connectPrivate].map((channel) => [channel, new Set(["U0OWNER001", "U0ADMIN001", "U0MAINT001"])] as const)),
+    memberAsks: [], memberRead: "ok", memberOn: true, linksOn: true,
   };
 }
 
@@ -98,6 +104,7 @@ const dependencies = (h: Harness) => ({
     pausedSources: async () => [] as string[],
     newId: () => `change-${String(h.ids.next++)}`,
     ...(h.slackOn ? { slackTeamBound: async (orgId: OrgId, teamId: string) => h.teams.get(orgId)?.has(teamId) === true } : {}),
+    ...(h.linksOn ? { slackUserIdsOf: async (developerId: string) => h.linked.get(developerId) ?? [] } : {}),
     ...(h.trackersOn ? { trackerPlace: trackerPlaceCheck(trackersOf(h), { now: () => h.w.clock.ms }) } : {}),
   },
 });
@@ -111,6 +118,14 @@ function contextOf(h: Harness, who: Who, body: unknown, over: Partial<SourceWrit
         const answer = h.channels.get(channelId);
         if (answer === "throws") throw new Error("slack went away");
         return answer === undefined || answer === "unreadable" ? undefined : answer;
+      },
+    } : {}),
+    ...(h.memberOn ? {
+      slackMember: async (userId: string, channelId: string) => {
+        h.memberAsks.push(`${userId}@${channelId}`);
+        if (h.memberRead === "throws") throw new Error("slack went away");
+        if (h.memberRead === "unreadable") return undefined;
+        return h.members.get(channelId)?.has(userId) === true;
       },
     } : {}),
     ...over,
@@ -141,7 +156,7 @@ const claims = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_R
 const requests = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_REQUEST");
 const nothingWritten = (h: Harness) => { expect(sourceRows(h)).toHaveLength(0); expect(proposals(h)).toHaveLength(0); expect(claims(h)).toHaveLength(0); expect(requests(h)).toHaveLength(0); };
 const flushed = async (h: Harness) => { await new Promise((resolve) => setTimeout(resolve, 0)); return h.audit.recorded(); };
-const INVITE_NEEDED = { status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again." } };
+const INVITE_NEEDED = { status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara." } };
 const DIFFERENT_WORKSPACE = { status: 422, body: { code: "SLACK_WRONG_WORKSPACE", message: "That link is for a different Slack workspace." } };
 const NOT_ALLOWED = (message: string) => ({ status: 422, body: { code: "SOURCE_NOT_ALLOWED", message } });
 const CONNECT_WORDS = "Slack Connect channels can't be used as a source.";
@@ -814,5 +829,90 @@ describe("task 11 C: a channel Rovara is not in answers the fixed 'invite Rovara
     const h = harness();
     h.channels.set(CH.pub, "unreadable");
     expect(await post(h, WHO.owner, add())).toMatchObject({ status: 503, body: { code: "RUNTIME_UNAVAILABLE" } });
+  });
+});
+
+// Final review 3, I1: a private channel is added from the web only by a person who is in it (by one of their linked Slack ids, chosen by the server), as the Slack-side Add checks. Everyone else gets the one neutral answer.
+describe("Slack: the editor must be in a private channel to add it from the web", () => {
+  it("a member adds it (their linked id is asked, nobody else's), and a second linked id is tried when the first is not in", async () => {
+    const h = harness();
+    expect(await post(h, WHO.maint, add({ scope: slackScope(CH.priv) }))).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+    expect(h.memberAsks).toEqual([`U0MAINT001@${CH.priv}`]);
+    const second = harness();
+    second.linked.set(MAINT, ["U0ALTID001", "U0MAINT001"]);
+    expect(await post(second, WHO.maint, add({ scope: slackScope(CH.priv) }))).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+    expect(second.memberAsks).toEqual([`U0ALTID001@${CH.priv}`, `U0MAINT001@${CH.priv}`]);
+  });
+
+  it("a non-member, an editor with no linked Slack id, a channel Rovara is not in and a channel that does not exist all get the identical reply, and nothing is written", async () => {
+    const nonMember = harness();
+    nonMember.members.set(CH.priv, new Set(["U0OWNER001"]));
+    const unlinked = harness();
+    unlinked.linked.delete(MAINT);
+    const botNotIn = harness();
+    botNotIn.channels.set("C0NOSUCH01", "none");
+    const replies = [
+      await post(nonMember, WHO.maint, add({ scope: slackScope(CH.priv) })),
+      await post(unlinked, WHO.maint, add({ scope: slackScope(CH.priv) })),
+      await post(botNotIn, WHO.maint, add({ scope: slackScope(CH.gone) })),
+      await post(botNotIn, WHO.maint, add({ scope: slackScope("C0NOSUCH01") })),
+    ];
+    for (const reply of replies) expect(reply).toEqual(INVITE_NEEDED);
+    nothingWritten(nonMember); nothingWritten(unlinked); nothingWritten(botNotIn);
+    // an editor with no linked id is never asked about membership: there is nobody to ask for
+    expect(unlinked.memberAsks).toEqual([]);
+    expect(await flushed(nonMember)).toEqual([]);
+  });
+
+  it("existence is not told through the other refusals either: a private Slack Connect channel, a DM and a group DM answer a non-member with the same neutral reply, not 'not allowed'", async () => {
+    const h = harness();
+    for (const channel of [CH.connectPrivate, CH.dm, CH.mpim, CH.priv]) h.members.set(channel, new Set(["U0OWNER001"]));
+    for (const channel of [CH.connectPrivate, CH.dm, CH.mpim]) expect(await post(h, WHO.maint, add({ scope: slackScope(channel) })), channel).toEqual(INVITE_NEEDED);
+    // a member still gets the edition's own answer for each
+    h.members.get(CH.connectPrivate)!.add("U0MAINT001");
+    expect(await post(h, WHO.maint, add({ scope: slackScope(CH.connectPrivate) }))).toEqual(NOT_ALLOWED(CONNECT_WORDS));
+    nothingWritten(h);
+  });
+
+  it("a membership that cannot be read fails closed as 'unavailable', and so does a missing way to read it or the sign-in store's links; nothing is written", async () => {
+    for (const make of [
+      (h: Harness) => { h.memberRead = "unreadable"; },
+      (h: Harness) => { h.memberRead = "throws"; },
+      (h: Harness) => { h.memberOn = false; },
+      (h: Harness) => { h.linksOn = false; },
+    ]) {
+      const h = harness();
+      make(h);
+      expect(await post(h, WHO.maint, add({ scope: slackScope(CH.priv) }))).toMatchObject({ status: 503, body: { code: "RUNTIME_UNAVAILABLE" } });
+      nothingWritten(h);
+    }
+  });
+
+  it("a public channel is not affected: an unlinked editor and a person in no channel add it, and membership is never asked", async () => {
+    const h = harness();
+    h.linked.clear(); h.members.clear();
+    expect(await post(h, WHO.maint, add({ scope: slackScope(CH.pub) }))).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+    const bare = harness({ edition: "public" });
+    bare.memberOn = false; bare.linksOn = false;
+    expect(await post(bare, WHO.owner, add({ scope: slackScope(CH.pub), retention: "A" }))).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+    expect(h.memberAsks).toEqual([]);
+    // a public Slack Connect channel keeps its own answer
+    expect(await post(h, WHO.maint, add({ scope: slackScope(CH.connect) }))).toEqual(NOT_ALLOWED(CONNECT_WORDS));
+  });
+
+  it("the Slack-side Add has already checked the presser in the channel itself: the route does not ask again for that actor", async () => {
+    const h = harness();
+    h.linked.clear();
+    const reply = await post(h, WHO.maint, add({ scope: slackScope(CH.priv) }), { context: { browserSession: false, actor: "slack_interaction" } });
+    expect(reply).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+    expect(h.memberAsks).toEqual([]);
+  });
+
+  it("the people asked are the editor's own links, never the request's: a body naming a Slack id changes nothing", async () => {
+    const h = harness();
+    h.members.set(CH.priv, new Set(["U0OWNER001"]));
+    expect(await post(h, WHO.maint, add({ scope: slackScope(CH.priv), slackUserId: "U0OWNER001" }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(await post(h, WHO.maint, add({ scope: slackScope(CH.priv) }))).toEqual(INVITE_NEEDED);
+    expect(h.memberAsks).toEqual([`U0MAINT001@${CH.priv}`]);
   });
 });
