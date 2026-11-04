@@ -11,7 +11,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { ChangeMessageVisibilityCommand, SQSClient, SendMessageBatchCommand } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, NUDGE_WINDOW_MS, sameJsonContent, AdminChangePendingRecordSchema, planClaimCount, planSummaryLines, PullRequestResultSchema, SHARE_DELIVERY_WINDOW_MS, WorkflowFeedbackReviewReportSchema, adminChangeKey, describeWorkflowCheckChanges, redactText, workflowCheckCommandText, workflowFeedbackCheckChanges, indexExpiresAt, lastAssistantResponse, sharedTaskKey, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, workflowPublicationRetryable, taskGraphDigest, type PendingChange, type PlanClaim, type PlanDocument, type WorkflowArtifact, type WorkflowCheck, type WorkflowCanvasLineage, type WorkflowSnapshot } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, NUDGE_WINDOW_MS, sameJsonContent, AdminChangePendingRecordSchema, planClaimCount, planSummaryLines, PullRequestResultSchema, SHARE_DELIVERY_WINDOW_MS, WorkflowFeedbackReviewReportSchema, adminChangeKey, describeWorkflowCheckChanges, redactText, workflowCheckCommandText, workflowFeedbackCheckChanges, indexExpiresAt, lastAssistantResponse, sharedTaskKey, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, workflowPublicationRetryable, taskGraphDigest, type PendingChange, type PlanClaim, type PlanDocument, type WorkflowArtifact, type WorkflowCheck, type WorkflowCanvasLineage, type WorkflowSnapshot } from "@agentx/contracts";
 import { adminChangeExpiredMessage, adminChangeMessage, adminChangeOutcomeMessage } from "../developer/change-messages.js";
 import { loadWorkflowDocument } from "../developer/plan-artifacts.js";
 import { PLAN_UNREADABLE_CATEGORIES, planCheckSummary, planUnreadableCategory } from "../developer/plan-check-summary.js";
@@ -33,6 +33,7 @@ import { runTaskCanvasCloseout, type CanvasCloseoutStore, type TaskCanvasCloseou
 import { SlackPostError, chatPostEphemeral, chatPostMessage, chatUpdate, createTaskPlanCanvas, deleteTaskPlanCanvas, postMayHaveLanded } from "./slack-web.js";
 import { readWorkflowE2ENotifierProjection } from "./workflow-e2e-notifier-projection.js";
 import { renderE2ENotifierSlackBlocks, renderE2EUnavailableSlackBlock } from "../e2e-presentation.js";
+import { canTakeOverNow } from "../developer/take-over-eligible.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
@@ -192,13 +193,13 @@ async function deliverOwnerStopped(deps: NotifierDependencies, notice: Notice): 
       ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":cancelled": "CANCELLED", ":status": row.status } }));
     return "cancelled";
   };
-  const task = await getItem<{ title?: unknown; orgId?: unknown }>(deps, { pk: `DEVTASK#${notice.taskId}`, sk: "META" });
+  const task = await getItem<DeveloperTaskRecord>(deps, { pk: `DEVTASK#${notice.taskId}`, sk: "META" });
   const people = await getItem<{ people?: Array<{ developerId?: string; role?: string }> }>(deps, { pk: `DEVTASK#${notice.taskId}`, sk: "PEOPLE" });
-  if (!Array.isArray(people?.people) || !people.people.some((person) => person.developerId === row.targetDeveloperId && (person.role === "owner" || person.role === "commenter"))) return cancel();
-  if (typeof task?.orgId === "string") {
-    const member = await getItem<Record<string, unknown>>(deps, orgMemberKey(task.orgId, row.targetDeveloperId));
-    if (member === undefined) return cancel();
-  }
+  // Still a co-owner (a commenter cannot Take over), still able to (company role and project role read now), and the task still open and still the same owner's (not taken over or closed since).
+  if (task === undefined || !Array.isArray(people?.people) || !people.people.some((person) => person.developerId === row.targetDeveloperId && person.role === "owner")) return cancel();
+  if (task.closedAt !== undefined || task.workflow?.stage === "CLOSED" || task.workflow?.stage === "MERGED") return cancel();
+  if (typeof row.ownerAtStop === "string" && tryEffectiveTaskOwner(task)?.developerId !== row.ownerAtStop) return cancel();
+  if (!await canTakeOverNow(deps, task, row.targetDeveloperId)) return cancel();
   if (row.status === "SENDING") {
     if (typeof row.claimUntil === "number" && row.claimUntil >= deps.now()) return "claimed";
     await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :unknown", ConditionExpression: "#status = :sending", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":unknown": "UNKNOWN", ":sending": "SENDING" } }));

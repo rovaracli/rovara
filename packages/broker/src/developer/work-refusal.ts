@@ -8,6 +8,7 @@ import { flushAuditEvents, recordAuditEventDurably } from "../audit/flush.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { viewerCannotStartTasksMessage } from "./project-roles.js";
+import { canTakeOverNow } from "./take-over-eligible.js";
 import { requireProjectSendBackRole } from "./task-access.js";
 import { effectiveTaskOwner, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "./task-records.js";
 
@@ -53,8 +54,8 @@ export async function ownerWorkRefusal(deps: Pick<DeveloperTaskRouteDependencies
 }
 
 /**
- * Tells the others on the task who could take it over, once per stop and per person (S2 owner decision): a pending row each for the co-owners and commenters of the task's PEOPLE list, other than the
- * effective owner, who have a Slack user. A conditional put, so the same stop recorded again (a retried refusal) adds nothing. The notifier reads the row and sends one direct message; it names nobody.
+ * Tells the others on the task who could take it over, once per stop and per person (S2 owner decision): a pending row each for the co-owners (People role `owner`) of the task's PEOPLE list, other than the
+ * effective owner, who have a Slack user and can really take the task over now (`canTakeOverNow`). A conditional put, so the same stop recorded again (a retried refusal) adds nothing. The notifier reads the row and sends one direct message; it names nobody.
  * Returns how many rows were written.
  */
 export async function notifyOthersOfStop(
@@ -66,12 +67,13 @@ export async function notifyOthersOfStop(
   const owner = tryEffectiveTaskOwner(task)?.developerId;
   let written = 0;
   for (const person of people as Array<{ developerId?: unknown; slackUserId?: unknown; role?: unknown }>) {
-    if (typeof person.developerId !== "string" || person.developerId === owner || (person.role !== "owner" && person.role !== "commenter")
-      || typeof person.slackUserId !== "string" || person.slackUserId === "") continue;
+    // Only a co-owner can Take over (a commenter has the session level `use`), and only one who can really do it now.
+    if (typeof person.developerId !== "string" || person.developerId === owner || person.role !== "owner"
+      || typeof person.slackUserId !== "string" || person.slackUserId === "" || !await canTakeOverNow(table, task, person.developerId)) continue;
     try {
       await table.documentClient.send(new PutCommand({ TableName: table.tableName, ConditionExpression: "attribute_not_exists(pk)", Item: {
         pk: `DEVTASK#${task.taskId}`, sk: `OWNER_STOP_NOTIFY#${stopId}#${person.developerId}`, entityType: "TASK_OWNER_STOPPED_NOTIFICATION", schemaVersion: 1,
-        taskId: task.taskId, stopId, targetDeveloperId: person.developerId, slackUserId: person.slackUserId, status: "PENDING", attempts: 0, createdAt: now } }));
+        taskId: task.taskId, stopId, targetDeveloperId: person.developerId, slackUserId: person.slackUserId, ownerAtStop: owner ?? null, status: "PENDING", attempts: 0, createdAt: now } }));
       written += 1;
     } catch (error) {
       if ((error instanceof Error ? error.name : "") !== "ConditionalCheckFailedException") throw error;

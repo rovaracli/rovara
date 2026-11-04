@@ -4,7 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { orgMemberKey, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
+import { orgMemberKey, projectMemberKey, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
 import { developerTaskIdentity, plannerRepliesKey } from "../../packages/broker/src/developer/task-records.js";
 import { SlackPostError, chatPostMessage } from "../../packages/broker/src/aws/slack-web.js";
 import { cachedSlackPoster, createNotifierHandler, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
@@ -24,13 +24,16 @@ describe("the stopped-for-the-owner notice (S2)", () => {
   const stopId = "ci_fix_round#31";
   const bea = "b".repeat(64);
   const key = `OWNER_STOP_NOTIFY#${stopId}#${bea}`;
-  const setup = (role: "owner" | "denied" = "owner", member = true) => {
+  const setup = (role: "owner" | "commenter" | "denied" = "owner", member = true, options: { grant?: "developer" | "viewer" | "none"; closed?: boolean; takenOverBy?: string } = {}) => {
     const db = new FakeDynamoDb();
     const stream = recordStream(db);
-    db.set({ pk: `DEVTASK#${taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId, orgId: TEST_ORG, title: "Fix the retry bug", project: "payments" });
+    db.set({ pk: `DEVTASK#${taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId, orgId: TEST_ORG, title: "Fix the retry bug", project: "payments", developerId: "a".repeat(64), developerName: "Maya", provider: "slack",
+      ...(options.closed === true ? { closedAt: new Date().toISOString() } : {}),
+      ...(options.takenOverBy === undefined ? {} : { currentOwner: { developerId: options.takenOverBy, name: "Cal", provider: "oidc", since: new Date().toISOString() } }) });
     db.set({ pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 2, orphaned: false, people: [{ developerId: bea, slackUserId: "U0BEA00001", name: "Bea", role }] });
     if (member) db.set({ ...orgMemberKey(TEST_ORG, bea), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: bea, role: "member", joinedAt: "2026-10-01T00:00:00.000Z" });
-    const row = { pk: `DEVTASK#${taskId}`, sk: key, entityType: "TASK_OWNER_STOPPED_NOTIFICATION", schemaVersion: 1, taskId, stopId, targetDeveloperId: bea, slackUserId: "U0BEA00001", status: "PENDING", attempts: 0, createdAt: new Date().toISOString() };
+    if ((options.grant ?? "developer") !== "none") db.set({ ...projectMemberKey(TEST_ORG, bea, "payments"), entityType: "MEMBERSHIP", ownerKey: bea, projectName: "payments", role: options.grant ?? "developer" });
+    const row = { pk: `DEVTASK#${taskId}`, sk: key, entityType: "TASK_OWNER_STOPPED_NOTIFICATION", schemaVersion: 1, taskId, stopId, targetDeveloperId: bea, slackUserId: "U0BEA00001", ownerAtStop: "a".repeat(64), status: "PENDING", attempts: 0, createdAt: new Date().toISOString() };
     db.set(row);
     const post = vi.fn(async (input: { channel: string; text: string }) => { void input; return { ts: "1.2", channel: "D0BEA" }; });
     const queued: Notice[] = [];
@@ -62,15 +65,23 @@ describe("the stopped-for-the-owner notice (S2)", () => {
     expect(t.db.get(`DEVTASK#${taskId}`, key)).toMatchObject({ status: "SENT" });
   });
 
-  it("is dropped when the person is no longer on the task with a role that can take over, or has left the company", async () => {
-    const denied = setup("denied");
-    await denied.deliver();
-    expect(denied.post).not.toHaveBeenCalled();
-    expect(denied.db.get(`DEVTASK#${taskId}`, key)).toMatchObject({ status: "CANCELLED" });
-    const gone = setup("owner", false);
-    await gone.deliver();
-    expect(gone.post).not.toHaveBeenCalled();
-    expect(gone.db.get(`DEVTASK#${taskId}`, key)).toMatchObject({ status: "CANCELLED" });
+  it("is dropped, with no message and no title, when the person cannot take the task over any more: left the company, no longer a co-owner (a commenter or denied), no project role that may start tasks, or only a viewer", async () => {
+    for (const [name, t] of [["denied", setup("denied")], ["commenter", setup("commenter")], ["left the company", setup("owner", false)], ["no project grant", setup("owner", true, { grant: "none" })], ["viewer", setup("owner", true, { grant: "viewer" })]] as const) {
+      await t.deliver();
+      expect(t.post, name).not.toHaveBeenCalled();
+      expect(t.db.get(`DEVTASK#${taskId}`, key), name).toMatchObject({ status: "CANCELLED" });
+    }
+  });
+
+  it("is dropped when the task is closed, or was already taken over by someone else", async () => {
+    const closed = setup("owner", true, { closed: true });
+    await closed.deliver();
+    expect(closed.post).not.toHaveBeenCalled();
+    expect(closed.db.get(`DEVTASK#${taskId}`, key)).toMatchObject({ status: "CANCELLED" });
+    const taken = setup("owner", true, { takenOverBy: "c".repeat(64) });
+    await taken.deliver();
+    expect(taken.post).not.toHaveBeenCalled();
+    expect(taken.db.get(`DEVTASK#${taskId}`, key)).toMatchObject({ status: "CANCELLED" });
   });
 });
 

@@ -228,6 +228,21 @@ async function deferForSlack(dependencies: AwsBrokerDependencies, item: Workflow
   return "DISPATCHED";
 }
 
+/** The access check answered: ends an earlier Slack wait (the clock on the row, the note on the workflow at its revision). Best effort; a lost race changes nothing. */
+async function clearSlackWait(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord, workflow: WorkflowSnapshot): Promise<void> {
+  if ((item as { slackWaitSince?: unknown }).slackWaitSince !== undefined) {
+    try {
+      await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk }, UpdateExpression: "REMOVE slackWaitSince", ConditionExpression: "attribute_exists(pk)" }));
+    } catch (error) { if (!isConditional(error)) throw error; }
+  }
+  if (workflow.accessCheckWaitSince !== undefined) {
+    try {
+      await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: taskKey(item.taskId), UpdateExpression: "REMOVE workflow.accessCheckWaitSince",
+        ConditionExpression: "workflow.revision = :revision AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":revision": workflow.revision } }));
+    } catch (error) { if (!isConditional(error)) throw error; }
+  }
+}
+
 /** Puts a waiting dispatch row's next sweep off, conditional on the attempts it was read with (a row someone else moved is left to them). */
 async function waitForMachine(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
   const next = new Date(Date.now() + WAIT_FOR_MACHINE_MS).toISOString();
@@ -373,7 +388,10 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
     // started: the task blocks where it stands with a plain reason, the row goes (nothing retries it), and the refusal is audited. IMPLEMENT asks the same inside its own start (its path names the round).
     // GROUNDING asks inside its own start (a check already running is not cut off: `runGroundingStep`), and CHECKS after a round was admitted goes on with it.
     const underway = item.kind === "GROUNDING" || (item.kind === "CHECKS" && workflow.e2e?.currentRoundId !== undefined);
-    if (item.kind !== "IMPLEMENT" && !underway && await stopIfOwnerRefused(routeDependencies, task, workflow, "queued_dispatch")) { await remove(); return "STALE"; }
+    const asked = item.kind !== "IMPLEMENT" && !underway;
+    if (asked && await stopIfOwnerRefused(routeDependencies, task, workflow, "queued_dispatch")) { await remove(); return "STALE"; }
+    // The access check answered (Slack included): an earlier Slack wait is over, on the row and on the task, so a later short outage starts its own 30 minutes and the page stops saying "Waiting for Slack".
+    if (asked) await clearSlackWait(dependencies, item, workflow);
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.
     let outcome: "STARTED" | "DUPLICATE" | "STALE" | "WAITING";
     if (item.kind === "CHECKS") {

@@ -358,17 +358,47 @@ describe("others who can take the task over are told once when Rovara stops a st
   ] });
   const rows = (t: Awaited<ReturnType<typeof world>>, taskId: string) => t.h.db.find((item) => item.pk === `DEVTASK#${taskId}` && item.entityType === "TASK_OWNER_STOPPED_NOTIFICATION");
 
-  it("a co-owner and a commenter get one pending notice each; the effective owner, a viewer and a denied person get none", async () => {
+  const withGrant = (t: Awaited<ReturnType<typeof world>>, who: string, role: "developer" | "viewer" = "developer") =>
+    t.h.db.set({ ...projectMemberKey(TEST_ORG, who, "payments"), entityType: "MEMBERSHIP", ownerKey: who, projectName: "payments", role });
+
+  it("only a co-owner who can really take over gets a notice: a project role that may start tasks and a writer org role; not the effective owner, a commenter, a viewer, a denied person, a co-owner without project access or one who is only a project viewer", async () => {
     const t = await world();
     const round = await t.ciRound();
     people(t, round.taskId);
+    withGrant(t, OMAR.developerId);
     t.notAMember();
     await t.sweep();
-    expect(rows(t, round.taskId).map((row) => row.targetDeveloperId).sort()).toEqual([OMAR.developerId, BEA].sort());
+    expect(rows(t, round.taskId).map((row) => row.targetDeveloperId)).toEqual([OMAR.developerId]);
     expect(rows(t, round.taskId).every((row) => row.status === "PENDING" && row.attempts === 0 && typeof row.slackUserId === "string")).toBe(true);
     // A second look finds nothing to do and adds nothing.
     await t.sweep();
-    expect(rows(t, round.taskId)).toHaveLength(2);
+    expect(rows(t, round.taskId)).toHaveLength(1);
+  });
+
+  it("a co-owner with no project grant, or only a viewer grant, is not told", async () => {
+    const none = await world();
+    const a = await none.ciRound();
+    people(none, a.taskId);
+    none.notAMember();
+    await none.sweep();
+    expect(rows(none, a.taskId)).toEqual([]);
+    const viewer = await world();
+    const b = await viewer.ciRound();
+    people(viewer, b.taskId);
+    withGrant(viewer, OMAR.developerId, "viewer");
+    viewer.notAMember();
+    await viewer.sweep();
+    expect(rows(viewer, b.taskId)).toEqual([]);
+  });
+
+  it("a company owner or admin who is a co-owner is told even with no grant (a maintainer of every project)", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    people(t, round.taskId);
+    t.h.db.set({ ...orgMemberKey(TEST_ORG, OMAR.developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: OMAR.developerId, role: "admin", joinedAt: "2026-10-01T00:00:00.000Z" });
+    t.notAMember();
+    await t.sweep();
+    expect(rows(t, round.taskId).map((row) => row.targetDeveloperId)).toEqual([OMAR.developerId]);
   });
 
   it("the same stop recorded twice (a retried refusal) is still one notice per person", async () => {
@@ -376,18 +406,20 @@ describe("others who can take the task over are told once when Rovara stops a st
     const round = await t.ciRound();
     people(t, round.taskId);
     const task = t.meta(round.taskId) as never;
+    withGrant(t, OMAR.developerId);
     const table = { documentClient: t.h.db as never, tableName: "state" };
-    expect(await notifyOthersOfStop(table, task, "ci_fix_round#31", NOW)).toBe(2);
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#31", NOW)).toBe(1);
     expect(await notifyOthersOfStop(table, task, "ci_fix_round#31", NOW)).toBe(0);
-    expect(rows(t, round.taskId)).toHaveLength(2);
+    expect(rows(t, round.taskId)).toHaveLength(1);
     // Another stop is another notice.
-    expect(await notifyOthersOfStop(table, task, "ci_fix_round#40", NOW)).toBe(2);
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#40", NOW)).toBe(1);
   });
 
   it("a removed owner's stop also tells the co-owner, and the notice names nobody", async () => {
     const t = await world();
     const round = await t.ciRound();
     people(t, round.taskId);
+    withGrant(t, OMAR.developerId);
     t.remove();
     await t.sweep();
     expect(rows(t, round.taskId).map((row) => row.targetDeveloperId)).toContain(OMAR.developerId);
@@ -425,6 +457,24 @@ describe("M6: a Slack outage defers with an age cap and says so on the task", ()
     expect(workflow.accessCheckWaitSince).toMatchObject({ revision: workflow.revision });
     expect(t.rows(round.taskId)[0]!.slackWaitSince).toBeDefined();
     expect(taskPageStage(workflow, false, true).status).toContain("Slack");
+  });
+
+  it("when Slack answers again, the wait ends: the note on the task and the wait clock on the row are cleared, so a later short outage starts its own 30 minutes", async () => {
+    const t = await world();
+    const round = await t.stepRound("PLAN");
+    t.h.channelMembers.mockImplementation(async () => ({ ok: false } as never));
+    await t.sweep();
+    expect(t.meta(round.taskId).workflow.accessCheckWaitSince).toBeDefined();
+    const row = t.rows(round.taskId)[0]!;
+    // The first miss was long ago, but Slack is back now.
+    const past = new Date(Date.now() - 31 * 60_000).toISOString();
+    t.h.db.set({ ...row, slackWaitSince: past, nextAttemptAt: past, dispatchDueSk: `${past}#${String(row.sk)}` });
+    t.h.channelMembers.mockImplementation(async (request) => ({ ok: true, memberOf: request.slackUserId === MAYA.slackUserId ? request.channelIds : [] }));
+    await t.sweep();
+    expect(t.meta(round.taskId).workflow.accessCheckWaitSince).toBeUndefined();
+    expect(t.rows(round.taskId).every((remaining) => remaining.slackWaitSince === undefined)).toBe(true);
+    expect(t.refused()).toEqual([]);
+    expect(String(t.meta(round.taskId).workflow.blockReason ?? "")).not.toContain("Rovara didn't start");
   });
 
   it("after 30 minutes of it the step is blocked with a plain, retryable reason, the row goes, and it is audited", async () => {
