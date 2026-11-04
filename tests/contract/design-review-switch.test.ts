@@ -64,7 +64,7 @@ describe.each(SWITCHES)("the $name switch", ({ parameter, setting, code, variabl
 
 describe("the design review project allowlist (`dp`)", () => {
   it("is a plain-text stack parameter, empty by default, that reaches the broker in its packed settings with no Lambda variable of its own", () => {
-    expect((named.toJSON() as { Parameters: Record<string, unknown> }).Parameters.DesignReviewProjects).toMatchObject({ Type: "String", Default: "", MaxLength: 64 });
+    expect((named.toJSON() as { Parameters: Record<string, unknown> }).Parameters.DesignReviewProjects).toMatchObject({ Type: "String", Default: "", MaxLength: 20 });
     expect(brokerSettingsIn(brokerVariables(named)).designReviewProjects).toEqual({ Ref: "DesignReviewProjects" });
     expect(brokerVariables(named)).not.toHaveProperty("DESIGN_REVIEW_PROJECTS");
     expect(BROKER_SETTINGS.designReviewProjects).toEqual({ code: "dp", variable: "DESIGN_REVIEW_PROJECTS" });
@@ -76,7 +76,7 @@ describe("the design review project allowlist (`dp`)", () => {
     expect(entry.target).toEqual({ kind: "stack-parameter", part: "control-plane", parameter: "DesignReviewProjects" });
     expect(entry.parse("payments:web")).toBe("payments:web");
     expect(entry.parse("")).toBe("");
-    for (const bad of ["Payments", "a,b", "a b", "a:", ":a", `a${"b".repeat(64)}`]) expect(() => entry.parse(bad), bad).toThrow("nothing changed");
+    for (const bad of ["Payments", "a,b", "a b", "a:", ":a", `a${"b".repeat(20)}`]) expect(() => entry.parse(bad), bad).toThrow("nothing changed");
     expect(OPERATOR_PARAMETERS["control-plane"]).toEqual(expect.arrayContaining(["DesignReviewProjects"]));
   });
 
