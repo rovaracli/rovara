@@ -18,9 +18,9 @@ export function NotesNote() {
  const at = T.SRC_NOTES_NOTE.indexOf(T.SRC_NOTES_LINK_TEXT);
  return <p className="rv-muted">{T.SRC_NOTES_NOTE.slice(0, at)}<a href={T.SRC_NOTES_LINK} target="_blank" rel="noopener noreferrer">{T.SRC_NOTES_LINK_TEXT}</a>{T.SRC_NOTES_NOTE.slice(at + T.SRC_NOTES_LINK_TEXT.length)}</p>;
 }
-/** The Public notes switch with its note. When the company only allows live reading for Slack (retention B is not offered) the switch is shown off and disabled, with one fixed reason. */
+/** The Public notes switch with its note. When the company only allows live reading for Slack (retention B is not offered) the switch cannot be turned ON and says why (one fixed reason); a row already at B can still be switched off. */
 export function NotesSwitch({ checked, onChange, offered }: { checked: boolean; onChange: (next: boolean) => void; offered: boolean }) {
- return <><Switch label={T.SRC_NOTES_SWITCH} checked={checked} onCheckedChange={onChange} disabled={!offered} />{!offered && <p className="rv-muted">{T.SRC_NOTES_LIVE_ONLY}</p>}<NotesNote /></>;
+ return <><Switch label={T.SRC_NOTES_SWITCH} checked={checked} onCheckedChange={onChange} disabled={!offered && !checked} />{!offered && <p className="rv-muted">{T.SRC_NOTES_LIVE_ONLY}</p>}<NotesNote /></>;
 }
 export const AUDIENCE_OPTIONS = [{ value: "project", label: T.SRC_AUDIENCE_PROJECT }, { value: "maintainers", label: T.SRC_AUDIENCE_MAINTAINERS }] as const;
 const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((value, index) => value === b[index]);

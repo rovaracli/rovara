@@ -354,6 +354,18 @@ describe("T9: the Public edition's notes-with-links switch", () => {
   await waitFor(() => { expect(f.posts).toHaveLength(1); });
   expect(f.posts[0]).toMatchObject({ action: "add", scope: "slack:T1/C8", retention: "A" });
  });
+ it("a Slack row already at B with the opt-in can still be switched off when the company only allows A: the switch is enabled and sends retention A, notesOptIn null", async () => {
+  const lockedToA = publicView({ sources: [slackRow({ retention: "B", notesOptIn: true })], offered: { github: ["A", "B", "C", "D"], rovara: ["A", "B", "C", "D"], slack: ["A"], linear: ["A", "B", "C"], jira: ["A", "B", "C"], codehost: ["A"], mcp: ["A"] } });
+  const f = await openEditor({ view: lockedToA });
+  const slack = slackRegion();
+  const notes = within(slack).getByRole("switch", { name: "Keep notes with links" });
+  expect(notes.getAttribute("aria-checked")).toBe("true");
+  expect(notes.hasAttribute("disabled")).toBe(false);
+  fireEvent.click(notes);
+  fireEvent.click(within(slack).getByRole("button", { name: "Save changes" }));
+  await waitFor(() => { expect(f.posts).toHaveLength(1); });
+  expect(f.posts[0]).toMatchObject({ action: "change", scope: "slack:T1/C9", retention: "A", notesOptIn: null });
+ });
  it("the reason is not shown when retention B is offered", async () => {
   await openEditor({ view: publicView({ sources: [slackRow()] }) });
   pick("What to add", "slack");

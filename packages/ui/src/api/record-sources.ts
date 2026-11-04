@@ -1,5 +1,5 @@
 // The project's Team record sources, as the Sources tab's editors see and change them (source-row lane T5). The admin view comes only from a live browser session; the writes go to the same route.
-// A write is sent once and never retried. The route answers some refusals with a flat `{code, message}` body (SOURCE_REMOVAL_RUNNING, SOURCE_NOT_ALLOWED, SOURCE_KIND_NOT_YET), which the shared client cannot read,
+// A write is sent once and never retried. The route answers some refusals with a flat `{code, message}` body (SOURCE_REMOVAL_RUNNING, SOURCE_CLEARING, SOURCE_REMOVAL_BUSY, SOURCE_NOT_ALLOWED, SOURCE_KIND_NOT_YET), which the shared client cannot read,
 // so a write reads its own refusal here. Only the fixed `code` is kept; the server's text is never shown.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
