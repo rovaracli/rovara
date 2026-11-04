@@ -60,7 +60,8 @@ withhold_test_services_for_ipv6() {
   local reason=$1 file=${WORKER_ENV_FILE:-/etc/agentx/worker.env} tmp line from to
   from='"ipv6Drops":true'
   to="\"ipv6Drops\":false,\"ipv6DropsReason\":\"$reason\""
-  tmp=$(mktemp) || return 1
+  # A private (0600) temp file in the SAME directory, moved over the target: the replace is atomic, so a reader never sees a half-written worker.env.
+  tmp=$(mktemp "$file.XXXXXX") || return 1
   if [[ -f "$file" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       case $line in
@@ -71,8 +72,7 @@ withhold_test_services_for_ipv6() {
     done <"$file"
   fi
   printf 'AGENTX_TEST_SERVICES_NOT_PULLED=all\n' >>"$tmp"
-  cat "$tmp" >"$file" || { rm -f "$tmp"; return 1; }
-  rm -f "$tmp"
+  mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
   log "TEST SERVICES WITHHELD: could not drop IPv6 from run networks into the host ($reason); the worker runs normal tasks and offers no test services"
 }
 # 5. The walls above and the isolation DROP are not in the container firewall unit (boot.sh, at its size limit, writes that), so they would be lost at a host reboot or a Docker restart (a restart rebuilds Docker's chains) if
@@ -81,8 +81,8 @@ withhold_test_services_for_ipv6() {
 readonly RUN_WALLS_UNIT=rovara-run-walls.service
 install_run_walls_unit() {
   install -d -o root -g root -m 0755 /usr/local/libexec
-  # The run network wall is fatal here; the IPv6 one is not: a failure withholds test services (see 4b) and lets the worker start.
-  { printf 'set -e\nWORKER_ENV_FILE=%s\nlog() { printf "%%s\\n" "$*" >&2; }\n' "$WORKER_ENV_FILE"; declare -f ipv6_active wall_between_run_networks wall_ipv6_into_host ipv6_wall_failure_reason withhold_test_services_for_ipv6; printf 'wall_between_run_networks\nwall_ipv6_into_host || withhold_test_services_for_ipv6 "$(ipv6_wall_failure_reason)"\n'; } >/usr/local/libexec/rovara-run-walls || return 1
+  # The run network wall is fatal here; the IPv6 one is not: a failure withholds test services (see 4b) and lets the worker start. A worker that is already running is restarted (best effort, not waited for: it is ordered after this unit) so it re-reads its environment.
+  { printf 'set -e\nWORKER_ENV_FILE=%s\nWORKER_UNIT=%s\nlog() { printf "%%s\\n" "$*" >&2; }\n' "$WORKER_ENV_FILE" "$WORKER_UNIT"; declare -f ipv6_active wall_between_run_networks wall_ipv6_into_host ipv6_wall_failure_reason withhold_test_services_for_ipv6; printf 'wall_between_run_networks\nwall_ipv6_into_host || { withhold_test_services_for_ipv6 "$(ipv6_wall_failure_reason)" || exit 1; systemctl try-restart --no-block "$WORKER_UNIT" || true; }\n'; } >/usr/local/libexec/rovara-run-walls || return 1
   cat >"/etc/systemd/system/$RUN_WALLS_UNIT" <<UNIT || return 1
 [Unit]
 Description=Wall run networks off from each other and from the host over IPv6

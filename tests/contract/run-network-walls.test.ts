@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -258,6 +258,8 @@ esac
       tool("iptables", FAKE.replace('op=$1; shift; rule="$*"', 'op=$1; shift; rule="$*"\n[ "$op" = -S ] && exit 0'));
       tool("ip6tables", "#!/bin/bash\nexit 3\n");
       const envFile = join(directory, "worker.env");
+      // A fake systemctl that records each call with the worker.env it saw at that moment, so the order (withhold first, restart after) is checked.
+      tool("systemctl", `#!/bin/bash\necho "$* :: $(grep -c '^AGENTX_TEST_SERVICES_NOT_PULLED=all$' "${envFile}") withheld" >> "${join(directory, "systemctl.log")}"\nexit 5\n`);
       const facts = '{"metadataBlocked":true,"runWalls":true,"ipv6Drops":true,"prepull":"ok","prepulled":1,"loggedOut":true,"dockerVersion":"25.0.5"}';
       writeFileSync(envFile, `AGENTX_FOO=1\nAGENTX_TEST_SERVICES_NOT_PULLED=svc/postgres\nAGENTX_TEST_SERVICES_BOOT_FACTS=${facts}\nAGENTX_BAR=2\n`);
       const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory };
@@ -266,17 +268,42 @@ esac
         .replaceAll("/usr/local/libexec", join(directory, "libexec")).replaceAll("/etc/systemd/system", join(directory, "systemd"));
       const setup = `FIREWALL_UNIT=f.service\nWORKER_UNIT=w.service\nRUN_WALLS_UNIT=r.service\nWORKER_ENV_FILE=${envFile}\ninstall() { mkdir -p "\${@: -1}"; }\nsystemctl() { :; }\n${code}\nipv6_active() { true; }\ninstall_run_walls_unit`;
       expect(spawnSync("/bin/bash", ["-c", setup], { env, encoding: "utf8" }).status).toBe(0);
+      const scriptText = readFileSync(join(directory, "libexec/rovara-run-walls"), "utf8");
+      expect(scriptText.indexOf("withhold_test_services_for_ipv6 \"$(")).toBeGreaterThan(-1);
+      expect(scriptText.indexOf("withhold_test_services_for_ipv6 \"$(")).toBeLessThan(scriptText.indexOf("systemctl try-restart --no-block \"$WORKER_UNIT\" || true"));
       const ran = spawnSync("/bin/bash", [join(directory, "libexec/rovara-run-walls")], { env, encoding: "utf8" });
       expect(ran.status, ran.stderr).toBe(0);
       expect(ran.stderr).toContain("TEST SERVICES WITHHELD");
+      // The running worker is restarted after the withhold is in the file (best effort: the fake systemctl fails and the unit still exits 0), not waited for.
+      expect(readFileSync(join(directory, "systemctl.log"), "utf8")).toBe("try-restart --no-block w.service :: 1 withheld\n");
+      // The replace was atomic: the file is private, and no temp file is left beside it.
+      expect(statSync(envFile).mode & 0o777).toBe(0o600);
+      expect(readdirSync(directory).filter((name) => name.startsWith("worker.env."))).toEqual([]);
       const lines = readFileSync(envFile, "utf8").split("\n").filter(Boolean);
       expect(lines.filter((line) => line.startsWith("AGENTX_TEST_SERVICES_NOT_PULLED="))).toEqual(["AGENTX_TEST_SERVICES_NOT_PULLED=all"]);
       expect(lines).toEqual(expect.arrayContaining(["AGENTX_FOO=1", "AGENTX_BAR=2"]));
       const written = lines.find((line) => line.startsWith("AGENTX_TEST_SERVICES_BOOT_FACTS="))?.slice("AGENTX_TEST_SERVICES_BOOT_FACTS=".length) ?? "";
       expect(JSON.parse(written)).toMatchObject({ ipv6Drops: false, ipv6DropsReason: "ip6tables-unusable", metadataBlocked: true });
+      // With a working ip6tables nothing is withheld and the worker is not restarted.
+      tool("ip6tables", FAKE.replace('op=$1; shift; rule="$*"', 'op=$1; shift; rule="$*"\n[ "$op" = -S ] && exit 0'));
+      rmSync(join(directory, "systemctl.log"));
+      expect(spawnSync("/bin/bash", [join(directory, "libexec/rovara-run-walls")], { env, encoding: "utf8" }).status).toBe(0);
+      expect(existsSync(join(directory, "systemctl.log"))).toBe(false);
       // The run-network wall (iptables) is still fatal in the unit.
       tool("iptables", "#!/bin/bash\nexit 1\n");
       expect(spawnSync("/bin/bash", [join(directory, "libexec/rovara-run-walls")], { env, encoding: "utf8" }).status).not.toBe(0);
+    });
+    it("withhold_test_services_for_ipv6 writes through a same-directory temp file moved over the target, and failing to write it is an error (the callers stop the boot / the unit)", () => {
+      const body = fn("withhold_test_services_for_ipv6");
+      expect(body).toContain('tmp=$(mktemp "$file.XXXXXX") || return 1');
+      expect(body).toContain('mv -f "$tmp" "$file"');
+      expect(body).not.toMatch(/>\s*"\$file"/u);
+      const directory = mkdtempSync(join(tmpdir(), "rovara-withhold-"));
+      const run = (file: string) => spawnSync("/bin/bash", ["-c", `log() { :; }\n${body}\nWORKER_ENV_FILE=${file}\nwithhold_test_services_for_ipv6 ip6tables-unusable`], { encoding: "utf8" });
+      writeFileSync(join(directory, "worker.env"), "A=1\n");
+      expect(run(join(directory, "worker.env")).status).toBe(0);
+      expect(readFileSync(join(directory, "worker.env"), "utf8")).toBe("A=1\nAGENTX_TEST_SERVICES_NOT_PULLED=all\n");
+      expect(run(join(directory, "missing-dir", "worker.env")).status).not.toBe(0);
     });
     it("stage 2 is where it lives: boot.sh (at its size limit) holds only its best-effort rule, the INPUT drop is not allowed through (-j DROP only), and it runs after the address pools", () => {
       const main = fn("stage2_main");
