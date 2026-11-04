@@ -51,7 +51,7 @@ import { releaseIfFinished } from "./terminal-and-github-events.js";
 import { askForPausedTask, blockEndedOperationKeys } from "./terminal-result.js";
 import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole, sharedThread, sharedThreadOpen, slackRequesterProjectAccess } from "./workspace-preparation.js";
 import { viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
-import { AuditEventInputSchema, auditEventId, canonicalJson } from "@agentx/contracts";
+import { AuditEventInputSchema, addDesignUsd, auditEventId, canonicalJson } from "@agentx/contracts";
 import { TaskFundingProofSchema, actualCompanyFunding, fundingAuditItems, fundingRevisionCheck } from "../../org/task-stop-funding.js";
 import { type TransactItem, failedIndexes, isTransactionConflict } from "../../agents/table-writes.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -347,7 +347,17 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
         : await unreadable("chain_run", () => getItem<{ chainId?: string }>(dependencies, chainRunKey(taskOrg, task.chain!.chainRunId, "META")));
       const chainTag = chainRun?.chainId === undefined || task.chain === undefined ? undefined : { chainId: chainRun.chainId, chainRunId: task.chain.chainRunId };
       // B2-M1: the planner's resolve run for a design review is held to what is left under the review's cap (its measured spend is added to the review's total when it ends). No room, no key.
-      const plannerRoomUsd = plannerRunRoomUsd(task.workflow, current);
+      let plannerRoomUsd = plannerRunRoomUsd(task.workflow, current);
+      // ON-10: ONE budget for the whole run, not one per key. A key minted again for the same run first closes the run's earlier keys (the proxy counts what it had admitted) and is given the room less what they measured,
+      // so the keys together stay inside the cap. A meter or a block that cannot answer is the retryable answer: nothing is minted on a guess.
+      if (plannerRoomUsd !== undefined && (current.modelKeyIds ?? []).length > 0) {
+        const earlier = [...new Set(current.modelKeyIds)];
+        const spentSoFar = await unreadable("planner_earlier_keys", async () => {
+          for (const keyId of earlier) await modelAccess.access.blockKey(keyId);
+          return modelAccess.access.keySpend(earlier);
+        });
+        plannerRoomUsd = Math.max(0, addDesignUsd(plannerRoomUsd, -spentSoFar));
+      }
       if (plannerRoomUsd !== undefined && !(plannerRoomUsd > 0)) throw agentXError("BUDGET_EXCEEDED", "The design review has no budget left for the planner's answer.");
       return {
         orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,

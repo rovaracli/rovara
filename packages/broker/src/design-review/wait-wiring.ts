@@ -8,7 +8,7 @@ import { listProjectMembers } from "../org/project-members.js";
 import { readApproverRoster } from "../org/second-person-evidence.js";
 import type { DesignApproverDirectory } from "./approval.js";
 import { readEffectiveDesignReview } from "./setting.js";
-import { designReviewEnabled, designReviewEnabledFor } from "./switch.js";
+import { designReviewEnabledFor } from "./switch.js";
 import { releaseDesignReviewRound } from "./round-record.js";
 import { roundRecordPortsOf } from "./wiring.js";
 import { sweepDesignWaits, type DesignWaitSweepDeps } from "./wait-sweep.js";
@@ -48,7 +48,7 @@ export function designWaitSweepDepsOf(dependencies: AwsBrokerDependencies): Desi
       return found;
     },
     // Block and finalize the keys of the task's design-review rounds (the proxy counts what it had admitted, the ledger drops the unspent hold) and remove their stored packets. Idempotent, so a round already recorded is a no-op.
-    releaseKeys: async (task) => {
+    releaseKeys: async (task, throughRound) => {
       try {
         const ports = roundRecordPortsOf(dependencies);
         const operations = (await queryAllItems(table, `WORKSPACE#${task.workspaceId}`, "OPERATION#"))
@@ -56,6 +56,8 @@ export function designWaitSweepDepsOf(dependencies: AwsBrokerDependencies): Desi
           .sort((left, right) => String(left["createdAt"]).localeCompare(String(right["createdAt"]))).slice(-ROUNDS_RELEASED);
         for (const operation of operations) {
           const binding = DesignReviewBindingSchema.parse(operation["designReview"]);
+          // A round that began after the task was read is a later round's (ON-8): its live keys are left alone.
+          if (binding.round > throughRound) continue;
           if (typeof operation["orgId"] === "string") await releaseDesignReviewRound(ports, { id: String(operation["id"]), orgId: operation["orgId"], designReview: binding });
         }
       } catch (error) {
@@ -65,8 +67,10 @@ export function designWaitSweepDepsOf(dependencies: AwsBrokerDependencies): Desi
   };
 }
 
-/** The recovery sweep's design-wait step. With the `dr` switch off for the whole environment it returns at once, reading nothing. */
+/**
+ * The recovery sweep's design-wait step. It runs with the `dr` switch off too (ON-7): then `enabledFor` is false for every project, so the sweep does only its switched-off work (it ends the cost holds as not run,
+ * `switched_off`, parked ones included) and starts no reminder, park or close. With nothing waiting it is one read of an index partition that holds no rows.
+ */
 export async function designWaitSweepOf(dependencies: AwsBrokerDependencies): Promise<{ attempted: number }> {
-  if (!designReviewEnabled()) return { attempted: 0 };
   return sweepDesignWaits(designWaitSweepDepsOf(dependencies));
 }

@@ -4,7 +4,7 @@
 //   - at 7 days: `parkDesignReview`, with the model keys of the task's design-review rounds blocked and finalized first (what they held is dropped) and a "parked" notice, in one commit;
 //   - at 30 days parked: `closeParkedDesignReview`, the task's release mark and a "closed" notice, in one commit.
 // NOTHING HERE APPROVES, ANSWERS OR SKIPS. The moves it makes record no decision. With the `dr` switch off, or the project not named in `dp`, it does nothing new for the task: no reminder, no park, no close (the row is looked at
-// again in an hour). The one exception is the cost hold, which is ended the way every other step of a switched-off review is (B2-m3): not run, `switched_off`, and the design goes to the person's card. A wait for answers cannot be
+// again in an hour). The one exception is the cost hold, parked or not, which is ended the way every other step of a switched-off review is (B2-m3): not run, `switched_off`, and the design goes to the person's card. A wait for answers cannot be
 // ended by anyone but the person (`closeDesignReview` refuses it); their answer reaches the planner's step, which ends the review as `switched_off` itself. A design card already waits for the person.
 import { QueryCommand, TransactWriteCommand, UpdateCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { WORKFLOW_DISPATCH_DUE_INDEX, WorkflowSnapshotSchema, closeDesignReview, closeParkedDesignReview, parkDesignReview, type EditionPolicy, type OrgId, type WorkflowSnapshot } from "@agentx/contracts";
@@ -31,8 +31,11 @@ export interface DesignWaitSweepDeps {
   edition: EditionPolicy | undefined;
   /** Display names and Slack ids of people, by developer id. A person who cannot be found is left out. */
   people(orgId: OrgId, ids: readonly string[]): Promise<ReadonlyMap<string, WaitPerson>>;
-  /** Blocks and finalizes the model keys of the task's design-review rounds and drops what they held. Idempotent; never throws. */
-  releaseKeys(task: DeveloperTaskRecord): Promise<void>;
+  /**
+   * Blocks and finalizes the model keys of the task's design-review rounds up to round `throughRound` (the rounds recorded when the task was read) and drops what they held. A round numbered above that began after the read
+   * (a spend choice landed and the next round started): its keys are not this sweep's to close (ON-8). Idempotent; never throws.
+   */
+  releaseKeys(task: DeveloperTaskRecord, throughRound: number): Promise<void>;
   log(entry: Record<string, unknown>): void;
 }
 
@@ -96,8 +99,8 @@ export async function settleDesignWait(deps: DesignWaitSweepDeps, taskId: string
   }
   const { wait, step } = due;
   if (!deps.enabledFor(task.project)) {
-    // The cost hold only waits for a spending choice for a review that is no longer to run: end it as every step does when the switch is off.
-    if (wait.kind === "cost" && wait.parkedAt === undefined) {
+    // The cost hold only waits for a spending choice for a review that is no longer to run: end it as every step does when the switch is off. A PARKED hold too (ON-7): it would otherwise be looked at every hour for ever.
+    if (wait.kind === "cost") {
       const ended = closeDesignReview(workflow, { expectedRevision: workflow.revision, outcome: "not_run", notRunReason: "switched_off", now: nowIso });
       try {
         await deps.documentClient.send(new UpdateCommand({
@@ -136,7 +139,7 @@ export async function settleDesignWait(deps: DesignWaitSweepDeps, taskId: string
     return "reminded";
   }
   // Park and close both end the task's use of its model keys for good: they are released first (idempotent), so a commit that loses a race has still left nothing live.
-  await deps.releaseKeys(task);
+  await deps.releaseKeys(task, workflow.designReview?.rounds.length ?? 0);
   const next = step.kind === "park"
     ? parkDesignReview(workflow, { expectedRevision: workflow.revision, now: nowIso })
     : closeParkedDesignReview(workflow, { expectedRevision: workflow.revision, now: nowIso });

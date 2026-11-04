@@ -77,7 +77,7 @@ import { verifyWorkflowE2EEvidence, workflowE2EPresentationDetailed, type Workfl
  */
 export async function retryDueWorkflowDispatches(dependencies: AwsBrokerDependencies): Promise<{ attempted: number; dispatched: number }> {
   await sweepGroundingHolds(dependencies);
-  // DR10: reminders, park and close for design reviews waiting on people (reads nothing while the `dr` switch is off). A failure here never holds back the dispatch rows.
+  // DR10: reminders, park and close for design reviews waiting on people (with the `dr` switch off it only ends cost holds as not run). A failure here never holds back the dispatch rows.
   await designWaitSweepOf(dependencies).catch((error: unknown) => console.log(JSON.stringify({ component: "broker", event: "design_review.wait_sweep_failed", error: error instanceof Error ? error.name : "unknown" })));
   const page = await dependencies.documentClient.send(new QueryCommand({
     TableName: dependencies.tableName,
