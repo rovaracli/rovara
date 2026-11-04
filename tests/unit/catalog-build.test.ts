@@ -484,7 +484,8 @@ describe("the real ports (against fake commands and a fake ECR; nothing is run)"
   it("mirrors with every platform and the digests kept, a destination tag derived from the digest, and the credential in a file, never in an argument", async () => {
     const { port, log } = commands(indexManifest);
     const result = await skopeoMirrorPort({ commands: port, registry: "111122223333.dkr.ecr.us-west-2.amazonaws.com", authFile: "/tmp/auth/config.json" })({ id: "postgres@16", source: `registry.example.com/library/postgres@sha256:${digest}`, repositoryName: "rovara-catalog/staging/svc/postgres", expectedDigest: digest });
-    expect(log[0]).toEqual({ file: "skopeo", args: ["copy", "--all", "--preserve-digests", "--dest-authfile", "/tmp/auth/config.json", `docker://registry.example.com/library/postgres@sha256:${digest}`, `docker://111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres:${digest.slice(0, 32)}`], env: undefined });
+    // The source is read with the auth file too: repack leaves it in the install's private repository (a staging run failed without it).
+    expect(log[0]).toEqual({ file: "skopeo", args: ["copy", "--all", "--preserve-digests", "--src-authfile", "/tmp/auth/config.json", "--dest-authfile", "/tmp/auth/config.json", `docker://registry.example.com/library/postgres@sha256:${digest}`, `docker://111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres:${digest.slice(0, 32)}`], env: undefined });
     expect(log[1]!.args).toEqual(["inspect", "--raw", "--authfile", "/tmp/auth/config.json", `docker://111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres@sha256:${digest}`]);
     // The digest is HASHED from the manifest bytes the destination served, not read from anything it said.
     // The platforms are the index's, each with its OWN manifest digest; the attestation manifest and an entry without a real digest are not platforms.

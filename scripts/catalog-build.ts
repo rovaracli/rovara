@@ -458,7 +458,10 @@ export function skopeoMirrorPort(input: { commands: CommandPort; registry: strin
     const destination = `${input.registry}/${repositoryName}`;
     // A Rovara-built layout is copied from disk (`oci:<dir>`: skopeo refuses a layout that holds more than one image, and `readBuiltSource` already checked that it holds exactly the one named by digest); everything after the copy is the same.
     const from = built === undefined ? `docker://${source}` : `oci:${built.layoutPath}`;
-    await input.commands.run("skopeo", ["copy", "--all", "--preserve-digests", "--dest-authfile", input.authFile, from, `docker://${destination}:${tagFor(expectedDigest)}`], { timeoutMs: input.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
+    // A registry source is read with the same auth file: repack leaves the source in the install's own private repository, which refuses an anonymous read.
+    // The file holds only the install registry's credential, so a public source is still read anonymously. A layout on disk needs none.
+    const sourceAuth = built === undefined ? ["--src-authfile", input.authFile] : [];
+    await input.commands.run("skopeo", ["copy", "--all", "--preserve-digests", ...sourceAuth, "--dest-authfile", input.authFile, from, `docker://${destination}:${tagFor(expectedDigest)}`], { timeoutMs: input.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
     const byDigest = `docker://${destination}@sha256:${expectedDigest}`;
     const raw = await input.commands.run("skopeo", ["inspect", "--raw", "--authfile", input.authFile, byDigest]);
     const digest = createHash("sha256").update(raw).digest("hex");
