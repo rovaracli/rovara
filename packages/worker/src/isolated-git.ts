@@ -1,13 +1,13 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { agentXError } from "@agentx/contracts";
 import { candidateWriteStep, commitLock, kindIn, lockIn, openDirectory, readFileIn, releaseLock, workTreeByDescriptor, type DirectoryLock, type HeldDirectory } from "./candidate-fs.js";
+import { makeWorkerScratch } from "./worker-scratch.js";
 import { assertNoEmbeddedRepositories, assertNoLfsFiles, isolatedGitEnvironment } from "./git.js";
 
 const execFile = promisify(execFileCallback);
@@ -137,7 +137,7 @@ export interface IsolatedGit {
 }
 
 /**
- * Runs `use` against a throwaway bare repository this worker created under the temporary directory, then removes it on every path. Git reads the candidate's
+ * Runs `use` against a throwaway bare repository this worker created in its scratch directory (worker-scratch.ts, never on the workspace volume), then removes it on every path. Git reads the candidate's
  * objects through `objects/info/alternates` and writes the objects it creates (the tree of a snapshot, a commit, a fetched pack) to the throwaway repository's own
  * object directory. `"write"` then copies them into the candidate's object directory, where the candidate repository and later reviews read them, through the
  * worker's own descriptor-relative writes (candidate-fs.ts) rather than through Git, which would follow a symlink the agent put in `objects/`. `"read"` writes
@@ -164,7 +164,7 @@ export async function withIsolatedGit<T>(
   } = {},
 ): Promise<T> {
   const layout = await candidateLayout(directory);
-  const scratch = await mkdtemp(join(tmpdir(), "agentx-candidate-git-"));
+  const scratch = await makeWorkerScratch("agentx-candidate-git-");
   let workTreeHeld: HeldDirectory | undefined;
   try {
     const gitDir = join(scratch, "worker.git");
@@ -237,6 +237,12 @@ export async function withIsolatedGit<T>(
 
 /** Leaves a file tool's leftover temporary file (`.agentx-file-ops-*`, from a write the helper was killed in) out of every snapshot. */
 export const CANDIDATE_EXCLUDE_PATHSPEC = ":(exclude,glob)**/.agentx-file-ops-*";
+/**
+ * Leaves the sandbox's Python user site (`.agentx-python`, task-sandbox.ts; a drift test pins the name) out of every snapshot, at the top of the work tree only (C67). Its own `.gitignore` of
+ * `*` is the first line of defence; a task that deletes that file, or force-adds the folder to the index, must not get a program of its own into the candidate that way. A task that commits
+ * the folder to HEAD keeps it in the snapshot (it is then in the reviewed diff, so nothing is hidden), and later edits to a tracked folder are not captured.
+ */
+export const CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC = ":(top,exclude,literal).agentx-python";
 
 /**
  * The tree of `commit` plus the work tree as it is now, computed in `git`'s temporary index (never the candidate's real one): `read-tree`, then `add --all`, then
@@ -264,10 +270,10 @@ export async function addWorkTree(git: IsolatedGit, index: IndexKind, gitlinks: 
       throw agentXError("CONFIG_INVALID", `the repository has a submodule at ${path} that is no longer a directory. AgentX tasks do not yet support changes to a project's submodules.`);
     }
   }
-  if (gitlinks.length === 0) await git.text(["add", "--all", "--", ".", CANDIDATE_EXCLUDE_PATHSPEC], { index, maxBuffer: 1024 * 1024 });
+  if (gitlinks.length === 0) await git.text(["add", "--all", "--", ".", CANDIDATE_EXCLUDE_PATHSPEC, CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC], { index, maxBuffer: 1024 * 1024 });
   else {
     const pathspecs = join(git.scratch, "pathspecs");
-    await writeFile(pathspecs, [".", CANDIDATE_EXCLUDE_PATHSPEC, ...gitlinks.map((path) => `:(exclude,literal)${path}`)].map((entry) => `${entry}\0`).join(""), { mode: 0o600 });
+    await writeFile(pathspecs, [".", CANDIDATE_EXCLUDE_PATHSPEC, CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC, ...gitlinks.map((path) => `:(exclude,literal)${path}`)].map((entry) => `${entry}\0`).join(""), { mode: 0o600 });
     await git.text(["add", "--all", `--pathspec-from-file=${pathspecs}`, "--pathspec-file-nul"], { index, maxBuffer: 1024 * 1024 });
   }
 }

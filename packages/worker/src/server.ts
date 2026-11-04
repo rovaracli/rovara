@@ -31,6 +31,11 @@ export interface WorkerExecutor {
   withheldInvocationFeatures?(): Readonly<Partial<Record<WorkerInvocationFeature, unknown>>>;
   /** Every feature `withheldInvocationFeatures` may name. If asking throws, all of these are withheld (fail closed). */
   withholdableInvocationFeatures?: readonly WorkerInvocationFeature[];
+  /**
+   * Why this worker cannot run tasks at all, found at start (for example worker scratch, worker-scratch.ts). /ping then answers the way a failed boot does (boot.sh's report_boot_failure):
+   * 503 and `{"status":"BootFailed","reason":...}`. The broker already reads that: a provisioning session fails at once, and a READY one counts it as a failed probe and is recycled.
+   */
+  bootFailure?: string;
 }
 
 export interface WorkerTerminalResult {
@@ -61,6 +66,8 @@ export interface WorkerServerState {
   activeOperations: Set<string>;
   invocationFeatures: readonly string[];
   invocationFeatureDiagnostics?: Readonly<Record<string, unknown>>;
+  /** See `WorkerExecutor.bootFailure`. */
+  bootFailure?: string;
   /** Required by the deployed worker; injectable for in-process tests. */
   invokeAuthentication?: InvokeAuthentication;
 }
@@ -78,6 +85,7 @@ export function createWorkerServerState(
     activeOperations: new Set(),
     invocationFeatures: [...WORKER_IMPLEMENTED_FEATURES, ...(executor.invocationFeatures ?? [])],
     ...(executor.invocationFeatureDiagnostics === undefined ? {} : { invocationFeatureDiagnostics: executor.invocationFeatureDiagnostics }),
+    ...(executor.bootFailure === undefined ? {} : { bootFailure: executor.bootFailure }),
     ...(invokeAuthentication === undefined ? {} : { invokeAuthentication }),
   };
 }
@@ -102,6 +110,8 @@ export function advertisedInvocationFeatures(state: WorkerServerState): { featur
 export async function handleWorkerRequest(request: Request, state: WorkerServerState): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/ping") {
+    // Not Healthy and no feature list: the same body the boot script's failure responder serves, which the broker already treats as a worker to stop using (session-steps.ts BootFailed).
+    if (state.bootFailure !== undefined) return response(503, { status: "BootFailed", reason: state.bootFailure.slice(0, 300) });
     const { features, withheld } = advertisedInvocationFeatures(state);
     const diagnostics = { ...state.invocationFeatureDiagnostics, ...withheld };
     return response(200, {

@@ -1,7 +1,7 @@
 // Bug K: a customer's `pip install --break-system-packages -r requirements-dev.txt` (Debian's pip, run as the sandbox's non-root user) installs into the
 // user site under the container's own HOME. Setup runs in one throw-away sandbox container and every later operation (the task, a send-back, the checks)
 // starts a new one from the image, so the installed tools were gone: `ruff` and `pytest` were "not found" (or off PATH) for the agent and for AgentX's checks.
-// Customer commands in the sandbox now get PYTHONUSERBASE on the workspace volume, with its bin first on PATH; a project command's own `env` still wins.
+// Customer commands in the sandbox now get PYTHONUSERBASE on the workspace volume, with its bin last on PATH; a project command's own `env` still wins.
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -173,7 +173,7 @@ describe("a customer's Python tools installed by setup (Bug K)", () => {
     const own = await sandbox.runCommand(command("python3", ["-c", "import os; print(os.environ['PYTHONUSERBASE'])"], { PYTHONUSERBASE: "/custom/base" }));
     expect(own.stdout.trim()).toBe("/custom/base");
     const defaultPath = await sandbox.runCommand(command("sh", ["-c", 'printf "%s" "$PATH"']));
-    expect(defaultPath.stdout.startsWith(`${join(root, ".agentx-python", "bin")}:`)).toBe(true);
+    expect(defaultPath.stdout.endsWith(`:${join(root, ".agentx-python", "bin")}`)).toBe(true);
     const ownPath = await sandbox.runCommand(command("sh", ["-c", 'printf "%s" "$PATH"'], { PATH: "/usr/bin:/bin" }));
     expect(ownPath.stdout).toBe("/usr/bin:/bin");
     await sandbox.dispose();
