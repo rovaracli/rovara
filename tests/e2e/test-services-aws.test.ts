@@ -359,12 +359,13 @@ describe("4. failure cases are flagged, never a quiet pass", () => {
     const { broker, checks } = await plans();
     // The fake emulator's ledger follows WHERE the sealed sandbox's SNS endpoint points: only a call that reaches the emulator (which has SNS switched off) is refused AND written to the ledger. A call to any other host is
     // nobody's: a static sinkhole name is never looked up, so nothing counts it. This is what the SDK does with AWS_ENDPOINT_URL_SNS.
-    let bench: Bench;
+    const holder: { bench?: Bench } = {};
     const callsSns = (): boolean => {
-      const exec = bench.fake.execs.find((entry) => entry.envFile?.includes("AWS_ENDPOINT_URL_SNS=") === true);
+      const exec = holder.bench?.fake.execs.find((entry) => entry.envFile?.includes("AWS_ENDPOINT_URL_SNS=") === true);
       return exec !== undefined && envOf(exec.envFile, "AWS_ENDPOINT_URL_SNS") === "http://aws:4566";
     };
-    bench = await workerBench({ aws: { ledger: () => ledgerOf({ s3: { PutObject: { calls: 3 } }, ...(callsSns() ? { sns: { Publish: { calls: 2, unsupported: 0, errors: 2 } } } : {}) }) } });
+    const bench = await workerBench({ aws: { ledger: () => ledgerOf({ s3: { PutObject: { calls: 3 } }, ...(callsSns() ? { sns: { Publish: { calls: 2, unsupported: 0, errors: 2 } } } : {}) }) } });
+    holder.bench = bench;
     const { started, round } = await run(bench, checks, broker.readiness);
     const sealedExec = bench.fake.execs.filter((entry) => entry.envFile?.includes("AWS_ENDPOINT_URL_SNS=") === true).at(-1)!;
     expect(envOf(sealedExec.envFile, "AWS_ENDPOINT_URL_SNS")).toBe("http://aws:4566");

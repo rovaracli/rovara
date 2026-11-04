@@ -76,7 +76,7 @@ const run = (directory: string, file: string, env: Record<string, string>): Prom
   const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
   child.once("close", (status) => { clearTimeout(timer); resolve({ status, output }); });
 });
-const at = (url: string): Record<string, string> => ({ AWS_ENDPOINT_URL_S3: url, AWS_ENDPOINT_URL_SQS: url, AWS_ENDPOINT_URL_DYNAMODB: url });
+const at = (url: string): Record<string, string> => ({ AWS_ENDPOINT_URL_S3: url, AWS_ENDPOINT_URL_SQS: url, AWS_ENDPOINT_URL_DYNAMODB: url, AWS_ENDPOINT_URL_SNS: url });
 
 describe("the overlay", () => {
   it("is plain node with no dependency, adds nothing to the slice-1 tests directory, and every overlay test file is described in the README with its check command", () => {

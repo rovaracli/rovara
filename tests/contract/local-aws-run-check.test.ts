@@ -11,7 +11,7 @@ const SHA = "a".repeat(40);
 const DIGEST = `sha256:${"b".repeat(64)}`;
 const META = { headBranch: "main", headSha: SHA, workflowName: "image", conclusion: "success" };
 
-function run(options: { meta?: Record<string, unknown> | "fail" | "garbage"; log?: string | "fail"; digestFile?: string; args?: string[] }) {
+function run(options: { meta?: Record<string, unknown> | string; log?: string; digestFile?: string; args?: string[] }) {
   const directory = mkdtempSync(join(tmpdir(), "la-run-"));
   const meta = options.meta ?? META;
   const log = options.log ?? `build\nindex digest: ${DIGEST}\ndone\n`;
@@ -32,8 +32,7 @@ function run(options: { meta?: Record<string, unknown> | "fail" | "garbage"; log
   ].join("\n"));
   chmodSync(gh, 0o755);
   const result = spawnSync("/bin/bash", [SCRIPT, ...(options.args ?? ["123456", SHA, directory])], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", GH: gh } });
-  let calls = "";
-  try { calls = readFileSync(join(directory, "gh.log"), "utf8"); } catch { calls = ""; }
+  const calls = (() => { try { return readFileSync(join(directory, "gh.log"), "utf8"); } catch { return ""; } })();
   return { status: result.status, out: result.stdout, err: result.stderr, calls };
 }
 
