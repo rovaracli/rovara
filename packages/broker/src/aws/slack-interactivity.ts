@@ -67,7 +67,7 @@ import {
   type WorkflowPath,
 } from "./slack-workflow-choice.js";
 import { detailsActionHandler, dynamoTurnDetailsReader } from "./slack-details.js";
-import { LEARN_ADD_ACTION, learnAddHandler } from "../team-record/slack-add.js";
+import { LEARN_ADD_ACTION, isHandedOffLearnPress, learnAddHandler, runHandedOffLearnPress, type HandedOffLearnPress } from "../team-record/slack-add.js";
 import {
   CHATGPT_OPEN_ACTION, CHATGPT_PASTE_ACTION, CHATGPT_PASTE_SUBMISSION, chatGptPasteModal, chatGptSubmission, isHandedOffChatGptFinish, runHandedOffChatGptFinish,
   type HandedOffChatGptFinish,
@@ -925,10 +925,12 @@ export function createAwsSlackInteractivityHandler() {
     postEphemeral: async (input) => chatPostEphemeral((await secrets()).botToken, input),
     log,
   }, event);
-  // Team record (task 12): the Add button of the private "learn from this channel" prompt, only where the record's switch is on (the broker waits up to 7 seconds: it reads Slack, then saves).
-  const recordHandlers = process.env.TEAM_RECORD_ENABLED !== "1" || brokerFunctionName === undefined ? [] : [learnAddHandler({
+  // Team record (task 12): the Add button of the private "learn from this channel" prompt, only where the record's switch is on. The press is acknowledged at once; the work (it reads Slack, then saves) runs in an asynchronous
+  // invoke of this Lambda, which answers through the press's response_url.
+  const recordHandlers = process.env.TEAM_RECORD_ENABLED !== "1" || brokerFunctionName === undefined ? [] : [learnAddHandler({ handOff: (event) => handOffToSelf(lambda, event), respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text) })];
+  const learnPress = (event: HandedOffLearnPress) => runHandedOffLearnPress({
     invokeBroker: (brokerEvent) => invokeBroker(brokerEvent, HANDED_OFF_START_TIMEOUT_MS), respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text), respondReplace: (responseUrl, message) => respondReplace(responseUrl, message),
-  })];
+  }, event);
   const interactivity = createSlackInteractivityHandler({
     secrets,
     log,
@@ -985,7 +987,8 @@ export function createAwsSlackInteractivityHandler() {
       log,
     })],
   });
-  return async (event: HttpApiV2Event | HandedOffWorkflowStart | HandedOffChatGptFinish): Promise<HttpResponse> => {
+  return async (event: HttpApiV2Event | HandedOffWorkflowStart | HandedOffChatGptFinish | HandedOffLearnPress): Promise<HttpResponse> => {
+    if (isHandedOffLearnPress(event)) return respond(200, { outcome: await learnPress(event) });
     if (isHandedOffWorkflowStart(event)) {
       const outcome = await chosenStart(event);
       log("workflow.handed_off_start", { outcome });
@@ -1000,7 +1003,7 @@ export function createAwsSlackInteractivityHandler() {
 const HANDED_OFF_START_TIMEOUT_MS = 7_000;
 
 /** This Lambda's own name, as Lambda sets it; a Quick or Full start is handed to an asynchronous invoke of it. */
-async function handOffToSelf(lambda: LambdaClient, event: HandedOffWorkflowStart | HandedOffChatGptFinish): Promise<void> {
+async function handOffToSelf(lambda: LambdaClient, event: HandedOffWorkflowStart | HandedOffChatGptFinish | HandedOffLearnPress): Promise<void> {
   const functionName = process.env.AWS_LAMBDA_FUNCTION_NAME;
   if (functionName === undefined) throw new Error("AWS_LAMBDA_FUNCTION_NAME is not set");
   const response = await lambda.send(new InvokeCommand({ FunctionName: functionName, InvocationType: "Event", Payload: Buffer.from(JSON.stringify(event)) }));

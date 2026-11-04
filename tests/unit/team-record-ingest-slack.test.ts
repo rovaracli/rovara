@@ -353,3 +353,59 @@ describe("Slack tap: the work done per message", () => {
     void tap;
   });
 });
+
+// Fix round 1, item 2 (privacy): a private channel created after March 2021 has a C id, and Slack's `channel_type` on a membership event is the id's letter. Whether a channel is private, a DM or a group DM
+// is decided only by Slack's own flags (`is_private`, `is_im`, `is_mpim`, read into `info.kind`), never by the id's first letter or `channel_type`. Unknown flags fail closed.
+describe("Slack tap: private is decided by Slack's flags, not by the id prefix", () => {
+  const PRIV_C = "C0PRIVATE01", MPIM_C = "C0GROUPDM01", UNKNOWN = "C0UNKNOWN01";
+  const channels: Record<string, SlackChannelInfo> = {
+    [CH]: { kind: "public", extShared: false },
+    [PRIV_C]: { kind: "private", extShared: false, memberIds: ["U0ALICE0001", "U0BOB000001"] },
+    [MPIM_C]: { kind: "mpim", extShared: false },
+  };
+  const member = (type: string, channel: string, user: string, channelType = "C") => ({ type: "event_callback", team_id: TEAM, event: { type, channel, channel_type: channelType, user, event_ts: TS } });
+
+  it("a person who LEAVES a C-prefixed private channel is removed from its audience, and a joiner is added (the old code ignored both: the leaver kept access)", async () => {
+    const { w, tap } = setup("enterprise", channels);
+    expect(await tap(member("member_left_channel", PRIV_C, "U0BOB000001"))).toEqual({ outcome: "acl_updated" });
+    expect(await tap(member("member_joined_channel", PRIV_C, "U0CAROL0001"))).toEqual({ outcome: "acl_updated" });
+    expect(w.sink.principalChanges).toMatchObject([
+      { scope: `slack:${TEAM}/${PRIV_C}`, remove: ["U0BOB000001"] },
+      { scope: `slack:${TEAM}/${PRIV_C}`, add: ["U0CAROL0001"] },
+    ]);
+  });
+
+  it("a C-prefixed PUBLIC channel is still left alone on joins and leaves (positive control: the flag, not the letter, decides)", async () => {
+    const { w, tap } = setup("enterprise", channels);
+    expect(await tap(member("member_joined_channel", CH, "U0CAROL0001"))).toEqual({ outcome: "ignored", reason: "public_private_unchanged" });
+    expect(await tap(member("member_left_channel", CH, "U0CAROL0001"))).toEqual({ outcome: "ignored", reason: "public_private_unchanged" });
+    expect(w.sink.principalChanges).toEqual([]);
+  });
+
+  it("unknown flags fail closed to restricted: a leave still removes the person and a join is recorded (neither is ignored as 'public')", async () => {
+    const { w, tap } = setup("enterprise", channels);
+    expect(await tap(member("member_left_channel", UNKNOWN, "U0BOB000001"))).toEqual({ outcome: "acl_updated" });
+    expect(await tap(member("member_joined_channel", UNKNOWN, "U0CAROL0001"))).toEqual({ outcome: "acl_updated" });
+    expect(w.sink.principalChanges).toMatchObject([{ scope: `slack:${TEAM}/${UNKNOWN}`, remove: ["U0BOB000001"] }, { scope: `slack:${TEAM}/${UNKNOWN}`, add: ["U0CAROL0001"] }]);
+  });
+
+  it("a message in a C-prefixed private channel is recorded with the members only, even when the row says project-wide; unknown flags record nothing; a C-prefixed group DM is refused in Public", async () => {
+    const { w, tap } = setup("enterprise", channels);
+    w.config.set("slack", `slack:${TEAM}/${PRIV_C}`, { retention: "D", audienceDefault: "project" });
+    w.config.set("slack", `slack:${TEAM}/${UNKNOWN}`, { retention: "D", audienceDefault: "project" });
+    expect(await tap(message({ channel: PRIV_C }))).toMatchObject({ outcome: "recorded" });
+    expect(w.sink.puts[0]!.audience).toMatchObject({ kind: "restricted", acl: { principals: ["U0ALICE0001", "U0BOB000001"] } });
+    expect(await tap(message({ channel: UNKNOWN, ts: "1758657700.000200" }))).toEqual({ outcome: "ignored", reason: "channel_unknown" });
+    expect(w.sink.puts).toHaveLength(1);
+    const pub = setup("public", channels);
+    pub.w.config.set("slack", `slack:${TEAM}/${MPIM_C}`, { retention: "B" });
+    pub.state.optIn = true;
+    expect(await pub.tap(message({ channel: MPIM_C }))).toEqual({ outcome: "ignored", reason: "dm_not_allowed" });
+  });
+
+  it("a channel made private (event with a C id) goes restricted at once, also with unknown flags", async () => {
+    const { w, tap } = setup("enterprise", channels);
+    expect(await tap(member("channel_convert_to_private", UNKNOWN, "U0ALICE0001"))).toEqual({ outcome: "audience_replaced" });
+    expect(w.sink.audienceReplacements).toMatchObject([{ scope: `slack:${TEAM}/${UNKNOWN}`, audience: { kind: "restricted", acl: { principals: [] } } }]);
+  });
+});

@@ -5,8 +5,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, type OrgId } from "@agentx/contracts";
+import { recordWriteContextOf } from "../../../packages/broker/src/aws/developer-routes/team-record-source-write.js";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import { dynamoRateLimiter } from "../../../packages/broker/src/team-record/query.js";
+import type { SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
 import { createSlackAdd, LEARN_ADD_ACTION, LEARN_PROJECT_ACTION, LEARN_PROJECT_BLOCK, LEARN_RETENTION_ACTION, LEARN_RETENTION_BLOCK, SLACK_ADD_WORDS, type SlackAddAnswer, type SlackAddPorts } from "../../../packages/broker/src/team-record/slack-add.js";
 import type { SlackFacts } from "../../../packages/broker/src/team-record/source-places.js";
 import { capturingAuditDeps } from "../../support/audit-capture.js";
@@ -34,7 +36,7 @@ function seedCompany(db: FakeDynamoDb, orgId: OrgId, people: Record<string, stri
 interface Harness {
   w: World; audit: ReturnType<typeof capturingAuditDeps>; links: Map<string, string>; teams: Map<string, OrgId>;
   projects: Map<OrgId, string[]>; facts: Map<string, SlackFacts | "none" | "unreadable">; reads: string[];
-  members: Map<string, Set<string> | "unreadable">; installTeam: string | undefined; routed: number;
+  members: Map<string, Set<string> | "unreadable">; installTeam: string | undefined; routed: number; contexts: SourceWriteContext[];
 }
 function harness(options: { edition?: "enterprise" | "public" } = {}): Harness {
   const w = world({ edition: options.edition ?? "enterprise" });
@@ -49,7 +51,7 @@ function harness(options: { edition?: "enterprise" | "public" } = {}): Harness {
       [CH.pub, { kind: "public", extShared: false }], [CH.pub2, { kind: "public", extShared: false }], [CH.priv, { kind: "private", extShared: false }],
       [CH.mpim, { kind: "mpim", extShared: false }], [CH.connect, { kind: "public", extShared: true }], [CH.gone, "none"],
     ]),
-    reads: [], members: new Map([[CH.priv, new Set([SLACK.owner, SLACK.maint, SLACK.bMaint])], [CH.mpim, new Set([SLACK.owner])]]), installTeam: TEAM_A, routed: 0,
+    reads: [], members: new Map([[CH.priv, new Set([SLACK.owner, SLACK.maint, SLACK.bMaint])], [CH.mpim, new Set([SLACK.owner])]]), installTeam: TEAM_A, routed: 0, contexts: [],
   };
 }
 
@@ -68,6 +70,7 @@ function build(h: Harness) {
     limiter: dynamoRateLimiter(h.w.table, () => h.w.clock.ms),
     route: async (request) => {
       h.routed += 1;
+      h.contexts.push(request.write);
       return await handleRecordRoute(routeDeps(h), { ...request, caller: caller({ orgId: request.caller.orgId, developerId: request.caller.developerId, projectRole: request.caller.projectRole }) });
     },
   });
@@ -224,6 +227,20 @@ describe("the invite prompt (Rovara added to a private channel)", () => {
     expect(await ask(h, service, SLACK.maint, CH.priv, { trigger: "invite" })).toEqual({ none: true });
   });
 
+  it("is only for a PRIVATE channel by Slack's own flags (the real-world shape: a C-prefixed private channel); a public channel, a group message, Slack Connect, an unreadable or unseen channel say nothing and do not use the person's window", async () => {
+    const h = harness();
+    const service = build(h);
+    h.facts.set("C0NEWPRIV01", { kind: "private", extShared: false });
+    h.facts.set("C0CONNECTPR", { kind: "private", extShared: true });
+    h.facts.set("C0UNREADABL", "unreadable");
+    expect(await ask(h, service, SLACK.maint, "C0NEWPRIV01", { trigger: "invite" })).toMatchObject({ show: { text: SLACK_ADD_WORDS.prompt } });
+    for (const channel of [CH.pub, CH.mpim, "C0CONNECTPR", "C0UNREADABL", CH.gone, "C0NOTKNOWN1"]) expect(await ask(h, service, SLACK.maint, channel, { trigger: "invite" }), channel).toEqual({ none: true });
+    // Positive control: the public channel's silence did not use the person's window, so typing the phrase there right away still shows the prompt.
+    expect("show" in await ask(h, service, SLACK.maint, CH.pub)).toBe(true);
+    // No Slack read wired: silence.
+    expect(await ask(h, service, SLACK.owner, "C0NEWPRIV01", { trigger: "invite", ports: { channel: undefined } })).toEqual({ none: true });
+  });
+
   it("says nothing when the inviter is not linked or edits no project (it never explains in the channel)", async () => {
     const h = harness();
     const service = build(h);
@@ -288,8 +305,8 @@ describe("pressing Add", () => {
     expect(h.reads).toHaveLength(reads);
     expect(sourceRows(h)).toHaveLength(1);
     expect(h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_REQUEST")).toHaveLength(1);
-    // A different interaction on the same prompt is the prompt used twice: one save, a fixed sentence.
-    expect(await press(h, service, { ...input, interactionId: "9999.0000.zzzz" })).toEqual({ text: SLACK_ADD_WORDS.used, final: false });
+    // A different interaction on the same prompt answers the stored outcome too (see the fix round 1 tests).
+    expect(await press(h, service, { ...input, interactionId: "9999.0000.zzzz" })).toEqual({ text: SLACK_ADD_WORDS.added, final: true });
     expect(sourceRows(h)).toHaveLength(1);
     expect(h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_REQUEST")).toHaveLength(1);
   });
@@ -520,5 +537,130 @@ describe("what is stored", () => {
     expect(JSON.stringify(blocks)).not.toContain(OWNER);
     expect(blocks.some((block) => block.accessory?.action_id === LEARN_PROJECT_ACTION && block.block_id === LEARN_PROJECT_BLOCK)).toBe(true);
     expect(blocks.some((block) => block.accessory?.action_id === LEARN_RETENTION_ACTION && block.block_id === LEARN_RETENTION_BLOCK)).toBe(true);
+  });
+});
+
+describe("fix round 1: rights between the prompt and the press", () => {
+  it("a company-role downgrade between the prompt and the press is refused: an admin made a plain member, and a role that no longer writes", async () => {
+    const h = harness();
+    const service = build(h);
+    const token = await prompted(h, service, SLACK.owner, CH.pub);
+    // The owner is made a plain member with no project grant (member row and pointer move together, as the company's role change does).
+    h.w.db.set({ ...orgMemberKey(ORG_A, OWNER), orgId: ORG_A, developerId: OWNER, role: "member", joinedAt: AT });
+    h.w.db.set({ ...developerOrgKey(OWNER), orgId: ORG_A, role: "member" });
+    expect(await press(h, service, { token, who: SLACK.owner, project: "web" })).toEqual({ text: SLACK_ADD_WORDS.notEditor, final: true });
+    // A maintainer whose company role became a read-only one (auditor) keeps the project grant but may not write.
+    const t2 = await prompted(h, service, SLACK.maint, CH.pub2);
+    h.w.db.set({ ...orgMemberKey(ORG_A, MAINT), orgId: ORG_A, developerId: MAINT, role: "auditor", joinedAt: AT });
+    h.w.db.set({ ...developerOrgKey(MAINT), orgId: ORG_A, role: "auditor" });
+    expect(await press(h, service, { token: t2, who: SLACK.maint, project: "web", channelId: CH.pub2 })).toEqual({ text: SLACK_ADD_WORDS.notEditor, final: true });
+    expect(sourceRows(h)).toHaveLength(0);
+    expect(h.routed).toBe(0);
+  });
+
+  it("a member removed from the company between the prompt and the press is refused (the member row and pointer are gone, the old grant row is ignored)", async () => {
+    const h = harness();
+    const service = build(h);
+    const token = await prompted(h, service, SLACK.maint);
+    h.w.db.delete(orgMemberKey(ORG_A, MAINT));
+    h.w.db.delete(developerOrgKey(MAINT));
+    expect(await press(h, service, { token, who: SLACK.maint, project: "web" })).toEqual({ text: SLACK_ADD_WORDS.notEditor, final: true });
+    expect(sourceRows(h)).toHaveLength(0);
+    // Positive control: the same person, still a member, saves.
+    const h2 = harness();
+    const s2 = build(h2);
+    const t2 = await prompted(h2, s2, SLACK.maint);
+    expect((await press(h2, s2, { token: t2, who: SLACK.maint, project: "web" })).text).toBe(SLACK_ADD_WORDS.added);
+  });
+});
+
+describe("fix round 1: a second press after a save answers the stored outcome", () => {
+  it("any later press by the same person on a saved prompt answers 'Added' and closes the prompt (a retry after a timed-out first press carries a new interaction id)", async () => {
+    const h = harness();
+    const service = build(h);
+    const token = await prompted(h, service, SLACK.maint);
+    expect(await press(h, service, { token, who: SLACK.maint, project: "web", retention: "C", interactionId: "first" })).toEqual({ text: SLACK_ADD_WORDS.added, final: true });
+    expect(await press(h, service, { token, who: SLACK.maint, project: "web", retention: "C", interactionId: "second" })).toEqual({ text: SLACK_ADD_WORDS.added, final: true });
+    // Even with a different choice in the menus the stored outcome stands: nothing more is saved.
+    expect(await press(h, service, { token, who: SLACK.maint, project: "api", retention: "A", interactionId: "third" })).toEqual({ text: SLACK_ADD_WORDS.added, final: true });
+    expect(sourceRows(h)).toHaveLength(1);
+    expect(h.routed).toBe(1);
+    // Another person's press is still not theirs.
+    expect(await press(h, service, { token, who: SLACK.owner, project: "web", interactionId: "fourth" })).toEqual({ text: SLACK_ADD_WORDS.notYours, final: false });
+  });
+
+  it("the second press can arrive before the first one's used-mark: the route says the row is already there, which for this person's own prompt is 'Added' too", async () => {
+    const h = harness();
+    const service = build(h);
+    const token = await prompted(h, service, SLACK.maint);
+    expect((await press(h, service, { token, who: SLACK.maint, project: "web", interactionId: "first" })).final).toBe(true);
+    // Take the stored outcome away, as if the used-mark had not landed yet.
+    for (const item of h.w.db.find((entry) => entry.entityType === "TEAM_RECORD_SLACK_ADD")) h.w.db.set({ ...item, doneBy: undefined, doneOutcome: undefined });
+    expect(await press(h, service, { token, who: SLACK.maint, project: "web", interactionId: "second" })).toEqual({ text: SLACK_ADD_WORDS.added, final: true });
+    expect(sourceRows(h)).toHaveLength(1);
+  });
+
+  it("a refusal is not a stored outcome: the prompt stays usable after one", async () => {
+    const h = harness();
+    const service = build(h);
+    const token = await prompted(h, service, SLACK.maint, CH.connect);
+    expect((await press(h, service, { token, who: SLACK.maint, project: "web", channelId: CH.connect, interactionId: "a" })).text).toBe("Slack Connect channels can't be used as a source.");
+    h.facts.set(CH.connect, { kind: "public", extShared: false });
+    expect(await press(h, service, { token, who: SLACK.maint, project: "web", channelId: CH.connect, interactionId: "b" })).toEqual({ text: SLACK_ADD_WORDS.added, final: true });
+  });
+});
+
+describe("fix round 1: the Slack press is its own actor, not a browser session", () => {
+  it("the route is called with browserSession false and actor slack_interaction; the audit event says via: slack, and a web add says nothing of the kind", async () => {
+    const h = harness();
+    const service = build(h);
+    const token = await prompted(h, service, SLACK.maint);
+    expect((await press(h, service, { token, who: SLACK.maint, project: "web", retention: "C" })).final).toBe(true);
+    expect(h.contexts).toHaveLength(1);
+    expect(h.contexts[0]).toMatchObject({ browserSession: false, actor: "slack_interaction" });
+    const events = (await flushed(h)).filter((event) => event.action === "record.source_added");
+    expect(events[0]?.facts).toMatchObject({ source: "slack", via: "slack" });
+    const body = { action: "add", requestId: randomUUID(), source: "slack", scope: `slack:${TEAM_A}/${CH.pub2}`, retention: "C", audienceDefault: "maintainers", enabled: true };
+    const web = await handleRecordRoute(routeDeps(h), { method: "POST", path: "/v1/app/projects/web/record/sources", query: {}, caller: caller({ orgId: ORG_A, developerId: OWNER, projectRole: "maintainer" }), write: { orgRole: "owner", browserSession: true, body: () => body, audit: h.audit.deps, slackTeamId: TEAM_A, slackChannel: async (): Promise<SlackFacts> => ({ kind: "public", extShared: false }) } });
+    expect(web?.status).toBe(200);
+    const all = (await flushed(h)).filter((event) => event.action === "record.source_added");
+    expect(all).toHaveLength(2);
+    expect(all[1]?.facts).not.toHaveProperty("via");
+  });
+
+  const slackActor = (h: Harness, route: string, body: unknown, over: Partial<SourceWriteContext> & { noActor?: true } = {}, method = "POST", query: Record<string, string> = {}) => {
+    const { noActor, ...rest } = over;
+    const write: SourceWriteContext = {
+      orgRole: "owner", browserSession: false, ...(noActor === true ? {} : { actor: "slack_interaction" as const }), body: () => body, audit: h.audit.deps, slackTeamId: TEAM_A, slackChannel: async (): Promise<SlackFacts> => ({ kind: "public", extShared: false }), ...rest,
+    };
+    return handleRecordRoute(routeDeps(h), { method, path: `/v1/app/projects/web/record/${route}`, query, caller: caller({ orgId: ORG_A, developerId: OWNER, projectRole: "maintainer" }), write });
+  };
+  const add = (over: Record<string, unknown> = {}) => ({ action: "add", requestId: randomUUID(), source: "slack", scope: `slack:${TEAM_A}/${CH.pub}`, retention: "C", audienceDefault: "maintainers", enabled: true, ...over });
+
+  it("the actor is accepted for adding a Slack place only: not a change, a removal, another kind of source, the pickers or the admin view", async () => {
+    const h = harness();
+    expect((await slackActor(h, "sources", add()))?.status).toBe(200);
+    const forbidden = { status: 403, body: { code: "FORBIDDEN" } };
+    expect(await slackActor(h, "sources", { action: "change", requestId: randomUUID(), source: "slack", scope: `slack:${TEAM_A}/${CH.pub}`, expectedRevision: 1, enabled: false })).toMatchObject(forbidden);
+    expect(await slackActor(h, "sources", { action: "remove", requestId: randomUUID(), source: "slack", scope: `slack:${TEAM_A}/${CH.pub}`, expectedRevision: 1 })).toMatchObject(forbidden);
+    expect(await slackActor(h, "sources", add({ source: "github", scope: "github:repo/9" }))).toMatchObject(forbidden);
+    expect(await slackActor(h, "sources/options", undefined, {}, "GET", { kind: "slack" })).toMatchObject(forbidden);
+    // The editors' view is for a live browser session: the actor does not open it (it answers the ordinary member view).
+    const view = await slackActor(h, "sources", undefined, {}, "GET");
+    expect(JSON.stringify(view?.body)).not.toContain("canEdit");
+    expect(sourceRows(h)).toHaveLength(1);
+  });
+
+  it("without the actor a non-browser caller is still refused, and no request can set the actor: a body that names one is invalid, and the web route's context builder never sets it", async () => {
+    const h = harness();
+    expect(await slackActor(h, "sources", add(), { noActor: true })).toMatchObject({ status: 403, body: { code: "FORBIDDEN" } });
+    for (const extra of [{ actor: "slack_interaction" }, { via: "slack" }, { browserSession: true }]) expect(await slackActor(h, "sources", add(extra), { noActor: true, browserSession: true }), JSON.stringify(extra)).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    for (const browserSession of [true, false]) {
+      const context = recordWriteContextOf({ audit: undefined } as never, { developerId: OWNER, sessionId: "s", amr: "slack", name: "n", orgId: ORG_A, orgRole: "owner", ...(browserSession ? { browserSession: true as const } : {}) } as never, { method: "POST", path: "/", headers: {}, body: JSON.stringify({ actor: "slack_interaction" }), requestId: "r" });
+      expect(context.actor).toBeUndefined();
+      expect(context).not.toHaveProperty("actor");
+      expect(context.browserSession).toBe(browserSession);
+    }
+    expect(sourceRows(h)).toHaveLength(0);
   });
 });

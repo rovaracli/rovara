@@ -68,6 +68,11 @@ export interface SourceWriteContext {
   orgRole: string;
   /** True only for a live browser session (never a token). */
   browserSession: boolean;
+  /**
+   * Who is acting when it is NOT a browser session: `slack_interaction` is a signed Slack button press by a person linked to Rovara (`slack-add.ts`). Only the broker's own direct-invoke path sets it (the web route's
+   * context builder never does, and a request body cannot); the route accepts it for ONE write, adding a Slack place, and the audit event then says `via: slack`. `browserSession` stays false for it.
+   */
+  actor?: "slack_interaction";
   /** The parsed request body; throws when it is not JSON. Read only for a write. */
   body(): unknown;
   /** The audit outbox of the State table. Absent (a legacy install): ordinary writes go on without an event, and a write that widens what is kept is refused. */
@@ -153,21 +158,24 @@ interface Run {
 const nowIso = (run: Run): string => new Date(run.now()).toISOString();
 
 /** Who may use the editors' routes: a person with a role in the project, who may edit its sources, on a live browser session. */
-export function gate(request: RecordRouteRequest, ctx: SourceWriteContext): void {
+export function gate(request: RecordRouteRequest, ctx: SourceWriteContext, options: { slackInteraction?: boolean } = {}): void {
   if (request.caller.projectRole === undefined) throw agentXError("PROJECT_NOT_FOUND", "No such project.");
   if (!mayEditSources(request.caller, ctx)) throw agentXError("FORBIDDEN", WORDS.notEditor);
-  if (!ctx.browserSession) throw agentXError("FORBIDDEN", WORDS.browser);
+  // A live browser session; or, for the one write that allows it (`handleSourceWrite`), a Slack interaction. The pickers and the admin view never pass `slackInteraction`.
+  if (!ctx.browserSession && !(options.slackInteraction === true && ctx.actor === "slack_interaction")) throw agentXError("FORBIDDEN", WORDS.browser);
 }
 
 export async function handleSourceWrite(deps: RecordQueryDependencies, request: RecordRouteRequest, project: string): Promise<RecordRouteReply> {
   const sources = deps.sources;
   const ctx = request.write;
   if (sources === undefined || ctx === undefined) throw unavailable();
-  gate(request, ctx);
+  gate(request, ctx, { slackInteraction: true });
   let raw: unknown;
   try { raw = ctx.body(); } catch { throw invalid(); }
   const parsed = SourceWriteBodySchema.safeParse(raw);
   if (!parsed.success) throw invalid();
+  // The Slack interaction actor may add a Slack place and do nothing else here: not a change, not a removal, not another kind of source.
+  if (ctx.actor === "slack_interaction" && !(parsed.data.action === "add" && parsed.data.source === "slack")) throw agentXError("FORBIDDEN", WORDS.browser);
   const run: Run = { deps, sources, ctx, orgId: request.caller.orgId, project, me: request.caller.developerId, now: deps.now ?? Date.now };
   // A Slack place may be pasted as a channel ID or a Slack link (task 11, B): read again here, whatever the screen did, and the exact place is what is stored, claimed, audited and replayed.
   try {
@@ -349,7 +357,7 @@ async function saveAdd(run: Run, body: Extract<SourceWriteBody, { action: "add" 
   const reply: Reply = { status: 200, body: { status: "saved", revision } };
   const at = nowIso(run);
   const stored = SourceConfigSchema.parse({ ...row, revision, updatedAt: at });
-  const events = [auditRecordSourceAdded({ orgId: run.orgId, actorId: run.me, at, occurrence: randomUUID(), project: run.project, source: body.source, scope: body.scope, retention: body.retention, restricted: restrictedBy(widened), widened })];
+  const events = [auditRecordSourceAdded({ orgId: run.orgId, actorId: run.me, at, occurrence: randomUUID(), project: run.project, source: body.source, scope: body.scope, retention: body.retention, restricted: restrictedBy(widened), widened, ...(run.ctx.actor === "slack_interaction" ? { via: "slack" as const } : {}) })];
   const items: TransactItem[] = [
     { Put: { TableName: table.tableName, Item: sourceRowItem(stored), ConditionExpression: NOT_EXISTS } },
     claimPut(table, run.orgId, run.project, body.source, body.scope, at),

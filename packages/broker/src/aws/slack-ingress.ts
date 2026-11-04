@@ -1,5 +1,5 @@
 import { sqsOpsQueue } from "../team-record/ops-queue.js";
-import { askThroughBroker, botInvite, isLearnFromChannel, offerLearnPrompt, type LearnIngress } from "../team-record/slack-add.js";
+import { askThroughBroker, botInvite, isHandedOffLearnPress, isLearnFromChannel, offerLearnPrompt, type HandedOffLearnPress, type LearnIngress } from "../team-record/slack-add.js";
 import { createSlackForwarder, removalPayload } from "../team-record/slack-forward.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -1337,8 +1337,8 @@ let awsInteractivityHandler: ReturnType<typeof createAwsSlackInteractivityHandle
  * The Events API and, since spec 014, Slack's interactivity request URL share this Lambda. Task 19: so does the
  * asynchronous start of a Quick or Full choice, which the interactivity handler hands to this same Lambda.
  */
-export const handler = (event: HttpApiV2Event | HandedOffWorkflowStart | HandedOffChatGptFinish): Promise<HttpResponse> => {
-  if (isHandedOffWorkflowStart(event) || isHandedOffChatGptFinish(event) || event.rawPath === SLACK_INTERACTIONS_PATH) {
+export const handler = (event: HttpApiV2Event | HandedOffWorkflowStart | HandedOffChatGptFinish | HandedOffLearnPress): Promise<HttpResponse> => {
+  if (isHandedOffWorkflowStart(event) || isHandedOffChatGptFinish(event) || isHandedOffLearnPress(event) || event.rawPath === SLACK_INTERACTIONS_PATH) {
     awsInteractivityHandler ??= createAwsSlackInteractivityHandler();
     return awsInteractivityHandler(event);
   }

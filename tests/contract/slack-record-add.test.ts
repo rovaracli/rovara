@@ -4,7 +4,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createSlackIngressHandler } from "../../packages/broker/src/aws/slack-ingress.js";
 import { createSlackInteractivityHandler } from "../../packages/broker/src/aws/slack-interactivity.js";
-import { botInvite, isLearnFromChannel, isTeamRecordSlackAddEvent, learnAddHandler, LEARN_ADD_ACTION, LEARN_PROJECT_ACTION, LEARN_PROJECT_BLOCK, LEARN_RETENTION_ACTION, LEARN_RETENTION_BLOCK, SLACK_ADD_WORDS, type SlackAddAnswer, type SlackAddAskInput } from "../../packages/broker/src/team-record/slack-add.js";
+import { botInvite, isHandedOffLearnPress, isLearnFromChannel, isTeamRecordSlackAddEvent, learnAddHandler, runHandedOffLearnPress, type HandedOffLearnPress, LEARN_ADD_ACTION, LEARN_PROJECT_ACTION, LEARN_PROJECT_BLOCK, LEARN_RETENTION_ACTION, LEARN_RETENTION_BLOCK, SLACK_ADD_WORDS, type SlackAddAnswer, type SlackAddAskInput } from "../../packages/broker/src/team-record/slack-add.js";
 import { StrictSlackWeb } from "../support/strict-slack.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -186,11 +186,21 @@ describe("Rovara invited to a private channel", () => {
     expect(r.queued).toHaveLength(0);
   });
 
-  it("is only for Rovara itself joining a private channel with a person who invited it; every other join is left alone", async () => {
+  it("does not trust channel_type: a private channel made after March 2021 has a C id and channel_type C, and the ingress still asks (the broker reads Slack's own flags); a public C channel is asked about too", async () => {
+    const r = rig();
+    await r.say(joined({ channelId: "C0NEWPRIVATE", channelType: "C", inviter: sam }));
+    await r.say(joined({ channelId: channel, channelType: "C", inviter: maya }));
+    expect(r.asked).toEqual([
+      { teamId: team, userId: sam, channelId: "C0NEWPRIVATE", trigger: "invite" },
+      { teamId: team, userId: maya, channelId: channel, trigger: "invite" },
+    ]);
+    expect(r.slack.ephemerals.map((entry) => [entry.channel, entry.user])).toEqual([["C0NEWPRIVATE", sam], [channel, maya]]);
+  });
+
+  it("is only for Rovara itself joining a channel with a person who invited it; every other join is left alone", async () => {
     const r = rig();
     for (const payload of [
       joined({ user: maya, inviter: sam }), // somebody else joined
-      joined({ channelType: "C", channelId: channel }), // a public channel
       joined({ inviter: undefined }), // no inviter (it joined by itself)
       joined({ inviter: bot }), // the bot inviting itself
       joined({ inviter: "not-a-user" }),
@@ -232,12 +242,14 @@ function pressRig(answer: (event: Record<string, unknown>) => Promise<{ statusCo
   const sent: Array<Record<string, unknown>> = [];
   const ephemerals: Array<{ url: string; text: string }> = [];
   const replaced: Array<{ url: string; text: string; blocks?: unknown }> = [];
+  const handedOff: HandedOffLearnPress[] = [];
+  const flags = { handOffFails: false };
   const interactivity = createSlackInteractivityHandler({
     secrets: async () => ({ signingSecret, botToken: "xoxb-test" }),
     handlers: [learnAddHandler({
-      invokeBroker: async (event) => { sent.push(event); return await answer(event); },
+      // The press is acknowledged at once: the work is handed to an asynchronous invoke (as Lambda would carry it: JSON), run by `run` below.
+      handOff: async (event) => { if (flags.handOffFails) throw new Error("not handed over"); handedOff.push(JSON.parse(JSON.stringify(event)) as HandedOffLearnPress); },
       respondEphemeral: async (url, text) => { ephemerals.push({ url, text }); },
-      respondReplace: async (url, message) => { replaced.push({ url, ...message }); },
     })],
     respondEphemeral: async (url, text) => { ephemerals.push({ url, text }); },
     now: () => nowSeconds * 1000,
@@ -248,7 +260,18 @@ function pressRig(answer: (event: Record<string, unknown>) => Promise<{ statusCo
     response_url: RESPONSE_URL, trigger_id: options.triggerId ?? "13.37.abc", state: options.state ?? selectState("web", "C"),
     actions: [{ action_id: options.actionId ?? LEARN_ADD_ACTION, value: options.value ?? "tok-0000", block_id: "b", action_ts: "1695500003.000100" }],
   }));
-  return { press, sent, ephemerals, replaced, interactivity };
+  /** The asynchronous invoke the press handed off, as the Lambda runs it. */
+  const run = async () => {
+    const event = handedOff.shift();
+    if (event === undefined) throw new Error("nothing was handed off");
+    expect(isHandedOffLearnPress(event)).toBe(true);
+    return runHandedOffLearnPress({
+      invokeBroker: async (brokerEvent) => { sent.push(brokerEvent); return await answer(brokerEvent); },
+      respondEphemeral: async (url, text) => { ephemerals.push({ url, text }); },
+      respondReplace: async (url, message) => { replaced.push({ url, ...message }); },
+    }, event);
+  };
+  return { press, run, sent, ephemerals, replaced, interactivity, handedOff, flags };
 }
 const reply = (body: unknown) => async () => ({ statusCode: 200, body: JSON.stringify(body) });
 
@@ -256,6 +279,11 @@ describe("the Add button", () => {
   it("hands the broker exactly what the verified press says: team, user, channel, the prompt's token, the chosen project and retention, and the interaction id", async () => {
     const r = pressRig(reply({ text: SLACK_ADD_WORDS.added, final: true }));
     expect((await r.press({ user: sam, value: "tok-1111", state: selectState("api", "A"), triggerId: "999.888.xyz" })).statusCode).toBe(200);
+    // Slack is answered at once: the broker has not been asked yet, and nothing has been said to the person.
+    expect(r.sent).toHaveLength(0);
+    expect(r.ephemerals).toHaveLength(0);
+    expect(r.handedOff).toHaveLength(1);
+    expect(await r.run()).toBe("final");
     expect(r.sent).toEqual([{ source: "agentx.slack-ingress", action: "team-record-slack-add", step: "press", teamId: team, userId: sam, channelId: channel, token: "tok-1111", project: "api", retention: "A", interactionId: "999.888.xyz" }]);
     expect(isTeamRecordSlackAddEvent(JSON.parse(JSON.stringify(r.sent[0])))).toBe(true);
     // A final answer replaces the prompt (the button goes away).
@@ -266,6 +294,7 @@ describe("the Add button", () => {
   it("a choice that was never made is sent as missing, never invented; a non-final answer is said privately and the prompt stays", async () => {
     const r = pressRig(reply({ text: SLACK_ADD_WORDS.chooseProject, final: false }));
     await r.press({ state: selectState(undefined, undefined) });
+    expect(await r.run()).toBe("open");
     expect(r.sent[0]).not.toHaveProperty("project");
     expect(r.sent[0]).not.toHaveProperty("retention");
     expect(r.ephemerals).toEqual([{ url: RESPONSE_URL, text: SLACK_ADD_WORDS.chooseProject }]);
@@ -277,6 +306,7 @@ describe("the Add button", () => {
     await r.press({ userTeam: "T0OTHER000" });
     await r.press({ workspace: "T0OTHER000", userTeam: team });
     expect(r.sent).toHaveLength(0);
+    expect(r.handedOff).toHaveLength(0);
     expect(r.ephemerals.map((entry) => entry.text)).toEqual([SLACK_ADD_WORDS.otherWorkspace, SLACK_ADD_WORDS.otherWorkspace]);
   });
 
@@ -284,8 +314,27 @@ describe("the Add button", () => {
     for (const answer of [async () => { throw new Error("internal detail"); }, async () => ({ statusCode: 500, body: "boom" }), reply({ unexpected: true }), async () => ({ statusCode: 200, body: "not json" })]) {
       const r = pressRig(answer);
       expect((await r.press()).statusCode).toBe(200);
+      expect(await r.run()).toBe("failed");
       expect(r.ephemerals).toEqual([{ url: RESPONSE_URL, text: SLACK_ADD_WORDS.unavailable }]);
       expect(r.replaced).toHaveLength(0);
+    }
+  });
+
+  it("a press that could not be handed over says 'try again' privately and asks nothing", async () => {
+    const r = pressRig(reply({ text: "x", final: true }));
+    r.flags.handOffFails = true;
+    expect((await r.press()).statusCode).toBe(200);
+    expect(r.ephemerals).toEqual([{ url: RESPONSE_URL, text: SLACK_ADD_WORDS.unavailable }]);
+    expect(r.sent).toHaveLength(0);
+  });
+
+  it("the hand-off is recognised only as Slack's own response URL and a well-formed press, never an HTTP request", async () => {
+    const r = pressRig(reply({ text: "x", final: true }));
+    await r.press();
+    const good = JSON.parse(JSON.stringify(r.handedOff[0])) as Record<string, unknown>;
+    expect(isHandedOffLearnPress(good)).toBe(true);
+    for (const bad of [{ ...good, responseUrl: "https://evil.example/x" }, { ...good, responseUrl: "http://hooks.slack.com/x" }, { ...good, requestContext: {} }, { ...good, source: "agentx.slack-ingress" }, { ...good, press: { ...(good.press as object), teamId: "x" } }, { ...good, press: { ...(good.press as object), token: "" } }, null]) {
+      expect(isHandedOffLearnPress(bad), JSON.stringify(bad)).toBe(false);
     }
   });
 
@@ -297,6 +346,7 @@ describe("the Add button", () => {
     }));
     expect(response.statusCode).toBe(200);
     expect(r.sent).toHaveLength(0);
+    expect(r.handedOff).toHaveLength(0);
     expect(r.ephemerals).toHaveLength(0);
   });
 

@@ -8,8 +8,13 @@
 // at the prompt and again at the press (company role and project role), never taken from the prompt.
 //
 // THE PROMPT is one item in the company's partition (`SLKADD#<uuid>`: team, channel, a HASH of the person, an expiry of 15 minutes; no Slack user id, no text). The Add button carries only that id. A press must come from
-// the same Slack user in the same channel and team, before it expires, and uses the prompt once: the route's requestId is derived from the interaction id, so Slack delivering one press twice is one save (the route
-// answers the stored outcome), while a second press of a used prompt is refused with a fixed sentence. One prompt per person per channel per 10 minutes (the record's rate item, keyed by the hash).
+// the same Slack user in the same channel and team, before it expires. The press is acknowledged at once and the work is handed to an asynchronous invoke of the same Lambda, which answers through the press's response_url.
+// The route's requestId is derived from the interaction id, so one press delivered twice is one save. Once a press has SAVED, the outcome ("added") is stored on the prompt and every later press by that person answers it
+// and closes the prompt (Slack never redelivers a press, so a retry after a timeout is a new interaction); a press that finds the row already there on a prompt a press had begun on is the same "Added". A refusal is never
+// stored: the prompt stays open. One prompt per person per channel per 10 minutes (the record's rate item, keyed by the hash).
+//
+// THE ACTOR. A Slack press is not a browser session: the write context says `browserSession: false` and `actor: "slack_interaction"`, which the source route accepts for adding a Slack place only (`source-write.ts`), and the
+// audit event for it says `via: slack`. Only this module sets that actor.
 //
 // A PRIVATE CHANNEL. Being in the channel proves membership when the prompt is made, but the button can be pressed later: the server reads the channel's class live and, for a private channel or group message, asks
 // Slack again whether the person is still in it (`isMember`, through DeveloperIdentity's `channel-members`). Unreadable fails closed. The route still classifies the channel itself and decides everything else.
@@ -28,7 +33,7 @@ import { allowedRetention, defaultRetention, type TeamRecordEdition } from "./ed
 import type { RateLimiter } from "./query.js";
 import type { RecordRouteReply } from "./routes.js";
 import { classifySlack, type SlackFacts } from "./source-places.js";
-import { markSlackAddUsed, putSlackAddPrompt, readSlackAddPrompt } from "./source-store.js";
+import { markSlackAddStarted, markSlackAddUsed, putSlackAddPrompt, readSlackAddPrompt } from "./source-store.js";
 import type { SourceWriteContext } from "./source-write.js";
 import { WORDS as SOURCE_WORDS } from "./source-write.js";
 import type { TeamRecordTable } from "./types.js";
@@ -51,7 +56,6 @@ export const SLACK_ADD_WORDS = {
   notEditor: "Only a project maintainer or a company admin can add channels. Ask one of them to add this channel.",
   added: "Added. Rovara will start recording new messages.",
   expired: "This prompt has expired. Mention me with `learn from this channel` to get a new one.",
-  used: "This prompt was already used. Mention me with `learn from this channel` to get a new one.",
   notYours: "This prompt isn't yours. Mention me with `learn from this channel` to get your own.",
   chooseProject: "Choose a project first.",
   leftChannel: "You're not in that channel any more, so I can't add it.",
@@ -215,6 +219,13 @@ export function createSlackAdd(deps: SlackAddDeps): SlackAddService {
       const orgId = await deps.orgOfSlackTeam(input.teamId);
       if (orgId === undefined) return NONE;
       if (ports.teamId !== undefined && ports.teamId !== input.teamId) return NONE;
+      // An invite is only for a PRIVATE channel, by what Slack says it is now (the flags, never the id's letter; a private channel made after March 2021 has a C id). This comes before the rate item, so a join of a public
+      // channel never uses the person's window. Anything else (public, a group message, Slack Connect, unreadable, not shown to Rovara) is silence.
+      if (invite) {
+        let facts: SlackFacts | "none" | undefined;
+        try { facts = ports.channel === undefined ? undefined : await ports.channel(input.teamId, input.channelId); } catch { facts = undefined; }
+        if (facts === undefined || facts === "none" || classifySlack(facts) !== "private_channel") return NONE;
+      }
       const person = personOf(orgId, input.userId);
       // A limiter that cannot answer is silence: nothing is shown that cannot be rationed.
       if (!await deps.limiter.take(`${orgId}|slack-add|${person}|${input.channelId}`, 1, RATE_SECONDS).then((allowed) => allowed, () => false)) return NONE;
@@ -239,8 +250,8 @@ export function createSlackAdd(deps: SlackAddDeps): SlackAddService {
       if (item === undefined || !(item.expiresAtSeconds * 1000 > deps.now()) || item.team !== input.teamId) return say(SLACK_ADD_WORDS.expired, true);
       // The press must be the person and the channel the prompt was made for. Another person's press changes nothing and does not use the prompt.
       if (item.person !== personOf(orgId, input.userId) || item.channel !== input.channelId) return say(SLACK_ADD_WORDS.notYours, false);
-      const replay = item.doneBy === input.interactionId;
-      if (item.doneBy !== undefined && !replay) return say(SLACK_ADD_WORDS.used, false);
+      // A prompt that saved answers every later press by its person with that outcome (a retry after a press that timed out carries a new interaction id), and closes the prompt.
+      if (item.doneOutcome === "added") return say(SLACK_ADD_WORDS.added, true);
       const developerId = await deps.developerOfSlackUser(input.userId);
       if (developerId === undefined) return say(SLACK_ADD_WORDS.notLinked, false);
       const project = input.project;
@@ -251,26 +262,27 @@ export function createSlackAdd(deps: SlackAddDeps): SlackAddService {
       const orgRole = await orgRoleOf(orgId, developerId);
       const projectRole = await mayEdit(orgId, developerId, orgRole, project);
       if (orgRole === undefined || projectRole === undefined) return say(SLACK_ADD_WORDS.notEditor, true);
-      if (!replay) {
-        const refusal = await channelRefusal(ports, input);
-        if (refusal !== undefined) return refusal;
-      }
+      const refusal = await channelRefusal(ports, input);
+      if (refusal !== undefined) return refusal;
       const body = {
         action: "add", requestId: requestIdOf(input.teamId, input.userId, input.interactionId), source: "slack", scope: `slack:${input.teamId}/${input.channelId}`, retention,
         audienceDefault: "maintainers", enabled: true, ...(deps.edition === "public" && retention === "B" ? { notesOptIn: true } : {}),
       };
       const write: SourceWriteContext = {
-        orgRole, browserSession: true, body: () => body,
+        orgRole, browserSession: false, actor: "slack_interaction", body: () => body,
         ...(ports.audit === undefined ? {} : { audit: ports.audit }), ...(ports.channel === undefined ? {} : { slackChannel: ports.channel }), ...(ports.teamId === undefined ? {} : { slackTeamId: ports.teamId }),
       };
+      await markSlackAddStarted(deps.table, orgId, input.token, input.interactionId);
       let reply: RecordRouteReply | undefined;
       try {
         reply = await deps.route({ method: "POST", path: `/v1/app/projects/${encodeURIComponent(project)}/record/sources`, query: {}, caller: { orgId, developerId, projectRole }, write });
       } catch (error) {
         return error instanceof AgentXError ? refusalOf(error.code, strip(error)) : say(SLACK_ADD_WORDS.unavailable, false);
       }
-      const answer = answerOf(reply);
-      if (answer.final && reply?.status === 200) await markSlackAddUsed(deps.table, orgId, input.token, input.interactionId);
+      // The row is already there and an earlier press began on THIS prompt: that was this prompt's own save (its press timed out or its used-mark did not land), so it is "Added" too.
+      const own = item.startedBy !== undefined && typeof reply?.body === "object" && reply.body !== null && (reply.body as { code?: unknown }).code === "CHANGE_STALE";
+      const answer = own ? say(SLACK_ADD_WORDS.added, true) : answerOf(reply);
+      if (own || (answer.final && reply?.status === 200)) await markSlackAddUsed(deps.table, orgId, input.token);
       return answer;
     } catch {
       return say(SLACK_ADD_WORDS.unavailable, false);
@@ -329,10 +341,13 @@ function ownBotUsers(payload: Record<string, unknown>): Set<string> {
   return new Set(entries.flatMap((entry) => (typeof entry === "object" && entry !== null && (entry as Record<string, unknown>).is_bot === true && typeof (entry as Record<string, unknown>).user_id === "string" ? [(entry as Record<string, string>).user_id!] : [])));
 }
 
-/** Rovara itself joining a private channel because a person invited it: that person, the channel and the verified team. Every other membership event is not this. */
+/**
+ * Rovara itself joining a channel because a person invited it: that person, the channel and the verified team. Every other membership event is not this. Whether the channel is PRIVATE is not read from the event (its
+ * `channel_type` is only the id's letter, and a private channel made after March 2021 has a C id): the broker reads Slack's own flags and says nothing for a channel that is not private.
+ */
 export function botInvite(payload: Record<string, unknown>): { eventId: string; teamId: string; channelId: string; inviterId: string } | undefined {
   const event = typeof payload.event === "object" && payload.event !== null ? payload.event as Record<string, unknown> : {};
-  if (payload.type !== "event_callback" || event.type !== "member_joined_channel" || event.channel_type !== "G") return undefined;
+  if (payload.type !== "event_callback" || event.type !== "member_joined_channel") return undefined;
   const teamId = SlackTeamIdSchema.safeParse(payload.team_id);
   const channelId = SlackChannelIdSchema.safeParse(event.channel);
   const inviter = SlackUserIdSchema.safeParse(event.inviter);
@@ -414,10 +429,49 @@ const chosen = (state: Record<string, unknown> | undefined, block: string, actio
   return typeof picked === "string" && picked !== "" ? picked : undefined;
 };
 
-export function learnAddHandler(deps: {
+/**
+ * The press is acknowledged at once and the work is handed to an asynchronous invoke of the same Lambda (the pattern the Quick or Full choice and the ChatGPT form use), because the work (the prompt, the person's rights, two Slack
+ * reads, the save) can outlast Slack's 3 seconds. The answer then goes through Slack's `response_url` (good for 30 minutes). Nothing about the person is in the hand-off but ids Slack's signed request carried.
+ */
+export interface HandedOffLearnPress { source: "agentx.slack-interactivity"; action: "team-record-slack-add-press"; press: SlackAddPressInput; responseUrl: string }
+
+export function isHandedOffLearnPress(event: unknown): event is HandedOffLearnPress {
+  if (event === null || typeof event !== "object") return false;
+  const value = event as Record<string, unknown>;
+  const press = record(value.press);
+  // Never an HTTP request (API Gateway's events always carry a requestContext), and only Slack's own response URL.
+  return value.source === "agentx.slack-interactivity" && value.action === "team-record-slack-add-press" && value.requestContext === undefined
+    && typeof value.responseUrl === "string" && value.responseUrl.startsWith("https://hooks.slack.com/") && value.responseUrl.length <= 2_000
+    && isTeamRecordSlackAddEvent({ source: SOURCE, action: ACTION, step: "press", ...press });
+}
+
+export interface LearnPressDependencies {
   invokeBroker(event: Record<string, unknown>): Promise<BrokerReply>;
   respondEphemeral(responseUrl: string, text: string): Promise<void>;
   respondReplace(responseUrl: string, message: { text: string; blocks: Array<Record<string, unknown>> }): Promise<void>;
+}
+
+/** Runs a handed-off press: asks the broker, then says the answer privately through the response URL (a final answer replaces the prompt, so its button goes away). Never throws. */
+export async function runHandedOffLearnPress(deps: LearnPressDependencies, event: HandedOffLearnPress): Promise<"final" | "open" | "failed"> {
+  let answer: SlackAddPressAnswer | undefined;
+  try {
+    const body = parseBody(await deps.invokeBroker({ source: SOURCE, action: ACTION, step: "press", ...event.press }));
+    if (body !== undefined && typeof body.text === "string" && typeof body.final === "boolean") answer = { text: body.text, final: body.final };
+  } catch { /* answered below */ }
+  try {
+    if (answer === undefined) { await deps.respondEphemeral(event.responseUrl, SLACK_ADD_WORDS.unavailable); return "failed"; }
+    if (answer.final) await deps.respondReplace(event.responseUrl, { text: answer.text, blocks: [{ type: "section", text: { type: "plain_text", text: answer.text } }] });
+    else await deps.respondEphemeral(event.responseUrl, answer.text);
+    return answer.final ? "final" : "open";
+  } catch {
+    return "failed";
+  }
+}
+
+export function learnAddHandler(deps: {
+  /** Hands the press to an asynchronous invoke of this Lambda. Throws when it was not handed over. */
+  handOff(event: HandedOffLearnPress): Promise<void>;
+  respondEphemeral(responseUrl: string, text: string): Promise<void>;
 }): { matches(actionId: string): boolean; handle(action: PressedAction): Promise<void> } {
   return {
     matches: (actionId) => actionId === LEARN_ADD_ACTION,
@@ -430,18 +484,14 @@ export function learnAddHandler(deps: {
       const project = chosen(action.stateValues, LEARN_PROJECT_BLOCK, LEARN_PROJECT_ACTION);
       const retention = chosen(action.stateValues, LEARN_RETENTION_BLOCK, LEARN_RETENTION_ACTION);
       const interactionId = action.triggerId !== "" ? action.triggerId : (action.actionTs ?? action.messageTs);
-      let answer: SlackAddPressAnswer | undefined;
       try {
-        const body = parseBody(await deps.invokeBroker({
-          source: SOURCE, action: ACTION, step: "press", teamId: action.thread.teamId, userId: action.userId, channelId: action.thread.channelId, token: action.value,
-          ...(project === undefined ? {} : { project }), ...(retention === undefined ? {} : { retention }), interactionId,
-        }));
-        if (body !== undefined && typeof body.text === "string" && typeof body.final === "boolean") answer = { text: body.text, final: body.final };
-      } catch { /* answered below */ }
-      if (answer === undefined) { await deps.respondEphemeral(action.responseUrl, SLACK_ADD_WORDS.unavailable); return; }
-      // A final answer replaces the prompt (its button goes away); anything the person can fix leaves the prompt as it is.
-      if (answer.final) await deps.respondReplace(action.responseUrl, { text: answer.text, blocks: [{ type: "section", text: { type: "plain_text", text: answer.text } }] });
-      else await deps.respondEphemeral(action.responseUrl, answer.text);
+        await deps.handOff({
+          source: "agentx.slack-interactivity", action: "team-record-slack-add-press", responseUrl: action.responseUrl,
+          press: { teamId: action.thread.teamId, userId: action.userId, channelId: action.thread.channelId, token: action.value, ...(project === undefined ? {} : { project }), ...(retention === undefined ? {} : { retention }), interactionId },
+        });
+      } catch {
+        await deps.respondEphemeral(action.responseUrl, SLACK_ADD_WORDS.unavailable);
+      }
     },
   };
 }
