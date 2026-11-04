@@ -16,8 +16,8 @@ const SourcesAdmin = lazy(() => import("./SourcesAdmin.js"));
 /** "Sources": what feeds the team record for this project, how long Rovara keeps it, and how each source is doing. Members read it here; a person who may edit gets the editing screen. A source kept for maintainers is named only to a maintainer. */
 export function SourcesTab({ project }: { project: string }) {
  const read = useLessonSources(project), person = useProject(project);
- // Only a maintainer of the project is asked for the editors' view; the server still decides (a reply that is not the editors' view leaves this tab read-only).
- const maintainer = person.data?.you.role === "maintainer", admin = useSourcesAdmin(project, maintainer);
+ // Only a maintainer of the project is asked for the editors' view, and only once the lessons sources read has answered: that route exists only where the team record is on, so with the switch off nothing extra is requested and the tab is what it was before (the server still decides what the editors' view says).
+ const maintainer = person.data?.you.role === "maintainer" && read.isSuccess, admin = useSourcesAdmin(project, maintainer);
  if (maintainer && admin.isPending) return <section className="rv-lessons" aria-label={T.SOURCES_TITLE}><Skeleton label={T.SOURCES_LOADING} /></section>;
  if (admin.data?.canEdit === true) return <Suspense fallback={<section className="rv-lessons" aria-label={T.SOURCES_TITLE}><Skeleton label={T.SOURCES_LOADING} /></section>}><SourcesAdmin project={project} view={admin.data} /></Suspense>;
  if (read.isPending) return <section className="rv-lessons" aria-label={T.SOURCES_TITLE}><Skeleton label={T.SOURCES_LOADING} /></section>;

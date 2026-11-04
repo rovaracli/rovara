@@ -378,6 +378,9 @@ async function saveChange(run: Run, body: Extract<SourceWriteBody, { action: "ch
   if (body.source === "slack" && (turnsOn || widensAudience || (body.retention !== undefined && exceedsRetention(body.retention, current.retention)))) {
     const place = await checkScope(run, body.source, body.scope);
     if (turnsOn || widensAudience) placeReasons = scopeReasons(run.sources.edition, place.slack);
+  } else if (body.source === "github" && (turnsOn || widensAudience || (body.retention !== undefined && exceedsRetention(body.retention, current.retention)))) {
+    // A GitHub row turned on, or kept more, looks at the project's repositories again: one that has left the project is a missing place, as when it was added.
+    await checkScope(run, body.source, body.scope);
   }
   const next = {
     retention, audienceDefault: body.audienceDefault ?? current.audienceDefault, enabled: body.enabled ?? current.enabled, exclude: body.exclude ?? current.exclude,
@@ -559,6 +562,9 @@ async function approveChange(run: Run, changeId: string): Promise<Reply> {
     const turnsOn = proposal.row.enabled && !current!.enabled;
     const widensAudience = proposal.row.audienceDefault === "project" && current!.audienceDefault !== "project";
     if ((turnsOn || widensAudience) && scopeReasons(run.sources.edition, place.slack).some((reason) => !proposal.reasons.includes(reason))) throw stale();
+  } else if (source === "github" && ((proposal.row.enabled && !current!.enabled) || (proposal.row.audienceDefault === "project" && current!.audienceDefault !== "project") || exceedsRetention(proposal.row.retention, current!.retention))) {
+    // The same live look as when the change was made: a repository that left the project is a missing place.
+    await checkScope(run, source, scope);
   }
   // The rules are asked again: the company may have set a ceiling since.
   await needsSecondPersonForRetention(run, source, current?.retention, proposal.row.retention, proposal.row.notesOptIn === true);
@@ -592,7 +598,7 @@ async function approveChange(run: Run, changeId: string): Promise<Reply> {
       ...(row.notesOptIn === undefined ? { remove: ["notesOptIn"] } : {}),
     }, proposal.againstRevision!)];
   // The row, the end of the waiting change, the audit and both people's live authority commit together.
-  const items: TransactItem[] = [...apply, proposalDelete(table, run.orgId, run.project, proposal.id), ...check.conditions, ...auditItems(run, events, true)];
+  const items: TransactItem[] = [...apply, proposalDelete(table, run.orgId, run.project, proposal.id, proposal.row), ...check.conditions, ...auditItems(run, events, true)];
   if ((await commit(run, items)) === "ok") { await flush(run, events); return { status: 200, body: { status: "saved", revision } }; }
   // Read again before saying why.
   if ((await readSourceChange(table, run.orgId, run.project, proposal.id)) === undefined) throw agentXError("NOT_FOUND", WORDS.noChange);

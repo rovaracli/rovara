@@ -10,6 +10,7 @@ import { readApproverRoster } from "../../../packages/broker/src/org/second-pers
 import { secondPersonFromRecords } from "../../../packages/broker/src/org/test-environment.js";
 import { DynamoSoleOwnerSwitch } from "../../../packages/broker/src/lessons/dynamo-settings.js";
 import { erasePerson, eraseProject } from "../../../packages/broker/src/team-record/erase.js";
+import { scrubSourceChanges } from "../../../packages/broker/src/team-record/source-store.js";
 import type { CompanyLocks } from "../../../packages/broker/src/team-record/edition.js";
 import { AUDIT_CAPTURE_TABLE, capturingAuditDeps } from "../../support/audit-capture.js";
 import type { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -480,6 +481,55 @@ describe("approving a waiting change", () => {
     expect((await post(h, WHO.admin, change(1, { enabled: false }))).status).toBe(200);
     expect(await approve(h, WHO.maint, changeId)).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
     expect(sourceRows(h)[0]).toMatchObject({ retention: "C", enabled: false, revision: 2 });
+  });
+
+  it("final M1: an erase that scrubs a waiting change just after the approve read it makes the approve CHANGE_STALE, and the erased person's source id is never written into the row", async () => {
+    const h = harness();
+    await post(h, WHO.owner, add());
+    // The waiting change excludes a person's source id; the live row does not, so the scrub touches only the proposal (the row's revision does not move).
+    const changeId = (await post(h, WHO.owner, change(1, { retention: "D", exclude: ["U123"] }))).body.changeId as string;
+    const send = h.w.db.send.bind(h.w.db);
+    let raced = false;
+    h.w.db.send = async (command: Parameters<FakeDynamoDb["send"]>[0]) => {
+      if (!raced && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") {
+        raced = true;
+        await scrubSourceChanges(h.w.table, ORG_A, "web", { ids: ["U123"] });
+      }
+      return send(command);
+    };
+    expect(await approve(h, WHO.maint, changeId)).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
+    expect(raced).toBe(true);
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "C", exclude: [], revision: 1 });
+    expect(JSON.stringify(sourceRows(h))).not.toContain("U123");
+    // The scrubbed change still waits, now without the id; approving it again applies the scrubbed text.
+    expect(proposals(h)[0]!.row).toMatchObject({ exclude: [] });
+    expect(await approve(h, WHO.maint, changeId)).toMatchObject({ status: 200 });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "D", exclude: [], revision: 2 });
+  });
+
+  it("final M8: a change to a GitHub row that turns it on or keeps more re-checks the repository is still the project's, and refuses as a missing place when it is not", async () => {
+    const h = harness();
+    await post(h, WHO.owner, add());
+    expect((await post(h, WHO.owner, change(1, { enabled: false }))).status).toBe(200); // keeping less never asks
+    h.repos.set(`${ORG_A}/web`, [11]); // the repository left the project
+    expect(await post(h, WHO.owner, change(2, { enabled: true }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(await post(h, WHO.owner, change(2, { retention: "D" }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(sourceRows(h)[0]).toMatchObject({ enabled: false, revision: 2 });
+    expect(proposals(h)).toHaveLength(0);
+    // Turning it off stays possible.
+    expect((await post(h, WHO.owner, change(2, { exclude: ["U1"] }))).status).toBe(200);
+    // A list that cannot be read fails closed for a turn-on.
+    h.repos.delete(`${ORG_A}/web`);
+    expect((await post(h, WHO.owner, change(3, { enabled: true }))).status).toBe(503);
+  });
+
+  it("final M8: approving a waiting change to a GitHub row re-checks the repository; one that left the project is refused as a missing place and the row is not touched", async () => {
+    const h = harness();
+    const changeId = await waiting(h);
+    h.repos.set(`${ORG_A}/web`, [11]);
+    expect(await approve(h, WHO.maint, changeId)).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "C", revision: 1 });
+    expect(proposals(h)).toHaveLength(1);
   });
 
   it("the people who can approve changed since the change was made: refused with CHANGE_STALE", async () => {

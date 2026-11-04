@@ -151,7 +151,23 @@ export function proposalPut(table: TeamRecordTable, proposal: SourceChangePropos
   };
 }
 
-export const proposalDelete = (table: TeamRecordTable, orgId: OrgId, project: string, id: string) => ({ Delete: { TableName: table.tableName, Key: sourceChangeKey(orgId, project, id), ConditionExpression: EXISTS } });
+/**
+ * Ends a waiting change. Given the change as it was read (`readAs`), the delete also needs the two fields the person-erase scrub rewrites (`row.addedBy`, `row.exclude`) to still be what was read,
+ * so an approve that read the change just before a scrub fails its transaction instead of writing the scrubbed-out id into the row.
+ */
+export function proposalDelete(table: TeamRecordTable, orgId: OrgId, project: string, id: string, readAs?: Pick<SourceChangeProposal["row"], "addedBy" | "exclude">) {
+  const key = sourceChangeKey(orgId, project, id);
+  if (readAs === undefined) return { Delete: { TableName: table.tableName, Key: key, ConditionExpression: EXISTS } };
+  const aliases = new Aliases();
+  const row = aliases.name("row");
+  return {
+    Delete: {
+      TableName: table.tableName, Key: key,
+      ConditionExpression: `${EXISTS} AND ${row}.${aliases.name("addedBy")} = ${aliases.value(readAs.addedBy)} AND ${row}.${aliases.name("exclude")} = ${aliases.value([...readAs.exclude])}`,
+      ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
+    },
+  };
+}
 
 /** The stored outcome of a request that was already answered, while it is still good. */
 export async function readSourceRequest(table: TeamRecordTable, orgId: OrgId, project: string, developerId: string, requestId: string, nowMs: number): Promise<{ bodyHash: string; status: number; reply: unknown } | undefined> {

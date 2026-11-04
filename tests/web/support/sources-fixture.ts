@@ -19,11 +19,12 @@ export const adminView = (over: Raw = {}) => SourcesAdminViewSchema.parse({
 export const wrapped = (code: string, message: string, status: number): ApiResponse => refusal(code, message, status);
 export const flat = (code: string, message: string, status: number): ApiResponse => ({ status, body: { code, message } });
 
-export function sourcesWorld(options: { view?: unknown; adminRead?: ApiResponse; canEdit?: boolean; readable?: unknown; write?: (body: Raw, request: ApiRequest) => ApiResponse | undefined } = {}) {
+export function sourcesWorld(options: { view?: unknown; adminRead?: ApiResponse; canEdit?: boolean; readable?: unknown; lessonsSources?: ApiResponse; write?: (body: Raw, request: ApiRequest) => ApiResponse | undefined } = {}) {
  const state = { view: options.view ?? adminView() }, posts: Raw[] = [];
  const cell = lessonsHost({
   ...(options.canEdit === undefined ? {} : { canEdit: options.canEdit }),
   ...(options.readable === undefined ? {} : { state: { sources: options.readable } }),
+  ...(options.lessonsSources === undefined ? {} : { lessons: (_request: ApiRequest, url: URL) => url.pathname.endsWith("/lessons/sources") ? options.lessonsSources : undefined }),
   handle: (request, url) => {
    if (url.pathname !== RECORD_SOURCES_PATH) return undefined;
    if (request.method === "GET") return options.adminRead ?? ok(state.view);

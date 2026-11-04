@@ -19,6 +19,12 @@ describe("the Sources tab for a person who cannot edit", () => {
   expect(f.recordCalls()).toHaveLength(0);
   expect(chunk.loads).toBe(0);
  });
+ it("with the team record off (the lessons sources read answers not found) a maintainer never asks for the editors' view, and sees the same tab as before this lane", async () => {
+  const f = openSources({ lessonsSources: refusal("NOT_FOUND", "The team record isn't set up here.", 404) });
+  expect(await screen.findByText("The team record isn't set up here yet.")).toBeTruthy();
+  expect(f.recordCalls()).toHaveLength(0);
+  expect(chunk.loads).toBe(0);
+ });
  it("a maintainer whose record route is absent keeps the read-only list and no editing screen", async () => {
   const f = openSources({ adminRead: refusal("NOT_FOUND", "Not found.", 404) });
   await screen.findByText("No source feeds the team record for this project yet.");
