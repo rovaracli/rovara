@@ -13,6 +13,7 @@ import {
   type ProjectRole,
 } from "@agentx/contracts";
 import { recordFacts, pastWork, recordSearch, recordStats, type RecordQueryDependencies } from "./query.js";
+import { sourceOptions } from "./source-options.js";
 import { handleSourceWrite, mayEditSources, sourcesAdminView, type SourceWriteContext } from "./source-write.js";
 import { listSourceConfigs } from "./store.js";
 import type { CallerIdentities, RecordCaller } from "./types.js";
@@ -43,7 +44,7 @@ export interface RecordRouteRequest {
 }
 export interface RecordRouteReply { status: number; body: unknown }
 
-const ROUTE = /^\/v1\/app\/projects\/([^/]+)\/record\/(search|facts|past-work|sources|stats\/[a-z_]+)$/;
+const ROUTE = /^\/v1\/app\/projects\/([^/]+)\/record\/(search|facts|past-work|sources|sources\/options|stats\/[a-z_]+)$/;
 
 function numberOf(value: string | undefined): number | undefined {
   if (value === undefined || value === "") return undefined;
@@ -81,6 +82,7 @@ export async function handleRecordRoute(deps: RecordQueryDependencies, request: 
       if (!parsed.success) return { status: 400, body: { code: "CONFIG_INVALID", message: "The search is not valid." } };
       return { status: 200, body: await pastWork(deps, audience, request.query.audience === "shared" ? "shared" : "private", project.data, parsed.data) };
     }
+    if (route === "sources/options") return await sourceOptions(deps, request, project.data);
     if (route === "sources") {
       if (request.caller.projectRole === undefined) throw agentXError("PROJECT_ACCESS_DENIED", "You don't have access to this project.");
       // A person who may edit the project's sources reads the editors' view (it carries person ids, so only on a live browser session); everyone else gets the reply below, unchanged.

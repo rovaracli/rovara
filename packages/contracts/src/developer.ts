@@ -392,6 +392,20 @@ export type ChannelClassResponse =
   | { ok: false; error: "slack_unavailable" }
   | { ok: false; error: "invalid_request" };
 
+/**
+ * Team record source pickers (lane task 10): the channels the bot can see, one page of `conversations.list` at a time, read fresh with the same bot token. Only for the team the bot token belongs to.
+ * `includeDirect` adds direct messages and group messages (the broker asks for them only in the edition that allows them). `cursor` is Slack's own, passed back as Slack gave it.
+ * `missing_scope`: the Slack app was installed without the scopes that listing needs (the broker says so in one fixed sentence).
+ */
+export const ChannelListRequestSchema = z.object({
+  kind: z.literal("channel-list"), teamId: SlackTeamIdSchema, includeDirect: z.boolean(), cursor: z.string().regex(/^[A-Za-z0-9+/=_%.-]{1,300}$/).optional(),
+}).strict();
+export type ChannelListRequest = z.infer<typeof ChannelListRequestSchema>;
+export type ChannelListEntry = { id: string; name: string; kind: "public" | "private" | "im" | "mpim"; extShared: boolean };
+export type ChannelListResponse =
+  | { ok: true; channels: ChannelListEntry[]; next?: string }
+  | { ok: false; error: "slack_unavailable" | "missing_scope" | "invalid_request" };
+
 /** Spec 025 A12: the broker asks DeveloperIdentity which Slack user owns a verified email (FR-012's lookup). */
 export const SlackUserByEmailRequestSchema = z.object({ kind: z.literal("slack-user-by-email"), email: z.string().email().max(254) }).strict();
 export type SlackUserByEmailRequest = z.infer<typeof SlackUserByEmailRequestSchema>;

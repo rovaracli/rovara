@@ -4,16 +4,15 @@ import { sourcesAdminKey, type SourcesAdminViewData } from "../../../api/record-
 import { Button } from "../../../design/Button.js";
 import { Select } from "../../../design/Select.js";
 import { Switch } from "../../../design/Switch.js";
-import { TextField } from "../../../design/TextField.js";
 import { visibleText } from "../../../design/VisibleText.js";
-import { AUDIENCE_OPTIONS, offeredFor } from "./SourceRow.js";
+import { PlacePicker } from "./PlacePicker.js";
+import { AUDIENCE_OPTIONS, NotesNote, offeredFor } from "./SourceRow.js";
 import { T, retentionWords } from "./lessons-text.js";
 import { useSourceWrite } from "./use-source-write.js";
 
 type Kind = "repository" | "rovara" | "slack" | "linear" | "jira";
 const SOURCE_OF: Readonly<Record<Kind, string>> = { repository: "github", rovara: "rovara", slack: "slack", linear: "linear", jira: "jira" };
 const KIND_WORDS: Readonly<Record<Kind, string>> = { repository: T.SRC_KIND_REPO, rovara: T.SRC_KIND_ROVARA, slack: T.SRC_KIND_SLACK, linear: T.SRC_KIND_LINEAR, jira: T.SRC_KIND_JIRA };
-const PLACE_WORDS: Readonly<Record<"slack" | "linear" | "jira", { label: string; hint: string }>> = { slack: { label: T.SRC_PLACE_SLACK, hint: T.SRC_HINT_SLACK }, linear: { label: T.SRC_PLACE_LINEAR, hint: T.SRC_HINT_LINEAR }, jira: { label: T.SRC_PLACE_JIRA, hint: T.SRC_HINT_JIRA } };
 
 /** The place and the places above it, itself first (`slack:T1/C9` -> `slack:T1/C9`, `slack:T1`): the same rule as the server's `scopeAndAncestors`, kept here so the screen does not pull the keys module into the web bundle. */
 const withAncestors = (scope: string): string[] => { const out = [scope];for (let at = scope.lastIndexOf("/"); at > 0; at = scope.lastIndexOf("/")) { scope = scope.slice(0, at);out.push(scope); } return out; };
@@ -62,10 +61,10 @@ export function SourceAdd({ project, view, notify }: { project: string; view: So
   <fieldset key={formKey} className="rv-lessons-edit" disabled={writer.busy}><legend>{T.SRC_ADD}</legend>
    <Select label={T.SRC_ADD_KIND} value={kind} placeholder={T.SRC_CHOOSE} options={kinds.map(candidate => ({ value: candidate, label: KIND_WORDS[candidate] }))} onValueChange={next => { setKind(next);setPlace("");setRetention("");setNotes(false); }} />
    {chosen === "repository" && <Select label={T.SRC_REPO} value={place} placeholder={T.SRC_CHOOSE} options={repositories.map(repository => isClearing(view, "github", repository.scope) ? { value: repository.scope, label: visibleText(repository.name) + " " + T.SRC_BEING_REMOVED, disabled: true } : { value: repository.scope, label: visibleText(repository.name) })} onValueChange={setPlace} />}
-   {(chosen === "slack" || chosen === "linear" || chosen === "jira") && <TextField label={PLACE_WORDS[chosen].label} hint={PLACE_WORDS[chosen].hint} value={place} maxLength={300} autoComplete="off" onChange={event => { setPlace(event.target.value); }} />}
+   {(chosen === "slack" || chosen === "linear" || chosen === "jira") && <PlacePicker key={chosen} project={project} kind={chosen} value={place} onChange={setPlace} unavailable={candidate => isClearing(view, SOURCE_OF[chosen], candidate)} />}
    {clearingNow && <p role="alert">{T.SRC_ERR_REMOVAL}</p>}
    {chosen !== undefined && <>
-    {notesMode ? <><Switch label={T.SRC_NOTES_SWITCH} checked={notes} onCheckedChange={setNotes} /><p className="rv-muted">{T.SRC_NOTES_NOTE}</p></>
+    {notesMode ? <><Switch label={T.SRC_NOTES_SWITCH} checked={notes} onCheckedChange={setNotes} /><NotesNote /></>
      : <Select label={T.SRC_RETENTION} value={retention} placeholder={T.SRC_CHOOSE} options={choices.map(mode => ({ value: mode, label: retentionWords(mode) }))} onValueChange={setRetention} />}
     {chosen === "rovara" ? <p className="rv-muted">{T.WHO_SEES}: {T.SRC_ROVARA_AUDIENCE}</p> : <Select label={T.SRC_AUDIENCE} value={audience} options={AUDIENCE_OPTIONS} onValueChange={setAudience} />}
     <Switch label={T.SRC_ON} checked={enabled} onCheckedChange={setEnabled} />

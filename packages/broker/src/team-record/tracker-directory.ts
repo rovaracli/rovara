@@ -30,8 +30,11 @@ export interface ConnectedTracker {
    * Used live by the source write route; nothing is stored.
    */
   readPlaces?(input: { after?: string | undefined; limit: number }): Promise<TrackerPlacePage>;
+  /** The same places with the name the tool shows for each, for the source pickers (a page at a time, live). Absent: the picker cannot list this connection and the editor types the place. */
+  readPlaceNames?(input: { after?: string | undefined; limit: number }): Promise<TrackerPlaceNamesPage>;
 }
 export interface TrackerPlacePage { scopes: string[]; /** An opaque cursor for the next page; absent on the last. */ next?: string | undefined }
+export interface TrackerPlaceNamesPage { places: Array<{ scope: string; name: string }>; /** An opaque cursor for the next page; absent on the last. */ next?: string | undefined }
 
 /** The org's connected trackers. A connection that is not Linear or Jira, or has no saved secret, is not offered. */
 export interface ConnectedTrackersPort {
@@ -175,25 +178,38 @@ const LinearTeams = z.object({ data: z.object({ teams: z.object({
 const JiraProjects = z.object({ values: z.array(z.unknown()).max(1_000), isLast: z.boolean().nullish() }).passthrough();
 const JIRA_PROJECT_KEY = /^[A-Z][A-Z0-9_]{1,49}$/u;
 
-/** Linear: the workspace's teams (the key can see), a page at a time, as source scopes. A node without a string id is skipped. */
-export function linearPlacesReader(input: { fetch: typeof fetch; graphqlUrl: string; apiKey: string }): NonNullable<ConnectedTracker["readPlaces"]> {
+/** The name a picker shows: the tool's own name for the place with its short key, cut to a sane length; the key (or id) alone when the tool gave no name. */
+const placeName = (name: unknown, key: string): string => (typeof name === "string" && name.trim() !== "" ? `${name.trim().slice(0, 150)} (${key})` : key).slice(0, 200);
+
+/** Linear: the workspace's teams (the key can see), a page at a time, with their names. A node without a string id is skipped. Shared by the scope reader and the name reader. */
+function linearTeamsReader(input: { fetch: typeof fetch; graphqlUrl: string; apiKey: string }): NonNullable<ConnectedTracker["readPlaceNames"]> {
   return async ({ after, limit }) => {
     const response = await input.fetch(input.graphqlUrl, {
       method: "POST", headers: { authorization: input.apiKey, "content-type": "application/json" }, redirect: "error", signal: AbortSignal.timeout(READ_TIMEOUT_MS),
-      body: JSON.stringify({ query: "query($first:Int!,$after:String){ teams(first:$first, after:$after){ nodes{ id } pageInfo{ hasNextPage endCursor } } }", variables: { first: Math.min(limit, 250), ...(after === undefined ? {} : { after }) } }),
+      body: JSON.stringify({ query: "query($first:Int!,$after:String){ teams(first:$first, after:$after){ nodes{ id key name } pageInfo{ hasNextPage endCursor } } }", variables: { first: Math.min(limit, 250), ...(after === undefined ? {} : { after }) } }),
     });
     if (!response.ok) throw new Error("linear refused the read");
     const text = await cappedText(response);
     const parsed = text === undefined ? undefined : LinearTeams.safeParse(JSON.parse(text));
     if (parsed === undefined || !parsed.success) throw new Error("linear answered with something unreadable");
     const { nodes, pageInfo } = parsed.data.data.teams;
-    const scopes = nodes.flatMap((node) => { const id = (node as { id?: unknown } | null)?.id; return typeof id === "string" && id !== "" && id.length <= 100 ? [linearScope(id)] : []; });
-    return { scopes, ...(pageInfo.hasNextPage && typeof pageInfo.endCursor === "string" && pageInfo.endCursor !== "" ? { next: pageInfo.endCursor } : {}) };
+    const places = nodes.flatMap((node) => {
+      const team = node as { id?: unknown; key?: unknown; name?: unknown } | null;
+      return typeof team?.id === "string" && team.id !== "" && team.id.length <= 100 ? [{ scope: linearScope(team.id), name: placeName(team.name, typeof team.key === "string" && team.key !== "" ? team.key.slice(0, 20) : team.id.slice(0, 40)) }] : [];
+    });
+    return { places, ...(pageInfo.hasNextPage && typeof pageInfo.endCursor === "string" && pageInfo.endCursor !== "" ? { next: pageInfo.endCursor } : {}) };
   };
 }
+/** Linear: the workspace's teams as source scopes (what the write route checks a typed place against). */
+export function linearPlacesReader(input: { fetch: typeof fetch; graphqlUrl: string; apiKey: string }): NonNullable<ConnectedTracker["readPlaces"]> {
+  const read = linearTeamsReader(input);
+  return async (page) => { const { places, next } = await read(page); return { scopes: places.map((place) => place.scope), ...(next === undefined ? {} : { next }) }; };
+}
+/** Linear: the same teams with their names, for the picker. */
+export const linearPlaceNamesReader = linearTeamsReader;
 
-/** Jira Cloud: the projects the connection's account can see, by position, as source scopes. Only well-formed project keys are listed. */
-export function jiraPlacesReader(input: { fetch: typeof fetch; siteUrl: string; email: string; apiToken: string }): NonNullable<ConnectedTracker["readPlaces"]> {
+/** Jira Cloud: the projects the connection's account can see, by position, with their names. Only well-formed project keys are listed. Shared by the scope reader and the name reader. */
+function jiraProjectsReader(input: { fetch: typeof fetch; siteUrl: string; email: string; apiToken: string }): NonNullable<ConnectedTracker["readPlaceNames"]> {
   return async ({ after, limit }) => {
     const startAt = after === undefined ? 0 : Number.parseInt(after, 10);
     if (!Number.isInteger(startAt) || startAt < 0 || startAt > 100_000) throw new Error("bad cursor");
@@ -205,10 +221,20 @@ export function jiraPlacesReader(input: { fetch: typeof fetch; siteUrl: string; 
     const text = await cappedText(response);
     const parsed = text === undefined ? undefined : JiraProjects.safeParse(JSON.parse(text));
     if (parsed === undefined || !parsed.success) throw new Error("jira answered with something unreadable");
-    const scopes = parsed.data.values.flatMap((value) => { const key = (value as { key?: unknown } | null)?.key; return typeof key === "string" && JIRA_PROJECT_KEY.test(key) ? [jiraScope(key)] : []; });
-    return { scopes, ...(parsed.data.isLast === true || parsed.data.values.length === 0 ? {} : { next: String(startAt + parsed.data.values.length) }) };
+    const places = parsed.data.values.flatMap((value) => {
+      const project = value as { key?: unknown; name?: unknown } | null;
+      return typeof project?.key === "string" && JIRA_PROJECT_KEY.test(project.key) ? [{ scope: jiraScope(project.key), name: placeName(project.name, project.key) }] : [];
+    });
+    return { places, ...(parsed.data.isLast === true || parsed.data.values.length === 0 ? {} : { next: String(startAt + parsed.data.values.length) }) };
   };
 }
+/** Jira Cloud: the projects as source scopes (what the write route checks a typed place against). */
+export function jiraPlacesReader(input: { fetch: typeof fetch; siteUrl: string; email: string; apiToken: string }): NonNullable<ConnectedTracker["readPlaces"]> {
+  const read = jiraProjectsReader(input);
+  return async (page) => { const { places, next } = await read(page); return { scopes: places.map((place) => place.scope), ...(next === undefined ? {} : { next }) }; };
+}
+/** Jira Cloud: the same projects with their names, for the picker. */
+export const jiraPlaceNamesReader = jiraProjectsReader;
 
 export interface SyncDependencies {
   table: TeamRecordTable;

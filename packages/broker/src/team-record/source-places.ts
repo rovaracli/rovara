@@ -64,3 +64,40 @@ export function trackerPlaceCheck(port: ConnectedTrackersPort, options: { now?: 
     return complete ? "absent" : undefined;
   };
 }
+
+/** One page of the places a company's connected apps of a kind list, for the pickers: `places` with the tool's names, and an opaque `next`. */
+export interface TrackerOptionsPage { places: Array<{ scope: string; name: string }>; next?: string }
+/** `undefined`: the apps could not be read (down, cut short, or one that cannot list names): nothing is guessed. */
+export type TrackerPlaceOptions = (orgId: OrgId, kind: "linear" | "jira", cursor: string | undefined) => Promise<TrackerOptionsPage | undefined>;
+
+const OPTIONS_CURSOR = /^([0-9]{1,2})\.([A-Za-z0-9+/=_%.-]{0,300})$/u;
+/** The cursor of the pickers' read is `<connection number>.<that connection's own cursor>`: one page of one connection per call; when a connection ends the next one starts. */
+export function validTrackerCursor(cursor: string | undefined): boolean {
+  return cursor === undefined || OPTIONS_CURSOR.test(cursor);
+}
+
+/**
+ * A page of the places the company's connected apps of this kind list, with names, for the pickers. The company comes from the caller; the port answers for that company only. A connection that cannot
+ * list names, or a read that fails or throws, is `undefined`. No app of the kind is an empty page.
+ */
+export function trackerPlaceOptions(port: ConnectedTrackersPort): TrackerPlaceOptions {
+  return async (orgId, kind, cursor) => {
+    const match = cursor === undefined ? undefined : OPTIONS_CURSOR.exec(cursor);
+    if (cursor !== undefined && match === null) return undefined;
+    const index = match === null || match === undefined ? 0 : Number(match[1]);
+    const after = match === null || match === undefined || match[2] === "" ? undefined : match[2];
+    let trackers;
+    try { trackers = (await port.list(orgId)).filter((tracker) => tracker.kind === kind); } catch { return undefined; }
+    const tracker = trackers[index];
+    if (tracker === undefined) return { places: [] };
+    if (tracker.readPlaceNames === undefined) return undefined;
+    let page;
+    try { page = await tracker.readPlaceNames({ ...(after === undefined ? {} : { after }), limit: PLACE_PAGE_SIZE }); } catch { return undefined; }
+    let next: string | undefined;
+    if (page.next !== undefined) {
+      next = `${String(index)}.${page.next}`;
+      if (!OPTIONS_CURSOR.test(next)) return undefined; // a cursor we could not hand back: the list would silently stop
+    } else if (index + 1 < trackers.length) next = `${String(index + 1)}.`;
+    return { places: page.places, ...(next === undefined ? {} : { next }) };
+  };
+}

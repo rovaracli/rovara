@@ -11,7 +11,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { SESv2Client } from "@aws-sdk/client-sesv2";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
-import { singleOrgIdForEnv, type OrgId, type ChannelByNameRequest, type ChannelClassRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type RealtimeTokenRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest, type StartIdentityLinkRequest, type UnlinkIdentityRequest } from "@agentx/contracts";
+import { singleOrgIdForEnv, type OrgId, type ChannelByNameRequest, type ChannelClassRequest, type ChannelListRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type RealtimeTokenRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest, type StartIdentityLinkRequest, type UnlinkIdentityRequest } from "@agentx/contracts";
 import { DecideStore } from "../developer/decide-session.js";
 import { brokerDecideKinds, lambdaInspectInvoker } from "../developer/decide-inspect.js";
 import type { DecideKinds } from "../developer/decide-kinds.js";
@@ -348,7 +348,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   });
 }
 
-export const handler = async (event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | ChannelClassRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest) => {
+export const handler = async (event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest) => {
   built ??= build(process.env);
   await editionGuard?.();
   return built(event);

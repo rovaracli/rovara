@@ -178,7 +178,7 @@ export function fakeSlack(options: { users: FakeSlackUser[]; channels?: Record<s
       return Response.json({ ok: true, members: page, response_metadata: { next_cursor: next } });
     }
     if (url.pathname === "/api/conversations.list") {
-      const channels = Object.entries(options.channelInfo ?? {}).map(([id, info]) => ({ id, name: info.name, is_private: info.isPrivate === true }));
+      const channels = Object.entries(options.channelInfo ?? {}).map(([id, info]) => ({ id, name: info.name, is_private: info.isPrivate === true, ...(info.raw ?? {}) }));
       return Response.json({ ok: true, channels, response_metadata: { next_cursor: "" } });
     }
     if (url.pathname === "/api/conversations.info") {

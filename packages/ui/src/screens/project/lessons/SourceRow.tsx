@@ -13,6 +13,11 @@ type Row = SourcesAdminViewData["sources"][number];
 const RANK: Readonly<Record<string, number>> = { A: 0, B: 1, C: 2, D: 3 };
 /** The retention the server offers for a kind (a code-host row is offered what `codehost` is). */
 export const offeredFor = (offered: SourcesAdminViewData["offered"], kind: string): readonly string[] => offered[kind] ?? offered[kind.split(":")[0]!] ?? [];
+/** The Public notes line: what Rovara keeps, with "Slack's API terms" as a real link (design 4.3), opened in a new tab and without the opener. The sentence itself is one constant (`T.SRC_NOTES_NOTE`). */
+export function NotesNote() {
+ const at = T.SRC_NOTES_NOTE.indexOf(T.SRC_NOTES_LINK_TEXT);
+ return <p className="rv-muted">{T.SRC_NOTES_NOTE.slice(0, at)}<a href={T.SRC_NOTES_LINK} target="_blank" rel="noopener noreferrer">{T.SRC_NOTES_LINK_TEXT}</a>{T.SRC_NOTES_NOTE.slice(at + T.SRC_NOTES_LINK_TEXT.length)}</p>;
+}
 export const AUDIENCE_OPTIONS = [{ value: "project", label: T.SRC_AUDIENCE_PROJECT }, { value: "maintainers", label: T.SRC_AUDIENCE_MAINTAINERS }] as const;
 const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((value, index) => value === b[index]);
 
@@ -52,7 +57,7 @@ function RowControls({ row, offered, notesSwitch, writer, notify }: { row: Row; 
   notify(lowered ? T.SRC_SAVED + " " + T.SRC_LOWERED : T.SRC_SAVED);
  };
  return <fieldset className="rv-lessons-edit" disabled={writer.busy}><legend>{T.SRC_SAVE}</legend>
-  {notesMode ? <><Switch label={T.SRC_NOTES_SWITCH} checked={notes} onCheckedChange={setNotes} /><p className="rv-muted">{T.SRC_NOTES_NOTE}</p></>
+  {notesMode ? <><Switch label={T.SRC_NOTES_SWITCH} checked={notes} onCheckedChange={setNotes} /><NotesNote /></>
    : <Select label={T.SRC_RETENTION} value={retention === "" ? (choices.includes(row.retention) ? row.retention : "") : retention} placeholder={retentionWords(row.retention)} options={choices.map(mode => ({ value: mode, label: retentionWords(mode) }))} onValueChange={setRetention} />}
   {lowered && <p className="rv-muted">{T.SRC_LOWERED}</p>}
   {rovara ? <p className="rv-muted">{T.WHO_SEES}: {T.SRC_ROVARA_AUDIENCE}</p> : <Select label={T.SRC_AUDIENCE} value={audience} options={AUDIENCE_OPTIONS} onValueChange={setAudience} />}

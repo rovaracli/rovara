@@ -97,7 +97,7 @@ describe("adding a source", () => {
   const f = await openEditor();
   const form = screen.getByRole("region", { name: "Add a source" });
   pick("What to add", "slack");
-  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "  slack:T1/C9  " } });
+  fireEvent.change(await within(form).findByLabelText("Slack channel"), { target: { value: "  slack:T1/C9  " } });
   expect(within(form).getByText(/Rovara checks the channel itself/u)).toBeTruthy();
   pick("How long Rovara keeps it", "B", form);
   fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
@@ -110,7 +110,7 @@ describe("adding a source", () => {
   const f = await openEditor({ write: () => answer });
   const form = screen.getByRole("region", { name: "Add a source" });
   pick("What to add", "slack");
-  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "slack:T1/D3" } });
+  fireEvent.change(await within(form).findByLabelText("Slack channel"), { target: { value: "slack:T1/D3" } });
   pick("How long Rovara keeps it", "A", form);
   const send = () => fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
   send();
@@ -244,6 +244,7 @@ describe("T9: no second person on the screen", () => {
 
 describe("T9: the Public edition's notes-with-links switch", () => {
  const NOTE = "Rovara keeps short notes with links to the messages, never the messages themselves. See Slack's API terms.";
+ const noteIn = (scope: HTMLElement) => within(scope).queryByText((_, element) => element?.tagName === "P" && element.textContent === NOTE);
  const publicView = (over: Record<string, unknown> = {}) => adminView({ notesSwitch: true, offered: { github: ["A", "B", "C", "D"], rovara: ["A", "B", "C", "D"], slack: ["A", "B"], linear: ["A", "B", "C"], jira: ["A", "B", "C"], codehost: ["A", "B", "C", "D"], mcp: ["A"] }, ...over });
  const slackRow = (over: Record<string, unknown> = {}) => adminRow({ kind: "slack", scope: "slack:T1/C9", retention: "A", ...over });
  const slackRegion = () => row(/Slack slack:T1\/C9/u);
@@ -252,11 +253,11 @@ describe("T9: the Public edition's notes-with-links switch", () => {
   const f = await openEditor({ view: publicView({ sources: [] }) });
   const form = screen.getByRole("region", { name: "Add a source" });
   pick("What to add", "slack");
-  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "slack:T1/C9" } });
+  fireEvent.change(await within(form).findByLabelText("Slack channel"), { target: { value: "slack:T1/C9" } });
   expect(within(form).queryByLabelText("How long Rovara keeps it")).toBeNull();
   const notes = within(form).getByRole("switch", { name: "Keep notes with links" });
   expect(notes.getAttribute("aria-checked")).toBe("false");
-  expect(within(form).getByText(NOTE)).toBeTruthy();
+  expect(noteIn(form)).toBeTruthy();
   fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
   await waitFor(() => { expect(f.posts).toHaveLength(1); });
   expect(f.posts[0]).toEqual({ action: "add", requestId: expect.stringMatching(UUID) as string, source: "slack", scope: "slack:T1/C9", retention: "A", audienceDefault: "maintainers", enabled: true });
@@ -266,12 +267,24 @@ describe("T9: the Public edition's notes-with-links switch", () => {
   const f = await openEditor({ view: publicView({ sources: [] }) });
   const form = screen.getByRole("region", { name: "Add a source" });
   pick("What to add", "slack");
-  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "slack:T1/C9" } });
+  fireEvent.change(await within(form).findByLabelText("Slack channel"), { target: { value: "slack:T1/C9" } });
   fireEvent.click(within(form).getByRole("switch", { name: "Keep notes with links" }));
   expect(within(form).getByRole("switch", { name: "Keep notes with links" }).getAttribute("aria-checked")).toBe("true");
   fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
   await waitFor(() => { expect(f.posts).toHaveLength(1); });
   expect(f.posts[0]).toMatchObject({ action: "add", source: "slack", scope: "slack:T1/C9", retention: "B", notesOptIn: true });
+ });
+ it("\"Slack's API terms\" in the note is a real link to Slack's terms, opened in a new tab without the opener (design 4.3); the sentence reads the same (add form and row)", async () => {
+  await openEditor({ view: publicView({ sources: [slackRow()] }) });
+  const form = screen.getByRole("region", { name: "Add a source" });
+  pick("What to add", "slack");
+  for (const scope of [form, slackRegion()]) {
+   const link = within(scope).getByRole<HTMLAnchorElement>("link", { name: "Slack's API terms" });
+   expect(link.getAttribute("href")).toBe("https://slack.com/terms-of-service/api");
+   expect(link.getAttribute("target")).toBe("_blank");
+   expect(link.getAttribute("rel")?.split(" ").sort()).toEqual(["noopener", "noreferrer"]);
+   expect(link.parentElement?.textContent).toBe(NOTE);
+  }
  });
  it("the switch is for Slack only: a repository and a Linear team still choose a retention and show no note", async () => {
   await openEditor({ view: publicView({ sources: [] }) });
@@ -281,7 +294,7 @@ describe("T9: the Public edition's notes-with-links switch", () => {
    expect(within(form).getByLabelText("How long Rovara keeps it")).toBeTruthy();
    expect(within(form).queryByRole("switch", { name: "Keep notes with links" })).toBeNull();
   }
-  expect(screen.queryByText(NOTE)).toBeNull();
+  expect(noteIn(document.body)).toBeNull();
  });
  it("Enterprise (no notesSwitch) never shows the switch or the note: a Slack channel still chooses a retention", async () => {
   await openEditor({ view: adminView({ sources: [slackRow({ retention: "C" })] }) });
@@ -290,7 +303,7 @@ describe("T9: the Public edition's notes-with-links switch", () => {
   expect(within(form).getByLabelText("How long Rovara keeps it")).toBeTruthy();
   expect(screen.queryByRole("switch", { name: "Keep notes with links" })).toBeNull();
   expect(within(slackRegion()).getByLabelText("How long Rovara keeps it")).toBeTruthy();
-  expect(screen.queryByText(NOTE)).toBeNull();
+  expect(noteIn(document.body)).toBeNull();
  });
  it("a Slack row shows the switch with the note instead of a retention choice; it reflects B with the opt-in, and turning it on sends retention B + notesOptIn true", async () => {
   const f = await openEditor({ view: publicView({ sources: [slackRow()] }) });
@@ -298,7 +311,7 @@ describe("T9: the Public edition's notes-with-links switch", () => {
   expect(within(slack).queryByLabelText("How long Rovara keeps it")).toBeNull();
   const notes = within(slack).getByRole("switch", { name: "Keep notes with links" });
   expect(notes.getAttribute("aria-checked")).toBe("false");
-  expect(within(slack).getByText(NOTE)).toBeTruthy();
+  expect(noteIn(slack)).toBeTruthy();
   expect(within(slack).getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
   fireEvent.click(notes);
   fireEvent.click(within(slack).getByRole("button", { name: "Save changes" }));
@@ -391,7 +404,7 @@ describe("T8: a source that was removed and is still being cleared", () => {
   const f = await openEditor({ view: adminView({ sources: [], clearing: [clearing({ source: "slack", scope: "slack:T1/C9" })] }) });
   const form = screen.getByRole("region", { name: "Add a source" });
   pick("What to add", "slack");
-  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "  slack:T1/C9 " } });
+  fireEvent.change(await within(form).findByLabelText("Slack channel"), { target: { value: "  slack:T1/C9 " } });
   pick("How long Rovara keeps it", "B", form);
   expect(within(form).getByText("This source was just removed and its stored data is still being deleted. You can add it again in about an hour.")).toBeTruthy();
   const send = within(form).getByRole<HTMLButtonElement>("button", { name: "Add source" });
@@ -399,7 +412,7 @@ describe("T8: a source that was removed and is still being cleared", () => {
   fireEvent.click(send);
   expect(f.posts).toHaveLength(0);
   // Another channel of the same kind is not refused; a clearing place of another kind does not block it either.
-  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "slack:T1/C10" } });
+  fireEvent.change(await within(form).findByLabelText("Slack channel"), { target: { value: "slack:T1/C10" } });
   expect(within(form).queryByText(/was just removed/u)).toBeNull();
   expect(send.disabled).toBe(false);
  });
@@ -419,7 +432,7 @@ describe("T8 round 1: refreshing, matching the server's rule, and the other refu
   const f = await openEditor({ view: adminView({ sources: [], clearing: [clearing({ source, scope: clearingScope })] }) });
   const form = screen.getByRole("region", { name: "Add a source" });
   pick("What to add", "slack");
-  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: typed } });
+  fireEvent.change(await within(form).findByLabelText("Slack channel"), { target: { value: typed } });
   pick("How long Rovara keeps it", "B", form);
   return { f, form, send: within(form).getByRole<HTMLButtonElement>("button", { name: "Add source" }) };
  };
@@ -451,6 +464,7 @@ describe("T8 round 1: refreshing, matching the server's rule, and the other refu
   const type = (value: string) => fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value } });
   const settle = async () => { await new Promise(resolve => setTimeout(resolve, 50)); };
   pick("What to add", "slack");
+  await within(form).findByLabelText("Slack channel"); // the list cannot be read here, so the typed field comes up
   type("slack:T1/C8"); // no match: nothing is read
   expect(f.recordReads().length).toBe(before);
   type("slack:T1/C9");

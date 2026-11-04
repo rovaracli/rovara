@@ -8,6 +8,7 @@ import {
   redactAndCap,
   type ChannelByNameResponse,
   type ChannelClassResponse,
+  type ChannelListResponse,
   type ChannelInfoResponse,
   type ChannelMembersResponse,
   type SlackAuthCheckResponse,
@@ -42,6 +43,11 @@ export interface SlackDirectory {
    * failure to reach Slack, is unavailable (the caller fails closed). A channel Slack does not know is `{ ok: true }` without a channel.
    */
   channelClass(teamId: string, channelId: string): Promise<ChannelClassResponse>;
+  /**
+   * Team record pickers: one page (at most 200) of the channels the bot can see, with Slack's cursor for the next. Only for this install's own team. A bot installed without the listing scopes is `missing_scope`;
+   * every other failure is unavailable. Direct messages are listed only when asked for.
+   */
+  channelList(teamId: string, options: { includeDirect: boolean; cursor?: string | undefined }): Promise<ChannelListResponse>;
   /** A13: whether the bot token works, with the team Slack says it belongs to. Never the token. */
   authTest(): Promise<SlackAuthCheckResponse>;
   /** E12 (Q8): a public channel of the team by its exact name, or none. A private channel is never found by name. */
@@ -62,6 +68,8 @@ const TIMEOUT_MS = 5_000;
 export const CHANNEL_INFO_MAX_CALLS = 20;
 /** Pages of 200 one channelByName request reads before it answers "no such channel". */
 export const CHANNEL_BY_NAME_MAX_PAGES = 10;
+/** Channels one channelList reply holds, at most. */
+export const CHANNEL_LIST_PAGE = 200;
 /** Matched to the contract's batch: every channel of a full cold batch, twice (a second page each). */
 const MAX_CALLS_PER_REQUEST = 2 * CHANNEL_MEMBERS_MAX_CHANNELS;
 
@@ -99,6 +107,12 @@ const errorCode = (error: unknown): string | undefined => {
   const code = typeof error === "string" ? error.replace(/[^a-z_]/g, "").slice(0, 64) : "";
   return code === "" ? undefined : code;
 };
+
+/** What Slack's channel object says it is: a kind only when Slack states it plainly (a channel is public only when Slack says it is a channel and not private). */
+function slackKindOf(channel: Record<string, unknown>): "public" | "private" | "im" | "mpim" | undefined {
+  return channel.is_im === true ? "im" : channel.is_mpim === true ? "mpim"
+    : channel.is_private === true || channel.is_group === true ? "private" : channel.is_channel === true && channel.is_private === false ? "public" : undefined;
+}
 
 export function slackDirectory(input: {
   teamId: string | undefined; botToken: () => Promise<string>; fetch: typeof fetch; now: () => number; cacheMs?: number; maxPages?: number;
@@ -453,10 +467,37 @@ export function slackDirectory(input: {
         return { ok: false, error: "slack_unavailable" };
       }
       // Fail closed: a kind Slack did not state plainly is unavailable, never guessed, and a channel is public only when Slack says it is a channel and not private.
-      const kind = channel.is_im === true ? "im" as const : channel.is_mpim === true ? "mpim" as const
-        : channel.is_private === true || channel.is_group === true ? "private" as const : channel.is_channel === true && channel.is_private === false ? "public" as const : undefined;
+      const kind = slackKindOf(channel);
       if (channel.id !== channelId || kind === undefined) return { ok: false, error: "slack_unavailable" };
       return { ok: true, channel: { kind, extShared: channel.is_ext_shared === true || channel.is_pending_ext_shared === true } };
+    },
+    async channelList(teamId, options) {
+      if (input.teamId === undefined || input.teamId !== teamId) return { ok: false, error: "slack_unavailable" };
+      const reply = await get("conversations.list", {
+        types: options.includeDirect ? "public_channel,private_channel,im,mpim" : "public_channel,private_channel", exclude_archived: "true", limit: String(CHANNEL_LIST_PAGE),
+        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+      });
+      if (reply === undefined) return { ok: false, error: "slack_unavailable" };
+      if (reply.body.ok !== true || !Array.isArray(reply.body.channels)) {
+        refused("conversations.list", reply);
+        return { ok: false, error: reply.body.error === "missing_scope" ? "missing_scope" : "slack_unavailable" };
+      }
+      const channels: Array<{ id: string; name: string; kind: "public" | "private" | "im" | "mpim"; extShared: boolean }> = [];
+      for (const entry of reply.body.channels as unknown[]) {
+        if (channels.length >= CHANNEL_LIST_PAGE) break;
+        if (typeof entry !== "object" || entry === null) continue;
+        const channel = entry as Record<string, unknown>;
+        // Fail closed: an entry without a plain id or a stated kind is left out, never guessed at; a direct message nobody asked for is left out too.
+        const kind = slackKindOf(channel);
+        if (typeof channel.id !== "string" || !/^[CGD][A-Z0-9]{2,31}$/.test(channel.id) || kind === undefined) continue;
+        if (!options.includeDirect && (kind === "im" || kind === "mpim")) continue;
+        // A direct message has no name of its own: the other person's Slack id stands for it.
+        const name = typeof channel.name === "string" && channel.name !== "" ? channel.name : kind === "im" && typeof channel.user === "string" ? channel.user : undefined;
+        if (name === undefined) continue;
+        channels.push({ id: channel.id, name: name.slice(0, 120), kind, extShared: channel.is_ext_shared === true || channel.is_pending_ext_shared === true });
+      }
+      const next = (reply.body.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
+      return { ok: true, channels, ...(typeof next === "string" && /^[A-Za-z0-9+/=_%.-]{1,300}$/.test(next) ? { next } : {}) };
     },
     async authTest() {
       const reply = await get("auth.test", {});

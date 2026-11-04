@@ -108,3 +108,33 @@ export const SourcesAdminViewSchema = z.object({
 }).strict();
 export type SourcesAdminView = z.infer<typeof SourcesAdminViewSchema>;
 export const SourcesAdminViewReaderSchema = forwardReader(SourcesAdminViewSchema);
+
+// ---- the pickers (source-row lane, task 10)
+// `GET /v1/app/projects/{p}/record/sources/options?kind=slack|linear|jira&cursor=`: what an editor may pick instead of typing an id. Read live for the caller's own company, never stored.
+/** The kinds that have a picker. */
+export const SOURCE_PICKER_KINDS = ["slack", "linear", "jira"] as const;
+export const SourcePickerKindSchema = z.enum(SOURCE_PICKER_KINDS);
+export type SourcePickerKind = z.infer<typeof SourcePickerKindSchema>;
+/** Where an option stands for this project: free to add, already one of this project's sources, held by another project (never named), or a Slack Connect channel (never a source). */
+export const SOURCE_OPTION_STATES = ["available", "added", "taken", "slack_connect"] as const;
+export const SourceOptionStateSchema = z.enum(SOURCE_OPTION_STATES);
+export type SourceOptionState = z.infer<typeof SourceOptionStateSchema>;
+export const SourceOptionSchema = z.object({
+  scope: SourceScopeSchema,
+  /** The place's name as its tool shows it. Shown to people as text only. */
+  name: z.string().min(1).max(200),
+  state: SourceOptionStateSchema,
+  /** Slack only: what kind of conversation it is. */
+  slackKind: z.enum(["public", "private", "im", "mpim"]).optional(),
+}).strict();
+export type SourceOption = z.infer<typeof SourceOptionSchema>;
+export const SourceOptionsViewSchema = z.object({
+  kind: SourcePickerKindSchema,
+  options: z.array(SourceOptionSchema).max(200),
+  /** Hand this back as `cursor` for the next page. Absent on the last page, and after the total bound (10 pages). */
+  next: z.string().min(1).max(400).optional(),
+}).strict();
+export type SourceOptionsView = z.infer<typeof SourceOptionsViewSchema>;
+export const SourceOptionsViewReaderSchema = forwardReader(SourceOptionsViewSchema);
+/** The query of the read. The cursor is the one the last page gave (`<page>.<opaque>`); anything else is refused. */
+export const SourceOptionsQuerySchema = z.object({ kind: SourcePickerKindSchema, cursor: z.string().regex(/^[0-9]{1,2}\.[A-Za-z0-9+/=_%.-]{0,330}$/).max(400).optional() }).strict();

@@ -2,7 +2,7 @@
 // Linear or Jira and has a saved secret, in THIS org; its secret is read when a page is read and goes nowhere but the tool's own address (Linear's fixed GraphQL address, the Jira site the connection names).
 import type { OrgId } from "@agentx/contracts";
 import { LINEAR_GRAPHQL, OrgConnectionStore, readConnection, readConnectionSecret, type OrgConnectionDeps, type OrgConnectionRecord } from "../connections/store.js";
-import { atlassianManagedAccountsReader, jiraPlacesReader, jiraUsersReader, linearPlacesReader, linearUsersReader, type ConnectedTracker, type ConnectedTrackersPort, type ManagedAccounts } from "./tracker-directory.js";
+import { atlassianManagedAccountsReader, jiraPlaceNamesReader, jiraPlacesReader, jiraUsersReader, linearPlaceNamesReader, linearPlacesReader, linearUsersReader, type ConnectedTracker, type ConnectedTrackersPort, type ManagedAccounts } from "./tracker-directory.js";
 
 export function connectedTrackersOf(input: { deps: OrgConnectionDeps; fetch?: typeof fetch }): ConnectedTrackersPort {
   const fetchImplementation = input.fetch ?? fetch;
@@ -21,6 +21,11 @@ export function connectedTrackersOf(input: { deps: OrgConnectionDeps; fetch?: ty
           const secret = await readConnectionSecret(input.deps, orgId, ref);
           if (secret === undefined || !("apiKey" in secret)) throw new Error("the saved secret could not be read");
           return linearPlacesReader({ fetch: fetchImplementation, graphqlUrl: LINEAR_GRAPHQL, apiKey: secret.apiKey })(page);
+        },
+        async readPlaceNames(page) {
+          const secret = await readConnectionSecret(input.deps, orgId, ref);
+          if (secret === undefined || !("apiKey" in secret)) throw new Error("the saved secret could not be read");
+          return linearPlaceNamesReader({ fetch: fetchImplementation, graphqlUrl: LINEAR_GRAPHQL, apiKey: secret.apiKey })(page);
         },
       };
     }
@@ -43,6 +48,11 @@ export function connectedTrackersOf(input: { deps: OrgConnectionDeps; fetch?: ty
           const secret = await readConnectionSecret(input.deps, orgId, ref);
           if (secret === undefined || !("apiToken" in secret) || !("email" in secret)) throw new Error("the saved secret could not be read");
           return jiraPlacesReader({ fetch: fetchImplementation, siteUrl, email: secret.email, apiToken: secret.apiToken })(page);
+        },
+        async readPlaceNames(page) {
+          const secret = await readConnectionSecret(input.deps, orgId, ref);
+          if (secret === undefined || !("apiToken" in secret) || !("email" in secret)) throw new Error("the saved secret could not be read");
+          return jiraPlaceNamesReader({ fetch: fetchImplementation, siteUrl, email: secret.email, apiToken: secret.apiToken })(page);
         },
       };
     }

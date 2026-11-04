@@ -12,6 +12,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   AGENTX_CLI_CLIENT_ID,
   ChannelClassRequestSchema,
+  ChannelListRequestSchema,
   ChannelInfoRequestSchema,
   ChannelByNameRequestSchema,
   ChannelMembersRequestSchema,
@@ -36,6 +37,8 @@ import {
   type ChannelByNameResponse,
   type ChannelClassRequest,
   type ChannelClassResponse,
+  type ChannelListRequest,
+  type ChannelListResponse,
   type ChannelInfoRequest,
   type ChannelInfoResponse,
   type ChannelMembersRequest,
@@ -1242,8 +1245,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/") || pathname.startsWith("/v1/auth/join") || pathname.startsWith("/v1/auth/decide/");
 
   return async (
-    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | ChannelClassRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
-  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | ChannelClassResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | UnlinkIdentityResponse | StartIdentityLinkResponse | ChannelByNameResponse | RealtimeTokenAnswer> => {
+    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
+  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | ChannelClassResponse | ChannelListResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | UnlinkIdentityResponse | StartIdentityLinkResponse | ChannelByNameResponse | RealtimeTokenAnswer> => {
     if ("kind" in event) {
       if (event.kind === "end-developer-sessions") {
         const parsed = EndDeveloperSessionsRequestSchema.safeParse(event);
@@ -1290,6 +1293,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         const parsed = ChannelClassRequestSchema.safeParse(event);
         if (!parsed.success) return { ok: false, error: "invalid_request" };
         return deps.directory.channelClass(parsed.data.teamId, parsed.data.channelId);
+      }
+      if (event.kind === "channel-list") {
+        const parsed = ChannelListRequestSchema.safeParse(event);
+        if (!parsed.success) return { ok: false, error: "invalid_request" };
+        return deps.directory.channelList(parsed.data.teamId, { includeDirect: parsed.data.includeDirect, ...(parsed.data.cursor === undefined ? {} : { cursor: parsed.data.cursor }) });
       }
       if (event.kind === "task-person-proof") {
         const parsed = TaskPersonProofRequestSchema.safeParse(event);

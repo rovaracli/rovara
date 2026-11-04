@@ -13,6 +13,14 @@ const slackChannelOf = (read: ChannelClassRead): NonNullable<SourceWriteContext[
   return "channel" in answer ? answer.channel : "none";
 };
 
+type ChannelListRead = NonNullable<NonNullable<DeveloperRouteDependencies["developer"]>["channelList"]>;
+/** The Slack picker's page, from DeveloperIdentity's `channel-list`: a missing scope keeps its own word, every other failure (an identity function that does not know the request included) is plain unavailable. */
+const slackChannelsOf = (read: ChannelListRead, teamId: string): NonNullable<SourceWriteContext["slackChannels"]> => async (input) => {
+  const answer = await read({ kind: "channel-list", teamId, includeDirect: input.includeDirect, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) });
+  if (answer.ok) return { ok: true, channels: answer.channels, ...(answer.next === undefined ? {} : { next: answer.next }) };
+  return { ok: false, error: answer.error === "missing_scope" ? "missing_scope" : "unavailable" };
+};
+
 export function recordWriteContextOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest): SourceWriteContext {
   return {
     orgRole: caller.orgRole,
@@ -21,5 +29,8 @@ export function recordWriteContextOf(deps: DeveloperRouteDependencies, caller: D
     ...(deps.audit === undefined ? {} : { audit: { audit: deps.audit } }),
     // What a Slack channel is, read fresh through DeveloperIdentity (it holds the bot token). Absent where the install has no such route: a Slack source then cannot be added.
     ...(deps.developer?.channelClass === undefined ? {} : { slackChannel: slackChannelOf(deps.developer.channelClass) }),
+    // The pickers: this install's Slack team and a page of the channels the bot sees in it (read fresh through DeveloperIdentity). The route lists them only for the company the team is bound to.
+    ...(deps.developer?.slackTeamId === undefined ? {} : { slackTeamId: deps.developer.slackTeamId }),
+    ...(deps.developer?.channelList === undefined || deps.developer.slackTeamId === undefined ? {} : { slackChannels: slackChannelsOf(deps.developer.channelList, deps.developer.slackTeamId) }),
   };
 }

@@ -26,7 +26,7 @@ import {
   allowedRetention, checkRetentionChange, slackScopeAllowed, type CompanyLocks, type RecordSourceKind, type SlackScope, type TeamRecordEdition,
 } from "./edition.js";
 import { exceedsRetention, retentionRefusal } from "./retention.js";
-import { classifySlack, parseSlackScope, type SlackFacts, type TrackerPlaceCheck } from "./source-places.js";
+import { classifySlack, parseSlackScope, type SlackFacts, type TrackerPlaceCheck, type TrackerPlaceOptions } from "./source-places.js";
 import { auditRecordSourceAdded, auditRecordSourceChanged, auditRecordSourceRemoved } from "./audit.js";
 import { closeScope } from "./item-head.js";
 import { DEFAULT_WORK_BUDGET, tombstoneRows } from "./scope-work.js";
@@ -49,6 +49,8 @@ export interface SourceRouteDependencies {
   slackTeamBound?: (orgId: OrgId, teamId: string) => Promise<boolean>;
   /** Whether a connected Linear or Jira app of the company lists the place, read live. Absent (the install has no connections): such a place is never accepted. */
   trackerPlace?: TrackerPlaceCheck;
+  /** The places the company's connected Linear and Jira apps list, with names, a page at a time, for the pickers (`source-options.ts`). Absent: the pickers for those kinds cannot be read and the editor types the place. */
+  trackerOptions?: TrackerPlaceOptions;
   /** The source keys the learning loop paused (for the admin view). */
   pausedSources?(orgId: OrgId, project: string): Promise<readonly string[]>;
   newId?(): string;
@@ -66,6 +68,11 @@ export interface SourceWriteContext {
   audit?: AuditDeps;
   /** What Slack says a channel is, read fresh: its facts, `"none"` when Slack does not know it, `undefined` (or a throw) when it could not be read. Absent: no Slack place can be checked. */
   slackChannel?: (teamId: string, channelId: string) => Promise<SlackFacts | "none" | undefined>;
+  /** The Slack team of this install (the one whose bot token DeveloperIdentity holds). The pickers list only this team, and only for the company it is bound to. Absent: the Slack picker cannot be read. */
+  slackTeamId?: string;
+  /** One page of the channels the bot can see, read fresh through DeveloperIdentity (`channel-list`). `missing_scope`: the Slack app lacks the listing scopes. Absent: the Slack picker cannot be read. */
+  slackChannels?: (input: { teamId: string; includeDirect: boolean; cursor?: string }) => Promise<
+    { ok: true; channels: Array<{ id: string; name: string; kind: "public" | "private" | "im" | "mpim"; extShared: boolean }>; next?: string } | { ok: false; error: "missing_scope" | "unavailable" }>;
 }
 
 const WORDS = {
@@ -128,7 +135,8 @@ interface Run {
 }
 const nowIso = (run: Run): string => new Date(run.now()).toISOString();
 
-function gate(request: RecordRouteRequest, ctx: SourceWriteContext): void {
+/** Who may use the editors' routes: a person with a role in the project, who may edit its sources, on a live browser session. */
+export function gate(request: RecordRouteRequest, ctx: SourceWriteContext): void {
   if (request.caller.projectRole === undefined) throw agentXError("PROJECT_NOT_FOUND", "No such project.");
   if (!mayEditSources(request.caller, ctx)) throw agentXError("FORBIDDEN", WORDS.notEditor);
   if (!ctx.browserSession) throw agentXError("FORBIDDEN", WORDS.browser);
@@ -297,7 +305,7 @@ async function saveAdd(run: Run, body: Extract<SourceWriteBody, { action: "add" 
 
   const row: Omit<SourceConfig, "revision" | "updatedAt"> = {
     workspaceId: run.orgId, project: run.project, source: body.source, scope: body.scope, enabled: body.enabled, retention: body.retention, exclude: body.exclude ?? [],
-    audienceDefault: body.audienceDefault, ...(body.notesOptIn === true ? { notesOptIn: true as const } : {}), health: "unknown", addedBy: run.me,
+    audienceDefault: body.audienceDefault, ...(body.notesOptIn === true && body.retention === "B" ? { notesOptIn: true as const } : {}), health: "unknown", addedBy: run.me,
   };
   const widened = orderedWords([...(raises ? (["retention_raise"] as const) : []), ...placeWidened(run.sources.edition, place.slack)]);
 
@@ -359,8 +367,10 @@ async function saveChange(run: Run, body: Extract<SourceWriteBody, { action: "ch
   }
   const next = {
     retention, audienceDefault: body.audienceDefault ?? current.audienceDefault, enabled: body.enabled ?? current.enabled, exclude: body.exclude ?? current.exclude,
-    ...(notesOptIn === undefined ? {} : { notesOptIn }),
+    // The opt-in belongs to retention B and goes with it: a row saved below B never carries one, so a later move to B needs its own explicit opt-in.
+    ...(notesOptIn === true && retention === "B" ? { notesOptIn: true as const } : {}),
   };
+  const dropsOptIn = body.notesOptIn === null || (current.notesOptIn !== undefined && !(notesOptIn === true && retention === "B"));
   const widened = orderedWords([...(raises ? (["retention_raise"] as const) : []), ...placeWords]);
 
   const revision = was + 1;
@@ -368,7 +378,7 @@ async function saveChange(run: Run, body: Extract<SourceWriteBody, { action: "ch
   const reply: Reply = { status: 200, body: { status: "saved", revision } };
   const events = [auditRecordSourceChanged({ orgId: run.orgId, actorId: run.me, at, occurrence: randomUUID(), project: run.project, source: body.source, scope: body.scope, fromRetention: current.retention, toRetention: retention, enabled: next.enabled, widened })];
   const items: TransactItem[] = [
-    rowUpdate(run, current, { set: { ...next, revision, updatedAt: at }, ...(body.notesOptIn === null ? { remove: ["notesOptIn"] } : {}) }, was),
+    rowUpdate(run, current, { set: { ...next, revision, updatedAt: at }, ...(dropsOptIn ? { remove: ["notesOptIn"] } : {}) }, was),
     requestItem(run, body.requestId, hash, reply),
     ...auditItems(run, events, widened.length > 0),
   ];

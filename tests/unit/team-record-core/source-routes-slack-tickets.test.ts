@@ -669,3 +669,43 @@ describe("T9: Slack and tracker sources apply at once", () => {
     nothingWritten(h);
   });
 });
+
+// ---- Task 10 (from the Task 9 review, Minor 2): a Slack row keeps the notes opt-in only while its saved retention is B.
+describe("T10: the notes opt-in leaves the row whenever the saved retention is not B", () => {
+  it("lowering a B row to A drops the opt-in, so a later retention B without an explicit opt-in is refused", async () => {
+    const h = harness({ edition: "public" });
+    expect((await post(h, WHO.owner, add({ retention: "B", notesOptIn: true }))).status).toBe(200);
+    expect(await post(h, WHO.owner, change(1, { retention: "A" }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "A", revision: 2 });
+    expect(sourceRows(h)[0]).not.toHaveProperty("notesOptIn");
+    expect(await post(h, WHO.owner, change(2, { retention: "B" }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    // With the explicit opt-in it goes back to B.
+    expect(await post(h, WHO.owner, change(2, { retention: "B", notesOptIn: true }))).toEqual({ status: 200, body: { status: "saved", revision: 3 } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "B", notesOptIn: true });
+  });
+
+  it("a hand-made add at A with the opt-in does not store it, so B on a later change still needs its own opt-in", async () => {
+    const h = harness({ edition: "public" });
+    expect((await post(h, WHO.owner, add({ retention: "A", notesOptIn: true }))).status).toBe(200);
+    expect(sourceRows(h)[0]).not.toHaveProperty("notesOptIn");
+    expect(await post(h, WHO.owner, change(1, { retention: "B" }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "A", revision: 1 });
+  });
+
+  it("a stale opt-in already on a row below B is removed by any change that saves the row (the row below B never carries it)", async () => {
+    const h = harness({ edition: "public" });
+    expect((await post(h, WHO.owner, add({ retention: "A" }))).status).toBe(200);
+    h.w.db.set({ ...sourceRows(h)[0]!, notesOptIn: true });
+    expect(await post(h, WHO.owner, change(1, { enabled: false }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(sourceRows(h)[0]).toMatchObject({ enabled: false, retention: "A" });
+    expect(sourceRows(h)[0]).not.toHaveProperty("notesOptIn");
+    expect(await post(h, WHO.owner, change(2, { retention: "B" }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+  });
+
+  it("a B row keeps its opt-in through changes that do not touch retention", async () => {
+    const h = harness({ edition: "public" });
+    expect((await post(h, WHO.owner, add({ retention: "B", notesOptIn: true }))).status).toBe(200);
+    expect((await post(h, WHO.owner, change(1, { enabled: false }))).status).toBe(200);
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "B", notesOptIn: true, enabled: false });
+  });
+});
