@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import { createElement as h } from "react";
 import { designReviewDisagreements, inputProofSentence, FILES_READ_LABEL, CODE_CITATION_UNCHECKED } from "@agentx/contracts/web";
-import { DesignTabView } from "../../packages/ui/src/screens/session/DesignTab.js";
+import { DesignTab, DesignTabView } from "../../packages/ui/src/screens/session/DesignTab.js";
 import { classificationLine, citationLine, designTabModel, readDesignActions, readDesignReview, reviewerLine, usdWords } from "../../packages/ui/src/screens/session/design-review-view.js";
 import { cleanApproveReason, openBlockersOnCard } from "../../packages/ui/src/design/design-review-card.js";
 import { designReviewFixture, HOSTILE, HOSTILE_PLAIN } from "./support/design-review-fixture.js";
@@ -132,4 +132,26 @@ it("cleans the reason for an approve with an open blocker to one plain line, and
  expect(openBlockersOnCard([{ label: "Open blockers", value: "0" }])).toBe(0);
  expect(openBlockersOnCard([{ label: "Open blockers", value: "many" }])).toBe(0);
  expect(openBlockersOnCard([])).toBe(0);
+});
+
+it("says it is waiting for the design, not working out the cost, while no design is written yet (DR-UI-1)", () => {
+ const before = designReviewFixture({ status: "estimating", rounds: [], spentUsd: 0, estimateUsd: undefined });
+ expect(designTabModel(before, { designWritten: false }).statusWords).toBe("Waiting for the design");
+ // Once a design exists, round 1's cost is being worked out.
+ expect(designTabModel(before, { designWritten: true }).statusWords).toBe("Working out the cost");
+ // A caller that does not say keeps the stored status's words.
+ expect(designTabModel(before).statusWords).toBe("Working out the cost");
+ // Round 2 is "estimating" again with a round behind it: the revised design exists, so it is the cost.
+ expect(designTabModel(designReviewFixture({ status: "estimating" }), { designWritten: false }).statusWords).toBe("Working out the cost");
+});
+
+it("the Design tab reads whether a design exists from the task's artifacts (DR-UI-1)", () => {
+ const designReview = designReviewFixture({ status: "estimating", rounds: [], spentUsd: 0, estimateUsd: undefined });
+ const task = (artifacts: { type: string }[]) => ({ taskId: "task-1", workflow: { designReview, artifacts } }) as unknown as Parameters<typeof DesignTab>[0]["task"];
+ const first = render(h(DesignTab, { task: task([{ type: "requirements" }]) }));
+ expect(first.container.textContent).toContain("Waiting for the design");
+ expect(first.container.textContent).not.toContain("Working out the cost");
+ first.unmount();
+ const second = render(h(DesignTab, { task: task([{ type: "requirements" }, { type: "design" }]) }));
+ expect(second.container.textContent).toContain("Working out the cost");
 });

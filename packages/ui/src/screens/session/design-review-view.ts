@@ -238,8 +238,14 @@ export interface DesignTabModel {
   earlier?: string | undefined;
 }
 
-/** What the Design tab shows, all of it. `note` is Understand's one-line reading, when the page has it. */
-export function designTabModel(review: DesignReviewView, options: { note?: string | undefined; codeLinkBase?: CodeLinkBase | undefined } = {}): DesignTabModel {
+/** Shown while the review is switched on but the planner has not written the design yet (a Full task still in its requirements, or writing the design): there is no cost to work out yet. */
+export const AWAITING_DESIGN_WORDS = "Waiting for the design";
+
+/**
+ * What the Design tab shows, all of it. `note` is Understand's one-line reading, when the page has it. `designWritten` is whether the task has a design document yet (the caller reads the task's artifacts):
+ * a review that is "estimating" with no rounds and no design is waiting for its first design, not working out a cost.
+ */
+export function designTabModel(review: DesignReviewView, options: { note?: string | undefined; codeLinkBase?: CodeLinkBase | undefined; designWritten?: boolean | undefined } = {}): DesignTabModel {
   const codeLinkBase = options.codeLinkBase, note = options.note ?? review.note;
   const approvals = (review.approvals ?? []).map((approval) => {
     switch (approval.kind) {
@@ -252,7 +258,7 @@ export function designTabModel(review: DesignReviewView, options: { note?: strin
   return {
     classification: classificationLine(review),
     reading: note === undefined || note === "" ? undefined : note,
-    statusWords: STATUS_WORDS[review.status], tierWords: TIER_WORDS[review.tier],
+    statusWords: review.status === "estimating" && review.rounds.length === 0 && options.designWritten === false ? AWAITING_DESIGN_WORDS : STATUS_WORDS[review.status], tierWords: TIER_WORDS[review.tier],
     cost: { estimate: usdWords(review.estimateUsd), spent: usdWords(review.spentUsd), limit: review.capUsd === undefined ? "not set" : usdWords(review.capUsd) },
     notRun: review.status === "not_run" && review.notRunReason !== undefined ? NOT_RUN_WORDS[review.notRunReason] : review.status === "stopped_at_cap" ? "Design review stopped because it reached the cost limit." : undefined,
     progress: review.status === "running" ? `Design review, round ${String(Math.min(review.rounds.length + 1, 2))} of 2: reviewers reading the design.` : undefined,
