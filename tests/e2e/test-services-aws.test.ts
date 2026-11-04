@@ -283,7 +283,7 @@ describe("3. a task passes a check round against Postgres and Rovara local AWS, 
     const coding = { ...approved, dependencies: approved.dependencies!.map((item) => (item.id === "aws-s3" ? { ...item, seeds: [{ command: SEED }] } : item)) };
     const bench = await workerBench();
     const started = (await bench.start(coding, "IMPLEMENT"))!;
-    expect(started.ids.sort()).toEqual(["aws-dynamodb", "aws-s3", "aws-sqs", "postgres"]);
+    expect([...started.ids].sort()).toEqual(["aws-dynamodb", "aws-s3", "aws-sqs", "postgres"]);
     expect(bench.aws.emulatorEnv).toHaveLength(1);
     const file = bench.aws.emulatorEnv[0]!;
     expect(envOf(file, "ROVARA_AWS_BASE_URL")).toBe("http://aws:4566");
@@ -414,8 +414,9 @@ describe("4. failure cases are flagged, never a quiet pass", () => {
     const bench = await workerBench();
     const { started, round } = await run(bench, checks, broker.readiness);
     const record = lastUsage(bench);
-    const { aws: _aws, ...withoutAws } = record;
-    const { pack } = await evidenceFor(broker, withoutAws as TestServicesUsageRecord, round);
+    const withoutAws: TestServicesUsageRecord = { ...record };
+    delete withoutAws.aws;
+    const { pack } = await evidenceFor(broker, withoutAws, round);
     expect(pack.notTested.find((entry) => entry.id === AWS_USAGE_ITEM_ID)?.text).toBe("AWS usage could not be checked");
     await started.dispose();
     await bench.sandbox.dispose();
