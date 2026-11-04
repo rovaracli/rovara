@@ -126,8 +126,16 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   // "Complete" is final only after the sweep. A write that read the person's markers just before they were written (an ingest in flight, a join on another instance) can land after
   // the pass above; so the erase schedules its OWN second pass, delayed, which the delete worker runs (`runErasureSweeps`) with no wiring of its own.
   if (result.complete && options.sweep !== true) {
-    const dueAt = now() + ERASE_SWEEP_DELAY_MS;
-    await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { pk: teamRecordPk(orgId), sk: `${ERASE_SWEEP_PREFIX}${occurrence}`, entityType: "TEAM_RECORD_ERASE_SWEEP", occurrence, who: withoutNames(who), dueAt } }));
+    const sweepKey = { pk: teamRecordPk(orgId), sk: `${ERASE_SWEEP_PREFIX}${occurrence}` };
+    let dueAt = now() + ERASE_SWEEP_DELAY_MS;
+    // TR-E2a: the first due time stands. Re-running a completed erase finds the item and leaves it (a later pass must not push the second pass out, again and again).
+    try {
+      await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { ...sweepKey, entityType: "TEAM_RECORD_ERASE_SWEEP", occurrence, who: withoutNames(who), dueAt, indexExpiresAt: sweepExpiry(dueAt) }, ConditionExpression: "attribute_not_exists(pk)" }));
+    } catch (error) {
+      if ((error as { name?: string } | undefined)?.name !== "ConditionalCheckFailedException") throw error;
+      const kept = await deps.table.documentClient.send(new GetCommand({ TableName: deps.table.tableName, Key: sweepKey, ConsistentRead: true })) as { Item?: Item };
+      if (typeof kept.Item?.dueAt === "number") dueAt = kept.Item.dueAt;
+    }
     return { ...result, final: false, sweepDueAt: new Date(dueAt).toISOString() };
   }
   return { ...result, final: options.sweep === true && result.complete };
@@ -139,6 +147,9 @@ const withoutNames = ({ names: _names, ...rest }: ErasedPerson): ErasedPerson =>
 /** How long after a complete erase its second pass runs. */
 export const ERASE_SWEEP_DELAY_MS = 15 * 60_000;
 const ERASE_SWEEP_PREFIX = "ERASESWEEP#";
+/** The sweep item holds ids, so it expires on its own if the sweep never runs: the table's expiry attribute (seconds), a week after the item is due. */
+export const ERASE_SWEEP_EXPIRY_MS = 7 * 86_400_000;
+const sweepExpiry = (dueAtMs: number): number => Math.floor((dueAtMs + ERASE_SWEEP_EXPIRY_MS) / 1000);
 
 /**
  * The second pass of every erase that reported complete and is due: the same erase, run again (it is idempotent), which removes whatever a late write put back. Once it reports complete
@@ -153,7 +164,7 @@ export async function runErasureSweeps(deps: PurgeDependencies, orgId: OrgId, no
     ran += 1;
     const result = await erasePerson(deps, orgId, item.who as ErasedPerson, item.occurrence, DEFAULT_ERASE_BUDGET, { sweep: true });
     if (result.complete) { await deleteItem(deps.table, { pk: teamRecordPk(orgId), sk: item.sk }); final += 1; }
-    else await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { ...item, dueAt: nowMs + ERASE_SWEEP_DELAY_MS } }));
+    else await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { ...item, dueAt: nowMs + ERASE_SWEEP_DELAY_MS, indexExpiresAt: sweepExpiry(nowMs + ERASE_SWEEP_DELAY_MS) } }));
   }
   return { ran, final };
 }
