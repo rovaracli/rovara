@@ -460,13 +460,20 @@ describe("the /ping feature", () => {
     expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: listed(shipped).images.map((image) => (image.id === "local-aws@r1" ? { ...image, digest: "c".repeat(64) } : image)) }), true))).toEqual(["task.testServices.v1"]);
     expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: listed(shipped).images.filter((image) => image.id !== "local-aws@r1") }), true))).toEqual(["task.testServices.v1"]);
   });
-  it("per image: root's note of a repository that did not pre-pull takes only that image out (local-aws gone: slice 1's feature stays; postgres gone: both stay); a malformed note changes nothing", async () => {
+  it("per image: root's note of a repository that did not pre-pull takes only that image out (local-aws gone: slice 1's feature stays; postgres gone: both stay); a malformed or too long note withholds everything (fail closed)", async () => {
     const shipped = await files(listed, true);
     expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/local-aws" }, shipped)).toEqual(["task.testServices.v1"]);
     expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/mysql" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.aws.v1"]);
     expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/local-aws" }, shipped)).toEqual(["task.testServices.v1"]);
-    for (const bad of ["svc/LOCAL-AWS", "local-aws", "svc/local-aws;", ""]) expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: bad }, shipped), bad).toEqual(["task.testServices.v1", "task.testServices.aws.v1"]);
-    expect([...notPulledRepositories({ AGENTX_TEST_SERVICES_NOT_PULLED: "svc/a,svc/b" })]).toEqual(["svc/a", "svc/b"]);
+    // Fail closed: `all`, a malformed value and a list past 16 names withhold EVERY test-services feature (an empty value or none means nothing is missing).
+    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.aws.v1"]);
+    const tooMany = Array.from({ length: 17 }, (_, index) => `svc/image${String(index)}`).join(",");
+    for (const bad of ["all", "svc/LOCAL-AWS", "local-aws", "svc/local-aws;", "svc/a,", tooMany]) {
+      expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: bad }, shipped), bad).toEqual([]);
+      expect(notPulledRepositories({ AGENTX_TEST_SERVICES_NOT_PULLED: bad }), bad).toBe("all");
+      expect(emulatorImagePrepulled(shipped, { AGENTX_TEST_SERVICES_NOT_PULLED: bad }), bad).toBe(false);
+    }
+    expect([...(notPulledRepositories({ AGENTX_TEST_SERVICES_NOT_PULLED: "svc/a,svc/b" }) as Set<string>)]).toEqual(["svc/a", "svc/b"]);
   });
   it("reads the shipped files once, not on every /ping (the answer is cached for the life of the process)", async () => {
     const shipped = await files(listed, true);

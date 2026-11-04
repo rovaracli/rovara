@@ -326,7 +326,10 @@ describe("the facts root hands to the worker for its CloudWatch self-report (sta
     };
     expect(write("svc/local-aws,svc/postgres")).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=svc/local-aws,svc/postgres\n");
     expect(write("")).not.toContain("NOT_PULLED");
-    for (const bad of ["../x", "svc/Upper", "svc/a;rm", "svc/a,", "other/a"]) expect(write(bad), bad).not.toContain("NOT_PULLED");
+    // Fail closed: a list that is not well formed, or longer than 16 names, is written as `all` (the worker then offers no test-services feature); it is never dropped.
+    const tooMany = Array.from({ length: 17 }, (_, index) => `svc/image${String(index)}`).join(",");
+    for (const bad of ["../x", "svc/Upper", "svc/a;rm", "svc/a,", "other/a", tooMany]) expect(write(bad), bad).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=all\n");
+    expect(write(Array.from({ length: 16 }, (_, index) => `svc/image${String(index)}`).join(","))).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=svc/image0,");
     expect(write("svc/local-aws")).toContain("AGENTX_TEST_SERVICES_REGISTRY=");
   });
   it("never writes a version it did not read as a version", () => {

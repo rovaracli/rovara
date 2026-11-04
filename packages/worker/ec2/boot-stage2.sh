@@ -88,8 +88,12 @@ write_test_services_environment() {
   [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 1
   environment=${BASH_REMATCH[1]}
   { printf 'AGENTX_TEST_SERVICES_REGISTRY=%s\n' "$registry"; printf 'AGENTX_TEST_SERVICES_ENV=%s\n' "$environment"; } >>"$WORKER_ENV_FILE"
-  # Per image: the repositories that did not pre-pull (a comma list of svc/<name>); the worker does not offer them. Only well-formed names are written.
-  if [[ "${PREPULL_FAILED_REPOS:-}" =~ ^svc/[a-z0-9][a-z0-9._-]{0,62}(,svc/[a-z0-9][a-z0-9._-]{0,62}){0,15}$ ]]; then printf 'AGENTX_TEST_SERVICES_NOT_PULLED=%s\n' "$PREPULL_FAILED_REPOS" >>"$WORKER_ENV_FILE"; fi
+  # Per image: the repositories that did not pre-pull (a comma list of svc/<name>); the worker does not offer them. FAIL CLOSED: a list that is not well formed or has more than 16 names is written as `all`
+  # (every image counts as not pulled and the worker offers no test-services feature), never dropped, because writing nothing would offer images that are not here.
+  if [[ -n "${PREPULL_FAILED_REPOS:-}" ]]; then
+    if [[ "$PREPULL_FAILED_REPOS" =~ ^svc/[a-z0-9][a-z0-9._-]{0,62}(,svc/[a-z0-9][a-z0-9._-]{0,62}){0,15}$ ]]; then printf 'AGENTX_TEST_SERVICES_NOT_PULLED=%s\n' "$PREPULL_FAILED_REPOS" >>"$WORKER_ENV_FILE"
+    else printf 'AGENTX_TEST_SERVICES_NOT_PULLED=all\n' >>"$WORKER_ENV_FILE"; fi
+  fi
 }
 # The worker container has no registry login and no AWS credentials (only root on the host has the instance role), so ROOT pulls, before the worker starts, every digest in the pre-pull list baked into the worker image
 # (catalog repositories `svc/*` only, by digest, never a tag). The worker never pulls: it runs a dependency only if its digest is pinned in the image AND already here. Nothing to pull (no catalog, an empty list) is fine and

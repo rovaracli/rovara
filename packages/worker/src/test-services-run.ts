@@ -1072,6 +1072,7 @@ export async function startTaskTestServices(input: StartTaskTestServicesInput): 
 /** The features this worker adds to /ping for test services: the plan feature only when the worker has a test-services configuration (a worker without one would only refuse such a plan). */
 export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env, shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE> {
   if (testServicesConfigFromEnvironment(environment, undefined, undefined) === undefined) return [];
+  if (notPulledRepositories(environment) === "all") return [];
   return emulatorImagePrepulled(shipped, environment) ? [TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE] : [TEST_SERVICES_PLAN_FEATURE];
 }
 
@@ -1079,11 +1080,15 @@ export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = 
 export interface ShippedCatalogFiles { catalog: URL | string; prepull: URL | string }
 export const SHIPPED_CATALOG_FILES: ShippedCatalogFiles = { catalog: BAKED_CATALOG_URL, prepull: new URL("../service-catalog/prepull.json", import.meta.url) };
 
-/** Root's note of the catalog repositories that did NOT pre-pull at boot (boot-stage2.sh, a comma list of `svc/<name>`). Anything not well formed is read as empty (those are the names; a malformed value cannot widen anything). */
+/**
+ * Root's note of the catalog repositories that did NOT pre-pull at boot (boot-stage2.sh): a comma list of `svc/<name>`, or `all`. FAIL CLOSED: `all`, and any non-empty value that is not a well-formed list (a value that cannot be
+ * read cannot be trusted to name what is missing), mean every image counts as not pulled and no test-services feature is offered. Absent or empty means nothing is missing.
+ */
 export const TEST_SERVICES_NOT_PULLED_ENVIRONMENT = "AGENTX_TEST_SERVICES_NOT_PULLED";
-export function notPulledRepositories(environment: NodeJS.ProcessEnv = process.env): ReadonlySet<string> {
+export function notPulledRepositories(environment: NodeJS.ProcessEnv = process.env): ReadonlySet<string> | "all" {
   const value = environment[TEST_SERVICES_NOT_PULLED_ENVIRONMENT];
-  if (value === undefined || !/^svc\/[a-z0-9][a-z0-9._-]{0,62}(,svc\/[a-z0-9][a-z0-9._-]{0,62}){0,15}$/u.test(value)) return new Set();
+  if (value === undefined || value === "") return new Set();
+  if (!/^svc\/[a-z0-9][a-z0-9._-]{0,62}(,svc\/[a-z0-9][a-z0-9._-]{0,62}){0,15}$/u.test(value)) return "all";
   return new Set(value.split(","));
 }
 
@@ -1113,7 +1118,8 @@ function shippedEmulatorImage(shipped: ShippedCatalogFiles): { repository: strin
  */
 export function emulatorImagePrepulled(shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES, environment: NodeJS.ProcessEnv = process.env): boolean {
   const image = shippedEmulatorImage(shipped);
-  return image !== undefined && !notPulledRepositories(environment).has(image.repository);
+  const missing = notPulledRepositories(environment);
+  return image !== undefined && missing !== "all" && !missing.has(image.repository);
 }
 
 // ---- the candidate check (Prove, worker side): prepare.ts
