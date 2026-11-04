@@ -282,6 +282,8 @@ export async function retryCiFix(
   if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
+  // S2 (SB-2): a Retry that lets Rovara fix CI (or sync the branch) starts agent work for this person, so it meets the send-back's project access rule and the archive check.
+  await requireProjectSendBackRole(deps, task, caller);
   await requireMayGoOn(deps, caller, task);
   const receivedAt = iso(deps);
   let next: WorkflowSnapshot;
@@ -514,6 +516,11 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
     : undefined;
   // Accepting findings may make a custom sequence's new agent run due, rather than publication.
   if (due === "IMPLEMENT" || due === "REVIEW") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
+  // S2 (F27-5): moving forward onto a coding step restarts coding for this person, so a removed owner is stopped and the send-back's project access applies (a review step or the pull request is not coding).
+  if (due === "IMPLEMENT") {
+    await creatorGuard(deps, task);
+    await requireProjectSendBackRole(checked, task, caller);
+  }
   const dueDigest = next.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST;
   try {
     await deps.actions.transact([{ Update: {

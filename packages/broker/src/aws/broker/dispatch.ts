@@ -2,7 +2,7 @@
 
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@agentx/contracts";
+import { AgentXError, isSystemOwnerId, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@agentx/contracts";
 import { withDesignReviewPorts } from "../../design-review/wiring.js";
 import { designResolveDue } from "../../design-review/resolve-run.js";
 import { StoredBaselineSourceSchema } from "../baseline-source.js";
@@ -14,7 +14,9 @@ import { E2EPortablePlanReferenceError } from "../../e2e/feature-plan-intent.js"
 import { TERMINAL, getItem, operationKey, type OperationRecord } from "../cancellation.js";
 import { driveAgentRun } from "../../agents/run-engine.js";
 import { END_LEASE_MS, type TaskEndOutcome } from "../../agents/task-end.js";
-import { taskKey, taskAgentRunKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { effectiveTaskOwner, taskKey, taskAgentRunKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { requireCreatorStillMember } from "../../developer/creator-member.js";
+import { recordWorkRefused } from "../../developer/work-refusal.js";
 import { operationEndDispatchItem, type WorkflowDispatchRecord, isConditional } from "../broker-shared.js";
 import { recycleDriftedWorker, requalifyHoldActive } from "../../e2e/requalify-hold.js";
 import { ApplicationDispatchRefusal, ApplicationPlanDefect } from "../../e2e/application-dispatch-check.js";
@@ -38,7 +40,7 @@ import { readObjectText } from "./plan-answers.js";
 import { requireWorkspace } from "./records.js";
 import { ec2Sessions } from "./runtime-clients.js";
 import { canReadBaseBranchHead, changeRequestRef, hostNameOf, hostOfTaskRepository } from "./repository-hosts.js";
-import { githubScopeOf, webhookRepositoryUrl } from "./scope-helpers.js";
+import { creatorCheckOf, githubScopeOf, webhookRepositoryUrl } from "./scope-helpers.js";
 import { workflowApplicationRouteDependencies } from "./slack-workflow-events.js";
 import { blockWorkflowE2EReadiness, closeUncheckedPlanCheck, companyChoseCriticModel, ensureWorkflowE2EComputeReadiness, recordWorkflowDispatchFailure, returnWorkflowToCorrectE2EPlan, settleLostBranchSync, type AccessPausedWorkflowDispatch } from "./sweeps-and-readiness.js";
 import { refreshTaskFeedbackForOwnerDecision, refusalText, releaseIfFinished } from "./terminal-and-github-events.js";
@@ -222,6 +224,26 @@ export async function readUnderstandingArtifact(dependencies: AwsBrokerDependenc
   return read.ok ? { assessment: read.assessment, artifact: { id: String(artifact.id), objectKey: artifact.objectKey, createdAt: String(artifact.createdAt) } } : undefined;
 }
 
+/**
+ * MR-3: whether the task's owner is gone, so a queued dispatch must not run for them. `requireCreatorStillMember` (ruling R60) reads the owner's membership live; a removed owner (or a system owner
+ * whose project or company no longer stands) ends the task `creator_removed` there and refuses with TASK_ACCESS_DENIED, which is a final stop here: the caller removes the row (no retry, no parking)
+ * and the stop is audited with fixed words. A read that fails throws, and the dispatch's own bounded retry goes on.
+ */
+async function stopForGoneOwner(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord): Promise<boolean> {
+  try {
+    await requireCreatorStillMember(creatorCheckOf(dependencies), task);
+    return false;
+  } catch (error) {
+    if (!(error instanceof AgentXError) || error.code !== "TASK_ACCESS_DENIED") throw error;
+  }
+  if (task.orgId !== undefined) {
+    const system = isSystemOwnerId(effectiveTaskOwner(task).developerId);
+    await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
+      orgId: task.orgId, taskId: task.taskId, path: "queued_dispatch", reason: system ? "project_inactive" : "owner_removed", occurrence: "queued_dispatch", now: new Date().toISOString() });
+  }
+  return true;
+}
+
 export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: AccessPausedWorkflowDispatch): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
   if (item.kind === "agent_run") return runAgentRunDispatch(dependencies, item);
   if (item.kind === "operation_end") return runOperationEndDispatch(dependencies, item);
@@ -268,6 +290,8 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
     }
     // Plan 6 Task 17: a merge of the base whose machine was lost (the row names its operation): judged from what GitHub shows.
     if (item.kind === "SYNC" && workflow.state === "RUNNING") return await settleLostBranchSync(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
+    // MR-3: a task whose owner was removed (or whose system owner no longer stands) runs nothing more. The guard records `creator_removed` on the task; the row goes, so nothing retries it, and the stop is audited.
+    if (await stopForGoneOwner(dependencies, task)) { await remove(); return "STALE"; }
     const caller = await ownerCallerOf(dependencies, task, "workflow-dispatch");
     const routeDependencies = withDesignReviewPorts(dependencies, developerTaskRouteDependencies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
@@ -280,6 +304,8 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       taskAutonomyNow: (target) => target.orgId === undefined ? Promise.resolve("suggest" as const)
         : taskAutonomy(() => readTaskRecipe(dependencies, target.taskId, target.orgId!), undefined, () => companyAutonomyLimit(dependencies, target.orgId!)),
       ...specSeamsOf(dependencies),
+      // S2: the Audit Ledger, so a fix round the owner may not start is audited (`task.work_refused`).
+      ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
       currentPullRequestHead: async (target, pullRequest) => {
         const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
         if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
@@ -489,6 +515,8 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
     task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
     if (config?.enabled !== true || task === undefined || dependencies.developer === undefined) { await remove(); return "STALE"; }
     // MONEY (mainline #408 sync; owner ruling pending): Rovara's own moves run as the task's effective owner in the task's own org with the plain member role, nothing elevated.
+    // MR-3: Rovara's own look at a blocked step runs as the owner too; a removed owner stops it for good.
+    if (await stopForGoneOwner(dependencies, task)) { await remove(); return "STALE"; }
     const caller = await ownerCallerOf(dependencies, task, "workflow-autofix");
     const tasks = developerTaskActions(dependencies);
     const route = developerTaskRouteDependencies({

@@ -1261,6 +1261,16 @@ export function stopWorkflowFeedbackRound(currentInput: unknown, reason: string,
 }
 
 /**
+ * S2: a fix round (CI, conflict or review comments) that has not started its coding run is refused because the person it runs as lost their place in the project (or the project was archived):
+ * IMPLEMENT/READY becomes WAIT_FOR_MERGE/BLOCKED with `reason`, the fix's marks gone, the round still counted. Nothing is run or paid for; a person takes over.
+ */
+export function stopWorkflowFixNotRun(currentInput: unknown, reason: string, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "IMPLEMENT" || current.state !== "READY" || current.fixSource === undefined) throw new WorkflowTransitionError("no fix is waiting to start");
+  return WorkflowSnapshotSchema.parse({ ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: reason.slice(0, 500), updatedAt: now });
+}
+
+/**
  * A CI fix round stops with a plain reason a person has to act on: Rovara was told to wait (suggest), the rounds are used up, or the round changed nothing. WAIT_FOR_MERGE/WAITING (or the fix
  * itself, IMPLEMENT/RUNNING) becomes WAIT_FOR_MERGE/BLOCKED with `reason`, which must be one of the CI fix texts; the fix's marks are dropped. The pull requests stay followed.
  */
