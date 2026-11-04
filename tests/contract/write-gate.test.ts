@@ -25,6 +25,7 @@ import {
 import { prepareAgentWrite } from "../../packages/broker/src/agents/write-class.js";
 import type { ClassifyAgentWriteDependencies } from "../../packages/broker/src/agents/write-class.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -2016,6 +2017,23 @@ describe("after a take-over (Plan 5 Task 12a)", () => {
     }
     expect((await w.write(id)).status).toBe("PENDING");
     expect(w.vendor.state.vendorCalls).toEqual([]);
+  });
+});
+
+describe("S3 (L3): a run owner whose name is only an address", () => {
+  it("is named by their placeholder, not \"[email removed]\", in the stored approval, the timeline event and the waiting answer", async () => {
+    const w = world();
+    const address = `alice${String.fromCharCode(64)}example.test`;
+    const decision = await decideWrite(w.deps, w.input({ run: { project: "web", owner: { developerId: ALICE, name: address } } }));
+    expect(decision).toMatchObject({ outcome: "wait" });
+    const placeholder = placeholderDisplayName(ALICE);
+    const record = await w.write((decision as { approvalId: string }).approvalId);
+    expect(record.owner.name).toBe(placeholder);
+    const [event] = w.events() as Array<{ text: string }>;
+    expect(event!.text).toContain(`approval from ${placeholder} or a project maintainer`);
+    expect(event!.text).not.toContain("[email removed]");
+    expect(JSON.stringify(decision)).toContain(placeholder);
+    expect(JSON.stringify(decision)).not.toContain("[email removed]");
   });
 });
 

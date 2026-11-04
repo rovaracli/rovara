@@ -685,6 +685,14 @@ export function shownText(text: string, max: number): string {
   return capText(cleaned, max).text;
 }
 
+/**
+ * A person's name as other people read it in an approval text: the name without any address in it, or their placeholder when nothing else is left (`safeDisplayName`), then cleaned like any text.
+ * Not `shownText` alone: a name that is only an address would read "[email removed]" (S3-L3).
+ */
+export function shownPersonName(person: { developerId: string; name: string }, max: number): string {
+  return shownText(safeDisplayName(person.name, person.developerId), max);
+}
+
 const DecideBodySchema = z.object({ requestId: z.string().uuid(), decision: z.enum(["APPROVE", "DECLINE"]) }).strict();
 export type DecideBody = z.infer<typeof DecideBodySchema>;
 

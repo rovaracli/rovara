@@ -13,7 +13,7 @@ import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTa
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import { approverRefusalFor } from "./approvals-store.js";
 import { recordApprovalViewed } from "./approval-viewed.js";
-import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
+import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownPersonName, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
 import { resolveRecipe } from "./changes.js";
 import { TRACK_RECORD_DEADLINE_MS, readTrackRecordsByKind } from "../playbook/track-record.js";
@@ -23,12 +23,12 @@ const OPEN_AGAIN = "Open the approval again from Rovara.";
 
 /** Who may decide a record, for "Only <who> can decide this.": words, never an id, and never a list of the people it was first asked of. */
 async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecord): Promise<string> {
-  if (record.kind === "write") return `${shownText(record.owner.name, NAME_MAX)} or a project maintainer`;
+  if (record.kind === "write") return `${shownPersonName(record.owner, NAME_MAX)} or a project maintainer`;
   if (record.approvers.kind === "rule") {
     switch (record.approvers.rule) {
       case WRITE_APPROVER_RULE: {
         const run = await runOfApproval(deps, record);
-        return run === undefined ? "a project maintainer" : `${shownText(run.owner.name, NAME_MAX)} or a project maintainer`;
+        return run === undefined ? "a project maintainer" : `${shownPersonName(run.owner, NAME_MAX)} or a project maintainer`;
       }
       case "org_admin": return "an organization owner or admin";
       case "pull_request_merge": return "the person who pressed Merge, while they can still merge this task";
@@ -48,7 +48,7 @@ async function nameOf(deps: ApprovalDependencies, developerId: string | undefine
   if (developerId === undefined) return "a teammate";
   try {
     const record = await deps.signInStore.getDeveloper(developerId);
-    return shownText(record?.displayName ?? "a teammate", NAME_MAX) || "a teammate";
+    return record === undefined ? "a teammate" : shownPersonName({ developerId, name: record.displayName }, NAME_MAX) || "a teammate";
   } catch {
     return "a teammate";
   }

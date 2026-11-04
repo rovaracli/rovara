@@ -23,10 +23,12 @@ import {
   ROVARA_CODE_AGENT_ID,
   agentXError,
   atLeast,
+  capText,
   chainRunKey,
   chainRunsByChainPk,
   chainRunsByProjectPk,
   projectAllows,
+  redactText,
   runEventSk,
   type ChainRunEventPage,
   type ChainRunList,
@@ -128,11 +130,16 @@ async function readableRun(deps: Deps, caller: AgentCaller, rawRunId: string, op
 // ---- the view
 
 const clean = (text: string): string => shownText(text, NAME_MAX);
-/** A vendor's link, neutralised like any text but never cut short (half a link is another link): one that changes under cleaning, or is no link, is left out. */
+/**
+ * A vendor's link, neutralised like any text but never cut short (half a link is another link): one that changes under cleaning, or is no link, is left out. The cleaning is
+ * `shownText`'s (secrets redacted, control characters and spacing, a length cap) without its email rule: an at sign in a link's path or query is part of the link, and hiding it would break
+ * the link (S3-L4). The text beside a link (its title) still goes through `shownText`.
+ */
 function cleanUrl(url: string | undefined): string | undefined {
   if (url === undefined) return undefined;
-  const shown = shownText(url, STEP_LINK_URL_MAX);
-  return shown === url && URL.canParse(shown) ? shown : undefined;
+  const shown = capText(redactText(url).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim(), STEP_LINK_URL_MAX).text;
+  // A link that carries a login (`https://user:secret@host/`) is no link to show.
+  return shown === url && URL.canParse(shown) && new URL(shown).username === "" && new URL(shown).password === "" ? shown : undefined;
 }
 
 function startedByOf(deps: Deps, run: ChainRunRecord): Promise<ChainRunView["startedBy"]> | ChainRunView["startedBy"] {
