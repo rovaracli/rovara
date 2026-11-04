@@ -35,7 +35,7 @@ import { createSavedEnvFallbackReporter, createSavedEnvLoginProvider } from "./s
 import { rememberCredentials, runSavedEnvRebuild } from "./saved-env/rebuild.js";
 import { savedEnvOptionsOf } from "./saved-env/use.js";
 import { createDockerCli } from "./swebench/containers.js";
-import { assertWorkerScratchReady, checkWorkerScratch } from "./worker-scratch.js";
+import { assertWorkerScratchReady, checkWorkerScratch, workerBootFailureOf } from "./worker-scratch.js";
 import { collectTestServicesUsage, testServicesAdvertisedFeatures, testServicesAtWorkerBoot } from "./test-services-run.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
 
@@ -98,6 +98,8 @@ const state = createWorkerServerState(
     invocationFeatureDiagnostics: { ...projectSetupRuntime.invocationFeatureDiagnostics, "worker.scratch": workerScratch },
     // Application CHECKS are listed on /ping only while this worker can run them, from the last background check (never a Docker call per ping).
     ...applicationChecks.executor,
+    // N1: a failed scratch check is a failed boot as far as the broker can see: /ping answers 503 BootFailed, so no task is routed here and the instance is recycled.
+    ...(workerBootFailureOf(workerScratch) === undefined ? {} : { bootFailure: workerBootFailureOf(workerScratch)! }),
     steer: (invocation) => handleSteerInvocation(invocation, cancellationController, journal),
     peek: (invocation) => handlePeekInvocation(invocation, rootPath),
     async execute(invocation: WorkerInvocation): Promise<unknown> {

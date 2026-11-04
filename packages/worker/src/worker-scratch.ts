@@ -89,6 +89,11 @@ export async function checkWorkerScratch(options: WorkerScratchOptions = {}): Pr
   }
 }
 
+/** The reason /ping reports as a boot failure (server.ts `bootFailure`) for this status, or none when scratch is ready. */
+export function workerBootFailureOf(status: WorkerScratchStatus): string | undefined {
+  return status.status === "ready" ? undefined : `worker scratch: ${status.reason}`;
+}
+
 /** Refuses a task, with the reason, on a worker whose scratch check failed. */
 export function assertWorkerScratchReady(status: WorkerScratchStatus): void {
   if (status.status === "ready") return;
