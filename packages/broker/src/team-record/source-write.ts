@@ -85,6 +85,7 @@ const WORDS = {
   notOffered: "That retention isn't offered for this source.",
   ceiling: "Your company doesn't allow that much retention for this source.",
   second: "A different eligible person has to approve this.",
+  rejecter: "Only the person who made this change, or someone who can approve it, can reject it.",
   eligibility: "Rovara could not check who may approve this. Try again.",
   audit: "This change needs the audit ledger.",
   full: "Too many changes are waiting. Decide some of them first.",
@@ -263,7 +264,7 @@ async function saveAdd(run: Run, body: Extract<SourceWriteBody, { action: "add" 
   const reply: Reply = { status: 200, body: { status: "saved", revision: 1 } };
   const at = nowIso(run);
   const stored = SourceConfigSchema.parse({ ...row, revision: 1, updatedAt: at });
-  const events = [auditRecordSourceAdded({ orgId: run.orgId, actorId: run.me, at, occurrence: body.requestId, project: run.project, source: body.source, scope: body.scope, retention: body.retention, restricted: false })];
+  const events = [auditRecordSourceAdded({ orgId: run.orgId, actorId: run.me, at, occurrence: randomUUID(), project: run.project, source: body.source, scope: body.scope, retention: body.retention, restricted: false })];
   const items: TransactItem[] = [
     { Put: { TableName: table.tableName, Item: sourceRowItem(stored), ConditionExpression: NOT_EXISTS } },
     claimPut(table, run.orgId, run.project, body.source, body.scope, at),
@@ -314,7 +315,7 @@ async function saveChange(run: Run, body: Extract<SourceWriteBody, { action: "ch
   const revision = was + 1;
   const at = nowIso(run);
   const reply: Reply = { status: 200, body: { status: "saved", revision } };
-  const events = [auditRecordSourceChanged({ orgId: run.orgId, actorId: run.me, at, occurrence: body.requestId, project: run.project, source: body.source, scope: body.scope, fromRetention: current.retention, toRetention: retention, enabled: next.enabled })];
+  const events = [auditRecordSourceChanged({ orgId: run.orgId, actorId: run.me, at, occurrence: randomUUID(), project: run.project, source: body.source, scope: body.scope, fromRetention: current.retention, toRetention: retention, enabled: next.enabled })];
   const items: TransactItem[] = [
     rowUpdate(run, current, { set: { ...next, revision, updatedAt: at }, ...(body.notesOptIn === null ? { remove: ["notesOptIn"] } : {}) }, was),
     requestItem(run, body.requestId, hash, reply),
@@ -341,7 +342,8 @@ async function rosterOf(run: Run): Promise<ApproverRoster> {
 async function propose(run: Run, input: { kind: "add" | "change"; row: SourceChangeProposal["row"]; reasons: SourceChangeReason[]; againstRevision: number | null; requestId: string; hash: string }): Promise<Reply> {
   const table = run.deps.table;
   const roster = await rosterOf(run);
-  if ((await listSourceChanges(table, run.orgId, run.project)).length >= SOURCE_CHANGES_MAX) throw invalid(WORDS.full);
+  // Changes that have expired (and wait for the table's TTL to remove them) do not count.
+  if ((await listSourceChanges(table, run.orgId, run.project, SOURCE_CHANGES_MAX * 3)).filter((change) => Date.parse(change.expiresAt) > run.now()).length >= SOURCE_CHANGES_MAX) throw invalid(WORDS.full);
   const createdAt = nowIso(run);
   const expiresAt = new Date(run.now() + SOURCE_PROPOSAL_TTL_MS).toISOString();
   const proposal = SourceChangeProposalSchema.parse({
@@ -433,6 +435,8 @@ async function rejectChange(run: Run, changeId: string): Promise<Reply> {
   const table = run.deps.table;
   const proposal = await readSourceChange(table, run.orgId, run.project, changeId);
   if (proposal === undefined) throw agentXError("NOT_FOUND", WORDS.noChange);
+  // The proposer, or a person the company's records list as able to approve it.
+  if (proposal.proposedBy !== run.me && !(await rosterOf(run)).eligibleIds.includes(run.me)) throw agentXError("FORBIDDEN", WORDS.rejecter);
   const at = nowIso(run);
   const events = [auditRecordSourceChangeDecided({ orgId: run.orgId, actorId: run.me, at, occurrence: `${proposal.id}:rejected`, project: run.project, source: proposal.source, scope: proposal.scope, decision: "rejected", soleOwner: false, related: proposal.proposedBy === run.me ? [] : [proposal.proposedBy] })];
   const items: TransactItem[] = [proposalDelete(table, run.orgId, run.project, proposal.id), ...auditItems(run, events, false)];
@@ -467,6 +471,8 @@ export async function sourcesAdminView(deps: RecordQueryDependencies, request: R
   let locks: CompanyLocks | undefined;
   try { locks = await sources.locks?.(orgId); } catch { throw unavailable(); }
   const offered = Object.fromEntries(OFFERED_KINDS.map((kind) => [kind, allowedRetention(sources.edition, kind).filter((mode) => checkRetentionChange({ edition: sources.edition, source: kind, stored: undefined, to: mode, ...(locks === undefined ? {} : { locks }) }).ok)]));
+  // TRW-4: the counts of what was left out for want of a linked author, for the project's editors (a read that fails leaves them out).
+  const skippedUnlinked = await Promise.resolve(deps.skipped?.read(orgId, project)).catch(() => undefined);
   const roster = await Promise.resolve(ctx.roster?.({ orgId, project })).catch(() => undefined);
   const soleApprover = roster !== undefined && roster.complete && roster.eligibleIds.length === 1 && roster.eligibleIds[0] === request.caller.developerId;
   return SourcesAdminViewSchema.parse({
@@ -474,6 +480,6 @@ export async function sourcesAdminView(deps: RecordQueryDependencies, request: R
     pending: changes.filter((change) => Date.parse(change.expiresAt) > nowMs).slice(0, 100).map((change) => ({
       changeId: change.id, source: change.source, scope: change.scope, kind: change.kind, reasons: change.reasons, proposedByYou: change.proposedBy === request.caller.developerId, expiresAt: change.expiresAt,
     })),
-    canEdit: true, soleApprover, offered,
+    canEdit: true, soleApprover, offered, ...(skippedUnlinked === undefined ? {} : { skippedUnlinked }),
   });
 }

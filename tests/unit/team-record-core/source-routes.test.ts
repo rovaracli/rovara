@@ -42,18 +42,19 @@ function seedCompany(db: FakeDynamoDb, orgId: OrgId, people: Record<string, OrgR
   for (const { id, project } of maintainers) db.set({ ...projectMemberKey(orgId, id, project), ownerKey: id, projectName: project, role: "developer", projectRole: "maintainer", grantId: `grant-${id.slice(0, 4)}` });
 }
 
-interface Harness { w: World; audit: ReturnType<typeof capturingAuditDeps>; repos: Map<string, number[]>; locks: { value: CompanyLocks | undefined }; paused: string[]; ids: { next: number } }
+interface Harness { w: World; audit: ReturnType<typeof capturingAuditDeps>; repos: Map<string, number[]>; locks: { value: CompanyLocks | undefined }; paused: string[]; ids: { next: number }; skipped: Record<string, number> | undefined }
 function harness(options: { edition?: "enterprise" | "public"; people?: Record<string, OrgRole>; maintainers?: Array<{ id: string; project: string }>; meta?: Record<string, unknown> } = {}): Harness {
   const w = world({ edition: options.edition ?? "enterprise" });
   const audit = capturingAuditDeps({ db: w.db, now: () => w.clock.ms });
   seedCompany(w.db, ORG_A, options.people ?? { [OWNER]: "owner", [ADMIN]: "admin", [MAINT]: "member", [CONTRIB]: "member", [VIEWER]: "member", [AUDITOR]: "auditor" }, options.maintainers ?? [{ id: MAINT, project: "web" }], ["web", "api"], options.meta);
   seedCompany(w.db, ORG_B, { [OTHER_ORG_OWNER]: "owner", [OTHER_ORG_MAINT]: "member" }, [{ id: OTHER_ORG_MAINT, project: "web" }], ["web"]);
   const repos = new Map<string, number[]>([[`${ORG_A}/web`, [9]], [`${ORG_A}/api`, [9, 10]], [`${ORG_B}/web`, [9]]]);
-  return { w, audit, repos, locks: { value: undefined }, paused: [], ids: { next: 1 } };
+  return { w, audit, repos, locks: { value: undefined }, paused: [], ids: { next: 1 }, skipped: undefined };
 }
 
 const dependencies = (h: Harness) => ({
   table: h.w.table, modes: h.w.deps.modes, now: () => h.w.clock.ms,
+  ...(h.skipped === undefined ? {} : { skipped: { read: async () => h.skipped! } }),
   sources: {
     edition: h.w.deps.edition,
     projectRepositories: async (orgId: OrgId, project: string) => h.repos.get(`${orgId}/${project}`),
@@ -728,5 +729,108 @@ describe("erasure and archive reach the new items", () => {
     expect(claims(h)).toHaveLength(0);
     // The lake's own delete queue stays until the lake job has run; nothing else of the company is left.
     expect(h.w.db.find((item) => String(item.pk) === teamRecordPk(ORG_A) && !String(item.sk).startsWith("LAKEDEL#"))).toEqual([]);
+  });
+});
+
+describe("fix round 1", () => {
+  it("1. an editor still gets the skipped-for-unlinked-author counts, in the admin view; members' reply is unchanged", async () => {
+    const h = harness();
+    h.skipped = { jira: 3 };
+    await post(h, WHO.owner, add());
+    const view = SourcesAdminViewSchema.parse((await get(h, WHO.maint)).body);
+    expect(view.skippedUnlinked).toEqual({ jira: 3 });
+    // The old reply gave the counts to maintainers only, and not to a contributor.
+    expect((await get(h, WHO.contrib)).body).not.toHaveProperty("skippedUnlinked");
+    expect(JSON.stringify(await get(h, WHO.contrib))).toBe(JSON.stringify(await get(h, WHO.contrib, { withContext: false })));
+    // Where nothing is read, the view has none.
+    const bare = harness();
+    expect(SourcesAdminViewSchema.parse((await get(bare, WHO.maint)).body)).not.toHaveProperty("skippedUnlinked");
+  });
+
+  it("2. the audit event of an add or a change does not depend on the client's request id: the same id in two projects, or after the request item expired, still audits", async () => {
+    const h = harness();
+    await post(h, WHO.owner, add({ requestId: REQUEST_A }), { project: "web" });
+    await post(h, WHO.owner, add({ requestId: REQUEST_A, scope: "github:repo/10" }), { project: "api" });
+    const added = (await flushed(h)).filter((event) => event.action === "record.source_added");
+    expect(added).toHaveLength(2);
+    expect(new Set(added.map((event) => event.eventId)).size).toBe(2);
+    const R2 = "22222222-2222-4222-8222-222222222222";
+    expect((await post(h, WHO.owner, change(1, { requestId: R2, enabled: false }))).status).toBe(200);
+    h.w.clock.ms += 2 * 86_400_000; // the request item is gone
+    expect((await post(h, WHO.owner, change(2, { requestId: R2, enabled: true }))).status).toBe(200);
+    const changed = (await flushed(h)).filter((event) => event.action === "record.source_changed");
+    expect(changed).toHaveLength(2);
+    expect(new Set(changed.map((event) => event.eventId)).size).toBe(2);
+    // Another person using the same id is audited too.
+    expect((await post(h, WHO.admin, change(3, { requestId: R2, enabled: false }))).status).toBe(200);
+    expect((await flushed(h)).filter((event) => event.action === "record.source_changed")).toHaveLength(3);
+  });
+
+  it("3. a person erase moves the row's revision: a change made from a page loaded before it is CHANGE_STALE and the erased id stays gone", async () => {
+    const h = harness();
+    await post(h, WHO.owner, add());
+    expect((await post(h, WHO.owner, change(1, { exclude: ["U123", "U999"] }))).status).toBe(200); // revision 2
+    const d = deleteDeps(h.w);
+    const erased = await erasePerson(d.deps, ORG_A, { developerId: "5".repeat(64), projects: ["web"], identities: [{ system: "slack", sourceId: "U123" }] }, "erase-fence-1");
+    expect(erased.steps.config).toBe(true);
+    expect(sourceRows(h)[0]).toMatchObject({ exclude: ["U999"], revision: 3 });
+    expect(await post(h, WHO.owner, change(2, { exclude: ["U123", "U999"] }))).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
+    expect(sourceRows(h)[0]).toMatchObject({ exclude: ["U999"], revision: 3 });
+    // The adder's id is scrubbed under the same fence.
+    const erasedAdder = await erasePerson(d.deps, ORG_A, { developerId: OWNER, projects: ["web"] }, "erase-fence-2");
+    expect(erasedAdder.steps.config).toBe(true);
+    expect(sourceRows(h)[0]).toMatchObject({ addedBy: "0".repeat(64), revision: 4 });
+    expect(await post(h, WHO.admin, change(3, { enabled: false }))).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
+  });
+
+  it("3. the scrub gives way to an editor who changed the same list meanwhile, and tries again within a bound", async () => {
+    const h = harness();
+    await post(h, WHO.owner, add());
+    await post(h, WHO.owner, change(1, { exclude: ["U123"] }));
+    const send = h.w.db.send.bind(h.w.db);
+    let raced = false;
+    h.w.db.send = async (command: never) => {
+      // An editor adds a second id just before the scrub's first write lands.
+      if (!raced && (command as { constructor: { name: string } }).constructor.name === "UpdateCommand") {
+        raced = true;
+        h.w.db.set({ ...sourceRows(h)[0]!, exclude: ["U123", "U777"], revision: 3 });
+      }
+      return send(command);
+    };
+    const d = deleteDeps(h.w);
+    await erasePerson(d.deps, ORG_A, { developerId: "5".repeat(64), projects: ["web"], identities: [{ system: "slack", sourceId: "U123" }] }, "erase-fence-3");
+    expect(raced).toBe(true);
+    expect(sourceRows(h)[0]).toMatchObject({ exclude: ["U777"], revision: 4 });
+  });
+
+  it("4. only the proposer, or a person the roster lists as able to approve, can reject", async () => {
+    const h = harness();
+    await post(h, WHO.owner, add());
+    const changeId = (await post(h, WHO.owner, change(1, { retention: "D" }))).body.changeId as string;
+    const rosterWithout = (id: string) => async () => ({ complete: true, membershipVersion: 3, ownerIds: [OWNER], eligibleIds: [OWNER, ADMIN, MAINT].filter((one) => one !== id), lastEligibleLossAtMs: null });
+    expect(await post(h, WHO.maint, { action: "reject", changeId }, { context: { roster: rosterWithout(MAINT) } })).toMatchObject({ status: 403, body: { code: "FORBIDDEN" } });
+    expect(await post(h, WHO.maint, { action: "reject", changeId }, { context: { roster: async () => { throw new Error("down"); } } })).toMatchObject({ status: 503 });
+    expect(proposals(h)).toHaveLength(1);
+    // The proposer needs no roster.
+    expect(await post(h, WHO.owner, { action: "reject", changeId }, { context: { roster: rosterWithout(OWNER) } })).toEqual({ status: 200, body: { status: "rejected" } });
+  });
+
+  it("5. the admin view, which carries person ids, is served only to a live browser session", async () => {
+    const h = harness();
+    await post(h, WHO.owner, add());
+    const token = await get(h, { ...WHO.maint, browser: false });
+    expect(JSON.stringify(token)).toBe(JSON.stringify(await get(h, WHO.maint, { withContext: false })));
+    expect(token.body).not.toHaveProperty("canEdit");
+    expect(JSON.stringify(token.body)).not.toContain(OWNER);
+    expect(SourcesAdminViewSchema.parse((await get(h, WHO.maint)).body).canEdit).toBe(true);
+  });
+
+  it("6. waiting changes that have expired do not count toward the limit of 100", async () => {
+    const h = harness();
+    await post(h, WHO.owner, add());
+    for (let index = 0; index < 100; index += 1) expect((await post(h, WHO.owner, change(1, { retention: "D" }))).status).toBe(202);
+    expect(await post(h, WHO.owner, change(1, { retention: "D" }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    h.w.clock.ms += 7 * 86_400_000 + 1;
+    expect((await post(h, WHO.owner, change(1, { retention: "D" }))).status).toBe(202);
   });
 });

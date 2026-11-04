@@ -157,6 +157,8 @@ export const SourcesAdminViewSchema = z.object({
   soleApprover: z.boolean(),
   /** The retention each source offers on this edition, so the screen never offers one the ingest would refuse. */
   offered: z.record(z.string().min(1).max(60), z.array(RetentionModeSchema).max(4)),
+  /** TRW-4: what the record left out because the author is not a linked Rovara person, per source (counts only), as the route has always shown the project's maintainers. */
+  skippedUnlinked: z.record(z.string().min(1).max(60), z.number().int().min(0)).optional(),
 }).strict();
 export type SourcesAdminView = z.infer<typeof SourcesAdminViewSchema>;
 export const SourcesAdminViewReaderSchema = forwardReader(SourcesAdminViewSchema);

@@ -83,8 +83,8 @@ export async function handleRecordRoute(deps: RecordQueryDependencies, request: 
     }
     if (route === "sources") {
       if (request.caller.projectRole === undefined) throw agentXError("PROJECT_ACCESS_DENIED", "You don't have access to this project.");
-      // A person who may edit the project's sources reads the editors' view; everyone else gets the reply below, unchanged.
-      if (deps.sources !== undefined && request.write !== undefined && mayEditSources(request.caller, request.write)) return { status: 200, body: await sourcesAdminView(deps, request, project.data) };
+      // A person who may edit the project's sources reads the editors' view (it carries person ids, so only on a live browser session); everyone else gets the reply below, unchanged.
+      if (deps.sources !== undefined && request.write !== undefined && request.write.browserSession && mayEditSources(request.caller, request.write)) return { status: 200, body: await sourcesAdminView(deps, request, project.data) };
       const rows = await listSourceConfigs(deps.table, request.caller.orgId, project.data);
       // The approval and who added a source are the maintainers' business; a member reads what is kept and how.
       // What the record left out because the author is not a linked Rovara person, per source: for the project's maintainers (TRW-4). Counts only.

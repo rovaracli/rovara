@@ -450,34 +450,55 @@ export async function scrubTier0Developer(table: TeamRecordTable, orgId: OrgId, 
   return changed;
 }
 
+/** How many times a scrub of a source row looks again when another writer changed the row under it. */
+const SCRUB_ATTEMPTS = 3;
+
+/**
+ * One scrub of a source row: `plan` says, from the row as read, what to set and what the row must still hold for that to be right. The write is conditional on those values and moves the
+ * row's `revision` (and `updatedAt`), so an editor who loaded the row before the scrub can no longer write the scrubbed value back through the source route's revision fence. A row that changed
+ * meanwhile is read again and planned again, within a small bound; past it the scrub throws and the erase step is resumed by the next run. Returns whether the row was written.
+ */
+async function scrubRow(table: TeamRecordTable, config: SourceConfig, plan: (row: SourceConfig) => { set: Array<{ path: string[]; value: unknown }>; expect: Array<{ path: string[]; value: unknown }> } | undefined): Promise<boolean> {
+  const key = recordSourceKey(config.workspaceId, config.project, config.source, config.scope);
+  let row: SourceConfig | undefined = config;
+  for (let attempt = 0; attempt < SCRUB_ATTEMPTS; attempt += 1) {
+    const change = row === undefined ? undefined : plan(row);
+    if (change === undefined) return false;
+    const aliases = new Aliases();
+    const at = (path: string[]): string => path.map((part) => aliases.name(part)).join(".");
+    const sets = [...change.set.map((entry) => `${at(entry.path)} = ${aliases.value(entry.value)}`), `${aliases.name("revision")} = if_not_exists(${aliases.name("revision")}, ${aliases.value(0)}) + ${aliases.value(1)}`, `${aliases.name("updatedAt")} = ${aliases.value(new Date().toISOString())}`];
+    try {
+      await table.documentClient.send(new UpdateCommand({
+        TableName: table.tableName, Key: key, UpdateExpression: `SET ${sets.join(", ")}`,
+        ConditionExpression: [`attribute_exists(${aliases.name("pk")})`, ...change.expect.map((entry) => `${at(entry.path)} = ${aliases.value(entry.value)}`)].join(" AND "),
+        ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
+      }));
+      return true;
+    } catch (error) {
+      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      const again = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item };
+      row = sourceConfigFromItem(again.Item);
+    }
+  }
+  throw new Error("the source row kept changing");
+}
+
 export async function scrubConfigDeveloper(table: TeamRecordTable, config: SourceConfig, developerId: string): Promise<boolean> {
-  const addedBy = config.addedBy === developerId;
-  const approved = config.approval?.by === developerId;
-  if (!addedBy && !approved) return false;
-  const aliases = new Aliases();
-  const sets = [...(addedBy ? [`${aliases.name("addedBy")} = ${aliases.value(ERASED_DEVELOPER_ID)}`] : []), ...(approved ? [`${aliases.name("approval")}.${aliases.name("by")} = ${aliases.value(ERASED_DEVELOPER_ID)}`] : [])];
-  await table.documentClient.send(new UpdateCommand({
-    TableName: table.tableName,
-    Key: recordSourceKey(config.workspaceId, config.project, config.source, config.scope),
-    UpdateExpression: `SET ${sets.join(", ")}`,
-    ConditionExpression: `attribute_exists(${aliases.name("pk")})`,
-    ExpressionAttributeNames: aliases.names,
-    ExpressionAttributeValues: aliases.values,
-  }));
-  return true;
+  return scrubRow(table, config, (row) => {
+    const addedBy = row.addedBy === developerId;
+    const approved = row.approval?.by === developerId;
+    if (!addedBy && !approved) return undefined;
+    return {
+      set: [...(addedBy ? [{ path: ["addedBy"], value: ERASED_DEVELOPER_ID }] : []), ...(approved ? [{ path: ["approval", "by"], value: ERASED_DEVELOPER_ID }] : [])],
+      expect: [...(addedBy ? [{ path: ["addedBy"], value: developerId }] : []), ...(approved ? [{ path: ["approval", "by"], value: developerId }] : [])],
+    };
+  });
 }
 
 export async function removeFromExclude(table: TeamRecordTable, config: SourceConfig, sourceIds: ReadonlySet<string>): Promise<boolean> {
-  if (!config.exclude.some((id) => sourceIds.has(id))) return false;
-  const aliases = new Aliases();
-  const key = recordSourceKey(config.workspaceId, config.project, config.source, config.scope);
-  await table.documentClient.send(new UpdateCommand({
-    TableName: table.tableName,
-    Key: key,
-    UpdateExpression: `SET ${aliases.name("exclude")} = ${aliases.value(config.exclude.filter((id) => !sourceIds.has(id)))}`,
-    ConditionExpression: `attribute_exists(${aliases.name("pk")})`,
-    ExpressionAttributeNames: aliases.names,
-    ExpressionAttributeValues: aliases.values,
-  }));
-  return true;
+  return scrubRow(table, config, (row) => {
+    if (!row.exclude.some((id) => sourceIds.has(id))) return undefined;
+    // Conditional on the list it was worked out from: an editor's change meanwhile is read again, not overwritten.
+    return { set: [{ path: ["exclude"], value: row.exclude.filter((id) => !sourceIds.has(id)) }], expect: [{ path: ["exclude"], value: row.exclude }] };
+  });
 }

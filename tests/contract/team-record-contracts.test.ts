@@ -364,6 +364,11 @@ describe("source row write contracts", () => {
     expect(parse({ ...admin, sources: [{ ...adminRow, revision: undefined }] })).toBe(false);
     expect(parse({ ...admin, sources: [{ ...adminRow, scope: undefined }] })).toBe(false); // an editor always sees the place
     expect(parse({ ...admin, extra: 1 })).toBe(false);
+    // TRW-4: the skipped-for-unlinked-author counts, per source, as the route always gave them to maintainers.
+    expect(parse({ ...admin, skippedUnlinked: { jira: 3 } })).toBe(true);
+    expect(parse({ ...admin, skippedUnlinked: {} })).toBe(true);
+    expect(parse({ ...admin, skippedUnlinked: { jira: -1 } })).toBe(false);
+    expect(parse({ ...admin, skippedUnlinked: { jira: 1.5 } })).toBe(false);
     expect(SourcesAdminViewReaderSchema.safeParse({ ...admin, extra: 1 }).success).toBe(true);
   });
 });
