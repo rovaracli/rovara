@@ -1093,6 +1093,8 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "cloudfront:*OriginAccessControl*",
                 "cloudfront:*Polic*",
                 "cloudfront:*Tag*",
+                "sts:GetCallerIdentity",
+                "servicequotas:GetServiceQuota",
               ],
               "Effect": "Allow",
               "Resource": "*",
@@ -1181,13 +1183,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-            },
-            {
-              "Action": [
-                "sts:GetCallerIdentity",
-              ],
-              "Effect": "Allow",
-              "Resource": "*",
             },
             {
               "Action": [
@@ -1334,13 +1329,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
             },
             {
               "Action": [
-                "servicequotas:GetServiceQuota",
-              ],
-              "Effect": "Allow",
-              "Resource": "*",
-            },
-            {
-              "Action": [
                 "iam:CreateRole",
                 "iam:DeleteRole",
                 "iam:GetRole",
@@ -1357,6 +1345,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "iam:PutRolePermissionsBoundary",
                 "iam:ListRolePolicies",
                 "iam:ListAttachedRolePolicies",
+                "iam:PassRole",
               ],
               "Effect": "Allow",
               "Resource": [
@@ -1538,13 +1527,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
             },
             {
               "Action": [
-                "iam:CreateInstanceProfile",
-                "iam:DeleteInstanceProfile",
-                "iam:GetInstanceProfile",
-                "iam:AddRoleToInstanceProfile",
-                "iam:RemoveRoleFromInstanceProfile",
-                "iam:TagInstanceProfile",
-                "iam:UntagInstanceProfile",
+                "iam:*InstanceProfile",
               ],
               "Effect": "Allow",
               "Resource": {
@@ -1600,56 +1583,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "iam:PassRole",
               ],
               "Effect": "Allow",
-              "Resource": [
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":role/agentx/staging/*",
-                    ],
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":iam::",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":role/agentx-staging-cloudformation",
                   ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":role/agentx-staging-img-create",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":role/agentx-staging-cloudformation",
-                    ],
-                  ],
-                },
-              ],
+                ],
+              },
             },
             {
               "Action": [
@@ -1754,12 +1703,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               "Action": [
                 "organizations:*",
                 "account:*",
-              ],
-              "Effect": "Deny",
-              "Resource": "*",
-            },
-            {
-              "Action": [
                 "iam:*User*",
                 "iam:*Group*",
               ],
@@ -1771,7 +1714,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "iam:CreatePolicy*",
                 "iam:*PolicyVersion*",
                 "iam:DeletePolicy",
-                "iam:SetDefaultPolicyVersion",
               ],
               "Effect": "Deny",
               "NotResource": {

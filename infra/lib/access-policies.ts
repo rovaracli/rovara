@@ -5,6 +5,8 @@
 // (access-policies.test.ts, access-stack.test.ts, environment-naming.test.ts) keeps working
 // unchanged.
 export {
+  BOUNDARY_INSTANCE_PROFILE_ACTIONS,
+  BOUNDARY_NAMED_READS,
   BOUNDARY_SERVICES,
   CLOUDFRONT_BOUNDARY_ACTIONS,
   MANAGED_POLICY_ACTIONS,

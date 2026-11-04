@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
+  BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
+import { readFileSync } from "node:fs";
 import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/contracts";
+
+const iamActions = JSON.parse(readFileSync(new URL("../fixtures/iam-actions-2026-11-03.json", import.meta.url), "utf8")) as { actions: string[] };
+/** An IAM action pattern as a case-insensitive RegExp: `*` is any run of characters and `?` one. */
+const actionPattern = (pattern: string) => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
 
 const scope: PolicyScope = {
   env: "staging", partition: "aws", region: "us-east-1", account: "123456789012",
@@ -441,7 +446,9 @@ describe("default permission boundary", () => {
   it("allows each needed service by wildcard, never IAM, Organizations or Account", () => {
     const services = allows.find((s) => s.Sid === "Services")!;
     // CloudFront is the exception: action families (not cloudfront:*), as a ceiling over the service role's exact actions.
-    expect(services.Action).toEqual([...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS]);
+    // 2026-11-03: and the two unconditional "*" reads that used to be statements of their own (sts:GetCallerIdentity, servicequotas:GetServiceQuota), by name.
+    expect(services.Action).toEqual([...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS, ...BOUNDARY_NAMED_READS]);
+    expect([...BOUNDARY_NAMED_READS]).toEqual(["sts:GetCallerIdentity", "servicequotas:GetServiceQuota"]);
     expect(services.Resource).toBe("*");
     for (const service of ["iam", "organizations", "account", "sts"]) expect(BOUNDARY_SERVICES).not.toContain(service);
     // The service role's own wildcard services must all pass the boundary it runs under.
@@ -461,10 +468,12 @@ describe("default permission boundary", () => {
   it("allows only sts:GetCallerIdentity from STS, AssumeRole with TagSession for the one ConnectorSecretsRole, and AssumeRole into other accounts' roles with a Rovara external id", () => {
     const sts = allows.flatMap((s) => s.Action).filter((a) => a.startsWith("sts:"));
     expect(sts).toEqual(["sts:GetCallerIdentity", "sts:AssumeRole", "sts:TagSession", "sts:AssumeRole"]);
+    expect(allows.find((s) => s.Sid === "CallerIdentity")).toBeUndefined();
     // Plan 4 Task 16 (and Plan 3's Bedrock sources): a bounded role's own policy may grant this, and the boundary must not cap it away. Another account's role only,
     // only with an external id that names a Rovara org, and (owner decision A) only for the three roles that need it: see "AssumeOrgRoles" below.
     expect(allows.find((s) => s.Sid === "AssumeOrgRoles")).toEqual(ASSUME_ORG_ROLES_WITHOUT_ORGANIZATION);
-    expect(allows.find((s) => s.Sid === "CallerIdentity")).toEqual({ Sid: "CallerIdentity", Effect: "Allow", Action: ["sts:GetCallerIdentity"], Resource: "*" });
+    // 2026-11-03: sts:GetCallerIdentity is in the Services statement (Resource "*", no condition), not a statement of its own.
+    expect(allows.find((s) => s.Sid === "Services")!.Action).toContain("sts:GetCallerIdentity");
     // Plan 3 (R62): the broker assumes the connector secrets role, named exactly. Setup and test health SH22 adds one wildcard for the saved-environment roles (agentx-<env>-saved-env-*): the boundary
     // has room for one more ARN, not three, and the broker's own policy names the three exactly.
     expect(allows.find((s) => s.Sid === "ConnectorSecretsRole")).toEqual({
@@ -484,19 +493,18 @@ describe("default permission boundary", () => {
     expect(iam).not.toContain("iam:*");
     expect(iam).not.toContain("*");
     expect(iam.filter((a) => /User|Group|AccessKey|LoginProfile|PolicyVersion|^iam:(Create|Delete)Policy$|DefaultPolicyVersion/.test(a))).toEqual([]);
-    expect(iam.filter((a) => a.includes("*"))).toEqual([]);
+    // 2026-11-03: the one wildcard is the instance profile pattern, which is exactly the seven INSTANCE_PROFILE_ACTIONS (pinned in "names the instance profile actions with one pattern" below).
+    expect(iam.filter((a) => a.includes("*"))).toEqual([BOUNDARY_INSTANCE_PROFILE_ACTIONS]);
   });
 
   it("scopes role actions and PassRole to AgentX's own roles", () => {
     const byId = Object.fromEntries(allows.map((s) => [s.Sid, s]));
     expect([byId.IamRoles!.Resource].flat()).toEqual(["arn:aws:iam::123456789012:role/agentx/staging/*", "arn:aws:iam::123456789012:role/agentx-staging-img-create"]);
     expect(byId.IamRoles!.Action.every((a) => /^iam:[A-Za-z]*Role[A-Za-z]*$/.test(a))).toBe(true);
-    expect([byId.PassRoles!.Resource].flat()).toEqual([
-      "arn:aws:iam::123456789012:role/agentx/staging/*",
-      "arn:aws:iam::123456789012:role/agentx-staging-img-create",
-      "arn:aws:iam::123456789012:role/agentx-staging-cloudformation",
-    ]);
-    expect(byId.PassRoles!.Action).toEqual(["iam:PassRole"]);
+    // 2026-11-03: iam:PassRole is in IamRoles (the same two ARNs), and the service role is passed by PassServiceRole alone: the union of what is allowed is what PassRoles and IamRoles allowed before.
+    expect(byId.IamRoles!.Action).toContain("iam:PassRole");
+    expect(byId.PassRoles).toBeUndefined();
+    expect(byId.PassServiceRole).toEqual({ Sid: "PassServiceRole", Effect: "Allow", Action: ["iam:PassRole"], Resource: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation" });
     // No pass-role for retired runtime's default instance role: the capacity provider was removed (#118).
     expect(byId.PassDefaultInstanceRole).toBeUndefined();
     expect(byId.ServiceLinkedRoles).toEqual({
@@ -519,10 +527,11 @@ describe("default permission boundary", () => {
 
   it("explicitly denies account, organization, user, group and policy management, and changing itself", () => {
     expect(denies.map((s) => ({ Action: s.Action, Resource: s.Resource ?? { NotResource: s.NotResource } }))).toEqual([
-      { Action: ["organizations:*", "account:*"], Resource: "*" },
-      { Action: ["iam:*User*", "iam:*Group*"], Resource: "*" },
+      // 2026-11-03: the two Denies on "*" are one statement.
+      { Action: ["organizations:*", "account:*", "iam:*User*", "iam:*Group*"], Resource: "*" },
       // Every policy except the agentx-* managed policies the service role creates (ruling M2); the boundary itself stays denied below.
-      { Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy", "iam:SetDefaultPolicyVersion"], Resource: { NotResource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*" } },
+      // iam:SetDefaultPolicyVersion is matched by iam:*PolicyVersion* (checked below), so it is not listed again.
+      { Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy"], Resource: { NotResource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*" } },
       { Action: ["iam:*Policy*"], Resource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary" },
     ]);
     expect(denies.every((s) => s.Condition === undefined)).toBe(true);
@@ -538,7 +547,34 @@ describe("default permission boundary", () => {
     const services = defaultBoundaryStatements(scope).find((s) => s.Sid === "Services")!.Action;
     expect(services).not.toContain("servicequotas:*");
     expect(BOUNDARY_SERVICES).not.toContain("servicequotas");
-    expect(allows.find((s) => s.Sid === "Quotas")).toEqual({ Sid: "Quotas", Effect: "Allow", Action: ["servicequotas:GetServiceQuota"], Resource: "*" });
+    // 2026-11-03: in the Services statement (Resource "*", no condition) with sts:GetCallerIdentity, not a statement of its own.
+    expect(allows.find((s) => s.Sid === "Quotas")).toBeUndefined();
+    expect(allows.find((s) => s.Sid === "Services")!.Action).toContain("servicequotas:GetServiceQuota");
+    expect(allows.find((s) => s.Sid === "Services")!.Resource).toBe("*");
+    expect(allows.find((s) => s.Sid === "Services")!.Condition).toBeUndefined();
+  });
+
+  it("names the instance profile actions with one pattern that matches exactly the seven the service role names (against AWS's IAM action list of 2026-11-03)", () => {
+    const boundary = allows.find((s) => s.Sid === "IamInstanceProfiles")!;
+    expect(boundary.Action).toEqual([BOUNDARY_INSTANCE_PROFILE_ACTIONS]);
+    const named = serviceRoleStatements(scope).find((s) => s.Sid === "IamInstanceProfiles")!.Action;
+    expect(named).toHaveLength(7);
+    const matched = iamActions.actions.filter((action) => actionPattern(BOUNDARY_INSTANCE_PROFILE_ACTIONS).test(action));
+    expect([...matched].sort()).toEqual([...named].sort());
+    expect(boundary.Resource).toBe("arn:aws:iam::123456789012:instance-profile/agentx/staging/*");
+  });
+
+  it("lets the roles it bounds read Bedrock model availability (bedrock:GetFoundationModelAvailability has no resource type, so it needs Resource \"*\"), through the Services statement's bedrock:* and no Deny", () => {
+    // 2026-11-03 (BND-2 check): the broker's usable-models probe calls it. The default boundary already allows it; only a company-supplied boundary can refuse it (docs/architecture-production.md names it).
+    const services = allows.find((s) => s.Sid === "Services")!;
+    expect(services.Action).toContain("bedrock:*");
+    expect(services.Resource).toBe("*");
+    expect(services.Condition).toBeUndefined();
+    const matches = (pattern: string, action: string) => actionPattern(pattern).test(action);
+    for (const action of ["bedrock:GetFoundationModelAvailability", "bedrock:InvokeModel"]) {
+      expect(services.Action.some((pattern) => matches(pattern, action)), action).toBe(true);
+      expect(denies.filter((d) => d.Action.some((pattern) => matches(pattern, action))), action).toEqual([]);
+    }
   });
 });
 
@@ -616,6 +652,9 @@ describe("CloudFront permissions (web app deploy)", () => {
         // so the margin that was 300 is 150. The base had 41 characters of room above the old margin. The next addition to the boundary needs it split or tightened first.
         // 2026-11-03: ECR's creation role moved to the root path (CustomRoleArn takes no path), so the boundary names it once in IamRoles and once in PassRoles (and no longer in the lookup list, which IamRoles covers):
         // one more ARN, the worst case (20-character environment, organization id) is 6,046 of 6,144, so the margin is 90. The next addition to the boundary MUST split it or tighten it first.
+        // 2026-11-03 (tightened, nothing new allowed): the stale 6,046 above was really 6,048. Merging statements with the same Effect and Resource (CallerIdentity and Quotas into Services, the two Denies on "*",
+        // PassRoles into IamRoles), dropping iam:SetDefaultPolicyVersion (matched by iam:*PolicyVersion*) and naming the instance profile actions with iam:*InstanceProfile brought the same worst case (20-character environment, organization id) from 6,048 to 5,585 of 6,144, so 559 characters are free.
+        // tests/contract/default-boundary-equivalence.test.ts proves it permits what v0.5.2's did. The limit below is unchanged (6144 - 90).
         const boundary = size(withoutSids(defaultBoundaryStatements(longest)));
         worst = Math.max(worst, boundary);
         expect(boundary, `boundary, ${env}, ${rovaraOrganizationId ?? "no org id"}`).toBeLessThanOrEqual(6144 - 90);

@@ -81,6 +81,9 @@ export const SERVICE_ROLE_SERVICES: readonly string[] = [
  */
 export const BOUNDARY_SERVICES: readonly string[] = [...SERVICE_ROLE_SERVICES, "bedrock", "budgets", "codebuild", "execute-api", "xray"];
 
+/** The two reads the boundary names on "*" in its Services statement: not the whole services (sts:*, servicequotas:*), see the note above. */
+export const BOUNDARY_NAMED_READS: readonly string[] = ["sts:GetCallerIdentity", "servicequotas:GetServiceQuota"];
+
 /**
  * Service-linked roles the service role may create while deploying. route53resolver: associating
  * the DNS firewall's query logging config makes Resolver create AWSServiceRoleForRoute53Resolver
@@ -444,6 +447,9 @@ function rootPathRoles(scope: Pick<PolicyScope, "env" | "partition" | "account">
   return [`arn:${scope.partition}:iam::${scope.account}:role/${savedEnvCreateRoleName(scope.env)}`];
 }
 
+/** The boundary's one action pattern for INSTANCE_PROFILE_ACTIONS (see defaultBoundaryStatements): the same seven actions, checked against AWS's service authorization reference. */
+export const BOUNDARY_INSTANCE_PROFILE_ACTIONS = "iam:*InstanceProfile";
+
 /** Instance profiles under the environment's IAM path, like its roles. */
 function environmentInstanceProfiles(scope: Pick<PolicyScope, "env" | "partition" | "account">): string {
   return `arn:${scope.partition}:iam::${scope.account}:instance-profile${environmentRolePath(scope.env)}*`;
@@ -506,7 +512,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
 }
 
 /**
- * The statements without their Sids, for the DEPLOYED boundary: Sids are optional, and an IAM managed policy is capped at 6,144 characters (non-whitespace) of which the 23 Sids are about 590.
+ * The statements without their Sids, for the DEPLOYED boundary: Sids are optional, and an IAM managed policy is capped at 6,144 characters (non-whitespace) of which the Sids are several hundred.
  * Tests find statements by Sid in `defaultBoundaryStatements`, so the Sids stay there and only the deployed copy drops them.
  */
 export function withoutSids<T extends { Sid?: string }>(statements: readonly T[]): Array<Omit<T, "Sid">> {
@@ -537,13 +543,14 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
   const roles = environmentRoles(scope);
   const withRootRoles = [roles, ...rootPathRoles(scope)];
   return [
-    { Sid: "Services", Effect: "Allow", Action: [...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS], Resource: "*" },
+    // 2026-11-03 (boundary tightened for room, no new permission): the two unconditional "*" reads that were statements of their own (CallerIdentity, Quotas) sit here, with the same Effect and Resource.
+    // sts:GetCallerIdentity is the operator's identity check. servicequotas:GetServiceQuota is the operator's EC2 quota read (prerequisites on a resume); named, not scoped further, since the scoped ARNs in
+    // the operator's identity policy already limit it to two quotas.
+    { Sid: "Services", Effect: "Allow", Action: [...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS, ...BOUNDARY_NAMED_READS], Resource: "*" },
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
     ...appsyncEvents(scope),
     // The broker and the outbox publisher publish change notices to the realtime events API's one namespace (Plan 5 Task 8): the boundary allows that action on that namespace only.
     { Sid: "AppSyncEventsPublish", Effect: "Allow", Action: ["appsync:EventPublish"], Resource: `arn:${scope.partition}:appsync:${scope.region}:${scope.account}:apis/*/channelNamespace/${REALTIME_NAMESPACE}` },
-    // The operator's identity check.
-    { Sid: "CallerIdentity", Effect: "Allow", Action: ["sts:GetCallerIdentity"], Resource: "*" },
     // The sign-in function's notice of a newly linked sign-in method (Plan 2, Task 8) sends from a verified SES identity: ses:SendEmail
     // by name, on this account's identities only. The region is any, since it sends in the region of the sender's identity ARN. Named, not
     // ses:*, so a bounded role cannot reach SES's other actions.
@@ -581,23 +588,18 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
         StringLike: { "sts:ExternalId": "rovara-org_*" },
       },
     },
-    // The operator's EC2 quota reads (prerequisites on a resume); named like CallerIdentity above,
-    // not scoped further, since scoped ARNs in the identity policy already limit it to two quotas.
-    { Sid: "Quotas", Effect: "Allow", Action: ["servicequotas:GetServiceQuota"], Resource: "*" },
-    { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: withRootRoles },
+    // iam:PassRole joins the role actions (the operator passes the service role to CloudFormation; CloudFormation passes the environment's roles to Lambda, ECS, EC2 and the rest): the same actions on the same
+    // two ARNs as before, in one statement instead of two. The service role (a root-path role) is passed by the separate PassServiceRole statement below.
+    { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS, "iam:PassRole"], Resource: withRootRoles },
     // The service role carries this boundary, so the path-less lookups it is granted (see fixedNameRoleLookupStatement) are named here too.
     fixedNameRoleLookupStatement(scope, true),
-    { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
+    // 2026-11-03: `iam:*InstanceProfile` is exactly the seven INSTANCE_PROFILE_ACTIONS: against AWS's service authorization reference for IAM, no other action name ends in InstanceProfile (the list and tag
+    // calls end in Profiles, ProfilesForRole and ProfileTags). tests/contract/access-policies.test.ts keeps that pinned.
+    { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [BOUNDARY_INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
     // The service role creates the broker's named managed policies (ruling M2); the boundary is a ceiling, so it names the same actions on the same ARNs.
     { Sid: "IamManagedPolicies", Effect: "Allow", Action: [...MANAGED_POLICY_ACTIONS], Resource: agentxManagedPolicies(scope) },
-    {
-      // The operator passes the service role (root path) to CloudFormation; CloudFormation passes
-      // the environment's roles to Lambda, ECS, EC2 and the rest.
-      Sid: "PassRoles",
-      Effect: "Allow",
-      Action: ["iam:PassRole"],
-      Resource: [...withRootRoles, `arn:${partition}:iam::${account}:role/${scope.cloudFormationRoleName}`],
-    },
+    // The operator passes the service role (root path) to CloudFormation. The environment's roles and the saved environment images' creation role are passed by IamRoles above.
+    { Sid: "PassServiceRole", Effect: "Allow", Action: ["iam:PassRole"], Resource: `arn:${partition}:iam::${account}:role/${scope.cloudFormationRoleName}` },
     {
       Sid: "ServiceLinkedRoles",
       Effect: "Allow",
@@ -607,12 +609,13 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     },
     cognitoEmailServiceLinkedRole(partition, account),
     ...sesChecks(scope),
-    { Sid: "DenyAccountChanges", Effect: "Deny", Action: ["organizations:*", "account:*"], Resource: "*" },
-    { Sid: "DenyUsersAndGroups", Effect: "Deny", Action: ["iam:*User*", "iam:*Group*"], Resource: "*" },
+    // Account and organization changes, and IAM users and groups: two Denies with the same Effect and Resource, one statement since 2026-11-03.
+    { Sid: "DenyAccountUsersAndGroups", Effect: "Deny", Action: ["organizations:*", "account:*", "iam:*User*", "iam:*Group*"], Resource: "*" },
     {
       Sid: "DenyPolicyManagement",
       Effect: "Deny",
-      Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy", "iam:SetDefaultPolicyVersion"],
+      // iam:SetDefaultPolicyVersion is matched by iam:*PolicyVersion*, so it is not listed twice (2026-11-03).
+      Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy"],
       // Everywhere except this environment's broker grant policies (ruling M2). NotResource, so a policy that is not named
       // (the default boundary and every other agentx-named policy included) stays denied; DenyBoundaryChanges below still covers the boundary.
       NotResource: agentxManagedPolicies(scope),
