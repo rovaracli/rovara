@@ -271,6 +271,7 @@ describe("onMembersMerged", () => {
   it("moves the accountable maintainer of a project's agent and of a built-in to the survivor, and keeps the agent's budget in the survivor's total", async () => {
     const w = agentWorld();
     const web = await w.projectAgent("web", OLD_ALICE, "Web helper", 30);
+    seedMembership(w.db, OLD_ALICE, { orgId: ORG_A, role: "admin" }); // a built-in's accountable person is an owner or admin, held to that in the write's own transaction
     await w.store.setAccountable(ORG_A, "rovara-code", { developerId: OLD_ALICE }, fixtureActor(w.store, ORG_A, "admin", true).developerId, undefined, { actor: fixtureActor(w.store, ORG_A, "admin", true) });
     const others = await w.projectAgent("web", BOB, "Bob's helper", 10);
     w.merged(OLD_ALICE, ALICE);
@@ -991,6 +992,7 @@ describe("onMemberRemoved", () => {
     w.projectMembers.grant(ORG_A, "api", BOB, "maintainer");
     const api = await w.projectAgent("api", BOB, "Api helper", 10);
     w.projectMembers.grant(ORG_A, "api", BOB, "viewer"); // her only grant on api is no longer a maintainer's
+    seedMembership(w.db, BOB, { orgId: ORG_A, role: "admin" }); // a built-in's accountable person is an owner or admin, held to that in the write's own transaction
     await w.store.setAccountable(ORG_A, "rovara-code", { developerId: BOB }, fixtureActor(w.store, ORG_A, "admin", true).developerId, undefined, { actor: fixtureActor(w.store, ORG_A, "admin", true) });
     gone(w, BOB);
 

@@ -378,6 +378,7 @@ describe("agent.owner_changed", () => {
     const s = storeSetup();
     const agent = await s.make("Web helper", { kind: "project", project: "web" }, { accountable: { developerId: ALICE } });
     s.clock.now += 1000;
+    seedMembership(s.db, BOB, { orgId: TEST_ORG, role: "admin" }); // the new accountable person is a real member, held to that in the write's own transaction
     await s.store.setAccountable(TEST_ORG, agent.agentId, { developerId: BOB }, ALICE, undefined, { actor: fixtureActor(s.db, TEST_ORG, ALICE) });
     s.clock.now += 1000;
     await s.store.setAccountable(TEST_ORG, "ticket-triage", { developerId: BOB }, fixtureActor(s.store, TEST_ORG, ALICE, true).developerId, undefined, { actor: fixtureActor(s.store, TEST_ORG, ALICE, true) });

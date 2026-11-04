@@ -421,6 +421,7 @@ describe("the one monthly total of a person's agent budgets", () => {
     const project = await store.create({ orgId: TEST_ORG, name: "Project agent", owner: { kind: "project", project: "web" }, accountable: { developerId: ALICE }, createdBy: ALICE });
     await store.setBudget(TEST_ORG, project.agentId, { monthlyUsd: 35 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(35);
+    fixtureActor(store, TEST_ORG, BOB); // the new accountable maintainer is a real member now: the write holds them to that in its own transaction
     await store.setAccountable(TEST_ORG, project.agentId, { developerId: BOB }, ALICE, undefined, { ownerCap: await capOf(), actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(0);
     expect(totalOf(BOB)).toBe(35);
@@ -440,6 +441,7 @@ describe("the one monthly total of a person's agent budgets", () => {
     expect(totalOf(DANA.developerId)).toBe(15);
     await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 25 }, fixtureActor(store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({ ownerCap: await capOf() }), actor: fixtureActor(store, TEST_ORG, DANA.developerId) });
     expect(totalOf(DANA.developerId)).toBe(25);
+    fixtureActor(store, TEST_ORG, BOB); // a built-in's accountable person is an owner or admin, held to that in the write's own transaction
     await store.setAccountable(TEST_ORG, "ticket-triage", { developerId: BOB }, fixtureActor(store, TEST_ORG, DANA.developerId, true).developerId, undefined, { actor: fixtureActor(store, TEST_ORG, DANA.developerId, true) });
     expect(totalOf(DANA.developerId)).toBe(0);
     expect(totalOf(BOB)).toBe(25);

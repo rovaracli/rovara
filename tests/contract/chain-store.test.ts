@@ -796,6 +796,7 @@ describe("the owner's monthly total", () => {
     expect(moved).toMatchObject({ owner: WEB_OWNS, accountable: { developerId: CAROL } });
     expect(ctx.total(BOB)).toBe(0);
     expect(ctx.total(CAROL)).toBe(10);
+    seedMembership(ctx.db, BOB, { orgId: ORG_A, role: "admin" }); // the new accountable maintainer is a real member (an admin is a maintainer of every project): the write holds them to that in its own transaction
     await ctx.chains.setAccountable(ORG_A, chain.chainId, { developerId: BOB }, DAN, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) });
     expect(ctx.total(CAROL)).toBe(0);
     expect(ctx.total(BOB)).toBe(10);

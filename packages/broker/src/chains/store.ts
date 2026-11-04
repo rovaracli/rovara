@@ -4,7 +4,7 @@
 // `OwnerBudgets` ledger, so a person's agent budgets and chain budgets are one monthly total. Every multi-item write is one transaction, so a
 // refused write leaves nothing behind. A published version pins every agent step to a number; publishing checks again, inside its transaction,
 // that each pinned agent version and built-in pin is still what validation saw.
-import { unarchiveActorChecks, budgetActorChecks, budgetActorRefused } from "../agents/budget-authority.js";
+import { unarchiveActorChecks, archiveActorChecks, budgetActorChecks, budgetActorRefused, destinationChecks, fenceRefusal } from "../agents/budget-authority.js";
 import { createHash } from "node:crypto";
 import {
   sameJsonContent,
@@ -510,11 +510,12 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
   }
 
   private async setStatus(orgId: OrgId, chainId: ChainId, status: "active" | "archived", by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<ChainRecord> {
-    const actorChecks = status === "active" ? unarchiveActorChecks(this.input.tableName, orgId, by, request, options) : [];
+    // Both directions carry the actor fence and the manage snapshot the route was granted on; archiving used to carry neither (C106).
+    const actorChecks = status === "active" ? unarchiveActorChecks(this.input.tableName, orgId, by, request, options) : archiveActorChecks(this.input.tableName, orgId, by, request, options);
     const chain = await this.require(orgId, chainId);
-    const sourceGuard = (a: Aliases) => `${budgetGuard(chain)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(chain.updatedAt)}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`}`;
+    const sourceGuard = (a: Aliases) => `${budgetGuard(chain)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(chain.updatedAt)}`}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`;
     if (chain.status === status) {
-      if (status === "active") {
+      if (status === "active" || actorChecks.length > 0) {
         const actorStart = 1;
         await this.commit(...withOverride([
           this.update(chainKey(orgId, chainId, "META"), { set: { status }, when: sourceGuard }),
@@ -655,9 +656,11 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       event.item,
       ...audit.items,
     ];
+    // The people it names are held to what the route checked, in this same transaction (C99); an approval brings its own checks.
+    const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [{ developerId: accountable.developerId, need: { maintainerOf: chain.owner.project } }], actorChecks);
     const actorStart = items.length;
-    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
-      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    await this.commit(...withOverride([...items, ...actorChecks, ...destination], (failed) => (
+      fenceRefusal(failed, actorStart, actorChecks, destination) ?? totals.refuse(failed)
     ), options, { tableName: this.input.tableName, orgId, by }), request, changed);
     await flushAuditEvents(this.input, audit.events);
     return changed;

@@ -4,7 +4,7 @@
 // write leaves nothing behind. An agent builds on another by a pinned version (`BaseRef`): the base moving
 // on changes nothing until the agent's owner takes the update. `resolveAgent` follows those pins down to a
 // built-in version or the empty recipe and applies each layer's overlay on the way back up.
-import { unarchiveActorChecks, budgetActorChecks, budgetActorRefused, type BudgetActor } from "./budget-authority.js";
+import { unarchiveActorChecks, archiveActorChecks, budgetActorChecks, budgetActorRefused, destinationChecks, fenceRefusal, type BudgetActor } from "./budget-authority.js";
 import {modelAuthorityRefused} from "../model-selection/authority.js";
 import {parseStageModelApprovalProof,type StageModelApprovalProof} from "../model-selection/approval-proof.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
@@ -735,11 +735,12 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
 
   private async setStatus(orgId: OrgId, agentId: AgentId, status: "active" | "archived", by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord> {
     if (isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", `${this.builtins.name(agentId)} is built in and can't be archived`);
-    const actorChecks = status === "active" ? unarchiveActorChecks(this.input.tableName, orgId, by, request, options) : [];
+    // Both directions carry the actor fence and the manage snapshot the route was granted on; archiving used to carry neither (C106).
+    const actorChecks = status === "active" ? unarchiveActorChecks(this.input.tableName, orgId, by, request, options) : archiveActorChecks(this.input.tableName, orgId, by, request, options);
     const agent = await this.require(orgId, agentId);
-    const sourceGuard = (a: Aliases) => `${budgetGuard(agent)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${agent.maxPerRunUsd === undefined ? `attribute_not_exists(${a.name("maxPerRunUsd")})` : `${a.name("maxPerRunUsd")} = ${a.value(agent.maxPerRunUsd)}`}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`}`;
+    const sourceGuard = (a: Aliases) => `${budgetGuard(agent)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${agent.maxPerRunUsd === undefined ? `attribute_not_exists(${a.name("maxPerRunUsd")})` : `${a.name("maxPerRunUsd")} = ${a.value(agent.maxPerRunUsd)}`}`}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`;
     if (agent.status === status) {
-      if (status === "active") {
+      if (status === "active" || actorChecks.length > 0) {
         const actorStart = 1;
         await this.commit(...withOverride([
           this.update(agentKey(orgId, agentId, "META"), { set: { status }, when: sourceGuard }),
@@ -940,9 +941,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
         event.item,
         ...audit.items,
       ];
+      // The people it names are held to what the route checked, in this same transaction (C99); an approval brings its own checks.
+      const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [{ developerId: accountable.developerId, need: "admin" }], actorChecks);
       const actorStart = items.length;
-      await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
-        [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+      await this.commit(...withOverride([...items, ...actorChecks, ...destination], (failed) => (
+        fenceRefusal(failed, actorStart, actorChecks, destination) ?? totals.refuse(failed)
       ), options, { tableName: this.input.tableName, orgId, by }), request, { accountable });
       await flushAuditEvents(this.input, audit.events);
       return;
@@ -971,9 +974,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       event.item,
       ...audit.items,
     ];
+    // The people it names are held to what the route checked, in this same transaction (C99); an approval brings its own checks.
+    const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [{ developerId: accountable.developerId, need: { maintainerOf: agent.owner.project } }], actorChecks);
     const actorStart = items.length;
-    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
-      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    await this.commit(...withOverride([...items, ...actorChecks, ...destination], (failed) => (
+      fenceRefusal(failed, actorStart, actorChecks, destination) ?? totals.refuse(failed)
     ), options, { tableName: this.input.tableName, orgId, by }), request, { accountable });
     await flushAuditEvents(this.input, audit.events);
   }

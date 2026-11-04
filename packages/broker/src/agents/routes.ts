@@ -586,7 +586,10 @@ async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, ag
   const { mark, replay } = await markRequest(deps, caller, archive ? "archive" : "unarchive", agentId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: customView(replay.result as AgentRecord, access) };
   if (archive) {
-    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark, guard === undefined ? undefined : { checks: guard });
+    // Archiving holds the person to the access this route checked, at the commit: still a member in this role, the company open, and the agent still the one they could manage.
+    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark, {
+      actor: { developerId: caller.developerId, role: caller.orgRole }, ...("owner" in agent ? { manageSnapshot: agent } : {}), ...(guard === undefined ? {} : { checks: guard }),
+    });
     // An archived agent starts nothing, so its triggers go off with it. Unarchiving turns none back on: a person does that.
     await deps.triggerHooks?.disableTriggersForTarget(caller.orgId, { kind: "agent", agentId });
     return { agent: customView(archived, access) };
