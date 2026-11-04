@@ -262,6 +262,15 @@ export class ControlPlaneStack extends Stack {
     if (naming.env !== undefined) {
       BrokerNames.of(broker).add("stateTable", state.tableName);
       BrokerNames.of(broker).add("artifactBucket", artifacts.bucketName);
+      // Test services, slice 3: the answer sets (fakes) are objects under private/<company>/fixtures/ in the artifacts bucket, written with this key (SSE-KMS) and read back with it. Only the broker may use it, to
+      // generate a data key and decrypt, and the grant is on this key alone. Retained like the bucket: the objects outlive a stack deletion and are unreadable without it. Named environments only.
+      const fixtureKey = new kms.Key(this, "FixtureKey", {
+        description: "Rovara: encrypts the answer sets (fakes) kept under private/<company>/fixtures/ in the artifacts bucket",
+        enableKeyRotation: true,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      fixtureKey.grant(broker, "kms:GenerateDataKey", "kms:Decrypt");
+      BrokerNames.of(broker).add("fixtureKey", fixtureKey.keyId);
     }
     // The merged control plane's broker policy is past CDK's 10,000-character inline limit, and CDK would move the overflow into a
     // managed policy, which the deploy's CloudFormation role may not create (R53). Merge same-shaped statements instead.

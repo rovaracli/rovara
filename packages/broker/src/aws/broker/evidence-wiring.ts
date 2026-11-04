@@ -1,6 +1,7 @@
 // Part of the broker: the proof evidence's hook on the end of a verification run (wire-proof). When a CHECKS run's result is accepted and its verification is recorded, the evidence of that run is assembled and
 // kept (rovara-code/evidence-keep.ts): the worker's test reports, the data guard, the pack, and the stored output tails. It runs only while the proof switch is on, is informational (a fault or a slow store only
 // means there is no evidence for this code), and is bounded: a call past its time writes nothing more.
+import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { CheckEntry, OrgId } from "@agentx/contracts";
@@ -30,7 +31,7 @@ export async function keepEvidenceAfterChecks(
   if (orgId === undefined) return undefined;
   let late = false;
   // Test environment (wire-testenv): the environment the task pinned, named in the pack (nothing while that switch is off). Inside the same bound as the rest.
-  const run = evidenceEnvironmentOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.fixtureStore === undefined ? {} : { fixtureStore: dependencies.fixtureStore }) }, input.task, env).then((chosen) => keepEvidence({
+  const run = evidenceEnvironmentOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...fixtureStoreForRoutes(dependencies) }, input.task, env).then((chosen) => keepEvidence({
     actions: developerTaskActions(dependencies as AwsBrokerDependencies), store: { s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName }, markStored: (orgId) => markEvidenceStored({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, orgId), late: () => late,
     log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, taskId: input.task.taskId, operationId: input.operation.id, ...fields })),
   }, {

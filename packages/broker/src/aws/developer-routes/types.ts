@@ -1,8 +1,7 @@
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
-import type { FixtureReadPort } from "../../test-env/fixture-lookup.js";
 import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { EvidenceErase } from "../../rovara-code/evidence-erase.js";
-import type { CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
+import type { CreateProjectFromMetaBody, EditionPolicy, TestEnvProdDeny } from "@agentx/contracts";
 import type { CodeHostRouter } from "../../plugins/registry.js";
 import type { LessonViewDeps } from "../../lessons/view.js";
 import type { ApproveDeps } from "../../lessons/approve.js";
@@ -12,6 +11,7 @@ import type { LoadedKnowledgeRouteDependencies } from "../../developer/loaded-kn
 import type { MetaProjectCreated } from "../../org/create-from-meta.js";
 import type { MetaConfigDependencies } from "../../meta-repo/config-import.js";
 import type { SavedEnvDeps } from "../../test-env/saved-env.js";
+import type { FixtureStore } from "../../test-env/fixture-store.js";
 import type { ServiceStatusDependencies } from "../../org/service-status.js";
 import type { AllowedDomainBrowserDependencies } from "../../org/project-allowed-domains-http.js";
 import type { WorkingBranchReviewDependencies } from "../../org/project-working-branch.js";
@@ -124,10 +124,10 @@ export interface DeveloperApiConfiguration {
 export interface DeveloperRouteDependencies {
   /** Test services (slice 1): the release's signed service image catalog (`serviceCatalogSourceOf`). The setup draft's dependency candidates become proposed dependencies only with it; without it none are proposed. */
   serviceCatalog?: ServiceCatalogSource;
-  /** Test services (slice 3): the fixture store, read side. A fake is approved and planned only for a set it says is approved for the caller's company; without it none is. */
-  fixtureStore?: FixtureReadPort;
   /** Saved project images: the registry (store, sessions, ECR), only where the install's `sv` switch is on and it was installed. Without it the project's Environment panel routes do not exist. */
   savedEnv?: SavedEnvDeps;
+  /** Test services, slice 3: the fixture store on its real ports, made for one request with the production deny list that request reads (the project's). Only where the install has the fixture key; without it the fixture routes do not exist. */
+  fixtureStore?: (denyFor: (orgId: string) => Promise<TestEnvProdDeny>) => FixtureStore;
   /**
    * Meta repo lane B: a file of one of an org's repositories at a commit, as GitHub holds it (undefined when it is not there; throws when GitHub cannot answer). The setup agent's
    * citations are re-read through it. Without it every citation reads `unchecked` and nothing is pre-ticked.

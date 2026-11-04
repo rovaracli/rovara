@@ -4,11 +4,23 @@
 //
 // The store is a PORT: `FixtureReadPort` is the part of `FixtureStore` (test-env/fixture-store.ts) this lane reads. The adapters over S3 and DynamoDB (s3-fakes-store) make the real one; until it is wired
 // `AwsBrokerDependencies.fixtureStore` is absent and every fake is refused.
-import type { OrgId, TaskDependencyPlan, TestEnvDependency, TestEnvironmentBody } from "@agentx/contracts";
+import type { OrgId, TaskDependencyPlan, TestEnvDependency, TestEnvProdDeny, TestEnvironmentBody } from "@agentx/contracts";
 import type { FixtureStore } from "./fixture-store.js";
 
 /** What this lane asks of the fixture store. */
 export type FixtureReadPort = Pick<FixtureStore, "record" | "readApproved" | "deliver">;
+
+/**
+ * How the install hands out the store (`AwsBrokerDependencies.fixtureStore`, made by `fixtureStoreForRoutes` of fixture-store-aws.ts from the install's fixture key): a factory that takes the production deny list the CALLER knows,
+ * because the store scans a set against it at approve, deliver and read. A real `FixtureStore` satisfies the narrower port this lane uses.
+ */
+export type FixtureStoreFactory = (denyFor: (orgId: string) => Promise<TestEnvProdDeny>) => FixtureReadPort;
+
+/** The deny list of a read that scans nothing (`record` only reads a row): if the store ever asked for it, it would fail closed instead of scanning against an empty list. */
+const NO_DENY_LIST = (): Promise<TestEnvProdDeny> => Promise.reject(new Error("a record read needs no production list"));
+
+/** The store for a read of rows (`record`) only. Undefined without a factory. */
+export const recordsOf = (factory: FixtureStoreFactory | undefined): Pick<FixtureReadPort, "record"> | undefined => factory?.(NO_DENY_LIST);
 
 /** An approved fixture set, as the plan and the evidence need it. */
 export interface ApprovedFixture {

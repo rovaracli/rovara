@@ -5,10 +5,10 @@ import { EDITION_ENV_VAR, agentXError, type OrgId, type TaskDependencyPlan, type
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, taskDependencyPlansOf, type ServiceCatalogSource } from "./dependency-plan.js";
 import { refuseDependenciesWithDevcontainer } from "./devcontainer-check.js";
 import { testServicesEnabled } from "./test-services-switch.js";
-import { approvedFixturesOf, type FixtureReadPort } from "./fixture-lookup.js";
+import { approvedFixturesOf, recordsOf, type FixtureStoreFactory } from "./fixture-lookup.js";
 
 export async function candidateDependencyPlan(
-  deps: { serviceCatalog?: ServiceCatalogSource | undefined; fixtureStore?: Pick<FixtureReadPort, "record"> | undefined; documentClient: { send(command: unknown): Promise<unknown> }; tableName: string },
+  deps: { serviceCatalog?: ServiceCatalogSource | undefined; fixtureStore?: FixtureStoreFactory | undefined; documentClient: { send(command: unknown): Promise<unknown> }; tableName: string },
   proposal: Pick<TestEnvironmentBody, "dependencies" | "prodDeny">,
   scope: { orgId: OrgId; project: string },
   env: NodeJS.ProcessEnv = process.env,
@@ -17,7 +17,7 @@ export async function candidateDependencyPlan(
   if (!testServicesEnabled(env)) throw agentXError("CONFIG_INVALID", DEPENDENCY_PLAN_REFUSAL_WORDS.not_available_yet);
   await refuseDependenciesWithDevcontainer(deps, scope.orgId, scope.project, proposal);
   const catalog = await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined);
-  const fixtures = await approvedFixturesOf(deps.fixtureStore, scope.orgId, proposal);
+  const fixtures = await approvedFixturesOf(recordsOf(deps.fixtureStore), scope.orgId, proposal);
   const planned = taskDependencyPlansOf({ body: proposal as TestEnvironmentBody, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: scope.project, fixtures });
   if (!planned.ok) throw agentXError("CONFIG_INVALID", DEPENDENCY_PLAN_REFUSAL_WORDS[planned.reason]);
   return planned.dependencies;

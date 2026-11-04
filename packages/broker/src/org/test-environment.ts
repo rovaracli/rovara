@@ -45,7 +45,7 @@ import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies
 import { decideSecondPersonApproval } from "./second-person-approval.js";
 import { clearSetupRunProposal } from "../rovara-code/setup-run-proposal.js";
 import { dependenciesStartableNow, emulatorServesAll, isPrepulledEntry } from "../test-env/dependency-plan.js";
-import { approvedFixturesOf, type FixtureReadPort } from "../test-env/fixture-lookup.js";
+import { approvedFixturesOf, recordsOf, type FixtureStoreFactory } from "../test-env/fixture-lookup.js";
 import { refuseDependenciesWithDevcontainer } from "../test-env/devcontainer-check.js";
 import { SEED_COMMAND_PROBLEM_WORDS, dependencySeedCommands, seedCommandProblem } from "../test-env/refused-command.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
@@ -67,6 +67,8 @@ export interface TestEnvDeps extends AuditDeps {
   secondPerson?: SecondPersonPort;
   /** The install switches, for the test-services refusals. Absent: the process environment. */
   env?: NodeJS.ProcessEnv;
+  /** Slice 3: the install's fixture store (a factory over the production list). A fake is proposed and approved only for a set it says is approved for the company; without it none is. */
+  fixtureStore?: FixtureStoreFactory | undefined;
 }
 
 /**
@@ -197,7 +199,7 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
   // Slice 3: a fake is approved only for a fixture set that is approved for THIS organisation, for the dependency's own family (the store is asked; without one no fake is "available").
   const fakes = changed.filter((dependency) => dependency.backing.kind === "fake");
   if (fakes.length > 0) {
-    const approvedSets = await approvedFixturesOf((deps as { fixtureStore?: Pick<FixtureReadPort, "record"> }).fixtureStore, orgId, { dependencies: fakes });
+    const approvedSets = await approvedFixturesOf(recordsOf(deps.fixtureStore), orgId, { dependencies: fakes });
     for (const dependency of fakes) {
       const ref = dependency.backing.kind === "fake" ? dependency.backing.fixtureSetRef : undefined;
       if (ref === undefined || approvedSets.get(ref)?.family !== dependency.family) throw invalid(FAKE_NOT_APPROVED);

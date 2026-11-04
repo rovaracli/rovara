@@ -9,13 +9,15 @@
 //   - the digest is one the run's PINNED PLAN named: the broker kept the plan's digests on the operation when it dispatched it (`fixtureSetDigests`), so a worker with a valid capability cannot ask for any other set, not
 //     even another approved set of its own company;
 //   - a task's operation must belong to a task of that organisation that is still open and not cancelled: a closed or cancelled task gets nothing, even with a capability that has not run out;
-//   - the store (`deliver`) hands out a set only while it is APPROVED for that organisation and its stored bytes still hash to the digest, and a withdrawn set stops here: the next phase gets nothing.
+//   - the store (`deliver`) hands out a set only while it is APPROVED for that organisation, its stored bytes still hash to the digest and it still passes the scan against the project\'s production list as it is NOW, and a withdrawn set stops here: the next phase gets nothing.
 // The reply is the digest, the address and its expiry, and nothing else. The address is not logged, kept or sent on by this module.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { FixtureSetCallbackReplySchema, FixtureSetCallbackRequestSchema, agentXError, type FixtureSetCallbackReply } from "@agentx/contracts";
+import { FixtureSetCallbackReplySchema, FixtureSetCallbackRequestSchema, agentXError, type FixtureSetCallbackReply, type OrgId, type TestEnvProdDeny } from "@agentx/contracts";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
-import type { FixtureReadPort } from "../../test-env/fixture-lookup.js";
+import { readApprovedTestEnvironment } from "../../org/test-environment.js";
+import type { FixtureStoreFactory } from "../../test-env/fixture-lookup.js";
 import { testServicesEnabled } from "../../test-env/test-services-switch.js";
+import { workspaceKey } from "./admin-and-helpers.js";
 
 /** The authenticated operation, as the callback route read it. */
 export interface FixtureDeliveryOperation {
@@ -31,7 +33,9 @@ export interface FixtureDeliveryOperation {
 export interface FixtureDeliveryDeps {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
-  fixtureStore?: Pick<FixtureReadPort, "deliver"> | undefined;
+  /** The install's fixture store, a factory over the production list (`fixtureStoreForRoutes`). */
+  fixtureStore?: FixtureStoreFactory | undefined;
+  now?: () => number;
 }
 
 /** What every refusal says. */
@@ -40,13 +44,26 @@ const MODES_WITH_FAKES: ReadonlySet<string | undefined> = new Set([undefined, "I
 
 const refuse = (): never => { throw agentXError("CALLBACK_FORBIDDEN", FIXTURE_DELIVERY_REFUSED); };
 
-/** The task a task operation belongs to, if it is still open, not cancelled and of this organisation. */
-async function openTaskOf(deps: FixtureDeliveryDeps, operation: FixtureDeliveryOperation, orgId: string): Promise<boolean> {
-  const get = async <T>(key: { pk: string; sk: string }): Promise<T | undefined> => ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: T }).Item;
-  const pointer = await get<DeveloperTaskPointerRecord>(taskPointerKey(operation.workspaceId));
-  if (pointer === undefined || pointer.cancelledAt !== undefined) return false;
-  const task = await get<DeveloperTaskRecord>(taskKey(pointer.taskId));
-  return task !== undefined && task.orgId === orgId && task.workspaceId === operation.workspaceId && task.closedAt === undefined;
+const get = async <T>(deps: FixtureDeliveryDeps, key: { pk: string; sk: string }): Promise<T | undefined> => ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: T }).Item;
+
+/** The project of the task a task operation belongs to, if the task is still open, not cancelled and of this organisation. */
+async function openTaskProjectOf(deps: FixtureDeliveryDeps, operation: FixtureDeliveryOperation, orgId: string): Promise<string | undefined> {
+  const pointer = await get<DeveloperTaskPointerRecord>(deps, taskPointerKey(operation.workspaceId));
+  if (pointer === undefined || pointer.cancelledAt !== undefined) return undefined;
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(pointer.taskId));
+  return task !== undefined && task.orgId === orgId && task.workspaceId === operation.workspaceId && task.closedAt === undefined ? task.project : undefined;
+}
+
+/** The project of the workspace a preparation belongs to, if the workspace is this organisation's. */
+async function preparedProjectOf(deps: FixtureDeliveryDeps, operation: FixtureDeliveryOperation, orgId: string): Promise<string | undefined> {
+  const workspace = await get<{ orgId?: string; projectName?: string }>(deps, workspaceKey(operation.workspaceId));
+  return workspace?.orgId === orgId && typeof workspace.projectName === "string" ? workspace.projectName : undefined;
+}
+
+/** The production list the project's approved environment has (the store scans a set against it before it hands one out), or an empty list for a project with no approved environment. A read that fails throws: it is never an empty list. */
+async function denyOf(deps: FixtureDeliveryDeps, orgId: string, project: string): Promise<TestEnvProdDeny> {
+  const approved = await readApprovedTestEnvironment({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now ?? Date.now }, orgId as OrgId, project);
+  return approved?.environment.prodDeny ?? { accountIds: [], hosts: [], arnPrefixes: [] };
 }
 
 /** Handles one request. Throws CALLBACK_FORBIDDEN (always the same words) for anything outside the rules above, CONFIG_INVALID for a body that is not the shape. */
@@ -58,8 +75,13 @@ export async function handleFixtureSetCallback(deps: FixtureDeliveryDeps, operat
   if (!body.success) throw agentXError("CONFIG_INVALID", "the fixture-set callback body is not the shape");
   const digest = body.data.digest;
   if (!(operation.fixtureSetDigests ?? []).includes(digest)) return refuse();
-  if (taskRun && !(await openTaskOf(deps, operation, operation.orgId).catch(() => false))) return refuse();
-  const delivered = await deps.fixtureStore.deliver(operation.orgId, digest).catch(() => undefined);
+  const orgId = operation.orgId;
+  // A task's operation belongs to a task of that organisation that is still open; a preparation to a workspace of that organisation. Either way the project is the record's, never the request's.
+  const project = await (taskRun ? openTaskProjectOf(deps, operation, orgId) : preparedProjectOf(deps, operation, orgId)).catch(() => undefined);
+  if (project === undefined) return refuse();
+  const deny = await denyOf(deps, orgId, project).catch(() => undefined);
+  if (deny === undefined) return refuse();
+  const delivered = await deps.fixtureStore(() => Promise.resolve(deny)).deliver(orgId, digest).catch(() => undefined);
   // The store checked the organisation, the approval and the stored bytes; its answer must be for the digest that was asked.
   if (delivered === undefined || !delivered.ok || delivered.digest !== digest) return refuse();
   // An address that is not https (or an expiry that is not a time) is not handed on.

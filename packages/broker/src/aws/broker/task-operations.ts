@@ -1,6 +1,7 @@
 // Part of the broker (split out of ../broker.ts): agent steps, the task operation parts, application selection, agent skills and tools.
 
 import { fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
+import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { prepareSecondReview } from "../../rovara-code/second-review-start.js";
 import { learnedContextForOperation } from "./lessons-dispatch.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
@@ -529,10 +530,10 @@ export async function taskOperationParts(
   if (contextToolsOn && dependencies.contextSources?.prewarm !== undefined) await prewarmStageServers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, prewarm: dependencies.contextSources.prewarm }, orgId, workspace.projectName, input.workflowMode);
   // Test environment (wire-testenv): the plan of the environment this task pinned, for a verification run whose first commands are the environment's checks. Nothing while the switch is off.
   const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
-    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog, fixtureStore: dependencies.fixtureStore }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness })
+    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog, ...fixtureStoreForRoutes(dependencies) }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness })
     // Test services: a coding run is sent the plan too, but only when the task's environment has dependencies (the working sandbox gets them while the agent codes); nothing otherwise and nothing with `tx` off.
     : input.workflowMode === "IMPLEMENT" && task !== undefined
-      ? await testEnvImplementPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog, fixtureStore: dependencies.fixtureStore }, { orgId, project: workspace.projectName, taskId: task.taskId }) : undefined;
+      ? await testEnvImplementPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog, ...fixtureStoreForRoutes(dependencies) }, { orgId, project: workspace.projectName, taskId: task.taskId }) : undefined;
   // Test services (slice 3): the fixture sets the plan names are kept on the operation, so the `fixture-set` callback delivers those and no other set (and the capability has the action only then).
   const fixtureDigests = fixtureDigestsOfPlan(testEnvironment);
   if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;

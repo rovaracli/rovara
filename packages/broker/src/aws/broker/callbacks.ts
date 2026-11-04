@@ -37,6 +37,7 @@ import { companySetupOff } from "../../rovara-code/setup-locks-store.js";
 import { handleNightlyResultCallback } from "../../test-env/nightly-callback.js";
 import { nightlyResultDeps } from "./nightly-run-wiring.js";
 import { handleFixtureSetCallback } from "./fixture-delivery.js";
+import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { savedEnvLeaseContext } from "./saved-env-lease.js";
 import { savedEnvPushLoginCore, savedEnvResultCore } from "../../test-env/saved-env-lease.js";
 import { readStoredCandidateSourceExport } from "./workflow-items.js";
@@ -102,7 +103,7 @@ export async function handleCallback(
   // Test services (slice 3): a fresh read address of an approved fixture set the run's pinned plan names (fixture-delivery.ts holds every rule).
   if (action === "fixture-set") {
     if (cancelClaims !== undefined) throw agentXError("CALLBACK_FORBIDDEN", "a cancel cannot reach a fixture set");
-    return json(await handleFixtureSetCallback({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, fixtureStore: dependencies.fixtureStore }, operation, body), request.requestId);
+    return json(await handleFixtureSetCallback({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, ...fixtureStoreForRoutes(dependencies) }, operation, body), request.requestId);
   }
   // Saved project images: the rebuild job's push login and result. The capability has them only for the preparation made for a job; the lease and the job's own operation are held to again inside.
   if (action === "saved-env-push-login" || action === "saved-env-result") {

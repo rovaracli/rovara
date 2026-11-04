@@ -6,7 +6,7 @@ import {
   type FixtureSet, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type TestServicesUsageRecord, type VerifiedCatalog,
 } from "@agentx/contracts";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
-import { approvedFixturesOf, fixtureDigestsOfEnvironment, fixtureDigestsOfPlan } from "../../packages/broker/src/test-env/fixture-lookup.js";
+import { approvedFixturesOf, fixtureDigestsOfEnvironment, fixtureDigestsOfPlan, recordsOf, type FixtureStoreFactory } from "../../packages/broker/src/test-env/fixture-lookup.js";
 import { createFixtureStore, createMemoryFixturePorts, verifiedFixtureDecision, type FixtureStore } from "../../packages/broker/src/test-env/fixture-store.js";
 import { environmentUnusedReason, testEnvironmentForStart } from "../../packages/broker/src/test-env/usable.js";
 import { testEnvPlanFor, testEnvImplementPlanFor } from "../../packages/broker/src/test-env/task-plan.js";
@@ -19,6 +19,7 @@ import { dependencyCardLines } from "../../packages/broker/src/test-env/dependen
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { verifyCapability } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
+import { workspaceKey } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
 import { projectMetaKey, projectRevisionKey } from "@agentx/contracts";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
@@ -195,7 +196,7 @@ async function approvedWith(environment: TestEnvironmentBody, store: FixtureStor
   db.set({ ...projectMetaKey(ORG, PROJECT), status: "active" });
   db.set(projectRow());
   const clock = { now: Date.UTC(2026, 10, 3, 10, 0, 0) };
-  const deps: TestEnvDeps & { serviceCatalog?: () => Promise<VerifiedCatalog | undefined>; fixtureStore?: FixtureStore } = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit, env: ON, ...(store === undefined ? {} : { fixtureStore: store }) };
+  const deps: TestEnvDeps & { serviceCatalog?: () => Promise<VerifiedCatalog | undefined> } = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit, env: ON, ...(store === undefined ? {} : { fixtureStore: () => store }) };
   deps.serviceCatalog = async () => catalog();
   const proposal = await proposeTestEnvironment(deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: environment });
   await recordTestEnvProveReport(deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }, { step: "dependencies", status: "passed", durationMs: 1 }, { step: "dependency_usage", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(clock.now).toISOString() } });
@@ -282,7 +283,8 @@ describe("the fixture-set callback", () => {
     const db = new FakeDynamoDb();
     db.set({ ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: over.taskOrg ?? ORG, project: PROJECT, workspaceId: WORKSPACE, ...(over.closed === true ? { closedAt: "2026-11-03T09:00:00.000Z" } : {}) });
     db.set({ ...taskPointerKey(WORKSPACE), entityType: "DEVELOPER_TASK_POINTER", taskId: TASK, developerId: "dev_a", ...(over.cancelled === true ? { cancelledAt: "2026-11-03T09:00:00.000Z" } : {}) });
-    const deps = { documentClient: db, tableName: "t", fixtureStore: store };
+    db.set({ ...workspaceKey(WORKSPACE), entityType: "WORKSPACE", orgId: over.taskOrg ?? ORG, projectName: PROJECT });
+    const deps = { documentClient: db, tableName: "t", fixtureStore: () => store };
     const operation = (change: Partial<FixtureDeliveryOperation> = {}): FixtureDeliveryOperation => ({ kind: "task", workflowMode: "CHECKS", status: "RUNNING", workspaceId: WORKSPACE, orgId: ORG, fixtureSetDigests: [digest], ...change });
     return { deps, digest, operation, store };
   }
@@ -312,8 +314,8 @@ describe("the fixture-set callback", () => {
     const otherWorld = await world({ taskOrg: OTHER_ORG });
     const asOther = otherWorld.operation({ orgId: OTHER_ORG, fixtureSetDigests: [w.digest] });
     // ... against the very store that holds the set for ORG: the store answers for the operation's org only.
-    expect(await refused(handleFixtureSetCallback({ ...otherWorld.deps, fixtureStore: w.store }, asOther, { digest: w.digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
-    expect((await handleFixtureSetCallback({ ...w.deps, fixtureStore: w.store }, w.operation(), { digest: w.digest }, ON)).digest).toBe(w.digest);
+    expect(await refused(handleFixtureSetCallback({ ...otherWorld.deps, fixtureStore: () => w.store }, asOther, { digest: w.digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
+    expect((await handleFixtureSetCallback({ ...w.deps, fixtureStore: () => w.store }, w.operation(), { digest: w.digest }, ON)).digest).toBe(w.digest);
     // A task of another company than the operation says.
     const mismatched = await world({ taskOrg: OTHER_ORG });
     expect(await refused(handleFixtureSetCallback(mismatched.deps, mismatched.operation(), { digest: mismatched.digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
@@ -345,7 +347,7 @@ describe("the fixture-set callback", () => {
     const db = new FakeDynamoDb();
     db.set({ ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: ORG, project: PROJECT, workspaceId: WORKSPACE });
     db.set({ ...taskPointerKey(WORKSPACE), entityType: "DEVELOPER_TASK_POINTER", taskId: TASK, developerId: "dev_a" });
-    expect(await refused(handleFixtureSetCallback({ documentClient: db, tableName: "t", fixtureStore: store }, { kind: "task", workflowMode: "CHECKS", status: "RUNNING", workspaceId: WORKSPACE, orgId: ORG, fixtureSetDigests: [digest] }, { digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
+    expect(await refused(handleFixtureSetCallback({ documentClient: db, tableName: "t", fixtureStore: () => store }, { kind: "task", workflowMode: "CHECKS", status: "RUNNING", workspaceId: WORKSPACE, orgId: ORG, fixtureSetDigests: [digest] }, { digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
   });
   it("with tx off, answers nothing and reads nothing", async () => {
     const w = await world();
@@ -398,10 +400,10 @@ describe("what the evidence says about a fake", () => {
     const store = storeOf();
     const digest = await approvedSet(store, recordedSet());
     const h = await approvedWith(body([payments(digest)]), store);
-    const chosen = await evidenceEnvironmentOf({ ...h.deps, fixtureStore: store }, { orgId: ORG, project: PROJECT, taskId: "t1" }, ON);
+    const chosen = await evidenceEnvironmentOf({ ...h.deps, fixtureStore: () => store }, { orgId: ORG, project: PROJECT, taskId: "t1" }, ON);
     expect(chosen.dependencies).toEqual([{ id: "payments", name: "Payments API", backing: "fake", fake: { origin: "recorded", revision: 5, recordedAt: "2026-10-20T08:00:00.000Z" } }]);
     // Another company's task sees nothing of it.
-    const elsewhere = await evidenceEnvironmentOf({ ...h.deps, fixtureStore: store }, { orgId: OTHER_ORG, project: PROJECT, taskId: "t1" }, ON);
+    const elsewhere = await evidenceEnvironmentOf({ ...h.deps, fixtureStore: () => store }, { orgId: OTHER_ORG, project: PROJECT, taskId: "t1" }, ON);
     expect(elsewhere.dependencies).toBeUndefined();
   });
 });
@@ -457,12 +459,14 @@ describe("the one-line hunks in the shared files", () => {
     expect(read("packages/broker/src/aws/broker/task-operations.ts")).toContain("if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;");
     expect(read("packages/broker/src/aws/broker/workspace-preparation.ts")).toContain("fixtureDigests.length > 0 ? { fixtureDelivery: true } : {}");
     expect(read("packages/broker/src/aws/ec2-delivery.ts")).toContain("dependency.backing === \"fake\"");
-    expect(read("packages/broker/src/aws/broker/evidence-wiring.ts")).toContain("fixtureStore: dependencies.fixtureStore");
+    expect(read("packages/broker/src/aws/broker/evidence-wiring.ts")).toContain("...fixtureStoreForRoutes(dependencies)");
   });
-  it("hands the fixture store to the routes that approve and plan a fake", () => {
-    expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("{ fixtureStore: dependencies.fixtureStore }");
-    expect(read("packages/broker/src/aws/developer-routes/types.ts")).toContain("fixtureStore?: FixtureReadPort;");
-    expect(read("packages/broker/src/aws/broker/definitions.ts")).toContain("fixtureStore?: FixtureReadPort;");
+  it("hands the fixture store (the install's factory) to the routes that approve and plan a fake, and to the callback, the task's plan and the evidence", () => {
+    expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("...fixtureStoreForRoutes(dependencies),");
+    expect(read("packages/broker/src/aws/broker/callbacks.ts")).toContain("...fixtureStoreForRoutes(dependencies) }, operation, body)");
+    expect(read("packages/broker/src/aws/broker/task-operations.ts")).toContain("serviceCatalog: dependencies.serviceCatalog, ...fixtureStoreForRoutes(dependencies) }");
+    expect(read("packages/broker/src/aws/developer-routes/test-environment.ts")).toContain("{ fixtureStore: deps.fixtureStore }");
+    expect(read("packages/broker/src/aws/developer-routes/types.ts")).toContain("fixtureStore?: (denyFor");
   });
 });
 
@@ -479,5 +483,22 @@ describe("the approve card", () => {
     expect(dependencyCardLines(environment.dependencies!)[0]).toBe("Payments API: answers from a fake. Found in src/pay.ts, line 3.");
     // the other company's store answer is no origin
     expect(dependencyCardLines(environment.dependencies!, await approvedFixturesOf(store, OTHER_ORG, environment))[0]).toBe("Payments API: answers from a fake. Found in src/pay.ts, line 3.");
+  });
+});
+
+describe("the install's store is a factory over the production list", () => {
+  it("a read of rows asks for no production list at all (it would fail closed if it did), and a delivery asks for the project's approved list", async () => {
+    const ports = createMemoryFixturePorts({ signUrl: (key, seconds) => `https://fixtures.example.test/${key}?X-Amz-Expires=${String(seconds)}` });
+    const asked: string[] = [];
+    const factory: FixtureStoreFactory = (denyFor) => createFixtureStore({ enabled: () => true, objects: ports.objects, index: ports.index, denyFor: (org) => { asked.push(org); return denyFor(org); }, now: () => NOW });
+    // set up through a store with an empty list, then read rows through the factory with a list that cannot be had
+    const digest = await approvedSet(factory(() => Promise.resolve(DENY)) as FixtureStore, makeSet());
+    asked.length = 0;
+    const found = await approvedFixturesOf(recordsOf((denyFor) => factory(denyFor)), ORG, body([payments(digest)]));
+    expect(found.get(digest)?.origin).toBe("hand_written");
+    expect(asked).toEqual([]);
+    expect(recordsOf(undefined)).toBeUndefined();
+    const reader = recordsOf((_denyFor) => factory(() => Promise.reject(new Error("no list"))));
+    expect((await reader!.record(ORG, digest)).ok).toBe(true);
   });
 });

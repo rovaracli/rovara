@@ -120,6 +120,8 @@ export const BROKER_NAMES = {
   teamRecordKmsKey: { code: "tk", variable: "TEAM_RECORD_KMS_KEY_ARN", kind: "kmsKeyArn" },
   // Saved project images (SV wiring): the key the repositories' creation template encrypts with (the stack's own, or the Enterprise customer's). The broker compares what ECR reports of a repository with it. Passed as the key's id.
   savedEnvKey: { code: "sk", variable: "SAVED_ENV_KMS_KEY_ARN", kind: "kmsKeyArn" },
+  // Test services, slice 3: the key the answer sets (fakes) under `private/<company>/fixtures/` in the artifacts bucket are written with (SSE-KMS). Passed as the key's id. Without it the broker has no fixture store.
+  fixtureKey: { code: "fk", variable: "FIXTURE_KEY_ARN", kind: "kmsKeyArn" },
 } as const satisfies Record<string, BrokerNameSpec>;
 
 export type BrokerNameKey = keyof typeof BROKER_NAMES;

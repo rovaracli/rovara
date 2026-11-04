@@ -8,7 +8,7 @@ import { testEnvironmentEnabled } from "./switch.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import type { EvidenceEnvironment, EvidenceNotTested, OrgId, TestEnvProdDeny } from "@agentx/contracts";
 import type { PinnedDependency } from "../rovara-code/dependency-evidence.js";
-import type { FixtureReadPort } from "./fixture-lookup.js";
+import type { FixtureStoreFactory } from "./fixture-lookup.js";
 
 export interface EvidenceEnvironmentChoice {
   environment?: EvidenceEnvironment | undefined;
@@ -20,7 +20,7 @@ export interface EvidenceEnvironmentChoice {
 }
 
 /** Never throws; with the switch off, or no pin, it says nothing (the pack then reads as it did before). */
-export async function evidenceEnvironmentOf(deps: TestEnvDeps & { fixtureStore?: Pick<FixtureReadPort, "readApproved"> | undefined }, task: { orgId?: OrgId | undefined; project?: string | undefined; taskId: string }, env: NodeJS.ProcessEnv = process.env): Promise<EvidenceEnvironmentChoice> {
+export async function evidenceEnvironmentOf(deps: TestEnvDeps, task: { orgId?: OrgId | undefined; project?: string | undefined; taskId: string }, env: NodeJS.ProcessEnv = process.env): Promise<EvidenceEnvironmentChoice> {
   if (!testEnvironmentEnabled(env) || task.orgId === undefined || task.project === undefined) return {};
   try {
     const pin = await readTestEnvPin(deps, task.orgId, task.project, task.taskId);
@@ -36,7 +36,7 @@ export async function evidenceEnvironmentOf(deps: TestEnvDeps & { fixtureStore?:
       else if (dependency.backing.kind === "fake") {
         // Slice 3: what the evidence says about a fake (recorded or hand-written, which revision, when it was recorded) is the STORE's, read for THIS organisation by the pinned digest; the worker's words never set it. A set the store
         // cannot give (no store, withdrawn since) is shown as the less trusted word, hand-written, without a revision.
-        const read = await Promise.resolve(deps.fixtureStore?.readApproved(task.orgId, dependency.backing.fixtureSetRef)).catch(() => undefined);
+        const read = await Promise.resolve(deps.fixtureStore?.(() => Promise.resolve(body.prodDeny)).readApproved(task.orgId, dependency.backing.fixtureSetRef)).catch(() => undefined);
         const set = read?.ok === true ? read.set : undefined;
         dependencies.push({ id: dependency.id, name: dependency.name, backing: "fake", fake: { origin: set?.origin === "recorded" ? "recorded" : "hand_written", ...(set === undefined ? {} : { revision: set.revision }), ...(set?.origin === "recorded" && set.recordedAt !== undefined ? { recordedAt: set.recordedAt } : {}) } });
       }

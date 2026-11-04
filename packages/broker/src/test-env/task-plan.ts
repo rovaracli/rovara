@@ -15,7 +15,7 @@ import { selectionFieldsAreSafe } from "./prove-from-setup-check.js";
 import { readTestEnvPin, usableTestEnvironment } from "./usable.js";
 import { testEnvironmentEnabled } from "./switch.js";
 import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS, projectUsesDevcontainer } from "./devcontainer-check.js";
-import { approvedFixturesOf, type FixtureReadPort } from "./fixture-lookup.js";
+import { approvedFixturesOf, recordsOf, type FixtureStoreFactory } from "./fixture-lookup.js";
 import { testServicesEnabled } from "./test-services-switch.js";
 
 const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
@@ -23,8 +23,8 @@ const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => le
 /** `serviceCatalog` is the release's signed catalog (`serviceCatalogSourceOf`). Without one, a run with dependencies is refused, never planned without them. */
 export type TestEnvPlanDeps = TestEnvDeps & {
   serviceCatalog?: ServiceCatalogSource | undefined;
-  /** Slice 3: the fixture store (read side). Without it no fake is approved, so a plan with a fake is refused. */
-  fixtureStore?: Pick<FixtureReadPort, "record"> | undefined;
+  /** Slice 3: the install's fixture store (a factory over the production list). Without it no fake is approved, so a plan with a fake is refused. */
+  fixtureStore?: FixtureStoreFactory | undefined;
 };
 
 export async function testEnvPlanFor(
@@ -69,7 +69,7 @@ async function planOf(
     // Sealed check runners cannot be combined with a dev container (the worker throws): refused here, in fixed words, even if the project got one after the task started.
     if (await projectUsesDevcontainer(deps, input.orgId, input.project)) throw agentXError("RUNTIME_UNAVAILABLE", DEPENDENCIES_WITH_DEVCONTAINER_WORDS);
     const catalog = await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined);
-    const fixtures = await approvedFixturesOf(deps.fixtureStore, input.orgId, body);
+    const fixtures = await approvedFixturesOf(recordsOf(deps.fixtureStore), input.orgId, body);
     const planned = taskDependencyPlansOf({ body, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: input.project, fixtures });
     if (!planned.ok) throw agentXError("RUNTIME_UNAVAILABLE", DEPENDENCY_PLAN_REFUSAL_WORDS[planned.reason]);
     dependencies = planned.dependencies;

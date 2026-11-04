@@ -1,7 +1,6 @@
 // Part of the broker (split out of ../broker.ts): limits, the setup capture policy, the record and dependency types, route keys.
 
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
-import type { FixtureReadPort } from "../../test-env/fixture-lookup.js";
 import type { LinearReplyPort } from "../../rovara-code/linear-comments.js";
 import type { SlackAskDependencies } from "./ask-service.js";
 import type { DiagnosisCoreDependencies } from "../../diagnosis/light.js";
@@ -12,7 +11,7 @@ import type { LessonsRuntime } from "../../lessons/runtime.js";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { S3Client } from "@aws-sdk/client-s3";
 import type { RegistryTokenSource } from "../../project-registries/mint.js";
-import { E2EPolicySchema, type PrepareSavedEnv, type SavedEnvRegistryAuth, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource, type EditionPolicy } from "@agentx/contracts";
+import { E2EPolicySchema, type PrepareSavedEnv, type SavedEnvRegistryAuth, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource, type EditionPolicy, type TestEnvProdDeny } from "@agentx/contracts";
 import { e2ePrivateTransferMaxBytes } from "@agentx/verifier";
 import type { AdminReadDependencies } from "../admin-reads.js";
 import type { AuditExportClientDeps } from "../../audit/export.js";
@@ -28,6 +27,7 @@ import type { IdentityNoticeDependencies } from "../../developer/identity-notice
 import type { PlanEvidenceEvent } from "../../developer/plan-evidence-jobs.js";
 import type { CodeHostRouter, PluginRegistry } from "../../plugins/registry.js";
 import type { SavedEnvDeps } from "../../test-env/saved-env.js";
+import type { FixtureStore } from "../../test-env/fixture-store.js";
 import type { SsoStores } from "../../developer/sso-sign-in.js";
 import type { CloudProjectDefaults } from "../../org/cloud-projects.js";
 import type { OrgResolver } from "../../org/resolve.js";
@@ -215,6 +215,8 @@ export interface AwsBrokerDependencies {
   savedEnvLogin?: ((input: { orgId: string; projectName: string; digest: string }) => Promise<SavedEnvRegistryAuth | undefined>) | undefined;
   /** Saved environments (SH24/SH25): the registry's ports (store, sessions, ECR). Wired with the routes; `installSavedEnv` derives the two hooks above from it, only while the switch is on. */
   savedEnvDeps?: SavedEnvDeps;
+  /** Test services, slice 3: the fixture store for one request's deny list (the hand-written answer set routes). Made from the install's fixture key by `fixtureStoreForRoutes`; a test may supply its own. */
+  fixtureStore?: (denyFor: (orgId: string) => Promise<TestEnvProdDeny>) => FixtureStore;
   /** Saved project images: what the install knows of the key's inputs for a project (the base image digest, the secret names, the detectors' globs). Undefined: a queued job cannot be started and is ended with `no_build_inputs`. */
   /**
    * Saved project images: the digest of the base image the project's commands run in (`sha256:...`), which is part of the environment key and of the saved image's manifest. The install says it: the broker does not
@@ -370,8 +372,6 @@ export interface AwsBrokerDependencies {
   agentTools?: { configure?: (base: AgentToolsDependencies) => AgentToolsDependencies };
   /** Test services (slice 1): the release's signed service image catalog (`releaseServiceCatalogSource`). Absent while the switch `tx` is off: nothing reads it. */
   serviceCatalog?: ServiceCatalogSource;
-  /** Test services (slice 3): the fixture store, read side (`FixtureStore` of test-env/fixture-store.ts over the S3 and DynamoDB adapters). Absent: no fake is approved, so a plan with a fake is refused and nothing is delivered. */
-  fixtureStore?: FixtureReadPort;
   /** Lane E: the MCP context sources' servers, Team record hooks and result keeper (`/v1/internal/context-tools*`). Absent: the routes answer that no sources are set up. */
   contextSources?: ContextSourcesRuntime;
   /** Learning v2 wiring (WA-2): the terminal-task hook's dependencies. Absent (the pilot default): no hook is registered and learning reads and writes nothing at a task's end. */

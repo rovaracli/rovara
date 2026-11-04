@@ -15,6 +15,7 @@
 //                approver's commit with the second-person rule), "Not now" refuses the host for a week.
 //   NOT connected: spend requests (`decideSpendRequest` is reachable only through the decide page's fresh sign-in; a card press would decide one with no sign-in proof, so Home's own card stays), and plan,
 //   requirements, design, dependency, E2E plan, feedback, autofix, setting and test-environment decisions (their endpoints live in hot task files and stay page-decided). An unregistered kind is refused `unsupported`.
+import { recordsOf } from "../../test-env/fixture-lookup.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { projectAllows } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -60,7 +61,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
   const loadTask = async (taskId: string) => ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
   const testEnvCards = {
     store,
-    ...(deps.fixtureStore === undefined ? {} : { fixtureStore: deps.fixtureStore }),
+    ...(deps.fixtureStore === undefined ? {} : { fixtureStore: recordsOf(deps.fixtureStore) }),
     maintainedProjects: async (who: { orgId: string; developerId: string }) => [...(await visibleProjectRoles(deps, who as DeveloperCaller)).entries()].filter(([, role]) => projectAllows(role, "edit_settings")).map(([name]) => name).sort(),
     confirmPathOf: async (who: { orgId: string; developerId: string }, scope: { project: string; digest: string; expectedRevision: number }) => {
       if (deps.agents === undefined) return undefined;
