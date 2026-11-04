@@ -4,6 +4,7 @@ import { ReviewedInviteCreateBodySchema, ReviewedInviteCreateResponseSchema, Age
 import type { z } from "zod";
 import type { ApiRequest, ApiResponse, AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
+import { withoutRequestId } from "./without-request-id.js";
 export type InviteCreateReceipt = z.infer<typeof InviteCreateReceiptSchema>;
 export type InviteStatus = z.infer<typeof AppOrgInviteStatusSchema>;
 function unreadable() { return new ApiError(502, "INVALID_RESPONSE", "The invite response could not be verified."); }
@@ -48,13 +49,13 @@ export function createInviteAdminApi(host: AppHost, orgId: string) {
   },
   setScopeActive(active: boolean) { scopeActive = active; },
   async status(inviteId: string): Promise<InviteStatus> {
-   const value = AppOrgInviteStatusSchema.safeParse(await once({ method: "GET", path: path(inviteId) }));
+   const value = AppOrgInviteStatusSchema.safeParse(withoutRequestId(await once({ method: "GET", path: path(inviteId) })));
    if (!value.success || value.data.orgId !== orgId || value.data.inviteId !== inviteId) throw unreadable();return value.data;
   },
   async revoke(inviteId: string, body: { requestId: string; expectedRevision: number }) {
    const endpoint = path(inviteId), parsed = RevokeOrganizationInviteBodySchema.safeParse(body);
    if (!parsed.success || !Number.isSafeInteger(parsed.data.expectedRevision) || parsed.data.expectedRevision >= Number.MAX_SAFE_INTEGER) throw new ApiError(400, "CONFIG_INVALID", "Review a valid invite revision before revoking it.");
-   const value = RevokeOrganizationInviteResponseSchema.safeParse(await once({ method: "POST", path: endpoint + "/revoke", body: parsed.data }));
+   const value = RevokeOrganizationInviteResponseSchema.safeParse(withoutRequestId(await once({ method: "POST", path: endpoint + "/revoke", body: parsed.data })));
    if (!value.success || value.data.inviteId !== inviteId || value.data.revision !== parsed.data.expectedRevision + 1 || !Number.isSafeInteger(value.data.revision)) throw unreadable();return value.data;
   },
  };

@@ -45,7 +45,8 @@ describe("an old playbook", () => {
     // A document exactly as the code before this stage wrote it.
     w.db.set({ ...projectPlaybookKey(ORG_A, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG_A, revision: 3, defaultProcess: { kind: "builtin" }, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAX });
     const read = await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web");
-    expect(read).toEqual({ designReviewGroups: true, playbook: { revision: 3, defaultProcess: { kind: "builtin" } } });
+    // Where the stage is on, the answer always carries the setting the project runs with (here the defaults), so a client reads an absent `designReview` as "off" (QA-04).
+    expect(read).toEqual({ designReviewGroups: true, playbook: { revision: 3, defaultProcess: { kind: "builtin" }, designReview: DESIGN_REVIEW_DEFAULT_SETTING } });
     expect(designReviewSettingOf(read.playbook)).toEqual(DESIGN_REVIEW_DEFAULT_SETTING);
     expect((await readEffectiveDesignReview(playbookDeps(w), ORG_A, "web")).setting).toEqual(DESIGN_REVIEW_DEFAULT_SETTING);
     const empty = mergeWorld();
@@ -59,6 +60,15 @@ describe("an old playbook", () => {
     expect(read.defaultProcess).toEqual({ kind: "builtin" });
     expect(read.designReview).toEqual(DESIGN_REVIEW_FAIL_CLOSED_SETTING);
     expect(read.designReview).toMatchObject({ mode: "always", allowSkip: false });
+  });
+});
+
+describe("where the stage is off (QA-04)", () => {
+  it("answers 200 with no designReview at all, so a client shows no card; it never sends the defaults there", async () => {
+    delete process.env.DESIGN_REVIEW_PROJECTS;
+    const w = mergeWorld();
+    w.db.set({ ...projectPlaybookKey(ORG_A, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG_A, revision: 3, defaultProcess: { kind: "builtin" }, designReview: SETTING, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAX });
+    expect(await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web")).toEqual({ playbook: { revision: 3, defaultProcess: { kind: "builtin" } } });
   });
 });
 
@@ -316,9 +326,9 @@ describe("fix round: the lock is enforced in the write transaction and on the re
     expect(read.playbook.designReview).toMatchObject({ mode: "always", allowSkip: false, capUsdPerTask: 8 });
     expect(read.designReviewLocked).toEqual(["designReview.mode", "designReview.allowSkip", "designReview.capUsdPerTask"]);
     expect(stored(w)).toMatchObject({ designReview: { mode: "never", allowSkip: true, capUsdPerTask: 30 } });
-    // No lock: the answer is exactly what it was.
+    // No lock: the defaults, and no locked fields.
     const open = mergeWorld();
-    expect(await getProjectPlaybook(playbookDeps(open), w.caller(PRIYA), "web")).toEqual({ designReviewGroups: true, playbook: { revision: 0, defaultProcess: { kind: "builtin" } } });
+    expect(await getProjectPlaybook(playbookDeps(open), w.caller(PRIYA), "web")).toEqual({ designReviewGroups: true, playbook: { revision: 0, defaultProcess: { kind: "builtin" }, designReview: DESIGN_REVIEW_DEFAULT_SETTING } });
     // An unreadable lock: the strictest setting, every field shown as locked.
     const broken = mergeWorld();
     setLock(broken, { surprise: true });

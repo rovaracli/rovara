@@ -96,7 +96,9 @@ export function resolveStageModel(input: StageModelInput): StageModelResult {
   const preferred = resolveStageModelOnce(input);
   if (usable.kind === "refusal") return preferred;
   if (preferred.kind === "refusal" || (same(usable.model, preferred.model) && usable.sourceId === preferred.sourceId)) return usable;
-  return usable.fallback !== undefined ? usable : { ...usable, fallback: { stage: input.stage, used: label(usable.model), wanted: label(preferred.model), reasonCode: "DEFAULT_MODEL_UNAVAILABLE" } };
+  // A fallback that already names what was asked for keeps it. One that names nothing (the model that ran was the only one left) is told the model the choice would have been, so the note says which model was unavailable.
+  if (usable.fallback !== undefined) return usable.fallback.wanted === null ? { ...usable, fallback: { ...usable.fallback, wanted: label(preferred.model) } } : usable;
+  return { ...usable, fallback: { stage: input.stage, used: label(usable.model), wanted: label(preferred.model), reasonCode: "DEFAULT_MODEL_UNAVAILABLE" } };
 }
 
 function resolveStageModelOnce(input: StageModelInput): StageModelResult {
@@ -124,7 +126,8 @@ function resolveStageModelOnce(input: StageModelInput): StageModelResult {
   const finish = (candidate: VerifiedStageCandidate, choice: StageModelChoice, reason: StageDecisionReason, wanted?: ModelIdentifier, fallbackCode?: ModelFallback["reasonCode"]): Extract<StageModelResult, { kind: "resolved" }> => ({
     kind: "resolved", model: candidate.model, sourceId: candidate.sourceId, thinkingLevel: choice.thinkingLevel ?? null, locked,
     reason: fallbackCode !== "DEFAULT_MODEL_UNAVAILABLE" && checking(input.stage) && input.referenceModel !== undefined && input.sameModelApproval !== undefined && same(candidate.model, input.referenceModel) && same(input.sameModelApproval.model, candidate.model) && same(input.sameModelApproval.referenceModel, input.referenceModel) ? "APPROVED_SAME_MODEL" : reason,
-    ...(fallbackCode === undefined ? {} : { fallback: { stage: input.stage, used: label(candidate.model), wanted: wanted === undefined ? null : label(wanted), reasonCode: fallbackCode } }),
+    // A fallback never names the model that ran as the one that was asked for (the legacy same-model default passes the step's reference model, which is the model that runs): that reads "Used X because X was unavailable".
+    ...(fallbackCode === undefined ? {} : { fallback: { stage: input.stage, used: label(candidate.model), wanted: wanted === undefined || same(wanted, candidate.model) ? null : label(wanted), reasonCode: fallbackCode } }),
   });
   let choice: StageModelChoice | undefined;
   let reason: StageDecisionReason = "BUILTIN_DEFAULT";
