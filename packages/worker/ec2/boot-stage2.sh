@@ -34,7 +34,7 @@ wall_between_run_networks() {
   ! command -v ip6tables >/dev/null || ! ip6tables -S DOCKER-USER >/dev/null 2>&1 || ip6tables -C $rule 2>/dev/null || ip6tables -I $rule || return 1
 }
 # 4. TS-SEAL-2: nothing on a run bridge (rvi+) or a build bridge (rvb+) reaches the HOST over IPv6 either. The firewall unit's own ip6tables rule is best effort (a failure there only prints a line, and it is skipped when ip6tables is
-#    missing), so after the Docker restart this puts the INPUT drops in place or stops the boot. Each is inserted at the top of INPUT, once. Without a usable ip6tables the boot is allowed to go on only when the host has no IPv6 at
+#    missing), so after the Docker restart this puts the INPUT drops in place, or (4b below) withholds test services. Each is inserted at the top of INPUT, once. Without a usable ip6tables the boot is allowed to go on only when the host has no IPv6 at
 #    all: IPv6 counts as off only when it is disabled for the interfaces that exist (conf/all) AND for those that will (conf/default, which a new bridge takes), or when the kernel has no IPv6.
 ipv6_active() {
   [[ -e /proc/net/if_inet6 ]] || return 1
@@ -50,13 +50,39 @@ wall_ipv6_into_host() {
     ! ipv6_active
   fi
 }
+# 4b. An IPv6 wall that cannot be put in place does NOT stop the worker (owner, 2026-11-04). The worker runs normal tasks as in 0.5.2 but offers no test services: AGENTX_TEST_SERVICES_NOT_PULLED=all is the existing fail-closed
+#    withhold (testServicesAdvertisedFeatures returns no feature for `all`), written here BEFORE the worker unit starts. The boot facts then say ipv6Drops false with one fixed reason word, and a line is logged. The run-network
+#    walls and the metadata block stay fatal. Also run by the walls unit on a reboot or Docker restart, so there the worker comes back withheld instead of not at all.
+ipv6_wall_failure_reason() {
+  if command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; then printf 'rule-not-added'; else printf 'ip6tables-unusable'; fi
+}
+withhold_test_services_for_ipv6() {
+  local reason=$1 file=${WORKER_ENV_FILE:-/etc/agentx/worker.env} tmp line from to
+  from='"ipv6Drops":true'
+  to="\"ipv6Drops\":false,\"ipv6DropsReason\":\"$reason\""
+  tmp=$(mktemp) || return 1
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case $line in
+        AGENTX_TEST_SERVICES_NOT_PULLED=*) ;;
+        AGENTX_TEST_SERVICES_BOOT_FACTS=*) printf '%s\n' "${line//"$from"/$to}" >>"$tmp" ;;
+        *) printf '%s\n' "$line" >>"$tmp" ;;
+      esac
+    done <"$file"
+  fi
+  printf 'AGENTX_TEST_SERVICES_NOT_PULLED=all\n' >>"$tmp"
+  cat "$tmp" >"$file" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  log "TEST SERVICES WITHHELD: could not drop IPv6 from run networks into the host ($reason); the worker runs normal tasks and offers no test services"
+}
 # 5. The walls above and the isolation DROP are not in the container firewall unit (boot.sh, at its size limit, writes that), so they would be lost at a host reboot or a Docker restart (a restart rebuilds Docker's chains) if
 #    only this one-time boot put them in place. A unit of its own re-applies them whenever the firewall unit runs, before the worker starts. An idle stop TERMINATES the instance and the next start launches a new one that runs boot.sh
 #    and this stage again; the unit covers what a new launch does not: a reboot of the same instance and a Docker restart.
 readonly RUN_WALLS_UNIT=rovara-run-walls.service
 install_run_walls_unit() {
   install -d -o root -g root -m 0755 /usr/local/libexec
-  { printf 'set -e\n'; declare -f ipv6_active wall_between_run_networks wall_ipv6_into_host; printf 'wall_between_run_networks\nwall_ipv6_into_host\n'; } >/usr/local/libexec/rovara-run-walls || return 1
+  # The run network wall is fatal here; the IPv6 one is not: a failure withholds test services (see 4b) and lets the worker start.
+  { printf 'set -e\nWORKER_ENV_FILE=%s\nlog() { printf "%%s\\n" "$*" >&2; }\n' "$WORKER_ENV_FILE"; declare -f ipv6_active wall_between_run_networks wall_ipv6_into_host ipv6_wall_failure_reason withhold_test_services_for_ipv6; printf 'wall_between_run_networks\nwall_ipv6_into_host || withhold_test_services_for_ipv6 "$(ipv6_wall_failure_reason)"\n'; } >/usr/local/libexec/rovara-run-walls || return 1
   cat >"/etc/systemd/system/$RUN_WALLS_UNIT" <<UNIT || return 1
 [Unit]
 Description=Wall run networks off from each other and from the host over IPv6
@@ -159,7 +185,7 @@ pull_catalog_images() {
 # The facts only root can see, handed to the worker as ONE environment value that it logs at its start (staging workers are not SSM-managed, so nothing reads them from the host). Booleans, a count and a version number:
 # no name, path or secret. Written after the walls are in place; the worker validates the shape (packages/worker/src/test-services-report.ts parseBootFacts).
 write_test_services_boot_facts() {
-  local imds=false walls=false ip6=false docker_version
+  local imds=false walls=false ip6=false ip6_reason="" docker_version
   metadata_blocked && imds=true
   iptables -C DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP 2>/dev/null && walls=true
   if command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; then
@@ -167,10 +193,12 @@ write_test_services_boot_facts() {
   else
     ipv6_active || ip6=true
   fi
+  [[ $ip6 == true ]] || ip6_reason=$(ipv6_wall_failure_reason)
   docker_version=$(docker version --format '{{.Server.Version}}' 2>/dev/null | head -n1)
   [[ "$docker_version" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){0,3}(-[a-z0-9.]{1,12})?$ ]] || docker_version=0
-  printf 'AGENTX_TEST_SERVICES_BOOT_FACTS={"metadataBlocked":%s,"runWalls":%s,"ipv6Drops":%s,"prepull":"%s","prepulled":%s,"loggedOut":%s,"dockerVersion":"%s"}\n' \
-    "$imds" "$walls" "$ip6" "$PREPULL_RESULT" "$PREPULL_COUNT" "$PREPULL_LOGGED_OUT" "$docker_version" >>"$WORKER_ENV_FILE"
+  [[ -z "$ip6_reason" ]] || ip6_reason=",\"ipv6DropsReason\":\"$ip6_reason\""
+  printf 'AGENTX_TEST_SERVICES_BOOT_FACTS={"metadataBlocked":%s,"runWalls":%s,"ipv6Drops":%s%s,"prepull":"%s","prepulled":%s,"loggedOut":%s,"dockerVersion":"%s"}\n' \
+    "$imds" "$walls" "$ip6" "$ip6_reason" "$PREPULL_RESULT" "$PREPULL_COUNT" "$PREPULL_LOGGED_OUT" "$docker_version" >>"$WORKER_ENV_FILE"
 }
 # This optional preload is bounded; failure leaves the worker available.
 pull_contained_image() {
@@ -526,7 +554,7 @@ stage2_main() {
     set_docker_address_pools || fail "could not set Docker's address pools"
     metadata_blocked || fail "the metadata block is missing after the Docker restart"
     wall_between_run_networks || fail "could not wall run networks off from each other"
-    wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"
+    wall_ipv6_into_host || withhold_test_services_for_ipv6 "$(ipv6_wall_failure_reason)" || fail "could not withhold test services after the IPv6 wall failed"
     install_run_walls_unit || fail "could not install the unit that restores the run network walls"
     write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"
   fi

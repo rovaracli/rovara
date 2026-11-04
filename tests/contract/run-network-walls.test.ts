@@ -132,8 +132,11 @@ esac
     expect(at("install_run_walls_unit")).toBeLessThan(at("write_worker_unit"));
     expect(at("write_worker_unit")).toBeLessThan(at("systemctl enable --now"));
     expect(at("systemctl enable --now")).toBeLessThan(at("start_e2e_qualification"));
-    // Pulling the catalog images and writing the test services settings is not fatal; every wall step is.
-    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+if pull_catalog_images "\$region"; then\n\s+write_test_services_environment \|\| log [^\n]*\n\s+else\n\s+log [^\n]*\n\s+fi\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+wall_ipv6_into_host \|\| fail [^\n]*\n\s+install_run_walls_unit \|\| fail [^\n]*\n\s+write_test_services_boot_facts \|\| log [^\n]*\n\s+fi/u);
+    // The withhold is written before the worker unit exists, so the worker never starts advertising test services on a host without the IPv6 drops.
+    expect(at("withhold_test_services_for_ipv6")).toBeGreaterThan(at("wall_ipv6_into_host"));
+    expect(at("withhold_test_services_for_ipv6")).toBeLessThan(at("write_worker_unit"));
+    // Pulling the catalog images and writing the test services settings is not fatal; the metadata block and the run-network walls are (a failed IPv6 drop withholds test services instead).
+    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+if pull_catalog_images "\$region"; then\n\s+write_test_services_environment \|\| log [^\n]*\n\s+else\n\s+log [^\n]*\n\s+fi\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+wall_ipv6_into_host \|\| withhold_test_services_for_ipv6 "\$\(ipv6_wall_failure_reason\)" \|\| fail [^\n]*\n\s+install_run_walls_unit \|\| fail [^\n]*\n\s+write_test_services_boot_facts \|\| log [^\n]*\n\s+fi/u);
   });
 
   // TS-SEAL-2: the IPv6 INPUT drop for the run bridges, run for real against fake iptables and ip6tables that keep their rules in files.
@@ -169,13 +172,13 @@ esac
       expect(wallIpv6({ ip6tables: "works", ipv6Active: true, before: [RVB, RVI] })).toEqual({ status: 0, rules: [RVB, RVI] });
       expect(wallIpv6({ ip6tables: "works", ipv6Active: true, before: ["INPUT -i lo -j ACCEPT"] }).rules).toEqual([RVI, RVB, "INPUT -i lo -j ACCEPT"]);
     });
-    it("stops the boot when ip6tables is missing or cannot be used while the host has IPv6, and lets it go on only when the host has none", () => {
+    it("reports failure (status 1) when ip6tables is missing or cannot be used while the host has IPv6, and success only when the host has none; stage 2 turns that failure into withheld test services, not a stop", () => {
       expect(wallIpv6({ ip6tables: "missing", ipv6Active: true }).status).not.toBe(0);
       expect(wallIpv6({ ip6tables: "unusable", ipv6Active: true }).status).not.toBe(0);
       expect(wallIpv6({ ip6tables: "missing", ipv6Active: false }).status).toBe(0);
       expect(wallIpv6({ ip6tables: "unusable", ipv6Active: false }).status).toBe(0);
     });
-    it("fails the boot when an insert fails (fail closed), whichever bridge it was for", () => {
+    it("reports failure when an insert fails (fail closed: the caller withholds test services), whichever bridge it was for", () => {
       const failing = (bridge: string) => {
         const directory = mkdtempSync(join(tmpdir(), "rovara-ipv6-fail-"));
         const bin = join(directory, "bin");
@@ -246,6 +249,34 @@ esac
       expect(fn("write_worker_unit")).not.toContain("RUN_WALLS_UNIT");
       expect(fn("stage2_main")).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then[\s\S]*install_run_walls_unit/u);
       expect(scripts["boot.sh"]).not.toContain("rovara-run-walls");
+    });
+    it("on a restart of the walls unit, an IPv6 failure does not take the worker down: the unit exits 0, rewrites the withhold and the boot facts, and a failed run-network wall is still fatal", () => {
+      const directory = mkdtempSync(join(tmpdir(), "rovara-walls-restart-"));
+      const bin = join(directory, "bin");
+      spawnSync("mkdir", ["-p", bin, join(directory, "libexec"), join(directory, "systemd")]);
+      const tool = (name: string, body: string) => { writeFileSync(join(bin, name), body); chmodSync(join(bin, name), 0o755); };
+      tool("iptables", FAKE.replace('op=$1; shift; rule="$*"', 'op=$1; shift; rule="$*"\n[ "$op" = -S ] && exit 0'));
+      tool("ip6tables", "#!/bin/bash\nexit 3\n");
+      const envFile = join(directory, "worker.env");
+      const facts = '{"metadataBlocked":true,"runWalls":true,"ipv6Drops":true,"prepull":"ok","prepulled":1,"loggedOut":true,"dockerVersion":"25.0.5"}';
+      writeFileSync(envFile, `AGENTX_FOO=1\nAGENTX_TEST_SERVICES_NOT_PULLED=svc/postgres\nAGENTX_TEST_SERVICES_BOOT_FACTS=${facts}\nAGENTX_BAR=2\n`);
+      const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory };
+      const names = ["install_run_walls_unit", "ipv6_active", "wall_between_run_networks", "wall_ipv6_into_host", "ipv6_wall_failure_reason", "withhold_test_services_for_ipv6"];
+      const code = names.map((name) => new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "mu").exec(scripts["boot-stage2.sh"])?.[0] ?? "").join("\n")
+        .replaceAll("/usr/local/libexec", join(directory, "libexec")).replaceAll("/etc/systemd/system", join(directory, "systemd"));
+      const setup = `FIREWALL_UNIT=f.service\nWORKER_UNIT=w.service\nRUN_WALLS_UNIT=r.service\nWORKER_ENV_FILE=${envFile}\ninstall() { mkdir -p "\${@: -1}"; }\nsystemctl() { :; }\n${code}\nipv6_active() { true; }\ninstall_run_walls_unit`;
+      expect(spawnSync("/bin/bash", ["-c", setup], { env, encoding: "utf8" }).status).toBe(0);
+      const ran = spawnSync("/bin/bash", [join(directory, "libexec/rovara-run-walls")], { env, encoding: "utf8" });
+      expect(ran.status, ran.stderr).toBe(0);
+      expect(ran.stderr).toContain("TEST SERVICES WITHHELD");
+      const lines = readFileSync(envFile, "utf8").split("\n").filter(Boolean);
+      expect(lines.filter((line) => line.startsWith("AGENTX_TEST_SERVICES_NOT_PULLED="))).toEqual(["AGENTX_TEST_SERVICES_NOT_PULLED=all"]);
+      expect(lines).toEqual(expect.arrayContaining(["AGENTX_FOO=1", "AGENTX_BAR=2"]));
+      const written = lines.find((line) => line.startsWith("AGENTX_TEST_SERVICES_BOOT_FACTS="))?.slice("AGENTX_TEST_SERVICES_BOOT_FACTS=".length) ?? "";
+      expect(JSON.parse(written)).toMatchObject({ ipv6Drops: false, ipv6DropsReason: "ip6tables-unusable", metadataBlocked: true });
+      // The run-network wall (iptables) is still fatal in the unit.
+      tool("iptables", "#!/bin/bash\nexit 1\n");
+      expect(spawnSync("/bin/bash", [join(directory, "libexec/rovara-run-walls")], { env, encoding: "utf8" }).status).not.toBe(0);
     });
     it("stage 2 is where it lives: boot.sh (at its size limit) holds only its best-effort rule, the INPUT drop is not allowed through (-j DROP only), and it runs after the address pools", () => {
       const main = fn("stage2_main");
