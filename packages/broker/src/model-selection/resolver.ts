@@ -96,9 +96,11 @@ export function resolveStageModel(input: StageModelInput): StageModelResult {
   const preferred = resolveStageModelOnce(input);
   if (usable.kind === "refusal") return preferred;
   if (preferred.kind === "refusal" || (same(usable.model, preferred.model) && usable.sourceId === preferred.sourceId)) return usable;
+  // The same model on a different source (one source cannot serve it, another can) is not a different model: the note then names none, never the model that ran as the one that was unavailable.
+  const wanted = same(preferred.model, usable.model) ? null : label(preferred.model);
   // A fallback that already names what was asked for keeps it. One that names nothing (the model that ran was the only one left) is told the model the choice would have been, so the note says which model was unavailable.
-  if (usable.fallback !== undefined) return usable.fallback.wanted === null ? { ...usable, fallback: { ...usable.fallback, wanted: label(preferred.model) } } : usable;
-  return { ...usable, fallback: { stage: input.stage, used: label(usable.model), wanted: label(preferred.model), reasonCode: "DEFAULT_MODEL_UNAVAILABLE" } };
+  if (usable.fallback !== undefined) return usable.fallback.wanted === null ? { ...usable, fallback: { ...usable.fallback, wanted } } : usable;
+  return { ...usable, fallback: { stage: input.stage, used: label(usable.model), wanted, reasonCode: "DEFAULT_MODEL_UNAVAILABLE" } };
 }
 
 function resolveStageModelOnce(input: StageModelInput): StageModelResult {
