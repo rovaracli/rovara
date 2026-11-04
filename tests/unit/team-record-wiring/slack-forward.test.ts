@@ -29,6 +29,15 @@ describe("readChannelInfo", () => {
     expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: privateChannel.fetch })).toStrictEqual({ kind: "private", extShared: false, memberIds: ["U0123456789", "U0123456780"] });
   });
 
+  it("a private channel made after March 2021 (a C id, is_channel true, is_private true) is private with its members: the flags decide, never the id's letter", async () => {
+    const modern = slack({ "conversations.info": info({ is_channel: true, is_private: true }), "conversations.members": { ok: true, members: ["U0123456789"], response_metadata: { next_cursor: "" } } });
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: modern.fetch })).toStrictEqual({ kind: "private", extShared: false, memberIds: ["U0123456789"] });
+    // The membership event for it carries channel_type "C" and still gets its fresh facts, members included.
+    const sent: SlackForwardEvent[] = [];
+    await createSlackForwarder({ token: async () => "xoxb-test", fetch: modern.fetch, edition: "enterprise", async invoke(event) { sent.push(event); } })({ type: "event_callback", team_id: "T0123456789", event: { type: "member_left_channel", channel: "C0123456789", channel_type: "C", user: "U0123456780", event_ts: "1761818400.000100" } });
+    expect(sent[0]!.channel!.info).toStrictEqual({ kind: "private", extShared: false, memberIds: ["U0123456789"] });
+  });
+
   it("answers nothing for a reply Slack did not send, a different channel id, or an unclassifiable channel; and a member list that cannot be read in full is treated as shared", async () => {
     expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: slack({}).fetch })).toBeUndefined();
     expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: slack({ "conversations.info": info({ id: "C0999999999", is_channel: true }) }).fetch })).toBeUndefined();

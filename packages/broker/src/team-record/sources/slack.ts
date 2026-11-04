@@ -178,11 +178,14 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     const channelId = event.channel;
     const userId = event.user;
     if (typeof channelId !== "string" || !CHANNEL.test(channelId) || typeof userId !== "string" || !USER.test(userId)) return ignored("malformed");
-    // Only a private channel's audience is a member list; a public channel's snapshot does not change when someone joins.
-    if (event.channel_type !== "G" && !channelId.startsWith("G")) return ignored("public_private_unchanged");
     const at = isoOfSlackTs(event.event_ts) ?? new Date().toISOString();
     const scope = slackScope(teamId, channelId);
     deps.directory.invalidate?.(teamId, channelId);
+    // Only a private channel's audience is a member list; a public channel's snapshot does not change when someone joins. Whether a channel is private is Slack's own flag (`is_private`, read into `kind`), NEVER the
+    // id's first letter or the event's `channel_type` (that is the id's letter, and a private channel made after March 2021 has a C id: the old test ignored its joins AND leaves, so a person who left kept access).
+    // Unknown flags fail closed to restricted: the change is recorded as if the channel were private (a leave removes the person; a join adds them to a list that only ever narrows who reads), never ignored.
+    const known = await deps.directory.channelInfo(teamId, channelId).catch(() => undefined);
+    if (known !== undefined && known.kind !== "private") return ignored("public_private_unchanged");
     // Before the first member event of a place (the app's own invite comes before any message), seed its access record from the full member list as Slack has it now. The list's
     // time is the time it was READ, which is what a snapshot's `capturedAt` must mean.
     await deps.sink.ensureAccessSeed?.({
