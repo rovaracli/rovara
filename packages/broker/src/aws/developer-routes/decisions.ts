@@ -60,6 +60,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
   const loadTask = async (taskId: string) => ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
   const testEnvCards = {
     store,
+    ...(deps.fixtureStore === undefined ? {} : { fixtureStore: deps.fixtureStore }),
     maintainedProjects: async (who: { orgId: string; developerId: string }) => [...(await visibleProjectRoles(deps, who as DeveloperCaller)).entries()].filter(([, role]) => projectAllows(role, "edit_settings")).map(([name]) => name).sort(),
     confirmPathOf: async (who: { orgId: string; developerId: string }, scope: { project: string; digest: string; expectedRevision: number }) => {
       if (deps.agents === undefined) return undefined;

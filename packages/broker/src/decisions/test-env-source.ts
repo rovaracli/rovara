@@ -15,6 +15,7 @@ import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/ta
 import { testEnvChangeLines } from "../org/test-env-diff.js";
 import { proposalIsSetupRun, readApprovedTestEnvironment, readProposal, readTestEnvProveReport, type TestEnvDeps } from "../org/test-environment.js";
 import { dependencyCardLines } from "../test-env/dependency-card-lines.js";
+import { approvedFixturesOf, type FixtureReadPort } from "../test-env/fixture-lookup.js";
 import { environmentUnusedReason, readTestEnvPin } from "../test-env/usable.js";
 import { testEnvironmentEnabled } from "../test-env/switch.js";
 import type { DecisionItem } from "./project.js";
@@ -56,6 +57,8 @@ export interface TestEnvCardPorts {
   maintainedProjects(caller: Who): Promise<string[]>;
   /** The confirmation page for the caller's own pending second-person card, where they can decide it there themselves. */
   confirmPathOf(caller: Who, scope: { project: string; digest: string; expectedRevision: number }): Promise<string | undefined>;
+  /** Slice 3: the fixture store, read side. With it a fake's line on the card says whether its answers were recorded or written by hand; without it the line says "a fake". */
+  fixtureStore?: Pick<FixtureReadPort, "record"> | undefined;
 }
 
 /** One `approve_test_env` card per project that has a proved proposal waiting; the caller's projects only. A project that cannot be read is left out (fail closed). */
@@ -83,7 +86,7 @@ export async function approveTestEnvItemsFor(ports: TestEnvCardPorts, caller: Wh
         openPath: `/app/onboard?project=${encodeURIComponent(project)}&step=setup`, ...(confirmPath === undefined ? {} : { confirmPath }),
         contentVersion: sha(`${newest.digest}:${String(expectedRevision)}`), risk, riskReasons: [...lessSafe.map(flagWords), ...(setupRun ? ["Made by a setup run that ran commands: approve it on the setup page after signing in again."] : []), ...(dependencies.length > 0 ? [dependencyReason(dependencies.length)] : [])], tier: body.tier, expectedRevision,
         // Test services: the plain Dependencies section. Absent for an environment without any, so such a card is what it was.
-        ...(dependencies.length > 0 ? { details: [{ title: "Dependencies", lines: dependencyCardLines(dependencies) }] } : {}),
+        ...(dependencies.length > 0 ? { details: [{ title: "Dependencies", lines: dependencyCardLines(dependencies, await approvedFixturesOf(ports.fixtureStore, orgId, body)) }] } : {}),
       });
     } catch { /* a project whose proposal cannot be read has no card */ }
   }

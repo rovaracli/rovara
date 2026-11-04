@@ -15,6 +15,7 @@ import { FAKE_USAGE_ITEM_ID, dependencyEvidenceOf, type PinnedDependency, type R
 import { packDependencyLines } from "../../packages/broker/src/rovara-code/dependency-lines.js";
 import { evidenceEnvironmentOf } from "../../packages/broker/src/test-env/evidence-line.js";
 import { dependencyStepsOf } from "../../packages/broker/src/test-env/prove-from-setup-check.js";
+import { dependencyCardLines } from "../../packages/broker/src/test-env/dependency-card-lines.js";
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { verifyCapability } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
@@ -348,7 +349,7 @@ describe("the fixture-set callback", () => {
   it("with tx off, answers nothing and reads nothing", async () => {
     const w = await world();
     let reads = 0;
-    const counting = { send: (command: unknown) => { reads += 1; return w.deps.documentClient.send(command); } };
+    const counting = { send: (command: unknown) => { reads += 1; return w.deps.documentClient.send(command as never); } };
     expect(await refused(handleFixtureSetCallback({ ...w.deps, documentClient: counting }, w.operation(), { digest: w.digest }, { TEST_ENVIRONMENT_ENABLED: "1" }))).toBe(FIXTURE_DELIVERY_REFUSED);
     expect(reads).toBe(0);
   });
@@ -461,5 +462,21 @@ describe("the one-line hunks in the shared files", () => {
     expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("{ fixtureStore: dependencies.fixtureStore }");
     expect(read("packages/broker/src/aws/developer-routes/types.ts")).toContain("fixtureStore?: FixtureReadPort;");
     expect(read("packages/broker/src/aws/broker/definitions.ts")).toContain("fixtureStore?: FixtureReadPort;");
+  });
+});
+
+describe("the approve card", () => {
+  it("says whether a fake's answers were recorded or written by hand when the store is asked, and 'a fake' when it is not", async () => {
+    const store = storeOf();
+    const written = await approvedSet(store, makeSet());
+    const recorded = await approvedSet(store, recordedSet());
+    const environment = body([payments(written), payments(recorded, { id: "geo", name: "Geo API", connect: { env: [], hostAliases: ["fake-geo"] } })]);
+    const origins = await approvedFixturesOf(store, ORG, environment);
+    const lines = dependencyCardLines(environment.dependencies!, origins);
+    expect(lines).toContain("Payments API: answers from a hand-written fake. Found in src/pay.ts, line 3.");
+    expect(lines).toContain("Geo API: answers from a recorded fake. Found in src/pay.ts, line 3.");
+    expect(dependencyCardLines(environment.dependencies!)[0]).toBe("Payments API: answers from a fake. Found in src/pay.ts, line 3.");
+    // the other company's store answer is no origin
+    expect(dependencyCardLines(environment.dependencies!, await approvedFixturesOf(store, OTHER_ORG, environment))[0]).toBe("Payments API: answers from a fake. Found in src/pay.ts, line 3.");
   });
 });
