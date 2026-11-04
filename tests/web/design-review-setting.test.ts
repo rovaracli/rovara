@@ -13,10 +13,10 @@ import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 
 const PERSON = "b".repeat(64);
-interface World { allowed?: boolean | undefined; setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
+interface World { off?: boolean; allowed?: boolean | undefined; setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
 function setup(world: World = {}, canEdit = true, filter: "all" | "changed" | "locked" = "all") {
  const state = { ...world }, puts: Array<{ path: string; body: Record<string, unknown> }> = [];
- const answer = () => ({ ...(state.allowed === undefined ? {} : { designReviewAllowed: state.allowed }), playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.setting === undefined || state.allowed === false ? {} : { designReview: state.setting }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
+ const answer = () => ({ ...(state.allowed === undefined ? {} : { designReviewAllowed: state.allowed }), playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.off === true || state.allowed === false ? {} : { designReview: state.setting ?? DESIGN_REVIEW_DEFAULT_SETTING }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
  const f = fakeHost(async request => {
   if (request.path.endsWith("/playbook") && request.method === "GET") return { status: 200, body: answer() };
   if (request.path.endsWith("/playbook") && request.method === "PUT") { const body = request.body as Record<string, unknown>;puts.push({ path: request.path, body });state.setting = body.designReview as DesignReviewSetting;state.revision = (state.revision ?? 4) + 1;return { status: 200, body: answer() }; }
@@ -118,7 +118,7 @@ it("says plainly, without an alert, when the setting cannot be read, and shows n
 });
 
 it("shows no card where design review is off for the project: the playbook answer has no designReview field (QA-04)", async () => {
- const f = setup({});
+ const f = setup({ off: true });
  await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.method === "GET" && request.path.endsWith("/playbook"))).toBe(true));
  await waitFor(() => expect(f.container.querySelector("section, [id=hww-stage-design-review]")).toBeNull());
  expect(screen.queryByText("Design review")).toBeNull();
