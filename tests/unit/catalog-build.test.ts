@@ -28,6 +28,8 @@ import {
   ecrServesPort,
   childrenProblem,
   evidenceFolderOf,
+  REPO_ROOT,
+  assertOutsideRepo,
   parseEntryIds,
   platformSlugOf,
   skopeoMirrorPort,
@@ -430,14 +432,16 @@ describe("writing a build", () => {
     const { ports, signer } = fakePorts();
     const output = await build(ports);
     const root = await temporary();
-    await writeCatalogBuild(output, { catalogDir: join(root, "environments/service-catalog"), prepullFile: join(root, "packages/worker/service-catalog/prepull.json") });
+    await writeCatalogBuild(output, { catalogDir: join(root, "environments/service-catalog"), prepullFile: join(root, "packages/worker/service-catalog/prepull.json"), evidenceDir: join(root, "evidence-out") });
     const loaded = loadSignedCatalogWithKeys({
       catalogBytes: await readFile(join(root, "environments/service-catalog", CATALOG_FILE)),
       signatureBytes: await readFile(join(root, "environments/service-catalog", CATALOG_SIGNATURE_FILE)),
       trustedKeys: [signer.publicKeyPem],
     });
     expect(loaded.ok).toBe(true);
-    expect((await readdir(join(root, "environments/service-catalog/evidence"))).sort()).toEqual(live.map((entry) => evidenceFolderOf(entry.id)).sort());
+    // The evidence is written to the folder named, laid out per entry, and NOT beside the catalog.
+    expect((await readdir(join(root, "evidence-out"))).sort()).toEqual(live.map((entry) => evidenceFolderOf(entry.id)).sort());
+    expect((await readdir(join(root, "environments/service-catalog"))).sort()).toEqual([CATALOG_FILE, CATALOG_SIGNATURE_FILE].sort());
     expect(JSON.parse(await readFile(join(root, "packages/worker/service-catalog/prepull.json"), "utf8"))).toEqual(JSON.parse(output.prepullBytes.toString()));
     expect((await readdir(join(root, "environments/service-catalog"))).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
@@ -448,14 +452,26 @@ describe("writing a build", () => {
     await mkdir(join(root, "c"), { recursive: true });
     const good = output.evidence[0]!;
     // A good file comes first and a bad one second: nothing at all is written.
-    await expect(writeCatalogBuild({ ...output, evidence: [good, { path: "evidence/../../outside.json", bytes: Buffer.from("x") }] }, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json") })).rejects.toThrow();
+    await expect(writeCatalogBuild({ ...output, evidence: [good, { path: "evidence/../../outside.json", bytes: Buffer.from("x") }] }, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json"), evidenceDir: join(root, "e") })).rejects.toThrow();
     await expect(readFile(join(root, "c", CATALOG_FILE))).rejects.toThrow();
-    await expect(readFile(join(root, "c", good.path))).rejects.toThrow();
+    await expect(readFile(join(root, "e", good.path.slice("evidence/".length)))).rejects.toThrow();
     await expect(readFile(join(root, "p.json"))).rejects.toThrow();
     for (const bad of ["evidence/x/other.json", "/etc/passwd", "evidence/UPPER/linux-arm64/sbom.json", "evidence/a/b/sbom.json", "evidence/a/linux-arm64/other.json", "evidence/a/linux-s390x/sbom.json", "evidence/a/sbom.json", "evidence/a/linux-arm64/../../b/sbom.json", "outside/postgres-16/linux-arm64/sbom.json"]) {
-      await expect(writeCatalogBuild({ ...output, evidence: [{ path: bad, bytes: Buffer.from("x") }] }, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json") }), bad).rejects.toThrow();
+      await expect(writeCatalogBuild({ ...output, evidence: [{ path: bad, bytes: Buffer.from("x") }] }, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json"), evidenceDir: join(root, "e") }), bad).rejects.toThrow();
     }
     await writeFile(join(root, "keep"), "x");
+  });
+  it("refuses an evidence folder inside the repository, before anything is written (the SBOMs are megabytes and are never committed)", async () => {
+    const { ports } = fakePorts();
+    const output = await build(ports);
+    const root = await temporary();
+    for (const inside of [REPO_ROOT, join(REPO_ROOT, "environments/service-catalog/evidence"), join(REPO_ROOT, "x/../tmp-evidence")]) {
+      await expect(writeCatalogBuild(output, { catalogDir: join(root, "c"), prepullFile: join(root, "p.json"), evidenceDir: inside }), inside).rejects.toThrow(/outside the repository/u);
+    }
+    await expect(readFile(join(root, "c", CATALOG_FILE))).rejects.toThrow();
+    await expect(readFile(join(root, "p.json"))).rejects.toThrow();
+    expect(() => assertOutsideRepo(root)).not.toThrow();
+    expect(() => assertOutsideRepo(join(REPO_ROOT, "..", "sibling"))).not.toThrow();
   });
   it("makes an evidence folder name from any catalog id, and refuses two ids that would share one", async () => {
     expect(evidenceFolderOf("redis@7.2_a")).toBe("redis-7-2-a");
