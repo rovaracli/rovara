@@ -35,8 +35,8 @@ export interface BootFacts {
   ipv6Drops: boolean;
   /** Only when `ipv6Drops` is false: why (boot-stage2.sh `IPV6_WALL_REASON`). The worker then runs without test services (AGENTX_TEST_SERVICES_NOT_PULLED=all). */
   ipv6DropsReason?: "ip6tables-unusable" | "rule-not-added";
-  /** `none`: the image pins nothing to pull; `ok`: every pinned digest is on the host; `partial`: some digests are on the host and the rest are named in AGENTX_TEST_SERVICES_NOT_PULLED (not offered; the done-check still wants `ok`); `failed`: the login failed or no digest arrived. */
-  prepull: "none" | "ok" | "partial" | "failed";
+  /** `none`: the image pins nothing to pull; `off`: test services (`tx`) are off for this launch, so nothing was read, logged in or pulled; `ok`: every pinned digest is on the host; `partial`: some digests are on the host and the rest are named in AGENTX_TEST_SERVICES_NOT_PULLED (not offered; the done-check still wants `ok`); `failed`: the login failed or no digest arrived. */
+  prepull: "none" | "off" | "ok" | "partial" | "failed";
   prepulled: number;
   /** The registry login was removed after the pulls. */
   loggedOut: boolean;
@@ -75,7 +75,7 @@ export function parseBootFacts(text: string | undefined): BootFacts | "absent" |
   if (hasReason && (facts["ipv6Drops"] !== false || (reason !== "ip6tables-unusable" && reason !== "rule-not-added"))) return "unreadable";
   const bool = (value: unknown): value is boolean => typeof value === "boolean";
   if (!bool(facts["metadataBlocked"]) || !bool(facts["runWalls"]) || !bool(facts["ipv6Drops"]) || !bool(facts["loggedOut"])) return "unreadable";
-  if (facts["prepull"] !== "none" && facts["prepull"] !== "ok" && facts["prepull"] !== "partial" && facts["prepull"] !== "failed") return "unreadable";
+  if (facts["prepull"] !== "none" && facts["prepull"] !== "off" && facts["prepull"] !== "ok" && facts["prepull"] !== "partial" && facts["prepull"] !== "failed") return "unreadable";
   if (typeof facts["prepulled"] !== "number" || !Number.isInteger(facts["prepulled"]) || facts["prepulled"] < 0 || facts["prepulled"] > 64) return "unreadable";
   if (typeof facts["dockerVersion"] !== "string" || !/^[0-9]{1,3}(?:\.[0-9]{1,3}){0,3}(?:-[a-z0-9.]{1,12})?$/u.test(facts["dockerVersion"])) return "unreadable";
   return { metadataBlocked: facts["metadataBlocked"], runWalls: facts["runWalls"], ipv6Drops: facts["ipv6Drops"], ...(reason === "ip6tables-unusable" || reason === "rule-not-added" ? { ipv6DropsReason: reason } : {}), prepull: facts["prepull"], prepulled: facts["prepulled"], loggedOut: facts["loggedOut"], dockerVersion: facts["dockerVersion"] };

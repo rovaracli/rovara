@@ -335,8 +335,8 @@ describe("writing a Rovara-built build", () => {
     const made = await makeLayout({ javaScan: { severities: ["Low"] } });
     const output = await buildBuilt(fakePorts({}, made).ports, sourceOf(made));
     const out = await temporary();
-    await writeCatalogBuild(output, { catalogDir: join(out, "catalog"), prepullFile: join(out, "prepull.json") });
-    expect(sha256HexOf(await readFile(join(out, "catalog/evidence/local-aws-r1/java-scan.json")))).toBe(sha256HexOf(await readFile(made.javaScanFile)));
+    await writeCatalogBuild(output, { catalogDir: join(out, "catalog"), prepullFile: join(out, "prepull.json"), evidenceDir: join(out, "evidence") });
+    expect(sha256HexOf(await readFile(join(out, "evidence/local-aws-r1/java-scan.json")))).toBe(sha256HexOf(await readFile(made.javaScanFile)));
   });
 });
 

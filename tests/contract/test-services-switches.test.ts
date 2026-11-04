@@ -63,3 +63,15 @@ describe.each(SWITCHES)("the $name switch", ({ parameter, setting, code, variabl
     expect(OPERATOR_PARAMETERS["control-plane"]).toContain(parameter);
   });
 });
+
+describe("the launch tells a worker's boot whether test services are on", () => {
+  const stepsVariables = (template: Template): Record<string, unknown> => {
+    const found = Object.entries(template.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)
+      .find(([id]) => /^SessionsSteps[0-9A-F]{8}$/.test(id));
+    return found?.[1].Properties.Environment?.Variables ?? {};
+  };
+  it("hands the session steps function the TestServicesEnabled parameter in a named environment (the boot pre-pulls only when it is 1), and the legacy template has no such variable", () => {
+    expect(stepsVariables(named)).toMatchObject({ MODEL_PROXY_REQUIRED: "true", TEST_SERVICES_ENABLED: { Ref: "TestServicesEnabled" } });
+    expect(stepsVariables(legacy)).not.toHaveProperty("TEST_SERVICES_ENABLED");
+  });
+});

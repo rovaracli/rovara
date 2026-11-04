@@ -23,7 +23,23 @@ interface RawEntry {
   [key: string]: unknown;
 }
 interface RawCatalog { pinned: boolean; entries: RawEntry[]; [key: string]: unknown }
-const raw = (): RawCatalog => JSON.parse(readFileSync(FILE, "utf8")) as RawCatalog;
+/** The data file exactly as it ships. */
+const shippedRaw = (): RawCatalog => JSON.parse(readFileSync(FILE, "utf8")) as RawCatalog;
+/**
+ * The base the tests below edit: the shipped file with every pin taken off (an explicit UNPINNED fixture, revision 1), so these schema tests do not change when an operator pins an entry in the shipped file.
+ * What the shipped file itself holds is checked in "the shipped data file".
+ */
+const raw = (): RawCatalog => {
+  const data = shippedRaw();
+  data.pinned = false;
+  data.revision = 1;
+  for (const entry of data.entries) {
+    delete entry.image.digest;
+    delete entry.sbomRef;
+    delete entry.scan;
+  }
+  return data;
+};
 const entryAt = (data: RawCatalog, index: number): RawEntry => {
   const found = data.entries[index];
   if (found === undefined) throw new Error(`no entry at ${String(index)}`);
@@ -49,7 +65,30 @@ const pinnedEntry = (id: string) => withEntry(id, (entry) => {
   entry.scan = { scannedAt: "2026-11-02T00:00:00.000Z", criticalOpen: 0, highOpen: 2 };
 });
 
-describe("the v1 data file", () => {
+describe("the shipped data file", () => {
+  const shipped = cat.ServiceCatalogSchema.parse(shippedRaw());
+  it("is the pinned revision 2: exactly postgres@16 and local-aws@r1 are pinned", () => {
+    expect(shipped).toMatchObject({ schemaVersion: 1, revision: 2, pinned: true });
+    expect(shipped.entries.filter((entry) => entry.image.digest !== undefined).map((entry) => entry.id).sort()).toEqual(["local-aws@r1", "postgres@16"]);
+  });
+  it("pins each of those two wholly (a digest, an SBOM hash and a scan with no critical finding) and every other entry not at all", () => {
+    for (const entry of shipped.entries) {
+      const isPinned = entry.id === "postgres@16" || entry.id === "local-aws@r1";
+      if (isPinned) {
+        expect(entry.image.digest, entry.id).toMatch(/^[a-f0-9]{64}$/u);
+        expect(entry.sbomRef, entry.id).toMatch(/^[a-f0-9]{64}$/u);
+        expect(entry.scan?.criticalOpen, entry.id).toBe(0);
+      } else {
+        expect(entry.image.digest, entry.id).toBeUndefined();
+        expect(entry.sbomRef, entry.id).toBeUndefined();
+        expect(entry.scan, entry.id).toBeUndefined();
+      }
+      expect(entry.process, entry.id).toBeUndefined();
+    }
+  });
+});
+
+describe("the v1 data file (as an unpinned fixture)", () => {
   const catalog = cat.ServiceCatalogSchema.parse(raw());
   it("parses, as unpinned revision 1", () => {
     expect(catalog).toMatchObject({ schemaVersion: 1, revision: 1, pinned: false });
@@ -58,14 +97,14 @@ describe("the v1 data file", () => {
     expect(catalog.entries.map((entry) => entry.id)).toEqual(["postgres@15", "postgres@16", "postgres@17", "mysql@8", "valkey@8", "redis@7", "rabbitmq@3", "local-aws@r1", "fake-server@r1", "test-account-proxy@r1", "dns-helper@r1"]);
     expect(Object.fromEntries(catalog.entries.filter((entry) => entry.status === "default").map((entry) => [entry.family, entry.id]))).toEqual({ postgres: "postgres@16", mysql: "mysql@8", redis: "valkey@8", "local-aws": "local-aws@r1", "fake-server": "fake-server@r1" });
   });
-  it("carries no digest, SBOM, scan or process artifact until the pin task", () => {
+  it("carries no digest, SBOM, scan or process artifact once unpinned", () => {
     for (const entry of catalog.entries) {
       expect(entry.image.digest, entry.id).toBeUndefined();
       expect(entry.sbomRef, entry.id).toBeUndefined();
       expect(entry.scan, entry.id).toBeUndefined();
       expect(entry.process, entry.id).toBeUndefined();
     }
-    expect(readFileSync(FILE, "utf8")).not.toMatch(/sha256|[a-f0-9]{64}/u);
+    expect(JSON.stringify(raw())).not.toMatch(/sha256|[a-f0-9]{64}/u);
   });
   it("holds the starting sizes of 2.5", () => {
     const size = (id: string) => catalog.entries.find((entry) => entry.id === id)!.resources;

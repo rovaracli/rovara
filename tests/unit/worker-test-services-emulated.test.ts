@@ -445,6 +445,11 @@ describe("the /ping feature", () => {
         entry.image.digest = entry.id === "postgres@16" ? "d".repeat(64) : DIGEST;
         entry.sbomRef = "e".repeat(64);
         entry.scan = { scannedAt: "2026-11-03T00:00:00.000Z", criticalOpen: 0, highOpen: 0 };
+      } else {
+        // The shipped file pins local-aws since revision 2; this helper builds the "not pinned" case explicitly.
+        delete entry.image.digest;
+        delete entry.sbomRef;
+        delete entry.scan;
       }
     }
     await writeFile(join(dir, "catalog.json"), JSON.stringify(shipped));

@@ -7,6 +7,7 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { MODEL_PROXY_URL_PARAMETER, WORKER_FEATURES_MAX, WORKER_FEATURE_MAX_CHARS, WORKER_PING_FEATURES_FIELD, agentXError, ec2WorkerUserData, getParametersInBatches } from "@agentx/contracts";
 import { requiredEnvironment } from "./lambda.js";
+import { testServicesEnabled } from "../test-env/test-services-switch.js";
 import { readWorkerSettings, type WorkerSettings } from "./worker-settings-read.js";
 
 export { readWorkerSettings, type WorkerSettings };
@@ -50,6 +51,8 @@ export interface SessionStepsDependencies {
    * proxy URL fails here with a clear error rather than boot a worker that could not call a model.
    */
   modelProxyRequired?: boolean;
+  /** Test services (`tx`) are on for this install (the stack's TestServicesEnabled, handed to this function as TEST_SERVICES_ENABLED). Named environments only. */
+  testServices?: boolean;
   /** The invoke signing key's public key as base64 DER, as KMS GetPublicKey returns it. */
   invokePublicKey: () => Promise<string>;
   /**
@@ -151,6 +154,8 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
           ...(settings.modelFallback ? { modelFallback: settings.modelFallback } : {}),
           // A named environment is the one that requires a model proxy; the legacy deployment's launch says nothing.
           ...(dependencies.modelProxyRequired ? { environmentKind: "named" as const } : {}),
+          // The boot pre-pulls the catalog images only when test services (`tx`) are on; nothing is told to a launch with them off.
+          ...(dependencies.modelProxyRequired && dependencies.testServices === true ? { testServices: true as const } : {}),
           logGroupName: dependencies.logGroupName,
         }, dependencies.bootScript(dependencies.modelProxyRequired ? "named" : "legacy"));
         // Already base64 gzip, the form RunInstances takes (#229).
@@ -207,6 +212,7 @@ const stateTableName = process.env.STATE_TABLE_NAME ?? "";
 
 export const handler = createSessionStepsHandler({
   modelProxyRequired,
+  testServices: testServicesEnabled(),
   // The provisioner's cleanup (a launch that failed) and the deleter's last step end compute here.
   sessions: new SessionManager({
     documentClient: stateClient,

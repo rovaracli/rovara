@@ -10,7 +10,7 @@
 //   3. SIGNS a statement for the image (id, repository, the index digest, and for every platform its child digest, SBOM hash and scan time), and then the catalog file itself (behind a fixed prefix, see contracts
 //      `service-catalog-verify.ts`). The catalog entry carries ONE `sbomRef` (the combined hash of the per-platform hashes, `combinedSbomRef`) and one scan (the OLDEST scan time, 0 critical, and the most highs any one
 //      platform shows); the per-platform SBOMs, scans and hashes are in the evidence folder and the signed statement;
-//   4. writes the pinned `catalog.json`, `catalog.sig.json`, the evidence folder and the worker pre-pull list. The pinned file must parse as a pinned catalog: a half-pinned file does not (contract), so a build that pinned
+//   4. writes the pinned `catalog.json`, `catalog.sig.json`, the worker pre-pull list, and the evidence folder OUTSIDE the repository (`--evidence-dir`, required). The pinned file must parse as a pinned catalog: a half-pinned file does not (contract), so a build that pinned
 //      only some entries cannot write one. (Slice 1: `--entries` pins chosen entries on purpose and carries the others over unpinned; the schema allows an entry that is not pinned YET, never a half-pinned one.) All outputs are made in memory first; nothing is written when any entry is refused, and the catalog file is written last, each file by rename.
 //
 // SOURCES must be Rovara-built multi-platform INDEXES (OCI image index or Docker manifest list) holding EXACTLY the platforms the catalog entry lists (`linux/arm64`, `linux/amd64`), by digest. A single-platform image is
@@ -32,8 +32,8 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { z } from "zod";
 import {
@@ -409,14 +409,28 @@ async function writeAtomic(file: string, bytes: Uint8Array): Promise<void> {
   await rename(temporary, file);
 }
 
-/** Writes a build: evidence first, then the pre-pull list, then the signature and then the catalog (the file everything else vouches for) last. Nothing is written when `output` is not complete. */
-export async function writeCatalogBuild(output: CatalogBuildOutput, where: { catalogDir: string; prepullFile: string }): Promise<void> {
+/** The checkout this script lives in. The evidence folder must be outside it: SBOMs run to megabytes and must never be committed. */
+export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Throws when `directory` is the repository or inside it. */
+export function assertOutsideRepo(directory: string, repoRoot: string = REPO_ROOT): void {
+  const path = relative(repoRoot, resolve(directory));
+  if (path === "" || (!path.startsWith("..") && !isAbsolute(path))) throw new Error("--evidence-dir must be outside the repository (SBOMs are megabytes and are kept with the release evidence, not committed)");
+}
+
+/**
+ * Writes a build: evidence first (into `evidenceDir`, laid out as `<evidenceDir>/<entry folder>/...`, outside the repository), then the pre-pull list, then the signature and then the catalog (the file everything else vouches for) last.
+ * Nothing is written when `output` is not complete or `evidenceDir` is inside the repository.
+ */
+export async function writeCatalogBuild(output: CatalogBuildOutput, where: { catalogDir: string; prepullFile: string; evidenceDir: string }): Promise<void> {
   const catalogDir = resolve(where.catalogDir);
+  const evidenceDir = resolve(where.evidenceDir);
+  assertOutsideRepo(evidenceDir);
   // Evidence paths were made from checked ids; every one is re-checked BEFORE anything is written, so none leaves the evidence folder and a bad one leaves no partial output.
   for (const item of output.evidence) {
     if (!/^evidence\/[a-z0-9][a-z0-9-]*\/(?:statement\.json|java-scan\.json|java-sbom\.json|linux-(?:arm64|amd64)\/(?:sbom|scan)\.json)$/u.test(item.path)) throw new Error(`unexpected evidence path ${item.path}`);
   }
-  for (const item of output.evidence) await writeAtomic(join(catalogDir, item.path), item.bytes);
+  for (const item of output.evidence) await writeAtomic(join(evidenceDir, item.path.slice(`${EVIDENCE_DIR}/`.length)), item.bytes);
   await writeAtomic(resolve(where.prepullFile), output.prepullBytes);
   await writeAtomic(join(catalogDir, CATALOG_SIGNATURE_FILE), output.signatureBytes);
   await writeAtomic(join(catalogDir, CATALOG_FILE), output.catalogBytes);
@@ -465,7 +479,10 @@ export function skopeoMirrorPort(input: { commands: CommandPort; registry: strin
     const destination = `${input.registry}/${repositoryName}`;
     // A Rovara-built layout is copied from disk (`oci:<dir>`: skopeo refuses a layout that holds more than one image, and `readBuiltSource` already checked that it holds exactly the one named by digest); everything after the copy is the same.
     const from = built === undefined ? `docker://${source}` : `oci:${built.layoutPath}`;
-    await input.commands.run("skopeo", ["copy", "--all", "--preserve-digests", "--dest-authfile", input.authFile, from, `docker://${destination}:${tagFor(expectedDigest)}`], { timeoutMs: input.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
+    // A registry source is read with the same auth file: repack leaves the source in the install's own private repository, which refuses an anonymous read.
+    // The file holds only the install registry's credential, so a public source is still read anonymously. A layout on disk needs none.
+    const sourceAuth = built === undefined ? ["--src-authfile", input.authFile] : [];
+    await input.commands.run("skopeo", ["copy", "--all", "--preserve-digests", ...sourceAuth, "--dest-authfile", input.authFile, from, `docker://${destination}:${tagFor(expectedDigest)}`], { timeoutMs: input.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
     const byDigest = `docker://${destination}@sha256:${expectedDigest}`;
     const raw = await input.commands.run("skopeo", ["inspect", "--raw", "--authfile", input.authFile, byDigest]);
     const digest = createHash("sha256").update(raw).digest("hex");
@@ -690,9 +707,9 @@ export function ecrScanPort(input: { client: EcrLike; commands: Pick<EcrCommands
 // ---- command line
 
 function usage(): string {
-  return `Usage: tsx scripts/catalog-build.ts --sources <file> --env <environment> --registry <host> --kms-key <key id or ARN> [--entries <id,id,...>] [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--prepull-file ${DEFAULT_PREPULL_FILE}] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
+  return `Usage: tsx scripts/catalog-build.ts --sources <file> --env <environment> --registry <host> --kms-key <key id or ARN> [--entries <id,id,...>] --evidence-dir <folder outside the repository> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--prepull-file ${DEFAULT_PREPULL_FILE}] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
 Run by an operator with the pipeline's own AWS credentials. It mirrors each catalog image by digest into <host>/rovara-catalog/<environment>/..., records an SBOM and a scan for EACH PLATFORM, signs, and writes the
-pinned catalog.json, catalog.sig.json, evidence/ and the worker pre-pull list. Nothing is written if any image is refused (a platform with a critical finding refuses the image). Needs skopeo and syft on PATH.
+pinned catalog.json, catalog.sig.json and the worker pre-pull list into the repository, and the per-image evidence (SBOMs, scans, signed statements) into --evidence-dir, which is required and must be outside the repository. Nothing is written if any image is refused (a platform with a critical finding refuses the image). Needs skopeo and syft on PATH.
 The sources file maps each catalog id to a digest reference (host/path@sha256:...), or, for the emulator only, to a Rovara-built layout:
 { "kind": "rovara-built", "layout": "<dir>/oci", "digestFile": "<dir>/index.digest", "javaScan": "<dir>/scan-java-arm64.json", "javaSbom": "<dir>/sbom-arm64/java-dependencies.cdx.json" } (the workflow artifact image-result, downloaded and unpacked; relative paths are read from the sources file's directory).
 The layout is verified on disk, pushed by its digest, and the digest the registry serves must be the artifact's; the SBOM, the scan and the signature are this script's. Every source must be a Rovara-built multi-platform INDEX holding exactly the platforms the catalog lists for that id (a
@@ -730,6 +747,9 @@ async function main(argv: string[]): Promise<void> {
   const entryIds = parseEntryIds(values("--entries")[0]);
   const catalogDir = resolve(values("--catalog-dir")[0] ?? DEFAULT_CATALOG_DIR);
   const prepullFile = resolve(values("--prepull-file")[0] ?? DEFAULT_PREPULL_FILE);
+  if (values("--evidence-dir").length !== 1 || values("--evidence-dir")[0] === "") throw new Error("--evidence-dir is required (once): a folder outside the repository for the SBOMs, scans and statements");
+  const evidenceDir = resolve(values("--evidence-dir")[0] as string);
+  assertOutsideRepo(evidenceDir);
   if (!sourcesFile || !env || !registry || !kmsKey) throw new Error("--sources, --env, --registry and --kms-key are required");
   const commandTimeoutMs = timeoutFlag(values("--command-timeout-seconds")[0], DEFAULT_COMMAND_TIMEOUT_MS, "--command-timeout-seconds");
   const copyTimeoutMs = timeoutFlag(values("--copy-timeout-seconds")[0], DEFAULT_COPY_TIMEOUT_MS, "--copy-timeout-seconds");
@@ -760,7 +780,7 @@ async function main(argv: string[]): Promise<void> {
         signer,
       },
     });
-    await writeCatalogBuild(output, { catalogDir, prepullFile });
+    await writeCatalogBuild(output, { catalogDir, prepullFile, evidenceDir });
     process.stdout.write(`pinned catalog revision ${String(output.catalog.revision)}: ${String(output.catalog.entries.filter((entry) => entry.image.digest !== undefined).length)} images\n`);
   } finally {
     await rm(authDir, { recursive: true, force: true });

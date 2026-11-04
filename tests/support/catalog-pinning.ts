@@ -5,7 +5,23 @@ import { CATALOG_SIGNATURE_ALGORITHM, ServiceCatalogSchema, catalogSigningMessag
 import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
 
 export const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
-export const unpinnedCatalog = (): ServiceCatalog => ServiceCatalogSchema.parse(JSON.parse(readFileSync("environments/service-catalog/catalog.json", "utf8")));
+/** The catalog file exactly as it is committed and shipped (a pinned, signed revision since the staging pin). Tests of the shipped state read this. */
+export const shippedCatalog = (): ServiceCatalog => ServiceCatalogSchema.parse(JSON.parse(readFileSync("environments/service-catalog/catalog.json", "utf8")));
+/**
+ * An UNPINNED catalog, as an explicit fixture: the shipped file's entries with every pin taken off (no digest, SBOM hash or scan; `pinned` false; revision 1). A test of what happens to a catalog that pins nothing uses this, so it
+ * does not change whenever an operator pins an entry in the shipped file. `revision` defaults to 1; the broker refuses a revision under its minimum before it looks at pins, so a test of the broker's "not pinned" words passes the minimum.
+ */
+export function unpinnedCatalog(revision = 1): ServiceCatalog {
+  const raw = JSON.parse(readFileSync("environments/service-catalog/catalog.json", "utf8")) as { pinned: boolean; revision: number; entries: Array<Record<string, unknown>> };
+  raw.pinned = false;
+  raw.revision = revision;
+  for (const entry of raw.entries) {
+    delete (entry["image"] as { digest?: string }).digest;
+    delete entry["sbomRef"];
+    delete entry["scan"];
+  }
+  return ServiceCatalogSchema.parse(raw);
+}
 export const digestOfId = (id: string): string => sha(`image:${id}`);
 
 /** A pinned copy of the data file: every non-retired entry gets its digest, an SBOM hash and a clean scan. */
