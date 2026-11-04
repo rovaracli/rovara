@@ -27,7 +27,21 @@ it("keeps the actual built application within the complete startup budget", () =
  expect(() => checkWebBundleBudget("packages/web/dist/app")).not.toThrow();
 });
 it("keeps screens and contracts that only a lazy route needs out of the initial JavaScript", () => {
- // One string from each: the decision-card tabs contract, the decision card's reject reasons, the loaded-knowledge contract, the Lessons tab's contract and words (L3b: "expectedSetVersion", "scope_not_one_repo"), the setup wizard's test-environment routes (E4: "request-approval"), and the second opinion's settings screen with its contract ("caughtMissedByFirst"). Home loads the cards after its first paint.
- const markers = ["second_person_required", "wrong_approach", "loadedKnowledge", "expectedSetVersion", "scope_not_one_repo", "request-approval", "caughtMissedByFirst", "Caught what the first review missed", "Share as company recipe"], directory = "packages/web/dist/app";
+ // One string from each: the decision-card tabs contract, the decision card's reject reasons, the loaded-knowledge contract, the Lessons tab's contract and words (L3b: "expectedSetVersion", "scope_not_one_repo"), the setup wizard's test-environment routes (E4: "request-approval"), the second opinion's settings screen with its contract ("caughtMissedByFirst"), and the Sources editing screen's words (T5: "Someone changed this source meanwhile"). Home loads the cards after its first paint.
+ const markers = ["second_person_required", "wrong_approach", "loadedKnowledge", "expectedSetVersion", "scope_not_one_repo", "request-approval", "caughtMissedByFirst", "Caught what the first review missed", "Share as company recipe", "Someone changed this source meanwhile", "You're the only person who can approve this"], directory = "packages/web/dist/app";
  for (const file of initialJavaScriptFiles(directory)) { const text = readFileSync(join(directory, file), "utf8");for (const marker of markers) expect(text.includes(marker), file + " holds " + marker).toBe(false); }
+});
+it("loads the Sources editing screen as a chunk of its own that no initial file imports, and the read-only Sources tab does not hold its code", () => {
+ const directory = "packages/web/dist/app", manifest = JSON.parse(readFileSync(join(directory, ".vite/manifest.json"), "utf8")) as Record<string, { file: string; isDynamicEntry?: boolean; imports?: string[]; dynamicImports?: string[] }>;
+ const keyOf = (suffix: string) => Object.keys(manifest).find(key => key.endsWith(suffix));
+ const adminKey = keyOf("lessons/SourcesAdmin.js") ?? keyOf("lessons/SourcesAdmin.tsx"), tabKey = keyOf("lessons/SourcesTab.js") ?? keyOf("lessons/SourcesTab.tsx");
+ expect(adminKey, "the editing screen has its own chunk").toBeDefined();expect(tabKey).toBeDefined();
+ const admin = manifest[adminKey!]!, tab = manifest[tabKey!]!;
+ expect(admin.isDynamicEntry).toBe(true);
+ expect(initialJavaScriptFiles(directory)).not.toContain(admin.file);
+ expect(tab.file).not.toBe(admin.file);
+ expect(tab.imports ?? []).not.toContain(adminKey);
+ // The screen's own code (the add form builds the Rovara row's place) is in its chunk, not in the tab's.
+ expect(readFileSync(join(directory, admin.file), "utf8")).toContain("rovara:project/");
+ expect(readFileSync(join(directory, tab.file), "utf8")).not.toContain("rovara:project/");
 });

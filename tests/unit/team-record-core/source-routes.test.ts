@@ -42,7 +42,7 @@ function seedCompany(db: FakeDynamoDb, orgId: OrgId, people: Record<string, OrgR
   for (const { id, project } of maintainers) db.set({ ...projectMemberKey(orgId, id, project), ownerKey: id, projectName: project, role: "developer", projectRole: "maintainer", grantId: `grant-${id.slice(0, 4)}` });
 }
 
-interface Harness { w: World; audit: ReturnType<typeof capturingAuditDeps>; repos: Map<string, number[]>; locks: { value: CompanyLocks | undefined }; paused: string[]; ids: { next: number }; skipped: Record<string, number> | undefined }
+interface Harness { w: World; audit: ReturnType<typeof capturingAuditDeps>; repos: Map<string, number[]>; locks: { value: CompanyLocks | undefined }; paused: string[]; ids: { next: number }; skipped: Record<string, number> | undefined; repoNames?: Map<string, Array<{ id: number; name: string }>> }
 function harness(options: { edition?: "enterprise" | "public"; people?: Record<string, OrgRole>; maintainers?: Array<{ id: string; project: string }>; meta?: Record<string, unknown> } = {}): Harness {
   const w = world({ edition: options.edition ?? "enterprise" });
   const audit = capturingAuditDeps({ db: w.db, now: () => w.clock.ms });
@@ -58,6 +58,7 @@ const dependencies = (h: Harness) => ({
   sources: {
     edition: h.w.deps.edition,
     projectRepositories: async (orgId: OrgId, project: string) => h.repos.get(`${orgId}/${project}`),
+    ...(h.repoNames === undefined ? {} : { repositoryNames: async (orgId: OrgId, project: string) => h.repoNames!.get(`${orgId}/${project}`) }),
     locks: async () => h.locks.value,
     pausedSources: async () => h.paused,
     newId: () => `change-${String(h.ids.next++)}`,
@@ -634,6 +635,18 @@ describe("the sources view", () => {
     expect(JSON.stringify(view)).not.toContain(OTHER_ORG_OWNER);
     // The owner did not make that change.
     expect(SourcesAdminViewSchema.parse((await get(h, WHO.owner)).body).pending[0]!.proposedByYou).toBe(false);
+  });
+
+  it("T5: the admin view lists the project's repositories with their places, from the same live read, so the screen can offer them; an unreadable list leaves them out", async () => {
+    const h = harness();
+    h.repoNames = new Map([[`${ORG_A}/web`, [{ id: 9, name: "payments-api" }, { id: 12, name: "web-app" }]]]);
+    const view = SourcesAdminViewSchema.parse((await get(h, WHO.maint)).body);
+    expect(view.repositories).toEqual([{ name: "payments-api", scope: "github:repo/9" }, { name: "web-app", scope: "github:repo/12" }]);
+    h.repoNames = new Map();
+    expect(SourcesAdminViewSchema.parse((await get(h, WHO.maint)).body)).not.toHaveProperty("repositories");
+    // Another company's project of the same name never lends its list.
+    h.repoNames = new Map([[`${ORG_B}/web`, [{ id: 9, name: "other-company-repo" }]]]);
+    expect(JSON.stringify((await get(h, WHO.maint)).body)).not.toContain("other-company-repo");
   });
 
   it("the offered retention follows the edition and the company's ceiling, and a company with one eligible approver says so", async () => {

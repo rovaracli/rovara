@@ -47,6 +47,8 @@ export interface SourceRouteDependencies {
   edition: TeamRecordEdition;
   /** The numeric GitHub ids of the project's repositories, read live from its latest revision. Undefined (or a throw): the project's places cannot be checked, so nothing is added. */
   projectRepositories(orgId: OrgId, project: string): Promise<readonly number[] | undefined>;
+  /** The project's repositories by name and numeric id, read live from the same latest revision, for the editors' view (the screen offers these when adding a repository). Absent or a throw: the view leaves the list out. */
+  repositoryNames?(orgId: OrgId, project: string): Promise<ReadonlyArray<{ id: number; name: string }> | undefined>;
   /** The company's retention ceiling. Absent: none is set. A read that throws refuses the write. */
   locks?(orgId: OrgId): Promise<CompanyLocks | undefined>;
   /** Whether this Slack workspace is bound to the company (the same binding the Slack tap resolves). Absent or a throw: a Slack place cannot be checked, so nothing is added. */
@@ -643,6 +645,7 @@ export async function sourcesAdminView(deps: RecordQueryDependencies, request: R
   const offered = Object.fromEntries(OFFERED_KINDS.map((kind) => [kind, allowedRetention(sources.edition, kind).filter((mode) => checkRetentionChange({ edition: sources.edition, source: kind, stored: undefined, to: mode, ...(locks === undefined ? {} : { locks }) }).ok)]));
   // TRW-4: the counts of what was left out for want of a linked author, for the project's editors (a read that fails leaves them out).
   const skippedUnlinked = await Promise.resolve(deps.skipped?.read(orgId, project)).catch(() => undefined);
+  const repositoryNames = await Promise.resolve(sources.repositoryNames?.(orgId, project)).catch(() => undefined);
   const roster = await Promise.resolve(ctx.roster?.({ orgId, project })).catch(() => undefined);
   const soleApprover = roster !== undefined && roster.complete && roster.eligibleIds.length === 1 && roster.eligibleIds[0] === request.caller.developerId;
   return SourcesAdminViewSchema.parse({
@@ -651,5 +654,6 @@ export async function sourcesAdminView(deps: RecordQueryDependencies, request: R
       changeId: change.id, source: change.source, scope: change.scope, kind: change.kind, reasons: change.reasons, proposedByYou: change.proposedBy === request.caller.developerId, expiresAt: change.expiresAt,
     })),
     canEdit: true, soleApprover, offered, ...(skippedUnlinked === undefined ? {} : { skippedUnlinked }),
+    ...(repositoryNames === undefined || repositoryNames.length === 0 ? {} : { repositories: repositoryNames.slice(0, 100).map((repository) => ({ name: repository.name, scope: `github:repo/${String(repository.id)}` })) }),
   });
 }

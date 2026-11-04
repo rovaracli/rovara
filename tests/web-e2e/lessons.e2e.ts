@@ -1,6 +1,7 @@
 import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
+import { evidenceShot } from "./support/screenshot.js";
 import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
 type Sent = Array<{ method: string; path: string; body?: Record<string, unknown> }>;
 const BASE = "/v1/web/projects/payments/lessons";
@@ -52,6 +53,51 @@ test("a maintainer reads the weekly digest and the sources, and sees a paused so
  await expect(list.getByText("Kept for maintainers")).toBeVisible();
  await expect(list.getByText(/Paused: it produced far more lessons than usual/u)).toBeVisible();
  await checkA11y(page, { theme: "dark" });
+});
+test("an editor adds, changes and removes a source and decides a change that waits for a second person, in the page and with no browser dialog", async ({ page, context, request, baseURL }) => {
+ const RECORD = "/v1/web/projects/payments/record/sources", dialogs: string[] = [];
+ page.on("dialog", dialog => { dialogs.push(dialog.type());void dialog.dismiss(); });
+ await request.post("/__mock/scenario", { data: { name: "project" } });await request.post("/__mock/source-editing");
+ await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
+ await mockRealtime(page);await page.setViewportSize({ width: 1280, height: 1100 });await page.goto("/app/projects/payments?tab=sources");
+ const github = page.getByRole("region", { name: /GitHub github:repo\/9/u });
+ await expect(github).toBeVisible();
+ await expect(page.getByRole("heading", { name: "Add a source" })).toBeVisible();
+ await expect(page.getByRole("region", { name: "Waiting for a second person" }).getByText("A private channel")).toBeVisible();
+ await evidenceShot(page, { path: ".test-build/web-e2e/sources-editor-desktop.png", fullPage: true });
+ await checkA11y(page, { theme: "light" });
+ // Lower the retention: the page says what that means before and after the save.
+ await github.getByLabel("How long Rovara keeps it").selectOption("B");
+ await expect(github.getByText("Applies to new items; items already kept leave when they expire.")).toBeVisible();
+ await github.getByRole("button", { name: "Save changes" }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Saved. Applies to new items; items already kept leave when they expire." })).toBeVisible();
+ // Add the project's other repository.
+ const add = page.getByRole("region", { name: "Add a source" });
+ await add.getByLabel("What to add").selectOption("repository");
+ await add.getByLabel("Repository").selectOption("github:repo/12");
+ await add.getByLabel("How long Rovara keeps it").selectOption("D");
+ await add.getByRole("button", { name: "Add source" }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Source added." })).toBeVisible();
+ await expect(page.getByRole("region", { name: /GitHub github:repo\/12/u })).toBeVisible();
+ // Another person's change waits: approve it.
+ await page.getByRole("region", { name: "Waiting for a second person" }).getByRole("button", { name: "Approve" }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Approved. The change is in effect." })).toBeVisible();
+ await expect(page.getByRole("region", { name: /Slack slack:T1\/C9/u })).toBeVisible();
+ // Remove the first repository: the question is in the page.
+ await github.getByRole("button", { name: "Remove" }).click();
+ await expect(github.getByText(/Remove this source\?/u)).toBeVisible();
+ await github.getByRole("button", { name: "Yes, remove it" }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Source removed." })).toBeVisible();
+ await expect(page.getByRole("region", { name: /GitHub github:repo\/9/u })).toHaveCount(0);
+ const sent = ((await (await request.get("/__mock/requests")).json()) as Sent).filter(item => item.method === "POST" && item.path === RECORD);
+ expect(sent.map(item => item.body?.action)).toEqual(["change", "add", "approve", "remove"]);
+ expect(sent[0]!.body).toMatchObject({ source: "github", scope: "github:repo/9", expectedRevision: 1, retention: "B" });
+ expect(sent[3]!.body).toMatchObject({ scope: "github:repo/9", expectedRevision: 2 });
+ expect(dialogs).toEqual([]);
+ await checkA11y(page, { theme: "dark" });
+ await page.setViewportSize({ width: 390, height: 900 });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+ await evidenceShot(page, { path: ".test-build/web-e2e/sources-editor-phone.png", fullPage: true });
 });
 test("the Lessons tab is usable on a phone and the lesson text is plain text", async ({ page, context, request, baseURL }) => {
  await openTab(page, context, request, baseURL, "lessons", 390);

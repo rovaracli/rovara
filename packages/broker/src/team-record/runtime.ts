@@ -546,6 +546,11 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       if (latest === undefined) return undefined;
       return latest.definition.repositories.flatMap((repository) => { const host = repositoryHostOf(repository); return host.kind === "github" && "repositoryId" in host && host.repositoryId !== undefined ? [host.repositoryId] : []; });
     },
+    repositoryNames: async (orgId, project) => {
+      const latest = await latestRevision(state, orgId, project);
+      if (latest === undefined) return undefined;
+      return latest.definition.repositories.flatMap((repository) => { const host = repositoryHostOf(repository); return host.kind === "github" && "repositoryId" in host && host.repositoryId !== undefined ? [{ id: host.repositoryId, name: repository.name }] : []; });
+    },
     // Slack: the workspace must be the one the company bound (the binding the tap resolves); the channel itself is read live through the request's own context. Linear and Jira: the connected apps list the place.
     slackTeamBound: async (orgId, teamId) => (await new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId)) === orgId,
     ...(input.trackers === undefined ? {} : { trackerPlace: trackerPlaceCheck(input.trackers, { now }) }),

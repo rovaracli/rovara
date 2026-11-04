@@ -33,6 +33,21 @@ export const T = {
  SOURCES_NONE: "No source feeds the team record for this project yet.", SOURCES_LOADING: "Loading sources", SOURCES_UNAVAILABLE: "The team record isn't set up here yet.",
  SOURCE_PAUSED: "Paused: it produced far more lessons than usual. A maintainer has to resume it.", SOURCE_PAUSED_OTHER: "other sources are paused for the same reason.", SOURCE_OFF: "Switched off", SOURCE_ON: "On",
  SOURCE_HIDDEN: "Kept for maintainers", SOURCE_EXCLUDED: "excluded", KEEPS: "Rovara keeps", STATUS: "Status", WHO_SEES: "Who sees it",
+ SRC_ADD: "Add a source", SRC_ADD_KIND: "What to add", SRC_ADD_SEND: "Add source", SRC_ADD_NONE: "Nothing more can be added here.", SRC_CHOOSE: "Choose",
+ SRC_KIND_REPO: "Repository", SRC_KIND_ROVARA: "Rovara (this project's own notes)", SRC_KIND_SLACK: "Slack channel", SRC_KIND_LINEAR: "Linear team", SRC_KIND_JIRA: "Jira project",
+ SRC_REPO: "Repository", SRC_PLACE_SLACK: "Slack channel", SRC_PLACE_LINEAR: "Linear team", SRC_PLACE_JIRA: "Jira project",
+ SRC_HINT_SLACK: "Looks like slack:T0123/C0456. Rovara checks the channel itself.", SRC_HINT_LINEAR: "Looks like linear:team/ENG. Rovara checks that your Linear app lists it.", SRC_HINT_JIRA: "Looks like jira:project/PAY. Rovara checks that your Jira app lists it.",
+ SRC_RETENTION: "How long Rovara keeps it", SRC_AUDIENCE: "Who sees it", SRC_AUDIENCE_PROJECT: "Everyone on this project", SRC_AUDIENCE_MAINTAINERS: "Maintainers only", SRC_ROVARA_AUDIENCE: "follows each task's visibility",
+ SRC_ON: "On", SRC_EXCLUDE: "Ids to leave out", SRC_EXCLUDE_HINT: "One per line: a person or an item id at the source.", SRC_EXCLUDE_TOO_MANY: "Leave out at most 200 ids, each at most 300 characters.",
+ SRC_SAVE: "Save changes", SRC_REMOVE: "Remove", SRC_REMOVE_ASK: "Remove this source? What it kept is deleted within an hour, and nothing new is recorded from it.", SRC_REMOVE_YES: "Yes, remove it", SRC_REMOVE_NO: "Keep it",
+ SRC_LOWERED: "Applies to new items; items already kept leave when they expire.", SRC_SAVED: "Saved.", SRC_ADDED: "Source added.", SRC_REMOVED: "Source removed.",
+ SRC_NEEDS_SECOND: "This change needs a second person to approve it. It is listed under the changes waiting for approval.", SRC_APPROVED: "Approved. The change is in effect.", SRC_REJECTED: "Change rejected.",
+ SRC_PENDING: "Changes waiting for approval", SRC_PENDING_CARD: "Waiting for a second person", SRC_WAITING: "Waiting", SRC_WAITING_FOR: "for another person to approve this.", SRC_SOLE: "You're the only person who can approve this.",
+ SRC_NEW: "New source", SRC_CHANGE: "Change to a source", SRC_REASON_PRIVATE: "A private channel", SRC_REASON_DM: "A direct message", SRC_REASON_MPIM: "A group direct message", SRC_REASON_RAISE: "Keeping items longer",
+ SRC_SKIPPED: "items weren't kept because their author isn't linked to a Rovara person.", SRC_NO_EDIT: "Changing sources isn't available to you right now.", SRC_SIGN_IN: "Sign in again", SRC_SAVING: "Saving",
+ SRC_ERR_STALE: "Someone changed this source meanwhile. Reload and try again.", SRC_ERR_REMOVAL: "This place is still being cleared. Try again in an hour.", SRC_ERR_REAUTH: "Sign in again to approve.",
+ SRC_ERR_PLACE: "That place can't be used as a source here.", SRC_ERR_KIND: "That kind of source can't be added yet.", SRC_ERR_FORBIDDEN: "You can't change the sources of this project.",
+ SRC_ERR_UNAVAILABLE: "Rovara can't check that right now. Try again shortly.", SRC_ERR_INVALID: "Those details aren't valid. Check them and try again.", SRC_ERR_GONE: "That source or change no longer exists. The list was read again.", SRC_ERR_OTHER: "Couldn't save that. Try again.",
  LOADED_TITLE: "Lessons the agent loaded", LOADED_NONE: "No lesson was loaded for this task.", LOADED_HIDDEN: "A lesson from a source you can't see", LOADED_THANKS: "Thanks. Your mark is recorded.",
 } as const;
 
@@ -84,3 +99,15 @@ export function failureText(error: unknown, fallback: string): string {
 }
 /** A failure that means the list is out of date: it is read again. */
 export const isStale = (error: unknown): boolean => error instanceof ApiError && (error.code === "CHANGE_STALE" || error.code === "NOT_FOUND");
+
+const SOURCE_FAILURES: Readonly<Record<string, string>> = {
+ CHANGE_STALE: T.SRC_ERR_STALE, SOURCE_REMOVAL_RUNNING: T.SRC_ERR_REMOVAL, REAUTH_REQUIRED: T.SRC_ERR_REAUTH, SOURCE_NOT_ALLOWED: T.SRC_ERR_PLACE, SOURCE_KIND_NOT_YET: T.SRC_ERR_KIND,
+ FORBIDDEN: T.SRC_ERR_FORBIDDEN, RUNTIME_UNAVAILABLE: T.SRC_ERR_UNAVAILABLE, CONFIG_INVALID: T.SRC_ERR_INVALID, NOT_FOUND: T.SRC_ERR_GONE, PROJECT_NOT_FOUND: T.SRC_ERR_GONE,
+};
+/** What a failed source change says: a fixed sentence for the code, never the server's own text. */
+export function sourceFailureText(error: unknown): string {
+ return error instanceof ApiError && Object.hasOwn(SOURCE_FAILURES, error.code) ? SOURCE_FAILURES[error.code]! : T.SRC_ERR_OTHER;
+}
+export const sourceChangeIsStale = (error: unknown): boolean => error instanceof ApiError && (error.code === "CHANGE_STALE" || error.code === "NOT_FOUND" || error.code === "PROJECT_NOT_FOUND");
+const REASONS: Readonly<Record<string, string>> = { private_channel: T.SRC_REASON_PRIVATE, dm: T.SRC_REASON_DM, mpim: T.SRC_REASON_MPIM, retention_raise: T.SRC_REASON_RAISE };
+export const sourceReasonWords = (reason: string): string => Object.hasOwn(REASONS, reason) ? REASONS[reason]! : "";

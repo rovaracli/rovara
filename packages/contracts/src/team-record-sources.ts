@@ -159,6 +159,8 @@ export const SourcesAdminViewSchema = z.object({
   offered: z.record(z.string().min(1).max(60), z.array(RetentionModeSchema).max(4)),
   /** TRW-4: what the record left out because the author is not a linked Rovara person, per source (counts only), as the route has always shown the project's maintainers. */
   skippedUnlinked: z.record(z.string().min(1).max(60), z.number().int().min(0)).optional(),
+  /** The project's repositories and the place each is (`github:repo/<id>`), read live, so the screen offers exactly these when adding a repository. Absent when the list cannot be read. */
+  repositories: z.array(z.object({ name: z.string().min(1).max(200), scope: SourceScopeSchema }).strict()).max(100).optional(),
 }).strict();
 export type SourcesAdminView = z.infer<typeof SourcesAdminViewSchema>;
 export const SourcesAdminViewReaderSchema = forwardReader(SourcesAdminViewSchema);
