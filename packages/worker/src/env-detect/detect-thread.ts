@@ -4,7 +4,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import { runDetectors } from "./index.js";
 import type { RepositoryReader } from "./types.js";
 
-interface Start { paths: string[]; truncated: boolean; cwd: string; legacyOnly: boolean }
+interface Start { paths: string[]; truncated: boolean; cwd: string; legacyOnly: boolean; only?: string[] }
 type Reply = { type: "text"; id: number; text: string | undefined; exhausted: boolean };
 
 const port = parentPort;
@@ -35,7 +35,7 @@ const reader: RepositoryReader = {
   },
 };
 
-runDetectors(reader, start.cwd, { legacyOnly: start.legacyOnly }).then(
+runDetectors(reader, start.cwd, { legacyOnly: start.legacyOnly, ...(start.only === undefined ? {} : { only: start.only }) }).then(
   (detection) => port.postMessage({ type: "done", detection }),
   () => port.postMessage({ type: "failed" }),
 );

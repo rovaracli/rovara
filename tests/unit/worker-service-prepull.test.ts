@@ -56,7 +56,7 @@ describe("pulling ahead", () => {
   it("skips what the host already holds", async () => {
     const pulled: string[] = [];
     const result = await prepullCatalogImages({ list, registry: REGISTRY, env: "staging", ports: { pull: async (reference) => { pulled.push(reference); }, present: async (reference) => reference.includes("svc/postgres@") } });
-    expect(result.alreadyPresent).toEqual(["postgres@16"]);
+    expect(result.alreadyPresent).toEqual(["postgres@15", "postgres@16", "postgres@17"]);
     expect(pulled.some((reference) => reference.includes("svc/postgres@"))).toBe(false);
   });
   it("reports a failed pull and carries on with the rest", async () => {

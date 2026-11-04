@@ -9,6 +9,7 @@
 // strike-through or a code span together), and every finished line is checked again as a whole (`dependencyLineIsInert`); the digest and the date are checked against their shape and otherwise shown as unknown; every other word is fixed
 // here or in the contract. The label is the pack's (the broker computed it from the pinned plan), never the worker's.
 import { EVIDENCE_FALLBACK_REASON_WORDS, evidenceDependencyLabelWords, type EvidenceDependency, type EvidencePack } from "@agentx/contracts";
+import { AWS_PERMISSIONS_NOT_CHECKED, AWS_PERMISSIONS_NOT_CHECKED_SHORT } from "./dependency-evidence.js";
 import { inertLine } from "./inert-text.js";
 
 /** The last shrink level (the Proof section's own last level is the same number). A level outside 0..last is read as the nearest one. */
@@ -142,6 +143,8 @@ export function dependencyLines(dependencies: readonly EvidenceDependency[] | un
     const accounts = named.filter(({ dependency }) => dependency.label === "test_account").map(({ name }) => name);
     if (accounts.length > 0) lines.push(`Note: used your ${joinNames(accounts)} test account${accounts.length === 1 ? "" : "s"}.`);
     const notTested = named.flatMap(({ dependency, name }) => notCheckedLines(dependency, name, at).map((text) => `- ${text}`));
+    // Rovara local AWS does not enforce IAM: said once, in fixed words, whatever the shrink level (design 2.4, 4.2 and 9.3).
+    if (named.some(({ dependency }) => dependency.label === "rovara_local_aws")) notTested.push(`- ${at >= 3 ? AWS_PERMISSIONS_NOT_CHECKED_SHORT : AWS_PERMISSIONS_NOT_CHECKED}`);
     return { lines, notTested };
   };
   const result = assemble((dependency) => safeName(dependency.name, nameMax));

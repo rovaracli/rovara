@@ -11,7 +11,7 @@ export function backingWords(backing: TestEnvDependency["backing"]): string {
   switch (backing.kind) {
     case "local": return backing.substituteImage === undefined ? "runs the real software from Rovara's image list" : "runs your company's own build of the image (a second person approves this)";
     case "project_image": return "runs your own image (a second person approves this)";
-    case "emulated": return "runs Rovara local AWS";
+    case "emulated": return "runs against Rovara local AWS. Not checked here: AWS permissions and exact AWS behaviour";
     case "test_account": return "uses your test account in sealed checks (a second person approves this)";
     case "fake": return backing.unmatched === "schema_synth" ? "answers from a fake that makes up answers for requests it has no recording for (a second person approves this)" : "answers from a fake";
     case "none": return backing.reason === "faked_by_tests" ? "is faked by your own tests, so Rovara starts nothing" : "has nothing behind it, so tests that need it do not run";

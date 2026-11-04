@@ -39,3 +39,22 @@ Only an IMPLEMENT task has a working-phase Postgres (CHECKS runs and Prove start
 Each target can be replaced with an `ESCAPE_*` variable (see `lib/targets.js`, `lib/resolve.js`, `lib/state.js`) so the repository's own tests can aim a test at something reachable and check that it then FAILS (tests/contract/test-services-escape-project.test.ts). They are honoured **only when `ESCAPE_FIXTURE_TEST=1`** (`lib/fixture.js`); in a real round they do nothing.
 
 Not covered here, because they need privileges the check sandbox does not have: spoofed source addresses (TS-SEAL-4) and raw multicast; those stay Linux checks (linux-runtime CI).
+
+## Slice 2: the `aws/` overlay (Rovara local AWS)
+
+`aws/` holds what the slice-2 staging proof adds. It is **not part of the slice-1 project** (so slice 1 is unchanged); copy it over the project root for the slice-2 staging project: `cp -R aws/. .` and then `rm -rf variants`. It mirrors the project layout:
+
+- `template.yaml`: a CloudFormation file declaring a DynamoDB table (`orders`), an S3 bucket (`orders-archive`) and an SQS queue (`order-events`). Setup finds them, so the project's environment lists Postgres plus S3, SQS and DynamoDB, and the worker seeds them into Rovara local AWS from this file. Nothing is deployed.
+- `lib/aws-http.js`: plain HTTP calls to the emulator (no SDK). The endpoint is the run's `AWS_ENDPOINT_URL_S3`.
+- checks, one per file, added to the slice-1 five (the done-check ties its verdict to these names):
+  - `node --test tests/aws-positive.test.js`
+  - `node --test tests/aws-control.test.js`
+
+| test file | what it tries | passes when |
+|---|---|---|
+| `aws-positive.test.js` | stores and reads back an S3 object in the declared bucket; asks SQS for the declared queue; describes the declared DynamoDB table | all three answer 200 (so the emulator is there and the worker seeded the project's template) |
+| `aws-control.test.js` | the emulator's health path, then `/_rovara/ledger/summary`, `/_rovara/ledger`, `/_rovara/seed`, `/_rovara/reset` with no token, a made-up control token and a made-up bearer token | health answers 200 and every control call is refused with **403 or 401** (a 404, a 2xx or a dropped connection FAILS); a refusal carries no counters or resource names |
+
+**The flag project** (the out-of-plan proof): a second staging project, set up from a copy of the slice-2 project **after** its environment was approved, with `cp -R aws/variants/out-of-plan/. .` added to the repository. `aws-out-of-plan.test.js` sends an SNS `Publish` to the endpoint in `AWS_ENDPOINT_URL_SNS` (what the SDK does; the run points it at the emulator, which has SNS switched off); it passes when the emulator refuses (4xx/5xx), and Rovara's evidence must then flag "The code called AWS services that are not in the plan" (the done-check reads that from the task). It is a separate project because the same call would fail Prove's dependency usage check, by design, in the project that proves clean.
+
+Unverified against the real emulator: the request shapes above (unsigned, credential scope names the service) and whether a disabled service's refused call is recorded in the ledger. The first staging run settles both; every test fails closed.

@@ -5,6 +5,7 @@
 // What stays at every shrink level: the Environment line, the not-run line and the mocked or not-tested bullets (a reader must not miss what was not proved), and the link. The counts per kind and the
 // changed-line coverage go first, from level 2.
 import { evidenceIsFor, type EvidenceMode, type EvidencePack } from "@agentx/contracts";
+import { AWS_PERMISSIONS_ITEM_ID } from "./dependency-evidence.js";
 import { packDependencyLines } from "./dependency-lines.js";
 import { inertLine } from "./inert-text.js";
 
@@ -149,7 +150,8 @@ const NOUNS = { claim: "Requirement", scenario: "Scenario", check: "Check", mock
  * not be read, and checks that skipped more tests. Bounded to ten, with the rest counted; never dropped by the shrink levels, which only shorten their words.
  */
 export function evidenceNotTestedLines(pack: EvidencePack, level: number, exclude: ReadonlySet<string> = new Set()): string[] {
-  const items = pack.notTested.filter((item) => item.kind !== "claim" && item.kind !== "scenario" && !exclude.has(`${item.kind}:${item.id}`));
+  // The "AWS permissions were not checked" item is for the Evidence tab; the pull request says it once through `dependencyLines`, which never drops it (so it is not counted among these ten).
+  const items = pack.notTested.filter((item) => item.kind !== "claim" && item.kind !== "scenario" && !exclude.has(`${item.kind}:${item.id}`) && !(item.kind === "environment" && item.id === AWS_PERMISSIONS_ITEM_ID));
   const lines = items.slice(0, EVIDENCE_NOT_TESTED_LISTED).map((item) => {
     const name = level >= 4 ? inertLine(item.id, 40) : inertLine(item.text === "" ? item.id : item.text, 80);
     return `- ${NOUNS[item.kind]} ${name} (${inertLine(item.reason, 100)})`;

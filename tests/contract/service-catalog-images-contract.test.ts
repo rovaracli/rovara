@@ -76,17 +76,21 @@ describe("the worker pre-pull list", () => {
   it("is empty for an unpinned catalog", () => {
     expect(catalogPrepullList(unpinnedCatalog())).toEqual({ schemaVersion: 1, catalogRevision: 1, images: [] });
   });
-  it("holds the pinned default of each family and the always-used helper, by repository and digest, sorted, and nothing else", () => {
+  it("holds EVERY pinned local and emulated entry (not only each family's default), the pinned defaults of the other families and the always-used helper, by repository and digest, sorted, and nothing else", () => {
     const list = catalogPrepullList(catalog);
-    expect(list.images.map((image) => image.id)).toEqual(["dns-helper@r1", "fake-server@r1", "local-aws@r1", "mysql@8", "postgres@16", "valkey@8"]);
+    expect(list.images.map((image) => image.id)).toEqual(["dns-helper@r1", "fake-server@r1", "local-aws@r1", "mysql@8", "postgres@15", "postgres@16", "postgres@17", "rabbitmq@3", "redis@7", "valkey@8"]);
+    // The test-account proxy is a helper that runs only with `ta`: not pulled ahead.
+    expect(list.images.map((image) => image.id)).not.toContain("test-account-proxy@r1");
+    expect(list.images.length).toBeLessThanOrEqual(PREPULL_MAX_IMAGES);
     expect(list.images.find((image) => image.id === "postgres@16")).toEqual({ id: "postgres@16", repository: "svc/postgres", digest: digest("postgres@16"), platforms: ["linux/arm64", "linux/amd64"] });
     expect(JSON.stringify(list)).not.toMatch(/latest|:\d+\/|amazonaws/u);
     expect(PrepullListSchema.safeParse(list).success).toBe(true);
     expect(list.catalogRevision).toBe(catalog.revision);
   });
-  it("leaves a retired default and a not-pinned-yet entry out", () => {
-    const retired = pinnedCatalog((entries) => { entries.find((entry) => entry["id"] === "mysql@8")!["status"] = "retired"; });
+  it("leaves a retired entry (default or not) out", () => {
+    const retired = pinnedCatalog((entries) => { entries.find((entry) => entry["id"] === "mysql@8")!["status"] = "retired"; entries.find((entry) => entry["id"] === "postgres@15")!["status"] = "retired"; });
     expect(catalogPrepullList(retired).images.map((image) => image.id)).not.toContain("mysql@8");
+    expect(catalogPrepullList(retired).images.map((image) => image.id)).not.toContain("postgres@15");
   });
   it("is checked on the way in: a tag, a hex that is too short, an unknown key or a list over the cap is refused", () => {
     const good = catalogPrepullList(catalog);

@@ -20,6 +20,10 @@ const DIGEST = "a".repeat(64);
 const PROBE_IMAGE = `rovara/worker@sha256:${"b".repeat(64)}`;
 const PASSWORD = ["pw", "Zk3Lm9Qx7TbW"].join("");
 const CONTROL = ["ct", "Vb4Nq8Wz2Kd7"].join("");
+// Rovara local AWS wants three different values of 16 to 64 letters and digits.
+const AWS_PRESIGN = ["ps", "Hq6Rv2Ny8Xc4", "Jt5Mw3Fa"].join("");
+const AWS_CONTROL = ["ct", "Vb4Nq8Wz2Kd7", "Ye9Lp1Sg"].join("");
+const RECEIPT = ["rc", "Gn7Tp5Ue9Lq1", "Bw8Zh4Kd"].join("");
 
 const catalog = ServiceCatalogSchema.parse(JSON.parse(readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url), "utf8")) as unknown);
 function pinned(id: string): CatalogEntry {
@@ -246,13 +250,13 @@ describe("probe, usage and reset", () => {
   it("M4/H1: an http_reset hook gets the control token on its own field, never inside the request, and other kinds get none", async () => {
     const seen: ResetContext[] = [];
     const hook = (context: ResetContext): Promise<void> => { seen.push(context); return Promise.resolve(); };
-    const aws = request("aws", "local-aws@r1", { credentials: { user: "rovara", password: PASSWORD, controlToken: CONTROL }, region: "us-east-1" });
+    const aws = request("aws", "local-aws@r1", { credentials: { user: "rovara", password: AWS_PRESIGN, controlToken: AWS_CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1" });
     const session = await createDockerServiceRunner(fakeDocker().docker).start(input({ helpers: [aws, request("postgres", "postgres@16", { credentials: { user: "rovara", password: PASSWORD, database: "app", controlToken: CONTROL } })], resetHooks: { http_reset: hook, template_db: hook } }));
     await session.reset("aws");
     await session.reset("postgres");
-    expect(seen[0]?.controlToken).toBe(CONTROL);
-    expect(JSON.stringify(seen[0]!.request)).not.toContain(CONTROL);
-    expect(JSON.stringify(seen[0]!.request)).not.toContain(PASSWORD);
+    expect(seen[0]?.controlToken).toBe(AWS_CONTROL);
+    expect(JSON.stringify(seen[0]!.request)).not.toContain(AWS_CONTROL);
+    expect(JSON.stringify(seen[0]!.request)).not.toContain(AWS_PRESIGN);
     expect(seen[1]?.controlToken).toBeUndefined();
     expect(JSON.stringify(seen[1]!.request)).not.toContain(PASSWORD);
     await session.stop();
@@ -301,7 +305,7 @@ describe("probe, usage and reset", () => {
   });
   it("every probe question has its own container name, so one that is slow cannot clash with the next", async () => {
     const fake = fakeDocker();
-    const session = await createDockerServiceRunner(fake.docker).start(input({ helpers: [request("aws", "local-aws@r1", { credentials: { user: "rovara", password: PASSWORD, controlToken: CONTROL }, region: "us-east-1" })] }));
+    const session = await createDockerServiceRunner(fake.docker).start(input({ helpers: [request("aws", "local-aws@r1", { credentials: { user: "rovara", password: AWS_PRESIGN, controlToken: AWS_CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1" })] }));
     const before = fake.calls.length;
     await session.probe("aws");
     await session.probe("aws");

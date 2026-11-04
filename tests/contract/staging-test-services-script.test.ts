@@ -7,6 +7,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { TEST_SERVICES_AWS_USAGE_PROBLEMS, TEST_SERVICES_AWS_USAGE_WORDS } from "@agentx/contracts";
 
 const SCRIPT = new URL("../../scripts/staging-test-services-e2e.sh", import.meta.url).pathname;
 const code = readFileSync(SCRIPT, "utf8").split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
@@ -17,6 +18,7 @@ const DIGEST = "a".repeat(64);
 const TASK = "11111111-2222-4333-8444-555555555555";
 const CANCEL_TASK = "99999999-2222-4333-8444-555555555555";
 const PIN = `sha256:${"b".repeat(64)}`;
+const PIN_AWS = `sha256:${"d".repeat(64)}`;
 const FACTS = { metadataBlocked: true, runWalls: true, ipv6Drops: true, prepull: "ok", prepulled: 1, loggedOut: true, dockerVersion: "25.0.5" };
 const start = (over: Record<string, unknown> = {}) => ({ component: "worker", event: "test-services.report", phase: "worker_start", outcome: "booted", leftoverContainers: 0, leftoverNetworks: 0, runDirEmpty: true, runDirTmpfs: true, workingSandboxPaused: null, sweptContainers: 0, sweptNetworks: 0, bootFacts: FACTS, ...over });
 const end = (over: Record<string, unknown> = {}) => ({ component: "worker", event: "test-services.report", phase: "run_end", outcome: "completed", leftoverContainers: 0, leftoverNetworks: 0, runDirEmpty: true, runDirTmpfs: true, workingSandboxPaused: false, ...over });
@@ -46,9 +48,12 @@ interface Scenario {
   /** What the guard prints for each call (a string), or makes fail (an Error message). */
   account: string;
   digests: string;
+  /** What the guard prints for the local-aws repository (slice 2). */
+  awsDigests?: string;
   guardFailsLogs?: string;
   logsText?: string;
   catalogPin?: string | null;
+  awsCatalogPin?: string | null;
 }
 const scenario = (): Scenario => ({
   routes: {
@@ -129,6 +134,7 @@ function run(s: Scenario, args: string[], env: Record<string, string> = {}) {
     ...(s.guardFailsLogs === undefined ? [] : [`  *"logs filter-log-events"*) echo "${s.guardFailsLogs}" >&2; exit 254 ;;`]),
     `  *"logs filter-log-events"*) python3 "${directory}/logs.py" "$@" ;;`,
     `  *"sts get-caller-identity"*) echo ${s.account} ;;`,
+    `  *"ecr describe-images"*"svc/local-aws"*) echo "${s.awsDigests ?? PIN_AWS}" ;;`,
     `  *"ecr describe-images"*) echo "${s.digests}" ;;`,
     "  *) echo unexpected >&2; exit 9 ;;",
     "esac",
@@ -138,7 +144,7 @@ function run(s: Scenario, args: string[], env: Record<string, string> = {}) {
   writeFileSync(token, "not-a-real-token-value");
   chmodSync(token, 0o600);
   const catalog = join(directory, "catalog.json");
-  writeFileSync(catalog, JSON.stringify({ entries: [{ id: "postgres@16", image: s.catalogPin === null ? { repository: "svc/postgres" } : { repository: "svc/postgres", digest: s.catalogPin ?? PIN } }] }));
+  writeFileSync(catalog, JSON.stringify({ entries: [{ id: "postgres@16", image: s.catalogPin === null ? { repository: "svc/postgres" } : { repository: "svc/postgres", digest: s.catalogPin ?? PIN } }, { id: "local-aws@r1", image: s.awsCatalogPin === null ? { repository: "svc/local-aws" } : { repository: "svc/local-aws", digest: s.awsCatalogPin ?? PIN_AWS } }] }));
   const ran = spawnSync("/bin/bash", [SCRIPT, ...args], {
     encoding: "utf8", timeout: 90_000,
     env: {
@@ -167,7 +173,9 @@ describe("the script uses no SSM and nothing but reads on AWS", () => {
     expect(code).not.toMatch(/docker (ps|network|images|exec)|iptables/u);
     const awsCalls = [...code.matchAll(/\$STAGING"? aws ([a-z0-9-]+ [a-z0-9-]+)/gu)].map((match) => match[1]);
     expect(new Set(awsCalls)).toEqual(new Set(["sts get-caller-identity", "ecr describe-images", "logs filter-log-events"]));
-    expect(code.match(/(?<![\w-])aws(?![\w-])/gu)?.length).toBe(awsCalls.length);
+    // (The embedded Python helper is not shell: its strings are not AWS calls.)
+    const shell = code.replace(/<<'PY'[\s\S]*?\nPY\n/u, "");
+    expect(shell.match(/(?<![\w-])aws(?![\w-])/gu)?.length).toBe(awsCalls.length);
     expect(code).not.toMatch(/--data[^\n]*(token|Bearer)/iu);
   });
 
@@ -450,5 +458,168 @@ describe("the operator-only items stay operator items", () => {
     expect(verdictOf(r.out, "8")).toBe("OPERATOR");
     expect(verdictOf(r.out, "9")).toBe("OPERATOR");
     expect(r.status).toBe(1);
+  });
+});
+
+
+// ---- slice 2: --aws -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("slice 2 (--aws): Postgres plus S3, SQS and DynamoDB on Rovara local AWS", () => {
+  const FLAG_TASK = "77777777-2222-4333-8444-555555555555";
+  const awsDependency = (service: string, over: Record<string, unknown> = {}, backing: Record<string, unknown> = {}) => ({
+    id: `aws-${service}`, name: service, kind: "object_store", family: `aws:${service}`, found: [{ path: "template.yaml", line: 3 }], usedBy: ["working", "task_check"],
+    backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices: [service], region: "us-east-1", resources: { provider: "cloudformation", path: "template.yaml" }, ...backing }, connect: { env: [], hostAliases: [] }, seeds: [], reset: "fresh_per_round", ...over,
+  });
+  const fourDependencies = (change: (list: Array<Record<string, unknown>>) => void = () => undefined) => { const list: Array<Record<string, unknown>> = [dependency, awsDependency("s3"), awsDependency("sqs"), awsDependency("dynamodb")]; change(list); return list; };
+  const AWS_TESTS = [...TESTS.map((name) => `tests/${name}.test.js`), "tests/aws-positive.test.js", "tests/aws-control.test.js"];
+  const awsEntries = (over: Record<string, string> = {}, omit: string[] = []) => AWS_TESTS.filter((file) => !omit.includes(file)).map((file) => ({ id: `readiness:${file}`, label: `node --test ${file}`, source: "project", before: "passed", after: over[file] ?? "passed", output: "" }));
+  const IAM = "AWS permissions (IAM) were not checked: Rovara local AWS does not enforce IAM";
+  const PR_AWS = "Integration tests ran against: Postgres (real), S3, SQS and DynamoDB (Rovara local AWS).";
+  const awsEvidence = (over: { checks?: unknown[]; pr?: string; iam?: boolean } = {}) => JSON.stringify({
+    checks: over.checks ?? awsEntries(),
+    pullRequestLines: [over.pr ?? PR_AWS, ...(over.iam === false ? [] : [`- ${IAM}`])],
+    environment: { blocked: "Blocked by environment: 3 calls to names no dependency answers: example.com (2), example.net (1)" },
+  });
+  const flagView = (over: { entry?: string; flagged?: string | null; status?: string } = {}) => ({
+    task: { taskId: FLAG_TASK, status: over.status ?? "SUCCEEDED", title: "t", project: "flag", createdAt: new Date(Date.now() - 5 * 60_000).toISOString() },
+    checks: [{ id: "readiness:oop", label: "node --test tests/aws-out-of-plan.test.js", source: "project", before: "passed", after: over.entry ?? "passed", output: "" }],
+    notTested: over.flagged === null ? [] : [over.flagged ?? "The code called AWS services that are not in the plan: sns"],
+  });
+  const awsScenario = (change: (s: Scenario) => void = () => undefined): Scenario => {
+    const s = scenario();
+    s.routes[`POST ${BASE}/propose`] = [{ status: 200, body: state(proposal({ environment: { dependencies: fourDependencies() } })) }];
+    s.routes["POST /v1/dev/tasks"] = [{ status: 201, body: { task: { taskId: TASK, status: "STARTING" } } }, { status: 201, body: { task: { taskId: FLAG_TASK, status: "STARTING" } } }];
+    s.routes[`GET /v1/dev/tasks/${FLAG_TASK}`] = [{ status: 200, body: flagView() }];
+    s.events = [start({ bootFacts: { ...FACTS, prepulled: 2 }, sweptContainers: 2, sweptNetworks: 1 }), end(), timed(end({ outcome: "cancelled" }), { afterCancel: true })];
+    change(s);
+    return s;
+  };
+  const ARGS = ["--aws", "--escape-project", "escape", "--aws-flag-project", "flag", "--expect-outcome", "completed"];
+  const verdicts = (r: { out: string }, ids: string[]) => Object.fromEntries(ids.map((id) => [id, verdictOf(r.out, id)]));
+
+  it("drives every slice-2 step and says PASS: the repository pin, four dependencies, the AWS tests by name, the PR line, the IAM line, the control paths, the flagged SNS call", () => {
+    const r = runWith(awsScenario(), awsEvidence(), ARGS);
+    for (const step of ["P0", "P1", "P2", "P3", "PA", "P4", "1", "2", "3", "4", "5", "6", "L3", "A2", "A3", "A4", "7"]) expect(verdictOf(r.out, step), `${step}\n${r.out}\n${r.err}`).toBe("PASS");
+    expect(line(r.out, "5")).toContain(PR_AWS);
+    expect(r.guard).toContain("ecr describe-images --repository-name rovara-catalog/staging/svc/local-aws");
+    expect(r.guard).not.toMatch(/ssm|send-command/u);
+    // The flag task was started on the flag project, after the main task.
+    const starts = r.curl.filter((call) => call.key === "POST /v1/dev/tasks").map((call) => (JSON.parse(call.data!) as { project: string }).project);
+    expect(starts).toEqual(["escape", "flag"]);
+    expect(r.curl.map((call) => call.key)).toContain(`GET /v1/dev/tasks/${FLAG_TASK}`);
+  });
+
+  it("without --aws nothing of slice 2 runs: no AWS step is printed, no local-aws repository is read, and the flag options are refused", () => {
+    const r = runWith(awsScenario(), evidence(), ["--escape-project", "escape", "--expect-outcome", "completed"]);
+    for (const step of ["PA", "A2", "A3", "A4"]) expect(line(r.out, step), step).toBe("");
+    expect(r.guard).not.toContain("local-aws");
+    expect(run(scenario(), ["--aws-flag-project", "flag"]).status).toBe(2);
+    expect(run(scenario(), ["--aws-flag-task", FLAG_TASK]).status).toBe(2);
+    expect(run(scenario(), ["--aws", "--aws-flag-project", "bad name"]).status).toBe(3);
+  });
+
+  it("PA fails when the repository is empty, holds another digest, the guard fails, or the catalog has no pin", () => {
+    const only = ["--aws", "--only", "PA"];
+    expect(verdictOf(run(awsScenario(), only).out, "PA")).toBe("PASS");
+    expect(verdictOf(run(awsScenario((s) => { s.awsDigests = ""; }), only).out, "PA")).toBe("FAIL");
+    expect(verdictOf(run(awsScenario((s) => { s.awsDigests = `sha256:${"e".repeat(64)}`; }), only).out, "PA")).toBe("FAIL");
+    expect(verdictOf(run(awsScenario((s) => { s.awsCatalogPin = null; }), only).out, "PA")).toBe("FAIL");
+  });
+
+  it("P4 needs at least two images pre-pulled in slice 2 (and one is enough without --aws)", () => {
+    const one = awsScenario((s) => { s.events = [start({ bootFacts: { ...FACTS, prepulled: 1 } })]; });
+    expect(verdictOf(run(one, ["--aws", "--only", "P4"]).out, "P4")).toBe("FAIL");
+    expect(run(one, ["--aws", "--only", "P4"]).out).toContain("fewer than 2 images pre-pulled");
+    expect(verdictOf(run(one, ["--only", "P4"]).out, "P4")).toBe("PASS");
+  });
+
+  it("step 1 fails when any of S3, SQS, DynamoDB is missing, is not emulated on local-aws@r1, has no source line or has no resource pointer", () => {
+    const propose = (change: (list: Array<Record<string, unknown>>) => void) => run(awsScenario((s) => { s.routes[`POST ${BASE}/propose`] = [{ status: 200, body: state(proposal({ environment: { dependencies: fourDependencies(change) } })) }]; }), ["--aws", "--only", "1"]);
+    for (const service of ["s3", "sqs", "dynamodb"]) {
+      const missing = propose((list) => { list.splice(list.findIndex((item) => item["id"] === `aws-${service}`), 1); });
+      expect(verdictOf(missing.out, "1"), service).toBe("FAIL");
+      expect(missing.out).toContain(service);
+    }
+    expect(verdictOf(propose((list) => { list[1] = awsDependency("s3", {}, { kind: "local" }); }).out, "1")).toBe("FAIL");
+    expect(verdictOf(propose((list) => { list[2] = awsDependency("sqs", {}, { catalogId: "local-aws@r2" }); }).out, "1")).toBe("FAIL");
+    expect(verdictOf(propose((list) => { list[3] = awsDependency("dynamodb", { found: [] }); }).out, "1")).toBe("FAIL");
+    expect(verdictOf(propose((list) => { list[1] = awsDependency("s3", {}, { resources: undefined }); }).out, "1")).toBe("FAIL");
+    expect(verdictOf(propose(() => undefined).out, "1")).toBe("PASS");
+    // Postgres alone is slice 1's list, and slice 2 refuses it.
+    expect(verdictOf(run(awsScenario((s) => { s.routes[`POST ${BASE}/propose`] = [{ status: 200, body: state(proposal()) }]; }), ["--aws", "--only", "1"]).out, "1")).toBe("FAIL");
+  });
+
+  it("step 4 needs aws-positive as well as the five escape tests; a failed or missing one is a FAIL, and the control test is its own step", () => {
+    const four = (checks: unknown[]) => runWith(awsScenario(), awsEvidence({ checks }), ["--aws", "--task", TASK, "--only", "4,A3", "--expect-outcome", "completed"]);
+    expect(verdictOf(four(awsEntries()).out, "4")).toBe("PASS");
+    expect(verdictOf(four(awsEntries({ "tests/aws-positive.test.js": "failed" })).out, "4")).toBe("FAIL");
+    expect(verdictOf(four(awsEntries({}, ["tests/aws-positive.test.js"])).out, "4")).toBe("FAIL");
+    expect(verdictOf(four(entries()).out, "4")).toBe("FAIL");
+    expect(verdictOf(four(awsEntries({ "tests/aws-control.test.js": "failed" })).out, "A3")).toBe("FAIL");
+    expect(verdictOf(four(awsEntries({}, ["tests/aws-control.test.js"])).out, "A3")).toBe("FAIL");
+    expect(verdictOf(four(awsEntries()).out, "A3")).toBe("PASS");
+    expect(verdictOf(run(awsScenario(), ["--aws", "--only", "A3"]).out, "A3")).toBe("OPERATOR");
+  });
+
+  it("step 5 needs Postgres (real) and all of S3, SQS and DynamoDB (Rovara local AWS) in one line; Postgres alone, a missing service or a different label is a FAIL; A2 needs the IAM line", () => {
+    const five = (over: { pr?: string; iam?: boolean }) => runWith(awsScenario(), awsEvidence(over), ["--aws", "--task", TASK, "--only", "5,A2"]);
+    expect(verdictOf(five({}).out, "5")).toBe("PASS");
+    expect(verdictOf(five({ pr: "Integration tests ran against: Postgres (real), DynamoDB, S3 and SQS (Rovara local AWS)." }).out, "5")).toBe("PASS");
+    for (const pr of ["Integration tests ran against: Postgres (real).", "Integration tests ran against: Postgres (real), S3 and SQS (Rovara local AWS).", "Integration tests ran against: Postgres (real), S3, SQS and DynamoDB (real).", "Integration tests ran against: S3, SQS and DynamoDB (Rovara local AWS)."]) {
+      expect(verdictOf(five({ pr }).out, "5"), pr).toBe("FAIL");
+    }
+    expect(verdictOf(five({}).out, "A2")).toBe("PASS");
+    expect(verdictOf(five({ iam: false }).out, "A2")).toBe("FAIL");
+    expect(verdictOf(run(awsScenario(), ["--aws", "--only", "5,A2"]).out, "5")).toBe("OPERATOR");
+    expect(verdictOf(run(awsScenario(), ["--aws", "--only", "5,A2"]).out, "A2")).toBe("OPERATOR");
+  });
+
+  it("A4: the SNS call is refused and flagged: PASS. No flag project or task: FAIL (it is required). Each way it can fail is a FAIL", () => {
+    const a4 = (change: (s: Scenario) => void, args = ["--aws", "--aws-flag-task", FLAG_TASK, "--only", "A4"]) => run(awsScenario(change), args);
+    expect(verdictOf(a4(() => undefined).out, "A4")).toBe("PASS");
+    // A4 is REQUIRED under --aws: no flag project or task is a FAIL, never an OPERATOR line.
+    expect(verdictOf(run(awsScenario(), ["--aws", "--only", "A4"]).out, "A4")).toBe("FAIL");
+    expect(run(awsScenario(), ["--aws", "--only", "A4"]).out).toMatch(/TSE A4 FAIL.*required under --aws/u);
+    // The refusal test did not pass, or has no entry, or the evidence does not flag the service (or names another).
+    expect(verdictOf(a4((s) => { s.routes[`GET /v1/dev/tasks/${FLAG_TASK}`] = [{ status: 200, body: flagView({ entry: "failed" }) }]; }).out, "A4")).toBe("FAIL");
+    expect(verdictOf(a4((s) => { s.routes[`GET /v1/dev/tasks/${FLAG_TASK}`] = [{ status: 200, body: { ...flagView(), checks: [] } }]; }).out, "A4")).toBe("FAIL");
+    expect(verdictOf(a4((s) => { s.routes[`GET /v1/dev/tasks/${FLAG_TASK}`] = [{ status: 200, body: flagView({ flagged: null }) }]; }).out, "A4")).toBe("FAIL");
+    expect(verdictOf(a4((s) => { s.routes[`GET /v1/dev/tasks/${FLAG_TASK}`] = [{ status: 200, body: flagView({ flagged: "The code called AWS services that are not in the plan: kinesis" }) }]; }).out, "A4")).toBe("FAIL");
+    expect(verdictOf(a4((s) => { s.routes[`GET /v1/dev/tasks/${FLAG_TASK}`] = [{ status: 200, body: flagView({ flagged: "AWS usage could not be checked" }) }]; }).out, "A4")).toBe("FAIL");
+    // A view that never answers, a task start that fails, and a dirty teardown are FAILs.
+    expect(verdictOf(a4((s) => { s.routes[`GET /v1/dev/tasks/${FLAG_TASK}`] = [{ status: 500 }]; }).out, "A4")).toBe("FAIL");
+    expect(verdictOf(a4((s) => { s.routes["POST /v1/dev/tasks"] = [{ status: 500 }]; }, ["--aws", "--aws-flag-project", "flag", "--only", "A4"]).out, "A4")).toBe("FAIL");
+    expect(verdictOf(a4((s) => { s.events = [start({ bootFacts: { ...FACTS, prepulled: 2 } }), end({ leftoverContainers: 1 })]; }).out, "A4")).toBe("FAIL");
+    expect(verdictOf(a4((s) => { s.events = [start({ bootFacts: { ...FACTS, prepulled: 2 } })]; }).out, "A4")).toBe("FAIL");
+  });
+
+  it("steps 4 and 5 FAIL whenever the main task's evidence holds any AWS usage sentence, and the script's list is the contracts' list", () => {
+    expect([...TEST_SERVICES_AWS_USAGE_PROBLEMS].map((problem) => TEST_SERVICES_AWS_USAGE_WORDS[problem]).sort()).toEqual([
+      "AWS usage could not be checked", "AWS usage could not be checked: the code made too many different AWS calls", "The code called AWS operations that Rovara local AWS does not support", "The code called AWS services that are not in the plan",
+    ]);
+    // Each sentence, as the pack writes it (with the service key where there is one), planted in the main evidence next to otherwise perfect checks.
+    for (const sentence of [...Object.values(TEST_SERVICES_AWS_USAGE_WORDS), `${TEST_SERVICES_AWS_USAGE_WORDS.out_of_plan}: sns`]) {
+      const text = JSON.stringify({ checks: awsEntries(), pullRequestLines: [PR_AWS, `- ${IAM}`], notTested: [sentence], environment: { blocked: "Blocked by environment: 3 calls to names no dependency answers: example.com (2), example.net (1)" } });
+      const r = runWith(awsScenario(), text, ["--aws", "--task", TASK, "--only", "4,5", "--expect-outcome", "completed"]);
+      expect(verdictOf(r.out, "4"), sentence).toBe("FAIL");
+      expect(r.out, sentence).toMatch(/TSE 4 FAIL.*the evidence says/u);
+      expect(verdictOf(r.out, "5"), sentence).toBe("FAIL");
+    }
+    // The same evidence without the sentence passes both; and the sentence in the FLAG task's view (where it belongs) does not fail the main task's steps.
+    const clean = runWith(awsScenario(), awsEvidence(), ["--aws", "--task", TASK, "--only", "4,5", "--expect-outcome", "completed"]);
+    expect(verdictOf(clean.out, "4")).toBe("PASS");
+    expect(verdictOf(clean.out, "5")).toBe("PASS");
+    const full = runWith(awsScenario(), awsEvidence(), ARGS);
+    expect(verdictOf(full.out, "4")).toBe("PASS");
+    expect(verdictOf(full.out, "A4")).toBe("PASS");
+    // Without --aws nothing changes: slice 1's evidence with such a sentence still passes step 5's slice-1 check.
+    expect(verdictOf(runWith(scenario(), evidence({ pr: "Integration tests ran against: Postgres (real). AWS usage could not be checked" }), ["--task", TASK, "--only", "5"]).out, "5")).toBe("PASS");
+  });
+
+  it("every slice-2 step is a named step (--only accepts it) and the summary counts them", () => {
+    const r = runWith(awsScenario(), awsEvidence(), ARGS);
+    expect(r.out).toMatch(/TSE SUMMARY pass=17 fail=0 operator=4/u);
+    expect(verdicts(r, ["8", "9"])).toEqual({ "8": "OPERATOR", "9": "OPERATOR" });
+    expect(run(awsScenario(), ["--aws", "--only", "A5"]).status).toBe(2);
   });
 });

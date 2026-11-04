@@ -68,7 +68,7 @@ export const catalogIdName = (catalogId: string): string => catalogId.slice(0, c
 export const ProjectImageIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u);
 export const TestAccountIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u);
 export const AwsServiceIdSchema = z.string().regex(/^[a-z][a-z0-9-]{1,39}$/u);
-export const TestEnvRegionSchema = z.string().regex(/^[a-z]{2}(?:-[a-z]+)+-\d$/u);
+export const TestEnvRegionSchema = z.string().max(32).regex(/^[a-z]{2}(?:-[a-z]+)+-\d$/u);
 export const DnsLabelSchema = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u);
 /** Names no dependency may use as an alias on the run's network: they are the helpers' and the system's own. */
 export const TEST_ENV_RESERVED_ALIASES = ["localhost", "dns", "dns-helper", "proxy", "test-account-proxy", "sinkhole", "rovara", "host", "gateway"] as const;

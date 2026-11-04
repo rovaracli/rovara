@@ -20,7 +20,7 @@ const SLOT = 153;
 const DIGEST = "a".repeat(64);
 const REGISTRY = "registry.example.test/rovara";
 const PROBE_IMAGE = `rovara/worker@sha256:${"b".repeat(64)}`;
-const SECRET = ["pw", "Zk3Lm9Qx7TbW"].join("");
+const SECRET = ["pw", "Zk3Lm9Qx7TbW", "Hd5Pr2Yc"].join("");
 
 const catalogFile = JSON.parse(readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url), "utf8")) as unknown;
 const catalog = ServiceCatalogSchema.parse(catalogFile);
@@ -130,7 +130,8 @@ function fakeClock() {
   return { now: () => at, sleep: (ms: number) => { at += ms; return Promise.resolve(); }, advance: (ms: number) => { at += ms; } };
 }
 
-const CONTROL = ["ct", "Vb4Nq8Wz2Kd7"].join("");
+const CONTROL = ["ct", "Vb4Nq8Wz2Kd7", "Ms6Jf3Xa"].join("");
+const RECEIPT = ["rc", "Gn7Tp5Ue9Lq1", "Bw8Zh4Kd"].join("");
 const CREDENTIALS = { user: "rovara", password: SECRET, database: "app" };
 function request(id: string, entryId: string, extra: Partial<HelperRequest> = {}): HelperRequest {
   const entry = pinned(entryId);
@@ -225,12 +226,13 @@ describe("the arguments of a helper (snapshot)", () => {
     const seen: string[] = [];
     const write = t.files.helper.write.bind(t.files.helper);
     t.files.helper.write = (name, content, mode) => { seen.push(content); return write(name, content, mode); };
-    await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-west-2" })]);
-    expect(seen).toEqual([`QUARKUS_HTTP_HOST=172.30.153.16\nROVARA_AWS_AUTH_PRESIGN_SECRET=${SECRET}\nROVARA_AWS_CONTROL_TOKEN=${CONTROL}\nROVARA_AWS_DEFAULT_REGION=us-west-2\nROVARA_AWS_HOSTNAME=aws\n`]);
-    expect(flag(t.started()[0]!, "--memory")).toEqual(["640m"]);
+    await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-west-2" })]);
+    expect(seen).toEqual([`QUARKUS_HTTP_HOST=172.30.153.16\nROVARA_AWS_BASE_URL=http://aws:4566\nROVARA_AWS_AUTH_PRESIGN_SECRET=${SECRET}\nROVARA_AWS_SERVICES_SQS_RECEIPT_HANDLE_SECRET=${RECEIPT}\nROVARA_AWS_CONTROL_TOKEN=${CONTROL}\nROVARA_AWS_DEFAULT_REGION=us-west-2\nROVARA_AWS_HOSTNAME=aws\n`]);
+    expect(flag(t.started()[0]!, "--memory")).toEqual(["384m"]);
     expect(flag(t.started()[0]!, "--network-alias")).toEqual(["aws"]);
     expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain(SECRET);
     expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain(CONTROL);
+    expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain(RECEIPT);
   });
 });
 
@@ -239,7 +241,7 @@ describe("every catalog entry is started under the profile (4.1.4)", () => {
   for (const entry of entries) {
     it(`${entry.id}`, async () => {
       const t = setup();
-      await t.run([request("dep", entry.id, entry.backing === "emulated" ? { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" } : {})]);
+      await t.run([request("dep", entry.id, entry.backing === "emulated" ? { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1" } : {})]);
       const call = t.started()[0]!;
       for (const forbidden of ["--privileged", "--cap-add", "--publish", "-p", "-P", "--publish-all", "--net", "--pid", "--ipc", "--uts", "--device", "--volumes-from", "--userns", "--add-host", "--entrypoint", "--env", "-e", "--dns", "--link", "--cgroupns", "--security-opt=seccomp=unconfined"]) {
         expect(call, forbidden).not.toContain(forbidden);
@@ -310,7 +312,7 @@ describe("what the repository can and cannot reach", () => {
       await expect(good.run([request("a", "valkey@8")]), probeImage).resolves.toBeDefined();
     }
     const t = setup({}, { probeImage: "rovara/worker --privileged" });
-    await expect(t.run([request("a", "valkey@8"), request("b", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" })])).rejects.toBeInstanceOf(HelperStartError);
+    await expect(t.run([request("a", "valkey@8"), request("b", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1" })])).rejects.toBeInstanceOf(HelperStartError);
     expect(t.calls).toHaveLength(0);
   });
   it("a hostile user, database or password cannot break out of the env file or be an option", async () => {
@@ -413,7 +415,7 @@ describe("small rules", () => {
 describe("review fixes (TS14 review M1-M3, L1-L3)", () => {
   it("M1: a probe that never answers is removed by name when its call times out, and the start fails with the health words", async () => {
     const t = setup({ probeTimesOut: true });
-    const error = await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" })]).then(() => undefined, (failure: unknown) => failure);
+    const error = await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1" })]).then(() => undefined, (failure: unknown) => failure);
     expect((error as HelperStartError).reason).toBe("health_timeout");
     const probes = t.calls.filter((call) => call[0] === "run" && call.includes("--rm"));
     expect(probes.length).toBeGreaterThan(1);
@@ -462,7 +464,7 @@ describe("review fixes (TS14 review M1-M3, L1-L3)", () => {
       const t = setup();
       const write = t.files.helper.write.bind(t.files.helper);
       t.files.helper.write = (name, content, mode) => { seen.push(content); return write(name, content, mode); };
-      await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1", ...(aliases === undefined ? {} : { aliases }) })]);
+      await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1", ...(aliases === undefined ? {} : { aliases }) })]);
     }
     expect(seen[0]).toContain("ROVARA_AWS_HOSTNAME=aws\n");
     expect(seen[1]).toContain("ROVARA_AWS_HOSTNAME=my-aws\n");
@@ -487,7 +489,7 @@ describe("review fixes (TS14 review M1-M3, L1-L3)", () => {
     const original = t.docker.run.bind(t.docker);
     // Every health call takes 300 ms of the fake clock, so the time left is rarely a multiple of the poll.
     t.docker.run = (args, runOptions) => { if (args[0] === "inspect" || (args[0] === "run" && args.includes("--rm"))) clock.advance(300); return original(args, runOptions); };
-    await t.run([{ id: "aws", name: "aws", entry, credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" }]).catch(() => undefined);
+    await t.run([{ id: "aws", name: "aws", entry, credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1" }]).catch(() => undefined);
     const probes = t.timeouts.filter((item) => item.args[0] === "run" && item.args.includes("--rm"));
     expect(probes.length).toBeGreaterThan(1);
     for (const probe of probes) { expect(probe.timeoutMs).toBeGreaterThan(0); expect(probe.timeoutMs).toBeLessThanOrEqual(2_000); }
@@ -515,7 +517,7 @@ describe("review fixes 2 (H1, M1)", () => {
     const seen = new Map<string, string>();
     const write = t.files.helper.write.bind(t.files.helper);
     t.files.helper.write = (name, content, mode) => { seen.set(name, content); return write(name, content, mode); };
-    await t.run([aws({ user: "rovara", password: SECRET, controlToken: CONTROL }), request("postgres", "postgres@16")]);
+    await t.run([aws({ user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }), request("postgres", "postgres@16")]);
     const awsFile = [...seen.entries()].find(([name]) => name.endsWith(".env") && seen.get(name)!.includes("ROVARA_AWS_CONTROL_TOKEN"));
     expect(awsFile?.[1]).toContain(`ROVARA_AWS_CONTROL_TOKEN=${CONTROL}\n`);
     expect(awsFile?.[1]).toContain(`ROVARA_AWS_AUTH_PRESIGN_SECRET=${SECRET}\n`);
@@ -573,7 +575,7 @@ describe("review fixes 2 (H1, M1)", () => {
 describe("the labels (TS-RN-3 rule 1)", () => {
   it("every container the launcher starts, helpers and probes, carries all four labels with this run's values", async () => {
     const t = setup();
-    await t.run([request("postgres", "postgres@16"), request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" })]);
+    await t.run([request("postgres", "postgres@16"), request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1" })]);
     const containerCalls = t.calls.filter((call) => call[0] === "run");
     expect(containerCalls.length).toBeGreaterThanOrEqual(3); // two helpers and at least one probe (the emulator's health is over HTTP)
     for (const call of containerCalls) {
@@ -623,7 +625,7 @@ describe("start order and health (4.0.6)", () => {
   });
   it("an http health check is a hardened probe container on the run network, asking the helper's own address", async () => {
     const t = setup();
-    await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" })]);
+    await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1" })]);
     const probe = t.calls.find((call) => call[0] === "run" && call.includes("--rm"))!;
     expect(probe).toBeDefined();
     expect(flag(probe, "--network")).toEqual([runNetworkName(RUN)]);

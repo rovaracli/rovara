@@ -245,6 +245,7 @@ export * from "./decision-cards.js";
 export * from "./decision-card-tabs.js";
 export * from "./test-environment.js";
 export * from "./service-mocks.js";
+export * from "./test-services-aws-resources.js";
 export * from "./test-services-shared.js";
 export * from "./test-env-dependency.js";
 export * from "./test-services-usage.js";

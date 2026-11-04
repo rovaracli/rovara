@@ -1,10 +1,10 @@
-// Test services, slice 1 (L1): at approval, a `local` dependency whose catalog entry has no pinned digest gets the same fixed "not available yet" words as any backing slice 1 cannot start.
+// Test services, slice 1 (L1) and slice 2 (pre-pull of every pinned local entry): at approval, a `local` dependency whose catalog entry has no pinned digest gets the same fixed "not available yet" words as any backing slice 1 cannot start.
 import { describe, expect, it } from "vitest";
 import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
-import { taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
+import { isPrepulledEntry, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { proposeTestEnvironment, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
-import { pinnedCatalog, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
+import { digestOfId, pinnedCatalog, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
@@ -31,21 +31,41 @@ const propose = (d: TestEnvDeps) => proposeTestEnvironment(d, { orgId: ORG, proj
 
 const bodyFor = (catalogId: string) => TestEnvironmentBodySchema.parse({ ...body(), dependencies: [{ ...postgres, backing: { kind: "local", catalogId, config: {} } }] });
 
-describe("a pinned entry that the worker does not pre-pull (slice 1)", () => {
-  it("is 'not available yet' at approval: postgres@15 and @17 are pinned but not the default, postgres@16 is", async () => {
+describe("a pinned entry and the worker's pre-pull list", () => {
+  it("is startable at approval for every pinned local entry, not only the default: postgres@15, @16 and @17 are all pre-pulled", async () => {
     const source = async () => verifiedCatalog(pinnedCatalog());
-    for (const catalogId of ["postgres@15", "postgres@17"]) {
-      await expect(proposeTestEnvironment(deps(source), { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: bodyFor(catalogId) }), catalogId).rejects.toThrow(/not available yet/u);
+    for (const catalogId of ["postgres@15", "postgres@16", "postgres@17"]) {
+      await expect(proposeTestEnvironment(deps(source), { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: bodyFor(catalogId) }), catalogId).resolves.toBeDefined();
     }
-    await expect(proposeTestEnvironment(deps(source), { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: bodyFor("postgres@16") })).resolves.toBeDefined();
   });
-  it("is refused at plan time in the same words (an environment approved before this rule still cannot start it)", () => {
+  it("plans every pinned local entry, and a retired or not-yet-pinned one is refused with the fixed words", () => {
     const catalog = verifiedCatalog(pinnedCatalog());
-    for (const [catalogId, ok] of [["postgres@15", false], ["postgres@17", false], ["postgres@16", true]] as const) {
-      const result = taskDependencyPlansOf({ body: bodyFor(catalogId), catalog, edition: "public", projectId: PROJECT });
-      expect(result.ok, catalogId).toBe(ok);
-      if (!result.ok) expect(result.reason).toBe("not_available_yet");
+    for (const catalogId of ["postgres@15", "postgres@16", "postgres@17"]) {
+      expect(taskDependencyPlansOf({ body: bodyFor(catalogId), catalog, edition: "public", projectId: PROJECT }).ok, catalogId).toBe(true);
     }
+    const retired = verifiedCatalog(pinnedCatalog((entries) => { entries.find((entry) => entry["id"] === "postgres@15")!["status"] = "retired"; }));
+    const result = taskDependencyPlansOf({ body: bodyFor("postgres@15"), catalog: retired, edition: "public", projectId: PROJECT });
+    expect(result.ok).toBe(false);
+  });
+  it("keeps refusing what the worker would not have pulled: an entry missing from the pre-pull list is 'not available yet' at approval and at plan time", async () => {
+    // A catalog with more images than a worker pre-pulls has no list at all (the schema's cap), so nothing in it is pre-pulled, and no error escapes.
+    const many = pinnedCatalog((entries) => {
+      const template = entries.find((entry) => entry["id"] === "redis@7")!;
+      for (let index = 0; index < 20; index += 1) {
+        const copy = structuredClone(template);
+        copy["id"] = `redis@9${String(index)}`;
+        copy["version"] = `9${String(index)}`;
+        const image = copy["image"] as { digest?: string };
+        image.digest = digestOfId(copy["id"] as string);
+        entries.push(copy);
+      }
+    });
+    const catalog = verifiedCatalog(many);
+    expect(isPrepulledEntry(catalog, "postgres@16")).toBe(false);
+    await expect(proposeTestEnvironment(deps(async () => catalog), { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: bodyFor("postgres@16") })).rejects.toThrow(/not available yet/u);
+    const result = taskDependencyPlansOf({ body: bodyFor("postgres@16"), catalog, edition: "public", projectId: PROJECT });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("not_available_yet");
   });
 });
 
