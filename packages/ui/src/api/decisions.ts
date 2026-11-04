@@ -7,6 +7,7 @@ import {
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
+import { exactAnswer } from "./without-request-id.js";
 import { isConfirmUrl } from "../text/links.js";
 
 type View = ReturnType<typeof DecisionCardsViewReaderSchema.parse>;
@@ -58,7 +59,7 @@ export function createDecisionsApi(host: AppHost) {
   ? { kind: "needs_confirmation", confirmUrl: isConfirmUrl(value.confirmUrl, host.origin) ? value.confirmUrl : undefined, merging: value.merging }
   : { kind: "decided", outcome: value.outcome };
  return {
-  async evidenceOpened(decision: ReadDecision, tab?: DecisionTabId) { return done(await api.send("POST", evidencePath(decision.card, tab), { requestId: crypto.randomUUID(), shownDigest: decision.digest }, DecisionEvidenceOpenedAnswerSchema)); },
+  async evidenceOpened(decision: ReadDecision, tab?: DecisionTabId) { return done(await api.send("POST", evidencePath(decision.card, tab), { requestId: crypto.randomUUID(), shownDigest: decision.digest }, exactAnswer(DecisionEvidenceOpenedAnswerSchema))); },
   async approve(decision: ReadDecision, tab?: DecisionTabId, reason?: string): Promise<DecisionResult> {
    const path = mayApproveHere(decision.card) ? decisionActionPath(decision.card, "approve") : undefined;
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");

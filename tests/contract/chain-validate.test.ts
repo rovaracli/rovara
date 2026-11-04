@@ -382,7 +382,7 @@ describe("validateChainForPublish", () => {
       const ctx = setup();
       const helper = await ctx.create("Helper");
       await ctx.publish(helper.agentId);
-      await ctx.store.archive(ORG_A, helper.agentId, ALICE);
+      await ctx.store.archive(ORG_A, helper.agentId, ALICE, undefined, { actor: fixtureActor(ctx.store, ORG_A, ALICE) });
       expect(text((await ctx.validate(onAgent(helper.agentId))).problems)).toEqual(["steps.0.agent: Helper is archived"]);
       expect(text((await ctx.validate(onAgent(helper.agentId, 1))).problems)).toEqual(["steps.0.agent: Helper is archived"]);
     });
@@ -418,7 +418,7 @@ describe("validateChainForPublish", () => {
       await ctx.publish(base.agentId);
       const child = await ctx.create("Child", { instructions: "x" }, { extends: base.agentId });
       await ctx.publish(child.agentId);
-      await ctx.store.archive(ORG_A, base.agentId, ALICE);
+      await ctx.store.archive(ORG_A, base.agentId, ALICE, undefined, { actor: fixtureActor(ctx.store, ORG_A, ALICE) });
       expect(text((await ctx.validate(onAgent(child.agentId))).problems)).toEqual(["steps.0.agent: Child builds on Base, which is archived. Ask Child's owner to pick another base."]);
     });
 

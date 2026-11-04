@@ -696,7 +696,7 @@ export const handler = createAwsBrokerHandler({
       }
     : {}),
   async deleteEc2Session(workspaceId) {
-    await ec2Sessions.deleteSession(workspaceId);
+    await ec2Sessions().deleteSession(workspaceId);
   },
   // Spec 043: read per request, so installing the eval stack or a new runner image needs no broker release.
   ...(process.env.SWEBENCH_SETTINGS_PREFIX

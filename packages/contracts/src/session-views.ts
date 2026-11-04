@@ -65,7 +65,9 @@ export const SessionViewSchema = z
     followers: CountSchema,
     viewingNow: z.array(SessionOwnerSchema).max(PRESENCE_VIEWERS_MAX),
     // `mayMerge`: set (true) only where the level alone would hide Merge from someone the server lets press it: a task's effective project maintainer or an org admin who reads it at `view`.
-    you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length), mayMerge: z.literal(true).optional() }).strict(),
+    you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length), mayMerge: z.literal(true).optional(),
+      /** Live buttons: `ask` / `fix` are present (true) only when the install's switch is on AND the reader may use the feature on this session (the routes' own gate). Both absent: the key is left out. */
+      live: z.object({ ask: z.literal(true).optional(), fix: z.literal(true).optional() }).strict().optional() }).strict(),
     link: LinkSchema,
     bindings: z.array(z.object({ kind: z.enum(["slack_thread", "linear_issue", "tracker_item"]), url: LinkSchema }).strict()).max(3),
     legs: z.array(SessionLegSchema).max(SESSION_LEGS_MAX),
@@ -100,6 +102,19 @@ export const SessionResponseSchema = z.object({
 }).strict();
 
 export const SessionResponseReaderSchema = forwardReader(SessionResponseSchema);
+
+/**
+ * What a not-closed close answer's `message` says in the cases the page acts on (the broker writes them, the web page compares with them, so a change of wording moves both): `checking` while the worker looks
+ * for unpublished work, `computePending` once it found none and only the workspace's release is left, `discardPending` the same after a discard was asked for, and `checkFailed` / `stillOpen` when the check
+ * ended without closing the task and only a NEW request id starts it again (the old id keeps answering with the old, ended check).
+ */
+export const CLOSE_MESSAGES = {
+  checking: "AgentX is checking the task's workspace for unpublished work before closing it; check back with agentx_get_task",
+  computePending: "the workspace has no unpublished work, but its compute is not removed yet; try agentx_close_task again shortly",
+  discardPending: "AgentX recorded your request to discard unpublished work, but could not finish releasing the workspace; try agentx_close_task again shortly",
+  checkFailed: "the check for unpublished work did not finish; try agentx_close_task again with a new request_id",
+  stillOpen: "the task is still open; try agentx_close_task again with a new request_id",
+} as const;
 
 /**
  * `POST /v1/app/sessions/{id}/close`: the task's own close (the one the Slack button and the AI-tool close run), as the page needs it. `closed: false` with `unpublished` means the workspace holds work that

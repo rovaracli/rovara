@@ -51,6 +51,8 @@
   "packages/contracts/src/knowledge-skills.ts",
   "packages/contracts/src/learned-context.ts",
   "packages/contracts/src/lesson-citation.ts",
+  "packages/contracts/src/live-ask.ts",
+  "packages/contracts/src/live-diagnosis.ts",
   "packages/contracts/src/live-interaction.ts",
   "packages/contracts/src/loaded-knowledge.ts",
   "packages/contracts/src/member-removal-web.ts",

@@ -215,6 +215,8 @@ export function testServicesConfigFromEnvironment(
   const runDirectoryParent = environment[TEST_SERVICES_RUN_DIR_ENVIRONMENT];
   const probeImage = environment[TASK_SANDBOX_IMAGE_ENVIRONMENT];
   if (!registry || !catalogEnv || !runDirectoryParent || !probeImage) return undefined;
+  // Root withheld test services on this host (boot-stage2.sh writes `all`, also when the IPv6 wall failed and the images ARE here): no configuration, so no entry point can start a run, whatever the plan.
+  if (notPulledRepositories(environment) === "all") return undefined;
   const edition = environment[TEST_SERVICES_EDITION_ENVIRONMENT] === "enterprise" ? "enterprise" : "public";
   const mem = Number(environment[TEST_SERVICES_MAX_MEM_ENVIRONMENT] ?? DEFAULT_MAX_MEM_MIB);
   return {

@@ -35,10 +35,10 @@ import { inertPlanLine } from "../../rovara-code/inert-text.js";
 import { attributionForPublication } from "../../wiring/enterprise-identity.js";
 import { recomputeRisk, type PullRequestBodyContext } from "../../rovara-code/pull-request-body.js";
 import { evidenceRiskOfTask, securityCheckIdsOf } from "./evidence-risk-input.js";
-import { breakLinearKeys, linearIssueKeyOfTask } from "../../rovara-code/linear-close.js";
+import { linearIssueKeyOfTask } from "../../rovara-code/linear-close.js";
 import { loadTestProofLines } from "../../developer/test-proof-lines.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
-import { creatorGuard, get, inertTaskTitle, iso, parse, partyOfTaskActor, putNew, stoppedByLoweredAutonomy, taskPageUrl, turnTable } from "./common.js";
+import { creatorGuard, get, iso, parse, partyOfTaskActor, putNew, stoppedByLoweredAutonomy, taskPageUrl, turnTable } from "./common.js";
 import { accessFence, authorizeTaskAction, systemTaskAccess } from "./access.js";
 import { resumeParkedTaskDispatch } from "./access-resume.js";
 import { candidateChangedFiles, taskView } from "./task-view.js";
@@ -47,7 +47,7 @@ import { actionableWorkspace, busyOrClosing, extraItemsCancelled } from "./task-
 import { specPublicationGate } from "./spec-wiring.js";
 import { withSpecLink } from "../../spec/link.js";
 import { loadTestingView } from "./testing-view.js";
-import { type WorkflowPublicationAuthority, approvedPlanForPullRequest, proofContextOfTask, workflowPullRequestBody } from "./pull-request-body.js";
+import { type WorkflowPublicationAuthority, approvedPlanForPullRequest, proofContextOfTask, pullRequestTitle, workflowPullRequestBody } from "./pull-request-body.js";
 import { recordPublishedCandidateOutcomes } from "./decide.js";
 
 type LoadedPublicationProject = NonNullable<Awaited<ReturnType<DeveloperTaskActions["latestProject"]>>>;
@@ -248,7 +248,7 @@ export async function startTaskWorkflowPublicationFromSystem(
     : { attribution: resolvedAttribution.attribution };
   const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}, evidenceRisk) : workflow;
   // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.
-  const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${rovaraV2 ? breakLinearKeys(inertTaskTitle(task.title)) : inertTaskTitle(task.title)}`.slice(0, 256);
+  const title = pullRequestTitle(task.title, rovaraV2);
   const body = withSpecLink(workflowPullRequestBody(task, judged, approvedPlan, origin.taskPageUrl, bodyContext, await loadTestProofLines(deps.actions, task, workflow.candidate?.digest, inertPlanLine)), spec.linkLine);
   const receivedAt = iso(deps);
   const unchanged = {

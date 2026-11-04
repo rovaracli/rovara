@@ -1,4 +1,5 @@
 import { fixtureActor } from "../support/money-authority.js";
+import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -70,6 +71,8 @@ async function setup(options: { builtins?: ConstructorParameters<typeof AgentSto
     guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAutonomy: "run" },
   });
   members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
+  // The write holds a new accountable maintainer to a real grant row in its own transaction, as the project roles read it.
+  h.db.set({ pk: projectMemberKey(TEST_ORG, MAX.developerId, "web").pk, sk: projectMemberKey(TEST_ORG, MAX.developerId, "web").sk, entityType: "MEMBERSHIP", role: "developer", projectRole: "maintainer" });
   members.grant(TEST_ORG, "web", CARL.developerId, "contributor");
   members.grant(TEST_ORG, "web", VIV.developerId, "viewer");
   // Beside the broker's own store: the same table, so a test can seed a published version without going through the routes.

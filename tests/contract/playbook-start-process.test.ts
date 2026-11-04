@@ -145,7 +145,7 @@ describe("starting work from the app", () => {
     const t = await setup();
     const agentId = await t.processLayer();
     t.point(agentId);
-    await t.store.archive(TEST_ORG, agentId, MAYA.developerId);
+    await t.store.archive(TEST_ORG, agentId, MAYA.developerId, undefined, { actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId) });
     const reply = await t.send();
     expect(reply.status).toBe(400);
     expect(reply.body.error).toMatchObject({ code: "PROCESS_UNAVAILABLE", message: MESSAGE });
@@ -182,7 +182,7 @@ describe("starting work from Slack", () => {
     const t = await setup();
     const agentId = await t.processLayer();
     t.point(agentId);
-    await t.store.archive(TEST_ORG, agentId, MAYA.developerId);
+    await t.store.archive(TEST_ORG, agentId, MAYA.developerId, undefined, { actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId) });
     const owner = "U0SLACKPROC2";
     t.slackOwner(owner);
     const started = await t.slackStart(owner, "1695500000.000932");

@@ -4,7 +4,7 @@
 //   high   one link, "Open to decide": the full page and its fresh sign-in. No approve and no reject here.
 // A pressed button carries only the card's id; the server re-checks everything (routes.ts), so a forged or stale press is refused there. Every word that came from a person, a plan or a repository
 // was already flattened by the projector; here it is also escaped for Slack (a mention, a link, a broadcast).
-import type { DecisionCard, DecisionTab } from "@agentx/contracts";
+import { hideEmailAddresses, type DecisionCard, type DecisionTab } from "@agentx/contracts";
 
 export const DECISION_SLACK_APPROVE_ACTION = "rovara_decision_approve";
 export const DECISION_SLACK_REJECT_ACTION = "rovara_decision_reject";
@@ -14,7 +14,7 @@ export const DECISION_SLACK_ACTION_IDS: ReadonlySet<string> = new Set([DECISION_
 export interface SlackCardMessage { text: string; blocks: Array<Record<string, unknown>> }
 
 /** Escapes what Slack would read as markup. */
-export const escapeSlack = (value: string): string => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+export const escapeSlack = (value: string): string => hideEmailAddresses(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const SECTION_MAX = 2_800;
 const clip = (value: string): string => [...value].slice(0, SECTION_MAX).join("");
 

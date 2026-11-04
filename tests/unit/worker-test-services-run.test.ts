@@ -719,6 +719,28 @@ describe("no secret reaches a log, an artifact, an argument or an error", () => 
   });
 });
 
+describe("a worker whose boot withheld test services (AGENTX_TEST_SERVICES_NOT_PULLED=all: the IPv6 wall failed, the images are on the host) refuses every plan", () => {
+  const complete = { AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara" };
+  it("has no configuration at all, so no entry point can start a run (positive control: the same environment without the note has one)", () => {
+    expect(testServicesConfigFromEnvironment(complete, fakeServicesDocker({}).docker)).toBeDefined();
+    expect(testServicesConfigFromEnvironment({ ...complete, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres" }, fakeServicesDocker({}).docker)).toBeDefined();
+    for (const note of ["all", "svc/Upper", "svc/a,"]) expect(testServicesConfigFromEnvironment({ ...complete, AGENTX_TEST_SERVICES_NOT_PULLED: note }, fakeServicesDocker({}).docker), note).toBeUndefined();
+  });
+  it("the task path refuses with the fixed sentence and makes no docker call and no file, when the configuration comes from the environment", async () => {
+    const h = await harness();
+    for (const [name, value] of Object.entries({ ...complete, AGENTX_TEST_SERVICES_NOT_PULLED: "all" })) vi.stubEnv(name, value);
+    try {
+      const before = h.fake.calls.length;
+      await expect(startTaskTestServices({ plan: { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [dependency()] }, mode: "CHECKS", sandbox: h.sandbox, devcontainer: false, nightly: false, repositoryPaths: [join(h.root, "app")], operationId: OPERATION, rootPath: h.root, artifactSink: () => Promise.resolve() }))
+        .rejects.toThrow("This worker is not set up to run test services");
+      expect(h.fake.calls.length).toBe(before);
+      expect(await readdir(h.runParent)).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe("with tx off, or a plan with no dependencies, nothing happens", () => {
   const plan = (dependencies?: TaskDependencyPlan[]): TestEnvTaskPlan => ({
     revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], ...(dependencies === undefined ? {} : { dependencies }),

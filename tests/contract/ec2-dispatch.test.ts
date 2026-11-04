@@ -530,6 +530,27 @@ describe("ec2-ebs delivery", () => {
       expect(await delivery({ workerFeatures: async () => base }).deliver(without, without.invocation)).toBe("DELIVERED");
     });
 
+    it("the feature gate also runs for a preparation that carries ONLY testServices and a task that carries ONLY testEnvironment (no other carried field skips the early return)", async () => {
+      const dependency = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), config: {}, aliases: ["postgres"], connect: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], seeds: [], reset: "fresh_per_round" };
+      const prepare = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant", testServices: { dependencies: [dependency], testChecks: [1] } } } as unknown as WorkerInvocation };
+      const older = delivery({ workerFeatures: async () => ["task.workflowMode"] });
+      await expect(older.deliver(prepare, prepare.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => ["task.workflowMode", "task.testServices.v1"] });
+      expect(await capable.deliver(prepare, prepare.invocation)).toBe("DELIVERED");
+      expect((postedPayload(capable.post).testServices as { dependencies: Array<{ id: string }> }).dependencies.map((entry) => entry.id)).toEqual(["postgres"]);
+      // A task whose only extra field is the environment's plan: refused without task.testEnvironment.v1, delivered with it (and with task.testServices.v1 when the plan starts dependencies).
+      const plan = { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [dependency] };
+      const task = taskRecord({ testEnvironment: plan });
+      for (const features of [[], ["task.testEnvironment.v1"]]) {
+        const refused = delivery({ workerFeatures: async () => features });
+        await expect(refused.deliver(task, task.invocation), features.join()).rejects.toThrow(/out of date|upgrade/iu);
+        expect(refused.post).not.toHaveBeenCalled();
+      }
+      const taskCapable = delivery({ workerFeatures: async () => ["task.testEnvironment.v1", "task.testServices.v1"] });
+      expect(await taskCapable.deliver(task, task.invocation)).toBe("DELIVERED");
+    });
+
     it("refuses a plan that starts Rovara local AWS to a worker that does not list task.testServices.aws.v1, and sends it to one that does (slice 2)", async () => {
       const postgres = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), config: {}, aliases: ["postgres"], connect: [], seeds: [], reset: "fresh_per_round" };
       const s3 = { id: "aws-s3", name: "S3", kind: "object_store", family: "aws:s3", backing: "emulated", catalogId: "local-aws@r1", repository: "svc/local-aws", digest: "c".repeat(64), config: {}, aliases: ["aws"], connect: [], seeds: [], reset: "fresh_per_round", aws: { services: ["s3"], region: "us-east-1" } };
