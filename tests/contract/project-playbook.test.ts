@@ -1,5 +1,6 @@
 // "How we work" (H2): a project's playbook document says which process the project runs. The built-in Rovara Code is the default; a project may point at its own process layer
 // (a project-owned custom agent marked `purpose: "process"`). The PUT is a maintainer's, under the revision they read, and records its audit event in the same transaction.
+import { fixtureActor } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -40,7 +41,7 @@ async function makeAgent(w: MergeWorld, options: { project?: string; process?: b
     ...(options.process === false ? {} : { purpose: "process" as const }),
   });
   if (options.publish !== false) await w.store.publish({ orgId: ORG_A, agentId: agent.agentId, expectedDraftRevision: agent.draftRevision, digest: "a".repeat(64), by: MAX });
-  if (options.archive === true) await w.store.archive(ORG_A, agent.agentId, MAX);
+  if (options.archive === true) await w.store.archive(ORG_A, agent.agentId, MAX, undefined, { actor: fixtureActor(w.store, ORG_A, MAX) });
   return agent.agentId;
 }
 const processBody = (agentId: string) => ({ defaultProcess: { kind: "project_process", agentId } });
@@ -228,7 +229,7 @@ describe("projectProcessOf", () => {
     const w = mergeWorld();
     const agentId = await makeAgent(w);
     await put(w, MAX, processBody(agentId));
-    await w.store.archive(ORG_A, agentId, MAX);
+    await w.store.archive(ORG_A, agentId, MAX, undefined, { actor: fixtureActor(w.store, ORG_A, MAX) });
     expect(await failure(projectProcessOf(readerOf(w), ORG_A, "web"))).toMatchObject({ code: "PROCESS_UNAVAILABLE", status: 400 });
   });
 

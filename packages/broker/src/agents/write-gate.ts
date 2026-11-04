@@ -353,7 +353,7 @@ export async function decideWrite(deps: ApprovalDependencies, input: DecideWrite
     agent: { agentId: input.agentId, name: shownText(input.agentName, 80) },
     attempts: 0, createdAt, expiresAt: new Date(now + WRITE_APPROVAL_TTL_MS).toISOString(),
   };
-  const text = capText(`${shownText(input.agentName, 80)} wants to ${lowerFirst(summary)}. This needs approval from ${ownerName} or a project maintainer.`, DEVELOPER_EVENT_TEXT_MAX).text;
+  const text = capText(`${shownText(input.agentName, 80)} wants to ${lowerFirst(shownText(summary, 300))}. This needs approval from ${ownerName} or a project maintainer.`, DEVELOPER_EVENT_TEXT_MAX).text;
   const event = { Put: { TableName: deps.tableName, Item: { ...approvalTaskEventKey(input.taskId, createdAt, approvalId), entityType: "TASK_EVENT", orgId: input.orgId, kind: "status", text, at: createdAt } } };
   const claim = input.claimRequest?.(approvalId);
   const extraItems = [event, ...(claim === undefined ? [] : [claim]), ...(input.operationGuard === undefined ? [] : [input.operationGuard])];

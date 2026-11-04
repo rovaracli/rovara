@@ -370,7 +370,8 @@ async function setArchived(deps: ChainRouteDependencies, caller: AgentCaller, ch
   if (replay !== undefined) return waitingReplay(replay.result) ?? { chain: chainView(replay.result as ChainRecord, access) };
   // An archived chain starts nothing, so its triggers go off with it. Unarchiving turns none back on: a person does that.
   if (archive) {
-    const archived = await deps.chains.archive(chain.orgId, chain.chainId, caller.developerId, mark);
+    // Archiving holds the person to the access this route checked, at the commit, as unarchiving does.
+    const archived = await deps.chains.archive(chain.orgId, chain.chainId, caller.developerId, mark, { actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: chain });
     await deps.chainTriggers?.disableTriggersForTarget(chain.orgId, { kind: "chain", chainId: chain.chainId });
     return { chain: chainView(archived, access) };
   }
@@ -416,7 +417,8 @@ async function putOwner(deps: ChainRouteDependencies, caller: AgentCaller, chain
   const moved = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, change, mark,
     (options) => deps.chains.setOwner(chain.orgId, chain.chainId, owner, caller.developerId, accountable, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: chain }));
   if (moved instanceof StatusReply) return moved;
-  return { chain: chainView(moved, access) };
+  // A member's chain runs its triggers as its owner, so the triggers are looked at again for the new one: those they can't run are turned off, and the answer says which (C98).
+  return { chain: chainView(moved, access), disabledTriggers: await recheck(deps, chain) };
 }
 
 /** `PUT /v1/app/chains/{id}/accountable` [manage]: another maintainer answers for a project's chain; its budget moves to their total, which the cap holds. */

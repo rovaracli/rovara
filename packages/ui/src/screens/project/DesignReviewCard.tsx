@@ -33,6 +33,8 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
  if (playbook.isPending) return <Card className="rv-hww-card" aria-label="Design review" id={id}><Skeleton label="Loading the design review setting" /></Card>;
  // A server that has no playbook route for this project shows no card; any other failure is said plainly (a note, not an alert: the rest of the page is fine) with a way to read it again.
  if (playbook.error instanceof ApiError && playbook.error.status === 404) return null;
+ // The broker answers 200 with no `designReview` where the stage is off for this project (and always sends it where the stage is on): no card there.
+ if (playbook.data !== undefined && playbook.data.playbook.designReview === undefined) return null;
  if (playbook.isError || playbook.data === undefined) return <Card className="rv-hww-card" aria-labelledby={id + "-title"} id={id}><h3 id={id + "-title"} tabIndex={-1}>Design review</h3><p role="status"><VisibleText text={failureText(playbook.error, "Couldn't load the design review setting.")} /></p><Button onClick={() => { void playbook.refetch(); }}>Reload design review settings</Button></Card>;
  const response = playbook.data, setting = designReviewSettingOf(response.playbook), locked = lockedSet(response.designReviewLocked), groups = response.designReviewGroups === true;
  const names = new Map((members.data?.members ?? []).map(member => [member.developerId, member.name]));

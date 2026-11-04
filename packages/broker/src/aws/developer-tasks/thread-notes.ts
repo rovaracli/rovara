@@ -7,6 +7,7 @@ import {
   SlackThreadSchema,
   SlackUserIdSchema,
   agentXError,
+  hideEmailAddresses,
   redactText,
   type WorkflowSnapshot,
   type PlanDocument,
@@ -65,8 +66,9 @@ export async function planWhyEntries(
   const notes = through === undefined ? []
     : (await readWorkflowThreadNotes(deps, task.taskId, task.threadNotesFedFrom)).filter((note) => note.receivedAt <= through);
   return [
-    { text: task.requestText, author: requester },
-    ...notes.slice(-WHY_NOTES_MAX).map((note) => ({ text: cutText(note.text, WHY_NOTE_MAX_CHARS), author: note.isOwner ? owner : "a teammate" })),
+    // S3 (C59): the plan is read by other people, so the requester's own words and the replies they quote carry no email address.
+    { text: hideEmailAddresses(task.requestText), author: requester },
+    ...notes.slice(-WHY_NOTES_MAX).map((note) => ({ text: hideEmailAddresses(cutText(note.text, WHY_NOTE_MAX_CHARS)), author: note.isOwner ? owner : "a teammate" })),
   ];
 }
 

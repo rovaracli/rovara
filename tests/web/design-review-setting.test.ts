@@ -13,10 +13,10 @@ import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 
 const PERSON = "b".repeat(64);
-interface World { setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
+interface World { setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown; off?: boolean }
 function setup(world: World = {}, canEdit = true, filter: "all" | "changed" | "locked" = "all") {
  const state = { ...world }, puts: Array<{ path: string; body: Record<string, unknown> }> = [];
- const answer = () => ({ playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.setting === undefined ? {} : { designReview: state.setting }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
+ const answer = () => ({ playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.off === true ? {} : { designReview: state.setting ?? DESIGN_REVIEW_DEFAULT_SETTING }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
  const f = fakeHost(async request => {
   if (request.path.endsWith("/playbook") && request.method === "GET") return { status: 200, body: answer() };
   if (request.path.endsWith("/playbook") && request.method === "PUT") { const body = request.body as Record<string, unknown>;puts.push({ path: request.path, body });state.setting = body.designReview as DesignReviewSetting;state.revision = (state.revision ?? 4) + 1;return { status: 200, body: answer() }; }
@@ -114,6 +114,15 @@ it("says plainly, without an alert, when the setting cannot be read, and shows n
  const missing = renderUi(h(AppHostProvider, { host: fakeHost(async () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "No." } } })).host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(DesignReviewCard, { project: "payments", canEdit: true, filter: "all" }) }) }));
  await waitFor(() => expect(missing.container.querySelector("section")).toBeNull());
  missing.unmount();
+});
+
+it("shows no card where design review is off for the project: the playbook answer has no designReview field (QA-04)", async () => {
+ const f = setup({ off: true });
+ await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.method === "GET" && request.path.endsWith("/playbook"))).toBe(true));
+ await waitFor(() => expect(f.container.querySelector("section, [id=hww-stage-design-review]")).toBeNull());
+ expect(screen.queryByText("Design review")).toBeNull();
+ expect(screen.queryByLabelText("When it runs")).toBeNull();
+ f.close();
 });
 
 it("gives a person who cannot edit the card and no editor", async () => {
