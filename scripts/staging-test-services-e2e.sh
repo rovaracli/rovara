@@ -41,9 +41,22 @@
 # leaves a receipt) and `npm run setup` (a detached heartbeat that LISTENS on the working sandbox's address and ticks every 200 ms), then to add one README line. The sealed round's tests then assert the plant is absent from the
 # round's brand-new Postgres, the heartbeat was alive and is frozen, and the working sandbox cannot be reached. Only an IMPLEMENT task has a working-phase Postgres, so the plant needs a task, not a CHECKS-only run.
 #
+# SLICE 2 (--aws): the same script, with Rovara local AWS (S3, SQS and DynamoDB) on top of Postgres. WRITTEN, NOT RUN. It needs the slice-2 steps first (the emulator image built on GitHub, `catalog-build --entries local-aws@r1`
+# on staging with the owner's OK, the pin committed, a worker image rebuild and upgrade: .superpowers/sdd/s2-integration/report.md). The project is the escape project with its `aws/` overlay copied over it (see the fixture's README).
+#   PA     the catalog repository rovara-catalog/<env>/svc/local-aws holds the committed pin of local-aws@r1.
+#   1      (changed) the proposal also lists S3, SQS and DynamoDB as `emulated` on local-aws@r1, each with its source line and the template as its resource pointer.
+#   4      (changed) the five escape tests AND aws-positive (the declared bucket, queue and table exist: the worker seeded the project's template) have a passed check entry.
+#   5      (changed) the PR line reads `Integration tests ran against: Postgres (real), <S3, SQS and DynamoDB> (Rovara local AWS).` (the order follows the proposal's), with all three names.
+#   A2     the IAM line: `AWS permissions (IAM) were not checked: Rovara local AWS does not enforce IAM`.
+#   A3     aws-control: the emulator's /_rovara/* control paths, tried from the sealed round with no token and a made-up one, were refused (403 or 401): a passed check entry.
+#   A4     --aws-flag-project <name> (or --aws-flag-task <id>): a task whose code calls SNS at the emulator: the emulator refused (the aws-out-of-plan check passed) AND the evidence flags
+#          `The code called AWS services that are not in the plan` naming sns; the worker's run_end for that task is clean. Without either, an OPERATOR line.
+#   P4     (changed) the worker's pre-pull count is at least 2 (Postgres and local-aws).
+# Everything else (2, 3, 6, L3, 7, 7c, 7k) is the slice-1 check, on the same project.
+#
 # USAGE  (from anywhere; the repository's catalog.json is read relative to this script)
 #   STAGING_E2E_OWNER_GO=yes ROVARA_STAGING_URL=https://<staging api> ROVARA_STAGING_HOST_REGEX='^api\.staging\.example\.com$' ROVARA_STAGING_TOKEN_FILE=$HOME/.rovara-staging-token ROVARA_STAGING_PROJECT=<project with the dependency> \
-#     scripts/staging-test-services-e2e.sh [--escape-project <name>] [--task <id>] [--evidence <file>] [--expect-outcome <o>] [--cancel-test] [--expect-swept] [--env <name>] [--since <epoch ms>] [--worker-window-hours <n>] [--only <id>[,<id>...]]
+#     scripts/staging-test-services-e2e.sh [--aws [--aws-flag-project <name>] [--aws-flag-task <id>]] [--escape-project <name>] [--task <id>] [--evidence <file>] [--expect-outcome <o>] [--cancel-test] [--expect-swept] [--env <name>] [--since <epoch ms>] [--worker-window-hours <n>] [--only <id>[,<id>...]]
 #   --since is where the run_end window starts (default: when the script started; with --task and no --since, a minute before the task was created). Re-run with --task / --evidence / --expect-outcome after the steps a person does.
 #   Environment for tests and slow days: TSE_POLL_SLEEP (10 s), TSE_POLL_PROVE (60), TSE_POLL_TASK (180), TSE_POLL_REPORTS (18), TSE_POLL_RUNNING (12), TSE_CATALOG_FILE (the committed catalog.json).
 set -u
@@ -53,13 +66,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STAGING="${STAGING_AWS:-$HOME/.local/share/rovara-tools/staging-aws.sh}"
 EXPECTED_ACCOUNT=944937319445
 CATALOG_REPOSITORY_SUFFIX="svc/postgres"
-STEP_IDS="P0 P1 P2 P3 P4 1 2 3 4 5 6 L3 7 7c 7k 8 9"
+STEP_IDS="P0 P1 P2 P3 PA P4 1 2 3 4 5 6 L3 A2 A3 A4 7 7c 7k 8 9"
 TASK_ID=""
 EVIDENCE_FILE=""
 ESCAPE_PROJECT=""
 EXPECT_OUTCOME=""
 EXPECT_SWEPT=""
 CANCEL_TEST=""
+AWS_MODE=""
+AWS_FLAG_PROJECT=""
+AWS_FLAG_TASK=""
 ENV_NAME="staging"
 NOW_MS=$(( $(date +%s) * 1000 ))
 SINCE_MS="$NOW_MS"
@@ -77,6 +93,9 @@ while [[ $# -gt 0 ]]; do
     --expect-outcome) EXPECT_OUTCOME="${2:-}"; shift 2 ;;
     --expect-swept) EXPECT_SWEPT=1; shift ;;
     --cancel-test) CANCEL_TEST=1; shift ;;
+    --aws) AWS_MODE=1; shift ;;
+    --aws-flag-project) AWS_FLAG_PROJECT="${2:-}"; shift 2 ;;
+    --aws-flag-task) AWS_FLAG_TASK="${2:-}"; shift 2 ;;
     --env) ENV_NAME="${2:-}"; shift 2 ;;
     --since) SINCE_MS="${2:-}"; SINCE_GIVEN=1; shift 2 ;;
     --worker-window-hours) WORKER_WINDOW_HOURS="${2:-}"; shift 2 ;;
@@ -94,6 +113,8 @@ if [[ -n "$ONLY" ]]; then
   for id in "${only_ids[@]}"; do [[ " $STEP_IDS " == *" $id "* ]] || { echo "unknown step in --only: '$id' (steps: $STEP_IDS)" >&2; exit 2; }; done
 fi
 if [[ -n "$CANCEL_TEST" && -z "$ESCAPE_PROJECT" ]]; then echo "--cancel-test needs --escape-project <name>" >&2; exit 2; fi
+if [[ -z "$AWS_MODE" && ( -n "$AWS_FLAG_PROJECT" || -n "$AWS_FLAG_TASK" ) ]]; then echo "--aws-flag-project and --aws-flag-task need --aws" >&2; exit 2; fi
+[[ "$AWS_FLAG_PROJECT" == "" || "$AWS_FLAG_PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]] || { echo "REFUSED: --aws-flag-project is not a project name." >&2; exit 3; }
 
 pass=0; fail=0; operator=0
 say() { printf 'TSE %s %s %s | %s\n' "$1" "$2" "$3" "$4"; case "$2" in PASS) pass=$((pass+1));; FAIL) fail=$((fail+1));; OPERATOR) operator=$((operator+1));; esac; }
@@ -162,6 +183,13 @@ elif cmd == "deps":
     good = [d for d in deps if isinstance(d, dict) and d.get("family") == "postgres" and (d.get("backing") or {}).get("kind") == "local" and d.get("found")]
     if not good:
         sys.stderr.write("no local Postgres with a source line among %s" % ",".join(str(d.get("id")) for d in deps if isinstance(d, dict)) or "no dependencies"); sys.exit(1)
+    if os.environ.get("AWS_MODE"):
+        # Slice 2: S3, SQS and DynamoDB must be there as emulated on local-aws@r1, each with its source line and the infrastructure file as its resource pointer. A missing one is a FAIL, not a smaller list.
+        for service in ("s3", "sqs", "dynamodb"):
+            found = [d for d in deps if isinstance(d, dict) and d.get("family") == "aws:" + service and (d.get("backing") or {}).get("kind") == "emulated" and (d.get("backing") or {}).get("catalogId") == "local-aws@r1" and d.get("found") and ((d.get("backing") or {}).get("resources") or {}).get("path")]
+            if not found:
+                sys.stderr.write("no emulated %s on local-aws@r1 with a source line and a resource pointer among %s" % (service, ",".join(str(d.get("id")) for d in deps if isinstance(d, dict)))); sys.exit(1)
+            good.append(found[0])
     print(",".join(str(d["id"]) for d in good))
 elif cmd == "prove":
     state = load()
@@ -228,7 +256,8 @@ elif cmd == "start":
         for k in ("metadataBlocked", "runWalls", "ipv6Drops", "loggedOut"):
             if f.get(k) is not True: bad.append(k)
         if f.get("prepull") != "ok": bad.append("prepull " + str(f.get("prepull")))
-        if not isinstance(f.get("prepulled"), int) or isinstance(f.get("prepulled"), bool) or f["prepulled"] < 1: bad.append("nothing pre-pulled")
+        minimum = 2 if os.environ.get("AWS_MODE") else 1
+        if not isinstance(f.get("prepulled"), int) or isinstance(f.get("prepulled"), bool) or f["prepulled"] < minimum: bad.append("nothing pre-pulled" if minimum == 1 else "fewer than %d images pre-pulled" % minimum)
     if r.get("leftoverContainers") != 0 or r.get("leftoverNetworks") != 0: bad.append("leftover objects (or Docker could not be asked)")
     if r.get("runDirEmpty") is not True: bad.append("run directory not empty")
     if r.get("runDirTmpfs") is not True: bad.append("run directory not a tmpfs")
@@ -290,7 +319,7 @@ elif cmd == "entries":
 else:
     sys.stderr.write("unknown helper command"); sys.exit(2)
 PY
-py() { python3 -I "$WORK/tse.py" "$@"; }
+py() { AWS_MODE="$AWS_MODE" python3 -I "$WORK/tse.py" "$@"; }
 
 # api METHOD PATH [JSON-BODY]: runs in THIS shell (never inside $(...)), so API_STATUS and API_BODY are real. A curl failure or an unreadable answer is status 000 and an empty body, which no step treats as success.
 api() {
@@ -352,6 +381,15 @@ if wanted P3; then
   if [[ -n "$pinned" && -n "$digests_ok" && "$digests" == *"sha256:${pinned#sha256:}"* ]]; then say P3 PASS "catalog pin matches the repository" "postgres@16 is pinned to a digest the repository holds"
   else say P3 FAIL "catalog pin matches the repository" "the committed catalog pin '${pinned:-none}' is not among the repository's digests (catalog step 4/5)"; fi
 fi
+
+# ---- PA (slice 2): the local-aws image is in the catalog repository by the committed pin
+if wanted PA && [[ -n "$AWS_MODE" ]]; then
+  if aws_digests=$("$STAGING" aws ecr describe-images --repository-name "rovara-catalog/$ENV_NAME/svc/local-aws" --query 'imageDetails[].imageDigest' --output text 2>"$WORK/cli.err") && [[ -n "$aws_digests" ]]; then
+    aws_pin=$(python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));print(" ".join(e["image"]["digest"] for e in d["entries"] if e["id"]=="local-aws@r1" and e["image"].get("digest")))' "${TSE_CATALOG_FILE:-$ROOT/environments/service-catalog/catalog.json}" 2>/dev/null)
+    if [[ -n "$aws_pin" && "$aws_digests" == *"sha256:${aws_pin#sha256:}"* ]]; then say PA PASS "local-aws is pinned and in the repository" "local-aws@r1 is pinned to a digest rovara-catalog/$ENV_NAME/svc/local-aws holds"
+    else say PA FAIL "local-aws is pinned and in the repository" "the committed pin '${aws_pin:-none}' is not among the repository's digests (the slice-2 catalog step, then commit the pin)"; fi
+  else say PA FAIL "local-aws is pinned and in the repository" "no image in rovara-catalog/$ENV_NAME/svc/local-aws: $(errline "$WORK/cli.err")"; fi
+elif wanted PA; then :; fi
 
 # ---- P4 the worker's start report: root's facts and nothing left over. A window that reaches back (a worker may have started days ago), not only since this script began.
 if wanted P4; then
@@ -452,6 +490,7 @@ if [[ -n "$TASK_ID" && -z "$SINCE_GIVEN" ]] && created=$(py created < "$WORK/vie
 SOURCES=(); [[ -s "$WORK/view.json" ]] && SOURCES+=("$WORK/view.json"); [[ -n "$EVIDENCE_FILE" ]] && SOURCES+=("$EVIDENCE_FILE")
 TEXT="$WORK/text"; : > "$TEXT"; for source in ${SOURCES[@]+"${SOURCES[@]}"}; do cat "$source" >> "$TEXT"; done
 ESCAPE_TESTS="tests/internet.test.js,tests/ipv6.test.js,tests/neighbours.test.js,tests/planted-state.test.js,tests/relay.test.js"
+[[ -n "$AWS_MODE" ]] && ESCAPE_TESTS="$ESCAPE_TESTS,tests/aws-positive.test.js"
 if wanted 4; then
   if [[ ${#SOURCES[@]} -eq 0 ]]; then say 4 OPERATOR "the escape project's tests passed" "pass --task and/or --evidence <file>"
   else
@@ -459,7 +498,7 @@ if wanted 4; then
     if [[ "$code" -eq 0 ]]; then
       if wait_reports run_end "$RUN_FROM"; then
         outcome=$(py last-outcome < "$WORK/reports" 2>&1)
-        if [[ "$outcome" == "completed" ]]; then say 4 PASS "the escape project's tests passed" "$verdict by name (internet, ipv6, neighbours, planted-state, relay); the worker's last run_end is completed"
+        if [[ "$outcome" == "completed" ]]; then say 4 PASS "the escape project's tests passed" "$verdict by name (internet, ipv6, neighbours, planted-state, relay${AWS_MODE:+, aws-positive}); the worker's last run_end is completed"
         else say 4 FAIL "the escape project's tests passed" "check entries passed but the worker's last run_end outcome is '$outcome'"; fi
       else say 4 FAIL "the escape project's tests passed" "check entries passed but there is no worker run_end report: $(why $? run_end "$RUN_FROM")"; fi
     elif [[ "$code" -eq 4 ]]; then say 4 OPERATOR "the escape project's tests passed" "$verdict: pass --evidence <file> saved from the task's Evidence tab"
@@ -468,6 +507,9 @@ if wanted 4; then
 fi
 if wanted 5; then
   if [[ ! -s "$TEXT" ]]; then say 5 OPERATOR "the PR line" "pass --task and/or --evidence <file>"
+  elif [[ -n "$AWS_MODE" ]]; then
+    if line=$(grep -m1 -o 'Integration tests ran against: Postgres (real), [^"\\]*(Rovara local AWS)\.' "$TEXT") && [[ "$line" == *S3* && "$line" == *SQS* && "$line" == *DynamoDB* ]]; then say 5 PASS "the PR line" "$line"
+    else say 5 FAIL "the PR line" "no line 'Integration tests ran against: Postgres (real), <S3, SQS and DynamoDB> (Rovara local AWS).' in the task's view or the evidence file"; fi
   elif grep -q 'Integration tests ran against: Postgres (real)\.' "$TEXT"; then say 5 PASS "the PR line" "'Integration tests ran against: Postgres (real).' is there"
   else say 5 FAIL "the PR line" "the line is not in the task's view or the evidence file"; fi
 fi
@@ -487,6 +529,47 @@ if wanted L3; then
     if [[ "$code" -eq 0 ]]; then say L3 PASS "relay test ran" "the relay check passed (it cannot skip: a missing or dead heartbeat fails it)"
     elif [[ "$code" -eq 4 ]]; then say L3 OPERATOR "relay test ran" "$verdict: pass --evidence <file>"
     else say L3 FAIL "relay test ran" "$verdict"; fi
+  fi
+fi
+
+# ---- slice 2: the IAM line, the control paths, the out-of-plan call
+if [[ -n "$AWS_MODE" ]]; then
+  if wanted A2; then
+    if [[ ! -s "$TEXT" ]]; then say A2 OPERATOR "the IAM line" "pass --task and/or --evidence <file>"
+    elif grep -q 'AWS permissions (IAM) were not checked: Rovara local AWS does not enforce IAM' "$TEXT"; then say A2 PASS "the IAM line" "'AWS permissions (IAM) were not checked: Rovara local AWS does not enforce IAM' is there"
+    else say A2 FAIL "the IAM line" "the line is not in the task's view or the evidence file"; fi
+  fi
+  if wanted A3; then
+    if [[ ${#SOURCES[@]} -eq 0 ]]; then say A3 OPERATOR "control paths refused from the sealed round" "pass --task and/or --evidence <file>"
+    else
+      verdict=$(REQUIRED="tests/aws-control.test.js" py entries "${SOURCES[@]}" 2>&1); code=$?
+      if [[ "$code" -eq 0 ]]; then say A3 PASS "control paths refused from the sealed round" "the emulator's /_rovara/* paths answered 403 or 401 with no token and a made-up one (health answered first)"
+      elif [[ "$code" -eq 4 ]]; then say A3 OPERATOR "control paths refused from the sealed round" "$verdict: pass --evidence <file>"
+      else say A3 FAIL "control paths refused from the sealed round" "$verdict"; fi
+    fi
+  fi
+  if wanted A4; then
+    flag_task="$AWS_FLAG_TASK"; saved_task="$TASK_ID"; saved_project="$ESCAPE_PROJECT"
+    if [[ -z "$flag_task" && -n "$AWS_FLAG_PROJECT" ]]; then
+      ESCAPE_PROJECT="$AWS_FLAG_PROJECT"; TASK_ID=""
+      if start_task "$ESCAPE_PROMPT"; then flag_task="$TASK_ID"; else say A4 FAIL "out-of-plan call is flagged" "the flag task was not started: $(cat "$WORK/py.err")"; flag_task="-"; fi
+      ESCAPE_PROJECT="$saved_project"
+    fi
+    if [[ -z "$flag_task" ]]; then say A4 OPERATOR "out-of-plan call is flagged" "pass --aws-flag-project <name> (the project with the out-of-plan variant, see the fixture's README) or --aws-flag-task <id>"
+    elif [[ "$flag_task" != "-" ]]; then
+      TASK_ID="$flag_task"; cp "$WORK/view.json" "$WORK/view.main.json" 2>/dev/null; : > "$WORK/view.json"
+      if wait_task_end "$POLL_TASK" || [[ -s "$WORK/view.json" ]]; then
+        flag_from=$(py created < "$WORK/view.json" 2>/dev/null); flag_from=$(( ${flag_from:-$NOW_MS} - 60000 ))
+        verdict=$(REQUIRED="tests/aws-out-of-plan.test.js" py entries "$WORK/view.json" 2>&1); code=$?
+        if [[ "$code" -ne 0 ]]; then say A4 FAIL "out-of-plan call is flagged" "the emulator was not shown to refuse the SNS call: $verdict (task $flag_task, status ${TASK_STATE:-unknown})"
+        elif ! grep -q 'The code called AWS services that are not in the plan' "$WORK/view.json" || ! grep -Eq 'not in the plan[^"]*sns' "$WORK/view.json"; then say A4 FAIL "out-of-plan call is flagged" "the SNS call was refused but the task's evidence does not say 'The code called AWS services that are not in the plan: sns' (is a refused call of a disabled service in the ledger?)"
+        elif wait_reports run_end "$flag_from" && cleanruns=$(py runs < "$WORK/reports" 2>&1); then say A4 PASS "out-of-plan call is flagged" "task $flag_task: the emulator refused SNS and the evidence flags it; worker run_end reports clean ($cleanruns)"
+        else say A4 FAIL "out-of-plan call is flagged" "flagged, but the worker's run_end is not clean: ${cleanruns:-$(why $? run_end "$flag_from")}"; fi
+      else say A4 FAIL "out-of-plan call is flagged" "task $flag_task did not end within $POLL_TASK polls (last status '${TASK_STATE:-none}', ${TASK_ERR:-no error})"; fi
+      cp "$WORK/view.main.json" "$WORK/view.json" 2>/dev/null
+      TASK_ID="$saved_task"
+    fi
+    ESCAPE_PROJECT="$saved_project"
   fi
 fi
 

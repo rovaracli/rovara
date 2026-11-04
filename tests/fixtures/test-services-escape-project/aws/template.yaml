@@ -1,0 +1,19 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: The AWS resources the slice-2 escape project declares. Rovara reads them (setup finds them, the worker seeds them into Rovara local AWS); nothing here is ever deployed.
+Resources:
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: orders
+      AttributeDefinitions:
+        - { AttributeName: orderId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: orderId, KeyType: HASH }
+  ArchiveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: orders-archive
+  EventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: order-events
