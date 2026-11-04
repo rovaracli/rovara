@@ -168,6 +168,95 @@ describe("web application runtime", () => {
     });
   }
 
+  // FLK-1: an agent step that throws (an executor fault, not the runner's own answer) used to leave the case with no capture, so every piece of evidence it had already recorded was
+  // bytes no capture reaches and the collector could only say "extra or unreferenced bytes". The step is now recorded as one that did not conclude and the case ends there.
+  for (const trigger of ["the step itself", "the download wait around it"] as const) {
+    it(`records an agent step that throws (${trigger}) as a step that did not conclude, so everything recorded is reachable from the case's steps`, async () => {
+      const recorded: string[] = [];
+      const fault = new Error("target closed");
+      const fakePage = { on: () => {}, off: () => {}, context: () => ({ on: () => {}, off: () => {} }) };
+      const fixtures = {
+        app: { open: async () => {} }, screen: { getByTestId: () => ({ click: async () => {}, tap: async () => {}, fill: async () => {} }) },
+        browser: { goto: async () => { recorded.push("goto"); }, reload: async () => {},
+          waitForDownload: async (operation: () => Promise<void>) => { if (trigger === "the download wait around it") throw fault; await operation(); return { suggestedFilename: "orders.csv", path: "/protected/download" }; } },
+        agent: { act: async () => {} },
+      } as never;
+      const evidence = { recordCaseEvidence: async ({ bytes, mediaType, kind }: { bytes: Uint8Array; mediaType: string; kind: string }) => {
+        const artifactId = `artifact-${recorded.length}`; recorded.push(`${kind}:${artifactId}`);
+        return { artifactId, sha256: (await import("node:crypto")).createHash("sha256").update(bytes).digest("hex"), byteLength: bytes.byteLength, mediaType };
+      } };
+      const agent = { runStep: async () => { throw fault; } };
+      const casePorts = { ...ports(), evidence, agent } as unknown as E2EWebRuntimePorts;
+      const result = await executeWebSteps({ caseId: "case-1", scenario: { steps: [{ kind: "navigate", path: "/" }, { kind: "agent", goal: "Check the orders page", maxActions: 2 }],
+        assertions: [{ kind: "csv", downloadName: "orders.csv", columns: ["id"], rows: [["a1"]] }] } as never, fixtures, ports: casePorts, signal: new AbortController().signal, origin: "http://127.0.0.1:43123", page: fakePage } as never);
+      // The case ends at the agent step, with that step in its capture as unavailable, and the fault travels with the stop.
+      expect(result.agentStopped).toMatchObject({ stopCode: "ACTION_FAILED", fault });
+      expect(result.steps.map((step) => [step.declaredStepIndex, step.kind, step.outcome])).toEqual([[0, "navigate", "completed"], [1, "agent", "unavailable"]]);
+      // Nothing recorded by the case is outside the steps' own references.
+      const reached = result.steps.flatMap((step) => step.evidenceRefs.map((ref) => ref.artifactId));
+      expect(recorded.filter((item) => item.includes(":")).map((item) => item.split(":")[1])).toEqual(reached);
+    });
+  }
+
+  // The review of FLK-1: a step that reported how it ended keeps that ending when the download wait around it then throws; a fault of the evidence writer or the download read is not the agent's.
+  const downloadCase = (options: { runStep: () => Promise<{ verdict: "concluded" | "failed"; stopCode: string | null; receiptIds: string[] }>; waitFault?: Error; readFault?: Error; fireDownload?: boolean }) => {
+    const logged: string[] = [];
+    const handlers: Array<() => void> = [];
+    const fakePage = { on: (event: string, handler: () => void) => { if (event === "download") handlers.push(handler); }, off: () => {}, context: () => ({ on: () => {}, off: () => {} }) };
+    const fixtures = { app: { open: async () => {} }, screen: { getByTestId: () => ({}) }, agent: { act: async () => {} },
+      browser: { goto: async () => {}, reload: async () => {}, waitForDownload: async (operation: () => Promise<void>) => {
+        try { await operation(); } catch (error) { if (options.waitFault !== undefined) throw options.waitFault; throw error; }
+        if (options.waitFault !== undefined) throw options.waitFault;
+        return { suggestedFilename: "orders.csv", path: "/protected/download" };
+      } } } as never;
+    const evidence = { recordCaseEvidence: async ({ bytes, mediaType }: { bytes: Uint8Array; mediaType: string }) => ({ artifactId: "artifact-x", sha256: (await import("node:crypto")).createHash("sha256").update(bytes).digest("hex"), byteLength: bytes.byteLength, mediaType }) };
+    const agent = { runStep: async () => { const outcome = await options.runStep(); if (options.fireDownload === true) for (const handler of handlers) handler(); return outcome; } };
+    const casePorts = { ...ports(), evidence, agent, log: (line: string) => { logged.push(line); },
+      readOwnedDownload: async () => { if (options.readFault !== undefined) throw options.readFault; return Buffer.from("id\na1\n"); } } as unknown as E2EWebRuntimePorts;
+    const run = () => executeWebSteps({ caseId: "case-1", scenario: { steps: [{ kind: "agent", goal: "Check the orders page", maxActions: 2 }],
+      assertions: [{ kind: "csv", downloadName: "orders.csv", columns: ["id"], rows: [["a1"]] }] } as never, fixtures, ports: casePorts, signal: new AbortController().signal, page: fakePage } as never);
+    return { run, logged };
+  };
+
+  it("keeps the stop code a step already reported when the download wait then throws something else, and still carries the fault", async () => {
+    const fault = new Error("download wait timed out");
+    const { run, logged } = downloadCase({ runStep: async () => ({ verdict: "failed", stopCode: "typed-value-not-replayable", receiptIds: [] }), waitFault: fault });
+    const result = await run();
+    expect(result.agentStopped).toMatchObject({ stopCode: "typed-value-not-replayable", fault });
+    expect(result.steps.map((step) => step.outcome)).toEqual(["unavailable"]);
+    expect(logged).toHaveLength(1);
+  });
+
+  it("replaces a concluded step's ending with ACTION_FAILED when the download wait then throws", async () => {
+    const fault = new Error("target closed");
+    const { run } = downloadCase({ runStep: async () => ({ verdict: "concluded", stopCode: null, receiptIds: [] }), waitFault: fault });
+    expect((await run()).agentStopped).toMatchObject({ stopCode: "ACTION_FAILED", fault });
+  });
+
+  it("does not take a fault of the download read for the agent step's", async () => {
+    const { run } = downloadCase({ runStep: async () => ({ verdict: "concluded", stopCode: null, receiptIds: [] }), readFault: new Error("disk gone"), fireDownload: true });
+    await expect(run()).rejects.toThrow("disk gone");
+  });
+
+  it("logs the fault by name and a bounded one-line message, and nothing else of it", async () => {
+    const fault = Object.assign(new Error(`line one\nline two ${"x".repeat(500)}`), { name: "TimeoutError" });
+    const { run, logged } = downloadCase({ runStep: async () => { throw fault; } });
+    await run();
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatch(/^agent step fault: step 0 of case case-1 ended ACTION_FAILED after it threw TimeoutError: line one line two x+$/);
+    expect(logged[0]!.length).toBeLessThan(330);
+  });
+
+  it("a cancelled case is not an agent step that failed: the throw leaves the case as before", async () => {
+    const controller = new AbortController();
+    const fixtures = { app: { open: async () => {} }, screen: { getByTestId: () => ({}) }, browser: { goto: async () => {}, reload: async () => {}, waitForDownload: async (operation: () => Promise<void>) => { await operation(); return { suggestedFilename: "x", path: "x" }; } }, agent: { act: async () => {} } } as never;
+    const evidence = { recordCaseEvidence: async () => { throw new Error("not reached"); } };
+    const agent = { runStep: async () => { controller.abort(); throw new Error("cancelled mid-step"); } };
+    const casePorts = { ...ports(), evidence, agent } as unknown as E2EWebRuntimePorts;
+    await expect(executeWebSteps({ caseId: "case-1", scenario: { steps: [{ kind: "agent", goal: "Check the orders page", maxActions: 2 }], assertions: [] } as never,
+      fixtures, ports: casePorts, signal: controller.signal, page: { on: () => {}, off: () => {}, context: () => ({ on: () => {}, off: () => {} }) } } as never)).rejects.toThrow("cancelled mid-step");
+  });
+
   it("requires an installed canonical JSON schema and validates the observed body against it", () => {
     const assertion = { kind: "json", responseId: "orders-state", schemaRef: "orders-state-v1", equals: { version: 1, ids: ["a1", "a2"] } };
     const schema = Buffer.from(canonicalJson({ type: "object", required: ["version", "ids"], additionalProperties: false,
