@@ -168,6 +168,46 @@ describe("web application runtime", () => {
     });
   }
 
+  // FLK-1: an agent step that throws (an executor fault, not the runner's own answer) used to leave the case with no capture, so every piece of evidence it had already recorded was
+  // bytes no capture reaches and the collector could only say "extra or unreferenced bytes". The step is now recorded as one that did not conclude and the case ends there.
+  for (const trigger of ["the step itself", "the download wait around it"] as const) {
+    it(`records an agent step that throws (${trigger}) as a step that did not conclude, so everything recorded is reachable from the case's steps`, async () => {
+      const recorded: string[] = [];
+      const fault = new Error("target closed");
+      const fakePage = { on: () => {}, off: () => {}, context: () => ({ on: () => {}, off: () => {} }) };
+      const fixtures = {
+        app: { open: async () => {} }, screen: { getByTestId: () => ({ click: async () => {}, tap: async () => {}, fill: async () => {} }) },
+        browser: { goto: async () => { recorded.push("goto"); }, reload: async () => {},
+          waitForDownload: async (operation: () => Promise<void>) => { if (trigger === "the download wait around it") throw fault; await operation(); return { suggestedFilename: "orders.csv", path: "/protected/download" }; } },
+        agent: { act: async () => {} },
+      } as never;
+      const evidence = { recordCaseEvidence: async ({ bytes, mediaType, kind }: { bytes: Uint8Array; mediaType: string; kind: string }) => {
+        const artifactId = `artifact-${recorded.length}`; recorded.push(`${kind}:${artifactId}`);
+        return { artifactId, sha256: (await import("node:crypto")).createHash("sha256").update(bytes).digest("hex"), byteLength: bytes.byteLength, mediaType };
+      } };
+      const agent = { runStep: async () => { throw fault; } };
+      const casePorts = { ...ports(), evidence, agent } as unknown as E2EWebRuntimePorts;
+      const result = await executeWebSteps({ caseId: "case-1", scenario: { steps: [{ kind: "navigate", path: "/" }, { kind: "agent", goal: "Check the orders page", maxActions: 2 }],
+        assertions: [{ kind: "csv", downloadName: "orders.csv", columns: ["id"], rows: [["a1"]] }] } as never, fixtures, ports: casePorts, signal: new AbortController().signal, origin: "http://127.0.0.1:43123", page: fakePage } as never);
+      // The case ends at the agent step, with that step in its capture as unavailable, and the fault travels with the stop.
+      expect(result.agentStopped).toMatchObject({ stopCode: "ACTION_FAILED", fault });
+      expect(result.steps.map((step) => [step.declaredStepIndex, step.kind, step.outcome])).toEqual([[0, "navigate", "completed"], [1, "agent", "unavailable"]]);
+      // Nothing recorded by the case is outside the steps' own references.
+      const reached = result.steps.flatMap((step) => step.evidenceRefs.map((ref) => ref.artifactId));
+      expect(recorded.filter((item) => item.includes(":")).map((item) => item.split(":")[1])).toEqual(reached);
+    });
+  }
+
+  it("a cancelled case is not an agent step that failed: the throw leaves the case as before", async () => {
+    const controller = new AbortController();
+    const fixtures = { app: { open: async () => {} }, screen: { getByTestId: () => ({}) }, browser: { goto: async () => {}, reload: async () => {}, waitForDownload: async (operation: () => Promise<void>) => { await operation(); return { suggestedFilename: "x", path: "x" }; } }, agent: { act: async () => {} } } as never;
+    const evidence = { recordCaseEvidence: async () => { throw new Error("not reached"); } };
+    const agent = { runStep: async () => { controller.abort(); throw new Error("cancelled mid-step"); } };
+    const casePorts = { ...ports(), evidence, agent } as unknown as E2EWebRuntimePorts;
+    await expect(executeWebSteps({ caseId: "case-1", scenario: { steps: [{ kind: "agent", goal: "Check the orders page", maxActions: 2 }], assertions: [] } as never,
+      fixtures, ports: casePorts, signal: controller.signal, page: { on: () => {}, off: () => {}, context: () => ({ on: () => {}, off: () => {} }) } } as never)).rejects.toThrow("cancelled mid-step");
+  });
+
   it("requires an installed canonical JSON schema and validates the observed body against it", () => {
     const assertion = { kind: "json", responseId: "orders-state", schemaRef: "orders-state-v1", equals: { version: 1, ids: ["a1", "a2"] } };
     const schema = Buffer.from(canonicalJson({ type: "object", required: ["version", "ids"], additionalProperties: false,

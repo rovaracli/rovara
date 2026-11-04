@@ -264,6 +264,8 @@ export type WebAgentDownloadStatus = "captured" | "agent-no-download" | "ambiguo
 /** How long an agent step that concluded is given for a download it caused to start, after its last action returned. */
 const AGENT_DOWNLOAD_GRACE_MS = 2_000;
 const AGENT_STEP_MAX_MS = 90_000;
+/** The stop code of an agent step that threw: the code the model driver's own ledger gives a step that ended in a fault. */
+const AGENT_FAULT_STOP_CODE = "ACTION_FAILED";
 class NoAgentDownload extends Error { constructor() { super("the agent step caused no download"); this.name = "NoAgentDownload"; } }
 
 /** Counts the downloads the owned page, and any page it opens, starts while it is watched. */
@@ -296,6 +298,8 @@ export async function executeWebSteps(input: { caseId: string; scenario: E2EScen
   let agentDownloadStatus: WebAgentDownloadStatus | null = null;
   /** Set when an agent step did not conclude: the case stops there (Task 4.4a), with the step recorded as it ended and no assertion observed on a page it left half-way. */
   let agentStopCode: string | null | undefined;
+  /** What an agent step threw instead of ending (an executor fault): the case still ends there with the step recorded, and the fault travels with the error it fails with. */
+  let agentFault: unknown;
   let pendingChooser: { chooser: FileChooser; page: Page; triggerIndex: number; triggerActionDigest: string; triggerActionId: string } | null = null;
   for (let stepIndex = 0; stepIndex < input.scenario.steps.length; stepIndex += 1) {
     if (agentStopCode !== undefined) break;
@@ -371,6 +375,11 @@ export async function executeWebSteps(input: { caseId: string; scenario: E2EScen
       let outcome: E2EWebAgentStepOutcome | undefined;
       let captured: { suggestedFilename: string; bytes: Uint8Array; contentRef: Awaited<ReturnType<typeof recordE2EApplicationCliEvidence>> } | null = null;
       let status: WebAgentDownloadStatus | null = null;
+      // An agent step that THROWS (a fault of the executor, the browser or the runner that is not the runner's own answer) is an agent step that did not conclude, and is recorded as one: the
+      // case ends there exactly as it does for a step that failed, with the step in its capture. Letting the throw leave the case would write no capture at all, and the identity evidence
+      // recorded before the step would then be bytes no capture reaches, which the collector can only call "extra or unreferenced bytes" (FLK-1) instead of naming the case's own reason.
+      // A cancelled case (its signal) is not a step that failed: that still leaves the case as it always did.
+      try {
       if (csvAssertions.length > 0 && stepIndex === finalDownloadTrigger) {
         if (download !== null) throw new Error("CSV download trigger association is ambiguous");
         // The download is the one the step caused. The pinned browser fixture arms its waiter before the step runs and keeps it for the whole step, then saves the first download it saw;
@@ -398,6 +407,13 @@ export async function executeWebSteps(input: { caseId: string; scenario: E2EScen
         }
       } else {
         outcome = await runAgent();
+      }
+      } catch (error) {
+        if (signal.aborted) throw error;
+        agentFault = error;
+        outcome = { verdict: "failed", stopCode: AGENT_FAULT_STOP_CODE, receiptIds: [] };
+        captured = null;
+        status = null;
       }
       // A step that did not conclude stops the case here: its facts are in the ledger and the report, and no assertion is observed on a page it left half-way. The step is recorded as
       // it ended, so the case's capture can name it and the collector can say why the case is UNKNOWN; the case still fails (the caller throws once the capture is written).
@@ -494,7 +510,8 @@ export async function executeWebSteps(input: { caseId: string; scenario: E2EScen
   }
   if (pendingChooser !== null) throw new Error("owned file chooser was opened without its exact following approved fixture selection");
   if (agentStopCode === undefined && csvAssertions.length > 0 && !download && agentDownloadStatus === null) throw new Error("CSV assertion has no exact preceding admitted download trigger");
-  return { download, steps, agentDownloadStatus, agentStopped: agentStopCode !== undefined ? { stopCode: agentStopCode } : null };
+  return { download, steps, agentDownloadStatus,
+    agentStopped: agentStopCode !== undefined ? { stopCode: agentStopCode, ...(agentFault === undefined ? {} : { fault: agentFault }) } : null };
 }
 
 async function observeWebAssertions(input: { caseId: string; scenario: E2EScenario; fixtures: WebFixtures; engine: EngineHandle;
@@ -661,7 +678,7 @@ export function createWebApplicationCliHost(input: { launchContext: E2EApplicati
         const { failedIndex, unavailableIndex, agentStopped } = chain.outcome;
         captureOutcome = failedIndex >= 0 ? "failed" : unavailableIndex >= 0 ? "unknown" : "passed";
         // The capture of a case whose agent step did not conclude is written (so the collector can name why the case is UNKNOWN), and the case fails all the same.
-        if (agentStopped != null) throw new Error(`the web agent step did not conclude (${agentStopped.stopCode ?? "unknown"})`);
+        if (agentStopped != null) throw new Error(`the web agent step did not conclude (${agentStopped.stopCode ?? "unknown"})`, agentStopped.fault === undefined ? undefined : { cause: agentStopped.fault });
         if (failedIndex >= 0) throw new Error(`web assertion ${failedIndex} failed against the actual owned browser observation`);
         if (unavailableIndex >= 0) throw new Error(`web assertion ${unavailableIndex} is unavailable on the installed fixed browser surface`);
       } catch (error) {

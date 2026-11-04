@@ -512,6 +512,16 @@ describe("application collection contracts", () => {
     missingIdentitySources.supervisorReadback.evidence = missingIdentitySources.supervisorReadback.evidence
       .filter((item) => item.ref.artifactId !== identitySourceReceipt.ref.artifactId && item.ref.artifactId !== subjectIdentitySourceReceipt.ref.artifactId);
     expect(qualifyE2EApplicationCollection(projectionOnlyOracle, missingIdentitySources).status).toBe("UNKNOWN");
+    // FLK-1: the inventory check stays strict. One extra evidence entry that nothing references (here, the bytes of a second copy of a frame under a new id) makes the collection
+    // UNKNOWN for exactly that reason, whatever else is right with it.
+    const extraBytes = structuredClone(result.collection!);
+    const extraSource = extraBytes.supervisorReadback.evidence[0]!;
+    const extraId = `${extraSource.ref.artifactId}-extra`;
+    extraBytes.supervisorReadback.evidence = [...extraBytes.supervisorReadback.evidence, { ...extraSource, ref: { ...extraSource.ref, artifactId: extraId } }]
+      .sort((left, right) => left.ref.artifactId.localeCompare(right.ref.artifactId));
+    const extraResult = qualifyE2EApplicationCollection(result.oracle!, extraBytes);
+    expect(extraResult.status).toBe("UNKNOWN");
+    expect(extraResult.reason).toContain("extra or unreferenced bytes");
 
     const recollect = (options: { capture?: typeof captureValue; reportValue?: typeof report; processStatus?: number; timeShiftMs?: number;
       observation?: typeof evidence; mockInputValue?: unknown; mockResponseBody?: unknown; mockRequestId?: string;
