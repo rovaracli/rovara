@@ -62,14 +62,14 @@ export function installTeamRecordEmitter(dependencies: HasTeamRecord): void {
   if (dependencies.teamRecord === undefined) return;
   removeSendBack ??= registerHumanSendBackListener(async (event) => {
     const runtime = current?.teamRecord;
-    if (runtime !== undefined) await sendBackToRecord(runtime.emitter, runtime.taskVisibility)(event);
+    if (runtime !== undefined) await sendBackToRecord(runtime.emitter, (orgId, taskId) => runtime.taskVisibility(orgId, taskId))(event);
   });
   // The rest of Rovara's own events, the same way: late-bound to the latest runtime, registered once per process and only where the record is on.
   if (removeRovaraEvents.length === 0) {
     removeRovaraEvents = [
       registerRovaraRecordListener(async (event) => {
         const runtime = current?.teamRecord;
-        if (runtime !== undefined) await recordListenerOf(runtime.emitter, runtime.taskVisibility)(event);
+        if (runtime !== undefined) await recordListenerOf(runtime.emitter, (orgId, taskId) => runtime.taskVisibility(orgId, taskId))(event);
       }),
       registerTaskEndHandler(recordTaskEndHandler()),
     ];

@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { learningEraseHook, learningWalkDeps } from "../../../packages/broker/src/learning/cleanup.js";
 import { clearArchivedProjectLearning } from "../../../packages/broker/src/aws/developer-routes/project-archive-setup.js";
-import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
+import { announceHumanSendBack, sendBackToRecord } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { installTeamRecordEmitter, teamRecordEmitterInstalled, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { ORG_A } from "../../support/team-record-core.js";
@@ -63,12 +63,10 @@ describe("a human send-back", () => {
 
   it("with no visibility reader the row is the owner's alone, whatever the event's Slack-channel flag says; a task the reader cannot place is not written", async () => {
     const sent: unknown[] = [];
-    installTeamRecordEmitter({ teamRecord: { emitter: { sendBack: async (input: unknown) => { sent.push(input); } } } as never });
-    await announceHumanSendBack(event);
+    const emitter = { sendBack: async (input: unknown) => { sent.push(input); } };
+    await sendBackToRecord(emitter)(event);
     expect(sent[0]).toMatchObject({ visibility: { kind: "private", ownerDeveloperId: DEV } });
-    uninstallTeamRecordEmitter();
-    installTeamRecordEmitter({ teamRecord: { emitter: { sendBack: async (input: unknown) => { sent.push(input); } }, taskVisibility: async () => undefined } as never });
-    await announceHumanSendBack(event);
+    await sendBackToRecord(emitter, async () => undefined)(event);
     expect(sent).toHaveLength(1);
   });
 
