@@ -1,13 +1,13 @@
 // Design review stage, DR7 slice B (design-review-stage.md 3.1): the one place the Understand step's `ready` answer meets the design review. Understand has returned and the workflow stands at PLAN/READY with the
-// reading recorded; if the `dr` switch is on AND the project is on the `dp` allowlist (`designReviewEnabledFor`; `dr` alone runs no project), code reads the project's EFFECTIVE setting (the playbook value held to the company's lock, `readEffectiveDesignReview` and nothing else), resolves the mode
+// reading recorded; if the `dr` switch is on AND the company allows design review (`dr` alone runs no project), code reads the project's EFFECTIVE setting (the playbook value held to the company's lock, `readEffectiveWhenAllowed` and nothing else), resolves the mode
 // (`resolveDesignMode`: Understand's `design` field is a reading, never a decision) and, when it is ON, switches the review on with `enableDesignReview`, which forces the Full path. Nothing is shown here: showing the
 // classification line is DR11. With the switch off this is never called into: the first line returns the workflow it was given.
 import { WorkflowTransitionError, enableDesignReview, type IntentAssessment, type OrgId, type WorkflowSnapshot } from "@agentx/contracts";
 import { isExplicitPath } from "../rovara-code/explicit-path.js";
 import type { ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
 import { resolveDesignMode } from "./mode.js";
-import { readEffectiveDesignReview } from "./setting.js";
-import { designReviewEnabledFor } from "./switch.js";
+import { readEffectiveWhenAllowed } from "./setting.js";
+import { designReviewEnabled } from "./switch.js";
 
 export interface DesignModeAtUnderstandInput {
   orgId: OrgId;
@@ -28,10 +28,12 @@ export interface DesignModeAtUnderstandInput {
  * in) leaves the review off and says so in the log with a fixed code; it never changes the workflow any other way.
  */
 export async function withDesignReviewMode(deps: ProjectPlaybookReader, input: DesignModeAtUnderstandInput): Promise<WorkflowSnapshot> {
-  if (!designReviewEnabledFor(input.project, input.env)) return input.workflow;
+  // `dr` off reads nothing at all. Otherwise the company must allow design review; a project that is Off is handled by the mode resolution below (it stays off unless the person asked for design first, owner Q3).
+  if (!designReviewEnabled(input.env)) return input.workflow;
   const { workflow, assessment } = input;
   if (assessment.kind !== "ready" || workflow.stage !== "PLAN" || workflow.state !== "READY" || workflow.designReview !== undefined) return workflow;
-  const effective = await readEffectiveDesignReview(deps, input.orgId, input.project);
+  const effective = await readEffectiveWhenAllowed(deps, input.orgId, input.project);
+  if (effective === undefined) return workflow;
   // What the person asked for, as far as the start recorded it: an explicit Quick path. (`design first:` and Skip arrive with DR11's intake; they are not invented here.)
   const decision = resolveDesignMode({ setting: effective.setting, assessment, quick: isExplicitPath(workflow) && workflow.path === "QUICK", ...(input.designFirst === undefined ? {} : { designFirst: true }) });
   if (!decision.decided || !decision.on) return workflow;

@@ -1,4 +1,4 @@
-// The design review switch at deploy time: DesignReviewEnabled (`dr`) and the project allowlist DesignReviewProjects (`dp`). It is a control-plane stack parameter, "0" (off) by default, that reaches the broker in its packed settings
+// The design review switch at deploy time: DesignReviewEnabled (`dr`), the environment's master switch, and the retired project list DesignReviewProjects (`dp`, kept one more release, decides nothing). It is a control-plane stack parameter, "0" (off) by default, that reaches the broker in its packed settings
 // (AGENTX_SETTINGS), never as a Lambda variable of its own, and is on only when the broker reads exactly "1".
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
@@ -7,7 +7,7 @@ import { BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE } from "@agentx/contracts";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
-import { designReviewEnabled, designReviewEnabledFor } from "../../packages/broker/src/design-review/switch.js";
+import { designReviewEnabled } from "../../packages/broker/src/design-review/switch.js";
 import { configKey } from "../../packages/cli/src/config/keys.js";
 import { OPERATOR_PARAMETERS } from "../../packages/cli/src/deploy/parameters.js";
 import { brokerSettingsIn } from "../support/broker-names-template.js";
@@ -62,30 +62,31 @@ describe.each(SWITCHES)("the $name switch", ({ parameter, setting, code, variabl
   });
 });
 
-describe("the design review project allowlist (`dp`)", () => {
-  it("is a plain-text stack parameter, empty by default, that reaches the broker in its packed settings with no Lambda variable of its own", () => {
+describe("the retired design review project list (`dp`): kept for one release, decides nothing", () => {
+  it("is still a plain-text stack parameter, empty by default, that reaches the broker in its packed settings with no Lambda variable of its own (so an upgrade keeps working)", () => {
     expect((named.toJSON() as { Parameters: Record<string, unknown> }).Parameters.DesignReviewProjects).toMatchObject({ Type: "String", Default: "", MaxLength: 20 });
+    expect((named.toJSON() as { Parameters: Record<string, { Description?: string }> }).Parameters.DesignReviewProjects!.Description).toMatch(/^Retired:/);
     expect(brokerSettingsIn(brokerVariables(named)).designReviewProjects).toEqual({ Ref: "DesignReviewProjects" });
     expect(brokerVariables(named)).not.toHaveProperty("DESIGN_REVIEW_PROJECTS");
     expect(BROKER_SETTINGS.designReviewProjects).toEqual({ code: "dp", variable: "DESIGN_REVIEW_PROJECTS" });
     expect(JSON.stringify(legacy.toJSON())).not.toContain("DesignReviewProjects");
   });
 
-  it("is set with `agentx config set designReview.projects`, which takes project names joined by a colon and nothing else", () => {
+  it("`agentx config set designReview.projects` is refused with a pointer to How we work, whatever the value", () => {
     const entry = configKey("designReview.projects");
     expect(entry.target).toEqual({ kind: "stack-parameter", part: "control-plane", parameter: "DesignReviewProjects" });
-    expect(entry.parse("payments:web")).toBe("payments:web");
-    expect(entry.parse("")).toBe("");
-    for (const bad of ["Payments", "a,b", "a b", "a:", ":a", `a${"b".repeat(20)}`]) expect(() => entry.parse(bad), bad).toThrow("nothing changed");
+    for (const value of ["payments:web", "", "payments", "Bad Value"]) expect(() => entry.parse(value), value).toThrow("Design review is now turned on per project in How we work.");
+    expect(entry.description).toMatch(/^Retired:/);
+  });
+
+  it("an upgrade still carries a value set before (the parameter stays in OPERATOR_PARAMETERS this release); 0.5.6 removes it from the template and from OPERATOR_PARAMETERS, and the upgrade then reports it as dropped", () => {
     expect(OPERATOR_PARAMETERS["control-plane"]).toEqual(expect.arrayContaining(["DesignReviewProjects"]));
   });
 
-  it("reaches the switch through hydration: `dr=1` with `dp=payments` runs payments only; `dr=1` alone runs no project", () => {
-    const hydrated = (pairs: string): MutableEnvironment => { const env: MutableEnvironment = { [BROKER_SETTINGS_VARIABLE]: pairs }; hydrateBrokerEnvironment(env); return env; };
-    expect(designReviewEnabledFor("payments", hydrated("dr=1,dp=payments"))).toBe(true);
-    expect(designReviewEnabledFor("billing", hydrated("dr=1,dp=payments"))).toBe(false);
-    expect(designReviewEnabledFor("payments", hydrated("dr=1,dp="))).toBe(false);
-    expect(designReviewEnabledFor("payments", hydrated("dr=1"))).toBe(false);
-    expect(designReviewEnabledFor("payments", hydrated("dr=0,dp=payments"))).toBe(false);
+  it("reaches the broker through hydration as a plain variable that nothing in the switch reads", () => {
+    const env: MutableEnvironment = { [BROKER_SETTINGS_VARIABLE]: "dr=1,dp=payments" };
+    hydrateBrokerEnvironment(env);
+    expect(env["DESIGN_REVIEW_PROJECTS"]).toBe("payments");
+    expect(designReviewEnabled(env)).toBe(true);
   });
 });

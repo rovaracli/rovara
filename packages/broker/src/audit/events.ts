@@ -548,6 +548,16 @@ export function auditPlaybookDesignReviewChanged(input: AuditBuilderBase & { pro
   return build("playbook.design_review_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, mode: input.mode, tier: input.tier, allowSkip: input.allowSkip, capCents: input.capCents, approverKind: input.approverKind, approverCount: input.approverCount });
 }
 
+/** `occurrence`: `auditOccurrence("design_review_policy", item revision)` for a change, the proposal's id for a proposal. `field` is `allowed` or `lock`; `from`/`to` are fixed words (or, for `lock`, how many fields it holds). */
+export function auditCompanyDesignReviewPolicyChanged(input: AuditBuilderBase & { field: "allowed" | "lock"; from: string; to: string; mode: "direct" | "second_person" | "sole_owner_exception" | "migration" | "cancelled"; revision: number }): AuditEventInput {
+  return build("company.design_review_policy_changed", input, { kind: "org", id: input.orgId }, { field: input.field, from: input.from, to: input.to, mode: input.mode, revision: input.revision });
+}
+
+/** `occurrence`: the proposal's id. A different admin has to approve turning "allowed" on. */
+export function auditCompanyDesignReviewPolicyProposed(input: AuditBuilderBase & { field: "allowed" | "lock"; from: string; to: string }): AuditEventInput {
+  return build("company.design_review_policy_proposed", input, { kind: "org", id: input.orgId }, { field: input.field, from: input.from, to: input.to });
+}
+
 /** `occurrence`: `auditOccurrence(project, company document revision)`. One event per project the change reached; `settingCount` is the number of settings that changed for it. */
 export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });

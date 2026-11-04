@@ -217,7 +217,7 @@ function world(workflow: WorkflowSnapshot, options: { setting?: ReturnType<typeo
     slackUserId: "UREQUESTER", ownerKey: REQUESTER, workflow,
   });
   const deps: DesignWaitSweepDeps = {
-    documentClient: db, tableName: "state", now: () => now.ms, enabledFor: () => enabled.on, edition: undefined,
+    documentClient: db, tableName: "state", now: () => now.ms, enabledFor: async () => enabled.on, edition: undefined,
     setting: async () => options.setting ?? setting(),
     directory: async () => ("directory" in options ? options.directory : dir()),
     people: async (_org, ids) => new Map(ids.flatMap((id) => (PEOPLE.has(id) ? [[id, PEOPLE.get(id)!] as const] : []))),

@@ -141,7 +141,7 @@ const conditionFailed = (error: unknown): boolean => error instanceof Error && (
  * else `PLAYBOOK_STALE` (C53).
  */
 export async function writeProjectPlaybook(
-  deps: ProjectPlaybookWriter, input: { orgId: OrgId; project: string; developerId: string; expectedRevision: number; defaultProcess: DefaultProcess; designReview?: DesignReviewSetting | undefined; ifLayer?: { agentId: AgentId; version: number }; guards?: readonly TransactItem[] },
+  deps: ProjectPlaybookWriter, input: { orgId: OrgId; project: string; developerId: string; expectedRevision: number; defaultProcess: DefaultProcess; designReview?: DesignReviewSetting | undefined; ifLayer?: { agentId: AgentId; version: number }; guards?: readonly TransactItem[]; /** The one-time `dp` move writes a setting, not a process change: it records only the design review event. */ skipProcessEvent?: true },
 ): Promise<ProjectPlaybook> {
   const { orgId, project } = input;
   const item = await readItem(deps, orgId, project);
@@ -173,13 +173,13 @@ export async function writeProjectPlaybook(
   const applied: ProjectPlaybook = { revision: current.revision + 1, defaultProcess: input.defaultProcess, ...(designReview === undefined ? {} : { designReview }) };
   const at = new Date(deps.now()).toISOString();
   const auditDeps: AuditDeps = deps.audit === undefined ? {} : { audit: deps.audit };
-  // `playbook.design_review_changed` only when the setting really changed (a missing setting is the owner's defaults, so saving the defaults over nothing is no change).
-  const designChanged = canonicalJson(designReviewSettingOf(current)) !== canonicalJson(designReviewSettingOf(applied));
+  // `playbook.design_review_changed` only when the setting really changed. A project with no setting is Off (DR-FU4), so saving any setting over none is a change (the mode it will run with is now its own).
+  const designChanged = canonicalJson(current.designReview ?? null) !== canonicalJson(applied.designReview ?? null);
   const events = await tryAuditEvents(auditDeps, () => [
-    auditPlaybookDefaultProcessChanged({
+    ...(input.skipProcessEvent === true ? [] : [auditPlaybookDefaultProcessChanged({
       orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(project, String(applied.revision)),
       projectName: project, revision: applied.revision, processKind: applied.defaultProcess.kind,
-    }),
+    })]),
     ...(!designChanged ? [] : [auditPlaybookDesignReviewChanged({
       orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(project, "design_review", String(applied.revision)),
       projectName: project, revision: applied.revision, ...designReviewAuditFacts(designReviewSettingOf(applied)),

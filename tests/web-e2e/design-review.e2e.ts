@@ -92,7 +92,7 @@ test("a maintainer changes the design review settings, and a locked field stays 
  let setting: Record<string, unknown> = { ...DEFAULTS, mode: "always", allowSkip: false }, revision = 3;
  const puts: Array<Record<string, unknown>> = [];
  await page.route("**/v1/web/projects/payments/playbook", async route => {
-  const req = route.request(), answer = () => ({ playbook: { revision, defaultProcess: { kind: "builtin" }, designReview: setting }, designReviewLocked: ["designReview.mode", "designReview.allowSkip"], designReviewGroups: false });
+  const req = route.request(), answer = () => ({ playbook: { revision, defaultProcess: { kind: "builtin" }, designReview: setting }, designReviewLocked: ["designReview.tier", "designReview.allowSkip"], designReviewGroups: false });
   if (req.method() === "PUT") { const body = req.postDataJSON() as Record<string, unknown>;puts.push(body);setting = body.designReview as Record<string, unknown>;revision += 1; }
   await route.fulfill({ status: 200, json: answer() });
  });
@@ -102,16 +102,18 @@ test("a maintainer changes the design review settings, and a locked field stays 
  await expect(card.getByText("Always: every code change gets a design review").first()).toBeVisible();
  await expect(card.getByText("Locked by company").first()).toBeVisible();
  const editor = card.getByRole("region", { name: "Design review settings editor" });
- await expect(editor.getByLabel("When it runs")).toBeDisabled();
+ // The mode is never locked: the project's maintainers can always turn it on or off.
+ await expect(editor.getByLabel("When it runs")).toBeEnabled();
+ await expect(editor.getByLabel("Tier")).toBeDisabled();
  await expect(editor.getByLabel("Allow skipping design review")).toBeDisabled();
  await expect(editor.getByText("Your company has locked this setting. A company admin can change it.").first()).toBeVisible();
  await expect(editor.getByLabel("Who approves a high-risk design").locator("option", { hasText: "A group" })).toHaveCount(0);
- await editor.getByLabel("Tier").selectOption("thorough");
+ await editor.getByLabel("When it runs").selectOption("never");
  await editor.getByLabel("Cost limit per task (USD)").fill("25");
  await editor.getByRole("button", { name: "Save design review settings" }).click();
  await expect(editor.getByText("Saved. New design reviews use these settings; running ones keep theirs.")).toBeVisible();
  expect(puts).toHaveLength(1);
- expect(puts[0]).toMatchObject({ expectedRevision: 3, defaultProcess: { kind: "builtin" }, designReview: { mode: "always", tier: "thorough", allowSkip: false, capUsdPerTask: 25, highRiskApprover: { kind: "maintainers" } } });
+ expect(puts[0]).toMatchObject({ expectedRevision: 3, defaultProcess: { kind: "builtin" }, designReview: { mode: "never", tier: "standard", allowSkip: false, capUsdPerTask: 25, highRiskApprover: { kind: "maintainers" } } });
  await evidenceShot(page, { path: shot("how-we-work-design-review"), fullPage: true });
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
  await page.setViewportSize({ width: 360, height: 800 });
