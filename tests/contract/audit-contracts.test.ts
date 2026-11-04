@@ -180,7 +180,7 @@ describe("the event catalog", () => {
       // Proof and evidence
       "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged", "task.design_sole_owner_exception", "company.second_review_mode_proposed", "company.second_review_mode_changed", "company.second_review_mode_refused", "company.second_review_mode_cancelled", "company.second_review_replay_recorded", "company.second_review_verdict_recorded", "company.second_review_verdict_withdrawn",
       // Team record and lessons (learning v2, R1)
-      "record.source_added", "record.source_changed", "record.source_removed", "record.source_change_proposed", "record.source_change_decided", "record.tombstoned", "record.erased", "record.tracker_person_mapped", "record.tracker_person_unmapped", "record.tracker_autolink_changed", "lesson.mode_changed", "lesson.proposed",
+      "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "record.tracker_person_mapped", "record.tracker_person_unmapped", "record.tracker_autolink_changed", "lesson.mode_changed", "lesson.proposed",
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
       "lesson.promoted", "lesson.rolled_back", "lesson.snapshot_created",
       "lesson.tier0_setting_proposed", "lesson.tier0_setting_changed", "lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed",
@@ -229,8 +229,7 @@ describe("the event catalog", () => {
       expect(Array.isArray(keys), action).toBe(true);
       expect(new Set(keys).size, action).toBe(keys.length);
       expect(keys.length, action).toBeLessThanOrEqual(AUDIT_MAX_FACTS);
-      // `record.source_change_proposed.reasons` is the one key that names "reason": its value is a comma list of four fixed words (private_channel, dm, mpim, retention_raise), never text.
-      for (const key of keys) if (!(action === "record.source_change_proposed" && key === "reasons")) expect(key, `${action}.${key}`).not.toMatch(personal);
+      for (const key of keys) expect(key, `${action}.${key}`).not.toMatch(personal);
     }
   });
 

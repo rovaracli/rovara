@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   AUDIT_FACT_KEYS, AuditEventInputSchema, ProposalCandidateSchema, RecordEventSchema, RecordFactSchema, RecordSearchResponseSchema, SourceConfigSchema, TRUST_RANK,
-  SOURCE_PROPOSAL_TTL_MS, SourceChangeProposalSchema, SourceWriteBodySchema, SourceWriteReplySchema, SourceWriteReplyReaderSchema, SourcesAdminViewSchema, SourcesAdminViewReaderSchema,
+  SOURCE_WIDENED_WORDS, SourceWriteBodySchema, SourceWriteReplySchema, SourceWriteReplyReaderSchema, SourcesAdminViewSchema, SourcesAdminViewReaderSchema,
   WORKER_INVOCATION_FEATURES, auditEventId, learningModeKey, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, memorySnapshotKey, minTrust, orgOfTeamRecordPk,
   recordActorIndexValue, recordDeleteQueueKey, recordDerivationKey, recordScopeIndexValue, learningModeLockKey, MAINTAINERS_GROUP, recordEventKey, recordFactKey, recordSourceIndexValue, recordSourceKey, teamRecordPk, teamRecordSourceHash, teamRecordWorkspacePrefix,
   type AuditAction, type OrgId,
@@ -184,17 +184,21 @@ describe("team record audit events and the worker feature", () => {
     expect(AuditEventInputSchema.safeParse({ ...source, facts: { source: "slack", retention: "B", restricted: false } }).success).toBe(true);
     expect(AuditEventInputSchema.safeParse({ ...source, facts: { channelName: "secret-launch" } }).success).toBe(false);
   });
-  it("takes the fixed facts of the source change proposal and decision, and nothing from the client", () => {
-    const base = { orgId: ORG_A, actor: { kind: "system", id: "rovara" }, target: { kind: "record_source", id: "abc" }, occurredAt: "2026-10-30T10:00:00.000Z" };
-    const proposed = { ...base, eventId: auditEventId("record.source_change_proposed", "c1"), action: "record.source_change_proposed" };
-    expect(AuditEventInputSchema.safeParse({ ...proposed, facts: { source: "slack", reasons: "private_channel,retention_raise" } }).success).toBe(true);
-    expect(AuditEventInputSchema.safeParse({ ...proposed, facts: { source: "slack", scope: "slack:T1/C9" } }).success).toBe(false);
-    expect(AuditEventInputSchema.safeParse({ ...proposed, facts: { source: "slack", changeId: "chg_1" } }).success).toBe(false);
-    const decided = { ...base, eventId: auditEventId("record.source_change_decided", "c1"), action: "record.source_change_decided" };
-    expect(AuditEventInputSchema.safeParse({ ...decided, facts: { source: "slack", decision: "approved", soleOwner: true } }).success).toBe(true);
-    expect(AuditEventInputSchema.safeParse({ ...decided, facts: { source: "slack", decision: "approved", scope: "slack:T1/C9" } }).success).toBe(false);
-    expect(AUDIT_FACT_KEYS["record.source_change_proposed"]).toStrictEqual(["source", "reasons"]);
-    expect(AUDIT_FACT_KEYS["record.source_change_decided"]).toStrictEqual(["source", "decision", "soleOwner"]);
+  it("takes the fixed `widened` fact on a source add and change (T9: the words of what a no-approval write widened), and nothing from the client", () => {
+    const base = { orgId: ORG_A, actor: { kind: "member", id: "dev-1" }, target: { kind: "record_source", id: "abc" }, occurredAt: "2026-10-30T10:00:00.000Z" };
+    const added = { ...base, eventId: auditEventId("record.source_added", "c1"), action: "record.source_added" };
+    expect(AuditEventInputSchema.safeParse({ ...added, facts: { source: "slack", retention: "D", restricted: true, widened: "retention_raise,private_channel" } }).success).toBe(true);
+    expect(AuditEventInputSchema.safeParse({ ...added, facts: { source: "slack", scope: "slack:T1/C9" } }).success).toBe(false);
+    const changed = { ...base, eventId: auditEventId("record.source_changed", "c1"), action: "record.source_changed" };
+    expect(AuditEventInputSchema.safeParse({ ...changed, facts: { source: "github", fromRetention: "C", toRetention: "D", enabled: true, widened: "retention_raise" } }).success).toBe(true);
+    expect(AuditEventInputSchema.safeParse({ ...changed, facts: { source: "github", changeId: "chg_1" } }).success).toBe(false);
+    expect(AUDIT_FACT_KEYS["record.source_added"]).toStrictEqual(["source", "retention", "restricted", "widened"]);
+    expect(AUDIT_FACT_KEYS["record.source_changed"]).toStrictEqual(["source", "fromRetention", "toRetention", "enabled", "widened"]);
+    expect(SOURCE_WIDENED_WORDS).toStrictEqual(["retention_raise", "private_channel", "dm", "mpim"]);
+  });
+  it("has no second-person source actions any more (T9: every editor's change applies at once)", () => {
+    expect(Object.keys(AUDIT_FACT_KEYS)).not.toContain("record.source_change_proposed");
+    expect(Object.keys(AUDIT_FACT_KEYS)).not.toContain("record.source_change_decided");
   });
   it("keep every learning action's fact keys free of free-text slots", () => {
     for (const action of Object.keys(AUDIT_FACT_KEYS).filter((name) => name.startsWith("lesson.") || name.startsWith("record.")) as AuditAction[]) {
@@ -271,17 +275,11 @@ describe("source row write contracts", () => {
     expect(body(without(remove, "expectedRevision"))).toBe(false);
     expect(body({ ...remove, retention: "A" })).toBe(false);
   });
-  it("takes approve and reject with a change id of the fixed pattern only", () => {
+  it("has no approve or reject action any more: an old body is refused whatever it carries (T9)", () => {
     for (const action of ["approve", "reject"]) {
-      expect(body({ action, changeId: "chg_AbC-123" })).toBe(true);
-      expect(body({ action, changeId: "x".repeat(100) })).toBe(true);
-      expect(body({ action, changeId: "x".repeat(101) })).toBe(false);
-      expect(body({ action, changeId: "" })).toBe(false);
-      expect(body({ action, changeId: "a b" })).toBe(false);
-      expect(body({ action, changeId: "a/b" })).toBe(false);
-      expect(body({ action, changeId: "a\nb" })).toBe(false);
-      expect(body({ action })).toBe(false);
-      expect(body({ action, changeId: "chg_1", requestId: REQUEST })).toBe(false);
+      expect(body({ action, changeId: "chg_AbC-123" }), action).toBe(false);
+      expect(body({ action }), action).toBe(false);
+      expect(body({ action, changeId: "chg_1", requestId: REQUEST }), action).toBe(false);
     }
   });
   it("refuses an unknown or missing action", () => {
@@ -291,54 +289,16 @@ describe("source row write contracts", () => {
     expect(body("add")).toBe(false);
   });
 
-  const row = { workspaceId: ORG_A, project: "web", source: "slack", scope: "slack:T1/G9", enabled: true, retention: "B", exclude: [], audienceDefault: "maintainers", health: "unknown", addedBy: "dev-1" };
-  const proposal = { id: "chg_1", workspaceId: ORG_A, project: "web", source: "slack", scope: "slack:T1/G9", kind: "add", row, reasons: ["private_channel"], proposedBy: "dev-1", againstRevision: null, membershipDigest: "d".repeat(64), createdAt: "2026-11-04T10:00:00.000Z", expiresAt: new Date(Date.parse("2026-11-04T10:00:00.000Z") + SOURCE_PROPOSAL_TTL_MS).toISOString() };
-  const proposalParses = (value: unknown) => SourceChangeProposalSchema.safeParse(value).success;
-  it("holds a source change proposal for seven days with a full row and a reason", () => {
-    expect(SOURCE_PROPOSAL_TTL_MS).toBe(7 * 24 * 60 * 60 * 1000);
-    expect(proposalParses(proposal)).toBe(true);
-    expect(proposalParses({ ...proposal, kind: "change", againstRevision: 3, reasons: ["retention_raise", "dm", "mpim"] })).toBe(true);
-    expect(proposalParses({ ...proposal, kind: "change", againstRevision: 0 })).toBe(true);
-    expect(proposalParses({ ...proposal, reasons: [] })).toBe(false);
-    expect(proposalParses({ ...proposal, reasons: ["public_channel"] })).toBe(false);
-    expect(proposalParses({ ...proposal, kind: "remove" })).toBe(false);
-    expect(proposalParses({ ...proposal, kind: "add", againstRevision: 0 })).toBe(false); // an add is against nothing
-    expect(proposalParses({ ...proposal, kind: "change", againstRevision: null })).toBe(false); // a change is against a revision
-    expect(proposalParses({ ...proposal, againstRevision: -1, kind: "change" })).toBe(false);
-    expect(proposalParses({ ...proposal, membershipDigest: "d".repeat(101) })).toBe(false);
-    expect(proposalParses({ ...proposal, membershipDigest: "" })).toBe(false);
-    expect(proposalParses({ ...proposal, id: "a b" })).toBe(false);
-    expect(proposalParses({ ...proposal, expiresAt: "2026-11-12T10:00:00.000Z" })).toBe(false); // not createdAt + 7 days
-    expect(proposalParses({ ...proposal, extra: 1 })).toBe(false);
-    expect(proposalParses({ ...proposal, row: { ...row, revision: 1 } })).toBe(false); // the row carries no revision
-    expect(proposalParses({ ...proposal, row: { ...row, updatedAt: "2026-11-04T10:00:00.000Z" } })).toBe(false);
-    expect(proposalParses(without(proposal, "proposedBy"))).toBe(false);
-  });
-  it("ties the proposal's row to the proposal itself, and keeps approval and cursor out of the row", () => {
-    expect(proposalParses({ ...proposal, row: { ...row, workspaceId: ORG_B } })).toBe(false); // another org
-    expect(proposalParses({ ...proposal, row: { ...row, project: "api" } })).toBe(false);
-    expect(proposalParses({ ...proposal, row: { ...row, source: "github" } })).toBe(false);
-    expect(proposalParses({ ...proposal, row: { ...row, scope: "slack:T1/G8" } })).toBe(false);
-    expect(proposalParses({ ...proposal, row: { ...row, approval: { approvalId: "a1", by: "dev-2", at: "2026-11-04T10:00:00.000Z" } } })).toBe(false);
-    expect(proposalParses({ ...proposal, row: { ...row, lastCursor: "cursor-1" } })).toBe(false);
-  });
-  it("refuses a repeated reason in a proposal", () => {
-    expect(proposalParses({ ...proposal, reasons: ["dm", "dm"] })).toBe(false);
-    expect(proposalParses({ ...proposal, reasons: ["private_channel", "dm", "mpim", "retention_raise"] })).toBe(true);
-  });
-
-  it("answers a write with one of four fixed replies", () => {
+  it("answers a write with one of two fixed replies: saved or removed (T9: nothing waits)", () => {
     const reply = (value: unknown) => SourceWriteReplySchema.safeParse(value).success;
     expect(reply({ status: "saved", revision: 1 })).toBe(true);
     expect(reply({ status: "saved", revision: 0 })).toBe(true);
     expect(reply({ status: "saved" })).toBe(false);
     expect(reply({ status: "saved", revision: -1 })).toBe(false);
-    expect(reply({ status: "needs_approval", changeId: "chg_1", expiresAt: "2026-11-11T10:00:00.000Z" })).toBe(true);
-    expect(reply({ status: "needs_approval", changeId: "chg 1", expiresAt: "2026-11-11T10:00:00.000Z" })).toBe(false);
-    expect(reply({ status: "needs_approval", changeId: "chg_1" })).toBe(false);
+    expect(reply({ status: "needs_approval", changeId: "chg_1", expiresAt: "2026-11-11T10:00:00.000Z" })).toBe(false);
+    expect(reply({ status: "rejected" })).toBe(false);
     expect(reply({ status: "removed" })).toBe(true);
-    expect(reply({ status: "rejected" })).toBe(true);
-    expect(reply({ status: "rejected", reason: "free text" })).toBe(false);
+    expect(reply({ status: "removed", reason: "free text" })).toBe(false);
     expect(reply({ status: "other" })).toBe(false);
     // The reader keeps a field a newer server adds and reads a status it does not know as "unknown".
     expect(SourceWriteReplyReaderSchema.safeParse({ status: "saved", revision: 2, note: "x" }).success).toBe(true);
@@ -348,19 +308,21 @@ describe("source row write contracts", () => {
   const adminRow = { kind: "slack", scope: "slack:T1/C9", enabled: true, retention: "B", health: "ok", audience: "maintainers", excluded: 1, updatedAt: "2026-11-04T10:00:00.000Z", paused: false, revision: 2, addedBy: "dev-1", exclude: ["slack:T1/C1"] };
   const admin = {
     sources: [adminRow, { ...adminRow, scope: "slack:T1/G9", revision: 0, approval: { by: "dev-2", at: "2026-11-04T11:00:00.000Z" } }], otherPaused: 0,
-    pending: [{ changeId: "chg_1", source: "slack", scope: "slack:T1/G9", kind: "add", reasons: ["private_channel"], proposedByYou: true, expiresAt: "2026-11-11T10:00:00.000Z" }],
-    canEdit: true, soleApprover: false, offered: { slack: ["A", "B"], github: ["A", "B", "C", "D"] },
+    canEdit: true, offered: { slack: ["A", "B"], github: ["A", "B", "C", "D"] },
   };
-  it("shows an editor the rows with their revision, the waiting changes, and what the edition offers", () => {
+  it("shows an editor the rows with their revision and what the edition offers (no waiting changes, no sole approver: T9)", () => {
     const parse = (value: unknown) => SourcesAdminViewSchema.safeParse(value).success;
     expect(parse(admin)).toBe(true);
-    expect(parse({ ...admin, pending: [], offered: {} })).toBe(true);
+    expect(parse({ ...admin, offered: {} })).toBe(true);
     expect(parse({ ...admin, canEdit: undefined })).toBe(false);
-    expect(parse({ ...admin, soleApprover: undefined })).toBe(false);
     expect(parse({ ...admin, offered: { slack: ["E"] } })).toBe(false);
-    expect(parse({ ...admin, pending: [{ ...admin.pending[0], reasons: [] }] })).toBe(false);
-    expect(parse({ ...admin, pending: [{ ...admin.pending[0], reasons: ["dm", "dm"] }] })).toBe(false);
-    expect(parse({ ...admin, pending: [{ ...admin.pending[0], proposedBy: "dev-1" }] })).toBe(false); // the person's id is not shown, only whether it was you
+    // The second-person fields are gone from the view (strict): an old shape is refused here, and the web reader still reads it.
+    expect(parse({ ...admin, pending: [] })).toBe(false);
+    expect(parse({ ...admin, soleApprover: false })).toBe(false);
+    // The Public edition's "notes with links" switch is shown only when the server says so.
+    expect(parse({ ...admin, notesSwitch: true })).toBe(true);
+    expect(parse({ ...admin, notesSwitch: false })).toBe(false);
+    expect(SourcesAdminViewReaderSchema.safeParse({ ...admin, pending: [], soleApprover: false }).success).toBe(true);
     expect(parse({ ...admin, sources: [{ ...adminRow, revision: undefined }] })).toBe(false);
     expect(parse({ ...admin, sources: [{ ...adminRow, scope: undefined }] })).toBe(false); // an editor always sees the place
     expect(parse({ ...admin, extra: 1 })).toBe(false);

@@ -1,32 +1,25 @@
 // What the source write route (`source-write.ts`) keeps in the TeamRecord table besides the source rows themselves. All three kinds hold no text of anyone's:
 //   SRCSCOPE#<system>#<hash>   in the WORKSPACE partition: the claim that one project holds a place. A source row and its claim are written in one transaction, so two projects can never
 //                              both hold one place (the claim's condition is "absent, or this project's");
-//   SRCCHG#<id>                in the PROJECT partition: a less-safe change waiting for a second person (seven days; the table's TTL removes it after that);
 //   SRCREQ#<hash>              in the PROJECT partition: the outcome of one write request, so a repeat of it answers the same and writes nothing (a day).
 //   SRCREV#<system>#<hash>     in the PROJECT partition: the highest revision a removed source row reached and when it was removed, so a row added for the place again counts on from there
-//                              and a waiting change made against the old row can never fit the new one (hash and number only; no expiry).
-// A proposal holds person ids (`proposedBy`, `row.addedBy`, source ids in `row.exclude`): `scrubSourceChanges` is the erase step for them. Project archive and company close remove all three
-// kinds (`erase.ts`): the claim of a source row is dropped with the row (`dropScopeClaim`), the others are in the project's partition.
+//                              and a write made against the old row can never fit the new one (hash and number only; no expiry).
+// Owner decision 2026-11-04 (no second person for any source change) removed the waiting-change item (`SRCCHG#`): no such row was ever written outside this lane's branch (the Team record switch is off
+// everywhere), so there is nothing to migrate, scrub or sweep. Project archive and company close remove the three kinds above (`erase.ts`): the claim of a source row is dropped with the row
+// (`dropScopeClaim`), the others are in the project's partition.
 import { createHash } from "node:crypto";
-import { DeleteCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, SourceChangeProposalSchema, recordSourceKey, teamRecordPk, teamRecordSourceHash,
-  type OrgId, type SourceChangeProposal, type SourceConfig,
-} from "@agentx/contracts";
-import { Aliases, EXISTS, NOT_EXISTS, type Item } from "../agents/table-writes.js";
-import { ERASED_DEVELOPER_ID, queryPrefix, sourceConfigFromItem } from "./store.js";
+import { DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { INDEX_EXPIRY_ATTRIBUTE, recordSourceKey, teamRecordPk, teamRecordSourceHash, type OrgId, type SourceConfig } from "@agentx/contracts";
+import { Aliases, NOT_EXISTS, type Item } from "../agents/table-writes.js";
+import { sourceConfigFromItem } from "./store.js";
 import type { TeamRecordTable } from "./types.js";
 
-export const SOURCE_CHANGE_SK_PREFIX = "SRCCHG#";
 export const SOURCE_SCOPE_SK_PREFIX = "SRCSCOPE#";
 export const SOURCE_REQUEST_SK_PREFIX = "SRCREQ#";
 export const SOURCE_REVISION_SK_PREFIX = "SRCREV#";
 /** How long a request item answers a repeat. */
 export const SOURCE_REQUEST_TTL_SECONDS = 86_400;
-/** Waiting changes one project may hold at once (the view lists at most this many). */
-export const SOURCE_CHANGES_MAX = 100;
 
-export const sourceChangeKey = (orgId: OrgId, project: string, id: string) => ({ pk: teamRecordPk(orgId, project), sk: `${SOURCE_CHANGE_SK_PREFIX}${id}` });
 export const scopeClaimKey = (orgId: OrgId, system: string, scope: string) => ({ pk: teamRecordPk(orgId), sk: `${SOURCE_SCOPE_SK_PREFIX}${system}#${teamRecordSourceHash(system, scope)}` });
 /** The request item is keyed by the person AND their request id, so one person's id never reads or blocks another's. */
 export const sourceRequestKey = (orgId: OrgId, project: string, developerId: string, requestId: string) => ({
@@ -118,57 +111,6 @@ export function claimDrop(table: TeamRecordTable, orgId: OrgId, project: string,
   };
 }
 
-/** A stored proposal, or undefined when absent. One that does not parse throws (never read as absent). The table's own attributes are not part of it. */
-export async function readSourceChange(table: TeamRecordTable, orgId: OrgId, project: string, id: string): Promise<SourceChangeProposal | undefined> {
-  const item = await getItem(table, sourceChangeKey(orgId, project, id));
-  return item === undefined ? undefined : proposalFromItem(item);
-}
-
-export function proposalFromItem(item: Item): SourceChangeProposal {
-  const { pk: _pk, sk: _sk, entityType: _entityType, [INDEX_EXPIRY_ATTRIBUTE]: _ttl, ...fields } = item; // eslint-disable-line @typescript-eslint/no-unused-vars -- the table's own attributes
-  const parsed = SourceChangeProposalSchema.safeParse(fields);
-  if (!parsed.success) throw new Error("the waiting change is not readable");
-  return parsed.data;
-}
-
-/** The project's waiting changes, oldest first by id order; those that do not parse are left out. Bounded. */
-export async function listSourceChanges(table: TeamRecordTable, orgId: OrgId, project: string, maxItems = SOURCE_CHANGES_MAX + 1): Promise<SourceChangeProposal[]> {
-  const { items } = await queryPrefix(table, orgId, project, SOURCE_CHANGE_SK_PREFIX, maxItems);
-  const found: SourceChangeProposal[] = [];
-  for (const item of items) {
-    try { found.push(proposalFromItem(item)); } catch { /* a change that does not parse is never shown or approved */ }
-  }
-  return found;
-}
-
-export function proposalPut(table: TeamRecordTable, proposal: SourceChangeProposal) {
-  return {
-    Put: {
-      TableName: table.tableName,
-      Item: { ...sourceChangeKey(proposal.workspaceId, proposal.project, proposal.id), entityType: "TEAM_RECORD_SOURCE_CHANGE", ...proposal, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(proposal.expiresAt) / 1000) },
-      ConditionExpression: NOT_EXISTS,
-    },
-  };
-}
-
-/**
- * Ends a waiting change. Given the change as it was read (`readAs`), the delete also needs the two fields the person-erase scrub rewrites (`row.addedBy`, `row.exclude`) to still be what was read,
- * so an approve that read the change just before a scrub fails its transaction instead of writing the scrubbed-out id into the row.
- */
-export function proposalDelete(table: TeamRecordTable, orgId: OrgId, project: string, id: string, readAs?: Pick<SourceChangeProposal["row"], "addedBy" | "exclude">) {
-  const key = sourceChangeKey(orgId, project, id);
-  if (readAs === undefined) return { Delete: { TableName: table.tableName, Key: key, ConditionExpression: EXISTS } };
-  const aliases = new Aliases();
-  const row = aliases.name("row");
-  return {
-    Delete: {
-      TableName: table.tableName, Key: key,
-      ConditionExpression: `${EXISTS} AND ${row}.${aliases.name("addedBy")} = ${aliases.value(readAs.addedBy)} AND ${row}.${aliases.name("exclude")} = ${aliases.value([...readAs.exclude])}`,
-      ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
-    },
-  };
-}
-
 /** The stored outcome of a request that was already answered, while it is still good. */
 export async function readSourceRequest(table: TeamRecordTable, orgId: OrgId, project: string, developerId: string, requestId: string, nowMs: number): Promise<{ bodyHash: string; status: number; reply: unknown } | undefined> {
   const item = await getItem(table, sourceRequestKey(orgId, project, developerId, requestId));
@@ -190,38 +132,4 @@ export function requestPut(table: TeamRecordTable, orgId: OrgId, project: string
       ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
     },
   };
-}
-
-/**
- * The person-erase step for waiting changes: a change the person proposed is deleted; in any other, their id as the adder becomes the 64-zero stand-in and the source ids of the person leave
- * the exclusion list. Works on the raw items, so a change that no longer parses is still scrubbed. Returns how many changes it touched.
- */
-export async function scrubSourceChanges(table: TeamRecordTable, orgId: OrgId, project: string, who: { developerId?: string; ids: readonly string[] }): Promise<number> {
-  const { items } = await queryPrefix(table, orgId, project, SOURCE_CHANGE_SK_PREFIX, SOURCE_CHANGES_MAX * 5);
-  let touched = 0;
-  for (const item of items) {
-    if (typeof item.pk !== "string" || typeof item.sk !== "string") continue;
-    const key = { pk: item.pk, sk: item.sk };
-    if (who.developerId !== undefined && item.proposedBy === who.developerId) {
-      await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: key }));
-      touched += 1;
-      continue;
-    }
-    const row = (item.row ?? {}) as { addedBy?: unknown; exclude?: unknown };
-    const aliases = new Aliases();
-    const sets: string[] = [];
-    if (who.developerId !== undefined && row.addedBy === who.developerId) sets.push(`${aliases.name("row")}.${aliases.name("addedBy")} = ${aliases.value(ERASED_DEVELOPER_ID)}`);
-    if (Array.isArray(row.exclude) && row.exclude.some((id) => typeof id === "string" && who.ids.includes(id))) sets.push(`${aliases.name("row")}.${aliases.name("exclude")} = ${aliases.value(row.exclude.filter((id) => !(typeof id === "string" && who.ids.includes(id))))}`);
-    if (sets.length === 0) continue;
-    try {
-      await table.documentClient.send(new UpdateCommand({
-        TableName: table.tableName, Key: key, UpdateExpression: `SET ${sets.join(", ")}`, ConditionExpression: `attribute_exists(${aliases.name("pk")})`,
-        ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
-      }));
-      touched += 1;
-    } catch (error) {
-      if (!(error instanceof Error) || error.name !== "ConditionalCheckFailedException") throw error; // the change was decided meanwhile: nothing left to scrub
-    }
-  }
-  return touched;
 }

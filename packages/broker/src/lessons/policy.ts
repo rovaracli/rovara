@@ -133,7 +133,7 @@ export async function resolveLearning(reader: LearningSettingsReader, workspaceI
 }
 
 /**
- * Why `resolveLearning` said Off, for the one read that tells the person: "off" (the project's own choice, or the company's lock agreeing), "locked" (the company's lock forces Off while the project's choice is on),
+ * Why `resolveLearning` said Off, for the one read that tells the person: "off" (the project's own choice, with no company lock on Off), "locked" (the company's lock is Off, whatever the project's own choice is),
  * or "unreadable" (the setting could not be read or does not parse: turning learning on would change nothing, so the person is told to retry). Only asked after `resolveLearning` already answered Off.
  */
 export async function whyLearningOff(reader: LearningSettingsReader, workspaceId: string, project: string): Promise<"off" | "locked" | "unreadable"> {
@@ -142,7 +142,8 @@ export async function whyLearningOff(reader: LearningSettingsReader, workspaceId
   const own = LearningModeSchema.safeParse(settings.mode ?? DEFAULT_LEARNING_MODE);
   const lock = settings.companyLock === undefined ? undefined : LearningModeSchema.safeParse(settings.companyLock);
   if (!own.success || (lock !== undefined && !lock.success)) return "unreadable";
-  if (lock?.success === true && lock.data === "Off" && own.data !== "Off") return "locked";
+  // The company's lock is Off: turning the project's own switch on would change nothing, so say so, whether or not the project's own choice is Off too (T9, Minor B of the T8 re-review).
+  if (lock?.success === true && lock.data === "Off") return "locked";
   return own.data === "Off" ? "off" : "unreadable";
 }
 

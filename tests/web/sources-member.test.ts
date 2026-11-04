@@ -81,7 +81,7 @@ describe("T8: learning is off for the project", () => {
  });
  it("a company lock gives its own line, with the existing company wording", async () => {
   const f = openSources({ lessonsSources: refusal("LEARNING_LOCKED", "Learning is off for this project because of a company setting.", 404) });
-  expect(await screen.findByText("Learning is off for this project. Your company set this to be stricter than the project's own choice.")).toBeTruthy();
+  expect(await screen.findByText("Learning is off for this project. Your company's setting keeps it off, so turning it on here would change nothing.")).toBeTruthy();
   expect(screen.queryByText(/Turn learning on/u)).toBeNull();
   expect(screen.queryByText(/isn't set up/u)).toBeNull();
   expect(f.recordCalls()).toHaveLength(0);

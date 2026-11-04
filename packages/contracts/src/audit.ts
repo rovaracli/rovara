@@ -234,9 +234,6 @@ export const AUDIT_ACTIONS = [
   "record.source_added",
   "record.source_changed",
   "record.source_removed",
-  // A less-safe source change (a private channel, DMs, a longer retention in Enterprise) waits for a second eligible person; then it is decided (approved or rejected).
-  "record.source_change_proposed",
-  "record.source_change_decided",
   "record.tombstoned",
   "record.erased",
   // Tracker people (lane team-record-links): an admin mapped a Linear or Jira person to a member of the company, or took the mapping away. The target is the member; the tool's id and name never go in.
@@ -549,13 +546,11 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company.second_review_verdict_withdrawn": ["model"],
   // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
   // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
-  "record.source_added": ["source", "retention", "restricted"],
-  "record.source_changed": ["source", "fromRetention", "toRetention", "enabled"],
+  // Owner decision 2026-11-04: no second person for a source change; it applies at once. `widened` (only when the write widened something, Enterprise) is the fixed words `retention_raise`, `private_channel`, `dm`, `mpim`
+  // joined with commas, in that order: what an auditor looks for. The place (scope) and the person's words never go in: the target names the source row.
+  "record.source_added": ["source", "retention", "restricted", "widened"],
+  "record.source_changed": ["source", "fromRetention", "toRetention", "enabled", "widened"],
   "record.source_removed": ["source"],
-  // `reasons` is the fixed words (`private_channel`, `dm`, `mpim`, `retention_raise`) joined with commas, in that order. `decision` is `approved` or `rejected`; `soleOwner` is true when the only eligible approver decided their own change.
-  // The place (scope), the change id and the proposer's words never go in: the target names the source row.
-  "record.source_change_proposed": ["source", "reasons"],
-  "record.source_change_decided": ["source", "decision", "soleOwner"],
   "record.tombstoned": ["source", "cause", "count"],
   "record.erased": ["cause", "rows", "facts", "lessons", "vectors"],
   // `source` is `linear` or `jira`.

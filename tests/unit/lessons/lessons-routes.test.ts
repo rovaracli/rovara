@@ -224,6 +224,8 @@ describe("approving", () => {
     // The company's lock forces Off while the project's own choice is on.
     expect(await codeOf({ mode: "On", companyLock: "Off" })).toEqual(["LEARNING_LOCKED", 404, "LEARNING_LOCKED: Learning is off for this project because of a company setting."]);
     expect((await codeOf({ companyLock: "Off" }))[0]).toBe("LEARNING_LOCKED"); // the project's own choice is the default
+    // T9 (Minor B of the T8 re-review): the project's own choice is Off AND the company lock is Off: turning the project's switch on would change nothing, so the person is told about the lock.
+    expect((await codeOf({ mode: "Off", companyLock: "Off" }))[0]).toBe("LEARNING_LOCKED");
     // A setting that does not parse (a mode, a lock, an expiry) is not "off": the person is asked to retry.
     expect((await codeOf({ mode: "Sometimes" as never }))[0]).toBe("RUNTIME_UNAVAILABLE");
     expect((await codeOf({ companyLock: "Sometimes" as never }))[0]).toBe("RUNTIME_UNAVAILABLE");

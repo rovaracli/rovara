@@ -17,26 +17,18 @@ export function resetLessons(): void { state = fresh();sources = freshSources();
 // The Team record's source rows (source-row lane T5): the editors' view and the writes of `/record/sources`. Off until a test switches editing on; until then the route is absent (404) and the Sources tab is the read-only list.
 interface SourceMock { kind: string; scope: string; retention: string; audience: string; enabled: boolean; revision: number; exclude: string[] }
 const SOURCE_REPOS = [{ name: "payments-api", scope: "github:repo/9" }, { name: "web-app", scope: "github:repo/12" }];
-function freshSources() { return { editing: false, rows: [{ kind: "github", scope: "github:repo/9", retention: "C", audience: "project", enabled: true, revision: 1, exclude: [] }] as SourceMock[], waiting: [{ changeId: "chg-slack-1", source: "slack", scope: "slack:T1/C9", kind: "add" as const, reasons: ["private_channel"] }] }; }
+function freshSources() { return { editing: false, rows: [{ kind: "github", scope: "github:repo/9", retention: "C", audience: "project", enabled: true, revision: 1, exclude: [] }] as SourceMock[] }; }
 let sources = freshSources();
 export function setSourceEditing(on: boolean): void { sources.editing = on; }
 const sourcesView = () => SourcesAdminViewSchema.parse({
  sources: sources.rows.map(row => ({ kind: row.kind, scope: row.scope, enabled: row.enabled, retention: row.retention, health: "ok", audience: row.audience, excluded: row.exclude.length, updatedAt: "2026-10-30T10:00:00.000Z", paused: false, revision: row.revision, addedBy: "a".repeat(64), exclude: row.exclude })),
- otherPaused: 0, canEdit: true, soleApprover: false, offered: { github: ["A", "B", "C", "D"], rovara: ["A", "B", "C", "D"], slack: ["A", "B"], linear: ["A", "B", "C"], jira: ["A", "B", "C"] }, repositories: SOURCE_REPOS,
- pending: sources.waiting.map(change => ({ ...change, proposedByYou: false, expiresAt: new Date(Date.now() + 5 * 86_400_000).toISOString() })),
+ otherPaused: 0, canEdit: true, offered: { github: ["A", "B", "C", "D"], rovara: ["A", "B", "C", "D"], slack: ["A", "B"], linear: ["A", "B", "C"], jira: ["A", "B", "C"] }, repositories: SOURCE_REPOS,
 });
 async function sourcesRoute({ method, body, json, record }: MockExchange): Promise<void> {
  if (!sources.editing) { json(404, { error: { code: "NOT_FOUND", message: "Not found." } });return; }
  if (method === "GET") { json(200, sourcesView());return; }
  const input = await body();record(input);
  const parsed = SourceWriteBodySchema.parse(input);
- if (parsed.action === "approve" || parsed.action === "reject") {
-  const waiting = sources.waiting.find(change => change.changeId === parsed.changeId);
-  if (waiting === undefined) { json(404, { error: { code: "NOT_FOUND", message: "Not found." } });return; }
-  sources.waiting = sources.waiting.filter(change => change !== waiting);
-  if (parsed.action === "reject") { json(200, { status: "rejected" });return; }
-  sources.rows.push({ kind: waiting.source, scope: waiting.scope, retention: "B", audience: "maintainers", enabled: true, revision: 1, exclude: [] });json(200, { status: "saved", revision: 1 });return;
- }
  if (parsed.action === "add") { sources.rows.push({ kind: parsed.source, scope: parsed.scope, retention: parsed.retention, audience: parsed.audienceDefault, enabled: parsed.enabled, revision: 1, exclude: parsed.exclude ?? [] });json(200, { status: "saved", revision: 1 });return; }
  const found = sources.rows.find(row => row.kind === parsed.source && row.scope === parsed.scope);
  if (found === undefined) { json(404, { error: { code: "NOT_FOUND", message: "Not found." } });return; }

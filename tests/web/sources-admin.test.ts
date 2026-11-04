@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
-// T5: the Sources tab for a person who may edit sources: add, change, remove, and approve or reject a waiting change. The server decides every rule; these tests hold what the screen shows and sends.
+// T5: the Sources tab for a person who may edit sources: add, change and remove (T9: every change applies at once; nothing waits for a second person). The server decides every rule; these tests hold what the screen shows and sends.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { SourceWriteBodySchema } from "@agentx/contracts/web";
-import { ok } from "./support/lessons-fixture.js";
-import { adminRow, adminView, flat, pendingChange, wrapped } from "./support/sources-fixture.js";
+import { adminRow, adminView, flat, wrapped } from "./support/sources-fixture.js";
 import { openSources } from "./support/sources-render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
@@ -94,17 +93,17 @@ describe("adding a source", () => {
   await waitFor(() => { expect(f.posts).toHaveLength(1); });
   expect(f.posts[0]).toMatchObject({ action: "add", source: "rovara", scope: "rovara:project/payments", retention: "C" });
  });
- it("adds a Slack channel by the place typed, and when the server says it waits for a second person says that, without calling the channel public or private itself", async () => {
-  const f = await openEditor({ write: () => ({ status: 202, body: { status: "needs_approval", changeId: "chg-new", expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString() } }) });
+ it("adds a Slack channel by the place typed and says it was added at once (T9: no second person), without calling the channel public or private itself", async () => {
+  const f = await openEditor();
   const form = screen.getByRole("region", { name: "Add a source" });
   pick("What to add", "slack");
   fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "  slack:T1/C9  " } });
   expect(within(form).getByText(/Rovara checks the channel itself/u)).toBeTruthy();
   pick("How long Rovara keeps it", "B", form);
   fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
-  expect(await screen.findByText(/needs a second person to approve it/u)).toBeTruthy();
-  expect(f.posts[0]).toMatchObject({ action: "add", source: "slack", scope: "slack:T1/C9", retention: "B", audienceDefault: "maintainers" });
-  expect(document.body.textContent).not.toMatch(/\b(public|private)\b/iu);
+  expect(await screen.findByText("Source added.")).toBeTruthy();
+  expect(f.posts[0]).toEqual({ action: "add", requestId: expect.stringMatching(UUID) as string, source: "slack", scope: "slack:T1/C9", retention: "B", audienceDefault: "maintainers", enabled: true });
+  expect(document.body.textContent).not.toMatch(/\b(public|private)\b|second person|waiting/iu);
  });
  it("says what the server's refusal means in fixed words: a source that cannot be used, a kind not yet supported, unavailable", async () => {
   let answer = flat("SOURCE_NOT_ALLOWED", "Direct messages can't be a source in Public.", 422);
@@ -185,13 +184,14 @@ describe("changing a source", () => {
   expect(document.body.textContent).not.toContain("12:01");
   await waitFor(() => { expect(f.recordReads().length).toBeGreaterThan(reads); });
  });
- it("a change that waits for a second person says so and the waiting card appears after the list is read again", async () => {
-  const f = await openEditor({ write: () => ({ status: 202, body: { status: "needs_approval", changeId: "chg-r", expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString() } }) });
-  f.state.view = adminView({ pending: [pendingChange({ changeId: "chg-r", source: "github", scope: "github:repo/9", kind: "change", reasons: ["retention_raise"], proposedByYou: true })] });
+ it("a raised retention is saved at once: the screen says Saved and offers no waiting card, no Approve and no Reject (T9)", async () => {
+  const f = await openEditor();
   pick("How long Rovara keeps it", "D", row(/GitHub/u));
   fireEvent.click(within(row(/GitHub/u)).getByRole("button", { name: "Save changes" }));
-  expect(await screen.findByText(/needs a second person to approve it/u)).toBeTruthy();
-  expect(await screen.findByText("Keeping items longer")).toBeTruthy();
+  expect(await screen.findByText("Saved.")).toBeTruthy();
+  expect(f.posts[0]).toMatchObject({ action: "change", retention: "D", expectedRevision: 3 });
+  expect(document.body.textContent).not.toMatch(/second person|waiting|Approve|Reject/iu);
+  expect(screen.queryByRole("button", { name: /Approve|Reject/u })).toBeNull();
  });
 });
 
@@ -224,67 +224,120 @@ describe("removing a source", () => {
  });
 });
 
-describe("changes waiting for a second person", () => {
- const view = (pending: unknown[], over: Record<string, unknown> = {}) => adminView({ pending, ...over });
- it("the person who made it sees Waiting and no Approve or Reject", async () => {
-  await openEditor({ view: view([pendingChange({ proposedByYou: true })]) });
-  const card = screen.getByRole("region", { name: /^Waiting for a second person/u });
-  expect(within(card).getByText("Waiting")).toBeTruthy();
-  expect(within(card).queryByRole("button", { name: "Approve" })).toBeNull();
-  expect(within(card).queryByRole("button", { name: "Reject" })).toBeNull();
-  expect(within(card).getByText("A private channel")).toBeTruthy();
-  expect(within(card).getByText("slack:T1/C9")).toBeTruthy();
+describe("T9: no second person on the screen", () => {
+ it("a view from an older server that still carries waiting changes shows none of them: no card, no Approve, no sign-in-again line", async () => {
+  await openEditor({ view: { ...adminView(), pending: [{ changeId: "chg-one", source: "slack", scope: "slack:T1/C9", kind: "add", reasons: ["private_channel"], proposedByYou: false, expiresAt: new Date(Date.now() + 86_400_000).toISOString() }], soleApprover: false } });
+  expect(screen.queryByRole("region", { name: /Waiting/u })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Approve|Reject|Sign in again/u })).toBeNull();
+  expect(document.body.textContent).not.toMatch(/second person|waiting for approval/iu);
  });
- it("another person sees Approve and Reject; Approve sends the change id alone and says it is in effect", async () => {
-  const f = await openEditor({ view: view([pendingChange()]) });
-  const card = screen.getByRole("region", { name: /^Waiting for a second person/u });
-  expect(within(card).queryByText("Waiting")).toBeNull();
-  f.state.view = view([]);
-  fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
-  expect(await screen.findByText("Approved. The change is in effect.")).toBeTruthy();
-  expect(f.posts[0]).toEqual({ action: "approve", changeId: "chg-one" });
- });
- it("Reject sends the change id alone", async () => {
-  const f = await openEditor({ view: view([pendingChange()]), write: body => ok({ status: body.action === "reject" ? "rejected" : "saved", ...(body.action === "reject" ? {} : { revision: 1 }) }) });
-  fireEvent.click(within(screen.getByRole("region", { name: /^Waiting for a second person/u })).getByRole("button", { name: "Reject" }));
-  expect(await screen.findByText("Change rejected.")).toBeTruthy();
-  expect(f.posts[0]).toEqual({ action: "reject", changeId: "chg-one" });
- });
- it("the only person who can approve (soleApprover) sees Approve on their own change with the fixed line, and no Reject", async () => {
-  const f = await openEditor({ view: view([pendingChange({ proposedByYou: true })], { soleApprover: true }) });
-  const card = screen.getByRole("region", { name: /^Waiting for a second person/u });
-  expect(within(card).getByText("You're the only person who can approve this.")).toBeTruthy();
-  expect(within(card).queryByText("Waiting")).toBeNull();
-  expect(within(card).queryByText(/for another person to approve this/u)).toBeNull();
-  fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
-  await waitFor(() => { expect(f.posts).toHaveLength(1); });
-  expect(f.posts[0]).toEqual({ action: "approve", changeId: "chg-one" });
-  expect(within(card).queryByRole("button", { name: "Reject" })).toBeNull();
- });
- it("each card is named by its source kind and place, so two waiting changes can be told apart", async () => {
-  await openEditor({ view: view([pendingChange(), pendingChange({ changeId: "chg-two", source: "linear", scope: "linear:team/ENG", reasons: ["retention_raise"] })]) });
-  expect(screen.getByRole("region", { name: "Waiting for a second person: Slack slack:T1/C9" })).toBeTruthy();
-  expect(screen.getByRole("region", { name: "Waiting for a second person: Linear linear:team/ENG" })).toBeTruthy();
- });
- it("without soleApprover the proposer never sees the sole-approver line", async () => {
-  await openEditor({ view: view([pendingChange({ proposedByYou: true })]) });
-  expect(screen.queryByText("You're the only person who can approve this.")).toBeNull();
- });
- it("asks for a fresh sign-in in fixed words and offers to sign in again", async () => {
-  const f = await openEditor({ view: view([pendingChange()]), write: () => wrapped("REAUTH_REQUIRED", "Sign in again to approve (server text).", 403) });
-  const card = screen.getByRole("region", { name: /^Waiting for a second person/u });
-  fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
-  expect(await within(card).findByText("Sign in again to approve.")).toBeTruthy();
-  fireEvent.click(within(card).getByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalledWith("/app/live");
+ it("a refusal that asks for a fresh sign-in is no longer a source answer: it gets the generic sentence and no sign-in button", async () => {
+  await openEditor({ write: () => wrapped("REAUTH_REQUIRED", "Sign in again (server text).", 403) });
+  const github = row(/GitHub/u);
+  fireEvent.click(within(github).getByRole("switch", { name: "On" }));
+  fireEvent.click(within(github).getByRole("button", { name: "Save changes" }));
+  expect(await within(github).findByText("Couldn't save that. Try again.")).toBeTruthy();
+  expect(within(github).queryByRole("button", { name: "Sign in again" })).toBeNull();
   expect(document.body.textContent).not.toContain("server text");
  });
 });
 
-describe("accessibility", () => {
- it("has no axe violations with sources, a waiting change and the add form open, in light and dark", async () => {
+describe("T9: the Public edition's notes-with-links switch", () => {
+ const NOTE = "Rovara keeps short notes with links to the messages, never the messages themselves. See Slack's API terms.";
+ const publicView = (over: Record<string, unknown> = {}) => adminView({ notesSwitch: true, offered: { github: ["A", "B", "C", "D"], rovara: ["A", "B", "C", "D"], slack: ["A", "B"], linear: ["A", "B", "C"], jira: ["A", "B", "C"], codehost: ["A", "B", "C", "D"], mcp: ["A"] }, ...over });
+ const slackRow = (over: Record<string, unknown> = {}) => adminRow({ kind: "slack", scope: "slack:T1/C9", retention: "A", ...over });
+ const slackRegion = () => row(/Slack slack:T1\/C9/u);
+
+ it("adds a Slack channel with the switch off: retention A (read live only), and no notesOptIn in the body", async () => {
+  const f = await openEditor({ view: publicView({ sources: [] }) });
+  const form = screen.getByRole("region", { name: "Add a source" });
+  pick("What to add", "slack");
+  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "slack:T1/C9" } });
+  expect(within(form).queryByLabelText("How long Rovara keeps it")).toBeNull();
+  const notes = within(form).getByRole("switch", { name: "Keep notes with links" });
+  expect(notes.getAttribute("aria-checked")).toBe("false");
+  expect(within(form).getByText(NOTE)).toBeTruthy();
+  fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
+  await waitFor(() => { expect(f.posts).toHaveLength(1); });
+  expect(f.posts[0]).toEqual({ action: "add", requestId: expect.stringMatching(UUID) as string, source: "slack", scope: "slack:T1/C9", retention: "A", audienceDefault: "maintainers", enabled: true });
+  expect(f.posts[0]).not.toHaveProperty("notesOptIn");
+ });
+ it("adds a Slack channel with the switch on: retention B and notesOptIn true", async () => {
+  const f = await openEditor({ view: publicView({ sources: [] }) });
+  const form = screen.getByRole("region", { name: "Add a source" });
+  pick("What to add", "slack");
+  fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "slack:T1/C9" } });
+  fireEvent.click(within(form).getByRole("switch", { name: "Keep notes with links" }));
+  expect(within(form).getByRole("switch", { name: "Keep notes with links" }).getAttribute("aria-checked")).toBe("true");
+  fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
+  await waitFor(() => { expect(f.posts).toHaveLength(1); });
+  expect(f.posts[0]).toMatchObject({ action: "add", source: "slack", scope: "slack:T1/C9", retention: "B", notesOptIn: true });
+ });
+ it("the switch is for Slack only: a repository and a Linear team still choose a retention and show no note", async () => {
+  await openEditor({ view: publicView({ sources: [] }) });
+  const form = screen.getByRole("region", { name: "Add a source" });
+  for (const kind of ["repository", "linear"]) {
+   pick("What to add", kind);
+   expect(within(form).getByLabelText("How long Rovara keeps it")).toBeTruthy();
+   expect(within(form).queryByRole("switch", { name: "Keep notes with links" })).toBeNull();
+  }
+  expect(screen.queryByText(NOTE)).toBeNull();
+ });
+ it("Enterprise (no notesSwitch) never shows the switch or the note: a Slack channel still chooses a retention", async () => {
+  await openEditor({ view: adminView({ sources: [slackRow({ retention: "C" })] }) });
+  const form = screen.getByRole("region", { name: "Add a source" });
+  pick("What to add", "slack");
+  expect(within(form).getByLabelText("How long Rovara keeps it")).toBeTruthy();
+  expect(screen.queryByRole("switch", { name: "Keep notes with links" })).toBeNull();
+  expect(within(slackRegion()).getByLabelText("How long Rovara keeps it")).toBeTruthy();
+  expect(screen.queryByText(NOTE)).toBeNull();
+ });
+ it("a Slack row shows the switch with the note instead of a retention choice; it reflects B with the opt-in, and turning it on sends retention B + notesOptIn true", async () => {
+  const f = await openEditor({ view: publicView({ sources: [slackRow()] }) });
+  const slack = slackRegion();
+  expect(within(slack).queryByLabelText("How long Rovara keeps it")).toBeNull();
+  const notes = within(slack).getByRole("switch", { name: "Keep notes with links" });
+  expect(notes.getAttribute("aria-checked")).toBe("false");
+  expect(within(slack).getByText(NOTE)).toBeTruthy();
+  expect(within(slack).getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
+  fireEvent.click(notes);
+  fireEvent.click(within(slack).getByRole("button", { name: "Save changes" }));
+  await waitFor(() => { expect(f.posts).toHaveLength(1); });
+  expect(f.posts[0]).toEqual({ action: "change", requestId: expect.stringMatching(UUID) as string, source: "slack", scope: "slack:T1/C9", expectedRevision: 3, retention: "B", notesOptIn: true });
+ });
+ it("turning the switch off on a row kept at B with the opt-in sends retention A and notesOptIn null", async () => {
+  const f = await openEditor({ view: publicView({ sources: [slackRow({ retention: "B", notesOptIn: true })] }) });
+  const slack = slackRegion();
+  expect(within(slack).getByRole("switch", { name: "Keep notes with links" }).getAttribute("aria-checked")).toBe("true");
+  fireEvent.click(within(slack).getByRole("switch", { name: "Keep notes with links" }));
+  fireEvent.click(within(slack).getByRole("button", { name: "Save changes" }));
+  await waitFor(() => { expect(f.posts).toHaveLength(1); });
+  expect(f.posts[0]).toMatchObject({ action: "change", retention: "A", notesOptIn: null, expectedRevision: 3 });
+ });
+ it("other changes to a Slack row in Public (on or off, who sees it) send no retention and no notesOptIn", async () => {
+  const f = await openEditor({ view: publicView({ sources: [slackRow()] }) });
+  const slack = slackRegion();
+  fireEvent.click(within(slack).getByRole("switch", { name: "On" }));
+  fireEvent.click(within(slack).getByRole("button", { name: "Save changes" }));
+  await waitFor(() => { expect(f.posts).toHaveLength(1); });
+  expect(f.posts[0]).not.toHaveProperty("retention");
+  expect(f.posts[0]).not.toHaveProperty("notesOptIn");
+ });
+ it("has no axe violations with the switch and its note, in light and dark", async () => {
   for (const theme of ["light", "dark"] as const) {
-   const f = openSources({ view: adminView({ pending: [pendingChange()], sources: [adminRow(), adminRow({ kind: "rovara", scope: "rovara:project/payments" })] }) }, theme);
+   const f = openSources({ view: publicView({ sources: [slackRow({ retention: "B", notesOptIn: true })] }) }, theme);
+   await screen.findByRole("heading", { name: "Add a source" });
+   pick("What to add", "slack");
+   await expectNoAxeViolations(f.container);
+   f.unmount();
+  }
+ });
+});
+
+describe("accessibility", () => {
+ it("has no axe violations with sources and the add form open, in light and dark", async () => {
+  for (const theme of ["light", "dark"] as const) {
+   const f = openSources({ view: adminView({ sources: [adminRow(), adminRow({ kind: "rovara", scope: "rovara:project/payments" })] }) }, theme);
    await screen.findByRole("heading", { name: "Add a source" });
    pick("What to add", "slack");
    fireEvent.click(within(row(/GitHub/u)).getByRole("button", { name: "Remove" }));
@@ -391,23 +444,27 @@ describe("T8 round 1: refreshing, matching the server's rule, and the other refu
   expect(within(form).queryByText(/was just removed/u)).toBeNull();
   expect(send.disabled).toBe(false);
  });
- it("typing a place that matches a clearing row reads the editors' view once more, not again while it stays the same place, and again for another matching place", async () => {
-  const f = await openEditor({ view: adminView({ sources: [], clearing: [clearing({ source: "slack", scope: "slack:T1/C9" })] }) });
+ it("typing a place that matches a clearing row reads the editors' view once more per clearing row, not once per keystroke (T9, Minor A of the T8 re-review)", async () => {
+  const f = await openEditor({ view: adminView({ sources: [], clearing: [clearing({ source: "slack", scope: "slack:T1/C9" }), clearing({ source: "slack", scope: "slack:T1/C7" })] }) });
   const before = f.recordReads().length;
   const form = screen.getByRole("region", { name: "Add a source" });
   const type = (value: string) => fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value } });
+  const settle = async () => { await new Promise(resolve => setTimeout(resolve, 50)); };
   pick("What to add", "slack");
   type("slack:T1/C8"); // no match: nothing is read
   expect(f.recordReads().length).toBe(before);
   type("slack:T1/C9");
   await waitFor(() => { expect(f.recordReads().length).toBe(before + 1); });
-  type("slack:T1/C9 "); // the same place (trimmed): not read again
-  await new Promise(resolve => setTimeout(resolve, 50));
+  // More characters after the match still match the same clearing row (a place below it): the same row, so no new read for each keystroke.
+  for (const typed of ["slack:T1/C9/", "slack:T1/C9/e", "slack:T1/C9/ex", "slack:T1/C9 "]) { type(typed);await settle(); }
   expect(f.recordReads().length).toBe(before + 1);
+  // Another clearing row is a new match and reads once more.
+  type("slack:T1/C7");
+  await waitFor(() => { expect(f.recordReads().length).toBe(before + 2); });
   // The worker finished meanwhile: the next read has no clearing row and the refusal goes.
   f.state.view = adminView({ sources: [] });
-  type("slack:T1");
-  await waitFor(() => { expect(f.recordReads().length).toBe(before + 2); });
+  type("slack:T1/C9");
+  await waitFor(() => { expect(f.recordReads().length).toBe(before + 3); });
   await waitFor(() => { expect(within(form).queryByText(/was just removed/u)).toBeNull(); });
  });
  it("says the queue is busy in its own sentence for SOURCE_REMOVAL_BUSY, never 'just removed'", async () => {

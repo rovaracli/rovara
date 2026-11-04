@@ -3,18 +3,16 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, recordFactKey, recordItemHeadKey, recordScopeHash, recordScopeMarkerKey, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, recordFactKey, recordItemHeadKey, recordScopeHash, recordScopeMarkerKey, type OrgId } from "@agentx/contracts";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import type { SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
-import { readApproverRoster } from "../../../packages/broker/src/org/second-person-evidence.js";
-import { secondPersonFromRecords } from "../../../packages/broker/src/org/test-environment.js";
 import { eraseProject } from "../../../packages/broker/src/team-record/erase.js";
 import { DEFAULT_DELETE_BUDGET, runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { hiddenByPending } from "../../../packages/broker/src/team-record/acl.js";
 import { advanceItemHead, isScopeClosed } from "../../../packages/broker/src/team-record/item-head.js";
 import { listScopeWork, pendingHidesOf, putScopeWork, sourceRowItem } from "../../../packages/broker/src/team-record/store.js";
 import type { CompanyLocks } from "../../../packages/broker/src/team-record/edition.js";
-import { AUDIT_CAPTURE_TABLE, capturingAuditDeps } from "../../support/audit-capture.js";
+import { capturingAuditDeps } from "../../support/audit-capture.js";
 import type { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { FACT_A, FACT_B, addFact, deleteDeps, idsOf } from "../../support/team-record-delete.js";
 import { GITHUB_SCOPE, ORG_A, ORG_B, caller, githubDraft, rows, world, type World } from "../../support/team-record-core.js";
@@ -22,7 +20,7 @@ import { GITHUB_SCOPE, ORG_A, ORG_B, caller, githubDraft, rows, world, type Worl
 // ---- people. Every id is a 64-character hex string, as the company's records keep them.
 const OWNER = "a".repeat(64), ADMIN = "b".repeat(64), MAINT = "c".repeat(64), CONTRIB = "d".repeat(64), VIEWER = "e".repeat(64), AUDITOR = "f".repeat(64), OTHER_ORG_MAINT = "1".repeat(64), OTHER_ORG_OWNER = "2".repeat(64);
 type OrgRole = "owner" | "admin" | "member" | "auditor";
-interface Who { id: string; orgRole: OrgRole; projectRole: "maintainer" | "contributor" | "viewer" | undefined; browser?: boolean; fresh?: boolean }
+interface Who { id: string; orgRole: OrgRole; projectRole: "maintainer" | "contributor" | "viewer" | undefined; browser?: boolean }
 const WHO = {
   owner: { id: OWNER, orgRole: "owner", projectRole: "maintainer" },
   admin: { id: ADMIN, orgRole: "admin", projectRole: "maintainer" },
@@ -68,14 +66,7 @@ const dependencies = (h: Harness) => ({
 });
 
 function contextOf(h: Harness, who: Who, body: unknown, over: Partial<SourceWriteContext> = {}): SourceWriteContext {
-  const evidence = { documentClient: h.w.db, tableName: AUDIT_CAPTURE_TABLE, signInTableName: "signin", now: () => h.w.clock.ms };
-  return {
-    orgRole: who.orgRole, browserSession: who.browser !== false, body: () => body, audit: h.audit.deps,
-    secondPerson: secondPersonFromRecords({ ...evidence, soleOwnerTable: h.w.table }),
-    roster: (scope) => readApproverRoster(evidence, scope),
-    freshSignIn: async () => { if (who.fresh === false) throw agentXError("REAUTH_REQUIRED", "sign in again"); },
-    ...over,
-  };
+  return { orgRole: who.orgRole, browserSession: who.browser !== false, body: () => body, audit: h.audit.deps, ...over };
 }
 
 const PATH = (project: string) => `/v1/app/projects/${project}/record/sources`;
@@ -91,7 +82,6 @@ const add = (over: Record<string, unknown> = {}) => ({ action: "add", requestId:
 const change = (expectedRevision: number, over: Record<string, unknown> = {}) => ({ action: "change", requestId: randomUUID(), source: "github", scope: "github:repo/9", expectedRevision, ...over });
 
 const sourceRows = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE");
-const proposals = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_CHANGE");
 const claims = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_SCOPE");
 const requests = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_REQUEST");
 const flushed = async (h: Harness) => { await new Promise((resolve) => setTimeout(resolve, 0)); return h.audit.recorded(); };
@@ -225,15 +215,11 @@ describe("the revision fence and replay", () => {
 });
 
 describe("one transaction", () => {
-  it("the row, its claim, the waiting changes of that place, the request, the audit and the queue item are written together", async () => {
+  it("the row, its claim, the request, the audit and the queue item are written together; another place's row stays", async () => {
     const h = harness();
     await seeded(h);
-    // Two waiting changes for this place (Enterprise: a raise waits) and one for another place that must stay.
     h.repos.set(`${ORG_A}/web`, [9, 11]);
-    expect((await post(h, WHO.owner, change(1, { retention: "D" }))).status).toBe(202);
-    expect((await post(h, WHO.owner, change(1, { retention: "D", enabled: false }))).status).toBe(202);
-    expect((await post(h, WHO.owner, add({ scope: "github:repo/11", retention: "D" }))).status).toBe(202);
-    expect(proposals(h)).toHaveLength(3);
+    expect((await post(h, WHO.owner, add({ scope: "github:repo/11", retention: "D" }))).status).toBe(200); // saved at once (T9)
     const requestsBefore = requests(h).length;
     const sent: number[] = [];
     const send = h.w.db.send.bind(h.w.db);
@@ -242,9 +228,8 @@ describe("one transaction", () => {
     expect(await post(h, WHO.owner, remove(1))).toEqual({ status: 200, body: { status: "removed" } });
     expect(sent).toHaveLength(1);
     expect(sent[0]).toBeLessThanOrEqual(100);
-    expect(sourceRows(h)).toHaveLength(0);
-    expect(claims(h)).toHaveLength(0);
-    expect(proposals(h).map((item) => (item.scope as string))).toEqual(["github:repo/11"]);
+    expect(sourceRows(h).map((row) => row.scope)).toEqual(["github:repo/11"]);
+    expect(claims(h)).toHaveLength(1);
     expect(requests(h)).toHaveLength(requestsBefore + 1);
     const [work] = queue(h);
     expect(work).toMatchObject({ type: "tombstone", system: "github", scope: GITHUB_SCOPE, cause: "excluded", hidePending: true, childPending: true });
@@ -255,15 +240,14 @@ describe("one transaction", () => {
     expect(JSON.stringify(recorded[0])).not.toContain("repo/9");
   });
 
-  it("if any part loses a race nothing is written: a change decided at the same moment cancels the removal whole", async () => {
+  it("if any part loses a race nothing is written: a change made at the same moment cancels the removal whole", async () => {
     const h = harness();
     await seeded(h);
-    expect((await post(h, WHO.owner, change(1, { retention: "D" }))).status).toBe(202);
     const requestsBefore = requests(h).length;
     const send = h.w.db.send.bind(h.w.db);
     h.w.db.send = async (command: Command) => {
       const seen: unknown = command;
-      if (seen instanceof TransactWriteCommand) for (const item of proposals(h)) h.w.db.delete({ pk: item.pk as string, sk: item.sk as string }); // someone rejects it first
+      if (seen instanceof TransactWriteCommand) h.w.db.set({ ...sourceRows(h)[0]!, revision: 2 }); // someone else saves the row first
       return send(command);
     };
     expect(await post(h, WHO.owner, remove(1))).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
@@ -273,9 +257,9 @@ describe("one transaction", () => {
     expect(requests(h)).toHaveLength(requestsBefore);
     expect(marker(h)).toBeUndefined();
     expect((await flushed(h)).filter((event) => event.action === "record.source_removed")).toHaveLength(0);
-    // Asked again with the world as it is, it goes through.
+    // Asked again with the revision as it is, it goes through.
     h.w.db.send = send;
-    expect(await post(h, WHO.owner, remove(1))).toEqual({ status: 200, body: { status: "removed" } });
+    expect(await post(h, WHO.owner, remove(2))).toEqual({ status: 200, body: { status: "removed" } });
   });
 
   it("a row with no claim (written by the older save path) is removed too; another project's claim is left alone", async () => {
@@ -296,26 +280,6 @@ describe("one transaction", () => {
     await worker(h);
     expect(await post(h, WHO.owner, add(), { project: "api" })).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
     expect(claims(h)[0]).toMatchObject({ project: "api" });
-  });
-
-  it("more than 80 waiting changes for one place refuse the removal (the transaction holds at most 100 items); fewer go through", async () => {
-    const h = harness();
-    await seeded(h);
-    for (let i = 0; i < 85; i += 1) expect((await post(h, WHO.owner, change(1, { retention: "D" }))).status).toBe(202);
-    expect(proposals(h)).toHaveLength(85);
-    const sent: number[] = [];
-    const send = h.w.db.send.bind(h.w.db);
-    h.w.db.send = async (command: Command) => { const seen: unknown = command; if (seen instanceof TransactWriteCommand) sent.push((seen.input.TransactItems ?? []).length); return send(command); };
-    expect(await post(h, WHO.owner, remove(1))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
-    expect(sent).toEqual([]);
-    expect(sourceRows(h)).toHaveLength(1);
-    expect(queue(h)).toHaveLength(0);
-    // Decided changes make room: with 60 left the removal is one transaction of at most 100 items and takes them all.
-    for (const item of proposals(h).slice(0, 25)) h.w.db.delete({ pk: item.pk as string, sk: item.sk as string });
-    expect(await post(h, WHO.owner, remove(1))).toEqual({ status: 200, body: { status: "removed" } });
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toBeLessThanOrEqual(100);
-    expect(proposals(h)).toHaveLength(0);
   });
 });
 
@@ -474,73 +438,16 @@ describe("ingest after a removal", () => {
   });
 });
 
-describe("a waiting change never outlives its row", () => {
-  const approve = (h: Harness, changeId: string) => post(h, WHO.admin, { action: "approve", changeId });
-
-  it("a change waiting when the row is removed goes with it; after the worker and a new add, approving it is CHANGE_STALE and the new row is untouched", async () => {
+describe("a write made against a removed row never fits the row added again", () => {
+  it("after the worker and a new add (revisions count on across a removal), a change or a remove made from the old page is CHANGE_STALE and the new row is untouched", async () => {
     const h = harness();
     await seeded(h);
-    const waiting = await post(h, WHO.owner, change(1, { retention: "D" }));
-    expect(waiting.status).toBe(202);
     await post(h, WHO.owner, remove(1));
-    expect(proposals(h)).toHaveLength(0);
     await worker(h);
     expect(await post(h, WHO.owner, add())).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
-    expect(await approve(h, waiting.body.changeId as string)).toMatchObject({ status: 404, body: { code: "NOT_FOUND" } });
+    expect(await post(h, WHO.owner, change(1, { retention: "D" }))).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
+    expect(await post(h, WHO.owner, remove(1))).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
     expect(sourceRows(h)[0]).toMatchObject({ retention: "C", revision: 2 });
-  });
-
-  it("a change that slipped in between remove's read and its commit is stale for the new row (revisions count on across a removal)", async () => {
-    const h = harness();
-    await seeded(h);
-    const send = h.w.db.send.bind(h.w.db);
-    let late: string | undefined;
-    let inside = false;
-    h.w.db.send = async (command: Command) => {
-      const seen: unknown = command;
-      if (seen instanceof TransactWriteCommand && !inside) {
-        inside = true;
-        const proposed = await post(h, WHO.owner, change(1, { retention: "D" })); // lands first, after remove has listed the waiting changes
-        late = proposed.body.changeId as string;
-      }
-      return send(command);
-    };
-    expect(await post(h, WHO.owner, remove(1))).toEqual({ status: 200, body: { status: "removed" } });
-    h.w.db.send = send;
-    expect(late).toBeDefined();
-    expect(proposals(h)).toHaveLength(1); // the orphan
-    await worker(h);
-    expect(await post(h, WHO.owner, add())).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
-    expect(await approve(h, late!)).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
-    expect(sourceRows(h)[0]).toMatchObject({ retention: "C", revision: 2 });
-  });
-
-  it("a change made before the current row was written is refused even when its revision fits", async () => {
-    const h = harness();
-    await seeded(h);
-    const waiting = await post(h, WHO.owner, change(1, { retention: "D" }));
-    const [stored] = proposals(h);
-    const earlier = (iso: unknown) => new Date(Date.parse(iso as string) - 3_600_000).toISOString(); // a change lives exactly seven days
-    h.w.db.set({ ...stored!, createdAt: earlier(stored!.createdAt), expiresAt: earlier(stored!.expiresAt) });
-    h.w.clock.ms += 1_000; // the row is rewritten later than the change was made, with the same revision number
-    h.w.db.set({ ...sourceRows(h)[0]!, updatedAt: new Date(h.w.clock.ms).toISOString() });
-    expect(await approve(h, waiting.body.changeId as string)).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
-    expect(sourceRows(h)[0]).toMatchObject({ retention: "C", revision: 1 });
-  });
-
-  it("an add that waited before the place was removed is refused afterwards", async () => {
-    const h = harness();
-    h.repos.set(`${ORG_A}/web`, [9, 11]);
-    expect((await post(h, WHO.owner, add({ scope: "github:repo/11", retention: "D" }))).status).toBe(202);
-    const [stored] = proposals(h);
-    // The same place gets a row, then loses it (a marker is left); the old add must not come back.
-    h.w.clock.ms += 1_000;
-    expect(await post(h, WHO.owner, add({ scope: "github:repo/11" }))).toMatchObject({ status: 200 });
-    expect(await post(h, WHO.owner, remove(1, { scope: "github:repo/11" }))).toMatchObject({ status: 200 });
-    await worker(h);
-    h.w.db.set(stored!); // it was still waiting
-    expect(await approve(h, stored!.id as string)).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
-    expect(sourceRows(h)).toHaveLength(0);
   });
 
   it("the revision marker is removed with the project", async () => {

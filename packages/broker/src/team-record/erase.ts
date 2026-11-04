@@ -4,7 +4,7 @@
 // privacy order as a source delete (`purgeItems`): the lake first, a row only after its vector.
 import { markUnstoredChange } from "./prior-edits.js";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { dropScopeClaim, scrubSourceChanges, SOURCE_CHANGE_SK_PREFIX, SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX, SOURCE_SCOPE_SK_PREFIX } from "./source-store.js";
+import { dropScopeClaim, SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX, SOURCE_SCOPE_SK_PREFIX } from "./source-store.js";
 import { LESSON_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, recordDeveloperHash, teamRecordPk, type OrgId } from "@agentx/contracts";
 import type { Item } from "../agents/table-writes.js";
 import { auditRecordErased } from "./audit.js";
@@ -218,8 +218,6 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
         if (context.who.developerId !== undefined) await scrubConfigDeveloper(context.deps.table, config, context.who.developerId);
       }
       if (context.who.developerId !== undefined) await scrubTier0Developer(context.deps.table, context.orgId, project, context.who.developerId);
-      // Waiting source changes hold the proposer, the adder and source ids (`SRCCHG#`).
-      await scrubSourceChanges(context.deps.table, context.orgId, project, { ...(context.who.developerId === undefined ? {} : { developerId: context.who.developerId }), ids: context.ids });
     }
     // The company's own tier-0 floor and proposals live in the workspace's project-less partition.
     if (context.who.developerId !== undefined) await scrubTier0Developer(context.deps.table, context.orgId, undefined, context.who.developerId);
@@ -326,7 +324,7 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 }
 
 /** Everything that lives in a project's partition besides rows, derivation links, facts and source settings: the learning lane's lessons, skills, manifests, snapshots and settings, and the source write route's waiting changes and request items. */
-const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE", SOURCE_CHANGE_SK_PREFIX, SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX] as const;
+const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE", SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
 /** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
 const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX] as const;

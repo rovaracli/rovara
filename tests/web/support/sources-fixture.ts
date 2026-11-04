@@ -9,9 +9,8 @@ type Raw = Record<string, unknown>;
 export const adminRow = (over: Raw = {}) => ({
  kind: "github", scope: "github:repo/9", enabled: true, retention: "C", health: "ok", audience: "project", excluded: 0, updatedAt: "2026-10-30T10:00:00.000Z", paused: false, revision: 3, addedBy: "a".repeat(64), exclude: [], ...over,
 });
-export const pendingChange = (over: Raw = {}) => ({ changeId: "chg-one", source: "slack", scope: "slack:T1/C9", kind: "add", reasons: ["private_channel"], proposedByYou: false, expiresAt: new Date(Date.now() + 5 * 86_400_000).toISOString(), ...over });
 export const adminView = (over: Raw = {}) => SourcesAdminViewSchema.parse({
- sources: [adminRow()], otherPaused: 0, pending: [], canEdit: true, soleApprover: false,
+ sources: [adminRow()], otherPaused: 0, canEdit: true,
  offered: { github: ["A", "B", "C", "D"], rovara: ["A", "B", "C", "D"], slack: ["A", "B"], linear: ["A", "B", "C"], jira: ["A", "B", "C"], codehost: ["A", "B", "C", "D"], mcp: ["A"] },
  repositories: [{ name: "payments-api", scope: "github:repo/9" }, { name: "web-app", scope: "github:repo/12" }], ...over,
 });

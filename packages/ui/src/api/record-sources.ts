@@ -31,7 +31,7 @@ function codeOf(body: unknown): string {
  return typeof code === "string" && CODE.test(code) ? code : "REQUEST_FAILED";
 }
 
-/** One write (add, change, remove, approve, reject). A 200 or a 202 (waiting for a second person) is an answer; anything else throws an `ApiError` carrying only the fixed code. */
+/** One write (add, change, remove). A 200 is the answer (every change applies at once: no second person); anything else throws an `ApiError` carrying only the fixed code. */
 export async function writeSource(host: AppHost, project: string, body: SourceWriteBody): Promise<SourceWriteResult> {
  let response;
  try { response = await host.transport.request({ method: "POST", path: path(project), body, retry: "never" }); }

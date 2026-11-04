@@ -18,11 +18,12 @@ const PLACE_WORDS: Readonly<Record<"slack" | "linear" | "jira", { label: string;
 /** The place and the places above it, itself first (`slack:T1/C9` -> `slack:T1/C9`, `slack:T1`): the same rule as the server's `scopeAndAncestors`, kept here so the screen does not pull the keys module into the web bundle. */
 const withAncestors = (scope: string): string[] => { const out = [scope];for (let at = scope.lastIndexOf("/"); at > 0; at = scope.lastIndexOf("/")) { scope = scope.slice(0, at);out.push(scope); } return out; };
 
-/** True while the place, or one above or below it, of a removed source is still being cleared: what the server refuses (`refuseWhileRemoving`), so the form never disagrees with it. */
-const isClearing = (view: SourcesAdminViewData, source: string, scope: string): boolean => {
+/** The clearing row the place matches, or undefined: the place, or one above or below it, of a removed source whose data is still being cleared. It is what the server refuses (`refuseWhileRemoving`), so the form never disagrees with it. */
+const clearingMatch = (view: SourcesAdminViewData, source: string, scope: string) => {
  const above = new Set(withAncestors(scope));
- return (view.clearing ?? []).some(place => place.source === source && (above.has(place.scope) || place.scope.startsWith(scope + "/")));
+ return (view.clearing ?? []).find(place => place.source === source && (above.has(place.scope) || place.scope.startsWith(scope + "/")));
 };
+const isClearing = (view: SourcesAdminViewData, source: string, scope: string): boolean => clearingMatch(view, source, scope) !== undefined;
 
 /** The kinds this person can add now: only what the server offers a retention for, a repository only from the project's own list (minus the ones already added), the Rovara row once. */
 function addableKinds(view: SourcesAdminViewData): Kind[] {
@@ -36,37 +37,41 @@ function addableKinds(view: SourcesAdminViewData): Kind[] {
 /** Add a source: pick the kind, then the place, how long to keep it and who sees it. The server checks the place (and classifies a Slack channel); this never says what a channel is. */
 export function SourceAdd({ project, view, notify }: { project: string; view: SourcesAdminViewData; notify: (text: string) => void }) {
  const writer = useSourceWrite(project), query = useQueryClient(), kinds = addableKinds(view), [formKey, setFormKey] = useState(0);
- const [kind, setKind] = useState<string>(""), [place, setPlace] = useState(""), [retention, setRetention] = useState(""), [audience, setAudience] = useState<string>("maintainers"), [enabled, setEnabled] = useState(true);
+ const [kind, setKind] = useState<string>(""), [place, setPlace] = useState(""), [retention, setRetention] = useState(""), [audience, setAudience] = useState<string>("maintainers"), [enabled, setEnabled] = useState(true), [notes, setNotes] = useState(false);
  const chosen = kinds.find(candidate => candidate === kind), choices = chosen === undefined ? [] : offeredFor(view.offered, SOURCE_OF[chosen]);
+ // In the Public edition Slack has no retention choice: "notes with links" is a switch (off: A, read live only; on: B with the opt-in). Enterprise never shows it.
+ const notesMode = chosen === "slack" && view.notesSwitch === true;
  const repositories = (view.repositories ?? []).filter(repository => !view.sources.some(row => row.kind === "github" && row.scope === repository.scope));
  const scope = chosen === "rovara" ? "rovara:project/" + project : place.trim();
  // A place that was just removed is refused up front, in the server's own words (it refuses too).
- const clearingNow = chosen !== undefined && isClearing(view, SOURCE_OF[chosen], scope);
- // The worker may have finished since the view was read: when the person picks or types a place that matches a clearing row, read the view once more (once per place, not on every render).
- const matchedPlace = chosen !== undefined && clearingNow ? SOURCE_OF[chosen] + "|" + scope : "";
+ const match = chosen === undefined ? undefined : clearingMatch(view, SOURCE_OF[chosen], scope), clearingNow = match !== undefined;
+ // The worker may have finished since the view was read: when the person picks or types a place that matches a clearing row, read the view once more. Keyed on the clearing row, not on the typed text, so one match is one read.
+ const matchedPlace = match === undefined ? "" : match.source + "|" + match.scope;
  useEffect(() => { if (matchedPlace !== "") void query.invalidateQueries({ queryKey: sourcesAdminKey(project) }); }, [matchedPlace, project, query]);
  if (kinds.length === 0) return <section aria-label={T.SRC_ADD} className="rv-lessons-section"><h3>{T.SRC_ADD}</h3><p className="rv-muted">{T.SRC_ADD_NONE}</p></section>;
- const ready = chosen !== undefined && retention !== "" && choices.includes(retention) && scope !== "" && !clearingNow;
+ const chosenRetention = notesMode ? (notes ? "B" : "A") : retention;
+ const ready = chosen !== undefined && chosenRetention !== "" && choices.includes(chosenRetention) && scope !== "" && !clearingNow;
  const add = async () => {
   if (chosen === undefined) return;
-  const reply = await writer.send({ action: "add", source: SOURCE_OF[chosen], scope, retention, audienceDefault: chosen === "rovara" ? "maintainers" : audience, enabled });
+  const reply = await writer.send({ action: "add", source: SOURCE_OF[chosen], scope, retention: chosenRetention, ...(notesMode && notes ? { notesOptIn: true } : {}), audienceDefault: chosen === "rovara" ? "maintainers" : audience, enabled });
   if (reply === undefined) return;
-  notify(reply.status === "needs_approval" ? T.SRC_NEEDS_SECOND : T.SRC_ADDED);
-  setKind("");setPlace("");setRetention("");setAudience("maintainers");setEnabled(true);setFormKey(formKey + 1);
+  notify(T.SRC_ADDED);
+  setKind("");setPlace("");setRetention("");setNotes(false);setAudience("maintainers");setEnabled(true);setFormKey(formKey + 1);
  };
  return <section aria-label={T.SRC_ADD} className="rv-lessons-section"><h3>{T.SRC_ADD}</h3>
   <fieldset key={formKey} className="rv-lessons-edit" disabled={writer.busy}><legend>{T.SRC_ADD}</legend>
-   <Select label={T.SRC_ADD_KIND} value={kind} placeholder={T.SRC_CHOOSE} options={kinds.map(candidate => ({ value: candidate, label: KIND_WORDS[candidate] }))} onValueChange={next => { setKind(next);setPlace("");setRetention(""); }} />
+   <Select label={T.SRC_ADD_KIND} value={kind} placeholder={T.SRC_CHOOSE} options={kinds.map(candidate => ({ value: candidate, label: KIND_WORDS[candidate] }))} onValueChange={next => { setKind(next);setPlace("");setRetention("");setNotes(false); }} />
    {chosen === "repository" && <Select label={T.SRC_REPO} value={place} placeholder={T.SRC_CHOOSE} options={repositories.map(repository => isClearing(view, "github", repository.scope) ? { value: repository.scope, label: visibleText(repository.name) + " " + T.SRC_BEING_REMOVED, disabled: true } : { value: repository.scope, label: visibleText(repository.name) })} onValueChange={setPlace} />}
    {(chosen === "slack" || chosen === "linear" || chosen === "jira") && <TextField label={PLACE_WORDS[chosen].label} hint={PLACE_WORDS[chosen].hint} value={place} maxLength={300} autoComplete="off" onChange={event => { setPlace(event.target.value); }} />}
    {clearingNow && <p role="alert">{T.SRC_ERR_REMOVAL}</p>}
    {chosen !== undefined && <>
-    <Select label={T.SRC_RETENTION} value={retention} placeholder={T.SRC_CHOOSE} options={choices.map(mode => ({ value: mode, label: retentionWords(mode) }))} onValueChange={setRetention} />
+    {notesMode ? <><Switch label={T.SRC_NOTES_SWITCH} checked={notes} onCheckedChange={setNotes} /><p className="rv-muted">{T.SRC_NOTES_NOTE}</p></>
+     : <Select label={T.SRC_RETENTION} value={retention} placeholder={T.SRC_CHOOSE} options={choices.map(mode => ({ value: mode, label: retentionWords(mode) }))} onValueChange={setRetention} />}
     {chosen === "rovara" ? <p className="rv-muted">{T.WHO_SEES}: {T.SRC_ROVARA_AUDIENCE}</p> : <Select label={T.SRC_AUDIENCE} value={audience} options={AUDIENCE_OPTIONS} onValueChange={setAudience} />}
     <Switch label={T.SRC_ON} checked={enabled} onCheckedChange={setEnabled} />
    </>}
    <div className="rv-lessons-actions"><Button variant="primary" busy={writer.busy} disabled={!ready} onClick={() => { void add(); }}>{T.SRC_ADD_SEND}</Button></div>
   </fieldset>
-  {writer.error !== undefined && <div role="alert"><p>{writer.error}</p>{writer.reauth && <Button onClick={writer.signInAgain}>{T.SRC_SIGN_IN}</Button>}</div>}
+  {writer.error !== undefined && <div role="alert"><p>{writer.error}</p></div>}
  </section>;
 }

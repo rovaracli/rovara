@@ -86,7 +86,7 @@ describe("both route families answer, each by its own handler", () => {
     expect((await f.request("GET", "/v1/app/projects/demo/lessons/sources")).status).toBe(200);
   });
 
-  it("the record sources write path: with no Team record it is a path that does not exist; with one, the route is handed the caller's role, session kind and a body that is read only when asked for", async () => {
+  it("the record sources write path: with no Team record it is a path that does not exist; with one, the route is handed the caller's role, session kind and a body that is read only when asked for, and no second-person check (T9)", async () => {
     const off = withRecord({ record: false });
     const missing = await off.request("POST", "/v1/app/projects/demo/nothing-here/sources", { action: "add" });
     expect(await off.request("POST", "/v1/app/projects/demo/record/sources", { action: "add" })).toEqual(missing);
@@ -101,8 +101,8 @@ describe("both route families answer, each by its own handler", () => {
     expect((await f.request("POST", "/v1/app/projects/demo/record/sources", { action: "add", marker: 1 })).body).toMatchObject({ from: "team-record" });
     expect((await f.request("POST", "/v1/app/projects/demo/record/sources", { action: "add", marker: 2 }, f.callerOf(me, "owner", false))).body).toMatchObject({ from: "team-record" });
     expect(seen).toEqual([
-      { browserSession: true, orgRole: "owner", body: { action: "add", marker: 1 }, hasSecondPerson: true },
-      { browserSession: false, orgRole: "owner", body: { action: "add", marker: 2 }, hasSecondPerson: true },
+      { browserSession: true, orgRole: "owner", body: { action: "add", marker: 1 }, hasSecondPerson: false },
+      { browserSession: false, orgRole: "owner", body: { action: "add", marker: 2 }, hasSecondPerson: false },
     ]);
   });
 

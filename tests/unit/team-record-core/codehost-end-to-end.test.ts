@@ -43,7 +43,7 @@ const sourcesPath = "/v1/app/projects/web/record/sources";
 async function postSource(runtime: TeamRecordRuntime, body: Record<string, unknown>, orgId: OrgId = ORG_A) {
   return runtime.routes({
     method: "POST", path: sourcesPath, query: {}, caller: { orgId, developerId: OWNER, projectRole: "maintainer" },
-    write: { orgRole: "owner", browserSession: true, body: () => body, freshSignIn: async () => undefined },
+    write: { orgRole: "owner", browserSession: true, body: () => body },
   }) as Promise<{ status: number; body: Record<string, unknown> }>;
 }
 const addGithubRow = (runtime: TeamRecordRuntime, over: Record<string, unknown> = {}, orgId?: OrgId) =>

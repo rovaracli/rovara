@@ -73,11 +73,11 @@ export function effectiveRetention(edition: TeamRecordEdition, source: RecordSou
 
 export type RetentionRefusal = "RETENTION_NOT_OFFERED" | "RETENTION_ABOVE_COMPANY_CEILING" | "SOURCE_UNKNOWN";
 
-export type RetentionCheck = { ok: true; needsSecondPerson: boolean } | { ok: false; refusal: RetentionRefusal };
+export type RetentionCheck = { ok: true; widens: boolean } | { ok: false; refusal: RetentionRefusal };
 
 /**
- * Checks a request to set a source's retention. Raising retention (for example B to C, or C to D) is a less-safe change and needs a second
- * person in Enterprise (design 4.2, SOURCE# config).
+ * Checks a request to set a source's retention. Raising retention (for example B to C, or C to D) in Enterprise `widens` what is kept: the change applies at once and the audit event
+ * says so (owner decision 2026-11-04: no second person for any source change; this replaces design 4.2's "a less-safe change needs a second person").
  */
 export function checkRetentionChange(input: { edition: TeamRecordEdition; source: string; stored: string | undefined; to: string; locks?: CompanyLocks }): RetentionCheck {
   if (!(SOURCES as readonly string[]).includes(input.source)) return { ok: false, refusal: "SOURCE_UNKNOWN" };
@@ -88,27 +88,27 @@ export function checkRetentionChange(input: { edition: TeamRecordEdition; source
   if (ceiling !== undefined && rank(to) > rank(ceiling)) return { ok: false, refusal: "RETENTION_ABOVE_COMPANY_CEILING" };
   // The starting point is derived from the stored row, never taken from the caller (review M-4).
   const from = effectiveRetention(input.edition, source, input.stored, input.locks);
-  return { ok: true, needsSecondPerson: input.edition === "enterprise" && rank(to) > rank(from) };
+  return { ok: true, widens: input.edition === "enterprise" && rank(to) > rank(from) };
 }
 
 export type SlackScope = "public_channel" | "private_channel" | "dm" | "mpim" | "slack_connect";
 
 /**
  * Which Slack places may be a source (design 4.4.1). Slack Connect: never. DMs and group DMs: Enterprise only, and only added explicitly.
- * Private channels: only added explicitly, in either edition. In Enterprise adding a private channel, DM or group DM is a less-safe change
- * that needs a second person (design 4.2, review M-5).
+ * Private channels: only added explicitly, in either edition. In Enterprise adding a private channel, DM or group DM `widens` what is kept: it applies at once and the
+ * audit event says so (owner decision 2026-11-04: no second person for any source change).
  */
-export function slackScopeAllowed(edition: TeamRecordEdition, scope: SlackScope): { allowed: boolean; explicitOnly: boolean; needsSecondPerson: boolean } {
+export function slackScopeAllowed(edition: TeamRecordEdition, scope: SlackScope): { allowed: boolean; explicitOnly: boolean; widens: boolean } {
   switch (scope) {
     case "public_channel":
-      return { allowed: true, explicitOnly: false, needsSecondPerson: false };
+      return { allowed: true, explicitOnly: false, widens: false };
     case "private_channel":
-      return { allowed: true, explicitOnly: true, needsSecondPerson: edition === "enterprise" };
+      return { allowed: true, explicitOnly: true, widens: edition === "enterprise" };
     case "dm":
     case "mpim":
-      return { allowed: edition === "enterprise", explicitOnly: true, needsSecondPerson: edition === "enterprise" };
+      return { allowed: edition === "enterprise", explicitOnly: true, widens: edition === "enterprise" };
     case "slack_connect":
-      return { allowed: false, explicitOnly: true, needsSecondPerson: false };
+      return { allowed: false, explicitOnly: true, widens: false };
   }
 }
 

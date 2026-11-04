@@ -54,7 +54,7 @@ test("a maintainer reads the weekly digest and the sources, and sees a paused so
  await expect(list.getByText(/Paused: it produced far more lessons than usual/u)).toBeVisible();
  await checkA11y(page, { theme: "dark" });
 });
-test("an editor adds, changes and removes a source and decides a change that waits for a second person, in the page and with no browser dialog", async ({ page, context, request, baseURL }) => {
+test("an editor adds, changes and removes a source, each applied at once with no second person, in the page and with no browser dialog", async ({ page, context, request, baseURL }) => {
  const RECORD = "/v1/web/projects/payments/record/sources", dialogs: string[] = [];
  page.on("dialog", dialog => { dialogs.push(dialog.type());void dialog.dismiss(); });
  await request.post("/__mock/scenario", { data: { name: "project" } });await request.post("/__mock/source-editing");
@@ -63,7 +63,6 @@ test("an editor adds, changes and removes a source and decides a change that wai
  const github = page.getByRole("region", { name: /GitHub github:repo\/9/u });
  await expect(github).toBeVisible();
  await expect(page.getByRole("heading", { name: "Add a source" })).toBeVisible();
- await expect(page.getByRole("region", { name: "Waiting for a second person" }).getByText("A private channel")).toBeVisible();
  await evidenceShot(page, { path: ".test-build/web-e2e/sources-editor-desktop.png", fullPage: true });
  await checkA11y(page, { theme: "light" });
  // Lower the retention: the page says what that means before and after the save.
@@ -79,10 +78,6 @@ test("an editor adds, changes and removes a source and decides a change that wai
  await add.getByRole("button", { name: "Add source" }).click();
  await expect(page.getByRole("status").filter({ hasText: "Source added." })).toBeVisible();
  await expect(page.getByRole("region", { name: /GitHub github:repo\/12/u })).toBeVisible();
- // Another person's change waits: approve it.
- await page.getByRole("region", { name: "Waiting for a second person" }).getByRole("button", { name: "Approve" }).click();
- await expect(page.getByRole("status").filter({ hasText: "Approved. The change is in effect." })).toBeVisible();
- await expect(page.getByRole("region", { name: /Slack slack:T1\/C9/u })).toBeVisible();
  // Remove the first repository: the question is in the page.
  await github.getByRole("button", { name: "Remove" }).click();
  await expect(github.getByText(/Remove this source\?/u)).toBeVisible();
@@ -90,9 +85,9 @@ test("an editor adds, changes and removes a source and decides a change that wai
  await expect(page.getByRole("status").filter({ hasText: "Source removed." })).toBeVisible();
  await expect(page.getByRole("region", { name: /GitHub github:repo\/9/u })).toHaveCount(0);
  const sent = ((await (await request.get("/__mock/requests")).json()) as Sent).filter(item => item.method === "POST" && item.path === RECORD);
- expect(sent.map(item => item.body?.action)).toEqual(["change", "add", "approve", "remove"]);
+ expect(sent.map(item => item.body?.action)).toEqual(["change", "add", "remove"]);
  expect(sent[0]!.body).toMatchObject({ source: "github", scope: "github:repo/9", expectedRevision: 1, retention: "B" });
- expect(sent[3]!.body).toMatchObject({ scope: "github:repo/9", expectedRevision: 2 });
+ expect(sent[2]!.body).toMatchObject({ scope: "github:repo/9", expectedRevision: 2 });
  expect(dialogs).toEqual([]);
  await checkA11y(page, { theme: "dark" });
  await page.setViewportSize({ width: 390, height: 900 });

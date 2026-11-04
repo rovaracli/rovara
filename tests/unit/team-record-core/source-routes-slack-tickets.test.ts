@@ -9,10 +9,8 @@ import type { SourceWriteContext } from "../../../packages/broker/src/team-recor
 import { classifySlack, linearScope, parseSlackScope, trackerPlaceCheck, type SlackFacts } from "../../../packages/broker/src/team-record/source-places.js";
 import { jiraPlacesReader, linearPlacesReader, type ConnectedTracker, type ConnectedTrackersPort } from "../../../packages/broker/src/team-record/tracker-directory.js";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
-import { readApproverRoster } from "../../../packages/broker/src/org/second-person-evidence.js";
-import { secondPersonFromRecords } from "../../../packages/broker/src/org/test-environment.js";
 import { listScopeWork } from "../../../packages/broker/src/team-record/store.js";
-import { AUDIT_CAPTURE_TABLE, capturingAuditDeps } from "../../support/audit-capture.js";
+import { capturingAuditDeps } from "../../support/audit-capture.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { ORG_A, ORG_B, caller, world, type World } from "../../support/team-record-core.js";
 
@@ -105,12 +103,8 @@ const dependencies = (h: Harness) => ({
 });
 
 function contextOf(h: Harness, who: Who, body: unknown, over: Partial<SourceWriteContext> = {}): SourceWriteContext {
-  const evidence = { documentClient: h.w.db, tableName: AUDIT_CAPTURE_TABLE, signInTableName: "signin", now: () => h.w.clock.ms };
   return {
     orgRole: who.orgRole, browserSession: true, body: () => body, audit: h.audit.deps,
-    secondPerson: secondPersonFromRecords({ ...evidence, soleOwnerTable: h.w.table }),
-    roster: (scope) => readApproverRoster(evidence, scope),
-    freshSignIn: async () => undefined,
     ...(h.lookupOn ? {
       slackChannel: async (teamId: string, channelId: string) => {
         h.reads.push(`${teamId}/${channelId}`);
@@ -142,7 +136,7 @@ const linearAdd = (over: Record<string, unknown> = {}) => add({ source: "linear"
 const jiraAdd = (over: Record<string, unknown> = {}) => add({ source: "jira", scope: "jira:project/ENG", retention: "C", ...over });
 
 const sourceRows = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE");
-const proposals = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_CHANGE");
+const proposals = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_CHANGE"); // no such row is ever written any more (T9)
 const claims = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_SCOPE");
 const requests = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_REQUEST");
 const nothingWritten = (h: Harness) => { expect(sourceRows(h)).toHaveLength(0); expect(proposals(h)).toHaveLength(0); expect(claims(h)).toHaveLength(0); expect(requests(h)).toHaveLength(0); };
@@ -163,57 +157,21 @@ describe("Slack: the server decides what the channel is", () => {
     }
   });
 
-  it("a private channel in Public is saved at once (explicit add, no second person); in Enterprise it waits for a second person with the reason private_channel", async () => {
+  it("a private channel in Public is saved at once with no widened fact (explicit add; Public widens nothing)", async () => {
     const pub = harness({ edition: "public" });
     expect(await post(pub, WHO.owner, add({ scope: slackScope(CH.priv), retention: "A" }))).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
     expect(sourceRows(pub)).toHaveLength(1);
-    expect(proposals(pub)).toHaveLength(0);
-
-    const ent = harness();
-    const reply = await post(ent, WHO.owner, add({ scope: slackScope(CH.priv), retention: "C" }));
-    expect(reply).toMatchObject({ status: 202, body: { status: "needs_approval" } });
-    expect(sourceRows(ent)).toHaveLength(0);
-    expect(claims(ent)).toHaveLength(0);
-    expect(proposals(ent)).toMatchObject([{ kind: "add", source: "slack", scope: slackScope(CH.priv), reasons: ["private_channel"], proposedBy: OWNER }]);
-    expect((await flushed(ent)).map((event) => event.action)).toContain("record.source_change_proposed");
+    expect((await flushed(pub)).find((event) => event.action === "record.source_added")?.facts).not.toHaveProperty("widened");
   });
 
-  it("a DM and a group DM: refused in Public (SOURCE_NOT_ALLOWED, nothing written); in Enterprise they wait with the reasons dm and mpim", async () => {
-    for (const channel of [CH.dm, CH.mpim]) {
-      const pub = harness({ edition: "public" });
-      expect(await post(pub, WHO.owner, add({ scope: slackScope(channel), retention: "A" })), channel).toEqual(NOT_ALLOWED(DM_WORDS));
-      nothingWritten(pub);
-    }
-    for (const [channel, reason] of [[CH.dm, "dm"], [CH.mpim, "mpim"]] as const) {
-      const ent = harness();
-      expect(await post(ent, WHO.owner, add({ scope: slackScope(channel) })), channel).toMatchObject({ status: 202 });
-      expect(proposals(ent)).toMatchObject([{ reasons: [reason] }]);
-      expect(sourceRows(ent)).toHaveLength(0);
-    }
-  });
-
-  it("a Slack Connect channel (public or private) is refused in both editions, and nothing is written", async () => {
-    for (const edition of ["enterprise", "public"] as const) {
-      for (const channel of [CH.connect, CH.connectPrivate]) {
-        const h = harness({ edition });
-        expect(await post(h, WHO.owner, add({ scope: slackScope(channel), retention: "A" })), `${edition} ${channel}`).toEqual(NOT_ALLOWED(CONNECT_WORDS));
-        nothingWritten(h);
-      }
-    }
-  });
-
-  it("the reasons come from what the server read, in the order of the design, and never from the body: a body that names reasons or a kind is refused as invalid", async () => {
+  it("the words of what was widened come from what the server read, never from the body: a body that names reasons, widened or a kind is refused as invalid", async () => {
     const h = harness();
-    const both = await post(h, WHO.owner, add({ scope: slackScope(CH.priv), retention: "D" }));
-    expect(both.status).toBe(202);
-    expect(proposals(h)).toMatchObject([{ reasons: ["private_channel", "retention_raise"] }]);
-    for (const extra of [{ reasons: [] }, { kind: "public" }, { channelKind: "public_channel" }]) {
+    expect((await post(h, WHO.owner, add({ scope: slackScope(CH.priv), retention: "D" }))).status).toBe(200);
+    for (const extra of [{ reasons: [] }, { widened: "dm" }, { kind: "public" }, { channelKind: "public_channel" }]) {
       const reply = await post(h, WHO.owner, add({ scope: slackScope(CH.priv), ...extra }));
       expect(reply, JSON.stringify(extra)).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
     }
-    // The admin view shows the stored reasons, not anything a client sent.
-    const view = await getView(h, WHO.owner);
-    expect(view.body.pending).toMatchObject([{ source: "slack", scope: slackScope(CH.priv), kind: "add", reasons: ["private_channel", "retention_raise"] }]);
+    expect(sourceRows(h)).toHaveLength(1);
   });
 
   it("only the exact form slack:<team>/<channel> names a place", async () => {
@@ -290,34 +248,6 @@ describe("Slack: the server decides what the channel is", () => {
     expect(h.reads).toHaveLength(reads);
     expect(sourceRows(h)).toHaveLength(1);
   });
-
-  it("approval reads the channel again: a second person approves a private channel; a channel that turned into Slack Connect meanwhile is refused and stays waiting", async () => {
-    const h = harness();
-    const proposed = await post(h, WHO.maint, add({ scope: slackScope(CH.priv) }));
-    expect(proposed.status).toBe(202);
-    const changeId = proposed.body.changeId as string;
-    h.channels.set(CH.priv, { kind: "private", extShared: true });
-    expect(await post(h, WHO.owner, { action: "approve", changeId })).toEqual(NOT_ALLOWED(CONNECT_WORDS));
-    expect(sourceRows(h)).toHaveLength(0);
-    expect(proposals(h)).toHaveLength(1);
-    h.channels.set(CH.priv, "unreadable");
-    expect(await post(h, WHO.owner, { action: "approve", changeId })).toMatchObject({ status: 503 });
-    expect(proposals(h)).toHaveLength(1);
-    h.channels.set(CH.priv, { kind: "private", extShared: false });
-    expect(await post(h, WHO.owner, { action: "approve", changeId })).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
-    expect(sourceRows(h)).toMatchObject([{ source: "slack", scope: slackScope(CH.priv) }]);
-    expect((await flushed(h)).find((event) => event.action === "record.source_added")).toMatchObject({ facts: { restricted: true } });
-  });
-
-  it("a channel that became a DM-like place needing more care than the waiting change says is not applied (the change is made again)", async () => {
-    const h = harness();
-    const proposed = await post(h, WHO.maint, add({ scope: slackScope(CH.pub), retention: "D" }));
-    expect(proposed.body.status).toBe("needs_approval");
-    expect(proposals(h)).toMatchObject([{ reasons: ["retention_raise"] }]);
-    h.channels.set(CH.pub, { kind: "private", extShared: false });
-    expect(await post(h, WHO.owner, { action: "approve", changeId: proposed.body.changeId })).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
-    expect(sourceRows(h)).toHaveLength(0);
-  });
 });
 
 describe("Slack: changing a row", () => {
@@ -347,104 +277,51 @@ describe("Slack: changing a row", () => {
     expect(await post(h, WHO.owner, change(3, { enabled: true }))).toMatchObject({ status: 503, body: { code: "RUNTIME_UNAVAILABLE" } });
     expect(sourceRows(h)).toMatchObject([{ enabled: false, retention: "B", revision: 3 }]);
   });
-
-  it("a retention raise in Enterprise still waits for a second person, with the reason retention_raise only (the channel was approved when it was added)", async () => {
-    const h = harness();
-    await saved(h, { retention: "C" });
-    expect(await post(h, WHO.owner, change(1, { retention: "D" }))).toMatchObject({ status: 202 });
-    expect(proposals(h)).toMatchObject([{ kind: "change", reasons: ["retention_raise"] }]);
-  });
 });
 
-describe("Slack: a change that turns a row on or widens it brings the reasons of the channel's class now (fix round 1)", () => {
+describe("Slack: a change that turns a row on or widens it says what the channel's class is now (T9: saved at once)", () => {
   const CLASSES = [[CH.priv, "private_channel"], [CH.dm, "dm"], [CH.mpim, "mpim"]] as const;
-  /** A row for a channel of this class in Enterprise, added and approved by a second person. */
-  async function approvedRow(h: Harness, channel: string, over: Record<string, unknown> = {}) {
-    const proposed = await post(h, WHO.maint, add({ scope: slackScope(channel), ...over }));
-    expect(proposed.status).toBe(202);
-    expect(await post(h, WHO.owner, { action: "approve", changeId: proposed.body.changeId })).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
-  }
+  const widenedOf = async (h: Harness) => (await flushed(h)).filter((event) => event.action === "record.source_changed").map((event) => event.facts?.widened);
 
-  it("a public row whose channel became private: widening the audience, or turning it on, waits for a second person with private_channel", async () => {
+  it("a public row whose channel became private: widening the audience, or turning it on, is saved at once and says private_channel / mpim", async () => {
     const h = harness();
     expect((await post(h, WHO.owner, add())).status).toBe(200);
     h.channels.set(CH.pub, { kind: "private", extShared: false });
-    expect(await post(h, WHO.owner, change(1, { audienceDefault: "project" }))).toMatchObject({ status: 202, body: { status: "needs_approval" } });
-    expect(proposals(h)).toMatchObject([{ kind: "change", reasons: ["private_channel"] }]);
-    expect(sourceRows(h)).toMatchObject([{ audienceDefault: "maintainers", revision: 1 }]);
+    expect(await post(h, WHO.owner, change(1, { audienceDefault: "project" }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(sourceRows(h)).toMatchObject([{ audienceDefault: "project", revision: 2 }]);
+    expect(await widenedOf(h)).toEqual(["private_channel"]);
 
     const off = harness();
     expect((await post(off, WHO.owner, add({ enabled: false }))).status).toBe(200);
     off.channels.set(CH.pub, { kind: "mpim", extShared: false });
-    expect(await post(off, WHO.owner, change(1, { enabled: true, retention: "D" }))).toMatchObject({ status: 202 });
-    expect(proposals(off)).toMatchObject([{ reasons: ["mpim", "retention_raise"] }]);
-    expect(sourceRows(off)).toMatchObject([{ enabled: false, revision: 1 }]);
+    expect(await post(off, WHO.owner, change(1, { enabled: true, retention: "D" }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(sourceRows(off)).toMatchObject([{ enabled: true, retention: "D", revision: 2 }]);
+    expect(await widenedOf(off)).toEqual(["retention_raise,mpim"]);
   });
 
-  it("a private, DM or group DM row turned off and back on waits for a second person; turning it off, or narrowing it, stays immediate and never asks Slack", async () => {
-    for (const [channel, reason] of CLASSES) {
+  it("a private, DM or group DM row turned off and back on: turning it off, or narrowing it, never asks Slack and says nothing widened; turning it on says the class", async () => {
+    for (const [channel, word] of CLASSES) {
       const h = harness();
-      await approvedRow(h, channel, { audienceDefault: "project" });
+      expect((await post(h, WHO.maint, add({ scope: slackScope(channel), audienceDefault: "project" }))).status, channel).toBe(200);
       const reads = h.reads.length;
       expect(await post(h, WHO.owner, change(1, { scope: slackScope(channel), enabled: false })), channel).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
       expect(await post(h, WHO.owner, change(2, { scope: slackScope(channel), audienceDefault: "maintainers" })), channel).toEqual({ status: 200, body: { status: "saved", revision: 3 } });
       expect(h.reads).toHaveLength(reads);
-      expect(await post(h, WHO.owner, change(3, { scope: slackScope(channel), enabled: true })), channel).toMatchObject({ status: 202 });
-      expect(proposals(h), channel).toMatchObject([{ kind: "change", reasons: [reason] }]);
-      expect(sourceRows(h), channel).toMatchObject([{ enabled: false, revision: 3 }]);
-      // The second person applies it, and the row is on.
-      expect(await post(h, WHO.admin, { action: "approve", changeId: proposals(h)[0]!.id })).toEqual({ status: 200, body: { status: "saved", revision: 4 } });
+      expect(await post(h, WHO.owner, change(3, { scope: slackScope(channel), enabled: true })), channel).toEqual({ status: 200, body: { status: "saved", revision: 4 } });
       expect(sourceRows(h), channel).toMatchObject([{ enabled: true, revision: 4 }]);
+      expect(await widenedOf(h), channel).toEqual([undefined, undefined, word]);
     }
   });
 
-  it("a retention raise alone on an approved private row still waits only for retention_raise, and Public needs no second person to turn a private row on", async () => {
+  it("a retention raise alone on a private row says only retention_raise; Public turns a private row on with no widened fact", async () => {
     const h = harness();
-    await approvedRow(h, CH.priv);
-    expect(await post(h, WHO.owner, change(1, { scope: slackScope(CH.priv), retention: "D" }))).toMatchObject({ status: 202 });
-    expect(proposals(h)).toMatchObject([{ reasons: ["retention_raise"] }]);
+    expect((await post(h, WHO.maint, add({ scope: slackScope(CH.priv) }))).status).toBe(200);
+    expect(await post(h, WHO.owner, change(1, { scope: slackScope(CH.priv), retention: "D" }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(await widenedOf(h)).toEqual(["retention_raise"]);
     const pub = harness({ edition: "public" });
     expect((await post(pub, WHO.owner, add({ scope: slackScope(CH.priv), retention: "A", enabled: false }))).status).toBe(200);
     expect(await post(pub, WHO.owner, change(1, { scope: slackScope(CH.priv), enabled: true }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
-  });
-
-  it("approving a change reads the channel again: Slack Connect is refused, an unreadable channel is 503, nothing is applied and the change stays; a class that now needs more care is made again", async () => {
-    const h = harness();
-    expect((await post(h, WHO.owner, add())).status).toBe(200);
-    h.channels.set(CH.pub, { kind: "private", extShared: false });
-    const waiting = await post(h, WHO.maint, change(1, { audienceDefault: "project" }));
-    const changeId = waiting.body.changeId as string;
-    h.channels.set(CH.pub, { kind: "private", extShared: true });
-    expect(await post(h, WHO.owner, { action: "approve", changeId })).toEqual(NOT_ALLOWED(CONNECT_WORDS));
-    h.channels.set(CH.pub, "unreadable");
-    expect(await post(h, WHO.owner, { action: "approve", changeId })).toMatchObject({ status: 503, body: { code: "RUNTIME_UNAVAILABLE" } });
-    h.channels.set(CH.pub, "throws");
-    expect(await post(h, WHO.owner, { action: "approve", changeId })).toMatchObject({ status: 503 });
-    expect(proposals(h)).toHaveLength(1);
-    expect(sourceRows(h)).toMatchObject([{ audienceDefault: "maintainers", revision: 1 }]);
-    h.channels.set(CH.pub, { kind: "private", extShared: false });
-    expect(await post(h, WHO.owner, { action: "approve", changeId })).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
-    expect(sourceRows(h)).toMatchObject([{ audienceDefault: "project", revision: 2 }]);
-
-    // A change waiting only for retention_raise, on a row that is turned on, whose channel became private: made again.
-    const drift = harness();
-    expect((await post(drift, WHO.owner, add({ enabled: false }))).status).toBe(200);
-    const only = await post(drift, WHO.maint, change(1, { enabled: true, retention: "D" }));
-    expect(proposals(drift)).toMatchObject([{ reasons: ["retention_raise"] }]);
-    drift.channels.set(CH.pub, { kind: "private", extShared: false });
-    expect(await post(drift, WHO.owner, { action: "approve", changeId: only.body.changeId })).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
-    expect(sourceRows(drift)).toMatchObject([{ enabled: false, revision: 1 }]);
-  });
-
-  it("approving a retention raise on a row that stays as it is reads the channel (Connect refuses) but a private class alone does not make it stale", async () => {
-    const h = harness();
-    await approvedRow(h, CH.priv);
-    const raise = await post(h, WHO.maint, change(1, { scope: slackScope(CH.priv), retention: "D" }));
-    expect(raise.status).toBe(202);
-    h.channels.set(CH.priv, { kind: "private", extShared: true });
-    expect(await post(h, WHO.owner, { action: "approve", changeId: raise.body.changeId })).toEqual(NOT_ALLOWED(CONNECT_WORDS));
-    h.channels.set(CH.priv, { kind: "private", extShared: false });
-    expect(await post(h, WHO.owner, { action: "approve", changeId: raise.body.changeId })).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(await widenedOf(pub)).toEqual([undefined]);
   });
 });
 
@@ -519,12 +396,11 @@ describe("Linear and Jira: the place must be one the connected app lists", () =>
     nothingWritten(endless);
   });
 
-  it("a place two projects want goes to the first; a Linear Enterprise raise above the default waits for a second person with retention_raise", async () => {
+  it("a place two projects want goes to the first", async () => {
     const h = harness();
     expect((await post(h, WHO.owner, linearAdd())).status).toBe(200);
     expect(await post(h, WHO.owner, linearAdd(), { project: "api" })).toMatchObject({ status: 400, body: { message: "That place is already used by another project." } });
-    expect(await post(h, WHO.owner, jiraAdd({ retention: "D" }))).toMatchObject({ status: 202 });
-    expect(proposals(h)).toMatchObject([{ source: "jira", reasons: ["retention_raise"] }]);
+    expect(await post(h, WHO.owner, jiraAdd({ retention: "D" }))).toMatchObject({ status: 200 });
   });
 
   it("a change to a Linear or Jira row works without asking the app", async () => {
@@ -634,7 +510,7 @@ describe("the runtime wires the checks (workspace binding from the State table, 
     return { db, runtime };
   }
   const writeFor = (body: unknown, facts: Lookup | undefined): SourceWriteContext => ({
-    orgRole: "owner", browserSession: true, body: () => body, freshSignIn: async () => undefined,
+    orgRole: "owner", browserSession: true, body: () => body,
     ...(facts === undefined ? {} : { slackChannel: async () => (facts === "none" || facts === "unreadable" || facts === "throws" ? (facts === "none" ? "none" as const : undefined) : facts) }),
   });
   const send = (runtime: TeamRecordRuntime, body: unknown, facts?: Lookup) => runtime.routes({ method: "POST", path: PATH("web"), query: {}, caller: { orgId: ORG_A, developerId: OWNER, projectRole: "maintainer" }, write: writeFor(body, facts) });
@@ -655,5 +531,116 @@ describe("the runtime wires the checks (workspace binding from the State table, 
     const bare = runtimeOf();
     expect(await send(bare.runtime, jiraAdd())).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
     expect(agentXError("CONFIG_INVALID", "x").code).toBe("CONFIG_INVALID");
+  });
+});
+
+// ---- Task 9 (owner decision 2026-11-04): no second person for a source change, in either edition; and the Public edition's "notes with links" switch.
+describe("T9: Slack and tracker sources apply at once", () => {
+  const events = async (h: Harness, ...actions: string[]) => (await flushed(h)).filter((event) => actions.includes(event.action as string));
+  const nothingWaits = async (h: Harness) => {
+    expect(proposals(h)).toHaveLength(0);
+    expect((await flushed(h)).map((event) => event.action as string)).not.toEqual(expect.arrayContaining(["record.source_change_proposed"]));
+  };
+
+  it("Enterprise: a private channel, a DM and a group DM are saved at once, with the row, the claim and widened: private_channel / dm / mpim", async () => {
+    for (const [channel, word] of [[CH.priv, "private_channel"], [CH.dm, "dm"], [CH.mpim, "mpim"]] as const) {
+      const h = harness();
+      expect(await post(h, WHO.maint, add({ scope: slackScope(channel) })), channel).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+      expect(sourceRows(h), channel).toMatchObject([{ source: "slack", scope: slackScope(channel), addedBy: MAINT, revision: 1 }]);
+      expect(claims(h)).toHaveLength(1);
+      expect((await events(h, "record.source_added"))[0], channel).toMatchObject({ facts: { source: "slack", retention: "C", restricted: true, widened: word } });
+      await nothingWaits(h);
+    }
+  });
+
+  it("Enterprise: a private channel above the default says both words, retention first", async () => {
+    const h = harness();
+    expect((await post(h, WHO.owner, add({ scope: slackScope(CH.priv), retention: "D" }))).status).toBe(200);
+    expect((await events(h, "record.source_added"))[0]).toMatchObject({ facts: { widened: "retention_raise,private_channel" } });
+  });
+
+  it("Enterprise: turning on a private channel's row, widening a DM row's audience, or raising its retention is saved at once and says what widened", async () => {
+    const h = harness();
+    expect((await post(h, WHO.owner, add({ scope: slackScope(CH.priv), enabled: false }))).status).toBe(200);
+    expect(await post(h, WHO.maint, change(1, { scope: slackScope(CH.priv), enabled: true }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(await post(h, WHO.maint, change(2, { scope: slackScope(CH.priv), audienceDefault: "project" }))).toEqual({ status: 200, body: { status: "saved", revision: 3 } });
+    expect(await post(h, WHO.maint, change(3, { scope: slackScope(CH.priv), retention: "D" }))).toEqual({ status: 200, body: { status: "saved", revision: 4 } });
+    expect(sourceRows(h)[0]).toMatchObject({ enabled: true, audienceDefault: "project", retention: "D", revision: 4 });
+    const changed = await events(h, "record.source_changed");
+    expect(changed.map((event) => event.facts?.widened)).toEqual(["private_channel", "private_channel", "retention_raise"]);
+    await nothingWaits(h);
+  });
+
+  it("Slack Connect stays refused in both editions, and a DM stays refused in Public (nothing written, no matter who asks)", async () => {
+    for (const edition of ["enterprise", "public"] as const) {
+      for (const channel of [CH.connect, CH.connectPrivate]) {
+        const h = harness({ edition });
+        expect(await post(h, WHO.owner, add({ scope: slackScope(channel), retention: edition === "public" ? "A" : "C" })), `${edition} ${channel}`).toEqual(NOT_ALLOWED(CONNECT_WORDS));
+        nothingWritten(h);
+      }
+    }
+    for (const channel of [CH.dm, CH.mpim]) {
+      const h = harness({ edition: "public" });
+      expect(await post(h, WHO.owner, add({ scope: slackScope(channel), retention: "A" })), channel).toEqual(NOT_ALLOWED(DM_WORDS));
+      nothingWritten(h);
+    }
+    // A row that turned into Slack Connect since it was added is refused when it is turned on again.
+    const h = harness();
+    expect((await post(h, WHO.owner, add({ enabled: false }))).status).toBe(200);
+    h.channels.set(CH.pub, { kind: "public", extShared: true });
+    expect(await post(h, WHO.owner, change(1, { enabled: true }))).toEqual(NOT_ALLOWED(CONNECT_WORDS));
+  });
+
+  it("Public Slack retention: C and D are refused; B only with the notes opt-in; A is saved; a change to B needs the opt-in too", async () => {
+    const h = harness({ edition: "public" });
+    for (const retention of ["C", "D"]) expect(await post(h, WHO.owner, add({ retention })), retention).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(await post(h, WHO.owner, add({ retention: "B" }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    nothingWritten(h);
+    expect((await post(h, WHO.owner, add({ retention: "A" }))).status).toBe(200);
+    expect(await post(h, WHO.owner, change(1, { retention: "B" }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(await post(h, WHO.owner, change(1, { retention: "C", notesOptIn: true }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "A", revision: 1 });
+  });
+
+  it("the notes switch: Public turns it on with retention B + notesOptIn true, and off with retention A + notesOptIn null, both at once, with no widened fact", async () => {
+    const h = harness({ edition: "public" });
+    expect((await post(h, WHO.maint, add({ retention: "A" }))).status).toBe(200);
+    expect(await post(h, WHO.maint, change(1, { retention: "B", notesOptIn: true }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "B", notesOptIn: true, revision: 2 });
+    const view = await getView(h, WHO.maint);
+    expect((view.body.sources as Array<Record<string, unknown>>)[0]).toMatchObject({ retention: "B", notesOptIn: true });
+    expect(await post(h, WHO.maint, change(2, { retention: "A", notesOptIn: null }))).toEqual({ status: 200, body: { status: "saved", revision: 3 } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "A", revision: 3 });
+    expect(sourceRows(h)[0]).not.toHaveProperty("notesOptIn");
+    for (const event of await events(h, "record.source_changed")) expect(event.facts).not.toHaveProperty("widened");
+    await nothingWaits(h);
+  });
+
+  it("taking the opt-in away while the row stays at B is refused (B without the opt-in is never stored); the stored row does not move", async () => {
+    const h = harness({ edition: "public" });
+    expect((await post(h, WHO.owner, add({ retention: "B", notesOptIn: true }))).status).toBe(200);
+    expect(await post(h, WHO.owner, change(1, { notesOptIn: null }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "B", notesOptIn: true, revision: 1 });
+  });
+
+  it("the admin view tells the screen to show the notes switch in Public, and never in Enterprise", async () => {
+    const pub = harness({ edition: "public" });
+    expect((await getView(pub, WHO.owner)).body).toMatchObject({ notesSwitch: true });
+    const ent = harness();
+    expect((await getView(ent, WHO.owner)).body).not.toHaveProperty("notesSwitch");
+  });
+
+  it("Linear and Jira apply at once in Enterprise even above the default, with widened: retention_raise", async () => {
+    const h = harness();
+    expect((await post(h, WHO.maint, linearAdd({ retention: "D" }))).status).toBe(200);
+    expect((await post(h, WHO.maint, jiraAdd({ retention: "C" }))).status).toBe(200);
+    expect((await events(h, "record.source_added")).map((event) => event.facts?.widened)).toEqual(["retention_raise", undefined]);
+    await nothingWaits(h);
+  });
+
+  it("the old approve and reject bodies are CONFIG_INVALID here too", async () => {
+    const h = harness();
+    for (const action of ["approve", "reject"]) expect(await post(h, WHO.owner, { action, changeId: "x" }), action).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    nothingWritten(h);
   });
 });
