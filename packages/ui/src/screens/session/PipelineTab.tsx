@@ -1,4 +1,5 @@
 import { Suspense, lazy } from "react";
+import { errorRefKey, type ErrorRef } from "@agentx/contracts/web";
 import { Button } from "../../design/Button.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
 import type { ReadSession } from "./SessionHeader.js";
@@ -22,7 +23,7 @@ export function PipelineTab({ session, task, onComment }: { session: ReadSession
  {task?.workflow && <LoadedKnowledgePanel taskId={task.taskId} />}
  {task && <AnsweredSection session={session} task={task} />}
  {task?.run && <ol className="rv-run-steps">{task.run.steps.map(step => { const anchor = visibleAnchor(session, "step", step.id);return <li key={step.id}><details open={task.run?.currentStep?.id === step.id}><summary><VisibleText text={step.name} /> <span className="rv-muted">{stepWords[step.status] ?? "Status unavailable"}</span></summary>{step.report !== undefined && <p className="rv-evidence-text"><VisibleText text={step.report} /></p>}{anchor && onComment && <Button variant="quiet" aria-label={"Comment on " + visibleText(step.name)} onClick={event => onComment(anchor, event.currentTarget)}>Comment on this step</Button>}</details></li>; })}</ol>}
- {session.you.live?.fix === true && session.errorRef !== undefined && <Suspense fallback={null}><FixWithAgentPanel errorRef={session.errorRef} /></Suspense>}
+ {session.you.live?.fix === true && session.errorRef !== undefined && <Suspense fallback={null}><FixWithAgentPanel key={errorRefKey(session.errorRef as ErrorRef)} errorRef={session.errorRef} /></Suspense>}
  {!task?.workflow && !task?.run && <p className="rv-evidence-text"><VisibleText text={session.peek ?? session.step ?? "No work details are available yet."} /></p>}
  <UnderstandQuestions session={session} task={task} />
  {/* PLAN6: critic reports, timing and merge controls stay with their owning implementation. */}

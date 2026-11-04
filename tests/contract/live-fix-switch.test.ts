@@ -16,6 +16,7 @@ import { configKey } from "../../packages/cli/src/config/keys.js";
 import { OPERATOR_PARAMETERS } from "../../packages/cli/src/deploy/parameters.js";
 import { brokerSettingsIn } from "../support/broker-names-template.js";
 import { PRIYA, diagnosisWorld } from "../support/diagnosis-world.js";
+import { BO, ORG_B, ZED } from "../support/agent-session-world.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -88,6 +89,15 @@ describe("the person's routes", () => {
     expect(started.body.state).toBe("queued");
     const read = await routeDiagnosisRequest({ ...w.diagnosis, deep: undefined, propose: undefined }, caller, "GET", `/v1/app/diagnoses/${started.body.diagnosisId}`, () => ({})) as { diagnosisId: string };
     expect(read.diagnosisId).toBe(started.body.diagnosisId);
+    // The browser reads it through this route: a reader without the right and a member of another org get what an id that was never issued gets.
+    const route = { ...w.diagnosis, deep: undefined, propose: undefined };
+    const never = await routeDiagnosisRequest(route, caller, "GET", `/v1/app/diagnoses/dgn_${"z".repeat(20)}`, () => ({})).then(() => undefined, (error: { code?: string; message: string }) => error);
+    expect(never).toMatchObject({ code: "NOT_FOUND" });
+    for (const reader of [w.w.caller(ZED), { ...w.w.caller(BO), orgId: ORG_B }, { ...w.w.caller(PRIYA), orgId: ORG_B }]) {
+      const refused = await routeDiagnosisRequest(route, reader, "GET", `/v1/app/diagnoses/${started.body.diagnosisId}`, () => ({})).then(() => undefined, (error: { code?: string; message: string }) => error);
+      expect(refused).toMatchObject({ code: "NOT_FOUND" });
+      expect(refused?.message).toBe(never?.message);
+    }
     await expect(routeDiagnosisRequest({ ...w.diagnosis, deep: undefined, propose: undefined }, caller, "DELETE", `/v1/app/diagnoses/${started.body.diagnosisId}`, () => ({}))).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(routeDiagnosisRequest({ ...w.diagnosis, deep: undefined, propose: undefined }, caller, "GET", "/v1/app/diagnoses/not-an-id", () => ({}))).resolves.toBeUndefined();
   });

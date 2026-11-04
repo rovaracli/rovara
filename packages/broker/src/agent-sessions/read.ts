@@ -238,7 +238,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
   // The parts a comment can be pinned to, from the very view shown (Task 10b).
   const anchors = taskShown === undefined ? [] : anchorTargetsOf(taskShown);
   // Ask about this task / Fix with agent: offered only where the switch is on and the routes' own gate lets this reader use it (`live-flags.ts`).
-  const live = await sessionLiveFlags(deps, caller, access, taskShown?.errorRef);
+  const live = await sessionLiveFlags(deps, caller, access, { errorRef: taskShown?.errorRef, closed: task?.closedAt !== undefined });
   return {
     contractVersion: AGENT_SESSION_CONTRACT_VERSION,
     sessionId: session.sessionId,

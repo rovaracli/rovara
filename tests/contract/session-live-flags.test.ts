@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionViewSchema, errorRefOf } from "../../packages/contracts/src/index.js";
 import { requireSessionLevel } from "../../packages/broker/src/agent-sessions/access.js";
+import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
 import { diagnosisSubjectFor } from "../../packages/broker/src/diagnosis/authority.js";
 import { ARJUN, CELL, MAX, MIA, OLA, ORG_A, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
@@ -14,14 +15,14 @@ const FIXED_TASK = "11111111-1111-4111-8111-111111111111";
 
 afterEach(() => { vi.unstubAllEnvs(); });
 
-function world(withError: boolean) {
+function world(withError: boolean | ((taskId: string) => unknown) = false) {
   const w = sessionWorld();
   const deps: SessionReadDependencies = {
     documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
     taskView: async (task) => ({
       taskId: FIXED_TASK, title: "Bump the Stripe SDK", project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false,
       createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:05:00.000Z", events: [],
-      ...(withError ? { errorRef: errorRefOf({ kind: "operation_failed", code: "CHECK_FAILED", subject: { taskId: task.taskId }, at: "2026-10-22T08:05:00.000Z" }) } : {}),
+      ...(withError === false ? {} : { errorRef: typeof withError === "function" ? withError(task.taskId) : errorRefOf({ kind: "operation_failed", code: "CHECK_FAILED", subject: { taskId: task.taskId }, at: "2026-10-22T08:05:00.000Z" }) }),
     }) as never,
   };
   const read = (who: string, sessionId: string) => sessionView(deps, w.caller(who), sessionId);
@@ -51,6 +52,36 @@ describe("you.live with both switches off", () => {
     const { sessionId } = r.w.seedSession();
     r.w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ARJUN }, "use");
     for (const who of [PRIYA, ARJUN, MAX, OLA]) expect((await r.read(who, sessionId)).you).not.toHaveProperty("live");
+  });
+});
+
+describe("you.live keeps to what the routes accept", () => {
+  it("offers fix only for the error kinds the diagnosis route accepts", async () => {
+    switches(undefined, "1");
+    const at = "2026-10-22T08:05:00.000Z";
+    const kinds: Array<[string, (taskId: string) => unknown, boolean]> = [
+      ["operation_failed", taskId => errorRefOf({ kind: "operation_failed", code: "CHECK_FAILED", subject: { taskId }, at }), true],
+      ["workflow_block", taskId => errorRefOf({ kind: "workflow_block", code: "WORKFLOW_BLOCKED", subject: { taskId }, at }), true],
+      ["intake_failure", taskId => errorRefOf({ kind: "intake_failure", code: "INTAKE_FAILED", subject: { taskId }, at }), false],
+      ["model_access", () => errorRefOf({ kind: "model_access", code: "MODEL_ACCESS_DENIED", subject: { project: "web" }, at }), false],
+      ["connector_health", () => errorRefOf({ kind: "connector_health", code: "CONNECTOR_EXPIRED", subject: { connectorId: "runtime-web" }, at }), false],
+    ];
+    for (const [kind, make, offered] of kinds) {
+      const r = world(make);
+      const { sessionId } = r.w.seedSession();
+      expect(make("11111111-1111-4111-8111-111111111111"), kind).toBeDefined();
+      expect((await r.read(PRIYA, sessionId)).you.live?.fix === true, kind).toBe(offered);
+    }
+  });
+
+  it("leaves ask out on a closed task and keeps it on the same task while it is open", async () => {
+    switches("1", undefined);
+    const r = world();
+    const open = r.w.seedSession(), closed = r.w.seedSession();
+    expect((await r.read(PRIYA, open.sessionId)).you.live).toEqual({ ask: true });
+    const key = taskKey(closed.taskId);
+    r.w.db.set({ ...r.w.db.get(key)!, closedAt: "2026-10-22T08:30:00.000Z" });
+    expect((await r.read(PRIYA, closed.sessionId)).you).not.toHaveProperty("live");
   });
 });
 

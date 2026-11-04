@@ -3,6 +3,7 @@
 // With both off (the default) this reads nothing from the table and returns undefined, so the view is byte-identical to one without the field.
 import { BROKER_SETTINGS, liveInteractionFlagOn, type ErrorRef, type SessionView } from "@agentx/contracts";
 import { diagnosisSubjectFor } from "../diagnosis/authority.js";
+import { DIAGNOSABLE_KINDS } from "../diagnosis/light.js";
 import { diagnosisEnabled } from "../diagnosis/switch.js";
 import { requireLevelOf, type SessionAccess, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 
@@ -17,16 +18,19 @@ export const askEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => liv
  */
 export async function sessionLiveFlags(
   deps: SessionAccessDependencies,
-  caller: SessionCaller, access: SessionAccess, errorRef: ErrorRef | undefined, env: NodeJS.ProcessEnv = process.env,
+  caller: SessionCaller, access: SessionAccess, shown: { errorRef?: ErrorRef | undefined; closed?: boolean | undefined }, env: NodeJS.ProcessEnv = process.env,
 ): Promise<Live | undefined> {
   const askOn = askEnabled(env), fixOn = diagnosisEnabled(env);
   if (!askOn && !fixOn) return undefined;
   const isTask = access.session.subject.kind === "task";
   let ask = false, fix = false;
-  if (askOn && isTask) {
+  // A closed task answers every Ask with the closed-task sentence (`submitAsk`), so it is not offered one.
+  if (askOn && isTask && shown.closed !== true) {
     try { requireLevelOf(access, "use", "ask about it"); ask = true; } catch { ask = false; }
   }
-  if (fixOn && isTask && errorRef !== undefined) {
+  // Only the error kinds the diagnosis route accepts (`DIAGNOSABLE_KINDS`, the route's own list).
+  const { errorRef } = shown;
+  if (fixOn && isTask && errorRef !== undefined && DIAGNOSABLE_KINDS.has(errorRef.kind)) {
     fix = await diagnosisSubjectFor({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps }, caller, errorRef) !== undefined;
   }
   return ask || fix ? { ...(ask ? { ask: true as const } : {}), ...(fix ? { fix: true as const } : {}) } : undefined;
