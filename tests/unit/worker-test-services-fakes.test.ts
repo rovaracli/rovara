@@ -358,6 +358,8 @@ describe("the feature the worker lists", () => {
     expect(testServicesAdvertisedFeatures({}, shipped(real.pathname))).toEqual([]);
     expect(fakeServerBaked(shipped(real.pathname))).toBe(true);
     expect(testServicesAdvertisedFeatures(configured, shipped(real.pathname))).toEqual(["task.testServices.v1", "task.testServices.fake.v1"]);
+    // Root withheld test services (NOT_PULLED=all, also when the IPv6 wall failed and the images ARE here): no configuration, so neither feature is listed, though the fake server is baked and needs no image.
+    expect(testServicesAdvertisedFeatures({ ...configured, AGENTX_TEST_SERVICES_NOT_PULLED: "all" }, shipped(real.pathname))).toEqual([]);
     // a catalog baked without the fake server (an older image) does not list it, and a catalog that cannot be read does not either
     const dir = await temp("rsf-catalog-");
     const without = JSON.parse(readFileSync(real, "utf8")) as { entries: Array<{ family: string }> };
