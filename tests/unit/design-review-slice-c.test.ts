@@ -7,6 +7,7 @@ import { designClassificationNoteOf } from "../../packages/broker/src/design-rev
 import { spendEstimatesOf } from "../../packages/broker/src/design-review/spend-estimates.js";
 import { readDesignTouches } from "../../packages/broker/src/design-review/route-facts.js";
 import { parseDesignFirstPrefix } from "../../packages/broker/src/rovara-code/explicit-path.js";
+import { designFirstRequestOf } from "../../packages/broker/src/design-review/design-first.js";
 import { parseWorkflowStartRequest } from "../../packages/broker/src/aws/slack-workflow-choice.js";
 import { dynamoDecisionStore } from "../../packages/broker/src/decisions/store.js";
 import { routeDecisionCards, type DecisionRouteDependencies } from "../../packages/broker/src/decisions/routes.js";
@@ -122,9 +123,14 @@ describe("the intake and the first card", () => {
     expect(parseDesignFirstPrefix("Design first: add a retry")).toEqual({ designFirst: true, rest: "add a retry" });
     expect(parseDesignFirstPrefix("  design-first : x").designFirst).toBe(true);
     expect(parseDesignFirstPrefix("quick: design first notes")).toEqual({ designFirst: false, rest: "quick: design first notes" });
-    expect(parseWorkflowStartRequest("design first: quick: add a retry")).toEqual({ kind: "start", path: "FULL", instructions: "add a retry", designFirst: true });
+    // The Slack ingress cannot know whether the stage runs for the project, so it never reads the prefix (the broker does, `designFirstRequestOf`): the text is exactly what was typed.
+    expect(parseWorkflowStartRequest("design first: quick: add a retry")).toEqual({ kind: "start", instructions: "design first: quick: add a retry" });
     expect(parseWorkflowStartRequest("quick: add a retry")).toEqual({ kind: "start", path: "QUICK", instructions: "add a retry" });
-    expect(parseWorkflowStartRequest("design first: chat: hello").kind).toBe("chat");
+    expect(parseWorkflowStartRequest("design first: chat: hello").kind).toBe("start");
+    const on = { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "payments:web" };
+    expect(designFirstRequestOf("payments", "Design first: add a retry", on)).toEqual({ designFirst: true, rest: "add a retry" });
+    expect(designFirstRequestOf("other", "Design first: add a retry", on)).toEqual({ designFirst: false, rest: "Design first: add a retry" });
+    expect(designFirstRequestOf("payments", "Design first: add a retry", { ...on, DESIGN_REVIEW_ENABLED: "0" })).toEqual({ designFirst: false, rest: "Design first: add a retry" });
   });
 
   it("says why the design is reviewed on the first card of a reviewed task, and nothing for a task with no review or on a later card", () => {

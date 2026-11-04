@@ -52,13 +52,25 @@ async function metaClient(dependencies: AwsBrokerDependencies, task: DeveloperTa
 
 export function specEndEnvironmentOf(dependencies: AwsBrokerDependencies, now: () => string = () => new Date().toISOString()): SpecEndEnvironment {
   const taskIdToTask = async (taskId: string) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+  // The task `approvedPlanDigest` just read, kept for the `design` port that runs right after it in the same spec end: the design step adds NO read of its own, so a spec write with design review off has exactly the reads it
+  // had before (a transient read error cannot fail it). The entry is used once and then dropped.
+  let justRead: { taskId: string; task: DeveloperTaskRecord | undefined } | undefined;
   return {
     tableName: dependencies.tableName,
     store: dynamoSpecStore(dependencies),
     now,
-    approvedPlanDigest: async (taskId) => approvedPlanDigestOf(await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId))),
-    // Design review (DR12): the spec waits for the approved design and writes it with the spec. Off for a task with no design review.
-    design: async (taskId) => designSpecStateOf(await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)), async (key, max) => (await readObjectText(dependencies.s3, dependencies.artifactBucketName, key, max)) ?? ""),
+    approvedPlanDigest: async (taskId) => {
+      const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+      justRead = { taskId, task };
+      return approvedPlanDigestOf(task);
+    },
+    // Design review (DR12): the spec waits for the approved design and writes it with the spec. Off for a task with no design review. It reads the task `approvedPlanDigest` read, not the table again.
+    design: async (taskId) => {
+      const earlier = justRead?.taskId === taskId ? justRead : undefined;
+      justRead = undefined;
+      const task = earlier !== undefined ? earlier.task : await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+      return designSpecStateOf(task, async (key, max) => (await readObjectText(dependencies.s3, dependencies.artifactBucketName, key, max)) ?? "");
+    },
     taskKey: (taskId) => taskId.slice(0, 8),
     // Both are read by the broker through GitHub at the task's knowledgeCommit, never from the workspace the builder wrote.
     existingFolders: async (state, parent) => {

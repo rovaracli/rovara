@@ -28,7 +28,8 @@ import { auditActorOf } from "../audit/plan3-hooks.js";
 
 /** What a refused design review setting says. Field names only; the company's lock values and the project's are never echoed. */
 export const DESIGN_REVIEW_LOCKED = "your company has set a stricter rule for design review";
-export const DESIGN_REVIEW_GROUP_EDITION = "a group can be the high-risk approver only in the Enterprise edition";
+/** A group is refused as the high-risk approver until groups have a member store (ON-12): a group named now would leave every high-risk design with nobody who can approve or skip it. */
+export const DESIGN_REVIEW_GROUP_EDITION = "a group can't be the high-risk approver yet; name people instead";
 export const DESIGN_REVIEW_LOCK_UNREADABLE = "your company's design review rules can't be read right now, so this can't be saved";
 export const DESIGN_REVIEW_NAMED_PEOPLE = "name only project maintainers or members who can approve";
 /** Naming people is refused when who may approve cannot be worked out right now (the candidates were not given): fail closed, never "anyone". */

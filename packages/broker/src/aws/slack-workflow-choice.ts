@@ -20,7 +20,6 @@ import {
 } from "@agentx/contracts";
 import { PROJECT_TASKS_DISABLED_TEXT, WORKFLOW_PATH_ANSWER_ACTION, WORKFLOW_PATH_FULL_ACTION, WORKFLOW_PATH_QUICK_ACTION } from "../developer/workflow-actions.js";
 import { answeredWorkflowCard } from "../developer/workflow-messages.js";
-import { parseDesignFirstPrefix } from "../rovara-code/explicit-path.js";
 
 export type WorkflowPath = "QUICK" | "FULL";
 /** Task 21: what a requester can choose for a waiting request: a path, or an answer from the chat agent instead. */
@@ -49,19 +48,14 @@ export function parseWorkflowChoiceReply(text: string): WorkflowChoice | undefin
   return parseWorkflowPathReply(text) ?? (ANSWER_REPLY.test(text.trim()) ? "ANSWER" : undefined);
 }
 
-export type WorkflowStartRequest = { kind: "start"; path?: WorkflowPath; instructions: string; /** `design first:` (DR11): the design is reviewed before any code; the task runs Full. */ designFirst?: true } | { kind: "chat"; text: string };
+export type WorkflowStartRequest = { kind: "start"; path?: WorkflowPath; instructions: string } | { kind: "chat"; text: string };
 
 /**
  * What an @AgentX request asks for: `chat:` goes to the chat agent; `quick:`, `full:`, `workflow quick:` and
  * `workflow full:` start a task on that path; `workflow:` and any other request start a task that asks Quick or Full.
  */
 export function parseWorkflowStartRequest(text: string): WorkflowStartRequest {
-  // `design first:` (alone or before `quick:` / `full:`): a request for design review first, which runs the Full path.
-  const first = parseDesignFirstPrefix(text.trim());
-  if (first.designFirst) {
-    const rest = parseWorkflowStartRequest(first.rest);
-    return rest.kind === "chat" ? rest : { kind: "start", path: "FULL", instructions: rest.instructions, designFirst: true };
-  }
+  // `design first:` is NOT read here: this runs in the Slack ingress, which cannot know whether the design review runs for the project. The broker reads it when the task starts (`designFirstRequestOf`).
   const trimmed = text.trim();
   const chat = /^chat\s*:([\s\S]*)$/i.exec(trimmed);
   if (chat !== null) return { kind: "chat", text: chat[1]!.trim() };
@@ -173,7 +167,7 @@ export class SlackWorkflowStartError extends Error {
   }
 }
 
-export type SlackWorkflowStartInput = { thread: SlackThread; userId: string; instructions: string; workflowPath: WorkflowPath; requestId: string; designFirst?: true };
+export type SlackWorkflowStartInput = { thread: SlackThread; userId: string; instructions: string; workflowPath: WorkflowPath; requestId: string };
 /** The broker's answer to a direct invoke, as its handler returns it. */
 export type BrokerReply = { statusCode?: number; body?: string };
 

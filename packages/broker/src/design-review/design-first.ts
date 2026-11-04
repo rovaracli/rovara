@@ -2,6 +2,16 @@
 // person's ask and nothing more: it turns the review on only while the `dr` switch is on for the project, and the company's lock and the high-risk rules apply exactly as they do to the button.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { taskKey } from "../developer/task-records.js";
+import { parseDesignFirstPrefix } from "../rovara-code/explicit-path.js";
+import { designReviewEnabledFor } from "./switch.js";
+
+/**
+ * The `design first:` prefix of a request typed in Slack or a Linear ticket, read ONLY while the design review stage runs for the project (`dr` on and the project named in `dp`). Otherwise the text is not looked at: it is
+ * returned as it came (no prefix is stripped and nothing is recorded), exactly as it was handled before the stage existed.
+ */
+export function designFirstRequestOf(project: string, text: string, env: NodeJS.ProcessEnv = process.env): { designFirst: boolean; rest: string } {
+  return designReviewEnabledFor(project, env) ? parseDesignFirstPrefix(text) : { designFirst: false, rest: text };
+}
 
 export interface DesignFirstRequest { by: string; at: string }
 

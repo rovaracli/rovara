@@ -1,6 +1,6 @@
 // Design review stage DR8: the project's design review setting in How we work (the playbook's `designReview`), the company's stricter-only lock on it, and the audit event on change.
 // The setting rides the existing playbook document and PUT (DR1 put the field on the schema and the body); this file pins what the broker does with it.
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookBodySchema, agentXError, designReviewSettingOf, editionPolicy, orgMetaKey, projectPlaybookKey, type DesignReviewSetting, type OrgRole,
 } from "../../packages/contracts/src/index.js";
@@ -11,6 +11,11 @@ import { isEffectiveSetting } from "../../packages/broker/src/design-review/effe
 import { readEffectiveDesignReview } from "../../packages/broker/src/design-review/setting.js";
 import { MAX, MIA, OLA, ORG_A, PRIYA } from "../support/agent-session-world.js";
 import { mergeWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
+import { designPlaybookDeps } from "../../packages/broker/src/aws/developer-routes/design-review.js";
+
+// The setting is read and saved only where the design review runs for the project (`dr` on and the project named in `dp`); the OFF answers are pinned in tests/contract/design-review-final-fix.test.ts.
+beforeEach(() => { process.env.DESIGN_REVIEW_ENABLED = "1"; process.env.DESIGN_REVIEW_PROJECTS = "web"; });
+afterEach(() => { delete process.env.DESIGN_REVIEW_ENABLED; delete process.env.DESIGN_REVIEW_PROJECTS; });
 
 const ROLES: Record<string, OrgRole> = { [OLA]: "admin" };
 function playbookDeps(w: MergeWorld, extra: Partial<ProjectPlaybookDependencies> = {}): ProjectPlaybookDependencies {
@@ -212,7 +217,7 @@ describe("groups are Enterprise only", () => {
   const withGroup: DesignReviewSetting = { ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "group", groupId: "security-leads" } };
   it("refuses a group as the high-risk approver in the Public edition, and when the edition is not known", async () => {
     const w = mergeWorld();
-    expect(await failure(put(w, MAX, { designReview: withGroup }, { edition: editionPolicy("public") }))).toMatchObject({ code: "CONFIG_INVALID", message: "designReview: a group can be the high-risk approver only in the Enterprise edition" });
+    expect(await failure(put(w, MAX, { designReview: withGroup }, { edition: editionPolicy("public") }))).toMatchObject({ code: "CONFIG_INVALID", message: "designReview: a group can't be the high-risk approver yet; name people instead" });
     expect(await failure(put(w, MAX, { designReview: withGroup }, { edition: undefined }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(stored(w)).toBeUndefined();
     // Maintainers and named people are fine in Public.
@@ -388,5 +393,60 @@ describe("money fix round 2: L4 fails closed, N7 one view", () => {
     expect(read.designReviewLocked).toEqual(["designReview.mode", "designReview.allowSkip", "designReview.capUsdPerTask"]);
     expect(read.playbook.designReview).toMatchObject({ mode: "always", allowSkip: false, capUsdPerTask: 8 });
     expect(stored(w)).toMatchObject({ revision: 2, designReview: { mode: "never", allowSkip: true, capUsdPerTask: 30 } });
+  });
+});
+
+// ---- the final fix round: with the stage off for a project, the playbook is exactly what it was before the stage existed (A3), and groups are not offered or accepted anywhere (ON-12)
+describe("A3: the playbook where the design review does not run for the project", () => {
+  const offFor = (variant: "dr" | "dp" | "listed-else"): void => {
+    if (variant === "dr") { process.env.DESIGN_REVIEW_ENABLED = "0"; process.env.DESIGN_REVIEW_PROJECTS = "web"; }
+    else if (variant === "dp") { process.env.DESIGN_REVIEW_ENABLED = "1"; process.env.DESIGN_REVIEW_PROJECTS = "payments"; }
+    else { process.env.DESIGN_REVIEW_ENABLED = "1"; delete process.env.DESIGN_REVIEW_PROJECTS; }
+  };
+
+  for (const variant of ["dr", "dp", "listed-else"] as const) {
+    it(`GET answers the old shape (${variant} off, Enterprise): no groups flag, no lock list, no setting, even where one is stored and a lock is set`, async () => {
+      offFor(variant);
+      const w = mergeWorld();
+      w.db.set({ ...projectPlaybookKey(ORG_A, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG_A, revision: 3, defaultProcess: { kind: "builtin" }, designReview: SETTING, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAX });
+      setLock(w, { mode: "always" });
+      expect(await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web")).toEqual({ playbook: { revision: 3, defaultProcess: { kind: "builtin" } } });
+    });
+
+    it(`PUT refuses a design review setting as a field the route does not take (${variant} off), writes nothing, and a process-only save answers the old shape`, async () => {
+      offFor(variant);
+      const w = mergeWorld();
+      expect(await failure(put(w, MAX, { designReview: SETTING }))).toMatchObject({ code: "CONFIG_INVALID", message: "designReview: has a field this route does not take" });
+      expect(stored(w)).toBeUndefined();
+      const saved = await put(w, MAX, {});
+      expect(saved.body).toEqual({ playbook: { revision: 1, defaultProcess: { kind: "builtin" } } });
+    });
+  }
+
+  it("a setting stored while the stage was on is kept across a process-only save made while it is off, and shows again when it is back on", async () => {
+    const w = mergeWorld();
+    await put(w, MAX, { designReview: SETTING });
+    offFor("dr");
+    const saved = await put(w, MAX, { expectedRevision: 1 });
+    expect(saved.body).toEqual({ playbook: { revision: 2, defaultProcess: { kind: "builtin" } } });
+    expect(stored(w)).toMatchObject({ designReview: SETTING });
+    process.env.DESIGN_REVIEW_ENABLED = "1";
+    process.env.DESIGN_REVIEW_PROJECTS = "web";
+    expect((await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web")).playbook.designReview).toEqual(SETTING);
+  });
+
+  it("ON-12: the wired dependencies offer no groups (no flag) and refuse a group in the PUT with a clear message, in Enterprise too; named people still work", async () => {
+    const w = mergeWorld();
+    // What the route wiring passes on: it carries no edition, so a group is refused whatever the install has.
+    const wiring = designPlaybookDeps({ editionPolicy: editionPolicy("enterprise") } as never);
+    expect(wiring).not.toHaveProperty("edition");
+    const wired = playbookDeps(w, { edition: (wiring as { edition?: ProjectPlaybookDependencies["edition"] }).edition });
+    expect(wired.edition).toBeUndefined();
+    const group = { ...SETTING, highRiskApprover: { kind: "group" as const, groupId: "g1" } };
+    const refused = await failure(putProjectPlaybook(wired, w.caller(MAX), "web", { expectedRevision: 0, defaultProcess: { kind: "builtin" }, designReview: group }));
+    expect(refused).toMatchObject({ code: "CONFIG_INVALID", message: "designReview: a group can't be the high-risk approver yet; name people instead" });
+    expect(stored(w)).toBeUndefined();
+    const people = await putProjectPlaybook(wired, w.caller(MAX), "web", { expectedRevision: 0, defaultProcess: { kind: "builtin" }, designReview: SETTING });
+    expect(people.body).toEqual({ playbook: { revision: 1, defaultProcess: { kind: "builtin" }, designReview: SETTING } });
   });
 });

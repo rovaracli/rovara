@@ -769,7 +769,7 @@ async function startFromMention(
   dependencies: SlackIngressDependencies,
   log: SlackIngressLog,
   mention: Mention,
-  request: { path?: WorkflowPath; instructions: string; designFirst?: true },
+  request: { path?: WorkflowPath; instructions: string },
   /** Task 21: queues a plain top-level request for the Slack service to route, instead of asking Quick or Full here. */
   route?: () => Promise<HttpResponse>,
 ): Promise<HttpResponse> {
@@ -797,7 +797,7 @@ async function startFromMention(
       log("workflow.choice_offered", { eventId });
       return respond(200, { ok: true });
     }
-    await dependencies.startWorkflow!({ thread, userId: mention.userId, instructions: request.instructions, workflowPath: request.path, requestId: eventId, ...(request.designFirst === true ? { designFirst: true as const } : {}) });
+    await dependencies.startWorkflow!({ thread, userId: mention.userId, instructions: request.instructions, workflowPath: request.path, requestId: eventId });
   } catch (error) {
     log("workflow.start_failed", { eventId, errorName: errorName(error) });
     await post(dependencies, log, thread, startFailureNotice(error, eventId), "workflow.start_failure_notice_failed");
