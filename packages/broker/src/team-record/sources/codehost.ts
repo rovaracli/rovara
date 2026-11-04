@@ -153,13 +153,15 @@ function audienceOf(repo: CodeHostRepo, at: string): Audience {
 
 const prId = (repo: CodeHostRepo, number: number): string => `${repo.fullName}#pr${number}`;
 
-export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event: CodeHostEvent): Promise<TapResult> } {
+export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event: CodeHostEvent, hooks?: { removalStarted?: () => void }): Promise<TapResult> } {
   const log: TapLog = deps.log ?? (() => undefined);
 
-  async function handle(event: CodeHostEvent): Promise<TapResult> {
+  async function handle(event: CodeHostEvent, hooks: { removalStarted?: () => void } = {}): Promise<TapResult> {
     const result: TapResult = { written: 0, duplicates: 0, refused: 0, failed: 0 };
     // A delete at the source is always honoured, before any mode or source-row check: what was recorded must go whatever the settings say now.
     if (event.type === "repository" || (event.type === "comment" && event.action === "deleted")) {
+      // The webhook is told first that a removal began, so one still running at its budget is answered retryable.
+      try { hooks.removalStarted?.(); } catch { /* a caller's callback never fails the removal */ }
       try {
         await deps.sink.tombstone(event.type === "repository"
           ? { workspaceId: event.repo.workspaceId, system: event.repo.host, scope: repoScope(event.repo), cause: "source_deleted" }

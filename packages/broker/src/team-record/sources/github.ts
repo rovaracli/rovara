@@ -58,10 +58,10 @@ export interface GithubRecordTapDependencies extends Omit<CodeHostTapDependencie
 export type GithubGetJson = (path: string) => Promise<{ status: number; body: unknown }>;
 
 /** A verified delivery in, nothing out: it never throws, so a failed record can never fail the webhook that carried it. */
-export function createGithubRecordTap(deps: GithubRecordTapDependencies): (verified: { eventName: string | undefined; deliveryId: string; payload: unknown }) => Promise<TapResult | undefined> {
+export function createGithubRecordTap(deps: GithubRecordTapDependencies): (verified: { eventName: string | undefined; deliveryId: string; payload: unknown; removalStarted?: () => void }) => Promise<TapResult | undefined> {
   const tap = createCodeHostTap({ ...deps, ...(deps.getJson === undefined ? {} : { diffs: createGithubDiffReader(deps.getJson) }) });
   const now = deps.now ?? Date.now;
-  return async ({ eventName, deliveryId, payload }) => {
+  return async ({ eventName, deliveryId, payload, removalStarted }) => {
     try {
       if (eventName === undefined) return undefined;
       const envelope = Envelope.safeParse(payload);
@@ -77,7 +77,7 @@ export function createGithubRecordTap(deps: GithubRecordTapDependencies): (verif
       const events = githubEventsOf(eventName, envelope.data.action, payload, repo, new Date(now()).toISOString(), deliveryId);
       let total: TapResult | undefined;
       for (const event of events) {
-        const result = await tap.handle(event);
+        const result = await tap.handle(event, removalStarted === undefined ? {} : { removalStarted });
         total = total === undefined ? result : { written: total.written + result.written, duplicates: total.duplicates + result.duplicates, refused: total.refused + result.refused, failed: total.failed + result.failed, ...(total.removalFailed === true || result.removalFailed === true ? { removalFailed: true } : {}) };
       }
       return total;

@@ -1085,14 +1085,16 @@ async function handleInstallationEvent(
 /** Longest the Team record tap may hold a delivery's answer (GitHub gives up on a webhook after ten seconds and does not retry by itself). */
 export const RECORD_TAP_BUDGET_MS = 3_000;
 
-/** Waits for `work` at most `ms`, and never throws: a slow or failing tap changes nothing about the delivery. */
-async function withinBudget(work: Promise<unknown>, ms: number): Promise<void> {
+/** Waits for `work` at most `ms`, and never throws: a slow or failing tap changes nothing about the delivery. True when the wait ended because the time was up. */
+async function withinBudget(work: Promise<unknown>, ms: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   try {
-    await Promise.race([work.catch(() => undefined), new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+    await Promise.race([work.catch(() => undefined), new Promise<void>((resolve) => { timer = setTimeout(() => { timedOut = true; resolve(); }, ms); })]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+  return timedOut;
 }
 
 /**
@@ -1103,23 +1105,26 @@ async function withinBudget(work: Promise<unknown>, ms: number): Promise<void> {
 export async function handleGithubWebhook(input: Parameters<typeof handleVerifiedGithubWebhook>[0]): ReturnType<typeof handleVerifiedGithubWebhook> {
   const offered = input.recordTap;
   if (offered === undefined) return handleVerifiedGithubWebhook(input);
-  let removalLost = false;
+  const signals: RecordSignals = { removalStarted: false, removalLost: false };
   const watched: typeof offered = async (verified) => {
-    const answer = await offered(verified);
-    if ((answer as { removalFailed?: unknown } | null | undefined)?.removalFailed === true) removalLost = true;
+    const answer = await offered({ ...verified, removalStarted: () => { signals.removalStarted = true; } });
+    if ((answer as { removalFailed?: unknown } | null | undefined)?.removalFailed === true) signals.removalLost = true;
     return answer;
   };
   let outcome: Awaited<ReturnType<typeof handleVerifiedGithubWebhook>>;
   try {
-    outcome = await handleVerifiedGithubWebhook({ ...input, recordTap: watched });
+    outcome = await handleVerifiedGithubWebhook({ ...input, recordTap: watched }, signals);
   } catch (error) {
     // A delivery the other paths left unanswered (ignored) is retryable when the delete was lost; any other failure keeps its own answer.
-    if (removalLost && error instanceof GithubWebhookIgnorable) throw new GithubWebhookRetryableError("the record could not take the delete");
+    if (signals.removalLost && error instanceof GithubWebhookIgnorable) throw new GithubWebhookRetryableError("the record could not take the delete");
     throw error;
   }
-  if (removalLost) throw new GithubWebhookRetryableError("the record could not take the delete");
+  if (signals.removalLost) throw new GithubWebhookRetryableError("the record could not take the delete");
   return outcome;
 }
+
+/** What the record tap told the webhook: a removal began, and whether it was lost (no durable path took it, or it was still running at the tap budget). */
+interface RecordSignals { removalStarted: boolean; removalLost: boolean }
 
 async function handleVerifiedGithubWebhook(input: {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -1142,9 +1147,9 @@ async function handleVerifiedGithubWebhook(input: {
    * Team record (R5): offered every verified delivery before it is looked at (`createGithubRecordTap`). It never throws and decides for itself what to keep;
    * an event it does not use, or a repository no project has registered, is left alone. Absent: nothing is offered, as before.
    */
-  recordTap?: (verified: { eventName: string | undefined; deliveryId: string; payload: unknown }) => Promise<unknown>;
+  recordTap?: (verified: { eventName: string | undefined; deliveryId: string; payload: unknown; removalStarted?: () => void }) => Promise<unknown>;
   now(): string;
-}): Promise<{ status: "ACCEPTED" | "DUPLICATE" | "IN_PROGRESS" | "IGNORED"; deliveryId: string; lifecycle?: true; trigger?: true }> {
+}, signals: RecordSignals = { removalStarted: false, removalLost: false }): Promise<{ status: "ACCEPTED" | "DUPLICATE" | "IN_PROGRESS" | "IGNORED"; deliveryId: string; lifecycle?: true; trigger?: true }> {
   if ((input.installationCreated !== undefined || input.installationLifecycle !== undefined)
     && Object.entries(input.headers).some(([key, value]) => key.toLowerCase() === "x-github-event" && (value === "installation" || value === "installation_repositories"))) {
     return handleInstallationEvent(input, {
@@ -1171,7 +1176,11 @@ async function handleVerifiedGithubWebhook(input: {
       ...(triggerEvents === undefined && input.recordTap === undefined ? {} : {
         onVerified: async ({ eventName, deliveryId, payload }) => {
           verifiedDelivery = deliveryId;
-          if (input.recordTap !== undefined) await withinBudget(input.recordTap({ eventName, deliveryId, payload }), RECORD_TAP_BUDGET_MS);
+          if (input.recordTap !== undefined) {
+            // A removal still running at the budget cannot be counted as done: the answer is retryable (the removal goes on in the background and is repeatable).
+            const timedOut = await withinBudget(input.recordTap({ eventName, deliveryId, payload }), RECORD_TAP_BUDGET_MS);
+            if (timedOut && signals.removalStarted) signals.removalLost = true;
+          }
           if (triggerEvents === undefined || eventName === undefined || !GITHUB_TRIGGER_EVENT_NAMES.has(eventName)) return;
           const installation = z.object({ installation: z.object({ id: z.number().int().positive() }).passthrough() }).passthrough().safeParse(payload);
           if (installation.success) triggered = await triggerEvents({ eventName, payload, installationId: installation.data.installation.id });

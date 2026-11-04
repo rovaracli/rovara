@@ -1,12 +1,13 @@
 // Task 6 item 4: a GitHub delete that every durable path refused answers a retryable 503 (GitHub can redeliver), and nothing else about the delivery changes.
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { GithubWebhookRetryableError, handleGithubWebhook } from "../../../packages/broker/src/aws/github-webhooks.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { GithubWebhookRetryableError, RECORD_TAP_BUDGET_MS, handleGithubWebhook } from "../../../packages/broker/src/aws/github-webhooks.js";
 import { createCodeHostTap, repoScope, type CodeHostEvent, type CodeHostRepo } from "../../../packages/broker/src/team-record/sources/codehost.js";
 import { createGithubRecordTap } from "../../../packages/broker/src/team-record/sources/github.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { world, WS } from "../../support/team-record-ingest-fakes.js";
 
+afterEach(() => { vi.useRealTimers(); });
 const SECRET = "whsec-lost-delete";
 const AT = "2026-10-30T10:00:00.000Z";
 const repo: CodeHostRepo = { host: "github", id: "77", fullName: "acme/shop", isPrivate: true, workspaceId: WS, project: "shop" };
@@ -61,5 +62,32 @@ describe("the webhook answer", () => {
       expect(await deliver(tap, seen)).toMatchObject({ status: "ACCEPTED", trigger: true });
       expect(seen).toEqual(["trigger work ran"]);
     }
+  });
+
+  it("a removal still running at the tap budget is retryable too; a slow put, a finished removal and a tap that never said a removal began are not", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const slow = async (tap: (verified: unknown) => Promise<unknown>): Promise<string> => {
+      const seen: string[] = [];
+      const outcome = deliver(tap, seen).then((result) => `answered:${result.status}`, (error: unknown) => (error instanceof GithubWebhookRetryableError ? "retryable" : "other"));
+      await vi.advanceTimersByTimeAsync(RECORD_TAP_BUDGET_MS + 100);
+      return outcome;
+    };
+    const never = () => new Promise<never>(() => undefined);
+    expect(await slow((verified) => { (verified as { removalStarted?: () => void }).removalStarted?.(); return never(); })).toBe("retryable");
+    expect(await slow(() => never())).toBe("answered:ACCEPTED");
+    expect(await slow(async (verified) => { (verified as { removalStarted?: () => void }).removalStarted?.(); return undefined; })).toBe("answered:ACCEPTED");
+  });
+});
+
+describe("the GitHub tap says when a removal begins", () => {
+  it("calls removalStarted before the tombstone, for a deleted comment and a deleted repository only", async () => {
+    const w = world();
+    const order: string[] = [];
+    w.sink.tombstone = async () => { order.push("tombstone"); return { hidden: 1 }; };
+    const tap = createGithubRecordTap({ sink: w.sink, actors: w.actors, rovaraPrs: w.prs, mode: w.mode, config: w.config, resolveRepo: async () => ({ workspaceId: WS, project: "shop" }) });
+    const envelope = { installation: { id: 1 }, repository: { id: 77, full_name: "acme/shop", private: true } };
+    await tap({ eventName: "repository", deliveryId: "d1", payload: { ...envelope, action: "deleted" }, removalStarted: () => order.push("started") } as never);
+    await tap({ eventName: "repository", deliveryId: "d2", payload: { ...envelope, action: "created" }, removalStarted: () => order.push("started-wrong") } as never);
+    expect(order).toEqual(["started", "tombstone"]);
   });
 });
