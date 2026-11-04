@@ -36,7 +36,7 @@ const UNAVAILABLE_MESSAGE = "Linear could not be reached just now.";
 /** What Rovara can do to a Linear issue's comments, through the org's connection. */
 export interface LinearWritePort extends LinearReplyPort {
   /** Posts the comment (once per `commentKey`) and answers its id. Throws when it could not be posted. */
-  reply(input: { orgId: OrgId; issueKey: string; text: string; commentKey?: string | undefined; workspace?: string | undefined }): Promise<{ commentId: string }>;
+  reply(input: { orgId: OrgId; issueKey: string; text: string; commentKey?: string | undefined; workspace?: string | undefined }): Promise<{ commentId: string; workspace?: string }>;
   /**
    * Replaces the text of a comment Rovara's own account wrote. Throws for any other comment. `workspace` is the workspace the comment was posted in (AL-1): given, only a connection to that workspace
    * can say the comment is gone.
@@ -164,14 +164,16 @@ export function linearWriteOf(input: { deps: OrgConnectionDeps; fetch?: typeof f
    *
    * AL-1: with the workspace the comment was posted in, a connection to ANOTHER workspace is not asked (it could never see the comment, so its not-found says nothing), and "gone" needs at least one
    * connection to that very workspace to have said not-found. When the posting connection was removed and only other workspaces' connections are left, nothing proves the comment is gone: it throws
-   * (CONFIG_INVALID, "not set up"), so the caller keeps the work waiting and, in the end, reports it. A connection whose workspace was never recorded is still asked (it may see the comment) but its
-   * not-found does not count as proof. Without a workspace (a comment recorded before this) the pass is as it was.
+   * (CONFIG_INVALID, "not set up"), so the caller keeps the work waiting and, in the end, reports it. A connection whose workspace was never recorded is still asked (it may see the comment); its not-found
+   * counts as proof only while no connection is known to be in that workspace. Without a workspace (a comment recorded before this) the pass is as it was.
    */
   async function ownComment(orgId: OrgId, commentId: string, workspace?: string): Promise<{ connection: Connection; comment: NonNullable<z.infer<typeof CommentRead>["comment"]> } | "gone"> {
     const all = (await writers(orgId)).filter((connection) => workspace === undefined || connection.workspaceKey === undefined || connection.workspaceKey === workspace);
     if (all.length === 0) throw notSetUp();
     let foreign = false;
     let failure: unknown;
+    // A connection whose workspace was never read may confirm "gone" only while no connection is known to be in the posting workspace (as before AL-1): then nothing better can answer.
+    const keyedHere = workspace !== undefined && all.some((connection) => connection.workspaceKey === workspace);
     let proof = false;
     for (const connection of all) {
       let comment: Awaited<ReturnType<typeof readComment>>;
@@ -184,7 +186,7 @@ export function linearWriteOf(input: { deps: OrgConnectionDeps; fetch?: typeof f
         continue;
       }
       if (comment === undefined) {
-        if (workspace === undefined || connection.workspaceKey === workspace) proof = true;
+        if (workspace === undefined || connection.workspaceKey === workspace || (connection.workspaceKey === undefined && !keyedHere)) proof = true;
         continue;
       }
       if (comment.user?.id === connection.actorId) return { connection, comment };
@@ -226,10 +228,12 @@ export function linearWriteOf(input: { deps: OrgConnectionDeps; fetch?: typeof f
           if (normalizeIssueKey(issue.identifier) !== key) continue;
           if (workspace !== undefined && workspaceOfIssueUrl(issue.url) !== workspace) continue;
           const created = await call(orgId, connection, CreateResult, "mutation($input:CommentCreateInput!){ commentCreate(input:$input){ success } }", { input: { id: commentId, issueId: issue.id, body: cut } });
-          if (!("errors" in created) && created.data.commentCreate.success) return { commentId };
+          // The workspace is the posting connection's own, checked, one: what a later erase must ask in (AL-1).
+          const posted = { commentId, ...(connection.workspaceKey === undefined ? {} : { workspace: connection.workspaceKey }) };
+          if (!("errors" in created) && created.data.commentCreate.success) return posted;
           // Linear refused or the answer was lost: if a comment with this very id is on this very issue, it is posted (the same post again is the same comment).
           const existing = await readComment(orgId, connection, commentId);
-          if (existing !== undefined && existing.id === commentId && normalizeIssueKey(existing.issue?.identifier) === key) return { commentId };
+          if (existing !== undefined && existing.id === commentId && normalizeIssueKey(existing.issue?.identifier) === key) return posted;
           lastError = unavailable();
         } catch (error) {
           // A rate limit is the same for every connection of the org: it stops the pass.

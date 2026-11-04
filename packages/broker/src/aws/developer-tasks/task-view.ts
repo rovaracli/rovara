@@ -14,6 +14,7 @@ import {
   diffStat,
   lastAssistantResponse,
   redactAndCap,
+  hideEmailAddresses,
   redactText,
   type DeveloperCloseResponse,
   type DeveloperTaskFailure,
@@ -350,7 +351,8 @@ export async function taskView(
   return {
     modelFallbacks:modelFallbacks.data,
     taskId: task.taskId,
-    title: task.title,
+    // S3: a reader who is not the owner reads the title (a person's request) without an email address.
+    title: options.actor === "viewer" ? hideEmailAddresses(task.title) : task.title,
     project: task.project,
     status: derived.status,
     ...(workflow === undefined ? {} : { workflow }),

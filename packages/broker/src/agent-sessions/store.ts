@@ -9,7 +9,6 @@ import {
   SessionEventSchema,
   agentSessionKey,
   agentXError,
-  hideEmailAddresses,
   redactText,
   sessionEventSk,
   sessionLegSk,
@@ -74,14 +73,7 @@ export function sessionFromItem(item: Item): AgentSessionRecord | undefined {
   // Release 0.4.16: a session started before it stored an email as the owner's name reads with a name that is safe to show.
   const owner = record.data.owner;
   const name = safeDisplayName(owner.name, owner.developerId);
-  const named = name === owner.name ? record.data : { ...record.data, owner: { ...owner, name } };
-  // S3 (C59): the title comes from a request and the step and latest line from a model, and every card, tile and view of the session shows them to other people: they read without an email address.
-  const { title, summary } = named;
-  const step = summary.step === undefined ? undefined : hideEmailAddresses(summary.step);
-  const peek = summary.peek === undefined ? undefined : hideEmailAddresses(summary.peek);
-  const readableTitle = hideEmailAddresses(title);
-  if (readableTitle === title && step === summary.step && peek === summary.peek) return named;
-  return { ...named, title: readableTitle, summary: { ...summary, ...(step === undefined ? {} : { step }), ...(peek === undefined ? {} : { peek }) } };
+  return name === owner.name ? record.data : { ...record.data, owner: { ...owner, name } };
 }
 
 // ---- legs (a move between a Mac and the cloud, Plan 5 Task 19)

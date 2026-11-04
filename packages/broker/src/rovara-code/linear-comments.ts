@@ -23,7 +23,7 @@ export interface LinearReplyPort {
    * Posts the comment. `commentKey` is a stable name for it: the same key again is the same comment (a retry is never a second post). `workspace` is the Linear workspace the issue's binding names, when it
    * names one. Answers the comment's id when it knows it.
    */
-  reply(input: { orgId: OrgId; issueKey: string; text: string; commentKey?: string | undefined; workspace?: string | undefined }): Promise<{ commentId: string } | void>;
+  reply(input: { orgId: OrgId; issueKey: string; text: string; commentKey?: string | undefined; workspace?: string | undefined }): Promise<{ commentId: string; workspace?: string | undefined } | void>;
   /** Rewrites a comment Rovara posted (an erased person's name taken out). Refuses a comment that is not Rovara's own. Absent: such comments are not rewritten. */
   update?(input: { orgId: OrgId; commentId: string; text: string; workspace?: string | undefined }): Promise<void>;
   /** Deletes a comment Rovara posted. Refuses a comment that is not Rovara's own. Absent: such comments are not deleted. */

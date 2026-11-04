@@ -2018,3 +2018,18 @@ describe("after a take-over (Plan 5 Task 12a)", () => {
     expect(w.vendor.state.vendorCalls).toEqual([]);
   });
 });
+
+describe("S3 (H3): the write's event on the task's timeline", () => {
+  it("carries no address from the call's values, while the stored approval keeps the exact summary the approver is shown", async () => {
+    const w = world();
+    const to = `omar${String.fromCharCode(64)}example.test`;
+    const args = { id: "ENG-12", comment: `Please tell ${to} about it` };
+    const decision = await decideWrite(w.deps, w.input({ call: { scope: "eng", schemaHash: SCHEMA, arguments: args } }));
+    const approvalId = (decision as { approvalId: string }).approvalId;
+    const record = await w.write(approvalId);
+    expect(record.summary).toContain(to);
+    const [event] = w.events() as Array<{ text: string }>;
+    expect(event!.text).not.toContain(to);
+    expect(event!.text).toContain("[email removed]");
+  });
+});

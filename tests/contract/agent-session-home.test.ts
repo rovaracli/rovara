@@ -893,7 +893,7 @@ describe("Home retires the kinds decision cards carry (Decisions Q5)", () => {
 describe("S3 (C59): no email address in the words of a card", () => {
   const mail = (local: string) => `${local}${String.fromCharCode(64)}example.test`;
 
-  it("a plan, pull request and failure card name the session without an address in the title or the reason", async () => {
+  it("a plan, pull request and failure card are the owner's own: the title is as written, and the words that say it (the reason) carry no address", async () => {
     const w = world();
     const title = `Reply to ${mail("omar.diaz")} about the invoice`;
     w.plan({ title });
@@ -901,8 +901,10 @@ describe("S3 (C59): no email address in the words of a card", () => {
     w.failed({ title, step: `Failed: could not reach ${mail("omar.diaz")}` });
     const cards = (await w.home(PRIYA)).cards;
     expect(cards.map((card) => card.kind).sort()).toEqual(["failure", "plan", "pull_request"]);
-    expect(JSON.stringify(cards)).not.toContain(String.fromCharCode(64));
-    expect(cards.find((card) => card.kind === "plan")!.title).toBe("Reply to [email removed] about the invoice");
+    for (const card of cards) {
+      expect(card.reason).not.toContain(String.fromCharCode(64));
+      expect(card.title).toBe(title);
+    }
   });
 
   it("a write approval's card hides an address in what the agent wants to do", async () => {

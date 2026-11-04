@@ -8,7 +8,7 @@ import {
   planSummaryLines,
   workflowFindingAccepted,
 } from "@agentx/contracts";
-import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../../developer/pull-request-feedback-section.js";
+import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START, ROVARA_STATUS_START } from "../../developer/pull-request-feedback-section.js";
 import type { DeveloperTaskRecord, OperationFacts } from "../../developer/task-records.js";
 import { loadWorkflowDocument, type LoadedDocument } from "../../developer/plan-artifacts.js";
 import { documentSummaryLines } from "../../developer/workflow-messages.js";
@@ -35,8 +35,28 @@ const WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED = 20;
 export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, plan: LoadedDocument | string | undefined, pageUrl: string | undefined, context?: PullRequestBodyContext, proofLines: readonly string[] = []): string {
   // S3 (C59): the description is read by everyone who can see the repository, and the plan, the findings and the title are a model's and a person's words. No email address is written on GitHub; layout is kept, so a code block still renders.
   const body = hideEmailAddresses(buildWorkflowPullRequestBody(task, workflow, plan, pageUrl, context, proofLines));
-  if (Buffer.byteLength(body, "utf8") <= WORKFLOW_PULL_REQUEST_BODY_MAX_BYTES) return body;
-  return Buffer.from(body, "utf8").subarray(0, WORKFLOW_PULL_REQUEST_BODY_MAX_BYTES).toString("utf8").replace(/\uFFFD+$/u, "");
+  return fitPullRequestBody(body);
+}
+
+const byteLength = (text: string): number => Buffer.byteLength(text, "utf8");
+/** Cut on a character boundary: a split multi-byte character decodes as U+FFFD, which is dropped. */
+const cutBytes = (text: string, max: number): string => Buffer.from(text, "utf8").subarray(0, max).toString("utf8").replace(/\uFFFD+$/u, "");
+
+/**
+ * The body within the cap. A body that is over it (hiding an address can lengthen a line) loses the end of its summary, in front of the marked status block, before anything is cut from the end:
+ * the block's end marker, the session link and the closing line stay, so the status updates and the Linear close line can still find the block.
+ */
+export function fitPullRequestBody(body: string): string {
+  if (byteLength(body) <= WORKFLOW_PULL_REQUEST_BODY_MAX_BYTES) return body;
+  const markers = [PULL_REQUEST_STATUS_START, ROVARA_STATUS_START].map((marker) => body.indexOf(marker)).filter((index) => index > 0);
+  const start = markers.length === 0 ? -1 : Math.min(...markers);
+  if (start > 0) {
+    const overflow = byteLength(body) - WORKFLOW_PULL_REQUEST_BODY_MAX_BYTES;
+    const head = body.slice(0, start);
+    // Keep at least a short head: the summary's first lines.
+    if (byteLength(head) > overflow + 200) return `${cutBytes(head, byteLength(head) - overflow - 5).trimEnd()}...\n\n${body.slice(start)}`;
+  }
+  return cutBytes(body, WORKFLOW_PULL_REQUEST_BODY_MAX_BYTES);
 }
 
 /** The title of the pull request Rovara opens: the task's title made inert, without an email address, and (for Rovara Code) without a Linear issue key. At most 256 characters. */
@@ -77,10 +97,7 @@ function buildWorkflowPullRequestBody(task: DeveloperTaskRecord, workflow: Workf
     "",
     `Opened as a draft by AgentX after the owner-approved plan${reviewOnly ? " and reviews" : ", checks and reviews"} passed. Merge it on GitHub.`,
   ];
-  const body = lines.join("\n");
-  if (Buffer.byteLength(body, "utf8") <= WORKFLOW_PULL_REQUEST_BODY_MAX_BYTES) return body;
-  // Cut on a character boundary: a split multi-byte character decodes as U+FFFD, which is dropped.
-  return Buffer.from(body, "utf8").subarray(0, WORKFLOW_PULL_REQUEST_BODY_MAX_BYTES).toString("utf8").replace(/\uFFFD+$/u, "");
+  return fitPullRequestBody(lines.join("\n"));
 }
 
 /**
@@ -91,18 +108,19 @@ function buildWorkflowPullRequestBody(task: DeveloperTaskRecord, workflow: Workf
  */
 export function workflowPullRequestStatusLines(workflow: WorkflowSnapshot, context?: PullRequestBodyContext, proofLines: readonly string[] = []): string[] {
   // Rovara Code version 2 rewrites its whole block (what changed, tests, reviews and risk); version 1's lines are as they were.
-  if (workflow.definitionVersion === "1.1.0") return rovaraStatusLines(workflow, proofLines.length === 0 ? context ?? {} : { ...context, proofLines }, (listed) => workflowReviewLines(workflow, listed));
+  if (workflow.definitionVersion === "1.1.0") return rovaraStatusLines(workflow, proofLines.length === 0 ? context ?? {} : { ...context, proofLines }, (listed) => workflowReviewLines(workflow, listed)).map((line) => hideEmailAddresses(line));
   const checks = [...(workflow.checkPolicy?.required ?? []), ...(workflow.checkPolicy?.proposed ?? []), ...(workflow.checkPolicy?.optional ?? [])];
   const passed = (workflow.verification?.results ?? []).filter((result) => result.status === "PASS")
     // A proposed check's label is model-written: one line, redacted and made inert like a plan line, as every label is.
     .map((result) => `${inertPlanLine(redactText(checks.find((check) => check.id === result.checkId)?.label ?? result.checkId).replace(/\s+/gu, " "))} passed`);
   const reviewOnly = workflow.verification?.reviewOnly === true && workflowIsReviewOnly(workflow.checkPolicy);
+  // S3: also the path the status block is rewritten by after a pushed fix, so no line reaches GitHub with an email address.
   return [
     ...(reviewOnly ? [] : [`Checks: ${passed.length > 0 ? passed.join(", ") : "none recorded"}`]),
     ...workflowReviewLines(workflow, WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED),
     ...(context?.secondReviewLines ?? []),
     ...proofLines,
-  ];
+  ].map((line) => hideEmailAddresses(line));
 }
 
 /**

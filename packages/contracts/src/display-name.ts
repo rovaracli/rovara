@@ -60,24 +60,49 @@ export function withoutEmailAddresses(text: string): string {
 export const EMAIL_HIDDEN = "[email removed]";
 
 /**
+ * The strict address rule for free text (names use the wide `EMAIL_ADDRESS_SOURCE`, where a false match only removes a word; here a false match would corrupt code). A local part of
+ * letters, digits and `._%+-` (no slash), an at sign, and a domain of dotted labels whose LAST label is letters only. So `react@18.3.1`, `golang.org/x/tools@v0.1.0`, `@scope/pkg@1.2.3` and
+ * `image@sha256:abc` are not addresses. A domain whose first label is all digits is a version (`pkg@1.0.0-rc.final`), and `user@host:path` (scp, git remotes) is not an address either.
+ */
+const STRICT_ADDRESS = /[\p{L}\p{N}\p{Cf}._%+-]+@(?!\d+\.)(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+\p{L}{2,63}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}]|:[^\s])/gu;
+/** An ssh-like command just before an address: the address is `user@host`, not mail. */
+const SSH_BEFORE = /(?:^|[\s;&|(])(?:ssh|scp|sftp|rsync|mosh)(?:[ \t]+-\S+(?:[ \t]+[^\s-]\S*)?)*[ \t]+$/iu;
+/** The ways an at sign is spelled that NFKC folds to "@" (fullwidth, small). */
+const AT_SPELLINGS = /[@\uFF20\uFE6B]/u;
+
+/**
  * The text with every email address replaced by `EMAIL_HIDDEN`, for free text that reaches other people (a session card, a Slack message, a pull request, a decision card).
  * Unlike `withoutEmailAddresses` (which makes a name), this keeps the layout: line breaks, indentation, code fences and every other character stay as they were, so a code block still renders
- * and a text with no address comes back as the very same string. A link with no address is not touched, and neither is a path that merely has an at sign (`example.test/@maya/post.html`).
- * It uses the same address rule as `containsEmailAddress`, a fullwidth spelling included (a text that is only an address in its compatibility form is read in that form).
+ * and a text with no address comes back as the very same string. It uses the strict rule above, so code text (versions, modules, git remotes, ssh hosts) is left alone. A fullwidth spelling is
+ * found by reading each character in its compatibility form; only the address itself is replaced, and every other character stays as it was.
  */
 export function hideEmailAddresses(text: string): string {
-  if (typeof text !== "string" || !text.includes("@") && !text.includes("\uFF20")) return text;
-  const hide = (value: string) => value.replace(new RegExp(EMAIL_ADDRESS_SOURCE, "gu"), (match) => {
-    // A slash before the at sign means a path (`/@maya/post.html`, `//host/user@host.test`): only what follows the last slash can be an address.
-    const local = match.slice(0, match.indexOf("@"));
-    const slash = local.lastIndexOf("/");
-    if (slash < 0) return EMAIL_HIDDEN;
-    return local.length === slash + 1 ? match : `${match.slice(0, slash + 1)}${EMAIL_HIDDEN}`;
-  });
-  const raw = hide(text);
-  if (raw !== text) return raw;
-  const folded = text.normalize("NFKC");
-  return folded === text ? text : hide(folded) === folded ? text : hide(folded);
+  if (typeof text !== "string" || !AT_SPELLINGS.test(text)) return text;
+  // The text in compatibility form, with where each folded character came from, so the address (and nothing else) can be replaced in the original.
+  let folded = "";
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let index = 0;
+  for (const character of text) {
+    const next = index + character.length;
+    for (const piece of character.normalize("NFKC")) {
+      for (let unit = 0; unit < piece.length; unit += 1) { starts.push(index); ends.push(next); }
+      folded += piece;
+    }
+    index = next;
+  }
+  let out = "";
+  let from = 0;
+  for (const match of folded.matchAll(STRICT_ADDRESS)) {
+    const begin = starts[match.index]!;
+    const finish = ends[match.index + match[0].length - 1]!;
+    if (begin < from) continue;
+    const before = text.slice(Math.max(0, text.lastIndexOf("\n", begin - 1) + 1), begin);
+    if (SSH_BEFORE.test(before)) continue;
+    out += text.slice(from, begin) + EMAIL_HIDDEN;
+    from = finish;
+  }
+  return from === 0 && out === "" ? text : out + text.slice(from);
 }
 
 /**

@@ -2,16 +2,18 @@
 // the text is rendered or sent to others: session views and tiles, Home cards, write-gate and decision texts (`shownText`), the shared-thread Slack messages, the plan's "why" quote and
 // the pull request's title and description. Text with no address is returned byte for byte. Fake addresses are built at runtime.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { agentSessionKey, hideEmailAddresses, EMAIL_HIDDEN, mySessionsKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, hideEmailAddresses, EMAIL_HIDDEN, mySessionsKey, sharedSessionsKey } from "../../packages/contracts/src/index.js";
 import { workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
 import { planWhyEntries } from "../../packages/broker/src/aws/developer-tasks.js";
 import { shownText } from "../../packages/broker/src/agents/approvals-store.js";
 import { setupFailedReply, startMessage } from "../../packages/broker/src/developer/share-messages.js";
 import { listSessions, sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
 import { pullRequestTitle } from "../../packages/broker/src/aws/developer-tasks/pull-request-body.js";
-import { ARJUN, CELL, ORG_A, PRIYA, sessionWorld } from "../support/agent-session-world.js";
+import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
+import { ARJUN, CELL, ORG_A, PRIYA, T0, sessionWorld } from "../support/agent-session-world.js";
+import { iso, projectorWorld } from "../support/agent-session-projector-world.js";
 import { PRIYA as PAGE_PRIYA, pageTask } from "../support/page-tasks.js";
 
 /** A fake address, built at runtime. */
@@ -44,6 +46,36 @@ describe("hideEmailAddresses", () => {
   it("finds a fullwidth spelling too", () => {
     expect(hideEmailAddresses(`write to omar＠example.test`)).not.toContain("omar");
   });
+
+  // H1: code text is not mail. Package versions, Go modules, scoped packages, git remotes and ssh hosts stay exactly as written.
+  it("leaves package versions, modules, scopes, git remotes and ssh strings alone", () => {
+    const at = String.fromCharCode(64);
+    const samples = [
+      `npm i react${at}18.3.1`, `node${at}22.23.2`, `"${at}agentx/contracts${at}0.4.2"`, `${at}scope/pkg${at}1.2.3`, `go get golang.org/x/tools${at}v0.1.0`, `lodash${at}4.17.21-rc.final`,
+      `git clone git${at}github.com:org/repo.git`, `scp file.txt deploy${at}build.example.test:/srv/app`, `ssh ec2-user${at}ip-10-0-0-1.ec2.internal`, `ssh -i key.pem ec2-user${at}ip-10-0-0-1.ec2.internal`,
+      `image${at}sha256:abc123`, `HEAD${at}{1}`, `pkg${at}git+https://example.test/pkg.git`, `${at}Component()`, `cc ${at}maya`, `https://example.test/${at}maya/post.html`,
+    ];
+    for (const text of samples) expect(hideEmailAddresses(text), text).toBe(text);
+  });
+
+  it("hides true addresses: any case, plus-addressing, dots, a trailing full stop, markup and a link around it", () => {
+    const at = String.fromCharCode(64);
+    const cases: Array<[string, string]> = [
+      [`MAYA${at}EXAMPLE.TEST`, EMAIL_HIDDEN], [`maya+tag${at}example.test`, EMAIL_HIDDEN], [`maya.o_brien-x${at}mail.example.test.`, `${EMAIL_HIDDEN}.`],
+      [`**maya${at}example.test**`, `**${EMAIL_HIDDEN}**`], [`|maya${at}example.test|admin|`, `|${EMAIL_HIDDEN}|admin|`], [`(maya${at}example.test)`, `(${EMAIL_HIDDEN})`],
+      [`[Maya](mailto:maya${at}example.test)`, `[Maya](mailto:${EMAIL_HIDDEN})`], [`<mailto:a${at}x.test|a${at}x.test>`, `<mailto:${EMAIL_HIDDEN}|${EMAIL_HIDDEN}>`],
+      [`https://example.test/u?email=maya${at}example.test&x=1`, `https://example.test/u?email=${EMAIL_HIDDEN}&x=1`], [`https://user:pw${at}host.example.test/path/x`, `https://user:${EMAIL_HIDDEN}/path/x`],
+      [`ssh to maya${at}example.test later`, `ssh to ${EMAIL_HIDDEN} later`],
+    ];
+    for (const [text, expected] of cases) expect(hideEmailAddresses(text), text).toBe(expected);
+  });
+
+  it("hides a fullwidth address and a plain one in the same text, and changes no other character", () => {
+    const at = String.fromCharCode(64);
+    const text = `a${at}b.test and maya＠example.test, then ™ and … stay`;
+    expect(hideEmailAddresses(text)).toBe(`${EMAIL_HIDDEN} and ${EMAIL_HIDDEN}, then ™ and … stay`);
+    expect(hideEmailAddresses(`x ™ y maya＠example.test`)).toBe(`x ™ y ${EMAIL_HIDDEN}`);
+  });
 });
 
 describe("shownText (write-gate, decision and Home words)", () => {
@@ -57,52 +89,85 @@ describe("shownText (write-gate, decision and Home words)", () => {
   });
 });
 
-describe("a session's words in a view and a tile", () => {
+describe("a session's words in a view and a tile (to everyone but its owner)", () => {
   function world() {
     const w = sessionWorld();
     const deps: SessionReadDependencies = {
       documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
-      taskView: async (task) => ({ taskId: task.taskId, title: "Bump the Stripe SDK", project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:05:00.000Z", events: [] }) as never,
+      taskView: async (task) => ({ taskId: task.taskId, title: `Reply to ${OMAR}`, project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:05:00.000Z", events: [] }) as never,
     };
     return { w, deps };
   }
-  function seedWords(w: ReturnType<typeof sessionWorld>, sessionId: string, words: { title: string; step: string; peek: string }) {
-    const meta = w.db.get(agentSessionKey(ORG_A, sessionId, "META"))! as { summary: Record<string, unknown> };
-    w.db.set({ ...meta, title: words.title, summary: { ...meta.summary, step: words.step, peek: words.peek } });
+  /** A session of Priya's with an address in the words, shared with Arjun (a person who is not its owner). */
+  function shared(w: ReturnType<typeof sessionWorld>, words = { title: `Reply to ${OMAR}`, step: `Wrote to ${OMAR}`, peek: `Sent the draft to ${OMAR} just now` }) {
+    const { sessionId } = w.seedSession({ owner: PRIYA });
+    const meta = w.db.get(agentSessionKey(ORG_A, sessionId, "META"))! as { summary: Record<string, unknown>; createdAt: string };
+    w.db.set({ ...meta, title: words.title, summaryRevision: 2, summary: { ...meta.summary, step: words.step, peek: words.peek } });
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ARJUN }, "view");
+    w.db.set({ ...sharedSessionsKey(ORG_A, { kind: "member", developerId: ARJUN }, sessionId), entityType: "SHARED_SESSION", orgId: ORG_A, sessionId, principal: { kind: "member", developerId: ARJUN }, level: "view", sharedAt: "2026-10-22T08:10:00.000Z" });
+    w.db.set({ ...mySessionsKey(ORG_A, PRIYA, meta.createdAt, sessionId), entityType: "MY_SESSION", orgId: ORG_A, sessionId, developerId: PRIYA, createdAt: meta.createdAt });
+    return sessionId;
   }
 
-  it("the view carries no address in the title, the step or the latest line", async () => {
+  it("a person it was shared with sees no address in the title, the step, the latest line or the task's title", async () => {
     const { w, deps } = world();
-    const { sessionId } = w.seedSession({ owner: PRIYA });
-    seedWords(w, sessionId, { title: `Reply to ${OMAR}`, step: `Wrote to ${OMAR}`, peek: `Sent the draft to ${OMAR} just now` });
-    const view = await sessionView(deps, w.caller(PRIYA), sessionId);
+    const sessionId = shared(w);
+    const view = await sessionView(deps, w.caller(ARJUN), sessionId);
     expect(JSON.stringify(view)).not.toContain(OMAR);
     expect(view.title).toBe(`Reply to ${EMAIL_HIDDEN}`);
+    expect(view.step).toBe(`Wrote to ${EMAIL_HIDDEN}`);
     expect(view.peek).toBe(`Sent the draft to ${EMAIL_HIDDEN} just now`);
     expect(JSON.stringify(view)).not.toContain(String.fromCharCode(64));
   });
 
-  it("the tile carries no address in the title, the step or the latest line, and one without any is unchanged", async () => {
+  it("the owner's own view is their own words, as stored", async () => {
     const { w, deps } = world();
+    const sessionId = shared(w);
+    const view = await sessionView(deps, w.caller(PRIYA), sessionId);
+    expect(view.title).toBe(`Reply to ${OMAR}`);
+    expect(view.step).toBe(`Wrote to ${OMAR}`);
+    expect(view.peek).toBe(`Sent the draft to ${OMAR} just now`);
+  });
+
+  it("the tile of a shared session hides the address, the owner's own tile does not, and a session with none is what was stored", async () => {
+    const { w, deps } = world();
+    const sessionId = shared(w);
     const plain = w.seedSession({ owner: PRIYA });
-    const dirty = w.seedSession({ owner: PRIYA });
-    seedWords(w, dirty.sessionId, { title: `Reply to ${OMAR}`, step: `Wrote to ${OMAR}`, peek: `Sent to ${OMAR}` });
-    for (const id of [plain.sessionId, dirty.sessionId]) {
-      const createdAt = (w.db.get(agentSessionKey(ORG_A, id, "META")) as { createdAt: string }).createdAt;
-      w.db.set({ ...mySessionsKey(ORG_A, PRIYA, createdAt, id), entityType: "MY_SESSION", orgId: ORG_A, sessionId: id, developerId: PRIYA, createdAt });
-    }
-    const tiles = (await listSessions(deps, w.caller(PRIYA), { owner: "me" })).sessions;
-    const shown = tiles.find((tile) => tile.sessionId === dirty.sessionId)!;
-    expect(JSON.stringify(shown)).not.toContain(OMAR);
-    expect(shown.title).toBe(`Reply to ${EMAIL_HIDDEN}`);
-    expect(shown.summary.step).toBe(`Wrote to ${EMAIL_HIDDEN}`);
-    expect(shown.summary.peek).toBe(`Sent to ${EMAIL_HIDDEN}`);
-    // A session with no address reads exactly as stored.
+    const theirs = (await listSessions(deps, w.caller(ARJUN), { shared: "me" })).sessions.find((tile) => tile.sessionId === sessionId)!;
+    expect(JSON.stringify(theirs)).not.toContain(OMAR);
+    expect(theirs.title).toBe(`Reply to ${EMAIL_HIDDEN}`);
+    expect(theirs.summary.step).toBe(`Wrote to ${EMAIL_HIDDEN}`);
+    expect(theirs.summary.peek).toBe(`Sent the draft to ${EMAIL_HIDDEN} just now`);
+    const createdAt = (w.db.get(agentSessionKey(ORG_A, plain.sessionId, "META")) as { createdAt: string }).createdAt;
+    w.db.set({ ...mySessionsKey(ORG_A, PRIYA, createdAt, plain.sessionId), entityType: "MY_SESSION", orgId: ORG_A, sessionId: plain.sessionId, developerId: PRIYA, createdAt });
+    const mine = (await listSessions(deps, w.caller(PRIYA), { owner: "me" })).sessions;
+    expect(mine.find((tile) => tile.sessionId === sessionId)!.title).toBe(`Reply to ${OMAR}`);
     const stored = w.db.get(agentSessionKey(ORG_A, plain.sessionId, "META"))! as { title: string; summary: unknown };
-    const clean = tiles.find((tile) => tile.sessionId === plain.sessionId)!;
+    const clean = mine.find((tile) => tile.sessionId === plain.sessionId)!;
     expect(clean.title).toBe(stored.title);
     expect(clean.summary).toEqual(stored.summary);
-    expect(ARJUN).toBeDefined();
+  });
+
+  it("the stored record keeps the raw words (the refresh, a move to the cloud and make-an-agent work from them)", async () => {
+    const { w } = world();
+    const sessionId = shared(w);
+    const record = await new AgentSessionStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now }).get(ORG_A, sessionId);
+    expect(record?.title).toBe(`Reply to ${OMAR}`);
+    expect(record?.summary.step).toBe(`Wrote to ${OMAR}`);
+    expect(record?.summary.peek).toBe(`Sent the draft to ${OMAR} just now`);
+  });
+
+  it("a refresh that changes only the cost writes no second step event for a step that holds an address", async () => {
+    const p = projectorWorld();
+    const local = p.w.seedSession({ kind: "local", owner: PRIYA });
+    const facts = { orgId: ORG_A, status: "running" as const, step: `Writing to ${OMAR}`, costUsd: 0.5, updatedAt: iso(T0) };
+    const source = { read: vi.fn(async () => facts as Record<string, unknown>) };
+    await p.refresh(local.sessionId, ORG_A, { local: source });
+    expect(p.events(local.sessionId).filter((event) => event.type === "step")).toHaveLength(1);
+    source.read.mockResolvedValue({ ...facts, costUsd: 0.75 });
+    await p.refresh(local.sessionId, ORG_A, { local: source });
+    expect(p.sessionOf(local.sessionId).summary).toMatchObject({ step: `Writing to ${OMAR}`, costUsd: 0.75 });
+    expect(p.events(local.sessionId).filter((event) => event.type === "step")).toHaveLength(1);
   });
 });
 

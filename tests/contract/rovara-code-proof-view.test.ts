@@ -120,6 +120,17 @@ describe("the task view's proof table", () => {
     expect(viewer.proofTable!.testProofLines).toHaveLength(1);
   });
 
+  it("S3: a reader who is not the owner sees the task's title without an address, and the owner sees it as written", async () => {
+    const { harness, record } = await task();
+    const input = harness.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
+    const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
+    const deps = developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: harness.actions }, caller);
+    const written = `Reply to omar${String.fromCharCode(64)}example.test`;
+    const stored = { ...record(), title: written } as never;
+    expect((await taskView(deps, stored, { events: 0, details: false, actor: "owner" })).title).toBe(written);
+    expect((await taskView(deps, stored, { events: 0, details: false, actor: "viewer" })).title).toBe("Reply to [email removed]");
+  });
+
   it("reads the task's operations once for a full read: the table uses the operations the view already holds", async () => {
     const reads = async (options: Parameters<typeof task>[0]) => {
       const { harness, record } = await task(options);
