@@ -78,10 +78,13 @@ export const SOURCE_PROPOSAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const SOURCE_CHANGE_REASONS = ["private_channel", "dm", "mpim", "retention_raise"] as const;
 export const SourceChangeReasonSchema = z.enum(SOURCE_CHANGE_REASONS);
 export type SourceChangeReason = z.infer<typeof SourceChangeReasonSchema>;
+/** One or more reasons, each at most once (a repeat is refused, not folded: a writer that builds the list twice has a bug worth seeing). */
+export const SourceChangeReasonsSchema = z.array(SourceChangeReasonSchema).min(1).max(SOURCE_CHANGE_REASONS.length).refine((reasons) => new Set(reasons).size === reasons.length, "each reason at most once");
 
 /**
  * Invariants checked here, so no writer can store a change that breaks them: an add is against no row (`againstRevision` null) and a change against one;
- * the change lives exactly seven days. `row` is the whole row as it would be saved, without the two fields the save sets itself.
+ * the change lives exactly seven days; the row is for the proposal's own company, project, source and place. `row` is the whole row as it would be saved, without what the save
+ * sets itself (`revision`, `updatedAt`), the approval (set when the change is approved, never carried in) and the ingest cursor.
  */
 export const SourceChangeProposalSchema = z.object({
   id: SourceChangeIdSchema,
@@ -90,8 +93,8 @@ export const SourceChangeProposalSchema = z.object({
   source: RecordSystemSchema,
   scope: SourceScopeSchema,
   kind: z.enum(["add", "change"]),
-  row: SourceConfigSchema.omit({ revision: true, updatedAt: true }),
-  reasons: z.array(SourceChangeReasonSchema).min(1).max(SOURCE_CHANGE_REASONS.length),
+  row: SourceConfigSchema.omit({ revision: true, updatedAt: true, approval: true, lastCursor: true }),
+  reasons: SourceChangeReasonsSchema,
   proposedBy: DeveloperIdSchema,
   againstRevision: Revision.nullable(),
   /** A fingerprint of the people who may approve, taken when the change was made. If the set moved, the approval is refused and the change is made again. */
@@ -101,6 +104,11 @@ export const SourceChangeProposalSchema = z.object({
 }).strict().superRefine((proposal, context) => {
   if (proposal.kind === "add" && proposal.againstRevision !== null) context.addIssue({ code: "custom", path: ["againstRevision"], message: "an add is against no row" });
   if (proposal.kind === "change" && proposal.againstRevision === null) context.addIssue({ code: "custom", path: ["againstRevision"], message: "a change is against a revision" });
+  const { row } = proposal;
+  if (row.workspaceId !== proposal.workspaceId) context.addIssue({ code: "custom", path: ["row", "workspaceId"], message: "the row is for the proposal's company" });
+  if (row.project !== proposal.project) context.addIssue({ code: "custom", path: ["row", "project"], message: "the row is for the proposal's project" });
+  if (row.source !== proposal.source) context.addIssue({ code: "custom", path: ["row", "source"], message: "the row is for the proposal's source" });
+  if (row.scope !== proposal.scope) context.addIssue({ code: "custom", path: ["row", "scope"], message: "the row is for the proposal's place" });
   if (Date.parse(proposal.expiresAt) !== Date.parse(proposal.createdAt) + SOURCE_PROPOSAL_TTL_MS) context.addIssue({ code: "custom", path: ["expiresAt"], message: "a change lives seven days" });
 });
 export type SourceChangeProposal = z.infer<typeof SourceChangeProposalSchema>;
@@ -134,7 +142,7 @@ export const SourcePendingChangeSchema = z.object({
   source: RecordSystemSchema,
   scope: SourceScopeSchema,
   kind: z.enum(["add", "change"]),
-  reasons: z.array(SourceChangeReasonSchema).min(1).max(SOURCE_CHANGE_REASONS.length),
+  reasons: SourceChangeReasonsSchema,
   /** The proposer's id is not shown; the screen needs only to know whether the change is the viewer's own (a person does not approve their own, except a sole approver). */
   proposedByYou: z.boolean(),
   expiresAt: z.string().datetime(),

@@ -314,6 +314,18 @@ describe("source row write contracts", () => {
     expect(proposalParses({ ...proposal, row: { ...row, updatedAt: "2026-11-04T10:00:00.000Z" } })).toBe(false);
     expect(proposalParses(without(proposal, "proposedBy"))).toBe(false);
   });
+  it("ties the proposal's row to the proposal itself, and keeps approval and cursor out of the row", () => {
+    expect(proposalParses({ ...proposal, row: { ...row, workspaceId: ORG_B } })).toBe(false); // another org
+    expect(proposalParses({ ...proposal, row: { ...row, project: "api" } })).toBe(false);
+    expect(proposalParses({ ...proposal, row: { ...row, source: "github" } })).toBe(false);
+    expect(proposalParses({ ...proposal, row: { ...row, scope: "slack:T1/G8" } })).toBe(false);
+    expect(proposalParses({ ...proposal, row: { ...row, approval: { approvalId: "a1", by: "dev-2", at: "2026-11-04T10:00:00.000Z" } } })).toBe(false);
+    expect(proposalParses({ ...proposal, row: { ...row, lastCursor: "cursor-1" } })).toBe(false);
+  });
+  it("refuses a repeated reason in a proposal", () => {
+    expect(proposalParses({ ...proposal, reasons: ["dm", "dm"] })).toBe(false);
+    expect(proposalParses({ ...proposal, reasons: ["private_channel", "dm", "mpim", "retention_raise"] })).toBe(true);
+  });
 
   it("answers a write with one of four fixed replies", () => {
     const reply = (value: unknown) => SourceWriteReplySchema.safeParse(value).success;
@@ -347,6 +359,7 @@ describe("source row write contracts", () => {
     expect(parse({ ...admin, soleApprover: undefined })).toBe(false);
     expect(parse({ ...admin, offered: { slack: ["E"] } })).toBe(false);
     expect(parse({ ...admin, pending: [{ ...admin.pending[0], reasons: [] }] })).toBe(false);
+    expect(parse({ ...admin, pending: [{ ...admin.pending[0], reasons: ["dm", "dm"] }] })).toBe(false);
     expect(parse({ ...admin, pending: [{ ...admin.pending[0], proposedBy: "dev-1" }] })).toBe(false); // the person's id is not shown, only whether it was you
     expect(parse({ ...admin, sources: [{ ...adminRow, revision: undefined }] })).toBe(false);
     expect(parse({ ...admin, sources: [{ ...adminRow, scope: undefined }] })).toBe(false); // an editor always sees the place
