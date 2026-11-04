@@ -1139,7 +1139,7 @@ describe("slice C: the design review's routes", () => {
       version: "2.0", routeKey: "ANY /review/{proxy+}", rawPath: `/review/${w.taskId}/task/api/decision`, rawQueryString: "",
       headers: { host: new URL(DEV_ISSUER).host, cookie: `__Host-agentx_review_session=${reviewCookie(w, who)}; __Host-agentx_review_csrf=${"c".repeat(43)}`, origin: new URL(DEV_ISSUER).origin, "x-agentx-csrf": "c".repeat(43), "content-type": "application/json" },
       body: JSON.stringify(body), requestContext: { requestId: randomUUID(), http: { method: "POST" } },
-    } as never);
+    });
     return { status: response.statusCode, body: response.body };
   };
 

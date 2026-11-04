@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrgId } from "@agentx/contracts";
+import type * as IntentModule from "../../packages/broker/src/rovara-code/intent.js";
 import { intakePortsOf, type IntakeWiring } from "../../packages/broker/src/intake/wiring.js";
 import { specEndEnvironmentOf } from "../../packages/broker/src/aws/broker/spec-wiring.js";
 import { parseWorkflowStartRequest } from "../../packages/broker/src/aws/slack-workflow-choice.js";
@@ -14,7 +15,7 @@ import { ARJUN, ORG_A, sessionWorld } from "../support/agent-session-world.js";
 // Real by default; the intake test takes the start over (the request it is handed is what it looks at).
 const intent = vi.hoisted(() => ({ start: undefined as undefined | ((...args: unknown[]) => Promise<unknown>) }));
 vi.mock("../../packages/broker/src/rovara-code/intent.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../packages/broker/src/rovara-code/intent.js")>();
+  const actual = await importOriginal<typeof IntentModule>();
   return { ...actual, startCodeIntent: (...args: Parameters<typeof actual.startCodeIntent>) => (intent.start ?? actual.startCodeIntent)(...args) };
 });
 
@@ -51,7 +52,7 @@ describe("A1: a Slack-started task", () => {
 
   it("positive control: with dr on and the project in dp the prefix is read, stripped and recorded for the person who typed it", async () => {
     const task = await start({ DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "payments" }, "1695500000.000199");
-    expect(task["designFirst"]).toMatchObject({ by: expect.any(String) });
+    expect(typeof (task["designFirst"] as { by?: unknown } | undefined)?.by).toBe("string");
     expect(JSON.stringify(task)).not.toContain("design first:");
     expect(JSON.stringify(task)).toContain("Add a retry to payments");
   });
