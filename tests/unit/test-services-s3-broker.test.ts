@@ -5,7 +5,7 @@ import {
   FixtureSetSchema, TestEnvTaskPlanSchema, TestEnvironmentBodySchema, fixtureEntry, fixtureSetDigest, TEST_SERVICES_FAKE_USAGE_WORDS, testEnvDigest,
   type FixtureSet, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type TestServicesUsageRecord, type VerifiedCatalog,
 } from "@agentx/contracts";
-import { DEPENDENCY_PLAN_REFUSAL_WORDS, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
+import { DEPENDENCY_PLAN_REFUSAL_WORDS, TEST_SERVICES_MIN_CATALOG_REVISION, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { approvedFixturesOf, fixtureDigestsOfEnvironment, fixtureDigestsOfPlan, recordsOf, type FixtureStoreFactory } from "../../packages/broker/src/test-env/fixture-lookup.js";
 import { createFixtureStore, createMemoryFixturePorts, verifiedFixtureDecision, type FixtureDenyFor, type FixtureStore } from "../../packages/broker/src/test-env/fixture-store.js";
 import { environmentUnusedReason, testEnvironmentForStart } from "../../packages/broker/src/test-env/usable.js";
@@ -126,8 +126,8 @@ describe("the plan of a fake", () => {
     const store = storeOf();
     const digest = await approvedSet(store, makeSet());
     const fixtures = await approvedFixturesOf(store, ORG, PROJECT, body([payments(digest)]));
-    expect(reason(plansOf([payments(digest)], fixtures, verifiedCatalog(unpinnedCatalog())))).toBe("ok");
-    expect(reason(plansOf([postgres(), payments(digest)], fixtures, verifiedCatalog(unpinnedCatalog())))).toBe("not_pinned");
+    expect(reason(plansOf([payments(digest)], fixtures, verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION))))).toBe("ok");
+    expect(reason(plansOf([postgres(), payments(digest)], fixtures, verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION))))).toBe("not_pinned");
   });
   it("refuses a set that is not approved for this company: another company's, a pending one, a withdrawn one, one nobody holds, and a store that is not there", async () => {
     const store = storeOf();

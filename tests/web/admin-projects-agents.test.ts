@@ -120,7 +120,7 @@ it("B33 member maintainer opens company-pinned website editing on the shipped ow
  await screen.findByRole("button", { name: "Edit allowed websites" });fireEvent.click(screen.getByRole("button", { name: "Edit allowed websites" }));await screen.findByRole("button", { name: "Review website change" });
  expect(screen.queryByRole("link", { name: /^Admin$/ })).toBeNull();expect(screen.queryByRole("navigation", { name: "Administration" })).toBeNull();
  revoked = true;await act(async () => { window.dispatchEvent(new Event("focus")); });await screen.findByText(/Website settings could not be checked/);
- expect(screen.queryByRole("button", { name: "Review website change" })).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);f.close();
+ expect(screen.queryByRole("button", { name: "Review website change" })).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.method === "POST" && !r.path.endsWith("/start-preview"))).toHaveLength(0);f.close();
 });
 for (const state of ["viewer", "archived"] as const) it(`B33 own-project ${state} has no website mutation entry`, async () => {
  const value = projectFixture({ orgId: "org_aaaaaaaaaaaaaaaaaaaa" });

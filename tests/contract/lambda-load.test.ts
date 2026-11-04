@@ -86,6 +86,15 @@ describe("checkLambdaBundles on fixtures", () => {
     expect(report.results[0]).toMatchObject({ status: "env-missing", detail: "SOME_TABLE_NAME is required" });
   });
 
+  it("accepts the packed-name hint requiredEnvironment appends on the broker, and no other trailing words (CLOSE-ENV-1)", async () => {
+    const hinted = await check("env-hint", { "env.ts": `throw new Error("STATE_TABLE_NAME is required (on the broker it arrives packed in AGENTX_NAMES, code ts)");\n${handlerSource}` });
+    expect(hinted.ok).toBe(true);
+    expect(hinted.results[0]).toMatchObject({ status: "env-missing" });
+    const other = await check("env-hint-other", { "env.ts": `throw new Error("STATE_TABLE_NAME is required (and the disk is full)");\n${handlerSource}` });
+    expect(other.ok).toBe(false);
+    expect(other.results[0]).toMatchObject({ status: "failed" });
+  });
+
   it("fails the acb278a1 shape: import.meta.url read at init throws in CJS", async () => {
     const files = { "crash.ts": `import { fileURLToPath } from "node:url";\nexport const here = fileURLToPath(import.meta.url);\n${handlerSource}` };
     const report = await check("crash", files);

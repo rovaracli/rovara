@@ -5,7 +5,7 @@ import { hasTaskEndHandlers, type TaskEndEvent } from "../../../packages/broker/
 import { installLearningTaskEnd, uninstallLearningTaskEnd } from "../../../packages/broker/src/aws/broker/learning-wiring.js";
 import { announceTaskSendBack } from "../../../packages/broker/src/aws/developer-tasks/learning-events.js";
 import type { DeveloperTaskRecord } from "../../../packages/broker/src/developer/task-records.js";
-import { announceHumanSendBack, registerHumanSendBackListener } from "../../../packages/broker/src/lessons/send-back-events.js";
+import { announceHumanSendBack, registerHumanSendBackListener, sendBackToRecord } from "../../../packages/broker/src/lessons/send-back-events.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import { learnFromEndedTask, learningTaskEndHandler, reflectOutcomeOf, subjectForTask, type TaskLearningDeps, type TaskSubjectBase } from "../../../packages/broker/src/lessons/task-end.js";
 import type { OutcomeRowReader } from "../../../packages/broker/src/lessons/task-outcome-rows.js";
@@ -158,8 +158,16 @@ describe("a human send-back names who sent it", () => {
         workspaceId: WS, project: PROJECT, taskId: "task-1", visibility: { kind: "private", ownerDeveloperId: "owner-1" }, at: "2026-10-31T10:00:00.000Z",
         sendBackId: "req-9", round: 2, origin: "human", reasonText: "use the shared helper", actorDeveloperId: "dev-sam",
       }]);
+      // 2026-11-04 (0.5.5 integration, team-record-sources f792f95a8): the event's `shared` flag no longer decides the audience; the task's Plan 5 visibility does, read by the team-record wiring's listener (`sendBackToRecord(emitter, reader)`,
+      // team-record-wiring.ts). This learning wiring has no reader, so the row stays the owner's alone (fail closed), whether or not the task is shared.
       await announce({ task: task({ shared: true }), requestId: "req-10" });
-      expect(sent[1]).toMatchObject({ visibility: { kind: "shared" }, sendBackId: "req-10" });
+      expect(sent[1]).toMatchObject({ visibility: { kind: "private", ownerDeveloperId: "owner-1" }, sendBackId: "req-10" });
+      // With the task's visibility reader the row takes that audience.
+      const read: Array<Record<string, unknown>> = [];
+      await sendBackToRecord({ sendBack: async (input) => { read.push(input as unknown as Record<string, unknown>); } }, async () => ({ kind: "shared" }))({
+        workspaceId: WS, project: PROJECT, taskId: "task-1", requestId: "req-11", actorDeveloperId: "dev-sam", instructions: "again", round: 3, shared: true, ownerDeveloperId: "owner-1", at: "2026-10-31T10:00:00.000Z",
+      });
+      expect(read[0]).toMatchObject({ visibility: { kind: "shared" }, sendBackId: "req-11", round: 3 });
     } finally { uninstallLearningTaskEnd(); }
   });
   it("tells nobody where learning is not wired, and a task without an org has nowhere to write", async () => {

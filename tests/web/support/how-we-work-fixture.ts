@@ -28,6 +28,7 @@ export function howWeWorkHost(options: { view?: unknown; canEdit?: boolean; over
   if (url.pathname === "/v1/app/org/members") return { status: 200, body: { members: [{ developerId: "a".repeat(64), name: "Priya", role: "admin" }] } };
   return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
  });
- return { ...fake, state, sent: () => fake.request.mock.calls.map(([request]) => request).filter(request => request.method !== "GET"), calls: () => fake.request.mock.calls.map(([request]) => request.method + " " + request.path.split("?")[0]) };
+ return { ...fake, state, // 2026-11-04 (0.5.5 integration): the project page's start box asks POST .../start-preview when it opens (admin-v11-finish); that is a read in effect and the cell answers it 404 here, so it is not a write these tests count.
+ sent: () => fake.request.mock.calls.map(([request]) => request).filter(request => request.method !== "GET" && !request.path.endsWith("/start-preview")), calls: () => fake.request.mock.calls.map(([request]) => request.method + " " + request.path.split("?")[0]) };
 }
 export const publishedAgent = () => agentProfile().agent;
