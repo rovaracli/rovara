@@ -4,7 +4,7 @@
 // `OwnerBudgets` ledger, so a person's agent budgets and chain budgets are one monthly total. Every multi-item write is one transaction, so a
 // refused write leaves nothing behind. A published version pins every agent step to a number; publishing checks again, inside its transaction,
 // that each pinned agent version and built-in pin is still what validation saw.
-import { unarchiveActorChecks, archiveActorChecks, budgetActorChecks, budgetActorRefused, destinationChecks, fenceRefusal } from "../agents/budget-authority.js";
+import { unarchiveActorChecks, archiveActorChecks, budgetActorChecks, budgetActorRefused, destinationChecks, fenceRefusal, type DestinationNeed } from "../agents/budget-authority.js";
 import { createHash } from "node:crypto";
 import {
   sameJsonContent,
@@ -621,9 +621,11 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       event.item,
       ...audit.items,
     ];
+    // The people it names are held to what the route checked, in this same transaction (C99); an approval brings its own checks.
+    const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [...(owner.kind === "member" ? [{ developerId: owner.developerId, need: "member" as DestinationNeed }] : []), ...(accountable === undefined ? [] : [{ developerId: accountable.developerId, need: (owner.kind === "project" ? { maintainerOf: owner.project } : "member") as DestinationNeed }])], actorChecks, actor);
     const actorStart = items.length;
-    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
-      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    await this.commit(...withOverride([...items, ...actorChecks, ...destination], (failed) => (
+      fenceRefusal(failed, actorStart, actorChecks, destination) ?? totals.refuse(failed)
     ), options, { tableName: this.input.tableName, orgId, by }), request, moved);
     await flushAuditEvents(this.input, audit.events);
     return moved;
@@ -657,7 +659,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       ...audit.items,
     ];
     // The people it names are held to what the route checked, in this same transaction (C99); an approval brings its own checks.
-    const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [{ developerId: accountable.developerId, need: { maintainerOf: chain.owner.project } }], actorChecks);
+    const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [{ developerId: accountable.developerId, need: { maintainerOf: chain.owner.project } }], actorChecks, actor);
     const actorStart = items.length;
     await this.commit(...withOverride([...items, ...actorChecks, ...destination], (failed) => (
       fenceRefusal(failed, actorStart, actorChecks, destination) ?? totals.refuse(failed)

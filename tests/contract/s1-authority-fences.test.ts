@@ -12,6 +12,8 @@ import { seedMembership, type Developer } from "../support/developer-task-broker
 import { fixtureActor } from "../support/money-authority.js";
 import { ChainStore } from "../../packages/broker/src/chains/store.js";
 import { TriggerStore } from "../../packages/broker/src/triggers/store.js";
+import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
+import { ARJUN, DANA, MAX, ORG_A, setupTriggerWorld } from "../support/trigger-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 /** A maintainer of payments other than Ben: someone the accountable seat can move to. */
@@ -145,8 +147,10 @@ for (const kind of ["agent", "chain"] as const) {
       expect(f.state()).toEqual(before);
     });
 
-    it(`the store still archives for Rovara's own internal callers that carry neither a request nor an actor`, async () => {
+    it(`the store refuses an archive with neither a request nor an actor unless Rovara itself (system) asks`, async () => {
       const f = await fixture(kind);
+      await expect(f.store.archive(TEST_ORG, f.id as never, DEB.developerId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(f.t.db.get(f.key)?.status).toBe("active");
       expect(await f.store.archive(TEST_ORG, f.id as never, "system")).toMatchObject({ status: "archived" });
     });
   });
@@ -154,10 +158,11 @@ for (const kind of ["agent", "chain"] as const) {
 
 // ---- C99: the destination of an accountable change
 
-const GRANT_LOSSES = ["member_removed", "pointer_removed", "grant_demoted", "grant_removed"] as const;
+const GRANT_LOSSES = ["member_removed", "pointer_removed", "pointer_moved", "grant_demoted", "grant_removed"] as const;
 function loseDestination(t: World, loss: typeof GRANT_LOSSES[number], who: Developer = FAY) {
   if (loss === "member_removed") t.db.delete(orgMemberKey(TEST_ORG, who.developerId));
   if (loss === "pointer_removed") t.db.delete(developerOrgKey(who.developerId));
+  if (loss === "pointer_moved") t.db.set({ ...t.db.get(developerOrgKey(who.developerId)), orgId: ORG_B });
   if (loss === "grant_demoted") t.db.set({ ...t.db.get(projectMemberKey(TEST_ORG, who.developerId, "payments")), projectRole: "contributor" });
   if (loss === "grant_removed") t.db.delete(projectMemberKey(TEST_ORG, who.developerId, "payments"));
 }
@@ -209,11 +214,54 @@ for (const kind of ["agent", "chain"] as const) {
       expect(f.state()).toEqual(before);
     });
 
-    it("still moves the owner to a current member (the owner change itself is not fenced on its destination)", async () => {
+    it("moves the owner to a current member", async () => {
       const f = await fixture(kind);
       const reply = await f.t.api(ADA, "PUT", f.path + "/owner", { owner: { kind: "member", developerId: EVE.developerId } });
       expect(reply.status, JSON.stringify(reply.body)).toBe(200);
       expect(f.t.db.get(f.key)?.owner).toEqual({ kind: "member", developerId: EVE.developerId });
+    });
+
+    for (const loss of ["member_removed", "pointer_removed", "pointer_moved"] as const) {
+      it(`refuses an owner change to a member who ${loss.replace("_", " ")} at the commit, and leaves ${kind} as it was`, async () => {
+        const f = await fixture(kind);
+        const before = f.state();
+        const race = f.raceOnce(() => loseDestination(f.t, loss, EVE));
+        const reply = await f.t.api(ADA, "PUT", f.path + "/owner", { owner: { kind: "member", developerId: EVE.developerId } });
+        expect(race.raced).toBe(true);
+        expect(reply.status, JSON.stringify(reply.body)).toBe(400);
+        expect(f.state()).toEqual(before);
+      });
+    }
+
+    for (const loss of GRANT_LOSSES) {
+      it(`refuses a project owner change whose new accountable maintainer ${loss.replace("_", " ")} at the commit`, async () => {
+        const f = await fixture(kind);
+        const before = f.state();
+        const race = f.raceOnce(() => loseDestination(f.t, loss));
+        const reply = await f.t.api(ADA, "PUT", f.path + "/owner", { owner: { kind: "project", project: "payments" }, accountable: { developerId: FAY.developerId } });
+        expect(race.raced).toBe(true);
+        expect(reply.status, JSON.stringify(reply.body)).toBe(400);
+        expect(f.state()).toEqual(before);
+      });
+    }
+
+    it("lets an admin or the org owner make themselves the owner (the actor is also the destination)", async () => {
+      for (const who of [ADA, DEB]) {
+        const f = await fixture(kind);
+        const reply = await f.t.api(who, "PUT", f.path + "/owner", { owner: { kind: "member", developerId: who.developerId } });
+        expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+        expect(f.t.db.get(f.key)?.owner).toEqual({ kind: "member", developerId: who.developerId });
+      }
+    });
+
+    it("answers a self-assigning actor who loses access at the commit with the actor's refusal (403), not the destination's", async () => {
+      const f = await fixture(kind);
+      const before = f.state();
+      const race = f.raceOnce(() => loseDestination(f.t, "member_removed", FAY));
+      const reply = await f.t.api(FAY, "PUT", f.path + "/accountable", { accountable: { developerId: FAY.developerId } });
+      expect(race.raced).toBe(true);
+      expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+      expect(f.state()).toEqual(before);
     });
   });
 }
@@ -301,5 +349,26 @@ describe("C98: a chain's owner change re-checks its triggers under the new owner
     const missing = await t.api(ADA, "PUT", `/v1/app/chains/chn_${"y".repeat(20)}/owner`, { owner: { kind: "member", developerId: EVE.developerId } });
     expect(missing.status).toBe(404);
     expect((await triggers.get(TEST_ORG, triggerId))?.enabled).toBe(true);
+  });
+});
+
+// ---- M3: an agent's owner change re-checks its triggers too
+
+describe("an agent's owner change re-checks its triggers under the new owner", () => {
+  const ISSUE = { kind: "event" as const, source: "github" as const, type: "issues.opened" };
+  it("turns off a trigger the new owner cannot run, says which, and leaves one the new owner can run", async () => {
+    const v = setupTriggerWorld();
+    const agent = await v.triggerAgent("Triage bot", [{ kind: "person" }, ISSUE], { budgetUsd: 20 });
+    const trigger = await v.seed({ target: { kind: "agent", agentId: agent.agentId }, createdBy: DANA, spec: TriggerSpecSchema.parse(ISSUE) as never });
+    for (const who of [DANA, ARJUN, MAX]) fixtureActor(v.db, ORG_A, who);
+    const base = `/v1/app/agents/${agent.agentId}`;
+    const fine = await v.agentCall(DANA, "PUT", `${base}/owner`, { owner: { kind: "member", developerId: MAX } });
+    expect(fine.status, JSON.stringify(fine.body)).toBe(200);
+    expect(fine.body["disabledTriggers"]).toBeUndefined();
+    expect((await v.triggers.get(ORG_A, trigger.triggerId))?.enabled).toBe(true);
+    const moved = await v.agentCall(DANA, "PUT", `${base}/owner`, { owner: { kind: "member", developerId: ARJUN } });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+    expect((moved.body["disabledTriggers"] as Array<{ triggerId: string }>).map(entry => entry.triggerId)).toEqual([trigger.triggerId]);
+    expect((await v.triggers.get(ORG_A, trigger.triggerId))?.enabled).toBe(false);
   });
 });

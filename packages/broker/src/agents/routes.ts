@@ -633,7 +633,8 @@ async function putOwner(deps: AgentRouteDependencies, caller: AgentCaller, agent
   const change: OwnerCapChange = { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
   const updated = await holdingCap(deps, caller, agentId, agent, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, change, mark, (options) => deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: agent }));
   if (updated instanceof StatusReply) return updated;
-  return { agent: customView(updated, access) };
+  // A custom agent runs as its owner, so its triggers are looked at again for the new one: those they can't run are turned off, and the answer says which.
+  return withDisabled({ agent: customView(updated, access) }, await recheck(deps, caller.orgId, agentId));
 }
 
 async function putAccountable(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown | StatusReply> {

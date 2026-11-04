@@ -992,7 +992,8 @@ describe("onMemberRemoved", () => {
     w.projectMembers.grant(ORG_A, "api", BOB, "maintainer");
     const api = await w.projectAgent("api", BOB, "Api helper", 10);
     w.projectMembers.grant(ORG_A, "api", BOB, "viewer"); // her only grant on api is no longer a maintainer's
-    seedMembership(w.db, BOB, { orgId: ORG_A, role: "admin" }); // a built-in's accountable person is an owner or admin, held to that in the write's own transaction
+    // BOB is an admin only so that he can be the built-in's accountable person (held to that in the write's own transaction); his maintainer grants on web and api are the test's subject.
+    seedMembership(w.db, BOB, { orgId: ORG_A, role: "admin" });
     await w.store.setAccountable(ORG_A, "rovara-code", { developerId: BOB }, fixtureActor(w.store, ORG_A, "admin", true).developerId, undefined, { actor: fixtureActor(w.store, ORG_A, "admin", true) });
     gone(w, BOB);
 

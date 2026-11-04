@@ -37,12 +37,16 @@ export function unarchiveActorChecks(tableName: string, orgId: OrgId, by: string
 
 /**
  * Archive takes a share out of its owner's total, so the person archiving must still hold the access the route checked, at the moment it commits (C106).
- * A write that carries a request (the route's) must carry its actor; one with neither is Rovara's own internal call, which the caller vouches for.
+ * A write that carries a request (the route's) must carry its actor; one with neither must be Rovara's own (`by` is `system`).
  */
 export function archiveActorChecks(tableName: string, orgId: OrgId, by: string,
   request: { orgId: OrgId; developerId: string } | undefined,
   options: { actor?: BudgetActor; overrideCap?: { actor?: BudgetActor }; cause?: unknown }): TransactItem[] {
-  if ((options.actor ?? options.overrideCap?.actor) === undefined && request === undefined) return [];
+  if ((options.actor ?? options.overrideCap?.actor) === undefined && request === undefined) {
+    // Rovara's own call, which the caller vouches for; any other name needs the actor fence.
+    if (by !== "system") throw budgetActorRefused();
+    return [];
+  }
   return unarchiveActorChecks(tableName, orgId, by, request, options);
 }
 
@@ -66,14 +70,15 @@ export function fenceRefusal(failed: Set<number>, start: number, actorChecks: Tr
  */
 export async function destinationChecks(
   read: (key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined>,
-  tableName: string, orgId: OrgId, destinations: ReadonlyArray<{ developerId: string; need: DestinationNeed }>, taken: TransactItem[],
+  tableName: string, orgId: OrgId, destinations: ReadonlyArray<{ developerId: string; need: DestinationNeed }>, taken: TransactItem[], actor?: BudgetActor,
 ): Promise<TransactItem[]> {
   const keyOf = (item: TransactItem) => item.ConditionCheck === undefined ? "" : `${String(item.ConditionCheck.Key?.["pk"])}|${String(item.ConditionCheck.Key?.["sk"])}`;
   const used = new Set(taken.map(keyOf));
   const found: TransactItem[] = [];
   const add = (item: TransactItem) => { if (!used.has(keyOf(item))) { used.add(keyOf(item)); found.push(item); } };
   for (const { developerId, need } of destinations) {
-    const parsed = OrgRoleSchema.safeParse((await read(orgMemberKey(orgId, developerId)))?.["role"]);
+    // The actor naming themselves is held by the actor's own checks (their refusal is the actor's), so their role is not read again here.
+    const parsed = OrgRoleSchema.safeParse(actor !== undefined && actor.developerId === developerId ? actor.role : (await read(orgMemberKey(orgId, developerId)))?.["role"]);
     if (!parsed.success || !/^[a-f0-9]{64}$/.test(developerId)) throw destinationRefused();
     const role = parsed.data, admin = role === "owner" || role === "admin";
     if (need === "admin" && !admin) throw destinationRefused();

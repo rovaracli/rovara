@@ -271,6 +271,7 @@ const BOB = "b".repeat(64);
 
 function ownerSetup() {
   const base = limitsSetup();
+  fixtureActor(base.store, TEST_ORG, BOB); // Bob is a real member: an owner change to him is held to that in its own transaction
   const ownerAgents = async (...budgets: number[]) => {
     const made: AgentId[] = [];
     for (const [index, monthlyUsd] of budgets.entries()) {
@@ -358,21 +359,21 @@ describe("the one monthly total of a person's agent budgets", () => {
   it("does not count an archived agent, and counts it again when it is unarchived", async () => {
     const { ownerAgents, totalOf, store } = ownerSetup();
     const [first, second] = await ownerAgents(30, 40);
-    await store.archive(TEST_ORG, first!, ALICE);
+    await store.archive(TEST_ORG, first!, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(40);
     await store.setBudget(TEST_ORG, first!, { monthlyUsd: 90 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) }); // raised while archived: counts for no one
     expect(totalOf(ALICE)).toBe(40);
     await store.unarchive(TEST_ORG, first!, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(130);
-    await store.archive(TEST_ORG, second!, ALICE);
-    await store.archive(TEST_ORG, second!, ALICE); // already archived: nothing is taken off twice
+    await store.archive(TEST_ORG, second!, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
+    await store.archive(TEST_ORG, second!, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) }); // already archived: nothing is taken off twice
     expect(totalOf(ALICE)).toBe(90);
   });
 
   it("refuses an unarchive that would take the owner past the cap, and leaves the agent archived", async () => {
     const { ownerAgents, totalOf, store, capOf } = ownerSetup();
     const [first] = await ownerAgents(60, 30);
-    await store.archive(TEST_ORG, first!, ALICE);
+    await store.archive(TEST_ORG, first!, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
     await ownerAgents(50);
     expect(totalOf(ALICE)).toBe(80);
     await expect(store.unarchive(TEST_ORG, first!, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE), ownerCap: await capOf() })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: containing(OVER_CAP_TEXT) });
@@ -399,6 +400,7 @@ describe("the one monthly total of a person's agent budgets", () => {
   it("moves an agent's budget to the new owner's total, and holds the new owner to the cap", async () => {
     const { ownerAgents, totalOf, store, capOf } = ownerSetup();
     const [small, big] = await ownerAgents(30, 80);
+    fixtureActor(store, TEST_ORG, BOB); // the new owner is a real member now: the write holds them to that in its own transaction
     await store.setOwner(TEST_ORG, small!, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(80);
     expect(totalOf(BOB)).toBe(30);
@@ -948,7 +950,7 @@ describe("an owner merged into another counts for the survivor", () => {
     await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 30 }, fixtureActor(store, TEST_ORG, GHOST).developerId, undefined, { ...({ ownerCap: await base.capOf() }), actor: fixtureActor(store, TEST_ORG, GHOST) });
     expect(totalOf(ALICE)).toBe(70);
     expect(base.db.get(ownerBudgetKey(TEST_ORG, GHOST))).toBeUndefined();
-    await store.archive(TEST_ORG, dup.agentId, GHOST);
+    await store.archive(TEST_ORG, dup.agentId, GHOST, undefined, { actor: fixtureActor(store, TEST_ORG, GHOST) });
     expect(totalOf(ALICE)).toBe(40);
   });
 
@@ -1037,7 +1039,7 @@ describe("two changes racing on one agent", () => {
       const { ownerAgents, store, totalOf } = ownerSetup();
       const [agent] = await ownerAgents(30);
       const budget = () => store.setBudget(TEST_ORG, agent!, { monthlyUsd: 45 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
-      const archive = () => store.archive(TEST_ORG, agent!, ALICE);
+      const archive = () => store.archive(TEST_ORG, agent!, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
       const results = await Promise.allSettled(budgetFirst ? [budget(), archive()] : [archive(), budget()]);
       expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
       expect(totalOf(ALICE)).toBe(await sumOfAgents(store, ALICE));
@@ -1050,7 +1052,7 @@ describe("a change worked out from a stale read of the agent", () => {
   type Change = (store: AgentStore, agentId: AgentId) => Promise<unknown>;
   const budget: Change = (store, agentId) => store.setBudget(TEST_ORG, agentId, { monthlyUsd: 45 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
   const owner: Change = (store, agentId) => store.setOwner(TEST_ORG, agentId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
-  const archive: Change = (store, agentId) => store.archive(TEST_ORG, agentId, ALICE);
+  const archive: Change = (store, agentId) => store.archive(TEST_ORG, agentId, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
   const cases: Array<[string, Change, Change]> = [
     ["a budget change after the owner moved", owner, budget], ["a budget change after the agent was archived", archive, budget],
     ["an owner change after the budget changed", budget, owner], ["an archive after the budget changed", budget, archive],
@@ -1084,7 +1086,7 @@ describe("a total that was never counted", () => {
     await store.setBudget(TEST_ORG, second!, { monthlyUsd: null }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(5);
     db.delete(ownerBudgetKey(TEST_ORG, ALICE));
-    await store.archive(TEST_ORG, first!, ALICE);
+    await store.archive(TEST_ORG, first!, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(0);
   });
 

@@ -4,7 +4,7 @@
 // write leaves nothing behind. An agent builds on another by a pinned version (`BaseRef`): the base moving
 // on changes nothing until the agent's owner takes the update. `resolveAgent` follows those pins down to a
 // built-in version or the empty recipe and applies each layer's overlay on the way back up.
-import { unarchiveActorChecks, archiveActorChecks, budgetActorChecks, budgetActorRefused, destinationChecks, fenceRefusal, type BudgetActor } from "./budget-authority.js";
+import { unarchiveActorChecks, archiveActorChecks, budgetActorChecks, budgetActorRefused, destinationChecks, fenceRefusal, type BudgetActor, type DestinationNeed } from "./budget-authority.js";
 import {modelAuthorityRefused} from "../model-selection/authority.js";
 import {parseStageModelApprovalProof,type StageModelApprovalProof} from "../model-selection/approval-proof.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
@@ -894,9 +894,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       event.item,
       ...audit.items,
     ];
+    // The people it names are held to what the route checked, in this same transaction (C99); an approval brings its own checks.
+    const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [...(owner.kind === "member" ? [{ developerId: owner.developerId, need: "member" as DestinationNeed }] : []), ...(accountable === undefined ? [] : [{ developerId: accountable.developerId, need: (owner.kind === "project" ? { maintainerOf: owner.project } : "member") as DestinationNeed }])], actorChecks, actor);
     const actorStart = items.length;
-    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
-      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    await this.commit(...withOverride([...items, ...actorChecks, ...destination], (failed) => (
+      fenceRefusal(failed, actorStart, actorChecks, destination) ?? totals.refuse(failed)
     ), options, { tableName: this.input.tableName, orgId, by }), request, moved);
     await flushAuditEvents(this.input, audit.events);
     return moved;
@@ -942,7 +944,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
         ...audit.items,
       ];
       // The people it names are held to what the route checked, in this same transaction (C99); an approval brings its own checks.
-      const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [{ developerId: accountable.developerId, need: "admin" }], actorChecks);
+      const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [{ developerId: accountable.developerId, need: "admin" }], actorChecks, actor);
       const actorStart = items.length;
       await this.commit(...withOverride([...items, ...actorChecks, ...destination], (failed) => (
         fenceRefusal(failed, actorStart, actorChecks, destination) ?? totals.refuse(failed)
@@ -975,7 +977,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       ...audit.items,
     ];
     // The people it names are held to what the route checked, in this same transaction (C99); an approval brings its own checks.
-    const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [{ developerId: accountable.developerId, need: { maintainerOf: agent.owner.project } }], actorChecks);
+    const destination = actor === undefined ? [] : await destinationChecks((key) => this.read(key), this.input.tableName, orgId, [{ developerId: accountable.developerId, need: { maintainerOf: agent.owner.project } }], actorChecks, actor);
     const actorStart = items.length;
     await this.commit(...withOverride([...items, ...actorChecks, ...destination], (failed) => (
       fenceRefusal(failed, actorStart, actorChecks, destination) ?? totals.refuse(failed)

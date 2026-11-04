@@ -1,6 +1,7 @@
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 4: the app's chain routes (`/v1/app/chains*`), through the broker's handler with two orgs. A publish or rollback that makes anything less
 // safe than what runs answers 202 with a confirmation link and changes nothing; deciding it is Plan 3's page (R66).
+import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
@@ -111,6 +112,8 @@ async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
     guardrails: { ...(await import("../../packages/contracts/src/agent-guardrails.js")).DEFAULT_AGENT_GUARDRAILS, maxAutonomy: "run" },
   });
   members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
+  // The write holds a new accountable maintainer to a real grant row in its own transaction, as the project roles read it.
+  h.db.set({ pk: projectMemberKey(TEST_ORG, MAX.developerId, "web").pk, sk: projectMemberKey(TEST_ORG, MAX.developerId, "web").sk, entityType: "MEMBERSHIP", role: "developer", projectRole: "maintainer" });
   members.grant(TEST_ORG, "web", CARL.developerId, "contributor");
   members.grant(TEST_ORG, "web", VIV.developerId, "viewer");
   // Beside the broker's own stores: the same table, so a test can seed a published version without going through the routes.
@@ -699,7 +702,7 @@ describe("a publish or rollback that makes something less safe", () => {
     const onHelper = (instructions?: string): ChainDefinitionInput => ({ start: "a", steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: helper, version: "current" }, ...(instructions === undefined ? {} : { instructions }), next: { kind: "end" } }] });
     await s.seed(chainId, onHelper());
     await s.seed(chainId, onHelper("Say what you did."));
-    await s.store.archive(TEST_ORG, helper, MAYA.developerId);
+    await s.store.archive(TEST_ORG, helper, MAYA.developerId, undefined, { actor: fixtureActor(s.store, TEST_ORG, MAYA.developerId) });
     const refused = await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
     expect(refused.status).toBe(409);
     expect(errorOf(refused)).toMatchObject({ code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being rolled back. Roll back again." });
