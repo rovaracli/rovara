@@ -141,6 +141,8 @@ const claims = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_R
 const requests = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_REQUEST");
 const nothingWritten = (h: Harness) => { expect(sourceRows(h)).toHaveLength(0); expect(proposals(h)).toHaveLength(0); expect(claims(h)).toHaveLength(0); expect(requests(h)).toHaveLength(0); };
 const flushed = async (h: Harness) => { await new Promise((resolve) => setTimeout(resolve, 0)); return h.audit.recorded(); };
+const INVITE_NEEDED = { status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again." } };
+const DIFFERENT_WORKSPACE = { status: 422, body: { code: "SLACK_WRONG_WORKSPACE", message: "That link is for a different Slack workspace." } };
 const NOT_ALLOWED = (message: string) => ({ status: 422, body: { code: "SOURCE_NOT_ALLOWED", message } });
 const CONNECT_WORDS = "Slack Connect channels can't be used as a source.";
 const DM_WORDS = "Direct messages and group messages can't be used as a source in this edition.";
@@ -206,9 +208,9 @@ describe("Slack: the server decides what the channel is", () => {
     expect(await post(h, WHO.otherMaint, add({ scope: slackScope(CH.pub, TEAM_A) }), { org: ORG_B })).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
   });
 
-  it("a channel Slack does not know is refused as a missing place; one that cannot be read fails closed with 503 and writes nothing", async () => {
+  it("a channel Slack does not know is answered with the fixed 'invite Rovara first' code (task 11: this replaces the missing-place answer; it never says whether the channel exists); one that cannot be read fails closed with 503 and writes nothing", async () => {
     const h = harness();
-    expect(await post(h, WHO.owner, add({ scope: slackScope(CH.gone) }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(await post(h, WHO.owner, add({ scope: slackScope(CH.gone) }))).toEqual(INVITE_NEEDED);
     h.channels.set(CH.pub, "unreadable");
     expect(await post(h, WHO.owner, add())).toMatchObject({ status: 503, body: { code: "RUNTIME_UNAVAILABLE" } });
     h.channels.set(CH.pub, "throws");
@@ -707,5 +709,110 @@ describe("T10: the notes opt-in leaves the row whenever the saved retention is n
     expect((await post(h, WHO.owner, add({ retention: "B", notesOptIn: true }))).status).toBe(200);
     expect((await post(h, WHO.owner, change(1, { enabled: false }))).status).toBe(200);
     expect(sourceRows(h)[0]).toMatchObject({ retention: "B", notesOptIn: true, enabled: false });
+  });
+});
+
+describe("task 11 B: a pasted Slack link or ID is accepted, read again on the server", () => {
+  const withTeam = { context: { slackTeamId: TEAM_A } } as const;
+  const forms: Array<[string, string]> = [
+    ["a bare channel ID", CH.pub],
+    ["a workspace link", `https://acme.slack.com/archives/${CH.pub}`],
+    ["a message link", `https://acme.slack.com/archives/${CH.pub}/p1700000000123456?thread_ts=1700000000.123456&cid=${CH.pub}`],
+    ["an app link of the bound workspace", `https://app.slack.com/client/${TEAM_A}/${CH.pub}`],
+    ["the full place", slackScope(CH.pub)],
+  ];
+  it.each(forms)("%s is saved as the exact place slack:<bound team>/<channel>, read live, and the row, claim and request hold that place", async (_name, scope) => {
+    const h = harness();
+    expect(await post(h, WHO.owner, add({ scope }), withTeam)).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+    expect(h.reads).toEqual([`${TEAM_A}/${CH.pub}`]);
+    expect(sourceRows(h).map((row) => row.scope)).toEqual([slackScope(CH.pub)]);
+    expect(claims(h)).toHaveLength(1);
+    // The same place again, in another form, is the same source (stale), not a second row.
+    expect(await post(h, WHO.owner, add({ scope: slackScope(CH.pub) }), withTeam)).toMatchObject({ status: 409 });
+  });
+
+  it("a link for another Slack workspace answers one fixed sentence, writes nothing and never asks Slack", async () => {
+    const h = harness();
+    for (const scope of [`https://app.slack.com/client/${TEAM_OTHER}/${CH.pub}`, `https://app.slack.com/client/${TEAM_B}/${CH.pub}`, slackScope(CH.pub, TEAM_OTHER)]) {
+      const reply = await post(h, WHO.owner, add({ scope }), withTeam);
+      expect(reply, scope).toEqual(DIFFERENT_WORKSPACE);
+      expect(JSON.stringify(reply.body)).not.toContain(TEAM_OTHER);
+    }
+    expect(h.reads).toEqual([]);
+    nothingWritten(h);
+  });
+
+  it("an enterprise-id app link takes the install's workspace; junk is the plain missing-place answer; Slack is not asked about junk", async () => {
+    const h = harness();
+    expect((await post(h, WHO.owner, add({ scope: `https://app.slack.com/client/E0ENTERPR/${CH.pub}` }), withTeam)).status).toBe(200);
+    expect(sourceRows(h).map((row) => row.scope)).toEqual([slackScope(CH.pub)]);
+    const junk = harness();
+    for (const scope of ["general", "#general", "https://evil.com/archives/C0PUBLIC1", `http://acme.slack.com/archives/${CH.pub}`, "https://acme.slack.com/team/U0123ABCD", `${CH.pub} ${CH.priv}`]) {
+      expect(await post(junk, WHO.owner, add({ scope }), withTeam), scope).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID", message: "That place can't be used as a source for this project." } });
+    }
+    expect(junk.reads).toEqual([]);
+    nothingWritten(junk);
+  });
+
+  it("a bare ID or workspace link needs the install's workspace: an install that does not know it fails closed with 503", async () => {
+    const h = harness();
+    expect(await post(h, WHO.owner, add({ scope: CH.pub }))).toMatchObject({ status: 503, body: { code: "RUNTIME_UNAVAILABLE" } });
+    expect(h.reads).toEqual([]);
+    nothingWritten(h);
+  });
+
+  it("another company's editor pasting the first company's workspace link gets the missing-place answer, as before, and Slack is not asked", async () => {
+    const h = harness();
+    expect(await post(h, WHO.otherMaint, add({ scope: `https://app.slack.com/client/${TEAM_A}/${CH.pub}` }), { org: ORG_B, context: { slackTeamId: TEAM_A } })).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID", message: "That place can't be used as a source for this project." } });
+    expect(h.reads).toEqual([]);
+  });
+
+  it("only a Slack add reads the form: a Linear scope or a repository is not rewritten", async () => {
+    const h = harness();
+    expect(await post(h, WHO.owner, add({ source: "linear", scope: CH.pub }), withTeam)).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    nothingWritten(h);
+  });
+
+  it("a private channel pasted as a link is classified by the server, saved at once in Enterprise and audited as widening a private channel", async () => {
+    const h = harness();
+    expect((await post(h, WHO.owner, add({ scope: `https://acme.slack.com/archives/${CH.priv}` }), withTeam)).status).toBe(200);
+    expect((await flushed(h)).find((event) => event.action === "record.source_added")?.facts).toMatchObject({ restricted: true, widened: "private_channel" });
+  });
+
+  it("the replay of a request answers the stored outcome whether the first body carried a link or the place", async () => {
+    const h = harness();
+    const requestId = randomUUID();
+    const link = add({ requestId, scope: `https://acme.slack.com/archives/${CH.pub}` });
+    expect(await post(h, WHO.owner, link, withTeam)).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+    expect(await post(h, WHO.owner, link, withTeam)).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+    expect(sourceRows(h)).toHaveLength(1);
+    expect(h.reads).toHaveLength(1);
+  });
+});
+
+describe("task 11 C: a channel Rovara is not in answers the fixed 'invite Rovara first' code", () => {
+  it("whatever form it was typed in, a channel the bot cannot read (Slack: channel_not_found or not_in_channel, both are 'none') is SLACK_INVITE_NEEDED, never whether it exists, and nothing is written", async () => {
+    const h = harness();
+    for (const scope of [slackScope(CH.gone), CH.gone, `https://acme.slack.com/archives/${CH.gone}`, `https://app.slack.com/client/${TEAM_A}/${CH.gone}`]) {
+      expect(await post(h, WHO.owner, add({ scope }), { context: { slackTeamId: TEAM_A } }), scope).toEqual(INVITE_NEEDED);
+    }
+    expect(JSON.stringify(INVITE_NEEDED)).not.toMatch(/exist|private|public/u);
+    nothingWritten(h);
+    // Positive control: a channel Slack can read is saved.
+    expect((await post(h, WHO.owner, add())).status).toBe(200);
+  });
+
+  it("turning a Slack row on again for a channel that is gone from Slack's view is the same fixed answer (the row stays as it was)", async () => {
+    const h = harness();
+    expect((await post(h, WHO.owner, add({ enabled: false }))).status).toBe(200);
+    h.channels.set(CH.pub, "none");
+    expect(await post(h, WHO.owner, change(1, { enabled: true }))).toEqual(INVITE_NEEDED);
+    expect(sourceRows(h)[0]!.enabled).toBe(false);
+  });
+
+  it("Slack being unreachable is still the plain 503, not the invite sentence", async () => {
+    const h = harness();
+    h.channels.set(CH.pub, "unreadable");
+    expect(await post(h, WHO.owner, add())).toMatchObject({ status: 503, body: { code: "RUNTIME_UNAVAILABLE" } });
   });
 });

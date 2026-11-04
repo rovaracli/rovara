@@ -36,7 +36,7 @@ export const T = {
  SRC_ADD: "Add a source", SRC_ADD_KIND: "What to add", SRC_ADD_SEND: "Add source", SRC_ADD_NONE: "Nothing more can be added here.", SRC_CHOOSE: "Choose",
  SRC_KIND_REPO: "Repository", SRC_KIND_ROVARA: "Rovara (this project's own notes)", SRC_KIND_SLACK: "Slack channel", SRC_KIND_LINEAR: "Linear team", SRC_KIND_JIRA: "Jira project",
  SRC_REPO: "Repository", SRC_PLACE_SLACK: "Slack channel", SRC_PLACE_LINEAR: "Linear team", SRC_PLACE_JIRA: "Jira project",
- SRC_HINT_SLACK: "Looks like slack:T0123/C0456. Rovara checks the channel itself.", SRC_HINT_LINEAR: "Looks like linear:team/ENG. Rovara checks that your Linear app lists it.", SRC_HINT_JIRA: "Looks like jira:project/PAY. Rovara checks that your Jira app lists it.",
+ SRC_HINT_SLACK: "To get a link: in Slack, right-click the channel and choose Copy link. To find the ID: open the channel, click its name at the top, and the Channel ID is at the bottom of the About tab.", SRC_HINT_LINEAR: "Looks like linear:team/ENG. Rovara checks that your Linear app lists it.", SRC_HINT_JIRA: "Looks like jira:project/PAY. Rovara checks that your Jira app lists it.",
  SRC_RETENTION: "How long Rovara keeps it", SRC_AUDIENCE: "Who sees it", SRC_AUDIENCE_PROJECT: "Everyone on this project", SRC_AUDIENCE_MAINTAINERS: "Maintainers only", SRC_ROVARA_AUDIENCE: "follows each task's visibility",
  SRC_NOTES_SWITCH: "Keep notes with links", SRC_NOTES_NOTE: "Rovara keeps short notes with links to the messages, never the messages themselves. See Slack's API terms.", SRC_ON: "On", SRC_EXCLUDE: "Ids to leave out", SRC_EXCLUDE_HINT: "One per line: a person or an item id at the source.", SRC_EXCLUDE_TOO_MANY: "Leave out at most 200 ids, each at most 300 characters.",
  SRC_SAVE: "Save changes", SRC_REMOVE: "Remove", SRC_REMOVE_ASK: "Remove this source? What it kept is deleted within an hour, and nothing new is recorded from it.", SRC_REMOVE_YES: "Yes, remove it", SRC_REMOVE_NO: "Keep it",
@@ -45,6 +45,12 @@ export const T = {
  SRC_NO_MATCH_SLACK: "No channel matches that.", SRC_NO_MATCH_LINEAR: "No team matches that.", SRC_NO_MATCH_JIRA: "No project matches that.",
  SRC_PARTIAL_SLACK: "Not in the channels shown so far.", SRC_PARTIAL_LINEAR: "Not in the teams shown so far.", SRC_PARTIAL_JIRA: "Not in the projects shown so far.",
  SRC_CUT_SLACK: "Showing the first channels only. Enter an ID instead to add one that isn't listed.", SRC_CUT_LINEAR: "Showing the first teams only. Enter an ID instead to add one that isn't listed.", SRC_CUT_JIRA: "Showing the first projects only. Enter an ID instead to add one that isn't listed.",
+ SRC_INVITE_FIRST: "Rovara can only read channels it's in. For a private channel, first type /invite @Rovara in that channel.", SRC_TYPE_INSTEAD_SLACK: "Enter an ID or link instead",
+ SRC_PRIVATE_LEGEND: "Your private channels", SRC_PRIVATE_ONLY_YOU: "Only you see this list: these are private channels you're in.",
+ SRC_PRIVATE_NOT_LINKED: "Link your Slack account to see your private channels here. You can still paste a channel link below.",
+ SRC_PRIVATE_FAIL: "Rovara can't load your private channels right now. You can still paste a channel link below.",
+ SRC_PRIVATE_EMPTY: "None yet. A private channel shows here once you and Rovara are both in it.",
+ SRC_ERR_INVITE: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again.", SRC_ERR_WORKSPACE: "That link is for a different Slack workspace.",
  SRC_SHOW_MORE: "Show more", SRC_NOT_JOINED: "Invite Rovara to this channel so it can read it.",
  SRC_LIST_LOADING: "Loading the list\u2026", SRC_LIST_FAIL: "Rovara can't load the list right now. Enter an ID instead.", SRC_LIST_SCOPE: "Rovara can't list channels. Ask an admin to reinstall the Slack app.", SRC_LIST_EMPTY: "There is nothing to pick from yet. Enter an ID instead.",
  SRC_LIST_MORE: "Showing the first 100. Type to narrow the list.", SRC_TYPE_INSTEAD: "Enter an ID instead", SRC_PICK_INSTEAD: "Pick from the list instead",
@@ -108,7 +114,7 @@ export function failureText(error: unknown, fallback: string): string {
 export const isStale = (error: unknown): boolean => error instanceof ApiError && (error.code === "CHANGE_STALE" || error.code === "NOT_FOUND");
 
 const SOURCE_FAILURES: Readonly<Record<string, string>> = {
- CHANGE_STALE: T.SRC_ERR_STALE, SOURCE_REMOVAL_RUNNING: T.SRC_ERR_REMOVAL, SOURCE_CLEARING: T.SRC_ERR_CLEARING, SOURCE_REMOVAL_BUSY: T.SRC_ERR_BUSY, SOURCE_NOT_ALLOWED: T.SRC_ERR_PLACE, SOURCE_KIND_NOT_YET: T.SRC_ERR_KIND,
+ CHANGE_STALE: T.SRC_ERR_STALE, SOURCE_REMOVAL_RUNNING: T.SRC_ERR_REMOVAL, SOURCE_CLEARING: T.SRC_ERR_CLEARING, SLACK_INVITE_NEEDED: T.SRC_ERR_INVITE, SLACK_WRONG_WORKSPACE: T.SRC_ERR_WORKSPACE, SOURCE_REMOVAL_BUSY: T.SRC_ERR_BUSY, SOURCE_NOT_ALLOWED: T.SRC_ERR_PLACE, SOURCE_KIND_NOT_YET: T.SRC_ERR_KIND,
  FORBIDDEN: T.SRC_ERR_FORBIDDEN, RUNTIME_UNAVAILABLE: T.SRC_ERR_UNAVAILABLE, CONFIG_INVALID: T.SRC_ERR_INVALID, NOT_FOUND: T.SRC_ERR_GONE, PROJECT_NOT_FOUND: T.SRC_ERR_GONE,
 };
 /** What a failed source change says: a fixed sentence for the code, never the server's own text. */

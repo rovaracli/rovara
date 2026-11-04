@@ -10,6 +10,7 @@ import {
   type ChannelClassResponse,
   type ChannelListEntry,
   type ChannelListRequest,
+  type MemberChannelsRequest,
   type ChannelListResponse,
   type ChannelInfoRequest,
   type ChannelInfoResponse,
@@ -53,7 +54,7 @@ type IdentityRefusal = typeof SLACK_UNAVAILABLE | { ok: false; error: "invalid_r
  */
 async function identityInvoke<T>(
   invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>,
-  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
+  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | MemberChannelsRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
   readReply: (reply: Record<string, unknown>) => T | undefined,
   event: string,
 ): Promise<T | IdentityRefusal> {
@@ -184,11 +185,13 @@ export function channelClassThroughLambda(invoke: (payload: Uint8Array) => Promi
 
 // Public only: a private channel in a reply is left out here too (the directory never asks for one).
 const LIST_KINDS = new Set(["public"]);
-const isListEntry = (entry: unknown): entry is ChannelListEntry => {
+const MEMBER_KINDS = new Set(["private"]);
+const isListEntryOfKinds = (entry: unknown, kinds: ReadonlySet<string>): entry is ChannelListEntry => {
   const candidate = entry as Partial<Record<keyof ChannelListEntry, unknown>> | null;
   return typeof candidate === "object" && candidate !== null && typeof candidate.id === "string" && typeof candidate.name === "string"
-    && typeof candidate.kind === "string" && LIST_KINDS.has(candidate.kind) && typeof candidate.extShared === "boolean" && typeof candidate.joined === "boolean";
+    && typeof candidate.kind === "string" && kinds.has(candidate.kind) && typeof candidate.extShared === "boolean" && typeof candidate.joined === "boolean";
 };
+const isListEntry = (entry: unknown): entry is ChannelListEntry => isListEntryOfKinds(entry, LIST_KINDS);
 /**
  * Team record source pickers: a page of the channels the Slack bot sees, read fresh by the DeveloperIdentity function. Entries without the shape are left out; a reply that is not understood is unavailable
  * (fail closed). `missing_scope` passes through (the Slack app was installed without the listing scopes). An identity function that has no `channel-list` answers invalid_request, which is unavailable here too.
@@ -202,6 +205,27 @@ export function channelListThroughLambda(invoke: (payload: Uint8Array) => Promis
       const channels = reply.channels.filter(isListEntry).map(({ id, name, kind, extShared, joined }) => ({ id, name, kind, extShared, joined }));
       return { ok: true as const, channels, ...(typeof reply.next === "string" && reply.next !== "" ? { next: reply.next } : {}) };
     }, "developer.channel_list");
+    if (!answer.ok && refusal !== undefined) return { ok: false, error: refusal };
+    return answer;
+  };
+}
+
+// Private only: "your private channels" lists nothing else, so a public channel or a direct message in a reply is left out here too.
+const isMemberEntry = (entry: unknown): entry is ChannelListEntry => isListEntryOfKinds(entry, MEMBER_KINDS);
+/**
+ * Team record source pickers, "your private channels" (task 11): a page of the private channels the bot and ONE Slack user are both in, read fresh by the DeveloperIdentity function. The user id in the request is chosen by the
+ * broker from the editor's linked Slack ids. Entries without the shape, or that are not private, are left out; a reply that is not understood is unavailable (fail closed); `missing_scope` passes through; an identity function that has no
+ * `member-channels` answers invalid_request, which is unavailable here too.
+ */
+export function memberChannelsThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: MemberChannelsRequest) => Promise<ChannelListResponse> {
+  return async (request) => {
+    let refusal: "missing_scope" | undefined;
+    const answer = await identityInvoke(invoke, request, (reply) => {
+      if (reply.ok === false && reply.error === "missing_scope") { refusal = "missing_scope"; return undefined; }
+      if (reply.ok !== true || !Array.isArray(reply.channels)) return undefined;
+      const channels = reply.channels.filter(isMemberEntry).map(({ id, name, kind, extShared, joined }) => ({ id, name, kind, extShared, joined }));
+      return { ok: true as const, channels, ...(typeof reply.next === "string" && reply.next !== "" ? { next: reply.next } : {}) };
+    }, "developer.member_channels");
     if (!answer.ok && refusal !== undefined) return { ok: false, error: refusal };
     return answer;
   };

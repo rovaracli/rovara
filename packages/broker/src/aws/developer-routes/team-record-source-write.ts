@@ -21,6 +21,14 @@ const slackChannelsOf = (read: ChannelListRead, teamId: string): NonNullable<Sou
   return { ok: false, error: answer.error === "missing_scope" ? "missing_scope" : "unavailable" };
 };
 
+type MemberChannelsRead = NonNullable<NonNullable<DeveloperRouteDependencies["developer"]>["memberChannels"]>;
+/** "Your private channels", from DeveloperIdentity's `member-channels`: the user id is the one the route chose from the editor's own linked ids. Same answers as the public page. */
+const slackMemberChannelsOf = (read: MemberChannelsRead): NonNullable<SourceWriteContext["slackMemberChannels"]> => async (input) => {
+  const answer = await read({ kind: "member-channels", teamId: input.teamId, userId: input.userId, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) });
+  if (answer.ok) return { ok: true, channels: answer.channels, ...(answer.next === undefined ? {} : { next: answer.next }) };
+  return { ok: false, error: answer.error === "missing_scope" ? "missing_scope" : "unavailable" };
+};
+
 export function recordWriteContextOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest): SourceWriteContext {
   return {
     orgRole: caller.orgRole,
@@ -32,5 +40,6 @@ export function recordWriteContextOf(deps: DeveloperRouteDependencies, caller: D
     // The pickers: this install's Slack team and a page of the channels the bot sees in it (read fresh through DeveloperIdentity). The route lists them only for the company the team is bound to.
     ...(deps.developer?.slackTeamId === undefined ? {} : { slackTeamId: deps.developer.slackTeamId }),
     ...(deps.developer?.channelList === undefined || deps.developer.slackTeamId === undefined ? {} : { slackChannels: slackChannelsOf(deps.developer.channelList, deps.developer.slackTeamId) }),
+    ...(deps.developer?.memberChannels === undefined || deps.developer.slackTeamId === undefined ? {} : { slackMemberChannels: slackMemberChannelsOf(deps.developer.memberChannels) }),
   };
 }

@@ -408,6 +408,16 @@ export type ChannelListResponse =
   | { ok: true; channels: ChannelListEntry[]; next?: string }
   | { ok: false; error: "slack_unavailable" | "missing_scope" | "invalid_request" };
 
+/**
+ * Team record source pickers (lane task 11): "your private channels". One Slack user's private channels that the bot is also in: `users.conversations` with `user` and `types=private_channel` (with a bot token Slack returns
+ * only the private channels the bot shares with that user). The user id is the editor's own linked Slack id, chosen by the broker from its sign-in store, never from a request. Only for the install's own team. The reply is a
+ * `ChannelListResponse` whose entries are private channels only. A Slack user who is not in this workspace has no channels here (an empty list).
+ */
+export const MemberChannelsRequestSchema = z.object({
+  kind: z.literal("member-channels"), teamId: SlackTeamIdSchema, userId: SlackUserIdSchema, cursor: z.string().regex(/^[A-Za-z0-9+/=_%.-]{1,300}$/).optional(),
+}).strict();
+export type MemberChannelsRequest = z.infer<typeof MemberChannelsRequestSchema>;
+
 /** Spec 025 A12: the broker asks DeveloperIdentity which Slack user owns a verified email (FR-012's lookup). */
 export const SlackUserByEmailRequestSchema = z.object({ kind: z.literal("slack-user-by-email"), email: z.string().email().max(254) }).strict();
 export type SlackUserByEmailRequest = z.infer<typeof SlackUserByEmailRequestSchema>;

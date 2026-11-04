@@ -98,7 +98,7 @@ describe("adding a source", () => {
   const form = screen.getByRole("region", { name: "Add a source" });
   pick("What to add", "slack");
   fireEvent.change(await within(form).findByLabelText("Slack channel"), { target: { value: "  slack:T1/C9  " } });
-  expect(within(form).getByText(/Rovara checks the channel itself/u)).toBeTruthy();
+  expect(within(form).getByText(/To get a link: in Slack, right-click the channel and choose Copy link\./u)).toBeTruthy();
   pick("How long Rovara keeps it", "B", form);
   fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
   expect(await screen.findByText("Source added.")).toBeTruthy();

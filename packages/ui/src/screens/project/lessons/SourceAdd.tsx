@@ -65,6 +65,7 @@ export function SourceAdd({ project, view, notify }: { project: string; view: So
   <fieldset key={formKey} className="rv-lessons-edit" disabled={writer.busy}><legend>{T.SRC_ADD}</legend>
    <Select label={T.SRC_ADD_KIND} value={kind} placeholder={T.SRC_CHOOSE} options={kinds.map(candidate => ({ value: candidate, label: KIND_WORDS[candidate] }))} onValueChange={next => { setKind(next);setPlace("");setRetention("");setNotes(false); }} />
    {chosen === "repository" && <Select label={T.SRC_REPO} value={place} placeholder={T.SRC_CHOOSE} options={repositories.map(repository => isClearing(view, "github", repository.scope) ? { value: repository.scope, label: visibleText(repository.name) + " " + T.SRC_BEING_REMOVED, disabled: true } : { value: repository.scope, label: visibleText(repository.name) })} onValueChange={setPlace} />}
+   {chosen === "slack" && <p className="rv-muted">{T.SRC_INVITE_FIRST}</p>}
    {(chosen === "slack" || chosen === "linear" || chosen === "jira") && <PlacePicker key={chosen} project={project} kind={chosen} value={place} onChange={setPlace} unavailable={candidate => isClearing(view, SOURCE_OF[chosen], candidate)} />}
    {clearingNow && <p role="alert">{T.SRC_ERR_REMOVAL}</p>}
    {chosen !== undefined && <>

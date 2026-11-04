@@ -14,7 +14,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  SOURCE_WIDENED_WORDS, scopeAndAncestors, SourceConfigSchema, SourceWriteBodySchema, SourcesAdminViewSchema,
+  SOURCE_WIDENED_WORDS, parseSlackPlaceInput, scopeAndAncestors, SourceConfigSchema, SourceWriteBodySchema, SourcesAdminViewSchema,
   agentXError, canonicalJson, isWriterOrgRole, recordScopeMarkerKey, recordSourceKey,
   type AuditEventInput, type OrgId, type RetentionMode, type SourceConfig, type SourceWidenedWord, type SourceWriteBody,
 } from "@agentx/contracts";
@@ -47,6 +47,8 @@ export interface SourceRouteDependencies {
   locks?(orgId: OrgId): Promise<CompanyLocks | undefined>;
   /** Whether this Slack workspace is bound to the company (the same binding the Slack tap resolves). Absent or a throw: a Slack place cannot be checked, so nothing is added. */
   slackTeamBound?: (orgId: OrgId, teamId: string) => Promise<boolean>;
+  /** The Slack user ids (`U...`) the person has signed in with: the sign-in store's own links, read by the server (never from a request). For "your private channels" in the Slack picker (`source-options.ts`). Absent or a throw: that group cannot be read. */
+  slackUserIdsOf?: (developerId: string) => Promise<readonly string[]>;
   /** Whether a connected Linear or Jira app of the company lists the place, read live. Absent (the install has no connections): such a place is never accepted. */
   trackerPlace?: TrackerPlaceCheck;
   /** The places the company's connected Linear and Jira apps list, with names, a page at a time, for the pickers (`source-options.ts`). Absent: the pickers for those kinds cannot be read and the editor types the place. */
@@ -55,6 +57,10 @@ export interface SourceRouteDependencies {
   pausedSources?(orgId: OrgId, project: string): Promise<readonly string[]>;
   newId?(): string;
 }
+
+/** A page of Slack channels, or why it could not be read. */
+export type SlackChannelPage =
+  { ok: true; channels: Array<{ id: string; name: string; kind: "public" | "private"; extShared: boolean; joined: boolean }>; next?: string } | { ok: false; error: "missing_scope" | "unavailable" };
 
 /** What only the broker's request knows, handed in per request by the caller (`aws/developer-routes/team-record-source-write.ts`). */
 export interface SourceWriteContext {
@@ -71,8 +77,9 @@ export interface SourceWriteContext {
   /** The Slack team of this install (the one whose bot token DeveloperIdentity holds). The pickers list only this team, and only for the company it is bound to. Absent: the Slack picker cannot be read. */
   slackTeamId?: string;
   /** One page of the channels the bot can see, read fresh through DeveloperIdentity (`channel-list`). `missing_scope`: the Slack app lacks the listing scopes. Absent: the Slack picker cannot be read. */
-  slackChannels?: (input: { teamId: string; cursor?: string }) => Promise<
-    { ok: true; channels: Array<{ id: string; name: string; kind: "public" | "private"; extShared: boolean; joined: boolean }>; next?: string } | { ok: false; error: "missing_scope" | "unavailable" }>;
+  slackChannels?: (input: { teamId: string; cursor?: string }) => Promise<SlackChannelPage>;
+  /** One page of the PRIVATE channels that both the bot and the Slack user `userId` are in (`member-channels` through DeveloperIdentity). `userId` is always one of the editor's own linked Slack ids, chosen by the server. Absent: "your private channels" cannot be read. */
+  slackMemberChannels?: (input: { teamId: string; userId: string; cursor?: string }) => Promise<SlackChannelPage>;
 }
 
 const WORDS = {
@@ -98,6 +105,12 @@ class ClearingElsewhere extends Error {}
 class RemovalBusy extends Error {}
 /** A place the edition's rules never allow (Slack Connect; a DM in Public): answered 422 with its own route-local code, like the two above. */
 class NotAllowed extends Error {}
+/** Slack could not show the bot the channel (channel_not_found, not_in_channel: Rovara is not in it, or it does not exist, and which is never said): answered with its own route-local code and one fixed sentence (task 11, C). */
+class InviteNeeded extends Error {}
+/** A pasted link (or place) for a Slack workspace other than this install's: its own route-local code and one fixed sentence (task 11, B). */
+class WrongWorkspace extends Error {}
+const wrongWorkspaceReply = (): RecordRouteReply => ({ status: 422, body: { code: "SLACK_WRONG_WORKSPACE", message: "That link is for a different Slack workspace." } });
+const inviteNeededReply = (): RecordRouteReply => ({ status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again." } });
 const removalRunningReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This source was just removed and its stored data is still being deleted. You can add it again in about an hour." } });
 const clearingElsewhereReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_CLEARING", message: "This source is still being cleared after a recent removal. You can add it again in about an hour." } });
 const removalBusyReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_BUSY", message: "Rovara is still deleting data from recently removed sources. Try again in an hour." } });
@@ -155,8 +168,9 @@ export async function handleSourceWrite(deps: RecordQueryDependencies, request: 
   const parsed = SourceWriteBodySchema.safeParse(raw);
   if (!parsed.success) throw invalid();
   const run: Run = { deps, sources, ctx, orgId: request.caller.orgId, project, me: request.caller.developerId, now: deps.now ?? Date.now };
-  const body = parsed.data;
+  // A Slack place may be pasted as a channel ID or a Slack link (task 11, B): read again here, whatever the screen did, and the exact place is what is stored, claimed, audited and replayed.
   try {
+    const body = parsed.data.action === "add" && parsed.data.source === "slack" ? { ...parsed.data, scope: slackPlaceOf(ctx, parsed.data.scope) } : parsed.data;
     switch (body.action) {
       case "add": return await saveAdd(run, body);
       case "change": return await saveChange(run, body);
@@ -167,6 +181,8 @@ export async function handleSourceWrite(deps: RecordQueryDependencies, request: 
     if (error instanceof ClearingElsewhere) return clearingElsewhereReply();
     if (error instanceof RemovalBusy) return removalBusyReply();
     if (error instanceof NotAllowed) return notAllowedReply(error);
+    if (error instanceof InviteNeeded) return inviteNeededReply();
+    if (error instanceof WrongWorkspace) return wrongWorkspaceReply();
     throw error;
   }
 }
@@ -196,6 +212,19 @@ async function checkScope(run: Run, source: string, scope: string): Promise<Plac
 }
 
 /**
+ * The exact place (`slack:<team>/<channel>`) of what was typed or pasted: a bare channel ID or a workspace link takes the install's Slack team; an app link names its team, which must be the install's (a link for another workspace
+ * is refused with its own sentence; an enterprise-grid id in the link stands for the install's team). The full place and anything this does not read are returned as they came, for the place check to accept or refuse as it always did.
+ */
+function slackPlaceOf(ctx: SourceWriteContext, scope: string): string {
+  const input = parseSlackPlaceInput(scope);
+  if (input === undefined || input.form === "scope") return scope;
+  const team = ctx.slackTeamId;
+  if (team === undefined) throw unavailable();
+  if (input.form === "client" && input.teamId!.startsWith("T") && input.teamId !== team) throw new WrongWorkspace();
+  return `slack:${team}/${input.channelId}`;
+}
+
+/**
  * A Slack place: the workspace is this company's (the binding the tap resolves), the channel is read LIVE and classified here, and the edition's rules apply. A workspace of another company answers as a
  * missing place and Slack is never asked; a channel that cannot be read fails closed. Slack Connect, and a DM or group DM in Public, are refused with their own code.
  */
@@ -204,13 +233,16 @@ async function checkSlackPlace(run: Run, scope: string): Promise<SlackScope> {
   if (parsed === undefined) throw invalid(WORDS.place);
   const bound = run.sources.slackTeamBound;
   if (bound === undefined || run.ctx.slackChannel === undefined) throw unavailable();
+  // A workspace other than the one this install's bot belongs to (a pasted link for another workspace) is said so, in one fixed sentence that names nobody.
+  if (run.ctx.slackTeamId !== undefined && parsed.teamId !== run.ctx.slackTeamId) throw new WrongWorkspace();
   let mine: boolean;
   try { mine = await bound(run.orgId, parsed.teamId); } catch { throw unavailable(); }
   if (!mine) throw invalid(WORDS.place);
   let facts: SlackFacts | "none" | undefined;
   try { facts = await run.ctx.slackChannel(parsed.teamId, parsed.channelId); } catch { facts = undefined; }
   if (facts === undefined) throw unavailable();
-  if (facts === "none") throw invalid(WORDS.place);
+  // Slack does not show the bot this channel: it is not in it, or there is no such channel. Never said which.
+  if (facts === "none") throw new InviteNeeded();
   const place = classifySlack(facts);
   if (!slackScopeAllowed(run.sources.edition, place).allowed) throw new NotAllowed(place === "slack_connect" ? WORDS.connect : WORDS.directMessages);
   return place;

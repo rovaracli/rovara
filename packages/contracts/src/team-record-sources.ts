@@ -111,8 +111,8 @@ export const SourcesAdminViewReaderSchema = forwardReader(SourcesAdminViewSchema
 
 // ---- the pickers (source-row lane, task 10)
 // `GET /v1/app/projects/{p}/record/sources/options?kind=slack|linear|jira&cursor=`: what an editor may pick instead of typing an id. Read live for the caller's own company, never stored.
-/** The kinds that have a picker. */
-export const SOURCE_PICKER_KINDS = ["slack", "linear", "jira"] as const;
+/** The kinds that have a picker. `slack-private` is "your private channels": the private Slack channels the editor (by their own linked Slack account) and Rovara are both in; it is never listed to anyone else. */
+export const SOURCE_PICKER_KINDS = ["slack", "linear", "jira", "slack-private"] as const;
 export const SourcePickerKindSchema = z.enum(SOURCE_PICKER_KINDS);
 export type SourcePickerKind = z.infer<typeof SourcePickerKindSchema>;
 /** Where an option stands for this project: free to add, already one of this project's sources, held by another project (never named), a Slack Connect channel (never a source), or still being cleared after a removal by another project or a tap (never named). */
@@ -135,8 +135,40 @@ export const SourceOptionsViewSchema = z.object({
   next: z.string().min(1).max(400).optional(),
   /** True only when the server stopped at its bound while more existed: the list shown is the first part only. */
   truncated: z.literal(true).optional(),
+  /** `slack-private` only: the editor has no linked Slack account, so there is nothing to list for them. */
+  notLinked: z.literal(true).optional(),
 }).strict();
 export type SourceOptionsView = z.infer<typeof SourceOptionsViewSchema>;
 export const SourceOptionsViewReaderSchema = forwardReader(SourceOptionsViewSchema);
 /** The query of the read. The cursor is the one the last page gave (`<session>.<opaque>`: the session is the server's own record of how many pages were read); anything else is refused. */
 export const SourceOptionsQuerySchema = z.object({ kind: SourcePickerKindSchema, cursor: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9+/=_%.-]{0,330}$/).max(400).optional() }).strict();
+
+// ---- what the Slack place field accepts (task 11, B)
+const SLACK_CHANNEL_ID = /^[CGD][A-Z0-9]{2,31}$/;
+const SLACK_SCOPE = /^slack:([TE][A-Z0-9]{2,31})\/([CGD][A-Z0-9]{2,31})$/;
+const SLACK_HOST = /^(?:[a-z0-9-]+\.)+slack\.com$/;
+const SLACK_APP_TEAM = /^[TE][A-Z0-9]{2,31}$/;
+/** What a typed or pasted Slack place was: the exact `slack:<team>/<channel>` (`scope`), a bare channel ID (`id`), a workspace link `https://<workspace>.slack.com/archives/<ID>` (`archives`, no team in it), or an app link `https://app.slack.com/client/<TEAM>/<ID>` (`client`). */
+export interface SlackPlaceInput { form: "scope" | "id" | "archives" | "client"; channelId: string; teamId?: string }
+/**
+ * Reads a Slack place the way a person types or pastes it. Undefined for anything else (a channel name, another host, another scheme, a user or workspace page, a lower-case ID, hidden characters). Pure; the screen uses it to fill the ID
+ * and the server uses it again on what arrives (it never trusts the screen).
+ */
+export function parseSlackPlaceInput(input: string): SlackPlaceInput | undefined {
+  const text = input.trim();
+  if (text === "" || text.length > 300 || /[\p{Cc}\p{Cf}]/u.test(text)) return undefined;
+  if (SLACK_CHANNEL_ID.test(text)) return { form: "id", channelId: text };
+  const scope = SLACK_SCOPE.exec(text);
+  if (scope !== null) return { form: "scope", teamId: scope[1]!, channelId: scope[2]! };
+  if (!text.startsWith("https://")) return undefined;
+  let url: URL;
+  try { url = new URL(text); } catch { return undefined; }
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "") return undefined;
+  const parts = url.pathname.split("/");
+  if (url.hostname === "app.slack.com") {
+    if (parts[1] !== "client" || !SLACK_APP_TEAM.test(parts[2] ?? "") || !SLACK_CHANNEL_ID.test(parts[3] ?? "")) return undefined;
+    return { form: "client", teamId: parts[2]!, channelId: parts[3]! };
+  }
+  if (!SLACK_HOST.test(url.hostname) || parts[1] !== "archives" || !SLACK_CHANNEL_ID.test(parts[2] ?? "")) return undefined;
+  return { form: "archives", channelId: parts[2]! };
+}

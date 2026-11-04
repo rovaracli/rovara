@@ -13,6 +13,7 @@ import {
   AGENTX_CLI_CLIENT_ID,
   ChannelClassRequestSchema,
   ChannelListRequestSchema,
+  MemberChannelsRequestSchema,
   ChannelInfoRequestSchema,
   ChannelByNameRequestSchema,
   ChannelMembersRequestSchema,
@@ -38,6 +39,7 @@ import {
   type ChannelClassRequest,
   type ChannelClassResponse,
   type ChannelListRequest,
+  type MemberChannelsRequest,
   type ChannelListResponse,
   type ChannelInfoRequest,
   type ChannelInfoResponse,
@@ -1245,7 +1247,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/") || pathname.startsWith("/v1/auth/join") || pathname.startsWith("/v1/auth/decide/");
 
   return async (
-    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
+    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | MemberChannelsRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
   ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | ChannelClassResponse | ChannelListResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | UnlinkIdentityResponse | StartIdentityLinkResponse | ChannelByNameResponse | RealtimeTokenAnswer> => {
     if ("kind" in event) {
       if (event.kind === "end-developer-sessions") {
@@ -1298,6 +1300,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         const parsed = ChannelListRequestSchema.safeParse(event);
         if (!parsed.success) return { ok: false, error: "invalid_request" };
         return deps.directory.channelList(parsed.data.teamId, parsed.data.cursor === undefined ? {} : { cursor: parsed.data.cursor });
+      }
+      if (event.kind === "member-channels") {
+        const parsed = MemberChannelsRequestSchema.safeParse(event);
+        if (!parsed.success) return { ok: false, error: "invalid_request" };
+        return deps.directory.memberChannels(parsed.data.teamId, parsed.data.userId, parsed.data.cursor === undefined ? {} : { cursor: parsed.data.cursor });
       }
       if (event.kind === "task-person-proof") {
         const parsed = TaskPersonProofRequestSchema.safeParse(event);
