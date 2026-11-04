@@ -57,7 +57,7 @@ describe("which dependencies a plan starts", () => {
     expect(refusal({ body: body({ dependencies: [postgres({ backing: { kind: "local", catalogId: "postgres@99", config: {} } })] }), catalog: catalog(), edition: "public" })).toBe("not_in_catalog");
     expect(refusal({ body: body({ dependencies: [postgres({ family: "mysql", kind: "database", connect: { env: [], hostAliases: [] } })] }), catalog: catalog(), edition: "public" })).toBe("not_in_catalog");
     // An older catalog than the release's minimum is refused: a rolled-back catalog could pin a digest later found critical (TS-IMG-2).
-    expect(refusal({ body: body(), catalog: verifiedCatalog(pinnedCatalog()), edition: "public", minCatalogRevision: 3 })).toBe("catalog_too_old");
+    expect(refusal({ body: body(), catalog: verifiedCatalog(pinnedCatalog()), edition: "public", minCatalogRevision: TEST_SERVICES_MIN_CATALOG_REVISION + 1 })).toBe("catalog_too_old");
   });
 
   it("starts real software from the catalog only (every other backing is not available yet)", () => {
@@ -101,7 +101,7 @@ describe("the signed catalog source", () => {
     expect(reads).toBe(1);
     const other = serviceCatalogSourceOf({ read: async () => good, trust, load: loaderTrusting(testSigner().publicKeyPem), minRevision: 1 });
     expect(await other()).toBeUndefined();
-    const old = serviceCatalogSourceOf({ read: async () => good, trust, load: loaderTrusting(good.signer.publicKeyPem), minRevision: 3 });
+    const old = serviceCatalogSourceOf({ read: async () => good, trust, load: loaderTrusting(good.signer.publicKeyPem), minRevision: TEST_SERVICES_MIN_CATALOG_REVISION + 1 });
     expect(await old()).toBeUndefined();
     const broken = serviceCatalogSourceOf({ read: async () => { throw new Error("no file"); }, trust, load: loaderTrusting(good.signer.publicKeyPem), minRevision: 1 });
     expect(await broken()).toBeUndefined();

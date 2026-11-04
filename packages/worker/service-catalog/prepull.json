@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogRevision": 2,
+  "catalogRevision": 3,
   "images": [
     {
       "id": "local-aws@r1",

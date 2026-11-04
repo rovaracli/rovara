@@ -28,7 +28,7 @@ export const digestOfId = (id: string): string => sha(`image:${id}`);
 export function pinnedCatalog(change: (entries: Array<Record<string, unknown>>) => void = () => undefined): ServiceCatalog {
   const raw = JSON.parse(readFileSync("environments/service-catalog/catalog.json", "utf8")) as { pinned: boolean; revision: number; entries: Array<Record<string, unknown>> };
   raw.pinned = true;
-  raw.revision = 2;
+  // The revision stays the shipped file's, which the broker's minimum equals (a test keeps the two equal).
   for (const entry of raw.entries) {
     const id = entry["id"] as string;
     // Slice 3: a helper that runs from the worker's own image has no image to pin.

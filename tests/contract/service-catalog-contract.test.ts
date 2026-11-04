@@ -67,8 +67,8 @@ const pinnedEntry = (id: string) => withEntry(id, (entry) => {
 
 describe("the shipped data file", () => {
   const shipped = cat.ServiceCatalogSchema.parse(shippedRaw());
-  it("is the pinned revision 2: exactly postgres@16 and local-aws@r1 are pinned", () => {
-    expect(shipped).toMatchObject({ schemaVersion: 1, revision: 2, pinned: true });
+  it("is the pinned revision 3: exactly postgres@16 and local-aws@r1 are pinned", () => {
+    expect(shipped).toMatchObject({ schemaVersion: 1, revision: 3, pinned: true });
     expect(shipped.entries.filter((entry) => entry.image.digest !== undefined).map((entry) => entry.id).sort()).toEqual(["local-aws@r1", "postgres@16"]);
   });
   it("pins each of those two wholly (a digest, an SBOM hash and a scan with no critical finding) and every other entry not at all", () => {

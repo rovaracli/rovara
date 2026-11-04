@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": 2,
+  "revision": 3,
   "pinned": true,
   "entries": [
     {
@@ -141,7 +141,7 @@
         "kind": "template_db"
       },
       "licence": "PostgreSQL",
-      "sbomRef": "30189ede8cf1374c5a87c3b0c25ed5a678f29a1151b228ab355fd67e05fb845c",
+      "sbomRef": "0ea219eb2fef529314a0acf29934787323a619ce3e9da6adc40c3f31983c8ed3",
       "scan": {
         "scannedAt": "2026-11-04T14:31:38.000Z",
         "criticalOpen": 0,
