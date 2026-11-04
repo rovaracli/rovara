@@ -371,7 +371,7 @@ export async function taskOperationParts(
   let chatgpt = planUse.selection ? planSelection : undefined;
   // Governed personal plans execute the exact verified resolver tuple, never the connection's preferred model.
   // A design review never runs on a person's ChatGPT plan (B-m5): the plan stays undefined, and the round is not run for want of a route with an alias.
-  if(planUse.governed) {
+  if(planUse.governed&&applied!==undefined) {
     if((turnPolicy===undefined&&task?.payer?.kind!=="member")||applied.model===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's verified personal model is unavailable.");
     chatgpt={developerId:turnPolicy?.frozen.payerDeveloperId??(task!.payer as {developerId:string}).developerId,model:applied.model};
   }
