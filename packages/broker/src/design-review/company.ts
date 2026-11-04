@@ -1,11 +1,18 @@
 // Design review stage (DR-FU4): the company's design review policy, written by company admins only. It lives on the same revisioned item as the stricter-only lock (`lock.ts`, DESIGNREVIEW#LOCK):
-//   - `allowed`      whether design review may run for ANY project of the company (default no). Turning it ON is a loosening: a DIFFERENT eligible admin confirms, as for every other company safeguard
-//                    (a company with one eligible admin has nobody to ask, so that admin applies it alone and the audit says `sole_admin`). Turning it OFF applies at once.
+//   - `allowed`      whether design review may run for ANY project of the company (default no).
 //   - `defaultMode`  the mode a project runs when it has no setting of its own: never (Off, the default), auto or always.
-//   - `lock`         the stricter-only lock fields (`DesignReviewLockSchema`), which no page wrote before this.
+//   - `lock`         the stricter-only lock fields (`DesignReviewLockSchema`).
 // `allowed` and `defaultMode` are company POLICY, not lock fields: the stricter-only rule and its clamp (`lock.ts`) are unchanged.
+//
+// Who may do what (the shared company rule, `org/second-person-approval.ts`):
+//   - TIGHTENING needs only the caller's OWN live owner or admin authority, with no roster read, so the company's off switch always works (a legacy company, a young tracking record): turning `allowed` OFF, any lock
+//     change that only adds or tightens a field, and the default mode. Those apply at once.
+//   - LOOSENING (turning `allowed` ON, or any lock change that removes or loosens a field) is a decision for two people. A DIFFERENT eligible admin confirms it. The one exception is the shared sole-owner exception, taken
+//     from `trySecondPersonTimed` and nothing else: the only owner, the only eligible person, and nobody eligible lost in the last 24 hours (so demoting the other admin does not open it). Anything else with nobody to
+//     confirm is refused, never applied.
+// At most ONE request waits at a time (one item, `DESIGNREVIEW#CHANGE`); it expires after 7 days; its proposer or any admin can withdraw it; turning `allowed` OFF withdraws it.
 // Every change commits in ONE transaction with its audit item and is conditional on the item's revision (`POLICY_STALE` otherwise); a refused write changes nothing. Answers are fixed words.
-import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import { orgMetaKey, type EditionPolicy, type OrgId } from "@agentx/contracts";
 import { auditCompanyDesignReviewPolicyChanged, auditCompanyDesignReviewPolicyProposed, auditOccurrence } from "../audit/events.js";
@@ -16,51 +23,57 @@ import { trySecondPersonTimed } from "../lessons/approve.js";
 import type { Tier0Authority } from "../lessons/tier0-setting.js";
 import { idIn, sameId } from "../lessons/types.js";
 import {
-  DESIGN_REVIEW_LOCK_SK, DesignReviewLockSchema, checkDesignReviewLockWrite, lockedFields, readDesignReviewCompany,
+  DESIGN_REVIEW_LOCK_SK, DesignReviewLockSchema, checkDesignReviewLockWrite, lockRevisionCheck, lockedFields, readDesignReviewCompany,
   type DesignReviewCompanyRead, type DesignReviewLock, type DesignReviewLockTable,
 } from "./lock.js";
 
 export type DesignReviewMode = "never" | "auto" | "always";
 export type DesignReviewPolicyFailure =
-  | "not_eligible" | "eligibility_unavailable" | "second_person_required" | "audit_unavailable" | "already_open" | "expired" | "not_found" | "not_pending"
+  | "not_eligible" | "eligibility_unavailable" | "second_person_required" | "sole_owner_cool_off" | "audit_unavailable" | "already_open" | "expired" | "not_found" | "not_pending"
   | "stale" | "unreadable" | "group_not_available" | "invalid";
+export type PolicyRefusal = { ok: false; code: DesignReviewPolicyFailure; /** For `sole_owner_cool_off`: when the exception opens (ISO). */ availableAt?: string };
 
 export interface DesignReviewCompanyDeps extends AuditDeps, DesignReviewLockTable {
   now(): number;
   edition?: EditionPolicy | undefined;
-  /** Who may act (the shared second-person evidence). Needed for turning "allowed" on or approving it. */
+  /** The company's roster as the shared second-person evidence reads it. Needed only for a LOOSENING and for confirming one. */
   authority?: Tier0Authority | undefined;
+  /** The caller's OWN live authority as a company owner or admin, fenced (no roster). Throws FORBIDDEN for anyone else. Needed for every change. */
+  actor?: ((orgId: string, by: string) => Promise<TransactItem[]>) | undefined;
   newId?: () => string;
 }
 
-export const DESIGN_REVIEW_ALLOW_CHANGE_TTL_MS = 7 * 86_400_000;
-const CHANGE_PREFIX = "DESIGNREVIEW#ALLOWCHANGE#";
+export const DESIGN_REVIEW_CHANGE_TTL_MS = 7 * 86_400_000;
+/** The one waiting request of a company. One item that a new request replaces once the old one is settled or expired, so old requests never pile up (and need no TTL). */
+const CHANGE_SK = "DESIGNREVIEW#CHANGE";
 const orgPk = (orgId: string): string => orgMetaKey(orgId).pk;
-const changeKey = (orgId: string, id: string) => ({ pk: orgPk(orgId), sk: `${CHANGE_PREFIX}${id.replace(/#/gu, "_")}` });
+const changeKey = (orgId: string) => ({ pk: orgPk(orgId), sk: CHANGE_SK });
 const conditionFailed = (error: unknown): boolean => error instanceof Error && (error.name === "ConditionalCheckFailedException"
   || (error.name === "TransactionCanceledException" && ((error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons ?? []).some((reason) => reason.Code === "ConditionalCheckFailed")));
-const onOff = (value: boolean): string => (value ? "on" : "off");
 
-/** A pending request to allow design review: made by one admin, waiting for a different one. */
-export interface AllowChange { id: string; proposedBy: string; at: number; expiresAt: number; state: "pending" | "applied" | "cancelled" }
+/** A request waiting for a different admin: to allow design review, or to loosen the lock to `lock`. */
+export interface PolicyChange { id: string; kind: "allowed" | "lock"; proposedBy: string; at: number; expiresAt: number; state: "pending" | "applied" | "cancelled"; lock?: DesignReviewLock; fromLock?: DesignReviewLock }
 
-function parseChange(item: Record<string, unknown> | undefined): AllowChange | undefined {
-  if (item === undefined || item["entityType"] !== "DESIGN_REVIEW_ALLOW_CHANGE" || typeof item["id"] !== "string" || typeof item["proposedBy"] !== "string" || typeof item["at"] !== "number" || typeof item["expiresAt"] !== "number") return undefined;
-  const state = item["state"];
+function parseChange(item: Record<string, unknown> | undefined): PolicyChange | undefined {
+  if (item === undefined || item["entityType"] !== "DESIGN_REVIEW_POLICY_CHANGE" || typeof item["id"] !== "string" || typeof item["proposedBy"] !== "string" || typeof item["at"] !== "number" || typeof item["expiresAt"] !== "number") return undefined;
+  const state = item["state"], kind = item["kind"];
   if (state !== "pending" && state !== "applied" && state !== "cancelled") return undefined;
-  return { id: item["id"], proposedBy: item["proposedBy"], at: item["at"], expiresAt: item["expiresAt"], state };
+  if (kind !== "allowed" && kind !== "lock") return undefined;
+  const lock = item["lock"] === undefined ? undefined : DesignReviewLockSchema.safeParse(item["lock"]);
+  const fromLock = item["fromLock"] === undefined ? undefined : DesignReviewLockSchema.safeParse(item["fromLock"]);
+  if (kind === "lock" && (lock?.success !== true || fromLock?.success !== true)) return undefined;
+  return { id: item["id"], kind, proposedBy: item["proposedBy"], at: item["at"], expiresAt: item["expiresAt"], state, ...(lock?.success === true ? { lock: lock.data } : {}), ...(fromLock?.success === true ? { fromLock: fromLock.data } : {}) };
 }
 
-/** The company's open (pending, unexpired) request to allow design review, if any. */
-export async function openAllowChange(table: DesignReviewLockTable, orgId: string, now: number): Promise<AllowChange | undefined> {
-  const response = await table.documentClient.send(new QueryCommand({
-    TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, ExpressionAttributeValues: { ":pk": orgPk(orgId), ":p": CHANGE_PREFIX },
-  })) as { Items?: Array<Record<string, unknown>> };
-  return (response.Items ?? []).map((item) => parseChange(item)).find((change) => change !== undefined && change.state === "pending" && change.expiresAt > now);
+/** The company's waiting request (any state), if it ever had one. */
+async function getChange(table: DesignReviewLockTable, orgId: string): Promise<PolicyChange | undefined> {
+  return parseChange((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: changeKey(orgId), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item);
 }
 
-async function getChange(table: DesignReviewLockTable, orgId: string, id: string): Promise<AllowChange | undefined> {
-  return parseChange((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: changeKey(orgId, id), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item);
+/** The company's open (pending, unexpired) request, if any. */
+export async function openPolicyChange(table: DesignReviewLockTable, orgId: string, now: number): Promise<PolicyChange | undefined> {
+  const change = await getChange(table, orgId);
+  return change !== undefined && change.state === "pending" && change.expiresAt > now ? change : undefined;
 }
 
 /** What a page shows: the policy, the lock, and the revision a change is made against. A stored item that does not read is said so, never shown as the defaults. */
@@ -110,50 +123,31 @@ async function commit(deps: DesignReviewCompanyDeps, items: TransactItem[], even
 
 const lockCount = (lock: DesignReviewLock): number => lockedFields(lock).length;
 const sameLock = (left: DesignReviewLock, right: DesignReviewLock): boolean => JSON.stringify(Object.entries(left).sort()) === JSON.stringify(Object.entries(right).sort());
-
-export type SaveResult = { ok: true; changed: boolean; revision: number } | { ok: false; code: DesignReviewPolicyFailure; fields?: string[] };
+const MODE_RANK = { auto: 1, always: 2 } as const;
+const TIER_RANK = { light: 0, standard: 1, thorough: 2 } as const;
 
 /**
- * Sets the default mode and/or the lock (a direct write: both are the company admin's to set; the caller checked the role). `expectedRevision` is the revision the admin read. A request that changes nothing writes nothing.
- * Each part that changed is one audit event, in the same transaction.
+ * Whether going from `current` to `next` LOOSENS any lock field: a field removed or lowered, a ceiling raised, skipping allowed again, or the approver group changed or removed. A change that only adds or tightens fields
+ * does not. Mixed changes loosen. Pure.
  */
-export async function saveDesignReviewCompany(
-  deps: DesignReviewCompanyDeps, input: { orgId: OrgId; by: string; expectedRevision: number; defaultMode?: DesignReviewMode | undefined; lock?: DesignReviewLock | undefined },
-): Promise<SaveResult> {
-  const lockParsed = input.lock === undefined ? undefined : DesignReviewLockSchema.safeParse(input.lock);
-  if (lockParsed !== undefined && !lockParsed.success) return { ok: false, code: "invalid" };
-  if (lockParsed?.success === true) {
-    const check = checkDesignReviewLockWrite(lockParsed.data, deps.edition);
-    if (!check.ok) return { ok: false, code: "group_not_available" };
-  }
-  // Live authority, as for "allowed": the caller's role in the request is not enough on its own.
-  const group = await groupOf(deps, input.orgId, { proposerId: input.by, approverId: input.by });
-  if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
-  if (!idIn(group.eligibleIds, input.by)) return { ok: false, code: "not_eligible" };
-  const read = await readDesignReviewCompany(deps, input.orgId);
-  if (read.revision === undefined || read.lock.kind === "unreadable" || read.policyUnreadable) return { ok: false, code: "unreadable" };
-  if (input.expectedRevision !== read.revision) return { ok: false, code: "stale" };
-  const currentLock = read.lock.kind === "lock" ? read.lock.lock : {};
-  const nextLock = lockParsed?.success === true ? lockParsed.data : currentLock;
-  const nextMode = input.defaultMode ?? read.policy.defaultMode;
-  const modeChanged = nextMode !== read.policy.defaultMode, lockChanged = !sameLock(currentLock, nextLock);
-  if (!modeChanged && !lockChanged) return { ok: true, changed: false, revision: read.revision };
-  const revision = read.revision + 1;
-  const at = new Date(deps.now()).toISOString();
-  const base = { orgId: input.orgId, actor: input.by === "system" ? SYSTEM_ACTOR : { kind: "member" as const, id: input.by }, occurredAt: at };
-  const audit: AuditDeps = deps.audit === undefined ? {} : { audit: deps.audit };
-  const events = await tryAuditEvents(audit, () => [
-    ...(modeChanged ? [auditCompanyDesignReviewPolicyChanged({ ...base, occurrence: auditOccurrence("design_review_policy", "defaultMode", String(revision)), field: "defaultMode", from: read.policy.defaultMode, to: nextMode, mode: "direct", revision })] : []),
-    ...(lockChanged ? [auditCompanyDesignReviewPolicyChanged({ ...base, occurrence: auditOccurrence("design_review_policy", "lock", String(revision)), field: "lock", from: String(lockCount(currentLock)), to: String(lockCount(nextLock)), mode: "direct", revision })] : []),
-  ]);
-  const item = itemOf(input.orgId, revision, nextLock, { allowed: read.policy.allowed, defaultMode: nextMode }, input.by, at);
-  return (await commit(deps, [putCompany(deps, input.orgId, read, item), ...((group.fence ?? []) as TransactItem[])], events)) ? { ok: true, changed: true, revision } : { ok: false, code: "stale" };
+export function lockLoosens(current: DesignReviewLock, next: DesignReviewLock): boolean {
+  if (current.mode !== undefined && (next.mode === undefined || MODE_RANK[next.mode] < MODE_RANK[current.mode])) return true;
+  if (current.tierAtLeast !== undefined && (next.tierAtLeast === undefined || TIER_RANK[next.tierAtLeast] < TIER_RANK[current.tierAtLeast])) return true;
+  if (current.allowSkip === false && next.allowSkip !== false) return true;
+  if (current.capCeilingUsd !== undefined && (next.capCeilingUsd === undefined || next.capCeilingUsd > current.capCeilingUsd)) return true;
+  if (current.approverGroupId !== undefined && next.approverGroupId !== current.approverGroupId) return true;
+  return false;
 }
 
-export type AllowResult =
-  | { ok: true; status: "applied"; changed: boolean; revision: number }
-  | { ok: true; status: "needs_approval"; changeId: string }
-  | { ok: false; code: DesignReviewPolicyFailure };
+/** The caller's own live authority: the commit conditions that pin it, or why not. */
+async function actorOf(deps: DesignReviewCompanyDeps, orgId: string, by: string): Promise<{ ok: true; conditions: TransactItem[] } | PolicyRefusal> {
+  if (deps.actor === undefined) return { ok: false, code: "eligibility_unavailable" };
+  try {
+    return { ok: true, conditions: await deps.actor(orgId, by) };
+  } catch (error) {
+    return { ok: false, code: (error as { code?: string }).code === "FORBIDDEN" ? "not_eligible" : "eligibility_unavailable" };
+  }
+}
 
 async function groupOf(deps: DesignReviewCompanyDeps, orgId: string, who: { proposerId: string; approverId: string }) {
   if (deps.authority === undefined) return undefined;
@@ -161,59 +155,196 @@ async function groupOf(deps: DesignReviewCompanyDeps, orgId: string, who: { prop
   return group !== undefined && group.complete ? group : undefined;
 }
 
+type Group = NonNullable<Awaited<ReturnType<typeof groupOf>>>;
 /**
- * Asks to allow or not allow design review for the company. NOT allowing applies at once (the stricter side; an audit outage never blocks it). ALLOWING is a loosening: with another eligible admin it opens a request that
- * a DIFFERENT admin approves; with no other eligible admin it applies for the one admin who asked (mode `sole_admin`, audited, and the audit must be writable). Only an eligible company admin may ask.
+ * The decision for a LOOSENING asked by one admin, from the shared rule alone: `alone` (the only owner, the only eligible person, nobody lost in 24 hours), `request` (a different eligible admin can confirm), or a refusal
+ * (the cool-off, with the time it opens; or nobody else is eligible and the exception does not apply, so there is nobody who could ever confirm).
  */
-export async function requestDesignReviewAllowed(deps: DesignReviewCompanyDeps, input: { orgId: OrgId; by: string; allowed: boolean; expectedRevision: number }): Promise<AllowResult> {
-  const group = await groupOf(deps, input.orgId, { proposerId: input.by, approverId: input.by });
+async function looseningDecision(deps: DesignReviewCompanyDeps, orgId: string, by: string, at: number): Promise<{ ok: true; how: "alone" | "request"; group: Group } | PolicyRefusal> {
+  const group = await groupOf(deps, orgId, { proposerId: by, approverId: by });
   if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
-  if (!idIn(group.eligibleIds, input.by)) return { ok: false, code: "not_eligible" };
+  if (!idIn(group.eligibleIds, by)) return { ok: false, code: "not_eligible" };
+  const decision = trySecondPersonTimed(group, by, by, at);
+  if (decision.ok) return decision.mode === "sole_owner_exception" ? { ok: true, how: "alone", group } : { ok: true, how: "request", group };
+  if (decision.code === "sole_owner_cool_off") return { ok: false, code: "sole_owner_cool_off", ...(decision.availableAt === undefined ? {} : { availableAt: decision.availableAt }) };
+  if (decision.code === "eligibility_unavailable") return { ok: false, code: "eligibility_unavailable" };
+  // Second person required: a request is useful only if somebody else could confirm it.
+  return group.eligibleIds.length > 1 ? { ok: true, how: "request", group } : { ok: false, code: "second_person_required" };
+}
+
+/** The Put that opens the one waiting request. It replaces a settled or expired one, never a pending one that has not expired. */
+function putChange(deps: DesignReviewCompanyDeps, orgId: string, change: PolicyChange): TransactItem {
+  return {
+    Put: {
+      TableName: deps.tableName,
+      Item: {
+        ...changeKey(orgId), entityType: "DESIGN_REVIEW_POLICY_CHANGE", id: change.id, orgId, kind: change.kind, proposedBy: change.proposedBy, at: change.at, expiresAt: change.expiresAt, state: "pending",
+        ...(change.lock === undefined ? {} : { lock: change.lock }), ...(change.fromLock === undefined ? {} : { fromLock: change.fromLock }),
+      },
+      ConditionExpression: "attribute_not_exists(pk) OR #s <> :pending OR expiresAt <= :now",
+      ExpressionAttributeNames: { "#s": "state" }, ExpressionAttributeValues: { ":pending": "pending", ":now": change.at },
+    },
+  };
+}
+
+/** The Update that settles a pending request (applied or cancelled). It holds only while the request is still that one, pending. */
+function settleChange(deps: DesignReviewCompanyDeps, orgId: string, id: string, to: "applied" | "cancelled", now?: number): TransactItem {
+  return {
+    Update: {
+      TableName: deps.tableName, Key: changeKey(orgId), UpdateExpression: "SET #s = :to",
+      ConditionExpression: `#s = :pending AND id = :id${now === undefined ? "" : " AND expiresAt > :now"}`,
+      ExpressionAttributeNames: { "#s": "state" }, ExpressionAttributeValues: { ":to": to, ":pending": "pending", ":id": id, ...(now === undefined ? {} : { ":now": now }) },
+    },
+  };
+}
+
+const byActor = (by: string) => (by === "system" ? SYSTEM_ACTOR : { kind: "member" as const, id: by });
+
+export type SaveResult =
+  | { ok: true; status: "applied"; changed: boolean; revision: number }
+  | { ok: true; status: "needs_approval"; changeId: string; revision: number }
+  | PolicyRefusal;
+
+/**
+ * Sets the default mode and/or the lock. `expectedRevision` is the revision the admin read. A request that changes nothing writes nothing. The default mode and any lock change that only tightens apply at once, on the
+ * caller's own live authority. A lock change that LOOSENS anything is a loosening: `onLoosening` runs first (the route asks for a recent sign-in there); then the sole-owner exception applies it for the only owner, or a
+ * request waits for a different admin (the default mode in the same call still applies now). Each part that changed is one audit event, in the same transaction.
+ */
+export async function saveDesignReviewCompany(
+  deps: DesignReviewCompanyDeps, input: { orgId: OrgId; by: string; expectedRevision: number; defaultMode?: DesignReviewMode | undefined; lock?: DesignReviewLock | undefined; onLoosening?: (() => Promise<void>) | undefined },
+): Promise<SaveResult> {
+  const lockParsed = input.lock === undefined ? undefined : DesignReviewLockSchema.safeParse(input.lock);
+  if (lockParsed !== undefined && !lockParsed.success) return { ok: false, code: "invalid" };
+  if (lockParsed?.success === true) {
+    const check = checkDesignReviewLockWrite(lockParsed.data, deps.edition);
+    if (!check.ok) return { ok: false, code: "group_not_available" };
+  }
+  const actor = await actorOf(deps, input.orgId, input.by);
+  if (!actor.ok) return actor;
   const read = await readDesignReviewCompany(deps, input.orgId);
   if (read.revision === undefined || read.lock.kind === "unreadable" || read.policyUnreadable) return { ok: false, code: "unreadable" };
   if (input.expectedRevision !== read.revision) return { ok: false, code: "stale" };
-  if (read.policy.allowed === input.allowed) return { ok: true, status: "applied", changed: false, revision: read.revision };
-  const at = deps.now();
-  const soleAdmin = group.eligibleIds.length === 1;
-  if (input.allowed && !soleAdmin) {
-    if ((await openAllowChange(deps, input.orgId, at)) !== undefined) return { ok: false, code: "already_open" };
-    if (deps.audit === undefined) return { ok: false, code: "audit_unavailable" };
-    const auditDeps: AuditDeps = { audit: deps.audit };
-    const id = (deps.newId ?? (() => randomUUID()))();
-    const when = new Date(at).toISOString();
-    const events = await tryAuditEvents({ audit: deps.audit }, () => [auditCompanyDesignReviewPolicyProposed({ orgId: input.orgId, actor: { kind: "member", id: input.by }, occurredAt: when, occurrence: auditOccurrence("design_review_policy", "allowed", id), field: "allowed", from: "off", to: "on" })]);
-    if (events.length === 0) return { ok: false, code: "audit_unavailable" };
-    try {
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
-        { Put: { TableName: deps.tableName, Item: { ...changeKey(input.orgId, id), entityType: "DESIGN_REVIEW_ALLOW_CHANGE", id, orgId: input.orgId, proposedBy: input.by, at, expiresAt: at + DESIGN_REVIEW_ALLOW_CHANGE_TTL_MS, state: "pending" }, ConditionExpression: "attribute_not_exists(pk)" } },
-        ...events.flatMap((event) => auditPending(auditDeps, event)),
-      ] }));
-    } catch (error) {
-      if (conditionFailed(error)) return { ok: false, code: "already_open" };
-      throw error;
-    }
-    await flushAuditEvents({ audit: deps.audit }, events);
-    return { ok: true, status: "needs_approval", changeId: id };
-  }
-  // Not allowing, or allowing as the only eligible admin: applied now, against the revision read, fenced on the membership the decision rested on.
-  if (input.allowed && deps.audit === undefined) return { ok: false, code: "audit_unavailable" };
-  const revision = read.revision + 1;
-  const when = new Date(at).toISOString();
-  const events = await tryAuditEvents(deps.audit === undefined ? {} : { audit: deps.audit }, () => [auditCompanyDesignReviewPolicyChanged({
-    orgId: input.orgId, actor: { kind: "member", id: input.by }, occurredAt: when, occurrence: auditOccurrence("design_review_policy", "allowed", String(revision)),
-    field: "allowed", from: onOff(read.policy.allowed), to: onOff(input.allowed), mode: input.allowed ? "sole_admin" : "direct", revision,
-  })]);
-  if (input.allowed && events.length === 0) return { ok: false, code: "audit_unavailable" };
   const currentLock = read.lock.kind === "lock" ? read.lock.lock : {};
-  const item = itemOf(input.orgId, revision, currentLock, { allowed: input.allowed, defaultMode: read.policy.defaultMode }, input.by, when);
-  const fence = (group.fence ?? []) as TransactItem[];
-  return (await commit(deps, [putCompany(deps, input.orgId, read, item), ...fence], events)) ? { ok: true, status: "applied", changed: true, revision } : { ok: false, code: "stale" };
+  const nextLock = lockParsed?.success === true ? lockParsed.data : currentLock;
+  const nextMode = input.defaultMode ?? read.policy.defaultMode;
+  const modeChanged = nextMode !== read.policy.defaultMode, lockChanged = !sameLock(currentLock, nextLock);
+  if (!modeChanged && !lockChanged) return { ok: true, status: "applied", changed: false, revision: read.revision };
+  const loosens = lockChanged && lockLoosens(currentLock, nextLock);
+  const now = deps.now();
+  const at = new Date(now).toISOString();
+  let how: "direct" | "alone" | "request" = "direct", fence = actor.conditions;
+  if (loosens) {
+    await input.onLoosening?.();
+    const decision = await looseningDecision(deps, input.orgId, input.by, now);
+    if (!decision.ok) return decision;
+    how = decision.how;
+    fence = (decision.group.fence ?? []) as TransactItem[];
+    if (how === "request" && (await openPolicyChange(deps, input.orgId, now)) !== undefined) return { ok: false, code: "already_open" };
+    if (deps.audit === undefined) return { ok: false, code: "audit_unavailable" };
+  }
+  // What this call writes to the item now: the default mode always; the lock when it only tightens, or when the sole-owner exception lets the one owner loosen it.
+  const writeLock = lockChanged && (!loosens || how === "alone");
+  const writeItem = modeChanged || writeLock;
+  const revision = read.revision + (writeItem ? 1 : 0);
+  const base = { orgId: input.orgId, actor: byActor(input.by), occurredAt: at };
+  const audit: AuditDeps = deps.audit === undefined ? {} : { audit: deps.audit };
+  const changeId = (deps.newId ?? (() => randomUUID()))();
+  const events = await tryAuditEvents(audit, () => [
+    ...(modeChanged ? [auditCompanyDesignReviewPolicyChanged({ ...base, occurrence: auditOccurrence("design_review_policy", "defaultMode", String(revision)), field: "defaultMode", from: read.policy.defaultMode, to: nextMode, mode: "direct", revision })] : []),
+    ...(writeLock ? [auditCompanyDesignReviewPolicyChanged({ ...base, occurrence: auditOccurrence("design_review_policy", "lock", String(revision)), field: "lock", from: String(lockCount(currentLock)), to: String(lockCount(nextLock)), mode: how === "alone" ? "sole_owner_exception" : "direct", revision })] : []),
+    ...(loosens && how === "request" ? [auditCompanyDesignReviewPolicyProposed({ ...base, occurrence: auditOccurrence("design_review_policy", "lock", changeId), field: "lock", from: String(lockCount(currentLock)), to: String(lockCount(nextLock)) })] : []),
+  ]);
+  if (loosens && events.length === 0) return { ok: false, code: "audit_unavailable" };
+  const items: TransactItem[] = [];
+  if (writeItem) items.push(putCompany(deps, input.orgId, read, itemOf(input.orgId, revision, writeLock ? nextLock : currentLock, { allowed: read.policy.allowed, defaultMode: nextMode }, input.by, at)));
+  // A request that writes no item now still holds only while the lock it was made against is the lock in force.
+  if (!writeItem) { const check = lockRevisionCheck(deps, input.orgId, read.lock); if (check !== undefined) items.push(check); }
+  if (loosens && how === "request") items.push(putChange(deps, input.orgId, { id: changeId, kind: "lock", proposedBy: input.by, at: now, expiresAt: now + DESIGN_REVIEW_CHANGE_TTL_MS, state: "pending", lock: nextLock, fromLock: currentLock }));
+  items.push(...fence);
+  if (!(await commit(deps, items, events))) return { ok: false, code: "stale" };
+  return loosens && how === "request" ? { ok: true, status: "needs_approval", changeId, revision } : { ok: true, status: "applied", changed: true, revision };
 }
 
-/** A DIFFERENT eligible admin approves a request to allow design review. The one who asked can never approve it. Applied with the change's claim and the audit in ONE transaction, fenced on the membership read. */
-export async function approveDesignReviewAllowed(deps: DesignReviewCompanyDeps, input: { orgId: OrgId; changeId: string; approverId: string }): Promise<AllowResult> {
-  const change = await getChange(deps, input.orgId, input.changeId);
-  if (change === undefined) return { ok: false, code: "not_found" };
+export type AllowResult =
+  | { ok: true; status: "applied"; changed: boolean; revision: number }
+  | { ok: true; status: "needs_approval"; changeId: string }
+  | PolicyRefusal;
+
+/**
+ * Asks to allow or not allow design review for the company. NOT allowing applies at once on the caller's own live authority (it also withdraws a request that waits); an audit outage never blocks it. ALLOWING is a
+ * loosening: the sole-owner exception applies it for the only owner, otherwise a request waits for a DIFFERENT admin. A single admin who is not the only owner, or who is inside the cool-off, is refused.
+ */
+export async function requestDesignReviewAllowed(deps: DesignReviewCompanyDeps, input: { orgId: OrgId; by: string; allowed: boolean; expectedRevision: number }): Promise<AllowResult> {
+  const actor = await actorOf(deps, input.orgId, input.by);
+  if (!actor.ok) return actor;
+  const read = await readDesignReviewCompany(deps, input.orgId);
+  if (read.revision === undefined || read.lock.kind === "unreadable" || read.policyUnreadable) return { ok: false, code: "unreadable" };
+  if (input.expectedRevision !== read.revision) return { ok: false, code: "stale" };
+  const now = deps.now();
+  const when = new Date(now).toISOString();
+  const audit: AuditDeps = deps.audit === undefined ? {} : { audit: deps.audit };
+  const currentLock = read.lock.kind === "lock" ? read.lock.lock : {};
+  const open = await openPolicyChange(deps, input.orgId, now);
+  if (!input.allowed) {
+    // Off applies at once and withdraws a waiting request. Already off with nothing waiting: nothing to do.
+    if (!read.policy.allowed && open === undefined) return { ok: true, status: "applied", changed: false, revision: read.revision };
+    const revision = read.revision + (read.policy.allowed ? 1 : 0);
+    const events = await tryAuditEvents(audit, () => [
+      ...(read.policy.allowed ? [auditCompanyDesignReviewPolicyChanged({ orgId: input.orgId, actor: byActor(input.by), occurredAt: when, occurrence: auditOccurrence("design_review_policy", "allowed", String(revision)), field: "allowed", from: "on", to: "off", mode: "direct", revision })] : []),
+      ...(open === undefined ? [] : [auditCompanyDesignReviewPolicyChanged({ orgId: input.orgId, actor: byActor(input.by), occurredAt: when, occurrence: auditOccurrence("design_review_policy", "withdrawn", open.id), field: open.kind, from: "requested", to: "withdrawn", mode: "cancelled", revision })]),
+    ]);
+    const items: TransactItem[] = [];
+    if (read.policy.allowed) items.push(putCompany(deps, input.orgId, read, itemOf(input.orgId, revision, currentLock, { allowed: false, defaultMode: read.policy.defaultMode }, input.by, when)));
+    if (open !== undefined) items.push(settleChange(deps, input.orgId, open.id, "cancelled"));
+    items.push(...actor.conditions);
+    return (await commit(deps, items, events)) ? { ok: true, status: "applied", changed: true, revision } : { ok: false, code: "stale" };
+  }
+  if (read.policy.allowed) return { ok: true, status: "applied", changed: false, revision: read.revision };
+  const decision = await looseningDecision(deps, input.orgId, input.by, now);
+  if (!decision.ok) return decision;
+  if (deps.audit === undefined) return { ok: false, code: "audit_unavailable" };
+  if (decision.how === "request") {
+    if (open !== undefined) return { ok: false, code: "already_open" };
+    const id = (deps.newId ?? (() => randomUUID()))();
+    const events = await tryAuditEvents(audit, () => [auditCompanyDesignReviewPolicyProposed({ orgId: input.orgId, actor: byActor(input.by), occurredAt: when, occurrence: auditOccurrence("design_review_policy", "allowed", id), field: "allowed", from: "off", to: "on" })]);
+    if (events.length === 0) return { ok: false, code: "audit_unavailable" };
+    const ok = await commit(deps, [putChange(deps, input.orgId, { id, kind: "allowed", proposedBy: input.by, at: now, expiresAt: now + DESIGN_REVIEW_CHANGE_TTL_MS, state: "pending" }), ...((decision.group.fence ?? []) as TransactItem[])], events);
+    return ok ? { ok: true, status: "needs_approval", changeId: id } : { ok: false, code: "already_open" };
+  }
+  // The sole-owner exception: applied for the one owner, audited, fenced on the membership read.
+  const revision = read.revision + 1;
+  const events = await tryAuditEvents(audit, () => [auditCompanyDesignReviewPolicyChanged({
+    orgId: input.orgId, actor: byActor(input.by), occurredAt: when, occurrence: auditOccurrence("design_review_policy", "allowed", String(revision)), field: "allowed", from: "off", to: "on", mode: "sole_owner_exception", revision,
+  })]);
+  if (events.length === 0) return { ok: false, code: "audit_unavailable" };
+  const items = [putCompany(deps, input.orgId, read, itemOf(input.orgId, revision, currentLock, { allowed: true, defaultMode: read.policy.defaultMode }, input.by, when)), ...(open === undefined ? [] : [settleChange(deps, input.orgId, open.id, "cancelled")]), ...((decision.group.fence ?? []) as TransactItem[])];
+  return (await commit(deps, items, events)) ? { ok: true, status: "applied", changed: true, revision } : { ok: false, code: "stale" };
+}
+
+/**
+ * Withdraws the waiting request. Its proposer, or any admin on their own live authority, may. Audited. Answers `not_found` when no request waits or the id is another one's.
+ */
+export async function cancelDesignReviewChange(deps: DesignReviewCompanyDeps, input: { orgId: OrgId; by: string; changeId: string }): Promise<{ ok: true } | PolicyRefusal> {
+  const actor = await actorOf(deps, input.orgId, input.by);
+  if (!actor.ok) return actor;
+  const now = deps.now();
+  const change = await openPolicyChange(deps, input.orgId, now);
+  if (change === undefined || change.id !== input.changeId) return { ok: false, code: "not_found" };
+  const read = await readDesignReviewCompany(deps, input.orgId);
+  const when = new Date(now).toISOString();
+  const events = await tryAuditEvents(deps.audit === undefined ? {} : { audit: deps.audit }, () => [auditCompanyDesignReviewPolicyChanged({
+    orgId: input.orgId, actor: byActor(input.by), occurredAt: when, occurrence: auditOccurrence("design_review_policy", "withdrawn", change.id), field: change.kind, from: "requested", to: "withdrawn", mode: "cancelled", revision: read.revision ?? 0,
+  })]);
+  return (await commit(deps, [settleChange(deps, input.orgId, change.id, "cancelled"), ...actor.conditions], events)) ? { ok: true } : { ok: false, code: "not_pending" };
+}
+
+/**
+ * A DIFFERENT eligible admin confirms the waiting request. The one who asked can never confirm it. Applied with the request's claim and the audit in ONE transaction, fenced on the membership read. A request older than
+ * 7 days is `expired`; one whose subject moved since (already allowed, or the lock changed) is `stale`.
+ */
+export async function approveDesignReviewChange(deps: DesignReviewCompanyDeps, input: { orgId: OrgId; changeId: string; approverId: string }): Promise<AllowResult> {
+  const change = await getChange(deps, input.orgId);
+  if (change === undefined || change.id !== input.changeId) return { ok: false, code: "not_found" };
   if (change.state !== "pending") return { ok: false, code: "not_pending" };
   const at = deps.now();
   if (change.expiresAt <= at) return { ok: false, code: "expired" };
@@ -226,46 +357,48 @@ export async function approveDesignReviewAllowed(deps: DesignReviewCompanyDeps, 
   if (decision.mode !== "second_person") return { ok: false, code: "second_person_required" };
   const read = await readDesignReviewCompany(deps, input.orgId);
   if (read.revision === undefined || read.lock.kind === "unreadable" || read.policyUnreadable) return { ok: false, code: "unreadable" };
-  if (read.policy.allowed) return { ok: false, code: "stale" };
+  const currentLock = read.lock.kind === "lock" ? read.lock.lock : {};
+  if (change.kind === "allowed" ? read.policy.allowed : !sameLock(currentLock, change.fromLock ?? {})) return { ok: false, code: "stale" };
   if (deps.audit === undefined) return { ok: false, code: "audit_unavailable" };
   const revision = read.revision + 1;
   const when = new Date(at).toISOString();
+  const nextLock = change.kind === "lock" ? change.lock ?? currentLock : currentLock;
   const events = await tryAuditEvents({ audit: deps.audit }, () => [auditCompanyDesignReviewPolicyChanged({
-    orgId: input.orgId, actor: { kind: "member", id: input.approverId }, occurredAt: when, occurrence: auditOccurrence("design_review_policy", "allowed", String(revision)),
-    field: "allowed", from: "off", to: "on", mode: "second_person", revision,
+    orgId: input.orgId, actor: { kind: "member", id: input.approverId }, occurredAt: when, occurrence: auditOccurrence("design_review_policy", change.kind, String(revision)),
+    field: change.kind, from: change.kind === "allowed" ? "off" : String(lockCount(currentLock)), to: change.kind === "allowed" ? "on" : String(lockCount(nextLock)), mode: "second_person", revision,
   })]);
   if (events.length === 0) return { ok: false, code: "audit_unavailable" };
-  const currentLock = read.lock.kind === "lock" ? read.lock.lock : {};
-  const item = itemOf(input.orgId, revision, currentLock, { allowed: true, defaultMode: read.policy.defaultMode }, input.approverId, when);
-  const claim: TransactItem = {
-    Update: {
-      TableName: deps.tableName, Key: changeKey(input.orgId, change.id), UpdateExpression: "SET #s = :applied", ConditionExpression: "#s = :pending",
-      ExpressionAttributeNames: { "#s": "state" }, ExpressionAttributeValues: { ":applied": "applied", ":pending": "pending" },
-    },
-  };
-  const ok = await commit(deps, [putCompany(deps, input.orgId, read, item), claim, ...((group.fence ?? []) as TransactItem[])], events);
+  const item = itemOf(input.orgId, revision, nextLock, { allowed: change.kind === "allowed" ? true : read.policy.allowed, defaultMode: read.policy.defaultMode }, input.approverId, when);
+  const ok = await commit(deps, [putCompany(deps, input.orgId, read, item), settleChange(deps, input.orgId, change.id, "applied", at), ...((group.fence ?? []) as TransactItem[])], events);
   return ok ? { ok: true, status: "applied", changed: true, revision } : { ok: false, code: "stale" };
 }
 
 export const DESIGN_REVIEW_DP_MIGRATION_SK = "DESIGNREVIEW#DPMIGRATION";
 
-/** Whether the one-time move of the old `dp` project list into stored settings already ran for this company. */
+/** The record that the move of the old `dp` list ran (or was skipped) for this company, if any. */
+export async function dpMigrationRecord(table: DesignReviewLockTable, orgId: string): Promise<{ outcome: "moved" | "skipped" } | undefined> {
+  const item = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: orgPk(orgId), sk: DESIGN_REVIEW_DP_MIGRATION_SK }, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+  return item === undefined ? undefined : { outcome: item["outcome"] === "skipped" ? "skipped" : "moved" };
+}
+/** Whether the move already ran (or was skipped) for this company. */
 export async function dpMigrationRan(table: DesignReviewLockTable, orgId: string): Promise<boolean> {
-  return (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: orgPk(orgId), sk: DESIGN_REVIEW_DP_MIGRATION_SK }, ConsistentRead: true })) as { Item?: unknown }).Item !== undefined;
+  return (await dpMigrationRecord(table, orgId)) !== undefined;
 }
 
 /**
- * The company half of the `dp` move (dp-migration.ts), by the system: the company becomes "allowed" if it is not, and the record that the move ran is written in the SAME transaction (so it never repeats, and an admin
- * who turns "allowed" off afterwards is not overridden). `projectCount` is how many `dp` projects of this company were moved. Audited as the system with mode `migration`. Answers `ran` for a move that already ran,
- * `stale` for a lost race (the next sweep tick tries again).
+ * The company half of the `dp` move (dp-migration.ts), by the system, and the record that the move ran in the SAME transaction (so it never repeats). With `allow`, the company becomes "allowed" unless an admin already
+ * touched the item (a member wrote it after it first existed: their choice stands, the record is still written). Without `allow` (the move was refused for a project, or has no evidence for this company) only the record
+ * is written, as `skipped`, so a refusal is not retried every tick. Audited as the system with mode `migration`. Answers `ran` for a move that already ran, `stale` for a lost race (the next tick tries again).
  */
-export async function recordDpMigration(deps: DesignReviewCompanyDeps, input: { orgId: OrgId; projectCount: number }): Promise<"done" | "ran" | "stale" | "unreadable"> {
+export async function recordDpMigration(deps: DesignReviewCompanyDeps, input: { orgId: OrgId; projectCount: number; allow: boolean; reason?: string }): Promise<"done" | "kept" | "skipped" | "ran" | "stale" | "unreadable"> {
   if (await dpMigrationRan(deps, input.orgId)) return "ran";
   const read = await readDesignReviewCompany(deps, input.orgId);
-  if (read.revision === undefined || read.lock.kind === "unreadable" || read.policyUnreadable) return "unreadable";
   const at = new Date(deps.now()).toISOString();
-  const marker: TransactItem = { Put: { TableName: deps.tableName, Item: { pk: orgPk(input.orgId), sk: DESIGN_REVIEW_DP_MIGRATION_SK, entityType: "DESIGN_REVIEW_DP_MIGRATION", orgId: input.orgId, ranAt: at, projectCount: input.projectCount }, ConditionExpression: "attribute_not_exists(pk)" } };
-  if (read.policy.allowed) return (await commit(deps, [marker], [])) ? "done" : "ran";
+  const marker = (outcome: "moved" | "skipped"): TransactItem => ({ Put: { TableName: deps.tableName, Item: { pk: orgPk(input.orgId), sk: DESIGN_REVIEW_DP_MIGRATION_SK, entityType: "DESIGN_REVIEW_DP_MIGRATION", orgId: input.orgId, ranAt: at, projectCount: input.projectCount, outcome, ...(input.reason === undefined ? {} : { reason: input.reason }) }, ConditionExpression: "attribute_not_exists(pk)" } });
+  if (!input.allow) return (await commit(deps, [marker("skipped")], [])) ? "skipped" : "ran";
+  if (read.revision === undefined || read.lock.kind === "unreadable" || read.policyUnreadable) return "unreadable";
+  // An admin's choice before the move reached this company stands.
+  if (read.policy.allowed || (read.revision > 0 && read.updatedBy !== undefined && read.updatedBy !== "system")) return (await commit(deps, [marker("moved")], [])) ? (read.policy.allowed ? "done" : "kept") : "ran";
   const revision = read.revision + 1;
   const events = await tryAuditEvents(deps.audit === undefined ? {} : { audit: deps.audit }, () => [auditCompanyDesignReviewPolicyChanged({
     orgId: input.orgId, actor: SYSTEM_ACTOR, occurredAt: at, occurrence: auditOccurrence("design_review_policy", "allowed", String(revision)),
@@ -273,5 +406,6 @@ export async function recordDpMigration(deps: DesignReviewCompanyDeps, input: { 
   })]);
   const currentLock = read.lock.kind === "lock" ? read.lock.lock : {};
   const item = itemOf(input.orgId, revision, currentLock, { allowed: true, defaultMode: read.policy.defaultMode }, "system", at);
-  return (await commit(deps, [putCompany(deps, input.orgId, read, item), marker], events)) ? "done" : "stale";
+  return (await commit(deps, [putCompany(deps, input.orgId, read, item), marker("moved")], events)) ? "done" : "stale";
 }
+

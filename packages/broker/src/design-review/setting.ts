@@ -26,9 +26,12 @@ export async function readEffectiveDesignReview(deps: ProjectPlaybookReader, org
   return effectiveOf(playbook, company);
 }
 
-/** The same, but the project's playbook is read only when the company allows design review: `undefined` for a company that does not (nothing about the project is read). */
+/**
+ * The same, but the project's playbook is read only when design review is AVAILABLE: `undefined` for a company that has not allowed it, and for one whose lock cannot be read (fail closed to OFF, M2: "strictest" for a lock
+ * is a different thing from "on" for spend, and an unreadable item must not turn design review on in every project). Nothing about the project is read then.
+ */
 export async function readEffectiveWhenAllowed(deps: ProjectPlaybookReader, orgId: OrgId, project: string): Promise<EffectiveDesignReview | undefined> {
   const company = await readDesignReviewCompany(deps, orgId);
-  if (!company.policy.allowed) return undefined;
+  if (!company.policy.allowed || company.lock.kind === "unreadable") return undefined;
   return effectiveOf(await readProjectPlaybook(deps, orgId, project, { lenient: true }), company);
 }

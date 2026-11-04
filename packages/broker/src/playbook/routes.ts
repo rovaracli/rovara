@@ -1,7 +1,6 @@
 // "How we work" (H2): `GET` and `PUT /v1/app/projects/{p}/playbook`. Anyone who can see the project reads it; the PUT needs `edit_settings` (a maintainer), as the project's code
 // settings do, and the revision the caller read. The project is found through `projectFor`, so another org's project and one the caller has no role in answer the same 404.
 import {
-  DESIGN_REVIEW_LOCKED_FIELDS,
   ProjectPlaybookBodySchema,
   agentXError,
   featureEnabled,
@@ -78,8 +77,8 @@ async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, pla
     return { playbook: plain };
   }
   const company: DesignReviewCompanyRead = await readDesignReviewCompany(deps, orgId).catch((): DesignReviewCompanyRead => ({ lock: { kind: "unreadable" }, policy: { allowed: false, defaultMode: "never" }, policyUnreadable: true, revision: undefined }));
-  // `dr` is on but the company has not allowed design review (DR-FU4): the setting is not shown or edited, and the page says why from this one flag.
-  if (!company.policy.allowed) {
+  // `dr` is on but design review is not available for the company (DR-FU4): not allowed, or its stored rules cannot be read (fail closed to off): the setting is not shown or edited, and the page says why from this one flag.
+  if (!company.policy.allowed || company.lock.kind === "unreadable") {
     const { designReview: _kept, ...plain } = playbook;
     void _kept;
     return { playbook: plain, designReviewAllowed: false };
@@ -89,8 +88,8 @@ async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, pla
   const { lock } = company;
   // What the project RUNS with: its own setting, or the company's default mode when it has none, held to the lock.
   const held = effectiveDesignReviewSetting(playbook, lock, company.policy.defaultMode);
-  const locked = lock.kind === "lock" ? lockedFields(lock.lock) : lock.kind === "unreadable" ? [...DESIGN_REVIEW_LOCKED_FIELDS] : [];
-  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewAllowed: true, ...(locked.length === 0 ? {} : { designReviewLocked: locked }), ...groups };
+  const locked = lock.kind === "lock" ? lockedFields(lock.lock) : [];
+  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewAllowed: true, ...(playbook.designReview === undefined ? { designReviewInherited: true as const } : {}), ...(locked.length === 0 ? {} : { designReviewLocked: locked }), ...groups };
 }
 
 /** `GET /v1/app/projects/{p}/playbook`: to anyone who can see the project. */

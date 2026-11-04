@@ -17,6 +17,7 @@ const T = {
  HELP: "Before Rovara builds, reviewers that never saw the conversation read the design and raise what it assumes or gets wrong. A person approves the design. Only company owners and admins can change these settings.",
  ALLOWED: "Allow design review in this company",
  ALLOWED_HELP: "Off until an admin turns it on. While it is off, no project runs design review, whatever the project chose. Allowing it needs a different admin to confirm.",
+ DESIGN_FIRST_NOTE: "Projects set to Off can still ask for a design review on a single task with Design first.",
  DEFAULT_HEADING: "Default for projects",
  DEFAULT_LABEL: "Projects that have not chosen",
  DEFAULT_HELP: "Each project can choose Off, Auto or Always in its own How we work. This is what a project runs until it does.",
@@ -25,6 +26,7 @@ const T = {
  MIN_MODE: "Design review at least", MIN_TIER: "Tier at least", NO_SKIP: "Nobody can skip design review", CAP: "Highest cost limit per task (USD)", CAP_HINT: "Leave empty for no ceiling.", GROUP: "Group that approves high-risk designs (Enterprise)",
  SAVE: "Save default and rules", SAVED: "Saved. New design reviews use these settings; running ones keep theirs.", SAVED_ON: "Design review is allowed in this company.", SAVED_OFF: "Design review is turned off for every project.",
  ASKED: "Waiting for a different admin to confirm.", PENDING_MINE: "You asked to allow design review. A different admin has to confirm it here.", PENDING_OTHER: "An admin asked to allow design review.",
+ PENDING_LOCK_MINE: "You asked to loosen the rules. A different admin has to confirm it here.", PENDING_LOCK_OTHER: "An admin asked to loosen the rules below.", APPROVE_LOCK: "Confirm the looser rules", WITHDRAW: "Withdraw the request", WITHDRAWN: "The request is withdrawn.", ASKED_LOCK: "Saved. The looser rules wait for a different admin to confirm; the default applies now.", ONE_REQUEST: "Only one request can wait at a time.",
  APPROVE: "Confirm allowing design review", APPROVE_HELP: "You will be asked to sign in again if you have not signed in in the last 10 minutes.", APPROVED: "Design review is allowed in this company.",
  UNREADABLE: "The stored design review settings could not be read, so nothing can be changed here. Ask Rovara support.", LOAD_FAILED: "Couldn't load the design review settings.", RETRY: "Try again", LOADING: "Loading the design review settings",
  CHANGED: "This changed while you were looking. The page has the latest; check it and try again.", FAILED: "Couldn't save. Nothing changed.", SIGN_IN_AGAIN: "Sign in again",
@@ -81,8 +83,12 @@ export default function DesignReviewCompanyRow() {
    <p className="rv-muted">{T.HELP}</p>
    <Switch label={T.ALLOWED} checked={state.allowed} disabled={busy || pending !== undefined} onCheckedChange={checked => { void run(() => api.allow(state.revision, checked), status => (status === "needs_approval" ? T.ASKED : checked ? T.SAVED_ON : T.SAVED_OFF)); }} />
    <p className="rv-muted">{T.ALLOWED_HELP}</p>
-   {pending !== undefined && <p role="status">{pending.proposedByYou ? T.PENDING_MINE : T.PENDING_OTHER}</p>}
-   {pending !== undefined && !pending.proposedByYou && <div className="rv-hww-company-actions"><Button variant="primary" busy={busy} onClick={() => { void run(() => api.approve(pending.changeId), () => T.APPROVED); }}>{T.APPROVE}</Button><span className="rv-muted">{T.APPROVE_HELP}</span></div>}
+   <p className="rv-muted">{T.DESIGN_FIRST_NOTE}</p>
+   {pending !== undefined && <p role="status">{pending.kind === "lock" ? (pending.proposedByYou ? T.PENDING_LOCK_MINE : T.PENDING_LOCK_OTHER) : pending.proposedByYou ? T.PENDING_MINE : T.PENDING_OTHER} <span className="rv-muted">{T.ONE_REQUEST}</span></p>}
+   {pending !== undefined && <div className="rv-hww-company-actions">
+    {!pending.proposedByYou && <><Button variant="primary" busy={busy} onClick={() => { void run(() => api.approve(pending.changeId), () => T.APPROVED); }}>{pending.kind === "lock" ? T.APPROVE_LOCK : T.APPROVE}</Button><span className="rv-muted">{T.APPROVE_HELP}</span></>}
+    <Button disabled={busy} onClick={() => { void run(() => api.cancel(pending.changeId), () => T.WITHDRAWN); }}>{T.WITHDRAW}</Button>
+   </div>}
    <h3>{T.DEFAULT_HEADING}</h3>
    <Select label={T.DEFAULT_LABEL} value={current.defaultMode} options={MODE_OPTIONS} disabled={busy} onValueChange={value => patch({ defaultMode: value as Draft["defaultMode"] })} />
    <p className="rv-muted">{T.DEFAULT_HELP}</p>
@@ -94,7 +100,7 @@ export default function DesignReviewCompanyRow() {
    <TextField label={T.CAP} type="number" inputMode="decimal" min={DESIGN_REVIEW_CAP_MIN_USD} max={DESIGN_REVIEW_CAP_MAX_USD} step={0.5} value={current.cap} hint={T.CAP_HINT} {...(parsed.ok ? {} : { error: parsed.cap })} disabled={busy} onChange={event => patch({ cap: event.target.value })} />
    {state.groups === true && <TextField label={T.GROUP} value={current.group} disabled={busy} onChange={event => patch({ group: event.target.value })} />}
    <div className="rv-hww-company-actions">
-    <Button variant="primary" busy={busy} disabled={!changed || !parsed.ok} onClick={() => { if (parsed.ok) void run(() => api.save(state.revision, { defaultMode: current.defaultMode, lock: parsed.lock }), () => T.SAVED); }}>{T.SAVE}</Button>
+    <Button variant="primary" busy={busy} disabled={!changed || !parsed.ok} onClick={() => { if (parsed.ok) void run(() => api.save(state.revision, { defaultMode: current.defaultMode, lock: parsed.lock }), status => (status === "needs_approval" ? T.ASKED_LOCK : T.SAVED)); }}>{T.SAVE}</Button>
     {edit !== undefined && <Button disabled={busy} onClick={() => { setEdit(undefined); }}>Discard</Button>}
    </div>
   </>;

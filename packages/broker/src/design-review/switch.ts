@@ -15,10 +15,10 @@ import { readEffectiveWhenAllowed } from "./setting.js";
 /** Whether the design review stage exists in this environment at all. Anything but exactly "1" is off. It says nothing about any company or project: use `designReviewAvailableFor` or `designReviewEnabledFor`. */
 export const designReviewEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => liveInteractionFlagOn(env[BROKER_SETTINGS.designReview.variable]);
 
-/** Whether the stage exists for this company: `dr` on AND the company allows it. `dr` off reads nothing. A company item that cannot be read is OFF. */
+/** Whether the stage exists for this company: `dr` on AND the company allows it AND its lock reads (an unreadable company item is OFF, never Always). `dr` off reads nothing. */
 export async function designReviewAvailableFor(deps: ProjectPlaybookReader, orgId: OrgId, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   if (!designReviewEnabled(env)) return false;
-  try { return (await readDesignReviewCompany(deps, orgId)).policy.allowed; } catch { return false; }
+  try { const company = await readDesignReviewCompany(deps, orgId); return company.policy.allowed && company.lock.kind !== "unreadable"; } catch { return false; }
 }
 
 /** Whether design review runs for this project: `dr` on AND the company allows it AND the project's effective mode is not Off. `dr` off reads nothing. A read that fails is OFF. */

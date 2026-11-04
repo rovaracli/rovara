@@ -26,23 +26,25 @@ export const DesignReviewCompanyStateSchema = z.object({
   unreadable: z.boolean(),
   /** True only in an edition that has groups: the lock may then name an approver group. */
   groups: z.boolean().optional(),
-  /** A request to allow design review waits for a different admin. Only the proposal's id and whether it is yours are shown. */
-  pending: z.object({ changeId: z.string().min(1).max(100), proposedByYou: z.boolean(), expiresAt: z.string().datetime() }).strict().optional(),
+  /** A request waits for a different admin: to allow design review (`allowed`) or to loosen the rules (`lock`). At most one waits at a time. Only its id, kind and whether it is yours are shown. */
+  pending: z.object({ changeId: z.string().min(1).max(100), kind: z.enum(["allowed", "lock"]), proposedByYou: z.boolean(), expiresAt: z.string().datetime() }).strict().optional(),
 }).strict();
 export type DesignReviewCompanyState = z.infer<typeof DesignReviewCompanyStateSchema>;
 export const DesignReviewCompanyStateReaderSchema = forwardReader(DesignReviewCompanyStateSchema);
 
 export const DesignReviewCompanyBodySchema = z.discriminatedUnion("action", [
-  /** Sets the default mode and/or replaces the lock (applies at once). */
+  /** Sets the default mode and/or replaces the lock. The default mode and a lock that only tightens apply at once; a lock that loosens anything waits for a different admin (202 needs_approval). */
   z.object({ action: z.literal("save"), expectedRevision: z.number().int().min(0), defaultMode: z.enum(DESIGN_REVIEW_MODES).optional(), lock: DesignReviewCompanyLockSchema.optional() }).strict(),
-  /** Allow (waits for a different admin when there is one) or do not allow (applies at once). */
+  /** Allow (waits for a different admin; only the sole owner alone) or do not allow (applies at once). */
   z.object({ action: z.literal("allow"), expectedRevision: z.number().int().min(0), allowed: z.boolean() }).strict(),
-  /** A different admin approves a request to allow design review (a sign-in within the last 10 minutes). */
+  /** A different admin approves the waiting request (a sign-in within the last 10 minutes). */
   z.object({ action: z.literal("approve"), changeId: z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/u) }).strict(),
+  /** Withdraws the waiting request (its proposer, or any admin). */
+  z.object({ action: z.literal("cancel"), changeId: z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/u) }).strict(),
 ]);
 export type DesignReviewCompanyBody = z.infer<typeof DesignReviewCompanyBodySchema>;
 
-/** 200 `applied`, or 202 `needs_approval` (allowing design review waits for a different admin). */
+/** 200 `applied`, or 202 `needs_approval` (allowing design review, or loosening the rules, waits for a different admin). */
 export const DesignReviewCompanyAnswerSchema = z.discriminatedUnion("status", [
   DesignReviewCompanyStateSchema.extend({ status: z.literal("applied") }).strict(),
   DesignReviewCompanyStateSchema.extend({ status: z.literal("needs_approval"), changeId: z.string().min(1).max(100) }).strict(),

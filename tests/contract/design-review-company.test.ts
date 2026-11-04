@@ -1,10 +1,12 @@
 // Design review (DR-FU4): the company's design review policy (allowed, default mode, lock) on the DESIGNREVIEW#LOCK item, who may change it, the switch that reads it, and the one-time move of the old `dp` list into it.
 // A project runs design review only when `dr` is on AND the company allows it AND the project's effective mode (its own setting, or the company's default, held to the lock) is not Off.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { orgMetaKey, projectMetaKey, projectPlaybookKey } from "../../packages/contracts/src/index.js";
+import { WORKSPACE_PROJECT_INDEX, agentXError, orgMetaKey, projectMetaKey, projectPlaybookKey, workspaceProjectIndexValue, type OrgId } from "../../packages/contracts/src/index.js";
+import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
 import { DESIGN_REVIEW_LOCK_SK, readDesignReviewCompany, type DesignReviewLock } from "../../packages/broker/src/design-review/lock.js";
 import { designReviewAvailableFor, designReviewEnabledFor, designReviewStillOn } from "../../packages/broker/src/design-review/switch.js";
-import { DESIGN_REVIEW_DP_MIGRATION_SK, approveDesignReviewAllowed, requestDesignReviewAllowed, saveDesignReviewCompany, type DesignReviewCompanyDeps } from "../../packages/broker/src/design-review/company.js";
+import { DESIGN_REVIEW_CHANGE_TTL_MS, DESIGN_REVIEW_DP_MIGRATION_SK, approveDesignReviewChange, cancelDesignReviewChange, lockLoosens, requestDesignReviewAllowed, saveDesignReviewCompany, type DesignReviewCompanyDeps } from "../../packages/broker/src/design-review/company.js";
+import { projectHadDesignReviewOf } from "../../packages/broker/src/design-review/wait-wiring.js";
 import { migrateDesignReviewOrg, runDesignReviewDpMigration, type DpMigrationPorts } from "../../packages/broker/src/design-review/dp-migration.js";
 import { readProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -27,6 +29,7 @@ async function bench(options: { maya?: "admin" | "member" | "maintainer" } = {})
 }
 const events = (audit: ReturnType<typeof capturingAuditDeps>) => audit.recorded().filter((event) => event.action.startsWith("company.design_review_policy_"));
 const get = (t: Bench, who = OMAR) => t.web(who, "GET", PATH);
+const setProject = (t: Bench, mode: string | undefined, extra: Record<string, unknown> = {}) => { if (mode !== undefined) t.db.set({ ...projectPlaybookKey(ORG, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAYA.developerId, ...own(mode, extra) }); };
 const own = (mode: string, extra: Record<string, unknown> = {}) => ({ revision: 1, defaultProcess: { kind: "builtin" }, designReview: { mode, tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" }, ...extra } });
 
 describe("the card's route", () => {
@@ -152,13 +155,13 @@ describe("allowing design review is a loosening", () => {
     expect(events(audit).at(-1)).toMatchObject({ facts: { field: "allowed", from: "on", to: "off", mode: "direct" } });
   });
 
-  it("a company with one eligible admin has nobody to ask: that admin allows it alone, audited as sole_admin", async () => {
+  it("the only owner of a company of one has nobody to ask: allowing it alone is the shared sole-owner exception, audited", async () => {
     const { t, audit } = await bench();
     dr();
     const reply = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0, allowed: true });
     expect(reply, JSON.stringify(reply.body)).toMatchObject({ status: 200, body: { status: "applied", allowed: true, revision: 1 } });
     expect(events(audit)).toHaveLength(1);
-    expect(events(audit)[0]).toMatchObject({ actor: { id: OMAR.developerId }, facts: { field: "allowed", from: "off", to: "on", mode: "sole_admin", revision: 1 } });
+    expect(events(audit)[0]).toMatchObject({ actor: { id: OMAR.developerId }, facts: { field: "allowed", from: "off", to: "on", mode: "sole_owner_exception", revision: 1 } });
   });
 
   it("needs the audit ledger: with none, allowing is refused and nothing changes (a loosening is never unaudited)", async () => {
@@ -171,15 +174,19 @@ describe("allowing design review is a loosening", () => {
 
   it("the function refuses a person who is not an eligible admin, and a lost race is stale", async () => {
     const { t, audit } = await bench();
-    const deps = (ids: string[]): DesignReviewCompanyDeps => ({ documentClient: t.db, tableName: "state", now: Date.now, audit: audit.audit, authority: { eligibility: async () => ({ complete: true, membershipVersion: 1, ownerIds: ids, eligibleIds: ids, lastEligibleLossAtMs: null }) } });
+    const deps = (ids: string[]): DesignReviewCompanyDeps => ({
+      documentClient: t.db, tableName: "state", now: Date.now, audit: audit.audit, authority: { eligibility: async () => ({ complete: true, membershipVersion: 1, ownerIds: ids.slice(0, 1), eligibleIds: ids, lastEligibleLossAtMs: null }) },
+      actor: async (_org, by) => { if (!ids.includes(by)) throw agentXError("FORBIDDEN", "no"); return []; },
+    });
     expect(await requestDesignReviewAllowed(deps(["someone-else"]), { orgId: ORG, by: OMAR.developerId, allowed: true, expectedRevision: 0 })).toEqual({ ok: false, code: "not_eligible" });
     expect(await requestDesignReviewAllowed({ ...deps([OMAR.developerId]), authority: undefined }, { orgId: ORG, by: OMAR.developerId, allowed: true, expectedRevision: 0 })).toEqual({ ok: false, code: "eligibility_unavailable" });
+    expect(await requestDesignReviewAllowed({ ...deps([OMAR.developerId]), actor: undefined }, { orgId: ORG, by: OMAR.developerId, allowed: false, expectedRevision: 0 })).toEqual({ ok: false, code: "eligibility_unavailable" });
     expect(await requestDesignReviewAllowed(deps([OMAR.developerId]), { orgId: ORG, by: OMAR.developerId, allowed: true, expectedRevision: 4 })).toEqual({ ok: false, code: "stale" });
-    expect(await approveDesignReviewAllowed(deps([OMAR.developerId, "b"]), { orgId: ORG, changeId: "nope", approverId: "b" })).toEqual({ ok: false, code: "not_found" });
+    expect(await approveDesignReviewChange(deps([OMAR.developerId, "b"]), { orgId: ORG, changeId: "nope", approverId: "b" })).toEqual({ ok: false, code: "not_found" });
     expect(await saveDesignReviewCompany(deps([OMAR.developerId]), { orgId: ORG, by: OMAR.developerId, expectedRevision: 0, lock: { surprise: 1 } as never })).toEqual({ ok: false, code: "invalid" });
     // The default mode and the lock need the same live authority as "allowed": a name the route's role check let through is still refused when the live records do not list it.
     expect(await saveDesignReviewCompany(deps(["someone-else"]), { orgId: ORG, by: OMAR.developerId, expectedRevision: 0, defaultMode: "auto" })).toEqual({ ok: false, code: "not_eligible" });
-    expect(await saveDesignReviewCompany({ ...deps([OMAR.developerId]), authority: undefined }, { orgId: ORG, by: OMAR.developerId, expectedRevision: 0, defaultMode: "auto" })).toEqual({ ok: false, code: "eligibility_unavailable" });
+    expect(await saveDesignReviewCompany({ ...deps([OMAR.developerId]), actor: undefined }, { orgId: ORG, by: OMAR.developerId, expectedRevision: 0, defaultMode: "auto" })).toEqual({ ok: false, code: "eligibility_unavailable" });
     expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.defaultMode).toBe("never");
     expect(events(audit)).toEqual([]);
   });
@@ -187,7 +194,6 @@ describe("allowing design review is a loosening", () => {
 
 describe("the switch: dr AND the company allows it AND the project is not Off", () => {
   const table = (t: Bench) => ({ documentClient: t.db, tableName: "state" });
-  const setProject = (t: Bench, mode: string | undefined, extra: Record<string, unknown> = {}) => { if (mode !== undefined) t.db.set({ ...projectPlaybookKey(ORG, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAYA.developerId, ...own(mode, extra) }); };
   const cases: Array<{ name: string; dr: string | undefined; company: CompanyPolicySeed | null; project?: string; extra?: Record<string, unknown>; enabled: boolean }> = [
     { name: "dr off: nothing, even for a company that allows it and a project at Always", dr: "0", company: { allowed: true, defaultMode: "always" }, project: "always", enabled: false },
     { name: "dr unset", dr: undefined, company: { allowed: true }, enabled: false },
@@ -273,7 +279,7 @@ describe("the one-time move of the old `dp` list into stored settings", () => {
     const { t, audit } = made;
     t.db.set({ ...projectMetaKey(ORG, "demo-tasklog"), entityType: "PROJECT_META", name: "demo-tasklog", status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId });
     const base = { documentClient: t.db, tableName: "state", now: Date.now, audit: audit.audit };
-    const ports: DpMigrationPorts = { playbook: base, company: base, listOrgs: async (after) => (after === undefined ? [ORG] : []), installOrg: () => ORG, now: Date.now, log: () => undefined };
+    const ports: DpMigrationPorts = { playbook: base, company: base, listOrgs: async (after) => (after === undefined ? [ORG] : []), installOrg: () => ORG, projectHadDesignReview: async () => false, now: Date.now, log: () => undefined };
     return { ...made, ports };
   }
   const playbookOf = (t: Bench, project = "demo-tasklog") => readProjectPlaybook({ documentClient: t.db, tableName: "state" }, ORG, project, { lenient: true });
@@ -338,5 +344,339 @@ describe("the one-time move of the old `dp` list into stored settings", () => {
       expect(await runDesignReviewDpMigration(counted, env as NodeJS.ProcessEnv), JSON.stringify(env)).toBe("off");
     }
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+// ---- the fix round (review DR-FU4-REVIEW.md) ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
+const HOUR = 3_600_000;
+
+describe("H1: the sole-owner exception is the shared rule, not 'the only admin I can see'", () => {
+  const demote = async (t: Bench, lostHoursAgo: number) => {
+    await t.person(MAYA, "member");
+    t.db.set({ ...(t.db.get(orgMetaKey(ORG)) as Record<string, unknown>), approvalLastCompanyEligibleLossAt: new Date(Date.now() - lostHoursAgo * HOUR).toISOString() });
+  };
+
+  it("demoting the other admin and then allowing is refused inside the 24-hour cool-off, with the time it opens; after it the only owner may", async () => {
+    const { t, audit } = await bench({ maya: "admin" });
+    dr();
+    await demote(t, 1);
+    const refused = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0, allowed: true });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(JSON.stringify(refused.body)).toContain("in the last 24 hours");
+    expect(await get(t)).toMatchObject({ body: { allowed: false, revision: 0 } });
+    expect(events(audit)).toEqual([]);
+    // The same for a lock that loosens.
+    t.db.set({ ...(t.db.get({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK }) ?? {}), pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK, entityType: "DESIGN_REVIEW_COMPANY", revision: 1, lock: { allowSkip: false }, policy: { allowed: false, defaultMode: "never" } });
+    const loosen = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, lock: {} });
+    expect(loosen.status).toBe(403);
+    expect(JSON.stringify(loosen.body)).toContain("in the last 24 hours");
+    expect(await get(t)).toMatchObject({ body: { lock: { allowSkip: false } } });
+    // 25 hours later nobody was lost in the last day: the only owner decides alone.
+    t.db.set({ ...(t.db.get(orgMetaKey(ORG)) as Record<string, unknown>), approvalLastCompanyEligibleLossAt: new Date(Date.now() - 25 * HOUR).toISOString() });
+    expect((await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 1, allowed: true })).status).toBe(200);
+  });
+
+  it("a sole admin who is not the owner cannot allow it alone, and no request is left behind for nobody to confirm", async () => {
+    const { t } = await bench();
+    dr();
+    await t.person(OMAR, "admin");
+    const refused = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0, allowed: true });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(JSON.stringify(refused.body)).toContain("only the company owner can do it alone");
+    expect(await get(t)).toMatchObject({ body: { allowed: false } });
+    expect((await get(t)).body).not.toHaveProperty("pending");
+  });
+});
+
+describe("H1: a lock change that loosens goes through the same flow as allowing; a tightening applies at once", () => {
+  it("lockLoosens: removed or lowered fields, a raised ceiling, skipping allowed again and a changed group loosen; additions and tightenings do not", () => {
+    expect(lockLoosens({}, { mode: "auto", allowSkip: false, capCeilingUsd: 5 })).toBe(false);
+    expect(lockLoosens({ mode: "auto" }, { mode: "always" })).toBe(false);
+    expect(lockLoosens({ capCeilingUsd: 8 }, { capCeilingUsd: 5 })).toBe(false);
+    expect(lockLoosens({ mode: "always" }, { mode: "auto" })).toBe(true);
+    expect(lockLoosens({ mode: "auto" }, {})).toBe(true);
+    expect(lockLoosens({ tierAtLeast: "thorough" }, { tierAtLeast: "standard" })).toBe(true);
+    expect(lockLoosens({ allowSkip: false }, {})).toBe(true);
+    expect(lockLoosens({ capCeilingUsd: 5 }, { capCeilingUsd: 8 })).toBe(true);
+    expect(lockLoosens({ capCeilingUsd: 5 }, {})).toBe(true);
+    expect(lockLoosens({ approverGroupId: "a" }, { approverGroupId: "b" })).toBe(true);
+    expect(lockLoosens({ mode: "always", allowSkip: false }, { mode: "auto", allowSkip: false, capCeilingUsd: 3 })).toBe(true);
+  });
+
+  it("with another admin a loosening waits (the default mode in the same call applies now), a different admin confirms it, and a tightening needs nobody", async () => {
+    const { t, audit } = await bench({ maya: "admin" });
+    dr();
+    const tight = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { allowSkip: false, capCeilingUsd: 5 } });
+    expect(tight, JSON.stringify(tight.body)).toMatchObject({ status: 200, body: { status: "applied", revision: 1, lock: { allowSkip: false, capCeilingUsd: 5 } } });
+    const loose = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, defaultMode: "auto", lock: { allowSkip: false } });
+    expect(loose, JSON.stringify(loose.body)).toMatchObject({ status: 202, body: { status: "needs_approval", defaultMode: "auto", lock: { allowSkip: false, capCeilingUsd: 5 }, pending: { kind: "lock", proposedByYou: true } } });
+    const changeId = (loose.body as { changeId: string }).changeId;
+    expect((await t.web(OMAR, "POST", PATH, { action: "approve", changeId })).status).toBe(403);
+    expect((await t.web(MAYA, "POST", PATH, { action: "approve", changeId })).status).toBe(200);
+    expect(await get(t)).toMatchObject({ body: { lock: { allowSkip: false }, defaultMode: "auto" } });
+    expect((await get(t)).body.lock).not.toHaveProperty("capCeilingUsd");
+    expect(events(audit).map((event) => [event.action, (event.facts as Record<string, unknown>).field, (event.facts as Record<string, unknown>).mode])).toEqual([
+      ["company.design_review_policy_changed", "lock", "direct"],
+      ["company.design_review_policy_changed", "defaultMode", "direct"],
+      ["company.design_review_policy_proposed", "lock", undefined],
+      ["company.design_review_policy_changed", "lock", "second_person"],
+    ]);
+  });
+
+  it("the only owner loosens alone (the shared exception); a loosening made by a member is refused before anything is read", async () => {
+    const { t, audit } = await bench();
+    dr();
+    await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { mode: "always" } });
+    const alone = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, lock: {} });
+    expect(alone, JSON.stringify(alone.body)).toMatchObject({ status: 200, body: { status: "applied", lock: {} } });
+    expect(events(audit).at(-1)).toMatchObject({ facts: { field: "lock", mode: "sole_owner_exception" } });
+  });
+});
+
+describe("M1: the company's off switch and every tightening work without a complete roster", () => {
+  it("a legacy company (no approval membership record) can turn allowed off, save the default and tighten the lock; allowing still needs the roster", async () => {
+    const { t, audit } = await bench();
+    dr();
+    seedDesignReviewCompany(t.db, ORG, { allowed: true, defaultMode: "always", revision: 1 });
+    const { approvalMembershipVersion: _version, approvalTrackingSince: _since, ...legacy } = t.db.get(orgMetaKey(ORG)) as Record<string, unknown>;
+    void _version; void _since;
+    t.db.set(legacy);
+    const mode = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, defaultMode: "never", lock: { allowSkip: false } });
+    expect(mode, JSON.stringify(mode.body)).toMatchObject({ status: 200, body: { defaultMode: "never", lock: { allowSkip: false } } });
+    const off = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 2, allowed: false });
+    expect(off, JSON.stringify(off.body)).toMatchObject({ status: 200, body: { status: "applied", allowed: false } });
+    expect(events(audit).map((event) => (event.facts as Record<string, unknown>).field)).toEqual(["defaultMode", "lock", "allowed"]);
+    // Allowing is a loosening and needs the complete roster: unavailable here, and nothing changes.
+    const on = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 3, allowed: true });
+    expect(on.status).toBe(503);
+    expect(await get(t)).toMatchObject({ body: { allowed: false } });
+  });
+
+  it("still needs the caller's own live authority: a member, or someone who is not in the company, changes nothing", async () => {
+    const { t } = await bench({ maya: "member" });
+    dr();
+    seedDesignReviewCompany(t.db, ORG, { allowed: true });
+    const deps: DesignReviewCompanyDeps = { documentClient: t.db, tableName: "state", now: Date.now, actor: async () => { throw agentXError("FORBIDDEN", "no"); } };
+    expect(await requestDesignReviewAllowed(deps, { orgId: ORG, by: MAYA.developerId, allowed: false, expectedRevision: 1 })).toEqual({ ok: false, code: "not_eligible" });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(true);
+  });
+});
+
+describe("M2: an unreadable lock while allowed is true means design review is NOT available", () => {
+  it("is off, never Always: for the switch, the stage, the playbook answer and the first steps of a task; the card says it cannot read the settings", async () => {
+    const { t } = await bench();
+    dr();
+    // A newer release added a lock field this broker does not know: the lock is unreadable, the policy still says allowed.
+    t.db.set({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK, entityType: "DESIGN_REVIEW_COMPANY", revision: 3, lock: { mode: "auto", futureField: true }, policy: { allowed: true, defaultMode: "always" } });
+    const client = { documentClient: t.db, tableName: "state" };
+    setProject(t, "never");
+    expect(await designReviewEnabledFor(client, ORG, "web")).toBe(false);
+    expect(await designReviewEnabledFor(client, ORG, "other-project")).toBe(false);
+    expect(await designReviewAvailableFor(client, ORG)).toBe(false);
+    expect(await designReviewStillOn(client, ORG, "web", "auto")).toBe(false);
+    expect(await designReviewStillOn(client, ORG, "web", "person")).toBe(false);
+    expect(await get(t)).toMatchObject({ body: { unreadable: true } });
+  });
+});
+
+describe("M4: the one waiting request can be withdrawn, and turning allowed off withdraws it", () => {
+  it("its proposer withdraws it (audited); a settled request cannot be confirmed; a new one can then be asked; a member cannot withdraw", async () => {
+    const { t, audit } = await bench({ maya: "admin" });
+    dr();
+    const asked = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0, allowed: true });
+    const changeId = (asked.body as { changeId: string }).changeId;
+    // At most one waits at a time, whatever it is for.
+    expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { allowSkip: false } })).status).toBe(200);
+    expect((await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 1, allowed: true })).status).toBe(409);
+    await t.person(MAYA, "member");
+    expect((await t.web(MAYA, "POST", PATH, { action: "cancel", changeId })).status).toBe(403);
+    await t.person(MAYA, "admin");
+    const withdrawn = await t.web(OMAR, "POST", PATH, { action: "cancel", changeId });
+    expect(withdrawn, JSON.stringify(withdrawn.body)).toMatchObject({ status: 200, body: { status: "applied" } });
+    expect((await get(t)).body).not.toHaveProperty("pending");
+    expect(events(audit).at(-1)).toMatchObject({ facts: { field: "allowed", from: "requested", to: "withdrawn", mode: "cancelled" } });
+    const late = await t.web(MAYA, "POST", PATH, { action: "approve", changeId });
+    expect(late.status).toBe(409);
+    expect(await get(t)).toMatchObject({ body: { allowed: false } });
+    expect((await t.web(OMAR, "POST", PATH, { action: "cancel", changeId })).status).toBe(404);
+    expect((await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 1, allowed: true })).status).toBe(202);
+  });
+
+  it("turning allowed off clears the waiting request in the same step, even when it was never on", async () => {
+    const { t, audit } = await bench({ maya: "admin" });
+    dr();
+    const asked = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0, allowed: true });
+    const changeId = (asked.body as { changeId: string }).changeId;
+    const off = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0, allowed: false });
+    expect(off, JSON.stringify(off.body)).toMatchObject({ status: 200, body: { status: "applied", allowed: false } });
+    expect((await get(t)).body).not.toHaveProperty("pending");
+    expect((await t.web(MAYA, "POST", PATH, { action: "approve", changeId })).status).toBe(409);
+    expect(await get(t)).toMatchObject({ body: { allowed: false } });
+    expect(events(audit).at(-1)).toMatchObject({ facts: { to: "withdrawn", mode: "cancelled" } });
+  });
+});
+
+describe("the 7-day expiry", () => {
+  it("a request can be confirmed up to 7 days after it was asked and not a moment later; an expired one can be asked again", async () => {
+    const { t, audit } = await bench();
+    const ids = [OMAR.developerId, MAYA.developerId];
+    let clock = Date.now();
+    const deps: DesignReviewCompanyDeps = {
+      documentClient: t.db, tableName: "state", now: () => clock, audit: audit.audit,
+      authority: { eligibility: async () => ({ complete: true, membershipVersion: 1, ownerIds: ids, eligibleIds: ids, lastEligibleLossAtMs: null }) },
+      actor: async () => [],
+    };
+    const asked = await requestDesignReviewAllowed(deps, { orgId: ORG, by: OMAR.developerId, allowed: true, expectedRevision: 0 });
+    expect(asked).toMatchObject({ ok: true, status: "needs_approval" });
+    const changeId = (asked as { changeId: string }).changeId;
+    const start = clock;
+    clock = start + DESIGN_REVIEW_CHANGE_TTL_MS;
+    expect(await approveDesignReviewChange(deps, { orgId: ORG, changeId, approverId: MAYA.developerId })).toEqual({ ok: false, code: "expired" });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(false);
+    // Expired, so a new request may be asked, and it is the one that waits now.
+    const again = await requestDesignReviewAllowed(deps, { orgId: ORG, by: OMAR.developerId, allowed: true, expectedRevision: 0 });
+    expect(again).toMatchObject({ ok: true, status: "needs_approval" });
+    expect((again as { changeId: string }).changeId).not.toBe(changeId);
+    expect(await approveDesignReviewChange(deps, { orgId: ORG, changeId, approverId: MAYA.developerId })).toEqual({ ok: false, code: "not_found" });
+    clock += DESIGN_REVIEW_CHANGE_TTL_MS - 1;
+    expect(await approveDesignReviewChange(deps, { orgId: ORG, changeId: (again as { changeId: string }).changeId, approverId: MAYA.developerId })).toMatchObject({ ok: true, status: "applied" });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(true);
+    // The proposer withdrawing at the function level needs only their own authority.
+    expect(await cancelDesignReviewChange(deps, { orgId: ORG, by: OMAR.developerId, changeId })).toEqual({ ok: false, code: "not_found" });
+  });
+});
+
+describe("H2: a bare project-name match never turns a company on", () => {
+  async function twoCompanies() {
+    const made = await bench();
+    const { t, audit } = made;
+    for (const org of [ORG, ORG_B]) t.db.set({ ...projectMetaKey(org, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId });
+    const base = { documentClient: t.db, tableName: "state", now: Date.now, audit: audit.audit };
+    return { ...made, base };
+  }
+  const withReview = (t: Bench, org: OrgId, id: string) => {
+    t.db.set({ pk: `WORKSPACE#${id}`, sk: "META", entityType: "WORKSPACE", id, orgId: org, [WORKSPACE_PROJECT_INDEX.partitionKey]: workspaceProjectIndexValue(org, "web"), [WORKSPACE_PROJECT_INDEX.sortKey]: "2026-10-20T00:00:00.000Z" });
+    t.db.set({ ...taskPointerKey(id), entityType: "TASK_POINTER", taskId: `task-${id}` });
+    t.db.set({ ...taskKey(`task-${id}`), entityType: "DEVELOPER_TASK", taskId: `task-${id}`, orgId: org, project: "web", workflow: { designReview: { status: "done", rounds: [] } } });
+  };
+  const policyOf = async (t: Bench, org: OrgId) => (await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, org)).policy.allowed;
+
+  it("a single-tenant install moves only its own company, whatever other companies have a project of that name", async () => {
+    const { t, base } = await twoCompanies();
+    vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
+    const log: Array<Record<string, unknown>> = [];
+    const listed: string[] = [];
+    const ports: DpMigrationPorts = { playbook: base, company: base, listOrgs: async () => { listed.push("walked"); return [ORG, ORG_B]; }, installOrg: () => ORG, projectHadDesignReview: async () => true, now: Date.now, log: (entry) => log.push(entry) };
+    expect(await runDesignReviewDpMigration(ports, { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "web" })).toBe("done");
+    expect(await policyOf(t, ORG)).toBe(true);
+    expect(await policyOf(t, ORG_B)).toBe(false);
+    expect((await readProjectPlaybook({ documentClient: t.db, tableName: "state" }, ORG, "web", { lenient: true })).designReview).toMatchObject({ mode: "auto" });
+    expect(t.db.get(projectPlaybookKey(ORG_B, "web"))).toBeUndefined();
+    expect(listed).toEqual([]);
+  });
+
+  it("with several companies, only the one where the project has a task that already carries a design review qualifies; the others are named in a log line and left untouched", async () => {
+    const { t, base } = await twoCompanies();
+    withReview(t, ORG_B, "wsb");
+    vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
+    const log: Array<Record<string, unknown>> = [];
+    const evidence = projectHadDesignReviewOf({ documentClient: t.db, tableName: "state" });
+    const ports: DpMigrationPorts = { playbook: base, company: base, listOrgs: async (after) => (after === undefined ? [ORG, ORG_B] : []), installOrg: () => undefined, projectHadDesignReview: evidence, now: Date.now, log: (entry) => log.push(entry) };
+    expect(await runDesignReviewDpMigration(ports, { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "web" })).toBe("done");
+    expect(await policyOf(t, ORG_B)).toBe(true);
+    expect(await policyOf(t, ORG)).toBe(false);
+    expect(t.db.get(projectPlaybookKey(ORG, "web"))).toBeUndefined();
+    expect((await readProjectPlaybook({ documentClient: t.db, tableName: "state" }, ORG_B, "web", { lenient: true })).designReview).toMatchObject({ mode: "auto" });
+    expect(log).toContainEqual({ event: "design_review.dp_migration_not_enabled", project: "web", reason: "no_design_review_task" });
+  });
+
+  it("the real evidence read: a task in another company, or in another project, is no proof for this one", async () => {
+    const { t } = await twoCompanies();
+    withReview(t, ORG_B, "wsb");
+    const had = projectHadDesignReviewOf({ documentClient: t.db, tableName: "state" });
+    expect(await had(ORG_B, "web")).toBe(true);
+    expect(await had(ORG, "web")).toBe(false);
+    expect(await had(ORG_B, "billing")).toBe(false);
+    // A task whose record says another company is no proof either, whatever its workspace says.
+    t.db.set({ ...taskKey("task-wsb"), entityType: "DEVELOPER_TASK", taskId: "task-wsb", orgId: ORG, project: "web", workflow: { designReview: { status: "done", rounds: [] } } });
+    expect(await had(ORG_B, "web")).toBe(false);
+  });
+});
+
+describe("M3: the move under a lock, a failure, and partial ticks", () => {
+  const ENV = { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "web" } as NodeJS.ProcessEnv;
+  async function staged(lock?: unknown) {
+    const made = await bench();
+    const { t, audit } = made;
+    const base = { documentClient: t.db, tableName: "state", now: Date.now, audit: audit.audit };
+    const log: Array<Record<string, unknown>> = [];
+    if (lock !== undefined) t.db.set({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK, entityType: "DESIGN_REVIEW_COMPANY", revision: 2, lock, policy: { allowed: false, defaultMode: "never" } });
+    const ports: DpMigrationPorts = { playbook: base, company: base, listOrgs: async (after) => (after === undefined ? [ORG] : []), installOrg: () => ORG, projectHadDesignReview: async () => true, now: Date.now, log: (entry) => log.push(entry) };
+    vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
+    return { ...made, base, ports, log };
+  }
+  const playbookWrites = (t: Bench) => t.db.transactions().filter((items) => JSON.stringify(items).includes("PROJECT_PLAYBOOK")).length;
+
+  it("a lock that forbids the defaults does not refuse the move: the project is set to Auto held to the lock, and the company is recorded", async () => {
+    const { t, ports } = await staged({ allowSkip: false, tierAtLeast: "thorough", capCeilingUsd: 5 });
+    expect(await runDesignReviewDpMigration(ports, ENV)).toBe("done");
+    expect((await readProjectPlaybook({ documentClient: t.db, tableName: "state" }, ORG, "web", { lenient: true })).designReview).toMatchObject({ mode: "auto", allowSkip: false, tier: "thorough", capUsdPerTask: 5 });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(true);
+  });
+
+  it("a write the company refuses is recorded as skipped once, logged with the project's name, and never tried again", async () => {
+    // A group approver in an edition without groups cannot be written for the project.
+    const { t, ports, log } = await staged({ approverGroupId: "leads" });
+    expect(await runDesignReviewDpMigration(ports, ENV)).toBe("done");
+    expect(log).toContainEqual({ event: "design_review.dp_migration_not_enabled", project: "web", reason: "refused" });
+    expect(await migrateDesignReviewOrg(ports, ORG, ["web"])).toBe("ran");
+    expect(t.db.get({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_DP_MIGRATION_SK })).toMatchObject({ outcome: "skipped", reason: "refused" });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(false);
+    const writes = playbookWrites(t);
+    t.db.delete("DESIGN_REVIEW_DP_MIGRATION", "STATE");
+    expect(await runDesignReviewDpMigration(ports, ENV)).toBe("done");
+    expect(playbookWrites(t)).toBe(writes);
+  });
+
+  it("a transient fault is kept in the state and only that company is tried at the next tick", async () => {
+    const { t, ports } = await staged();
+    t.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("PROJECT_PLAYBOOK"), error: { name: "InternalServerError" }, times: 1 });
+    expect(await runDesignReviewDpMigration(ports, ENV)).toBe("failed");
+    expect(t.db.get("DESIGN_REVIEW_DP_MIGRATION", "STATE")).toMatchObject({ done: false, retry: [ORG] });
+    expect(await runDesignReviewDpMigration(ports, ENV)).toBe("done");
+    expect(t.db.get("DESIGN_REVIEW_DP_MIGRATION", "STATE")).toMatchObject({ done: true });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(true);
+  });
+
+  it("the progress of a time-limited tick is kept: the next tick goes on from the last company and does not start over", async () => {
+    const { t, base, log } = await staged();
+    const orgs = [ORG, ORG_B, "org_cccccccccccccccccccc" as OrgId];
+    for (const org of orgs.slice(1)) t.db.set({ ...projectMetaKey(org, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId });
+    const seen: string[] = [];
+    const ports: DpMigrationPorts = { playbook: base, company: base, listOrgs: async (after) => orgs.filter((org) => after === undefined || org > after), installOrg: () => undefined, projectHadDesignReview: async (org) => { seen.push(org); return true; }, now: Date.now, log: (entry) => log.push(entry) };
+    let ticks = 0;
+    const clock = () => (ticks++ < 2 ? 0 : 10_000);
+    expect(await runDesignReviewDpMigration(ports, ENV, { budgetMs: 5_000, clock })).toBe("partial");
+    const first = [...seen];
+    expect(first.length).toBeGreaterThan(0);
+    expect(await runDesignReviewDpMigration(ports, ENV)).toBe("done");
+    expect([...new Set(seen)].sort()).toEqual([...orgs].sort());
+    expect(seen.filter((org) => org === first[0])).toHaveLength(1);
+  });
+});
+
+describe("L2: an admin's choice made before the move reached the company stands", () => {
+  it("a company an admin has already written (allowed off) is not switched on by the move; the record is written and the project is still moved", async () => {
+    const { t, audit } = await bench();
+    seedDesignReviewCompany(t.db, ORG, { allowed: false, revision: 4 });
+    t.db.set({ ...(t.db.get({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK }) as Record<string, unknown>), updatedBy: OMAR.developerId });
+    t.db.set({ ...projectMetaKey(ORG, "demo-tasklog"), entityType: "PROJECT_META", name: "demo-tasklog", status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId });
+    const base = { documentClient: t.db, tableName: "state", now: Date.now, audit: audit.audit };
+    const ports: DpMigrationPorts = { playbook: base, company: base, listOrgs: async () => [], installOrg: () => ORG, projectHadDesignReview: async () => false, now: Date.now, log: () => undefined };
+    expect(await migrateDesignReviewOrg(ports, ORG, ["demo-tasklog"])).toBe(1);
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(false);
+    expect(t.db.get({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_DP_MIGRATION_SK })).toMatchObject({ outcome: "moved" });
+    expect(audit.recordedBy("playbook.default_process_changed")).toEqual([]);
   });
 });

@@ -62,6 +62,7 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
  return <Card className="rv-hww-card rv-hww-design" aria-labelledby={id + "-title"} id={id}>
   <h3 id={id + "-title"} tabIndex={-1}>Design review</h3>
   <p className="rv-muted">Before Rovara builds, reviewers that never saw the conversation read the design and raise what it assumes or gets wrong. A person approves the design.</p>
+  {response.designReviewInherited === true && <p className="rv-muted">This project follows the company default. Saving any design review setting here makes it the project's own.</p>}
   {anyLocked && <p className="rv-hww-note" role="status">{locked.size === 5 ? "Your company controls every design review setting here." : "Your company locks some of these settings. Locked settings are read-only."}</p>}
   {shownRows.length === 0 ? <p className="rv-muted">Nothing here is changed or locked. Show all settings to see everything.</p> : <dl className="rv-hww-rows">{shownRows.map(row => <div className="rv-hww-row" key={row.id}>
    <dt>{row.title}</dt>

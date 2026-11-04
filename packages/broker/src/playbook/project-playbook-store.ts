@@ -141,7 +141,7 @@ const conditionFailed = (error: unknown): boolean => error instanceof Error && (
  * else `PLAYBOOK_STALE` (C53).
  */
 export async function writeProjectPlaybook(
-  deps: ProjectPlaybookWriter, input: { orgId: OrgId; project: string; developerId: string; expectedRevision: number; defaultProcess: DefaultProcess; designReview?: DesignReviewSetting | undefined; ifLayer?: { agentId: AgentId; version: number }; guards?: readonly TransactItem[] },
+  deps: ProjectPlaybookWriter, input: { orgId: OrgId; project: string; developerId: string; expectedRevision: number; defaultProcess: DefaultProcess; designReview?: DesignReviewSetting | undefined; ifLayer?: { agentId: AgentId; version: number }; guards?: readonly TransactItem[]; /** The one-time `dp` move writes a setting, not a process change: it records only the design review event. */ skipProcessEvent?: true },
 ): Promise<ProjectPlaybook> {
   const { orgId, project } = input;
   const item = await readItem(deps, orgId, project);
@@ -176,10 +176,10 @@ export async function writeProjectPlaybook(
   // `playbook.design_review_changed` only when the setting really changed. A project with no setting runs the COMPANY's default mode (DR-FU4), so saving any setting over none is a change (the mode it will now run with is its own).
   const designChanged = canonicalJson(current.designReview ?? null) !== canonicalJson(applied.designReview ?? null);
   const events = await tryAuditEvents(auditDeps, () => [
-    auditPlaybookDefaultProcessChanged({
+    ...(input.skipProcessEvent === true ? [] : [auditPlaybookDefaultProcessChanged({
       orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(project, String(applied.revision)),
       projectName: project, revision: applied.revision, processKind: applied.defaultProcess.kind,
-    }),
+    })]),
     ...(!designChanged ? [] : [auditPlaybookDesignReviewChanged({
       orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(project, "design_review", String(applied.revision)),
       projectName: project, revision: applied.revision, ...designReviewAuditFacts(designReviewSettingOf(applied)),

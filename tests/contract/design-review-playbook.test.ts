@@ -47,7 +47,7 @@ describe("an old playbook", () => {
     // A document exactly as the code before this stage wrote it.
     w.db.set({ ...projectPlaybookKey(ORG_A, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG_A, revision: 3, defaultProcess: { kind: "builtin" }, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAX });
     const read = await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web");
-    expect(read).toEqual({ designReviewAllowed: true, designReviewGroups: true, playbook: { revision: 3, defaultProcess: { kind: "builtin" }, designReview: DESIGN_REVIEW_DEFAULT_SETTING } });
+    expect(read).toEqual({ designReviewAllowed: true, designReviewInherited: true, designReviewGroups: true, playbook: { revision: 3, defaultProcess: { kind: "builtin" }, designReview: DESIGN_REVIEW_DEFAULT_SETTING } });
     expect(designReviewSettingOf(read.playbook)).toEqual(DESIGN_REVIEW_DEFAULT_SETTING);
     expect((await readEffectiveDesignReview(playbookDeps(w), ORG_A, "web")).setting).toEqual(DESIGN_REVIEW_DEFAULT_SETTING);
     // A company that set no policy: design review is not allowed and a project with no setting is Off (DR-FU4).
@@ -200,8 +200,12 @@ describe("the company's lock is stricter-only", () => {
     const w = world();
     setLock(w, { mode: "sometimes", surprise: true });
     const result = await failure(put(w, MAX, { designReview: SETTING }));
-    expect(result).toMatchObject({ code: "CONFIG_INVALID", status: 400 });
-    expect(result?.message).toContain("can't be read");
+    // M2 (DR-FU4): with the company's rules unreadable design review is NOT available, so the route takes no setting and the page says it is not on; the writer underneath still refuses with the reason.
+    expect(result).toMatchObject({ code: "CONFIG_INVALID", status: 400, message: "designReview: has a field this route does not take" });
+    expect(await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web")).toEqual({ designReviewAllowed: false, playbook: { revision: 0, defaultProcess: { kind: "builtin" } } });
+    const direct = await failure(writeProjectPlaybook(playbookDeps(w), { orgId: ORG_A, project: "web", developerId: MAX, expectedRevision: 0, defaultProcess: { kind: "builtin" }, designReview: SETTING }));
+    expect(direct).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(direct?.message).toContain("can't be read");
     expect(stored(w)).toBeUndefined();
     const effective = await readEffectiveDesignReview(playbookDeps(w), ORG_A, "web");
     expect(effective).toMatchObject({ lockUnreadable: true, setting: { mode: "always", allowSkip: false } });
@@ -324,13 +328,14 @@ describe("fix round: the lock is enforced in the write transaction and on the re
     expect(stored(w)).toMatchObject({ designReview: { mode: "never", allowSkip: true, capUsdPerTask: 30 } });
     // No lock: the project runs its own setting, or (with none) the company's default mode.
     const open = world();
-    expect(await getProjectPlaybook(playbookDeps(open), w.caller(PRIYA), "web")).toEqual({ designReviewAllowed: true, designReviewGroups: true, playbook: { revision: 0, defaultProcess: { kind: "builtin" }, designReview: DESIGN_REVIEW_DEFAULT_SETTING } });
-    // An unreadable lock: the strictest setting, every field shown as locked.
+    expect(await getProjectPlaybook(playbookDeps(open), w.caller(PRIYA), "web")).toEqual({ designReviewAllowed: true, designReviewInherited: true, designReviewGroups: true, playbook: { revision: 0, defaultProcess: { kind: "builtin" }, designReview: DESIGN_REVIEW_DEFAULT_SETTING } });
+    // An unreadable lock (M2): design review is not available, so no setting is shown and the page says it is not on; reviews already under way read the strictest posture.
     const broken = world();
     setLock(broken, { surprise: true });
     const shown = await getProjectPlaybook(playbookDeps(broken), w.caller(PRIYA), "web");
-    expect(shown.playbook.designReview).toMatchObject({ mode: "always", allowSkip: false });
-    expect(shown.designReviewLocked).toHaveLength(5);
+    expect(shown.playbook).not.toHaveProperty("designReview");
+    expect(shown.designReviewAllowed).toBe(false);
+    expect((await readEffectiveDesignReview(playbookDeps(broken), ORG_A, "web")).setting).toMatchObject({ mode: "always", allowSkip: false });
   });
 
   it("only a setting held to the lock is the effective one: the brand is set by the lock code alone", async () => {

@@ -11,7 +11,7 @@ test.beforeEach(async ({ context, request, baseURL, page }) => {
  await page.route("**/v1/web/org/model-sources", route => route.fulfill({ json: { sources: [], order: ["rovara"] } }));
 });
 
-type State = { revision: number; allowed: boolean; defaultMode: "never" | "auto" | "always"; lock: Record<string, unknown>; unreadable: boolean; pending?: { changeId: string; proposedByYou: boolean; expiresAt: string } };
+type State = { revision: number; allowed: boolean; defaultMode: "never" | "auto" | "always"; lock: Record<string, unknown>; unreadable: boolean; pending?: { changeId: string; kind: "allowed" | "lock"; proposedByYou: boolean; expiresAt: string } };
 async function company(page: Page, initial: State) {
  let state = initial;
  const posts: Array<Record<string, unknown>> = [];
@@ -20,7 +20,7 @@ async function company(page: Page, initial: State) {
   if (req.method() === "GET") return route.fulfill({ json: state });
   const body = req.postDataJSON() as Record<string, unknown>;posts.push(body);
   if (body.action === "save") { state = { ...state, revision: state.revision + 1, defaultMode: body.defaultMode as State["defaultMode"], lock: body.lock as Record<string, unknown> }; return route.fulfill({ json: { status: "applied", ...state } }); }
-  if (body.action === "allow" && body.allowed === true) { state = { ...state, pending: { changeId: "chg_1", proposedByYou: true, expiresAt: "2026-11-11T12:00:00.000Z" } }; return route.fulfill({ status: 202, json: { status: "needs_approval", changeId: "chg_1", ...state } }); }
+  if (body.action === "allow" && body.allowed === true) { state = { ...state, pending: { changeId: "chg_1", kind: "allowed", proposedByYou: true, expiresAt: "2026-11-11T12:00:00.000Z" } }; return route.fulfill({ status: 202, json: { status: "needs_approval", changeId: "chg_1", ...state } }); }
   state = { ...state, revision: state.revision + 1, allowed: false }; return route.fulfill({ json: { status: "applied", ...state } });
  });
  return posts;
@@ -36,6 +36,7 @@ test("a company admin allows design review, which waits for a different admin, t
  await card.getByRole("switch", { name: "Allow design review in this company" }).click();
  await expect(card.getByText("Waiting for a different admin to confirm.")).toBeVisible();
  await expect(card.getByText("You asked to allow design review. A different admin has to confirm it here.")).toBeVisible();
+ await expect(card.getByText("Projects set to Off can still ask for a design review on a single task with Design first.")).toBeVisible();
  expect(posts[0]).toEqual({ action: "allow", expectedRevision: 0, allowed: true });
  await card.getByLabel("Projects that have not chosen").selectOption("auto");
  await card.getByLabel("Design review at least").selectOption("auto");

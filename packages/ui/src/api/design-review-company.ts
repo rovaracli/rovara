@@ -18,6 +18,8 @@ export function createDesignReviewCompanyApi(host: AppHost) {
   allow: (expectedRevision: number, allowed: boolean) => send({ action: "allow", expectedRevision, allowed }),
   /** A different admin approves allowing it. The server asks for a sign-in within the last 10 minutes (`REAUTH_REQUIRED` otherwise). */
   approve: (changeId: string) => send({ action: "approve", changeId }),
+  /** Withdraws the waiting request (its proposer, or any admin). */
+  cancel: (changeId: string) => send({ action: "cancel", changeId }),
  };
 }
 export function useDesignReviewCompanyApi() { const host = useAppHost();return useMemo(() => createDesignReviewCompanyApi(host), [host]); }

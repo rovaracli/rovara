@@ -549,12 +549,12 @@ export function auditPlaybookDesignReviewChanged(input: AuditBuilderBase & { pro
 }
 
 /** `occurrence`: `auditOccurrence("design_review_policy", item revision)` for a change, the proposal's id for a proposal. `field` is `allowed`, `defaultMode` or `lock`; `from`/`to` are fixed words (or, for `lock`, how many fields it holds). */
-export function auditCompanyDesignReviewPolicyChanged(input: AuditBuilderBase & { field: "allowed" | "defaultMode" | "lock"; from: string; to: string; mode: "direct" | "second_person" | "sole_admin" | "migration"; revision: number }): AuditEventInput {
+export function auditCompanyDesignReviewPolicyChanged(input: AuditBuilderBase & { field: "allowed" | "defaultMode" | "lock"; from: string; to: string; mode: "direct" | "second_person" | "sole_owner_exception" | "migration" | "cancelled"; revision: number }): AuditEventInput {
   return build("company.design_review_policy_changed", input, { kind: "org", id: input.orgId }, { field: input.field, from: input.from, to: input.to, mode: input.mode, revision: input.revision });
 }
 
 /** `occurrence`: the proposal's id. A different admin has to approve turning "allowed" on. */
-export function auditCompanyDesignReviewPolicyProposed(input: AuditBuilderBase & { field: "allowed"; from: string; to: string }): AuditEventInput {
+export function auditCompanyDesignReviewPolicyProposed(input: AuditBuilderBase & { field: "allowed" | "lock"; from: string; to: string }): AuditEventInput {
   return build("company.design_review_policy_proposed", input, { kind: "org", id: input.orgId }, { field: input.field, from: input.from, to: input.to });
 }
 

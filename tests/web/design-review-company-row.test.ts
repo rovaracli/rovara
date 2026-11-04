@@ -19,7 +19,7 @@ import { companyPolicyRaw } from "./support/company-policy-raw.js";
 const PATH = "/v1/app/org/design-review";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const EXPIRES = "2026-11-03T12:30:00.000Z";
-type State = { revision: number; allowed: boolean; defaultMode: "never" | "auto" | "always"; lock: Record<string, unknown>; unreadable: boolean; groups?: boolean; pending?: { changeId: string; proposedByYou: boolean; expiresAt: string } };
+type State = { revision: number; allowed: boolean; defaultMode: "never" | "auto" | "always"; lock: Record<string, unknown>; unreadable: boolean; groups?: boolean; pending?: { changeId: string; kind: "allowed" | "lock"; proposedByYou: boolean; expiresAt: string } };
 type Handler = (request: ApiRequest) => ApiResponse | undefined | Promise<ApiResponse | undefined>;
 const refuse = (status: number, code: string, message: string) => ({ status, body: { error: { code, message } } });
 const OFF: State = { revision: 0, allowed: false, defaultMode: "never", lock: {}, unreadable: false };
@@ -43,7 +43,8 @@ function mount(options: { state?: State; missing?: boolean; post?: Handler; role
    if (custom !== undefined) return custom;
    const body = request.body as { action: string; allowed?: boolean; defaultMode?: State["defaultMode"]; lock?: Record<string, unknown> };
    if (body.action === "save") { state = { ...state, revision: state.revision + 1, defaultMode: body.defaultMode ?? state.defaultMode, lock: body.lock ?? state.lock }; return { status: 200, body: { status: "applied", ...state } }; }
-   if (body.action === "allow" && body.allowed === true) { state = { ...state, pending: { changeId: "chg_1", proposedByYou: true, expiresAt: EXPIRES } }; return { status: 202, body: { status: "needs_approval", changeId: "chg_1", ...state } }; }
+   if (body.action === "allow" && body.allowed === true) { state = { ...state, pending: { changeId: "chg_1", kind: "allowed", proposedByYou: true, expiresAt: EXPIRES } }; return { status: 202, body: { status: "needs_approval", changeId: "chg_1", ...state } }; }
+   if (body.action === "cancel") { const { pending: _gone, ...rest } = state;void _gone;state = rest;return { status: 200, body: { status: "applied", ...state } }; }
    const { pending: _pending, ...rest } = state;void _pending;
    state = { ...rest, revision: state.revision + 1, allowed: body.action === "approve" };
    return { status: 200, body: { status: "applied", ...state } };
@@ -101,7 +102,7 @@ describe("allowing design review", () => {
  });
 
  it("a different admin sees the waiting request and confirms it; the confirmation names the request", async () => {
-  const f = mount({ role: "admin", state: { ...OFF, pending: { changeId: "chg_9", proposedByYou: false, expiresAt: EXPIRES } } });
+  const f = mount({ role: "admin", state: { ...OFF, pending: { changeId: "chg_9", kind: "allowed", proposedByYou: false, expiresAt: EXPIRES } } });
   const section = await card();
   expect(await section.findByText("An admin asked to allow design review.")).toBeTruthy();
   fireEvent.click(section.getByRole("button", { name: "Confirm allowing design review" }));
@@ -111,7 +112,7 @@ describe("allowing design review", () => {
  });
 
  it("a confirmation without a recent sign-in shows the server's words and a way to sign in again, and changes nothing", async () => {
-  const f = mount({ role: "admin", state: { ...OFF, pending: { changeId: "chg_9", proposedByYou: false, expiresAt: EXPIRES } }, post: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to confirm this.") });
+  const f = mount({ role: "admin", state: { ...OFF, pending: { changeId: "chg_9", kind: "allowed", proposedByYou: false, expiresAt: EXPIRES } }, post: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to confirm this.") });
   const section = await card();
   fireEvent.click(await section.findByRole("button", { name: "Confirm allowing design review" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Sign in again to confirm this.");
@@ -133,6 +134,41 @@ describe("allowing design review", () => {
   const section = await card();
   fireEvent.click(await section.findByRole("switch", { name: "Allow design review in this company" }));
   expect((await screen.findByRole("alert")).textContent).toContain("This changed while you were looking.");
+ });
+});
+
+describe("the one waiting request", () => {
+ it("says plainly that Off projects can still use Design first, and that only one request waits at a time", async () => {
+  mount({ role: "admin", state: { ...OFF, pending: { changeId: "chg_9", kind: "allowed", proposedByYou: false, expiresAt: EXPIRES } } });
+  const section = await card();
+  expect(await section.findByText("Projects set to Off can still ask for a design review on a single task with Design first.")).toBeTruthy();
+  expect(section.getByText("Only one request can wait at a time.")).toBeTruthy();
+ });
+
+ it("the one who asked can withdraw the request, and the card then shows none", async () => {
+  const f = mount({ state: { ...OFF, pending: { changeId: "chg_1", kind: "allowed", proposedByYou: true, expiresAt: EXPIRES } } });
+  const section = await card();
+  fireEvent.click(await section.findByRole("button", { name: "Withdraw the request" }));
+  await section.findByText("The request is withdrawn.");
+  expect(f.posts()[0]!.body).toEqual({ action: "cancel", changeId: "chg_1" });
+  await waitFor(() => expect(section.queryByRole("button", { name: "Withdraw the request" })).toBeNull());
+ });
+
+ it("a request to loosen the rules is named as such, and a different admin confirms it with its own words", async () => {
+  const f = mount({ role: "admin", state: { ...OFF, allowed: true, lock: { allowSkip: false }, pending: { changeId: "chg_5", kind: "lock", proposedByYou: false, expiresAt: EXPIRES } } });
+  const section = await card();
+  expect(await section.findByText("An admin asked to loosen the rules below.")).toBeTruthy();
+  fireEvent.click(section.getByRole("button", { name: "Confirm the looser rules" }));
+  await waitFor(() => expect(f.posts()).toHaveLength(1));
+  expect(f.posts()[0]!.body).toEqual({ action: "approve", changeId: "chg_5" });
+ });
+
+ it("saving rules that loosen answers that they wait for a different admin", async () => {
+  mount({ state: { ...OFF, revision: 2, allowed: true, lock: { allowSkip: false } }, post: () => ({ status: 202, body: { status: "needs_approval", changeId: "chg_7", ...OFF, revision: 2, allowed: true, lock: { allowSkip: false }, pending: { changeId: "chg_7", kind: "lock", proposedByYou: true, expiresAt: EXPIRES } } }) });
+  const section = await card();
+  fireEvent.click(await section.findByRole("switch", { name: "Nobody can skip design review" }));
+  fireEvent.click(section.getByRole("button", { name: "Save default and rules" }));
+  await section.findByText("Saved. The looser rules wait for a different admin to confirm; the default applies now.");
  });
 });
 

@@ -13,10 +13,10 @@ import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 
 const PERSON = "b".repeat(64);
-interface World { allowed?: boolean | undefined; setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
+interface World { allowed?: boolean | undefined; inherited?: boolean | undefined; setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
 function setup(world: World = {}, canEdit = true, filter: "all" | "changed" | "locked" = "all") {
  const state = { ...world }, puts: Array<{ path: string; body: Record<string, unknown> }> = [];
- const answer = () => ({ ...(state.allowed === undefined ? {} : { designReviewAllowed: state.allowed }), playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.setting === undefined || state.allowed === false ? {} : { designReview: state.setting }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
+ const answer = () => ({ ...(state.allowed === undefined ? {} : { designReviewAllowed: state.allowed }), ...(state.inherited === undefined ? {} : { designReviewInherited: state.inherited }), playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.setting === undefined || state.allowed === false ? {} : { designReview: state.setting }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
  const f = fakeHost(async request => {
   if (request.path.endsWith("/playbook") && request.method === "GET") return { status: 200, body: answer() };
   if (request.path.endsWith("/playbook") && request.method === "PUT") { const body = request.body as Record<string, unknown>;puts.push({ path: request.path, body });state.setting = body.designReview as DesignReviewSetting;state.revision = (state.revision ?? 4) + 1;return { status: 200, body: answer() }; }
@@ -162,4 +162,15 @@ it("DR-FU4: where the company allows it the project chooses Off, Auto or Always,
  await waitFor(() => expect(f.puts).toHaveLength(1));
  expect(f.puts[0]!.body.designReview).toMatchObject({ mode: "auto" });
  f.close();
+});
+
+it("DR-FU4: a project that follows the company default says so, and the note goes once it has its own setting", async () => {
+ const f = setup({ allowed: true, inherited: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ const card = await screen.findByRole("region", { name: "Design review" });
+ expect(await within(card).findByText("This project follows the company default. Saving any design review setting here makes it the project's own.")).toBeTruthy();
+ f.close();
+ const own = setup({ allowed: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ await screen.findByText("Who does it");
+ expect(screen.queryByText(/follows the company default/u)).toBeNull();
+ own.close();
 });

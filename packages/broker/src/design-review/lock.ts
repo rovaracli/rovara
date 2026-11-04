@@ -65,6 +65,8 @@ export interface DesignReviewCompanyRead {
   policyUnreadable: boolean;
   /** The item's revision: 0 when there is no item, undefined when the item has no readable revision. */
   revision: number | undefined;
+  /** Who last wrote the item (`system` for the one-time `dp` move); undefined when there is no item. */
+  updatedBy?: string | undefined;
 }
 
 /**
@@ -86,6 +88,7 @@ export async function readDesignReviewCompany(table: DesignReviewLockTable, orgI
   return {
     lock: parsed.success && revisionOk ? { kind: "lock", lock: parsed.data, revision } : { kind: "unreadable" },
     policy, policyUnreadable: policyParsed !== undefined && !policyParsed.success, revision: revisionOk ? revision : undefined,
+    ...(typeof found.Item["updatedBy"] === "string" ? { updatedBy: found.Item["updatedBy"] } : {}),
   };
 }
 

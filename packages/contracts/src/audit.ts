@@ -516,7 +516,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "playbook.default_process_changed": ["revision", "processKind"],
   // `mode` is auto, always or never; `tier` light, standard or thorough; `approverKind` maintainers, people or group (never the people or the group named); `capCents` the per-task cap in whole cents.
   "playbook.design_review_changed": ["revision", "mode", "tier", "allowSkip", "capCents", "approverKind", "approverCount"],
-  // `field` is `allowed`, `defaultMode` or `lock`; `from` and `to` are fixed words (on/off, never/auto/always) or, for `lock`, how many fields the lock holds; `mode` is `direct`, `second_person`, `sole_admin` or `migration`.
+  // `field` is `allowed`, `defaultMode` or `lock`; `from` and `to` are fixed words (on/off, never/auto/always) or, for `lock`, how many fields the lock holds; `mode` is `direct`, `second_person`, `sole_owner_exception`, `migration` or `cancelled` (a waiting request withdrawn: `from` is `requested`, `to` is `withdrawn`).
   "company.design_review_policy_proposed": ["field", "from", "to"],
   "company.design_review_policy_changed": ["field", "from", "to", "mode", "revision"],
   "company.change_applied_to_project": ["changeRevision", "settingCount"],

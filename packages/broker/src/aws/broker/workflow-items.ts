@@ -79,8 +79,6 @@ export async function retryDueWorkflowDispatches(dependencies: AwsBrokerDependen
   await sweepGroundingHolds(dependencies);
   // DR10: reminders, park and close for design reviews waiting on people (with the `dr` switch off it only ends cost holds as not run). A failure here never holds back the dispatch rows.
   await designWaitSweepOf(dependencies).catch((error: unknown) => console.log(JSON.stringify({ component: "broker", event: "design_review.wait_sweep_failed", error: error instanceof Error ? error.name : "unknown" })));
-  // DR-FU4: the one-time move of the old `dp` project list into stored settings (it reads nothing while `dr` is off or `dp` is empty). A failure never holds back the dispatch rows.
-  await designDpMigrationOf(dependencies).catch((error: unknown) => console.log(JSON.stringify({ component: "broker", event: "design_review.dp_migration_failed", error: error instanceof Error ? error.name : "unknown" })));
   const page = await dependencies.documentClient.send(new QueryCommand({
     TableName: dependencies.tableName,
     IndexName: WORKFLOW_DISPATCH_DUE_INDEX.name,
@@ -92,6 +90,8 @@ export async function retryDueWorkflowDispatches(dependencies: AwsBrokerDependen
   const rows = (page.Items ?? []) as WorkflowDispatchRecord[];
   let dispatched = 0;
   for (const row of rows) if (await runWorkflowDispatch(dependencies, row) === "DISPATCHED") dispatched += 1;
+  // DR-FU4: the one-time move of the old `dp` project list into stored settings, AFTER the dispatch work and in a small budget, so it can never delay a due row (it reads nothing while `dr` is off or `dp` is empty).
+  await designDpMigrationOf(dependencies).catch((error: unknown) => console.log(JSON.stringify({ component: "broker", event: "design_review.dp_migration_failed", error: error instanceof Error ? error.name : "unknown" })));
   return { attempted: rows.length, dispatched };
 }
 
