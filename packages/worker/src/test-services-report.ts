@@ -33,7 +33,7 @@ export interface BootFacts {
   metadataBlocked: boolean;
   runWalls: boolean;
   ipv6Drops: boolean;
-  /** Only when `ipv6Drops` is false: why (boot-stage2.sh `ipv6_wall_failure_reason`). The worker then runs without test services (AGENTX_TEST_SERVICES_NOT_PULLED=all). */
+  /** Only when `ipv6Drops` is false: why (boot-stage2.sh `IPV6_WALL_REASON`). The worker then runs without test services (AGENTX_TEST_SERVICES_NOT_PULLED=all). */
   ipv6DropsReason?: "ip6tables-unusable" | "rule-not-added";
   /** `none`: the image pins nothing to pull; `ok`: every pinned digest is on the host; `partial`: some digests are on the host and the rest are named in AGENTX_TEST_SERVICES_NOT_PULLED (not offered; the done-check still wants `ok`); `failed`: the login failed or no digest arrived. */
   prepull: "none" | "ok" | "partial" | "failed";
