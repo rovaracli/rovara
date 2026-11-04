@@ -78,7 +78,7 @@ export function createGithubRecordTap(deps: GithubRecordTapDependencies): (verif
       let total: TapResult | undefined;
       for (const event of events) {
         const result = await tap.handle(event);
-        total = total === undefined ? result : { written: total.written + result.written, duplicates: total.duplicates + result.duplicates, refused: total.refused + result.refused, failed: total.failed + result.failed };
+        total = total === undefined ? result : { written: total.written + result.written, duplicates: total.duplicates + result.duplicates, refused: total.refused + result.refused, failed: total.failed + result.failed, ...(total.removalFailed === true || result.removalFailed === true ? { removalFailed: true } : {}) };
       }
       return total;
     } catch {

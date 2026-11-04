@@ -125,6 +125,8 @@ export interface TapResult {
   duplicates: number;
   refused: number;
   failed: number;
+  /** True when a DELETE at the source could not be accepted by any durable path (table, queue, event invoke). The webhook answer is then retryable, so the host can send it again. */
+  removalFailed?: boolean;
 }
 
 export const HUMAN_EDIT_MAX_FILES = 40;
@@ -164,6 +166,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           : { workspaceId: event.repo.workspaceId, system: event.repo.host, sourceIds: [commentId(event)], cause: "source_deleted" });
       } catch {
         result.failed += 1;
+        result.removalFailed = true;
         log("record.tombstone_failed", { host: event.repo.host });
       }
       // The place is gone at its source: its source row (if any) reads as failing. Never fails the delivery.

@@ -1095,8 +1095,33 @@ async function withinBudget(work: Promise<unknown>, ms: number): Promise<void> {
   }
 }
 
-/** Shared endpoint path: verify, durably reserve, claim, process, then record the outcome. */
-export async function handleGithubWebhook(input: {
+/**
+ * Shared endpoint path: verify, durably reserve, claim, process, then record the outcome. When the Team record could not take a DELETE through any durable path (the tap says
+ * `removalFailed`), the delivery's own work is done as before and then the answer is a retryable error (503), so GitHub can send it again; the tap runs before the delivery is
+ * reserved, so a redelivery offers the delete again. Nothing else about the answer changes.
+ */
+export async function handleGithubWebhook(input: Parameters<typeof handleVerifiedGithubWebhook>[0]): ReturnType<typeof handleVerifiedGithubWebhook> {
+  const offered = input.recordTap;
+  if (offered === undefined) return handleVerifiedGithubWebhook(input);
+  let removalLost = false;
+  const watched: typeof offered = async (verified) => {
+    const answer = await offered(verified);
+    if ((answer as { removalFailed?: unknown } | null | undefined)?.removalFailed === true) removalLost = true;
+    return answer;
+  };
+  let outcome: Awaited<ReturnType<typeof handleVerifiedGithubWebhook>>;
+  try {
+    outcome = await handleVerifiedGithubWebhook({ ...input, recordTap: watched });
+  } catch (error) {
+    // A delivery the other paths left unanswered (ignored) is retryable when the delete was lost; any other failure keeps its own answer.
+    if (removalLost && error instanceof GithubWebhookIgnorable) throw new GithubWebhookRetryableError("the record could not take the delete");
+    throw error;
+  }
+  if (removalLost) throw new GithubWebhookRetryableError("the record could not take the delete");
+  return outcome;
+}
+
+async function handleVerifiedGithubWebhook(input: {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   rawBody: string;
