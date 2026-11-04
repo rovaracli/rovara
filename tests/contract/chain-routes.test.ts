@@ -3,7 +3,7 @@ import { fixtureActor } from "../support/money-authority.js";
 // safe than what runs answers 202 with a confirmation link and changes nothing; deciding it is Plan 3's page (R66).
 import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord, type ApproverSpec } from "../../packages/broker/src/agents/approvals.js";
 import { AgentStore, type BuiltinSource } from "../../packages/broker/src/agents/store.js";
@@ -81,6 +81,8 @@ async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
     enabled: new Set<string>(),
     rechecked: [] as Array<{ orgId: string; chainId: string }>,
     disabledByCheck: [] as Array<{ triggerId: string; problems: Array<{ path: string; message: string }> }>,
+    /** Makes the next checks fail, as a trigger store that cannot be reached would. */
+    recheckFails: false,
     archived: [] as string[],
     /** Runs once, inside the next check of whether the chain has a trigger: where a test lets something land between a route's read and its write. */
     betweenReadAndWrite: undefined as (() => Promise<void>) | undefined,
@@ -92,7 +94,11 @@ async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
       await hook?.();
       return triggers.enabled.has(chainId);
     },
-    recheckTriggersForTarget: async (orgId, target) => { triggers.rechecked.push({ orgId, chainId: target.chainId }); return triggers.disabledByCheck; },
+    recheckTriggersForTarget: async (orgId, target) => {
+      triggers.rechecked.push({ orgId, chainId: target.chainId });
+      if (triggers.recheckFails) throw Object.assign(new Error("secret detail the log must not carry"), { name: "ThrottlingException" });
+      return triggers.disabledByCheck;
+    },
     disableTriggersForTarget: async (_orgId, target) => { triggers.archived.push(target.chainId); },
   };
   const members = new FakeProjectMembers();
@@ -388,6 +394,32 @@ describe("who can see and change a chain", () => {
     const rolled = await call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
     expect(rolled.body.disabledTriggers).toEqual(triggers.disabledByCheck);
     expect(triggers.rechecked).toEqual([chainId, chainId, chainId].map((id) => ({ orgId: TEST_ORG, chainId: id })));
+  });
+});
+
+describe("a trigger check that fails after the change was made", () => {
+  it("answers the change that was made (not a 500), lists no triggers, and logs a fixed event without the error's text (L5)", async () => {
+    const { call, create, putDraft, publish, triggers, state } = await setup();
+    const chainId = await create(MAYA);
+    triggers.recheckFails = true;
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await putDraft(MAYA, chainId, variant({ investigate: { name: "second" } }));
+      const published = await publish(MAYA, chainId);
+      expect(published.status, JSON.stringify(published.body)).toBe(200);
+      expect(published.body.disabledTriggers).toEqual([]);
+      expect(triggers.rechecked).toEqual([{ orgId: TEST_ORG, chainId }]);
+      const budget = await call(MAYA, "PUT", `/v1/app/chains/${chainId}/budget`, { monthlyUsd: 5 });
+      expect(budget.status, JSON.stringify(budget.body)).toBe(200);
+      expect(budget.body.disabledTriggers).toEqual([]);
+      expect((await state(chainId)).monthlyBudgetUsd).toBe(5);
+      const lines = log.mock.calls.map(call => String(call[0])).filter(line => line.includes("chain.trigger_recheck_failed"));
+      expect(lines).toHaveLength(2);
+      expect(JSON.parse(lines[0]!)).toMatchObject({ level: "warn", event: "chain.trigger_recheck_failed", chainId, error: "ThrottlingException" });
+      expect(lines.join("")).not.toContain("secret detail");
+    } finally {
+      log.mockRestore();
+    }
   });
 });
 

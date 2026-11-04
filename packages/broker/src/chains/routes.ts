@@ -294,7 +294,13 @@ async function requireManagerWhileTriggered(deps: ChainRouteDependencies, chain:
 
 /** The triggers the check turned off after a version change, for the answer. */
 async function recheck(deps: ChainRouteDependencies, chain: ChainRecord): Promise<Array<{ triggerId: string; problems: ChainProblem[] }>> {
-  return await deps.chainTriggers?.recheckTriggersForTarget(chain.orgId, { kind: "chain", chainId: chain.chainId }) ?? [];
+  // Always after the change was committed (L5): a failure here is logged and the answer is the change that was made, without the list. A trigger left on is looked at again when it starts a run.
+  try {
+    return await deps.chainTriggers?.recheckTriggersForTarget(chain.orgId, { kind: "chain", chainId: chain.chainId }) ?? [];
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", level: "warn", event: "chain.trigger_recheck_failed", chainId: chain.chainId, error: error instanceof Error ? error.name : "unknown" }));
+    return [];
+  }
 }
 
 /**

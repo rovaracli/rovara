@@ -239,7 +239,13 @@ const withDisabled = <T extends object>(body: T, disabled: ReadonlyArray<unknown
 
 /** The triggers a change turned off because they no longer qualify, for the answer. The change itself has been made. */
 async function recheck(deps: AgentRouteDependencies, orgId: OrgId, agentId: AgentId): Promise<Awaited<ReturnType<NonNullable<AgentRouteDependencies["triggerHooks"]>["recheckTriggersForTarget"]>>> {
-  return await deps.triggerHooks?.recheckTriggersForTarget(orgId, { kind: "agent", agentId }) ?? [];
+  // The change was committed before this runs (L5): a failure is logged and the answer is the change that was made, without the list. A trigger left on is looked at again when it starts a run.
+  try {
+    return await deps.triggerHooks?.recheckTriggersForTarget(orgId, { kind: "agent", agentId }) ?? [];
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", level: "warn", event: "agent.trigger_recheck_failed", agentId, error: error instanceof Error ? error.name : "unknown" }));
+    return [];
+  }
 }
 
 /** `requireAgentAccess` for reading an agent: a built-in the company turned off is not found by a member, as it is missing from their list; owners and admins still see it. */
