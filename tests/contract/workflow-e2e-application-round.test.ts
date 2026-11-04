@@ -7,7 +7,7 @@ import { getTaskDocumentView, retryApplicationRoundOnPage, startTaskWorkflowPubl
 import { disposeRealCandidates } from "../support/e2e-application-candidate.js";
 import type { E2EApplicationReport } from "../../packages/verifier/src/application-report-schema.js";
 import type { ApplicationGroupEvidence, ObservedApiOutcome } from "../support/e2e-application-evidence-fixture.js";
-import { MAYA } from "../support/developer-task-broker.js";
+import { MAYA, grantProject } from "../support/developer-task-broker.js";
 import { apiRowKey, sha, startApplicationRound, type ApplicationRound } from "../support/e2e-application-round-harness.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { orgMemberKey, projectMemberKey, slackBindingKey } from "@agentx/contracts";
@@ -586,6 +586,8 @@ describe("current authority at verification (the runtime row, the creator, the s
     const pageDeps = async (round: ApplicationRound) => {
       const input = round.harness.brokerInput as { documentClient: never; tableName: string; developer: never };
       const broker = await brokerModule();
+      // The page's Retry restarts work for the owner, so it meets the send-back's project access rule (S2): the owner holds a grant, as a task owner who may retry does.
+      grantProject(round.harness.db as never, MAYA);
       return developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: round.harness.actions as never,
         ...broker.workflowApplicationRouteDependencies(round.harness.brokerInput as never) }, maya);
     };

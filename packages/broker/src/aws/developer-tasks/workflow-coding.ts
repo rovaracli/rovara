@@ -329,6 +329,8 @@ export async function retryWorkflowImplementation(
   if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
+  // S2 (any path): a Retry that restarts coding for this person meets the send-back's project access rule and the archive check, like a send-back does.
+  await requireProjectSendBackRole(deps, task, caller);
   await requireMayGoOn(deps, caller, task);
   await actionableWorkspace(deps, task);
   // Plan 6 Task 15: a CI fix that stopped before it finished is told again what CI said, so the run that goes on has it in its own prompt, not only in the conversation (and needs no plan text).

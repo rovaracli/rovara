@@ -68,6 +68,7 @@ import { framedPlanningInstruction } from "./redirect-frame.js";
 import { type AutomaticRetry, automaticRetryDecision, queueWorkflowUnderstand } from "./workflow-starts.js";
 import { fedThroughUpdate, withCurrentThreadNotes } from "./thread-notes.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
+import { requireProjectSendBackRole } from "../../developer/task-access.js";
 
 /**
  * Plan self-check: the planner's automatic second run. A plan that parsed but failed AgentX's own checks (or an answer that could
@@ -118,6 +119,9 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
   const { task } = access;
   // Ruling R60, first: before the E2E branch writes its dispatch row, so the removal's reason wins.
   await creatorGuard(deps, task);
+  // S2 (any path): a person's Retry of any step restarts agent work for them, so it meets the send-back's project access rule and the archive check at this one entry. Rovara's own retry (AUTOFIX)
+  // runs as the owner but is judged by the autofix policy and the creator check, not as a person's press.
+  if (automatic === undefined) await requireProjectSendBackRole(deps, task, caller);
   const recoveryHash = hashJson({ action: "committed-source-recovery", taskId, actorId: access.actorId, request });
   const recoveryKey = { pk: `DEVTASK#${taskId}`, sk: `WORKFLOW_SOURCE_RECOVERY#${request.requestId}` };
   const priorRecovery = await get<{ payloadHash: string; actorId: string; operationId: string }>(deps, recoveryKey);

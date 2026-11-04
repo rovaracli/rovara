@@ -110,7 +110,7 @@ describe("the CI-fix Retry meets the send-back gate", () => {
 });
 
 /** A task whose reviews block on one finding, in a sequence whose next step after the review is a second coding step. */
-async function blockedOnFinding() {
+async function approvedPlanTask() {
   const audit = capturingAuditDeps();
   const harness = await createSingleAnswerPlanBroker({ audit, brokerExtra: { planSelfCheck: false } });
   const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Retry failed payments", client: "test", workflow: true, workflowPath: "QUICK" });
@@ -124,6 +124,12 @@ async function blockedOnFinding() {
   const approval = { requestId: randomUUID(), expectedRevision: meta(harness, taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: createHash("sha256").update(plan).digest("hex") };
   expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, approval)).status).toBe(200);
   const coding = () => operations(harness, workspaceId).filter((item) => item.workflowMode === "IMPLEMENT").at(-1)!;
+  return { audit, harness, taskId, workspaceId, coding };
+}
+
+/** A task whose reviews block on one finding. */
+async function blockedOnFinding() {
+  const { audit, harness, taskId, workspaceId, coding } = await approvedPlanTask();
   const passing = { status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: [{ id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }], extraTry: "not_needed", agentClaim: "success" };
   await harness.finish(workspaceId, String(coding().id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: passing } });
   const review = operations(harness, workspaceId).filter((item) => item.workflowMode === "REVIEW").at(-1)!;
@@ -339,5 +345,97 @@ describe("the read-only feedback-review critic meets the send-back gate", () => 
       const t = await failedReview();
       await expect(retry(t, grantedAs("maintainer"), { ...OWNER, orgId: OTHER_ORG })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
     });
+  });
+});
+
+describe("the owner's Retry of a blocked coding step meets the send-back gate", () => {
+  /** A task whose coding run stopped (FAILED), so its IMPLEMENT step is blocked and the owner can Retry it. */
+  async function blockedCoding() {
+    const { harness, taskId, workspaceId, coding } = await approvedPlanTask();
+    await harness.finish(workspaceId, String(coding().id), "FAILED", { error: "the model stopped" });
+    expect(meta(harness, taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    const revision = meta(harness, taskId).workflow.revision;
+    const retry = (checkAccess: CheckAccess, caller: DeveloperCaller = OWNER) =>
+      retryTaskWorkflow(routeDeps(harness as never, checkAccess), caller, taskId, { requestId: randomUUID(), instructions: "Try again.", expectedRevision: revision });
+    return { harness, taskId, workspaceId, retry, revision, runs: () => operations(harness, workspaceId).filter((item) => item.workflowMode === "IMPLEMENT").length };
+  }
+
+  it("golden: an allowed contributor's Retry starts coding again", async () => {
+    const t = await blockedCoding();
+    const before = t.runs();
+    await t.retry(grantedAs("contributor"));
+    expect(t.runs()).toBe(before + 1);
+    expect(meta(t.harness, t.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+  });
+
+  it("a member who lost project access is refused with the send-back's words, and nothing starts", async () => {
+    const t = await blockedCoding();
+    const before = t.runs();
+    await expectRefused(t.retry(denied), sendBackNoAccessMessage("payments"));
+    expect(t.runs()).toBe(before);
+    expect(meta(t.harness, t.taskId).workflow).toMatchObject({ state: "BLOCKED", revision: t.revision });
+  });
+
+  it("a demoted project viewer is refused with the viewer message", async () => {
+    const t = await blockedCoding();
+    await expectRefused(t.retry(grantedAs("viewer")), viewerCannotStartTasksMessage("payments"));
+    expect(meta(t.harness, t.taskId).workflow.state).toBe("BLOCKED");
+  });
+
+  it("an archived project is refused", async () => {
+    const t = await blockedCoding();
+    archive(t.harness.db);
+    await expect(t.retry(grantedAs("maintainer"))).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(meta(t.harness, t.taskId).workflow.state).toBe("BLOCKED");
+  });
+
+  it("a removed member is refused, and the task ends creator_removed", async () => {
+    const t = await blockedCoding();
+    removeMaya(t.harness.db);
+    await expect(t.retry(grantedAs("contributor"))).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(meta(t.harness, t.taskId)).toMatchObject({ outcome: "creator_removed" });
+  });
+
+  it("another company's caller reads it as no task", async () => {
+    const t = await blockedCoding();
+    await expect(t.retry(grantedAs("maintainer"), { ...OWNER, orgId: OTHER_ORG })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+  });
+});
+
+describe("the owner's Retry of a blocked planning step meets the send-back gate (every human Retry is gated at its one entry)", () => {
+  /** A real task whose planning was cancelled: PLAN is blocked and the workspace is free. */
+  async function blockedPlanning() {
+    const h = await createDeveloperTaskBroker({});
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test", workflow: true, workflowPath: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = meta(h, taskId).workspaceId;
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.workflowMode === "PLAN")!.id), "CANCELLED");
+    expect(meta(h, taskId).workflow).toMatchObject({ stage: "PLAN", state: "BLOCKED" });
+    const revision = meta(h, taskId).workflow.revision;
+    const retry = (checkAccess: CheckAccess, caller: DeveloperCaller = OWNER) =>
+      retryTaskWorkflow(routeDeps(h as never, checkAccess), caller, taskId, { requestId: randomUUID(), instructions: "Plan again.", expectedRevision: revision });
+    return { h, taskId, workspaceId, retry, revision, plans: () => operations(h, workspaceId).filter((item) => item.workflowMode === "PLAN").length };
+  }
+
+  it("golden: an allowed contributor's Retry plans again", async () => {
+    const t = await blockedPlanning();
+    const before = t.plans();
+    await t.retry(grantedAs("contributor"));
+    expect(t.plans()).toBe(before + 1);
+  });
+
+  it("a member who lost project access is refused with the send-back's words, and nothing starts", async () => {
+    const t = await blockedPlanning();
+    const before = t.plans();
+    await expectRefused(t.retry(denied), sendBackNoAccessMessage("payments"));
+    expect(t.plans()).toBe(before);
+    expect(meta(t.h, t.taskId).workflow).toMatchObject({ state: "BLOCKED", revision: t.revision });
+  });
+
+  it("an archived project is refused", async () => {
+    const t = await blockedPlanning();
+    archive(t.h.db);
+    await expect(t.retry(grantedAs("maintainer"))).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
   });
 });
