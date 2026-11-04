@@ -5,6 +5,9 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
+import { deleteDeps } from "../../support/team-record-delete.js";
+import { eraseWorkspace } from "../../../packages/broker/src/team-record/erase.js";
+import { teamRecordPk } from "@agentx/contracts";
 import { dynamoRateLimiter } from "../../../packages/broker/src/team-record/query.js";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import type { SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
@@ -295,6 +298,44 @@ describe("Slack: the channels of the company's bound workspace", () => {
     expect(text).not.toContain(MAINT);
     expect(text).not.toContain("name-c0");
     expect(rows[0]).toMatchObject({ kind: "slack", project: "web", pages: 1 });
+  });
+
+  it("closing the company removes its listing sessions (they are in the company's own partition, like every other item of it)", async () => {
+    const h = harness();
+    manyPages(h, 3);
+    await options(h, WHO.maint, { kind: "slack" });
+    expect(sessions(h)).toHaveLength(1);
+    const done = await eraseWorkspace(deleteDeps(h.w).deps, ORG_A, ["web", "api"], "close-1");
+    expect(done.complete).toBe(true);
+    expect(sessions(h)).toHaveLength(0);
+    expect(h.w.db.find((item) => String(item.pk) === teamRecordPk(ORG_A) && !String(item.sk).startsWith("LAKEDEL#"))).toEqual([]);
+  });
+
+  it("a page is counted only after it was read: a failed read (Slack down, a throw) does not use up one of the 10", async () => {
+    const h = harness();
+    manyPages(h, 12);
+    const cursor = (await options(h, WHO.maint, { kind: "slack" })).body.next as string;
+    for (const how of ["unreadable", "throws", "missing_scope"] as const) {
+      h.slackFails = how;
+      for (let again = 0; again < 2; again += 1) expect((await options(h, WHO.maint, { kind: "slack", cursor })).status, how).toBe(503);
+    }
+    h.slackFails = "none";
+    h.w.clock.ms += 61_000; // the company's minute (12 Slack reads) is not what is being tested
+    let ok = 0;
+    for (let again = 0; again < 12; again += 1) if ((await options(h, WHO.maint, { kind: "slack", cursor })).status === 200) ok += 1;
+    expect(ok).toBe(9); // the first page was one; six failures took nothing
+    expect(sessions(h)[0]).toMatchObject({ pages: 10 });
+  });
+
+  it("a page the company's Slack budget refused is not counted either", async () => {
+    const h = harness();
+    manyPages(h, 40);
+    const cursor = (await options(h, WHO.maint, { kind: "slack" })).body.next as string;
+    for (let call = 0; call < 11; call += 1) expect((await options(h, WHO.maint, { kind: "slack" })).status).toBe(200); // the minute's 12 are used
+    for (let again = 0; again < 3; again += 1) expect((await options(h, WHO.maint, { kind: "slack", cursor })).status).toBe(429);
+    h.w.clock.ms += 61_000;
+    expect((await options(h, WHO.maint, { kind: "slack", cursor })).status).toBe(200);
+    expect(sessions(h).find((item) => item.pages !== 1)).toMatchObject({ pages: 2 });
   });
 
   it("Slack page reads are rationed per company (12 a minute, shared by every editor), with a fixed 429, and the budget comes back with the next minute", async () => {

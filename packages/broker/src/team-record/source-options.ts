@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, SourceOptionsQuerySchema, SourceOptionsViewSchema, agentXError, teamRecordPk, type OrgId, type SourceOption, type SourcePickerKind } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, errorName } from "../agents/table-writes.js";
+import { SOURCE_OPTIONS_SK_PREFIX } from "./source-store.js";
 import type { RecordQueryDependencies } from "./query.js";
 import type { RecordRouteReply, RecordRouteRequest } from "./routes.js";
 import { gate, type SourceWriteContext } from "./source-write.js";
@@ -29,7 +30,6 @@ export const OPTION_SESSION_SECONDS = 900;
 export const SLACK_LIST_PER_MINUTE = 12;
 /** First pages one person may open a minute. */
 export const LISTINGS_PER_PERSON_PER_MINUTE = 60;
-const SESSION_SK = "SRCOPT#";
 const CURSOR = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(.*)$/su;
 const OPTIONS_MAX = 200;
 const SLACK_CURSOR = /^[A-Za-z0-9+/=_%.-]{1,300}$/u;
@@ -58,14 +58,20 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
   if (session !== undefined) pages = await takePage(deps, orgId, project, kind, session);
   else await ration(deps, orgId, `person:${request.caller.developerId}`, "source-options", LISTINGS_PER_PERSON_PER_MINUTE);
 
+  // A page counts only once it was read: a read that fails or is refused (Slack down, the company's budget) gives its page back.
   let found: Found | RecordRouteReply;
-  if (kind === "slack") {
-    if (inner !== undefined && !SLACK_CURSOR.test(inner)) throw invalidRequest();
-    found = await slackOptions(deps, ctx, orgId, inner);
-  } else {
-    found = await trackerOptions(deps, orgId, kind, inner);
+  try {
+    if (kind === "slack") {
+      if (inner !== undefined && !SLACK_CURSOR.test(inner)) throw invalidRequest();
+      found = await slackOptions(deps, ctx, orgId, inner);
+    } else {
+      found = await trackerOptions(deps, orgId, kind, inner);
+    }
+  } catch (error) {
+    if (session !== undefined) await giveBackPage(deps, orgId, session);
+    throw error;
   }
-  if ("status" in found) return found;
+  if ("status" in found) { if (session !== undefined) await giveBackPage(deps, orgId, session); return found; }
 
   // More to read: the first such page opens the session that counts the pages; at the bound the list is cut and says so.
   let next: string | undefined;
@@ -151,7 +157,7 @@ async function ration(deps: RecordQueryDependencies, orgId: OrgId, who: string, 
   if (!allowed) throw agentXError("TOO_MANY_REQUESTS", "Too many requests. Try again in a minute.");
 }
 
-const sessionKey = (orgId: OrgId, session: string) => ({ pk: teamRecordPk(orgId), sk: `${SESSION_SK}${session}` });
+const sessionKey = (orgId: OrgId, session: string) => ({ pk: teamRecordPk(orgId), sk: `${SOURCE_OPTIONS_SK_PREFIX}${session}` });
 const nowSeconds = (deps: RecordQueryDependencies): number => Math.floor((deps.now ?? Date.now)() / 1000);
 
 /** The session of a listing that has more pages: this company's partition, this project and kind, the pages read so far (one). Holds no person and no text. */
@@ -186,4 +192,15 @@ async function takePage(deps: RecordQueryDependencies, orgId: OrgId, project: st
     if (error instanceof AgentXError) throw error;
     throw unavailable();
   }
+}
+
+/** Gives back the page a failed read took (best effort: a count left one too high only ends the session a page early). */
+async function giveBackPage(deps: RecordQueryDependencies, orgId: OrgId, session: string): Promise<void> {
+  const aliases = new Aliases();
+  try {
+    await deps.table.documentClient.send(new UpdateCommand({
+      TableName: deps.table.tableName, Key: sessionKey(orgId, session), UpdateExpression: `ADD ${aliases.name("pages")} ${aliases.value(-1)}`,
+      ConditionExpression: `attribute_exists(pk) AND ${aliases.name("pages")} > ${aliases.value(1)}`, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
+    }));
+  } catch { /* the count stays one too high */ }
 }
