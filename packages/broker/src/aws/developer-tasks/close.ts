@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXError,
+  CLOSE_MESSAGES,
   DeveloperPullRequestRequestSchema,
   DeveloperTaskCloseRequestSchema,
   PullRequestResultSchema,
@@ -342,12 +343,12 @@ function safeClose({ workspace, operations }: WorkspaceReads): Operation | undef
     && (preflight.data.safeToClose || operation.discardUnpublished === true) ? operation : undefined;
 }
 
-const CLOSE_CHECKING = "AgentX is checking the task's workspace for unpublished work before closing it; check back with agentx_get_task";
+const CLOSE_CHECKING = CLOSE_MESSAGES.checking;
 const CLOSE_REFUSED = "not closed: some work is not published; push it or open a pull request with agentx_open_pull_request, then close the task again";
-const CLOSE_COMPUTE_PENDING = "the workspace has no unpublished work, but its compute is not removed yet; try agentx_close_task again shortly";
-const CLOSE_DISCARD_PENDING = "AgentX recorded your request to discard unpublished work, but could not finish releasing the workspace; try agentx_close_task again shortly";
-const CLOSE_CHECK_FAILED = "the check for unpublished work did not finish; try agentx_close_task again with a new request_id";
-const CLOSE_STILL_OPEN = "the task is still open; try agentx_close_task again with a new request_id";
+const CLOSE_COMPUTE_PENDING = CLOSE_MESSAGES.computePending;
+const CLOSE_DISCARD_PENDING = CLOSE_MESSAGES.discardPending;
+const CLOSE_CHECK_FAILED = CLOSE_MESSAGES.checkFailed;
+const CLOSE_STILL_OPEN = CLOSE_MESSAGES.stillOpen;
 const COMPUTE_STOPPING = "the task's compute is still stopping; try agentx_close_task again shortly";
 const CLOSE_FAILED = "AgentX could not close this task just now; try agentx_close_task again, and ask an admin if it keeps failing";
 
