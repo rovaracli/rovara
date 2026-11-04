@@ -20,7 +20,8 @@ test("a maintainer opens How we work, adds a project rule, reviews the change an
  await dialog.getByRole("button", { name: "Close dialog" }).click();
  await expect(page.getByRole("button", { name: "Review changes" })).toBeFocused();
  const sent = await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string; body?: { overlay?: { instructions?: string } } }>;
- const writes = sent.filter(item => item.method !== "GET" && !item.path.includes("/realtime/")).map(item => item.method + " " + item.path);
+ // The start box's spending-stop preview (admin-v11, POST .../start-preview) is a read sent as POST, not a change this journey makes.
+ const writes = sent.filter(item => item.method !== "GET" && !item.path.includes("/realtime/") && item.path !== "/v1/web/projects/payments/start-preview").map(item => item.method + " " + item.path);
  expect(writes).toEqual(["POST /v1/web/projects/payments/playbook/process", "PUT /v1/web/agents/agt_cccccccccccccccccccc/draft", "POST /v1/web/agents/agt_cccccccccccccccccccc/publish"]);
  expect(sent.find(item => item.method === "PUT")?.body?.overlay?.instructions).toBe("Keep changes small.\nAdd a test for every bug fix.");
  await checkA11y(page, { theme: "dark" });
