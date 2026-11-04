@@ -233,6 +233,12 @@ export const SourceConfigSchema = z.object({
   /** The approval that allowed a less-safe change (a private channel, DMs, or a longer retention) in Enterprise. */
   approval: z.object({ approvalId: z.string().min(1).max(100), by: DeveloperIdSchema, at: z.string().datetime() }).strict().optional(),
   updatedAt: z.string().datetime(),
+  /**
+   * The row's version, for the source write route (add / change / remove): a write names the revision it read and loses cleanly if the row moved. A row written before the
+   * route existed has none, and a missing revision reads as 0 (the reader's rule: `row.revision ?? 0`). Only the route writes this field; `putSourceConfig` keeps writing
+   * rows without it, so a switched-off install stores nothing new.
+   */
+  revision: z.number().int().min(0).optional(),
 }).strict();
 export type SourceConfig = z.infer<typeof SourceConfigSchema>;
 

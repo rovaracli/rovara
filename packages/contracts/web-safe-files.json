@@ -96,6 +96,8 @@
   "packages/contracts/src/task-stop-project.ts",
   "packages/contracts/src/task-stop.ts",
   "packages/contracts/src/task-workflow.ts",
+  "packages/contracts/src/team-record-sources.ts",
+  "packages/contracts/src/team-record.ts",
   "packages/contracts/src/test-env-dependency.ts",
   "packages/contracts/src/test-env-nightly.ts",
   "packages/contracts/src/test-env-value-source.ts",
