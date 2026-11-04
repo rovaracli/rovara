@@ -686,8 +686,9 @@ async function runInContainerGroup(
     const result = await exec([
       "bash", "-c",
       // Job control only while starting the command, which puts it in its own process group; left
-      // on, bash would also print a "Done" line into the output.
-      `${unsetStatement(command)}${pathStatement(command)}set -m; (cd -- "$1" && shift 2 && ${command.body}) & child=$!; set +m; echo "$child" > "$2"; wait "$child"; status=$?; rm -f "$2"; exit "$status"`,
+      // on, bash would also print a "Done" line into the output. C67: the folders in front of PATH (the task's Python user site) apply inside the command's own
+      // subshell only, and the wrapper's `rm` is looked up in the system's default path (`command -p`), so a program the task put in such a folder cannot run as AgentX's wrapper.
+      `${unsetStatement(command)}set -m; (${pathStatement(command)}cd -- "$1" && shift 2 && ${command.body}) & child=$!; set +m; echo "$child" > "$2"; wait "$child"; status=$?; command -p rm -f "$2"; exit "$status"`,
       "bash", command.cwd, groupFile, ...command.args,
     ], {
       ...(command.env !== undefined ? { env: command.env } : {}),

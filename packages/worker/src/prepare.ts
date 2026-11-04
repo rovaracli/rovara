@@ -454,6 +454,9 @@ async function prepareWorkspaceOnce(options: PrepareWorkspaceOptions): Promise<P
     // The readiness runner turns an error into a result; a leak found by a check's scan is thrown here instead.
     const leak = registrySession?.leak();
     if (leak !== undefined) throw leak;
+    // VL-1: a readiness command runs code of the repository's as well, after the last check of the setup steps. A link it left to somewhere outside the workspace is refused here,
+    // before anything is recorded as the result (a failed readiness included), and before the check history under `.agentx` is written.
+    await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, options.venvLinkPolicy);
     const readinessFailure = readiness.ready ? undefined : describeReadinessFailure(project.readiness, readiness.results);
     // Spec 051 Ruling M: before the workspace is READY, so a task never plans from an outcome this preparation replaced.
     if (readiness.ready) await resetCheckHistory(canonicalRoot, project.readiness, options.onDiagnostic ?? logPreparationDiagnostic);

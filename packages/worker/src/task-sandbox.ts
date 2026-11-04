@@ -359,7 +359,7 @@ export class TaskSandbox {
   }
 
   /**
-   * The Python user site's folder, made before the first command: a real directory with a `.gitignore` of `*`. A link or file a task left at its name is removed (the link
+   * The Python user site's folder, made before the first command: a real directory with a `.gitignore` of `*` (rewritten at every start). A link or file a task left at its name is removed (the link
    * itself, never its target), as the worker's state directories are (workspace-state.ts). A folder that cannot be made is logged, not fatal: pip makes it, without the `.gitignore`.
    */
   private async prepareUserBase(root: string): Promise<void> {
@@ -371,7 +371,10 @@ export class TaskSandbox {
       });
       if (found !== undefined && (found.isSymbolicLink() || !found.isDirectory())) await rm(path, { force: true });
       await mkdir(path, { recursive: true });
-      await writeFile(join(path, ".gitignore"), "*\n", { flag: "wx" }).catch(() => undefined);
+      // Rewritten on every start (C67): a task may have emptied, replaced or linked it. The old entry goes first (a link itself, never its target), then the file is made
+      // exclusively, so the write can never follow a link a task puts there between the two.
+      await rm(join(path, ".gitignore"), { recursive: true, force: true });
+      await writeFile(join(path, ".gitignore"), "*\n", { flag: "wx" });
     } catch (error) {
       (this.options.log ?? logEvent)({ event: "task-sandbox.python-user-base.failed", taskId: this.options.taskId, reason: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300) });
     }

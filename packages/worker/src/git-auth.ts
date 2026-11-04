@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { gitHardenedEnvironment } from "./git.js";
+import { makeWorkerScratch } from "./worker-scratch.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -81,7 +81,7 @@ export async function runGitWithCredential(input: {
 
   const askPassDirectory = username === undefined && credential.ssh === undefined
     ? undefined
-    : await mkdtemp(join(tmpdir(), "agentx-git-askpass-"));
+    : await makeWorkerScratch("agentx-git-askpass-");
   try {
     const environment = await gitHardenedEnvironment(input.directory, { ...input.environment }, { network: true });
     environment.GIT_TERMINAL_PROMPT = "0";
@@ -152,7 +152,7 @@ export async function pushCommitFromIsolatedRepository(input: {
   if (!/^[A-Za-z0-9._/-]{1,255}$/u.test(input.branch) || input.branch.includes("..") || input.branch.startsWith("-")) {
     throw new Error("the branch to push is not a valid branch name");
   }
-  const temporary = await mkdtemp(join(tmpdir(), "agentx-push-"));
+  const temporary = await makeWorkerScratch("agentx-push-");
   try {
     const gitDirectory = join(temporary, "repository.git");
     // No template: the repository starts with no hooks, and only the config Git itself writes.

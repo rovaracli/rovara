@@ -1,6 +1,6 @@
 // Ruling R56: on an EC2 worker, task-controlled code never runs in the worker's own process, network or user. It runs
 // in a sandbox container with no Docker socket, no host network, no capabilities and only the workspace mounted.
-import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -369,5 +369,48 @@ describe("where the local shell may run (R56)", () => {
 
   it("refuses a value it does not know", () => {
     expect(() => taskShellFromEnvironment({ AGENTX_TASK_SHELL: "host" })).toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
+  });
+});
+
+describe("the Python user site's .gitignore is rewritten on every start (C67)", () => {
+  const cleanup: string[] = [];
+  afterEach(async () => {
+    await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  });
+  const workspace = async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "agentx-sandbox-gitignore-")));
+    cleanup.push(root);
+    return root;
+  };
+  const start = async (root: string) => new TaskSandbox({ rootPath: root, taskId: TASK, docker: fakeDocker().docker, image: IMAGE }).start();
+
+  it("writes it on the first start", async () => {
+    const root = await workspace();
+    await start(root);
+    expect(await readFile(join(root, ".agentx-python", ".gitignore"), "utf8")).toBe("*\n");
+  });
+
+  it("restores it when a task deleted or changed it", async () => {
+    const root = await workspace();
+    await mkdir(join(root, ".agentx-python"));
+    await writeFile(join(root, ".agentx-python", ".gitignore"), "# nothing is ignored here\n");
+    await start(root);
+    expect(await readFile(join(root, ".agentx-python", ".gitignore"), "utf8")).toBe("*\n");
+    await rm(join(root, ".agentx-python", ".gitignore"));
+    await start(root);
+    expect(await readFile(join(root, ".agentx-python", ".gitignore"), "utf8")).toBe("*\n");
+  });
+
+  it("replaces a link a task left at its name, without writing through it", async () => {
+    const root = await workspace();
+    const outside = join(await workspace(), "target.txt");
+    await writeFile(outside, "keep me\n");
+    await mkdir(join(root, ".agentx-python"));
+    await symlink(outside, join(root, ".agentx-python", ".gitignore"));
+    await start(root);
+    expect(await readFile(outside, "utf8")).toBe("keep me\n");
+    const found = await lstat(join(root, ".agentx-python", ".gitignore"));
+    expect(found.isFile()).toBe(true);
+    expect(await readFile(join(root, ".agentx-python", ".gitignore"), "utf8")).toBe("*\n");
   });
 });
