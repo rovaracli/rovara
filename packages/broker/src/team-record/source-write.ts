@@ -368,15 +368,20 @@ async function saveChange(run: Run, body: Extract<SourceWriteBody, { action: "ch
   // The starting point of a retention change is the STORED row, never anything the caller says.
   const needsSecond = body.retention !== undefined && body.retention !== current.retention
     ? await needsSecondPersonForRetention(run, body.source, current.retention, body.retention, notesOptIn === true) : false;
-  // Turning a Slack row on or widening it (more kept, a wider audience) looks at the channel again: it may have become Slack Connect since. Turning off or keeping less never asks Slack.
-  if (body.source === "slack" && ((body.enabled === true && !current.enabled) || (body.retention !== undefined && exceedsRetention(body.retention, current.retention)) || (body.audienceDefault === "project" && current.audienceDefault !== "project"))) {
-    await checkScope(run, body.source, body.scope);
+  // A Slack row turned on, or kept more (more retained, a wider audience), looks at the channel again: it may have become Slack Connect, private or a DM since. Turning off or keeping less never asks Slack.
+  // Turning it on or widening who sees it is as less safe as adding the place was, so the class the server just read brings its reasons (Enterprise: a second person for a private channel, DM or group DM).
+  const turnsOn = body.enabled === true && !current.enabled;
+  const widensAudience = body.audienceDefault === "project" && current.audienceDefault !== "project";
+  let placeReasons: SourceChangeReason[] = [];
+  if (body.source === "slack" && (turnsOn || widensAudience || (body.retention !== undefined && exceedsRetention(body.retention, current.retention)))) {
+    const place = await checkScope(run, body.source, body.scope);
+    if (turnsOn || widensAudience) placeReasons = scopeReasons(run.sources.edition, place.slack);
   }
   const next = {
     retention, audienceDefault: body.audienceDefault ?? current.audienceDefault, enabled: body.enabled ?? current.enabled, exclude: body.exclude ?? current.exclude,
     ...(notesOptIn === undefined ? {} : { notesOptIn }),
   };
-  const reasons = orderedReasons(needsSecond ? ["retention_raise"] : []);
+  const reasons = orderedReasons([...placeReasons, ...(needsSecond ? (["retention_raise"] as const) : [])]);
   if (reasons.length > 0) {
     const { revision: _revision, updatedAt: _updatedAt, approval: _approval, lastCursor: _lastCursor, ...base } = current; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out of a proposal's row
     const { notesOptIn: _dropped, ...withoutNotes } = base; // eslint-disable-line @typescript-eslint/no-unused-vars -- set again below
@@ -546,6 +551,12 @@ async function approveChange(run: Run, changeId: string): Promise<Reply> {
     await refuseWhileRemoving(run, scope);
     const holder = await readScopeClaim(table, run.orgId, source, scope);
     if (holder !== undefined && holder !== run.project) throw invalid(WORDS.taken);
+  } else if (source === "slack") {
+    // A change to a Slack row looks at the channel again too: Slack Connect or an unreadable channel refuses; a row turned on or widened that now needs more care than the waiting change says is made again.
+    const place = await checkScope(run, source, scope);
+    const turnsOn = proposal.row.enabled && !current!.enabled;
+    const widensAudience = proposal.row.audienceDefault === "project" && current!.audienceDefault !== "project";
+    if ((turnsOn || widensAudience) && scopeReasons(run.sources.edition, place.slack).some((reason) => !proposal.reasons.includes(reason))) throw stale();
   }
   // The rules are asked again: the company may have set a ceiling since.
   await needsSecondPersonForRetention(run, source, current?.retention, proposal.row.retention, proposal.row.notesOptIn === true);

@@ -356,6 +356,98 @@ describe("Slack: changing a row", () => {
   });
 });
 
+describe("Slack: a change that turns a row on or widens it brings the reasons of the channel's class now (fix round 1)", () => {
+  const CLASSES = [[CH.priv, "private_channel"], [CH.dm, "dm"], [CH.mpim, "mpim"]] as const;
+  /** A row for a channel of this class in Enterprise, added and approved by a second person. */
+  async function approvedRow(h: Harness, channel: string, over: Record<string, unknown> = {}) {
+    const proposed = await post(h, WHO.maint, add({ scope: slackScope(channel), ...over }));
+    expect(proposed.status).toBe(202);
+    expect(await post(h, WHO.owner, { action: "approve", changeId: proposed.body.changeId })).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
+  }
+
+  it("a public row whose channel became private: widening the audience, or turning it on, waits for a second person with private_channel", async () => {
+    const h = harness();
+    expect((await post(h, WHO.owner, add())).status).toBe(200);
+    h.channels.set(CH.pub, { kind: "private", extShared: false });
+    expect(await post(h, WHO.owner, change(1, { audienceDefault: "project" }))).toMatchObject({ status: 202, body: { status: "needs_approval" } });
+    expect(proposals(h)).toMatchObject([{ kind: "change", reasons: ["private_channel"] }]);
+    expect(sourceRows(h)).toMatchObject([{ audienceDefault: "maintainers", revision: 1 }]);
+
+    const off = harness();
+    expect((await post(off, WHO.owner, add({ enabled: false }))).status).toBe(200);
+    off.channels.set(CH.pub, { kind: "mpim", extShared: false });
+    expect(await post(off, WHO.owner, change(1, { enabled: true, retention: "D" }))).toMatchObject({ status: 202 });
+    expect(proposals(off)).toMatchObject([{ reasons: ["mpim", "retention_raise"] }]);
+    expect(sourceRows(off)).toMatchObject([{ enabled: false, revision: 1 }]);
+  });
+
+  it("a private, DM or group DM row turned off and back on waits for a second person; turning it off, or narrowing it, stays immediate and never asks Slack", async () => {
+    for (const [channel, reason] of CLASSES) {
+      const h = harness();
+      await approvedRow(h, channel, { audienceDefault: "project" });
+      const reads = h.reads.length;
+      expect(await post(h, WHO.owner, change(1, { scope: slackScope(channel), enabled: false })), channel).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+      expect(await post(h, WHO.owner, change(2, { scope: slackScope(channel), audienceDefault: "maintainers" })), channel).toEqual({ status: 200, body: { status: "saved", revision: 3 } });
+      expect(h.reads).toHaveLength(reads);
+      expect(await post(h, WHO.owner, change(3, { scope: slackScope(channel), enabled: true })), channel).toMatchObject({ status: 202 });
+      expect(proposals(h), channel).toMatchObject([{ kind: "change", reasons: [reason] }]);
+      expect(sourceRows(h), channel).toMatchObject([{ enabled: false, revision: 3 }]);
+      // The second person applies it, and the row is on.
+      expect(await post(h, WHO.admin, { action: "approve", changeId: proposals(h)[0]!.id })).toEqual({ status: 200, body: { status: "saved", revision: 4 } });
+      expect(sourceRows(h), channel).toMatchObject([{ enabled: true, revision: 4 }]);
+    }
+  });
+
+  it("a retention raise alone on an approved private row still waits only for retention_raise, and Public needs no second person to turn a private row on", async () => {
+    const h = harness();
+    await approvedRow(h, CH.priv);
+    expect(await post(h, WHO.owner, change(1, { scope: slackScope(CH.priv), retention: "D" }))).toMatchObject({ status: 202 });
+    expect(proposals(h)).toMatchObject([{ reasons: ["retention_raise"] }]);
+    const pub = harness({ edition: "public" });
+    expect((await post(pub, WHO.owner, add({ scope: slackScope(CH.priv), retention: "A", enabled: false }))).status).toBe(200);
+    expect(await post(pub, WHO.owner, change(1, { scope: slackScope(CH.priv), enabled: true }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+  });
+
+  it("approving a change reads the channel again: Slack Connect is refused, an unreadable channel is 503, nothing is applied and the change stays; a class that now needs more care is made again", async () => {
+    const h = harness();
+    expect((await post(h, WHO.owner, add())).status).toBe(200);
+    h.channels.set(CH.pub, { kind: "private", extShared: false });
+    const waiting = await post(h, WHO.maint, change(1, { audienceDefault: "project" }));
+    const changeId = waiting.body.changeId as string;
+    h.channels.set(CH.pub, { kind: "private", extShared: true });
+    expect(await post(h, WHO.owner, { action: "approve", changeId })).toEqual(NOT_ALLOWED(CONNECT_WORDS));
+    h.channels.set(CH.pub, "unreadable");
+    expect(await post(h, WHO.owner, { action: "approve", changeId })).toMatchObject({ status: 503, body: { code: "RUNTIME_UNAVAILABLE" } });
+    h.channels.set(CH.pub, "throws");
+    expect(await post(h, WHO.owner, { action: "approve", changeId })).toMatchObject({ status: 503 });
+    expect(proposals(h)).toHaveLength(1);
+    expect(sourceRows(h)).toMatchObject([{ audienceDefault: "maintainers", revision: 1 }]);
+    h.channels.set(CH.pub, { kind: "private", extShared: false });
+    expect(await post(h, WHO.owner, { action: "approve", changeId })).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+    expect(sourceRows(h)).toMatchObject([{ audienceDefault: "project", revision: 2 }]);
+
+    // A change waiting only for retention_raise, on a row that is turned on, whose channel became private: made again.
+    const drift = harness();
+    expect((await post(drift, WHO.owner, add({ enabled: false }))).status).toBe(200);
+    const only = await post(drift, WHO.maint, change(1, { enabled: true, retention: "D" }));
+    expect(proposals(drift)).toMatchObject([{ reasons: ["retention_raise"] }]);
+    drift.channels.set(CH.pub, { kind: "private", extShared: false });
+    expect(await post(drift, WHO.owner, { action: "approve", changeId: only.body.changeId })).toMatchObject({ status: 409, body: { code: "CHANGE_STALE" } });
+    expect(sourceRows(drift)).toMatchObject([{ enabled: false, revision: 1 }]);
+  });
+
+  it("approving a retention raise on a row that stays as it is reads the channel (Connect refuses) but a private class alone does not make it stale", async () => {
+    const h = harness();
+    await approvedRow(h, CH.priv);
+    const raise = await post(h, WHO.maint, change(1, { scope: slackScope(CH.priv), retention: "D" }));
+    expect(raise.status).toBe(202);
+    h.channels.set(CH.priv, { kind: "private", extShared: true });
+    expect(await post(h, WHO.owner, { action: "approve", changeId: raise.body.changeId })).toEqual(NOT_ALLOWED(CONNECT_WORDS));
+    h.channels.set(CH.priv, { kind: "private", extShared: false });
+    expect(await post(h, WHO.owner, { action: "approve", changeId: raise.body.changeId })).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
+  });
+});
+
 describe("Linear and Jira: the place must be one the connected app lists", () => {
   it("a listed Linear team and a listed Jira project are saved; the stored row keeps what the editor sent for the audience (maintainers first)", async () => {
     const h = harness();
