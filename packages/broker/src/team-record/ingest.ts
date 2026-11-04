@@ -172,11 +172,13 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   let ceiling: RetentionMode;
   let excluded: readonly string[] = [];
   let notesOptIn = false;
-  if (scope === undefined) {
+  // Rovara's own events: the project's `rovara:project/<p>` row decides, also for a private task's event (its access snapshot names the task's place, which has no row of its own).
+  const rowScope = draft.source === "rovara" && project !== undefined ? `rovara:project/${project}` : scope;
+  if (rowScope === undefined) {
     if (draft.source !== "rovara") return refused("no_scope");
     ceiling = deps.rovaraDefaultRetention;
   } else {
-    const config = await getSourceConfigByScope(deps.table, orgId, draft.source, scope);
+    const config = await getSourceConfigByScope(deps.table, orgId, draft.source, rowScope);
     if (config === undefined) {
       if (draft.source !== "rovara") return refused("no_source_row");
       ceiling = deps.rovaraDefaultRetention;

@@ -116,6 +116,8 @@ export interface CodeHostTapDependencies extends GateDependencies {
   log?: TapLog;
   /** S2: lets a comment edited by its own author, with no earlier text from the host, keep that author's whole text when nobody else edited it before. Absent: such an edit keeps no words. */
   priorEdits?: PriorEditsPort;
+  /** A repository deleted or transferred marks its source row's health `failing` (after the place is tombstoned). Absent: the row is left as it is (tests). */
+  sourceHealth?: { markFailing(input: { workspaceId: string; source: SourceSystem; scope: string }): Promise<void> };
 }
 
 export interface TapResult {
@@ -163,6 +165,14 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
       } catch {
         result.failed += 1;
         log("record.tombstone_failed", { host: event.repo.host });
+      }
+      // The place is gone at its source: its source row (if any) reads as failing. Never fails the delivery.
+      if (event.type === "repository" && deps.sourceHealth !== undefined) {
+        try {
+          await deps.sourceHealth.markFailing({ workspaceId: event.repo.workspaceId, source: sourceOf(event.repo), scope: repoScope(event.repo) });
+        } catch {
+          log("record.health_failed", { host: event.repo.host });
+        }
       }
       return result;
     }

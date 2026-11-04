@@ -491,6 +491,33 @@ async function scrubRow(table: TeamRecordTable, config: SourceConfig, plan: (row
   throw new Error("the source row kept changing");
 }
 
+/**
+ * A place that is gone at its source (a repository deleted or transferred): the source row's `health` becomes `failing`. The write touches ONLY `health`. It never moves `revision` or `updatedAt`, so
+ * an editor who loaded the row at revision N can still write at N (the source route's fence), and the route's own writes set only the five editable fields, so a change never undoes the health.
+ * It is conditional on the revision it read (a missing revision reads as 0, like everywhere), so a row removed and added again, or changed, between the read and the write is read again (three
+ * attempts, then `busy`: the caller logs a fixed code; the place is already closed either way). `no_row`: nothing to mark. `already`: nothing to write.
+ */
+export async function markSourceFailing(table: TeamRecordTable, orgId: OrgId, source: RecordSystem, scope: string): Promise<"marked" | "already" | "no_row" | "busy"> {
+  for (let attempt = 0; attempt < SCRUB_ATTEMPTS; attempt += 1) {
+    const row = await getSourceConfigByScope(table, orgId, source, scope);
+    if (row === undefined) return "no_row";
+    if (row.health === "failing") return "already";
+    const aliases = new Aliases();
+    const revision = aliases.name("revision");
+    try {
+      await table.documentClient.send(new UpdateCommand({
+        TableName: table.tableName, Key: recordSourceKey(orgId, row.project, source, scope), UpdateExpression: `SET ${aliases.name("health")} = ${aliases.value("failing")}`,
+        ConditionExpression: row.revision === undefined ? `attribute_exists(${aliases.name("pk")}) AND attribute_not_exists(${revision})` : `attribute_exists(${aliases.name("pk")}) AND ${revision} = ${aliases.value(row.revision)}`,
+        ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
+      }));
+      return "marked";
+    } catch (error) {
+      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+    }
+  }
+  return "busy";
+}
+
 export async function scrubConfigDeveloper(table: TeamRecordTable, config: SourceConfig, developerId: string): Promise<boolean> {
   return scrubRow(table, config, (row) => {
     const addedBy = row.addedBy === developerId;

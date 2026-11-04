@@ -1,6 +1,8 @@
 // Part of the broker (split out of ../broker.ts): the Team record's call sites. Everything here is an optional chain on `dependencies.teamRecord`, which is `undefined` unless the install was deployed with the
 // record's switch on (`TEAM_RECORD_ENABLED=1`, team-record/runtime.ts). With it off no function in this file reads, writes, schedules or even builds a client: the handler's branches answer "off" and return.
 import { teamRecordOpsQueueName } from "@agentx/contracts";
+import { registerTaskEndHandler } from "../../agents/task-end.js";
+import { recordListenerOf, recordTaskEndHandler, registerRovaraRecordListener } from "../../lessons/record-events.js";
 import { registerHumanSendBackListener, sendBackToRecord, } from "../../lessons/send-back-events.js";
 import { TEAM_RECORD_SLACK_SOURCE, type SlackForwardEvent } from "../../team-record/slack-forward.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type RemovalFallback, type RemovalFallbackEvent } from "../../team-record/ops-queue.js";
@@ -47,6 +49,8 @@ export async function recordSlackForward(dependencies: HasTeamRecord, event: Sla
 }
 
 let removeSendBack: (() => void) | undefined;
+/** The other four events (a remembered note, a plan's outcome, a published review's outcome, the end of the task): one listener and the task-end handler (`lessons/record-events.ts`). */
+let removeRovaraEvents: Array<() => void> = [];
 let current: HasTeamRecord | undefined;
 
 /**
@@ -60,6 +64,16 @@ export function installTeamRecordEmitter(dependencies: HasTeamRecord): void {
     const emitter = current?.teamRecord?.emitter;
     if (emitter !== undefined) await sendBackToRecord(emitter)(event);
   });
+  // The rest of Rovara's own events, the same way: late-bound to the latest runtime, registered once per process and only where the record is on.
+  if (removeRovaraEvents.length === 0) {
+    removeRovaraEvents = [
+      registerRovaraRecordListener(async (event) => {
+        const emitter = current?.teamRecord?.emitter;
+        if (emitter !== undefined) await recordListenerOf(emitter)(event);
+      }),
+      registerTaskEndHandler(recordTaskEndHandler()),
+    ];
+  }
 }
 
 /** Whether the send-back listener is registered (it is only where the record is on). */
@@ -69,6 +83,8 @@ export const teamRecordEmitterInstalled = (): boolean => removeSendBack !== unde
 export function uninstallTeamRecordEmitter(): void {
   removeSendBack?.();
   removeSendBack = undefined;
+  for (const remove of removeRovaraEvents) remove();
+  removeRovaraEvents = [];
   current = undefined;
 }
 

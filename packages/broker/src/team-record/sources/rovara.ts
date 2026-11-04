@@ -5,8 +5,8 @@
 //
 // Structured parts (outcomes, counts, codes) are kept long-term. Free text (a send-back reason, a remembered note) follows the project's
 // "rovara" source row: retention A drops it. Audience follows the task's visibility (Plan 5): a private task's events are never project-wide.
-import { cleanText, gate, linksOf, scalars, withRetention, type GateDependencies } from "./common.js";
-import type { ActorResolverPort, Audience, ReflectorTriggerPort, RecordDraft, RecordKind, RecordSinkPort, TapLog, TrustClass } from "./ports.js";
+import { cleanText, linksOf, scalars, withRetention, type GateDependencies } from "./common.js";
+import { MAINTAINERS_GROUP, type ActorResolverPort, type Audience, type ReflectorTriggerPort, type RecordDraft, type RecordKind, type RecordSinkPort, type Retention, type SourceConfig, type TapLog, type TrustClass } from "./ports.js";
 
 export type TaskVisibility =
   | { kind: "shared" }
@@ -28,13 +28,23 @@ export interface RovaraEmitterDependencies extends GateDependencies {
   actors: ActorResolverPort;
   reflector?: ReflectorTriggerPort;
   log?: TapLog;
+  /**
+   * What applies when the project has NO `rovara:project/<p>` source row: the edition's default retention for Rovara's own events (the same word the ingest uses as its ceiling then). Absent: no row means no
+   * record (tests). A row that exists is read as written: its switch, its retention and its audience.
+   */
+  defaultRetention?: Retention;
 }
 
 export const rovaraScope = (project: string): string => `rovara:project/${project}`;
 
-export function audienceOfVisibility(base: Pick<RovaraEventBase, "taskId" | "visibility" | "at">): Audience {
+/**
+ * Who may read the rows of a task. A private or shared-with task is restricted to the people named, whatever the source row says (a row never widens it). A shared task is the project's, unless the
+ * project's Rovara row says maintainers only (`audienceDefault`), which narrows it to the project's maintainers.
+ */
+export function audienceOfVisibility(base: Pick<RovaraEventBase, "taskId" | "visibility" | "at">, audienceDefault: "project" | "maintainers" = "project"): Audience {
   const { visibility } = base;
-  if (visibility.kind === "shared") return { kind: "project" };
+  if (visibility.kind === "shared" && audienceDefault === "project") return { kind: "project" };
+  if (visibility.kind === "shared") return { kind: "restricted", acl: { source: "rovara", scope: `rovara:task/${base.taskId}`, groups: [MAINTAINERS_GROUP], capturedAt: base.at, liveCheck: "none" } };
   const principals = visibility.kind === "private" ? [visibility.ownerDeveloperId] : [...visibility.developerIds].slice(0, 500);
   return { kind: "restricted", acl: { source: "rovara", scope: `rovara:task/${base.taskId}`, principals, capturedAt: base.at, liveCheck: "none" } };
 }
@@ -52,17 +62,30 @@ export interface RovaraEmitter {
 export function createRovaraEmitter(deps: RovaraEmitterDependencies): RovaraEmitter {
   const log: TapLog = deps.log ?? (() => undefined);
 
+  /** The project's Rovara row, or (no row) the edition's default. A disabled row, capture off, an unreadable row: nothing is recorded (fail closed). */
+  async function rovaraConfigOf(base: RovaraEventBase): Promise<Pick<SourceConfig, "retention" | "audienceDefault"> | undefined> {
+    try {
+      const row = await deps.config.get(base.workspaceId, "rovara", rovaraScope(base.project));
+      if (row === undefined && deps.defaultRetention === undefined) return undefined;
+      if (row !== undefined && !row.enabled) return undefined;
+      if (!await deps.mode.captureOn(base.workspaceId, base.project)) return undefined;
+      return row ?? { retention: deps.defaultRetention!, audienceDefault: "project" };
+    } catch {
+      return undefined;
+    }
+  }
+
   async function emit(base: RovaraEventBase, kind: RecordKind, parts: {
     id: string; version: string; trust: TrustClass; text?: string; structured: Record<string, string | number | boolean | undefined>; actor?: RecordDraft["actor"]; origin?: "slack";
   }): Promise<"stored" | "duplicate" | "queued" | "refused" | "skipped" | "failed"> {
     try {
-      const config = await gate(deps, { workspaceId: base.workspaceId, project: base.project, source: "rovara", scope: rovaraScope(base.project) });
+      const config = await rovaraConfigOf(base);
       if (config === undefined) return "skipped";
       const text = cleanText(parts.text);
       const draft: RecordDraft = {
         workspaceId: base.workspaceId, project: base.project, source: "rovara", kind, occurredAt: base.at,
         sourceRef: { system: "rovara", id: parts.id, ...(base.url === undefined ? {} : { url: base.url }), parentId: `task:${base.taskId}`, version: parts.version },
-        ...(parts.actor === undefined ? {} : { actor: parts.actor }), trust: parts.trust, scope: rovaraScope(base.project), audience: audienceOfVisibility(base),
+        ...(parts.actor === undefined ? {} : { actor: parts.actor }), trust: parts.trust, scope: rovaraScope(base.project), audience: audienceOfVisibility(base, config.audienceDefault),
         ...(text === undefined ? {} : { text }), structured: scalars({ taskId: base.taskId, ...parts.structured }), links: linksOf(base.url), retention: config.retention,
         ...(parts.origin === undefined ? {} : { origin: parts.origin }),
       };

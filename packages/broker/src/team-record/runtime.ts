@@ -30,6 +30,7 @@ import type { RecordAuditSink } from "./audit.js";
 import { callRecordTool, recordToolsFor, type RecordToolContext } from "./agent-tools.js";
 import { runDeleteWorker, type DeleteBudget } from "./delete-worker.js";
 import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition.js";
+import { markSourceFailing } from "./store.js";
 import { createEmbedder } from "./embed.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
@@ -505,10 +506,17 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   };
   const priorEdits = priorEditsPort(table, now);
   // Per-editor rows: every change is its own row under the person who made it, and the sink counts a change whose person is not linked (`author_not_linked`).
-  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits });
+  // A repository deleted or transferred also marks its source row `failing` (health only: no new revision, see `markSourceFailing`).
+  const sourceHealth = {
+    async markFailing({ workspaceId, source, scope }: { workspaceId: string; source: string; scope: string }): Promise<void> {
+      const org = OrgIdSchema.safeParse(workspaceId);
+      if (org.success && await markSourceFailing(table, org.data, source, scope) === "busy") log("record.health_busy", {});
+    },
+  };
+  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits, sourceHealth });
   const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog, priorEdits });
   const hook = createHookRecordTap({ recorder });
-  const emitter = createRovaraEmitter({ sink, actors, mode, config, log: tapLog });
+  const emitter = createRovaraEmitter({ sink, actors, mode, config, log: tapLog, defaultRetention: defaultRetention(edition, "rovara") });
 
   // ---- the query API
   async function queryFor(orgId: OrgId): Promise<RecordQueryDependencies> {
