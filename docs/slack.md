@@ -169,7 +169,7 @@ Then configure the Slack app:
 - Under **Event Subscriptions**, enable events and set the request URL to the `SlackEventsUrl`
   output. Slack verifies the URL immediately, which succeeds only after the secret is stored.
 - Subscribe to the bot events `app_mention`, `message.channels`, `message.groups`,
-  `member_joined_channel`, `member_left_channel`, `channel_deleted`, `channel_id_changed`,
+  `member_joined_channel`, `member_left_channel`, `channel_deleted`, `group_deleted`, `channel_id_changed`,
   `channel_shared`, `app_uninstalled` and `tokens_revoked`. The two message events deliver replies
   in the thread of a task started in Slack, which are saved as input for the task's next step;
   Rovara ignores, and does not store, any other channel message. The other events are for the Team
@@ -180,7 +180,7 @@ Then configure the Slack app:
   channel's rows are removed). **The two member events go together: subscribe to both or to
   neither.** With only the join, Rovara's own join would switch a private channel's access to
   events alone and a person who leaves would keep reading it. None of these needs a new scope
-  (`channels:read` and `groups:read` already cover them; `channel_id_changed`, `app_uninstalled`
+  (`channels:read` and `groups:read` already cover them, `groups:read` being the one `group_deleted` needs; `channel_id_changed`, `app_uninstalled`
   and `tokens_revoked` need none). **An app made before these events were listed must add them
   by hand** under Event Subscriptions, bot events, and save; nothing else changes, and no
   reinstall is needed because no scope changes.

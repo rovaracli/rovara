@@ -221,6 +221,15 @@ describe("Slack tap: edits, deletes and membership", () => {
     ]);
   });
 
+  it("tombstones a private place on group_deleted exactly as on channel_deleted (cause source_deleted)", async () => {
+    const { w, tap } = setup("enterprise");
+    w.mode.on = false;
+    expect(await tap({ type: "event_callback", team_id: TEAM, event: { type: "group_deleted", channel: PRIV } })).toEqual({ outcome: "scope_removed" });
+    expect(w.sink.tombstones).toMatchObject([{ system: TEAM, scope: `slack:${TEAM}/${PRIV}`, cause: "source_deleted" }]);
+    expect(await tap({ type: "event_callback", team_id: TEAM, event: { type: "group_deleted", channel: "not-a-channel" } })).toEqual({ outcome: "ignored", reason: "malformed" });
+    expect(w.sink.tombstones).toHaveLength(1);
+  });
+
   it("refreshes a private channel's members on join and leave, and leaves a public channel alone", async () => {
     const { w, tap } = setup("enterprise");
     await tap({ type: "event_callback", team_id: TEAM, event: { type: "member_joined_channel", channel: PRIV, channel_type: "G", user: "U0CAROL0001", event_ts: TS } });

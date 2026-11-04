@@ -23,7 +23,7 @@ export interface SlackForwardEvent {
 }
 
 /** `message` events and edits carry text; nothing else the tap handles does. */
-const REMOVAL_EVENTS = new Set(["channel_deleted", "channel_shared", "channel_id_changed", "app_uninstalled", "tokens_revoked"]);
+const REMOVAL_EVENTS = new Set(["channel_deleted", "group_deleted", "channel_shared", "channel_id_changed", "app_uninstalled", "tokens_revoked"]);
 const KEEP_FIELDS = ["type", "subtype", "channel", "deleted_ts", "ts", "event_ts", "old_channel_id", "new_channel_id", "tokens", "channel_type"] as const;
 
 /** The event cut down to ids, or `undefined` when it is not a removal. A deleted message's old text (`previous_message`, `message`) never leaves the ingress: only the tombstone's `ts` and subtype do. */
@@ -140,7 +140,7 @@ export function createSlackForwarder(deps: SlackForwarderDependencies): (payload
     if (typeof teamId !== "string" || !TEAM.test(teamId) || typeof event.type !== "string") return;
     const channelId = typeof event.channel === "string" ? event.channel : record(event.channel).id;
     const forward: SlackForwardEvent = { source: TEAM_RECORD_SLACK_SOURCE, payload };
-    if (typeof channelId === "string" && CHANNEL.test(channelId) && event.type !== "channel_deleted") {
+    if (typeof channelId === "string" && CHANNEL.test(channelId) && event.type !== "channel_deleted" && event.type !== "group_deleted") {
       const key = `${teamId}/${channelId}`;
       const hit = cache.get(key);
       let info = hit !== undefined && now() - hit.at < 300_000 ? hit.info : undefined;

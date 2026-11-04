@@ -79,13 +79,13 @@ describe("Slack app manifest", () => {
   it("subscribes to exactly the bot events the Team record tap handles, the member events as a pair, and needs no scope the app does not already request", () => {
     expect([...SLACK_BOT_EVENTS]).toEqual([
       "app_mention", "message.channels", "message.groups",
-      "member_joined_channel", "member_left_channel", "channel_deleted", "channel_id_changed", "channel_shared", "app_uninstalled", "tokens_revoked",
+      "member_joined_channel", "member_left_channel", "channel_deleted", "group_deleted", "channel_id_changed", "channel_shared", "app_uninstalled", "tokens_revoked",
     ]);
     // Final review 3, C1: joins without leaves lock a private channel's access to events that never remove anyone. Both or neither.
     expect(SLACK_BOT_EVENTS.includes("member_joined_channel")).toBe(SLACK_BOT_EVENTS.includes("member_left_channel"));
     // Every real Slack event type the tap handles is subscribed (conversions arrive as message subtypes, through message.channels and message.groups).
     for (const type of SLACK_TAP_EVENT_TYPES) expect(SLACK_BOT_EVENTS, type).toContain(type);
-    // Slack's docs: member_left_channel and channel_shared need channels:read / groups:read; channel_deleted needs channels:read; message subtypes need channels:history / groups:history; the rest need no scope.
+    // Slack's docs: member_left_channel and channel_shared need channels:read / groups:read; channel_deleted needs channels:read and group_deleted needs groups:read; message subtypes need channels:history / groups:history; the rest need no scope.
     for (const scope of ["channels:read", "groups:read", "channels:history", "groups:history"]) expect(SLACK_BOT_SCOPES).toContain(scope);
   });
 
