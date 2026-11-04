@@ -2814,7 +2814,7 @@ it("enrollment cutover reports verified own-source funding as exempt, without ch
  for (const id of BUILTIN_AGENT_IDS) { const key = builtinSettingsKey(TEST_ORG, id);if (f.t.db.get(key) === undefined) f.t.db.set({ ...key, orgId: TEST_ORG, entityType: "BUILTIN_AGENT_SETTINGS", agentId: id, revision: 1, stopKind: "inherit" }); }
  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "ready" }, enrollmentReview: { reviewId: randomUUID(), digest: "d".repeat(64), sourceDigest: "e".repeat(64), by: ADA.developerId, at: new Date().toISOString(), tasksReviewed: 0 } });
  const captured = await captureCompanyCutover({ documentClient: f.t.db, tableName: "state", now: () => f.fundingNow, agents,
-  developer: { issuer: "https://cell.example", env: "test", signInTableName: "signin", methods: { cloud: true, slack: false, oidc: false }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) },
+  developer: { issuer: "https://cell.example", env: "test", signInTableName: "signin", methods: { cloud: true, slack: false, oidc: false }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true as const, memberOf: [] }) },
  }, { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner", name: ADA.name, amr: "oidc", sessionId: ADA.sessionId });
  expect(captured.tasks).toEqual(expect.arrayContaining([expect.objectContaining({ taskId, outcome: "exempt", effectiveStopMicrousd: 0 })]));
  expect(f.t.meta(taskId)).toEqual(before);
@@ -2824,4 +2824,45 @@ for (const state of ["ready", "enabled"] as const) it(`spend-request decider rec
  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state }, enrollmentReview: { reviewId: randomUUID(), digest: "d".repeat(64), sourceDigest: "e".repeat(64), by: ADA.developerId, at: new Date().toISOString(), tasksReviewed: 0 } });
  if (state === "enabled") await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "FORBIDDEN" });
  else expect((await f.t.decide(MAYA, f.spendRequest.spendRequestId)).spendRequest.status).toBe("APPROVED");
+});
+
+for (const scenario of ["plain", "requested", "own-source", "spent", "zero", "own-source-zero"] as const) it(`cutover projection agrees with real Continue: ${scenario}`, async () => {
+ const { BUILTIN_AGENT_IDS } = await import("@agentx/contracts");
+ const { capturingAuditDeps } = await import("../support/audit-capture.js");
+ const { reviewTaskStopEnrollment, writeTaskStopEnrollment } = await import("../../packages/broker/src/org/task-stop-enrollment.js");
+ const f = scenario.startsWith("own-source") ? await ownSourceFundingFixture() : await fixture();
+ const now = "fundingNow" in f && typeof f.fundingNow === "number" ? f.fundingNow : Date.now(), amount = scenario.includes("zero") ? 0 : 2_000_000;
+ f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: amount } }, enrollment: { version: 1, state: "disabled" } });
+ f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 10 } });
+ f.t.db.set({ ...f.t.db.get(f.project)!, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+ for (const id of BUILTIN_AGENT_IDS) { const key = builtinSettingsKey(TEST_ORG, id);f.t.db.set({ ...f.t.db.get(key), ...key, orgId: TEST_ORG, entityType: "BUILTIN_AGENT_SETTINGS", agentId: id, revision: 1, stopKind: "inherit" }); }
+ const started = await f.start();expect(started.status, JSON.stringify(started.body)).toBe(200);
+ const taskId = (started.body.task as { taskId: string }).taskId;
+ // Legacy plain tasks can carry the requested limit persisted by older start paths.
+ if (scenario === "requested") f.t.db.set({ ...f.t.meta(taskId), requestedRunLimitUsd: 0.5 });
+ const workspaceId = f.t.meta(taskId).workspaceId;
+ expect(f.t.meta(taskId).fundingProof).toBeUndefined();expect(f.t.meta(taskId).spendingStop).toBeUndefined();
+ await f.t.finish(workspaceId, f.t.activeOf(workspaceId), "SUCCEEDED", PREPARED);
+ await f.t.pauseAndEnd({ taskId, workspaceId }, "none");
+ const spent = scenario === "spent" ? 5 : 0;
+ f.t.access.keySpend.mockResolvedValue(spent);
+ if (scenario === "spent") f.t.db.set({ ...f.t.meta(taskId), modelKeyIds: ["prior-key"] });
+ const audit = capturingAuditDeps({ db: f.t.db });audit.audit.documentClient = f.t.db as never;
+ f.t.db.set({ ...f.t.db.get({ pk: `SESSION#${ADA.sessionId}`, sk: "META" })!, authTime: new Date(now - 60_000).toISOString() });
+ const deps = { documentClient: f.t.db, tableName: "state", now: () => now, agents: f.t.deps(), audit: audit.audit,
+  developer: { issuer: "https://cell.example", env: "test", signInTableName: "signin", methods: { cloud: true, slack: false, oidc: false }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true as const, memberOf: [] }) } };
+ const caller = { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" as const, name: ADA.name, amr: "oidc" as const, sessionId: ADA.sessionId };
+ const review = await reviewTaskStopEnrollment(deps, caller, { requestId: randomUUID(), expectedRevision: 1 });
+ const impact = review.tasks.find(task => task.taskId === taskId)!;
+ expect(impact).toMatchObject({ outcome: amount === 0 ? "refuse_next_admission" : "new_window_at_stop", effectiveStopMicrousd: scenario === "requested" ? 500000 : amount });
+ const terms = { reviewId: review.reviewId, expectedReviewDigest: review.digest };
+ await writeTaskStopEnrollment(deps, caller, { requestId: randomUUID(), expectedRevision: 1, state: "ready", ...terms });
+ await writeTaskStopEnrollment(deps, caller, { requestId: randomUUID(), expectedRevision: 2, state: "enabled", ...terms });
+ const continued = await f.t.api(MAYA, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "Continue after company cutover" });
+ if (amount === 0) expect(continued.body.error).toMatchObject({ code: "TASK_STOP_ZERO" });
+ else {
+  expect(continued.status, JSON.stringify(continued.body)).toBe(200);
+  expect(f.t.meta(taskId)).toMatchObject({ spendingStop: { effectiveStopMicrousd: impact.effectiveStopMicrousd }, budgetBaselineUsd: spent });
+  if (scenario === "requested") expect(f.t.meta(taskId).spendingStop).toMatchObject({ bindingScopes: ["requested"] });
+ }
 });

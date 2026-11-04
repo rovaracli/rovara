@@ -21,7 +21,7 @@ The owner-only enforcement step in TaskStopEditor is lazy, checks sign-in freshn
 
 ## Limits and deliberately unchanged behavior
 
-The workspace index is eventually consistent; the review is an as-of preview, not a serializable exhaustive rollout certificate. Admission is the safety mechanism. One-step bounds are W=2P+A+B <=80, <=25 active tasks, <=500 workspaces, <=128 KiB review, <=94 conservative transaction actions plus checked byte/item limits. Oversize is TASK_STOP_REVIEW_TOO_LARGE. Missing spend evidence with existing model keys refuses review; settled spend is advisory. newImpacts counts newly observed task ids whose fresh outcome is stop_at_next_admission or refuse_next_admission, relative to the supplied review.
+The workspace index is eventually consistent; the review is an as-of preview, not a serializable exhaustive rollout certificate. Admission is the safety mechanism. One-step bounds are W=2P+A+B <=80, <=100 active tasks, <=500 workspaces, <=128 KiB review, <=94 conservative transaction actions plus checked byte/item limits. Oversize is TASK_STOP_REVIEW_TOO_LARGE. No TASK_SPENT dependency: Continue opens a fresh window from current key spend. newImpacts counts newly observed task ids whose fresh outcome is new_window_at_stop or refuse_next_admission, relative to the supplied review.
 
 The existing calculator treats the ceiling as an approval cap and keeps ordinary unapproved estimates; no second formula was added. Task 2 must honor the shared calculation rather than invent a client-side minimum. New same-id/different-body requests follow checklist CONFIG_INVALID; task-stop-editing's older IDEMPOTENCY_CONFLICT convention was left unchanged.
 
@@ -38,3 +38,21 @@ No CI, full suite, typecheck:all, Linux runtime gate, AWS commands, deployment, 
 ## Next checkpoint
 
 STOP at M2 and wait for REVIEW-M2.md. Address findings before proceeding. Task 2 start-preview, Task 3 menu links and optional Task 4 Send back visibility are not implemented and remain behind M2 approval. M3 is not started.
+
+
+## M2-FIXES (REVIEW-M2)
+
+1. Exemption requires an admitted task funding proof equal to its frozen recipe proof. Removed the cutover-only funding bypass. Disabled-era own-source work is covered by real Continue tests, including zero refusal; admitted-proof coverage remains.
+2. R38 projections now say new_window_at_stop for positive queued work and retain_current_window for running work. Removed TASK_SPENT reads, so minted keys without a spend row do not block review. Real Continue checks its fresh baseline against current key spend.
+3. continueAdmissionIdentity is the pure shared input builder for Continue and cutover review, preserving disabled-era requestedRunLimitUsd and invalid-present refusal semantics. Task 2 must reuse it.
+4. Replaced the hand-built admission control with six Continue-driven cutover cases: plain, requested, own-source, spent-at/above-stop, zero, own-source-zero. The requested case uses an actual disabled-era plain start with a legacy persisted requestedRunLimitUsd field; the normal modern agent-start path creates a workflow, which Continue correctly refuses for unrelated reasons.
+5. GET and disable validate only company identity, revision and enrollment. Both malformed-policy regressions preserve the bad content, advance revision and produce one audit. The disable Put still fences the full native row.
+6. Ready registration now writes the same inherit row and policy condition as enabled registration. A real registration test proceeds ready -> disabled -> fresh review -> ready -> enabled. Disabled registration remains condition-only: this is behaviorally compatible, but not literally byte-identical when enrollment moves concurrently.
+7. Up to 100 tasks classified sequentially (bounded concurrency 1); all outcome counts returned, <=25 impacts listed with refusal/new-window priority, truncated explicitly. Review rows remain checked below 128 KiB. All private task ids are retained for correct newImpacts accounting beyond the list. 26-task enable and 101-task refusal covered.
+8. Fixed code-to-message mapping for too-large, missing/invalid config with a checked resource, ready/enable stale guidance, audit unavailable. UI renders resource text through VisibleText and discards raw server text. No retry write follows a refusal.
+9. sessions-ended loss added for enable and disable, plus both commit races. Request-time loss is REAUTH_REQUIRED. Commit-time identity drift remains FORBIDDEN by deliberate choice; membership/identity authority takes precedence and a reload/new sign-in is needed. No second owner is required for disabling.
+
+The historical M2-READY gate table describes ec8bd9baf, not this fix revision. Fresh gate/mutation evidence is recorded separately in m2-fixes-gates.json and m2-fix-mutations.json before the authorized integ/054 merge.
+
+
+M2-FIXES verification complete: `npm run typecheck`, strict pkg-broker/pkg-contracts/tests-contract-a/tests-contract-t-z, changed-file lint, seven owning lint shards, build:web, 21 named files / 1262 tests, six Chromium admin-spending journeys, codemap and diff checks passed. Four new mutations were killed by assertions and automatically restored; the final restored run passed four files / 609 tests. Initial JS is 184561 gzip bytes (historical M2 184564; original base 183820; cap 256000 unchanged). Review screenshot inspected. Exact commands/exits remain in local m2-fixes-gates.json and m2-fix-mutations.json.

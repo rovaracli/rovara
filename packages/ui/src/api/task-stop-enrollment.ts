@@ -14,9 +14,19 @@ export function createTaskStopEnrollmentApi(host: AppHost, orgId: string) {
   finally { clearTimeout(timer); }
   if (!live()) throw new ApiError(0, "SCOPE_ENDED", "Reload Spending.");
   if (response.status !== 200) {
-   const wire = response.body as { error?: { code?: unknown }; code?: unknown } | null, code = wire?.error?.code ?? wire?.code;
+   const wire = response.body as { error?: { code?: unknown; resource?: unknown }; code?: unknown; resource?: unknown } | null, code = wire?.error?.code ?? wire?.code;
+   const resource = wire?.error?.resource ?? wire?.resource;
+   const checked = resource !== null && typeof resource === "object" && "kind" in resource && "name" in resource && (resource.kind === "project" || resource.kind === "agent") && typeof resource.name === "string" && resource.name.length > 0 && resource.name.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(resource.name) ? ` ${resource.kind}: ${resource.name}.` : "";
+   const texts: Record<string, string> = {
+    REAUTH_REQUIRED: "Sign in again before reviewing or changing enforcement.",
+    TASK_STOP_REVIEW_TOO_LARGE: "This review supports up to 100 active tasks and 80 project/agent source actions. Reduce the inventory before trying again.",
+    TASK_STOP_CONFIG_MISSING: "Prepare the missing Spending setting before reviewing enforcement." + checked,
+    TASK_STOP_CONFIG_INVALID: "Repair the invalid Spending setting before reviewing enforcement." + checked,
+    CHANGE_STALE: typeof body === "object" && body !== null && "state" in body && body.state === "enabled" ? "Spending sources changed. Cancel setup and review again." : "Spending settings changed. Resolve pending changes and capture a fresh review.",
+    AUDIT_UNAVAILABLE: "The audit ledger is unavailable. Enforcement was not changed. Try again when the ledger is restored.",
+   };
    if (response.status === 401) host.signIn(host.currentPath(), { automatic: true });
-   throw new ApiError(response.status, code === "REAUTH_REQUIRED" ? code : "ENFORCEMENT_UNAVAILABLE", code === "REAUTH_REQUIRED" ? "Sign in again before reviewing or changing enforcement." : "Could not confirm enforcement. Resolve pending Spending changes, then reload the review.");
+   throw new ApiError(response.status, typeof code === "string" ? code : "ENFORCEMENT_UNAVAILABLE", typeof code === "string" && texts[code] !== undefined ? texts[code] : "Could not confirm enforcement. Reload and review before trying again.");
   }
   return response.body;
  }

@@ -50,7 +50,7 @@ async function write(deps: EnrollmentDeps, caller: DeveloperCaller, requestId: s
 }
 export async function getTaskStopEnrollment(deps: EnrollmentDeps, caller: DeveloperCaller, fresh = false) {
  await ownerChecks(deps, caller);if (fresh) await freshChecks(deps, caller);
- const source = await companySource(deps, caller);await ownerChecks(deps, caller);
+ const source = await companySource(deps, caller, false);await ownerChecks(deps, caller);
  return TaskStopEnrollmentReadSchema.parse({ orgId: caller.orgId, state: source.state, revision: source.revision });
 }
 export async function reviewTaskStopEnrollment(deps: EnrollmentDeps, caller: DeveloperCaller, value: unknown) {
@@ -60,14 +60,14 @@ export async function reviewTaskStopEnrollment(deps: EnrollmentDeps, caller: Dev
  const captured = await captureCompanyCutover(deps, caller);
  if (captured.source.state === "enabled" || captured.source.revision !== body.expectedRevision) throw stale();
  const at = deps.now(), review = TaskStopReviewSchema.parse({ orgId: caller.orgId, reviewId: randomUUID(), digest: captured.digest, revision: captured.source.revision,
-  complete: true, capturedAt: new Date(at).toISOString(), expiresAt: new Date(at + period).toISOString(), tasks: captured.tasks });
+  complete: true, capturedAt: new Date(at).toISOString(), expiresAt: new Date(at + period).toISOString(), tasks: captured.tasks, counts: captured.counts, truncated: captured.truncated });
  const key = taskStopReviewKey(caller.orgId, review.reviewId), row = { ...key, entityType: "TASK_STOP_REVIEW", by: caller.developerId, sourceDigest: captured.sourceDigest,
-  review, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((at + period) / 1000) };
+  taskIds: captured.allTasks.map(task => task.taskId), review, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((at + period) / 1000) };
  if (Buffer.byteLength(JSON.stringify(row)) > 128 * 1024) throw tooLarge();
  const items = [...mergeChecks([...authority, ...captured.checks]), { Put: { TableName: deps.tableName, Item: row, ConditionExpression: "attribute_not_exists(pk)" } }];
  return TaskStopReviewSchema.parse(await write(deps, caller, body.requestId, fingerprint, review, items, authority, []));
 }
-const Binding = z.object({ reviewId: z.string().uuid(), digest: z.string().regex(/^[a-f0-9]{64}$/), sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), by: z.string().regex(/^[a-f0-9]{64}$/), at: z.string().datetime(), tasksReviewed: z.number().int().min(0).max(25) }).strict();
+const Binding = z.object({ reviewId: z.string().uuid(), digest: z.string().regex(/^[a-f0-9]{64}$/), sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), by: z.string().regex(/^[a-f0-9]{64}$/), at: z.string().datetime(), tasksReviewed: z.number().int().min(0).max(100) }).strict();
 async function reviewed(deps: EnrollmentDeps, caller: DeveloperCaller, reviewId: string, expectedDigest: string) {
  const key = taskStopReviewKey(caller.orgId, reviewId), row = await read(deps, key);
  if (row === undefined) throw agentXError("NOT_FOUND", "No enforcement review belongs to this company.");
@@ -82,7 +82,7 @@ export async function writeTaskStopEnrollment(deps: EnrollmentDeps, caller: Deve
  const body = parsed.data, fingerprint = digest({ op: "task-stop-enrollment", orgId: caller.orgId, body });
  const earlier = await replay(deps, caller, body.requestId, fingerprint);if (earlier !== undefined) return TaskStopEnrollmentResultSchema.parse(earlier);
  // Read state only to decide whether this request loosens money. No revision/review verdict precedes REAUTH.
- const source = await companySource(deps, caller), sessions = body.state === "enabled" || body.state === "disabled" && source.state === "enabled" ? await freshChecks(deps, caller) : [];
+ const source = await companySource(deps, caller, body.state !== "disabled"), sessions = body.state === "enabled" || body.state === "disabled" && source.state === "enabled" ? await freshChecks(deps, caller) : [];
  if (source.revision !== body.expectedRevision || source.revision >= Number.MAX_SAFE_INTEGER) throw stale();
  const edge = `${source.state}:${body.state}`;
  if (!["disabled:ready", "ready:enabled", "ready:disabled", "enabled:disabled"].includes(edge)) throw stale();
@@ -100,15 +100,15 @@ export async function writeTaskStopEnrollment(deps: EnrollmentDeps, caller: Deve
   // Never compare policyDigest across a company revision bump, or fence task/workspace rows.
   if (r.sourceDigest !== fresh.sourceDigest) throw stale();
   if (body.state === "ready") {
-   if (r.review.revision !== source.revision) throw stale();tasksReviewed = r.review.tasks.length;tasksAtEnable = fresh.tasks.length;
+   if (r.review.revision !== source.revision) throw stale();tasksReviewed = Object.values(r.review.counts).reduce((sum, count) => sum + count, 0);tasksAtEnable = fresh.allTasks.length;
    next.enrollmentReview = Binding.parse({ reviewId: r.review.reviewId, digest: r.review.digest, sourceDigest: r.sourceDigest, by: caller.developerId, at: r.review.capturedAt, tasksReviewed });
   } else {
    const binding = Binding.safeParse(source.row.enrollmentReview);if (!binding.success || binding.data.sourceDigest !== r.sourceDigest) throw stale();
    const bound = binding.data.reviewId === r.review.reviewId && binding.data.digest === r.review.digest && r.review.revision === source.revision - 1;
    if (!bound && r.review.revision !== source.revision) throw stale();
-   tasksReviewed = r.review.tasks.length;tasksAtEnable = fresh.tasks.length;
-   const oldIds = new Set(r.review.tasks.map(task => task.taskId));
-   newImpacts = fresh.tasks.filter(task => !oldIds.has(task.taskId) && (task.outcome === "refuse_next_admission" || task.outcome === "stop_at_next_admission")).length;
+   tasksReviewed = Object.values(r.review.counts).reduce((sum, count) => sum + count, 0);tasksAtEnable = fresh.allTasks.length;
+   const oldIds = new Set(z.array(z.string().uuid()).max(100).parse(r.row.taskIds));
+   newImpacts = fresh.allTasks.filter(task => !oldIds.has(task.taskId) && (task.outcome === "refuse_next_admission" || task.outcome === "new_window_at_stop")).length;
    next.enrollmentReview = Binding.parse({ ...binding.data, reviewId: r.review.reviewId, digest: r.review.digest, by: caller.developerId, at: r.review.capturedAt, tasksReviewed });
   }
  } else if (body.state !== "disabled") throw invalid();

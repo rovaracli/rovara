@@ -90,7 +90,7 @@ it("owner reviews impacts before two explicit enforcement confirmations, after f
    if (r.method === "PUT") { state = (r.body as { state: string }).state;revision += 1;return { status: 200, body: { orgId, requestId: (r.body as { requestId: string }).requestId, state, revision, tasksReviewed: 0, tasksAtEnable: 0, newImpacts: 0 } }; }
    return { status: 200, body: { orgId, state, revision } };
   }
-  if (r.path.endsWith("/cutover-review")) return { status: 200, body: { orgId, reviewId, digest, revision, complete: true, capturedAt: "2026-11-04T15:00:00.000Z", expiresAt: "2026-11-04T15:05:00.000Z", tasks: [] } };
+  if (r.path.endsWith("/cutover-review")) return { status: 200, body: { orgId, reviewId, digest, revision, complete: true, capturedAt: "2026-11-04T15:00:00.000Z", expiresAt: "2026-11-04T15:05:00.000Z", tasks: [], truncated: false, counts: { refuse_next_admission: 0, new_window_at_stop: 0, retain_current_window: 0, exempt: 0 } } };
   return { status: 200, body: settings };
  } });
  try {
@@ -125,4 +125,30 @@ it("stale sign-in stops before review and offers the existing sign-in flow", asy
 it("turning off enabled enforcement also handles REAUTH without a second-owner flow", async () => {
  const f = mount({ respond: async r => r.path.includes("/enrollment") ? r.method === "GET" ? { status: 200, body: { orgId, state: "enabled", revision: 3 } } : { status: 403, body: { error: { code: "REAUTH_REQUIRED" } } } : { status: 200, body: settings } });
  try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));fireEvent.click(await screen.findByRole("button", { name: "Turn off enforcement" }));await screen.findByRole("button", { name: "Sign in again" });expect(screen.queryByText(/second owner/i)).toBeNull(); } finally { f.close(); }
+});
+
+for (const [code, text] of [
+ ["TASK_STOP_REVIEW_TOO_LARGE", /up to 100 active tasks/],
+ ["TASK_STOP_CONFIG_MISSING", /Prepare the missing Spending setting/],
+ ["TASK_STOP_CONFIG_INVALID", /Repair the invalid Spending setting/],
+ ["CHANGE_STALE", /capture a fresh review/],
+ ["AUDIT_UNAVAILABLE", /audit ledger is unavailable/],
+] as const) it(`enforcement review explains ${code} without writing`, async () => {
+ const f = mount({ respond: async r => r.path.includes("/enrollment") ? { status: 200, body: { orgId, state: "disabled", revision: 1 } } : r.path.endsWith("/cutover-review") ? { status: 409, body: { error: { code, message: "UNTRUSTED SERVER TEXT", resource: { kind: "project", name: "payments" } } } } : { status: 200, body: settings } });
+ try {
+  await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));await screen.findByText(text);
+  if (code.startsWith("TASK_STOP_CONFIG_")) expect(screen.getByRole("alert").textContent).toContain("project: payments");
+  expect(screen.queryByText(/UNTRUSTED SERVER TEXT/)).toBeNull();expect(f.request.mock.calls.some(([r]) => r.method === "PUT")).toBe(false);
+ } finally { f.close(); }
+});
+
+it("stale enable tells the owner to cancel setup; failure sends no follow-up write", async () => {
+ const review = { orgId, reviewId: "11111111-1111-4111-8111-111111111111", digest: "d".repeat(64), revision: 2, complete: true, capturedAt: "2026-11-04T15:00:00.000Z", expiresAt: "2026-11-04T15:05:00.000Z", tasks: [], truncated: false, counts: { refuse_next_admission: 0, new_window_at_stop: 0, retain_current_window: 0, exempt: 0 } };
+ const f = mount({ respond: async r => r.path.endsWith("/cutover-review") ? { status: 200, body: review } : r.path.includes("/enrollment") ? r.method === "GET" ? { status: 200, body: { orgId, state: "ready", revision: 2 } } : { status: 409, body: { error: { code: "CHANGE_STALE", message: "raw server words" } } } : { status: 200, body: settings } });
+ try {
+  await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Enable enforcement" }));await screen.findByText("Spending sources changed. Cancel setup and review again.");
+  expect(screen.getByRole("button", { name: "Cancel enforcement setup" })).toBeTruthy();
+  expect(f.request.mock.calls.filter(([r]) => r.method === "PUT")).toHaveLength(1);expect(screen.queryByText(/raw server words/)).toBeNull();
+ } finally { f.close(); }
 });

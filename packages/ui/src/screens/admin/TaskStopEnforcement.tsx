@@ -6,7 +6,7 @@ import { ApiError } from "../../api/errors.js";
 import { useAppHost } from "../../host.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
-const outcomes = { refuse_next_admission: "Refused at next admission", stop_at_next_admission: "Stop reached at next admission", retain_current_window: "Current window retained", exempt: "Verified own-source exemption; customer limits still apply" };
+const outcomes = { refuse_next_admission: "Refused at next admission", new_window_at_stop: "New window at this stop from current spend", retain_current_window: "Current window retained until next admission; then a new window at this stop", exempt: "Verified own-source exemption; customer limits still apply" };
 export function TaskStopEnforcement({ orgId, checking }: { orgId: string; checking: boolean }) {
  const host = useAppHost(), api = useMemo(() => createTaskStopEnrollmentApi(host, orgId), [host, orgId]);
  const [context, setContext] = useState<Awaited<ReturnType<typeof api.get>>>(), [review, setReview] = useState<TaskStopReview>(), [busy, setBusy] = useState(true);
@@ -45,6 +45,7 @@ export function TaskStopEnforcement({ orgId, checking }: { orgId: string; checki
   {context !== undefined && <p>Current enforcement: {context.state}. Revision {context.revision}.</p>}
   {review !== undefined && <><h4>Review enforcement impacts</h4><p>As of {new Date(review.capturedAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC. Work can start or finish after this preview.</p>
    <p>Running tasks keep their existing window and customer limits until their next admission. Enabling adds company stops to future admissions. This preview does not stop any task.</p>
+   <p>{review.counts.refuse_next_admission} refused; {review.counts.new_window_at_stop} new windows; {review.counts.retain_current_window} running windows retained; {review.counts.exempt} exempt.</p>{review.truncated && <p>Showing the first 25 impacts, refusals first. Counts include all reviewed tasks.</p>}
    {review.tasks.length === 0 ? <p>No active tasks were visible at review time.</p> : <table><caption>Tasks in this review</caption><thead><tr><th>Task</th><th>Project</th><th>Phase</th><th>Effective stop</th><th>Impact</th></tr></thead><tbody>{review.tasks.map(task => <tr key={task.taskId}><td>{task.taskId}</td><td><VisibleText text={task.project} /></td><td>{task.phase}</td><td>{formatUsdMicrodollars(task.effectiveStopMicrousd)}</td><td>{outcomes[task.outcome]}</td></tr>)}</tbody></table>}
    {context?.state === "disabled" && <Button disabled={locked} onClick={() => { void change("ready"); }}>Confirm review and mark ready</Button>}
    {context?.state === "ready" && <Button disabled={locked} onClick={() => { void change("enabled"); }}>Enable enforcement</Button>}

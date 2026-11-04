@@ -1,20 +1,19 @@
 // Bounded company readiness and advisory task impacts; never paid-work permission.
+import { isDeepStrictEqual } from "node:util";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
  AgentGuardrailsSchema, AgentIdSchema, BUILTIN_AGENT_IDS, OrgModelSourcesSchema, ROVARA_CODE_AGENT_ID,
  TaskStopCompanyPolicySchema, TaskStopProjectPolicySchema, WORKSPACE_PROJECT_INDEX, agentGuardrailsKey, agentKey,
  builtinSettingsKey, isBuiltinAgentId, modelSourcesKey, orgProjectCatalogKey, orgScoped, projectAiKey, projectMetaKey,
- taskSpendKey, workspaceProjectIndexValue, type TaskStopImpact,
+ workspaceProjectIndexValue, type TaskStopImpact,
 } from "@agentx/contracts";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import { readTaskRecipe } from "../agents/runs.js";
-import { captureTaskFundingProof, taskFundingModelPool } from "./task-stop-funding.js";
 import { captureTaskStopCutoverReview, type CapturedTaskStop } from "./task-stop-admission.js";
-import { savedTaskStopBounds } from "./task-stop-window.js";
-import { taskRunLimitMicrousd } from "../spend/task-approval-terms.js";
+import { continueAdmissionIdentity } from "./task-stop-window.js";
 import { usdToWholeMicrodollars } from "./budget-amount.js";
 import { badConfig, checks, companySource, digest, missing, read, tooLarge, type EnrollmentDeps, type Key, type Row } from "./task-stop-enrollment-common.js";
 
@@ -81,9 +80,9 @@ export async function captureCompanyCutover(deps: EnrollmentDeps, caller: Develo
   const key = orgProjectCatalogKey(caller.orgId, project.data);
   if (catalog.pk !== key.pk || catalog.sk !== key.sk || catalog.orgId !== caller.orgId || catalog.entityType !== "PROJECT_CATALOG" || !positive(catalog.latestRevision) || projects.includes(project.data)) throw badConfig();
   const aiKey = projectAiKey(caller.orgId, project.data), ai = await read(deps, aiKey), meta = await read(deps, projectMetaKey(caller.orgId, project.data));
-  if (ai === undefined || ai.taskStopPolicy === undefined) throw missing();
+  if (ai === undefined || ai.taskStopPolicy === undefined) throw missing({ kind: "project", name: project.data });
   if (ai.orgId !== caller.orgId || ai.project !== project.data || ai.entityType !== "PROJECT_AI" || !positive(ai.revision) || !TaskStopProjectPolicySchema.safeParse(ai.taskStopPolicy).success
-   || meta === undefined || meta.name !== project.data || (meta.orgId !== undefined && meta.orgId !== caller.orgId)) throw badConfig();
+   || meta === undefined || meta.name !== project.data || (meta.orgId !== undefined && meta.orgId !== caller.orgId)) throw badConfig({ kind: "project", name: project.data });
   projects.push(project.data);
   economicRow(key, catalog, ["orgId", "entityType", "name", "latestRevision"]);
   economicRow(aiKey, ai, ["orgId", "entityType", "project", "revision", "taskStopPolicy", "sourceOrder"]);
@@ -95,10 +94,10 @@ export async function captureCompanyCutover(deps: EnrollmentDeps, caller: Develo
  }
  for (const id of ids) {
   const key = isBuiltinAgentId(id) ? builtinSettingsKey(caller.orgId, id) : agentKey(caller.orgId, id, "META"), row = await read(deps, key);
-  if (row === undefined || (row.stopKind === undefined && row.maxPerRunUsd === undefined)) throw missing();
+  if (row === undefined || (row.stopKind === undefined && row.maxPerRunUsd === undefined)) throw missing({ kind: "agent", name: id });
   if (row.orgId !== caller.orgId || row.agentId !== id || row.entityType !== (isBuiltinAgentId(id) ? "BUILTIN_AGENT_SETTINGS" : "AGENT") || !positive(row.revision)
    || (!isBuiltinAgentId(id) && row.status !== "active" && row.status !== "archived")
-   || (row.maxPerRunUsd === undefined ? row.stopKind !== "inherit" : usdToWholeMicrodollars(row.maxPerRunUsd) === undefined || (row.stopKind !== undefined && row.stopKind !== "limited"))) throw badConfig();
+   || (row.maxPerRunUsd === undefined ? row.stopKind !== "inherit" : usdToWholeMicrodollars(row.maxPerRunUsd) === undefined || (row.stopKind !== undefined && row.stopKind !== "limited"))) throw badConfig({ kind: "agent", name: id });
   economicRow(key, row, ["orgId", "entityType", "agentId", "revision", "stopKind", "maxPerRunUsd", "status", "pinnedVersion"]);agents.add(id);
  }
  const tasks: TaskStopImpact[] = [], taskEconomics: Array<{ taskId: string; digest: string }> = [], seen = new Set<string>();let workspaces = 0;
@@ -112,30 +111,18 @@ export async function captureCompanyCutover(deps: EnrollmentDeps, caller: Develo
   if (raw === undefined || raw.orgId !== caller.orgId || raw.taskId !== taskId || raw.entityType !== "DEVELOPER_TASK" || raw.project !== project) throw badConfig();
   const task = raw as unknown as DeveloperTaskRecord;
   if (task.closedAt !== undefined || task.releasedAt !== undefined || task.workflow?.state === "COMPLETE") continue;
-  if (tasks.length >= 25) throw tooLarge();
+  if (tasks.length >= 100) throw tooLarge();
   const agentId = task.agent?.agentId ?? ROVARA_CODE_AGENT_ID;if (!agents.has(agentId)) throw missing();
   const preview = await captureTaskStopCutoverReview({ ...deps, requireScopeAccess: async () => {
    const meta = await read(deps, projectMetaKey(caller.orgId, project));if (meta?.status !== "active" || meta.archivedAt !== undefined) throw badConfig();
   } }, { orgId: caller.orgId, developerId: caller.developerId, role: "owner", project, agentId,
-   ...savedTaskStopBounds(task.spendingStop), pathLimitMicrousd: taskRunLimitMicrousd(task) ?? null,
-   ...(task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }) });
+   ...continueAdmissionIdentity(task) });
   // Only economic native keys: task/workspace inventory is advisory, and owner evidence is separately fenced.
   native.push(...preview.sourceChecks.filter(item => item.ConditionCheck?.Key !== undefined && (identities.has(digest(item.ConditionCheck.Key)) || item.ConditionCheck.Key.pk === source.key.pk && item.ConditionCheck.Key.sk === source.key.sk)));
   const snapshot = preview.snapshot, phase = raw.activeOperationId !== undefined || workspace.activeOperationId !== undefined || workspace.state === "RUNNING" ? "running" as const : "queued" as const;
-  const spend = await read(deps, taskSpendKey(caller.orgId, taskId));
-  if (spend === undefined && (task.modelKeyIds?.length ?? 0) > 0) throw badConfig();
-  const spent = spend === undefined ? 0 : usdToWholeMicrodollars(spend.settledUsd), baseline = usdToWholeMicrodollars(task.budgetBaselineUsd ?? 0);
-  if (spent === undefined || baseline === undefined || spend !== undefined && spend.orgId !== caller.orgId) throw badConfig();
-  let exempt = false;
-  if (deps.agents?.modelRouting !== undefined) {
-   const frozen = await readTaskRecipe(deps, taskId, caller.orgId);
-   if (frozen?.modelPolicyPin !== undefined) exempt = (await captureTaskFundingProof({ ...deps, routing: deps.agents.modelRouting, chatgpt: deps.agents.stageChatgpt, now: deps.now }, {
-    orgId: caller.orgId, project, models: taskFundingModelPool(frozen.modelPolicyPin, deps.agents.modelRouting.rovaraGeography), purpose: "cutover_review",
-    ...(task.payer?.kind === "member" ? { payerDeveloperId: task.payer.developerId } : {}),
-   })) !== undefined;
-  }
-  const outcome = exempt ? "exempt" : phase === "running" ? "retain_current_window" : snapshot.effectiveStopMicrousd === 0 ? "refuse_next_admission"
-   : Math.max(0, spent - baseline) >= snapshot.effectiveStopMicrousd ? "stop_at_next_admission" : "retain_current_window";
+  const frozen = task.fundingProof === undefined ? undefined : await readTaskRecipe(deps, taskId, caller.orgId);
+  const exempt = task.fundingProof !== undefined && isDeepStrictEqual(frozen?.fundingProof, task.fundingProof);
+  const outcome = exempt ? "exempt" : phase === "running" ? "retain_current_window" : snapshot.effectiveStopMicrousd === 0 ? "refuse_next_admission" : "new_window_at_stop";
   const currentCapMicrousd = usdToWholeMicrodollars(task.budgetUsd);if (currentCapMicrousd === undefined) throw badConfig();
   tasks.push({ taskId, project, phase, effectiveStopMicrousd: snapshot.effectiveStopMicrousd, approvalCapMicrousd: snapshot.approvalCapMicrousd, currentCapMicrousd, outcome });
   taskEconomics.push({ taskId, digest: taskStopEconomicDigest(snapshot, outcome) });
@@ -144,5 +131,9 @@ export async function captureCompanyCutover(deps: EnrollmentDeps, caller: Develo
  // Validate company content even with no tasks; no numeric defaults are invented.
  if (!TaskStopCompanyPolicySchema.safeParse(source.row.policy).success) throw badConfig();
  const sourceDigest = digest(economic), projectionDigest = digest({ economic, taskEconomics });
- return { source, tasks, sourceDigest, digest: projectionDigest, checks: native };
+ const counts = { refuse_next_admission: 0, new_window_at_stop: 0, retain_current_window: 0, exempt: 0 };
+ for (const task of tasks) counts[task.outcome] += 1;
+ const rank = { refuse_next_admission: 0, new_window_at_stop: 1, retain_current_window: 2, exempt: 3 };
+ tasks.sort((a, b) => rank[a.outcome] - rank[b.outcome] || a.taskId.localeCompare(b.taskId));
+ return { source, tasks: tasks.slice(0, 25), allTasks: tasks, counts, truncated: tasks.length > 25, sourceDigest, digest: projectionDigest, checks: native };
 }

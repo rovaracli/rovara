@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { OrgIdSchema, TaskStopCompanyPolicySchema, TaskStopEnrollmentStateSchema, agentXError, canonicalJson, developerOrgKey, orgMemberKey, orgMetaKey, orgSettingsKey } from "@agentx/contracts";
+import { AgentXError, errorStatus, OrgIdSchema, TaskStopCompanyPolicySchema, TaskStopEnrollmentStateSchema, agentXError, canonicalJson, developerOrgKey, orgMemberKey, orgMetaKey, orgSettingsKey } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { budgetActorChecks } from "../agents/budget-authority.js";
 import type { TransactItem } from "../agents/table-writes.js";
@@ -22,9 +22,14 @@ export function decodeBody(value: unknown): unknown {
  try { return JSON.parse(value) as unknown; } catch { throw invalid(); }
 }
 export const reauth = () => agentXError("REAUTH_REQUIRED", "Sign in again to confirm enforcement. A sign-in within the last 10 minutes is required.");
-export const missing = () => agentXError("TASK_STOP_CONFIG_MISSING", "Prepare every company Spending setting before reviewing enforcement.");
-export const badConfig = () => agentXError("TASK_STOP_CONFIG_INVALID", "A company Spending setting needs repair before enforcement.");
-export const tooLarge = () => agentXError("TASK_STOP_REVIEW_TOO_LARGE", "This company is too large for one-step enable. Ask for a staged enforcement cutover.");
+export class TaskStopReadinessError extends AgentXError {
+ constructor(code: "TASK_STOP_CONFIG_MISSING" | "TASK_STOP_CONFIG_INVALID", readonly resource: { kind: "project" | "agent"; name: string }) {
+  super(code, "Prepare this resource's Spending setting before enforcement.", errorStatus(code));
+ }
+}
+export const missing = (resource?: { kind: "project" | "agent"; name: string }) => resource === undefined ? agentXError("TASK_STOP_CONFIG_MISSING", "Prepare every company Spending setting before reviewing enforcement.") : new TaskStopReadinessError("TASK_STOP_CONFIG_MISSING", resource);
+export const badConfig = (resource?: { kind: "project" | "agent"; name: string }) => resource === undefined ? agentXError("TASK_STOP_CONFIG_INVALID", "A company Spending setting needs repair before enforcement.") : new TaskStopReadinessError("TASK_STOP_CONFIG_INVALID", resource);
+export const tooLarge = () => agentXError("TASK_STOP_REVIEW_TOO_LARGE", "This review supports at most 100 active tasks and 80 project/agent source actions. Prepare a smaller inventory before trying again.");
 export async function read(deps: EnrollmentDeps, Key: Key, TableName = deps.tableName): Promise<Row | undefined> {
  return (await deps.documentClient.send(new GetCommand({ TableName, Key, ConsistentRead: true })) as { Item?: Row }).Item;
 }
@@ -47,12 +52,12 @@ export async function freshChecks(deps: EnrollmentDeps, caller: DeveloperCaller)
   || (identity?.sessionsEndedAt !== undefined && (typeof identity.sessionsEndedAt !== "string" || !Number.isFinite(Date.parse(identity.sessionsEndedAt)) || Date.parse(session.data.startedAt) <= Date.parse(identity.sessionsEndedAt)))) throw reauth();
  return nativeSnapshotConditions(table, [key], [row], ["revokedAt", "authTime", "endsAt"]);
 }
-export async function companySource(deps: EnrollmentDeps, caller: DeveloperCaller) {
+export async function companySource(deps: EnrollmentDeps, caller: DeveloperCaller, full = true) {
  const key = orgSettingsKey(caller.orgId, "TASK_STOP_POLICY"), row = await read(deps, key);
  if (row === undefined) throw missing();
- const parsed = z.object({ pk: z.literal(key.pk), sk: z.literal(key.sk), orgId: z.literal(caller.orgId), entityType: z.literal("ORG_TASK_STOP_POLICY"), revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), policy: TaskStopCompanyPolicySchema,
+ const parsed = z.object({ pk: z.literal(key.pk), sk: z.literal(key.sk), orgId: z.literal(caller.orgId), entityType: z.literal("ORG_TASK_STOP_POLICY"), revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   enrollment: z.object({ version: z.literal(1), state: TaskStopEnrollmentStateSchema }).strict() }).passthrough().safeParse(row);
- if (!parsed.success || ["ceilingMicrousd", "maxPerRunCeilingUsd", "taskStopCeilingMicrousd"].some(field => Object.hasOwn(row, field))) throw badConfig();
+ if (!parsed.success || full && (!TaskStopCompanyPolicySchema.safeParse(row.policy).success || ["ceilingMicrousd", "maxPerRunCeilingUsd", "taskStopCeilingMicrousd"].some(field => Object.hasOwn(row, field)))) throw badConfig();
  return { key, row, revision: parsed.data.revision, state: parsed.data.enrollment.state };
 }
 /** One action per native key. Rename aliases before merging to avoid cross-source collisions. */

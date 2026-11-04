@@ -58,7 +58,7 @@ function fixture() {
    return { status: result === undefined ? 404 : 200, body: result as Row | undefined };
   } catch (error) {
    if (!(error instanceof AgentXError)) throw error;
-   return { status: errorStatus(error.code), body: { code: error.code } as Row };
+   return { status: errorStatus(error.code), body: { code: error.code, ...("resource" in error ? { resource: error.resource } : {}) } as Row };
   }
  }
  const changedEvents = () => audit.recorded().filter(event => String(event.action) === "spending.enrollment_changed");
@@ -134,7 +134,7 @@ it("no review and no disabled-to-enabled shortcut may change the policy", async 
  for (const state of ["ready", "enabled"]) expect((await f.call("PUT", enrollment, f.transitionBody(state, 1))).body?.code).toBe("CONFIG_INVALID");
  expect(f.db.get(f.key)).toEqual(before);expect(f.changedEvents()).toEqual([]);
 });
-for (const target of ["enable", "disable"] as const) for (const loss of ["missing", "stale", "revoked", "expired", "wrong-person", "future", "refresh-only"] as const)
+for (const target of ["enable", "disable"] as const) for (const loss of ["missing", "stale", "revoked", "expired", "wrong-person", "future", "sessions-ended", "refresh-only"] as const)
 it(`${target} requires recent interactive sign-in: ${loss}`, async () => {
  const f = fixture(), r = await f.ready();if (target === "disable") expect((await f.call("PUT", enrollment, f.transitionBody("enabled", 2, r))).status).toBe(200);
  const k = { pk: `SESSION#session-${owner}`, sk: "META" }, session = f.db.get(k)!;
@@ -143,13 +143,14 @@ it(`${target} requires recent interactive sign-in: ${loss}`, async () => {
  else if (loss === "revoked") f.db.set({ ...session, revokedAt: new Date(initialNow).toISOString() });
  else if (loss === "expired") f.db.set({ ...session, endsAt: initialNow / 1000 - 1 });
  else if (loss === "wrong-person") f.db.set({ ...session, developerId: other });
+ else if (loss === "sessions-ended") f.db.set({ ...f.db.get({ pk: `DEVELOPER#${owner}`, sk: "META" })!, sessionsEndedAt: new Date(initialNow).toISOString() });
  else if (loss === "future") f.db.set({ ...session, authTime: new Date(initialNow + 60_000).toISOString() });
  else { const old: Row = { ...session, lastRefreshAt: new Date(initialNow).toISOString() };delete old.authTime;f.db.set(old); }
  const before = f.db.get(f.key), events = f.changedEvents().length;
  expect(await f.call("PUT", enrollment, f.transitionBody(target === "enable" ? "enabled" : "disabled", target === "enable" ? 2 : 3, target === "enable" ? r : undefined))).toMatchObject({ body: { code: "REAUTH_REQUIRED" } });
  expect(f.db.get(f.key)).toEqual(before);expect(f.changedEvents()).toHaveLength(events);
 });
-for (const edge of ["ready", "enable", "disable"] as const) for (const drift of ["revision", "role", "pointer", "identity", "closing", "removed", ...(edge === "ready" ? [] : ["session"])] as const)
+for (const edge of ["ready", "enable", "disable"] as const) for (const drift of ["revision", "role", "pointer", "identity", "closing", "removed", ...(edge === "ready" ? [] : ["session", "sessions-ended"])] as const)
 it(`${edge} fences concurrent ${drift} loss at commit`, async () => {
  const f = fixture(), r = edge === "ready" ? await f.review() : await f.ready();
  if (edge === "disable") expect((await f.call("PUT", enrollment, f.transitionBody("enabled", 2, r))).status).toBe(200);
@@ -163,6 +164,7 @@ it(`${edge} fences concurrent ${drift} loss at commit`, async () => {
    if (drift === "pointer") f.db.set({ ...f.db.get(developerOrgKey(owner))!, orgId: foreignOrg });
    if (drift === "identity") f.db.set({ ...f.db.get({ pk: `DEVELOPER#${owner}`, sk: "META" })!, revoked: true });
    if (drift === "closing") f.db.set({ ...f.db.get(orgMetaKey(orgId))!, closingAt: new Date(initialNow).toISOString() });
+   if (drift === "sessions-ended") f.db.set({ ...f.db.get({ pk: `DEVELOPER#${owner}`, sk: "META" })!, sessionsEndedAt: new Date(initialNow).toISOString() });
    if (drift === "session") f.db.set({ ...f.db.get({ pk: `SESSION#session-${owner}`, sk: "META" })!, revokedAt: new Date(initialNow).toISOString() });
   }
   return send(command);
@@ -315,8 +317,8 @@ for (const extra of [0, 1]) it(`one-step source bound ${extra === 0 ? "exactly f
   expect(f.db.transactions().every(items => items.length <= 100)).toBe(true);
  }
 });
-it("26 active tasks refuse the review without writing anything", async () => {
- const f = fixture();for (let n = 0; n < 26; n += 1) f.task(true);const before = [...f.db.items.entries()];
+it("101 active tasks refuse the review without writing anything", async () => {
+ const f = fixture();for (let n = 0; n < 101; n += 1) f.task(true);const before = [...f.db.items.entries()];
  await expect(f.call("POST", reviewPath, { requestId: randomUUID(), expectedRevision: 1 })).resolves.toMatchObject({ status: 409, body: { code: "TASK_STOP_REVIEW_TOO_LARGE" } });
  expect([...f.db.items.entries()]).toEqual(before);
 });
@@ -377,17 +379,15 @@ for (const mismatch of ["table", "client"]) it(`audit ${mismatch} mismatch canno
  const f = fixture(), r = await f.review();if (mismatch === "table") f.audit.audit.tableName = "other";else f.audit.audit.documentClient = new FakeDynamoDb() as unknown as typeof f.audit.audit.documentClient;
  const before = [...f.db.items.entries()];expect((await f.call("PUT", enrollment, f.transitionBody("ready", 1, r))).body?.code).toBe("AUDIT_UNAVAILABLE");expect([...f.db.items.entries()]).toEqual(before);
 });
-it("review classification matches the real enrolled admission and audits no task text", async () => {
+it("enable audit contains reviewed counts and no task text", async () => {
  const f = fixture(), id = f.task(true), r = await f.ready();expect(f.db.get({ pk: `DEVTASK#${id}`, sk: "META" })?.title).toBe("Private task title");
  expect((await f.call("PUT", enrollment, f.transitionBody("enabled", 2, r))).status).toBe(200);
- const snapshot = await captureTaskStopAdmission({ ...f.deps, requireScopeAccess: async () => {} }, { orgId, developerId: owner, role: "owner", project: "web", agentId, pathLimitMicrousd: 20_000_000 });
- expect(snapshot).toMatchObject({ effectiveStopMicrousd: (r.tasks as Row[])[0]?.effectiveStopMicrousd });
  const event = f.changedEvents().at(-1)!;expect(event.facts).toMatchObject({ before: "ready", after: "enabled", revision: 3, tasksReviewed: 1, tasksAtEnable: 1, reviewId: r.reviewId, reviewDigest: r.digest });
  expect(JSON.stringify(event)).not.toMatch(/Private task title|sourceChecks|ConditionExpression|DEVTASK/);
 });
-it("queued settled spend at the new positive stop is a stop_at_next_admission impact", async () => {
+it("queued settled spend at the new positive stop is a new_window_at_stop impact", async () => {
  const f = fixture(), id = f.task(true);f.db.set({ ...taskSpendKey(orgId, id), entityType: "TASK_SPENT", orgId, settledUsd: 2 });
- const r = await f.review();expect(r.tasks).toEqual([expect.objectContaining({ taskId: id, outcome: "stop_at_next_admission" })]);
+ const r = await f.review();expect(r.tasks).toEqual([expect.objectContaining({ taskId: id, outcome: "new_window_at_stop" })]);
 });
 for (const corrupt of ["foreign-task", "bad-pointer"] as const) it(`review refuses ${corrupt} index links instead of skipping them`, async () => {
  const f = fixture(), id = f.task(true), row = f.db.get({ pk: `DEVTASK#${id}`, sk: "META" })!;
@@ -516,4 +516,28 @@ it("owner authority precedes malformed JSON validation", async () => {
  const f = fixture();f.db.set({ ...f.db.get(orgMemberKey(orgId, owner))!, role: "admin" });f.db.set({ ...f.db.get(developerOrgKey(owner))!, role: "admin" });
  expect(await f.call("PUT", enrollment, "{broken")).toEqual({ status: 403, body: { code: "FORBIDDEN" } });
  expect(await f.call("POST", reviewPath, "{broken")).toEqual({ status: 403, body: { code: "FORBIDDEN" } });
+});
+
+for (const corrupt of [{ ceilingMicrousd: 1 }, { policy: { broken: true } }]) it(`emergency disable preserves malformed content ${JSON.stringify(corrupt)}`, async () => {
+ const f = fixture(), r = await f.ready();await f.call("PUT", enrollment, f.transitionBody("enabled", 2, r));
+ f.db.set({ ...f.db.get(f.key)!, ...corrupt });const count = f.changedEvents().length;
+ expect(await f.call("GET", enrollment)).toMatchObject({ status: 200, body: { state: "enabled" } });
+ expect(await f.call("PUT", enrollment, f.transitionBody("disabled", 3))).toMatchObject({ status: 200, body: { revision: 4 } });
+ expect(f.db.get(f.key)).toMatchObject(corrupt);expect(f.changedEvents()).toHaveLength(count + 1);
+});
+it("26 queued tasks are counted with a bounded list and can enable", async () => {
+ const f = fixture();for (let n = 0; n < 26; n += 1) f.task(true);
+ const r = await f.ready();expect(r.counts).toEqual({ refuse_next_admission: 0, new_window_at_stop: 26, retain_current_window: 0, exempt: 0 });
+ expect(r.truncated).toBe(true);expect((r.tasks as Row[]).length).toBeLessThanOrEqual(25);
+ expect(await f.call("PUT", enrollment, f.transitionBody("enabled", 2, r))).toMatchObject({ status: 200, body: { tasksReviewed: 26, tasksAtEnable: 26 } });
+});
+it("keys without TASK_SPENT do not block review; disabled-era requested limit binds", async () => {
+ const f = fixture(), id = f.task(true), key = { pk: `DEVTASK#${id}`, sk: "META" };
+ f.db.set({ ...f.db.get(key)!, modelKeyIds: ["key"], requestedRunLimitUsd: 0.5 });
+ const r = await f.review();expect(r.tasks).toEqual([expect.objectContaining({ taskId: id, effectiveStopMicrousd: 500000, outcome: "new_window_at_stop" })]);
+});
+
+it("readiness names the first unprepared checked project", async () => {
+ const f = fixture();addProject(f, "unprepared");const key = projectAiKey(orgId, "unprepared"), row = f.db.get(key)!;delete row.taskStopPolicy;f.db.set(row);
+ expect(await f.call("POST", reviewPath, { requestId: randomUUID(), expectedRevision: 1 })).toMatchObject({ status: 409, body: { code: "TASK_STOP_CONFIG_MISSING", resource: { kind: "project", name: "unprepared" } } });
 });

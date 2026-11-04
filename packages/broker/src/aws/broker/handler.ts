@@ -3,6 +3,7 @@
 import { noteInvokedFunctionArn } from "../../test-env/lambda-identity.js";
 import { EVIDENCE_RESUME_BUDGET_MS, evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
 import { runCompanyDomainRecheck } from "../../org/company-domains/recheck.js";
+import { TaskStopReadinessError } from "../../org/task-stop-enrollment-common.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-press.js";
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
@@ -1211,7 +1212,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (error instanceof ProcessModelRefusal) return json({error:processModelRefusalBody(error)},request.requestId,error.statusCode);
       if (error instanceof AgentXError) {
         // A decision that needs a person present says where to go (`confirmUrl` for a token, `signInUrl` for a browser): R66.
-        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...("reason" in error && error.reason === "settingsChanged" ? {reason:"settingsChanged"} : {}), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
+        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...("reason" in error && error.reason === "settingsChanged" ? {reason:"settingsChanged"} : {}), ...(error instanceof DecideReauthRequired ? error.details : {}), ...(error instanceof TaskStopReadinessError ? { resource: error.resource } : {}) } }, request.requestId, error.statusCode);
         return isolate ? withDecideIsolation(response) : response;
       }
       const response = unexpectedErrorAnswer(error, request.requestId);
