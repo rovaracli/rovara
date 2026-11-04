@@ -1,7 +1,11 @@
 // Start from inside Slack (Team record source-row lane, task 12), at the two live Slack doors: the events ingress ("@Rovara learn from this channel", and Rovara added to a private channel) and the
 // interactivity handler (the Add press). Real handlers, a strict Slack double, a stand-in for the broker that records exactly what the ingress sent it. The identity is only ever what the VERIFIED Slack request says.
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { LambdaClient } from "@aws-sdk/client-lambda";
+import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { SQSClient } from "@aws-sdk/client-sqs";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSlackIngressHandler } from "../../packages/broker/src/aws/slack-ingress.js";
 import { createSlackInteractivityHandler } from "../../packages/broker/src/aws/slack-interactivity.js";
 import { botInvite, isHandedOffLearnPress, isLearnFromChannel, isTeamRecordSlackAddEvent, learnAddHandler, runHandedOffLearnPress, type HandedOffLearnPress, LEARN_ADD_ACTION, LEARN_PROJECT_ACTION, LEARN_PROJECT_BLOCK, LEARN_RETENTION_ACTION, LEARN_RETENTION_BLOCK, SLACK_ADD_WORDS, type SlackAddAnswer, type SlackAddAskInput } from "../../packages/broker/src/team-record/slack-add.js";
@@ -412,5 +416,65 @@ describe("the broker's event", () => {
     const shown: SlackAddAnswer = { show: { text: "x" } };
     const none: SlackAddAnswer = { none: true };
     expect([shown, none]).toHaveLength(2);
+  });
+});
+
+// Final review 3, minor 1: the handed-off press (an asynchronous invoke of the ingress Lambda by the interactivity handler) is dispatched only where the record's switch is on, so with it off a direct invoke is exactly what it was
+// before the feature: an event of an unknown shape, never a press, and nothing is sent to the broker or posted to a Slack response URL.
+describe("the switch gates the handed-off press at both Lambda doors", () => {
+  const environment = { ...process.env };
+  afterEach(() => { process.env = { ...environment }; vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetModules(); });
+  const press = (): HandedOffLearnPress => ({
+    source: "agentx.slack-interactivity", action: "team-record-slack-add-press", responseUrl: RESPONSE_URL,
+    press: { teamId: team, userId: maya, channelId: channel, token: "tok-0000", project: "web", retention: "C", interactionId: "1.2.3" },
+  } as HandedOffLearnPress);
+
+  function wire(recordOn: boolean) {
+    process.env.STATE_TABLE_NAME = "state"; process.env.SLACK_THREADS_TABLE_NAME = "threads";
+    process.env.SLACK_REQUEST_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123456789012/requests.fifo";
+    process.env.SLACK_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:slack";
+    process.env.AWS_REGION = "us-east-1"; process.env.BROKER_FUNCTION_NAME = "broker";
+    if (recordOn) process.env.TEAM_RECORD_ENABLED = "1"; else delete process.env.TEAM_RECORD_ENABLED;
+    const invoked: unknown[] = [], posted: string[] = [];
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(SecretsManagerClient.prototype, "send").mockImplementation((async () => ({ SecretString: JSON.stringify({ signingSecret, botToken: "xoxb-test" }) })) as never);
+    vi.spyOn(SQSClient.prototype, "send").mockImplementation((async () => ({})) as never);
+    vi.spyOn(DynamoDBDocumentClient.prototype, "send").mockImplementation((async () => ({})) as never);
+    vi.spyOn(LambdaClient.prototype, "send").mockImplementation((async (command: { input: { Payload?: Uint8Array } }) => {
+      invoked.push(JSON.parse(Buffer.from(command.input.Payload ?? new Uint8Array()).toString("utf8")));
+      return { Payload: Buffer.from(JSON.stringify({ statusCode: 200, body: JSON.stringify({ text: SLACK_ADD_WORDS.added, final: true }) })) };
+    }) as never);
+    vi.stubGlobal("fetch", async (url: string) => { posted.push(String(url)); return new Response("ok", { status: 200 }); });
+    return { invoked, posted };
+  }
+  const settled = async (run: () => Promise<unknown>): Promise<unknown> => { try { return await run(); } catch { return "threw"; } };
+
+  it("the interactivity Lambda: with the switch on the press is run (the broker is asked, the response URL answered); with it off nothing is", async () => {
+    const on = wire(true);
+    const { createAwsSlackInteractivityHandler } = await import("../../packages/broker/src/aws/slack-interactivity.js");
+    expect(await createAwsSlackInteractivityHandler()(press() as never)).toMatchObject({ statusCode: 200, body: JSON.stringify({ outcome: "final" }) });
+    expect(on.invoked).toHaveLength(1);
+    expect(on.posted.some((url) => url.startsWith("https://hooks.slack.com/"))).toBe(true);
+    vi.restoreAllMocks();
+    const off = wire(false);
+    const answer = await settled(() => createAwsSlackInteractivityHandler()(press() as never));
+    expect(JSON.stringify(answer)).not.toContain("outcome");
+    expect(off.invoked).toEqual([]);
+    expect(off.posted).toEqual([]);
+  });
+
+  it("the ingress Lambda's entry point: with the switch on it hands the press to the interactivity handler; with it off it does not", async () => {
+    const on = wire(true);
+    vi.resetModules();
+    const onEntry = (await import("../../packages/broker/src/aws/slack-ingress.js")).handler;
+    expect(await onEntry(press() as never)).toMatchObject({ statusCode: 200, body: JSON.stringify({ outcome: "final" }) });
+    expect(on.invoked).toHaveLength(1);
+    vi.restoreAllMocks(); vi.resetModules();
+    const off = wire(false);
+    const offEntry = (await import("../../packages/broker/src/aws/slack-ingress.js")).handler;
+    const answer = await settled(() => offEntry(press() as never));
+    expect(JSON.stringify(answer)).not.toContain("outcome");
+    expect(off.invoked).toEqual([]);
+    expect(off.posted).toEqual([]);
   });
 });

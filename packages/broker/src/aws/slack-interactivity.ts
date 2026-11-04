@@ -927,7 +927,8 @@ export function createAwsSlackInteractivityHandler() {
   }, event);
   // Team record (task 12): the Add button of the private "learn from this channel" prompt, only where the record's switch is on. The press is acknowledged at once; the work (it reads Slack, then saves) runs in an asynchronous
   // invoke of this Lambda, which answers through the press's response_url.
-  const recordHandlers = process.env.TEAM_RECORD_ENABLED !== "1" || brokerFunctionName === undefined ? [] : [learnAddHandler({ handOff: (event) => handOffToSelf(lambda, event), respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text) })];
+  const recordOn = process.env.TEAM_RECORD_ENABLED === "1" && brokerFunctionName !== undefined;
+  const recordHandlers = !recordOn ? [] : [learnAddHandler({ handOff: (event) => handOffToSelf(lambda, event), respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text) })];
   const learnPress = (event: HandedOffLearnPress) => runHandedOffLearnPress({
     invokeBroker: (brokerEvent) => invokeBroker(brokerEvent, HANDED_OFF_START_TIMEOUT_MS), respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text), respondReplace: (responseUrl, message) => respondReplace(responseUrl, message),
   }, event);
@@ -988,14 +989,16 @@ export function createAwsSlackInteractivityHandler() {
     })],
   });
   return async (event: HttpApiV2Event | HandedOffWorkflowStart | HandedOffChatGptFinish | HandedOffLearnPress): Promise<HttpResponse> => {
-    if (isHandedOffLearnPress(event)) return respond(200, { outcome: await learnPress(event) });
+    // The handed-off press is dispatched only where the record's switch is on (as its button is): with it off a direct invoke of this shape is an event of an unknown shape, exactly as before the feature.
+    if (recordOn && isHandedOffLearnPress(event)) return respond(200, { outcome: await learnPress(event) });
     if (isHandedOffWorkflowStart(event)) {
       const outcome = await chosenStart(event);
       log("workflow.handed_off_start", { outcome });
       return respond(200, { outcome });
     }
     if (isHandedOffChatGptFinish(event)) return respond(200, { outcome: await chatgptFinish(event) });
-    return interactivity(event);
+    // With the switch off a press-shaped event lands here, as any other unknown shape did before the feature existed.
+    return interactivity(event as HttpApiV2Event);
   };
 }
 

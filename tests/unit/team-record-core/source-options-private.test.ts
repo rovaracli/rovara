@@ -80,6 +80,8 @@ function contextOf(h: Harness, who: Who, body: unknown, over: Partial<SourceWrit
   return {
     orgRole: who.orgRole, browserSession: true, body: () => body, audit: h.audit.deps,
     slackChannel: async () => ({ kind: "private" as const, extShared: false }),
+    // Adding a private channel from the web needs the editor to be in it (final review 3, I1): these tests are about the picker, so every linked editor is.
+    slackMember: async () => true,
     ...(h.installTeam === undefined ? {} : { slackTeamId: h.installTeam }),
     ...(h.listOn ? {
       slackMemberChannels: (async (input: Parameters<MemberRead>[0]) => {

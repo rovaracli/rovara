@@ -272,15 +272,15 @@ export function createSlackAdd(deps: SlackAddDeps): SlackAddService {
         orgRole, browserSession: false, actor: "slack_interaction", body: () => body,
         ...(ports.audit === undefined ? {} : { audit: ports.audit }), ...(ports.channel === undefined ? {} : { slackChannel: ports.channel }), ...(ports.teamId === undefined ? {} : { slackTeamId: ports.teamId }),
       };
-      await markSlackAddStarted(deps.table, orgId, input.token, input.interactionId);
+      await markSlackAddStarted(deps.table, orgId, input.token, input.interactionId, project);
       let reply: RecordRouteReply | undefined;
       try {
         reply = await deps.route({ method: "POST", path: `/v1/app/projects/${encodeURIComponent(project)}/record/sources`, query: {}, caller: { orgId, developerId, projectRole }, write });
       } catch (error) {
         return error instanceof AgentXError ? refusalOf(error.code, strip(error)) : say(SLACK_ADD_WORDS.unavailable, false);
       }
-      // The row is already there and an earlier press began on THIS prompt: that was this prompt's own save (its press timed out or its used-mark did not land), so it is "Added" too.
-      const own = item.startedBy !== undefined && typeof reply?.body === "object" && reply.body !== null && (reply.body as { code?: unknown }).code === "CHANGE_STALE";
+      // The row is already there and an earlier press began on THIS prompt FOR THIS PROJECT: that was this prompt's own save (its press timed out or its used-mark did not land), so it is "Added" too. A press for another project is its own attempt.
+      const own = item.startedBy !== undefined && item.startedProject === project && typeof reply?.body === "object" && reply.body !== null && (reply.body as { code?: unknown }).code === "CHANGE_STALE";
       const answer = own ? say(SLACK_ADD_WORDS.added, true) : answerOf(reply);
       if (own || (answer.final && reply?.status === 200)) await markSlackAddUsed(deps.table, orgId, input.token);
       return answer;

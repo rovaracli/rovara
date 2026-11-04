@@ -1338,10 +1338,12 @@ let awsInteractivityHandler: ReturnType<typeof createAwsSlackInteractivityHandle
  * asynchronous start of a Quick or Full choice, which the interactivity handler hands to this same Lambda.
  */
 export const handler = (event: HttpApiV2Event | HandedOffWorkflowStart | HandedOffChatGptFinish | HandedOffLearnPress): Promise<HttpResponse> => {
-  if (isHandedOffWorkflowStart(event) || isHandedOffChatGptFinish(event) || isHandedOffLearnPress(event) || event.rawPath === SLACK_INTERACTIONS_PATH) {
+  // The handed-off press goes to the interactivity handler only where the record's switch is on; with it off a press-shaped direct invoke is an event of an unknown shape, handled as any such event was before the feature.
+  const press = process.env.TEAM_RECORD_ENABLED === "1" && isHandedOffLearnPress(event);
+  if (isHandedOffWorkflowStart(event) || isHandedOffChatGptFinish(event) || press || (!isHandedOffLearnPress(event) && event.rawPath === SLACK_INTERACTIONS_PATH)) {
     awsInteractivityHandler ??= createAwsSlackInteractivityHandler();
     return awsInteractivityHandler(event);
   }
   awsHandler ??= createAwsSlackIngressHandler();
-  return awsHandler(event);
+  return awsHandler(event as HttpApiV2Event);
 };

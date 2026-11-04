@@ -600,6 +600,26 @@ describe("fix round 1: a second press after a save answers the stored outcome", 
     expect(sourceRows(h)).toHaveLength(1);
   });
 
+  it("final review 3: the 'own save' shortcut compares the project: a later press for a DIFFERENT project that already has the channel gets its own answer, not 'Added'", async () => {
+    const h = harness();
+    const service = build(h);
+    // The channel is already a source of "api" (added from the web), so a press for "web" is refused as taken, and that press still marks the prompt as started.
+    const body = { action: "add", requestId: randomUUID(), source: "slack", scope: `slack:${TEAM_A}/${CH.pub}`, retention: "C", audienceDefault: "maintainers", enabled: true };
+    const added = await handleRecordRoute(routeDeps(h), { method: "POST", path: "/v1/app/projects/api/record/sources", query: {}, caller: caller({ orgId: ORG_A, developerId: OWNER, projectRole: "maintainer" }), write: { orgRole: "owner", browserSession: true, body: () => body, audit: h.audit.deps, slackTeamId: TEAM_A, slackChannel: async (): Promise<SlackFacts> => ({ kind: "public", extShared: false }) } });
+    expect(added?.status).toBe(200);
+    const token = await prompted(h, service, SLACK.owner, CH.pub);
+    expect(await press(h, service, { token, who: SLACK.owner, project: "web", interactionId: "first" })).toEqual({ text: SLACK_ADD_WORDS.taken, final: true });
+    // A later press picks "api", which already has it: that is "already a source of this project", never "Added" (the first press did not save anything for api).
+    expect(await press(h, service, { token, who: SLACK.owner, project: "api", interactionId: "second" })).toEqual({ text: SLACK_ADD_WORDS.alreadyHere, final: true });
+    // The shortcut still works for the project the press began with.
+    const again = harness();
+    const second = build(again);
+    const own = await prompted(again, second, SLACK.maint);
+    expect((await press(again, second, { token: own, who: SLACK.maint, project: "web", interactionId: "a" })).final).toBe(true);
+    for (const item of again.w.db.find((entry) => entry.entityType === "TEAM_RECORD_SLACK_ADD")) again.w.db.set({ ...item, doneBy: undefined, doneOutcome: undefined });
+    expect(await press(again, second, { token: own, who: SLACK.maint, project: "web", interactionId: "b" })).toEqual({ text: SLACK_ADD_WORDS.added, final: true });
+  });
+
   it("a refusal is not a stored outcome: the prompt stays usable after one", async () => {
     const h = harness();
     const service = build(h);

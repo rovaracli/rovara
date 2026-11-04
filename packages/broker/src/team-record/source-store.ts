@@ -153,17 +153,17 @@ export async function putSlackAddPrompt(table: TeamRecordTable, orgId: OrgId, to
 }
 
 /** The prompt, or undefined when there is none under this company. */
-export async function readSlackAddPrompt(table: TeamRecordTable, orgId: OrgId, token: string): Promise<{ team?: unknown; channel?: unknown; person?: unknown; startedBy?: unknown; doneOutcome?: unknown; expiresAtSeconds: number } | undefined> {
+export async function readSlackAddPrompt(table: TeamRecordTable, orgId: OrgId, token: string): Promise<{ team?: unknown; channel?: unknown; person?: unknown; startedBy?: unknown; startedProject?: unknown; doneOutcome?: unknown; expiresAtSeconds: number } | undefined> {
   const item = await getItem(table, slackAddKey(orgId, token));
-  return item === undefined ? undefined : { team: item.team, channel: item.channel, person: item.person, startedBy: item.startedBy, doneOutcome: item.doneOutcome, expiresAtSeconds: Number(item[INDEX_EXPIRY_ATTRIBUTE]) };
+  return item === undefined ? undefined : { team: item.team, channel: item.channel, person: item.person, startedBy: item.startedBy, startedProject: item.startedProject, doneOutcome: item.doneOutcome, expiresAtSeconds: Number(item[INDEX_EXPIRY_ATTRIBUTE]) };
 }
 
-/** Remembers that a press began on the prompt (the first one wins). A later press that finds the place already saved knows the first one was this prompt's own. Best effort. */
-export async function markSlackAddStarted(table: TeamRecordTable, orgId: OrgId, token: string, interactionId: string): Promise<void> {
+/** Remembers that a press began on the prompt, and for which project (the first one wins). A later press FOR THE SAME PROJECT that finds the place already saved knows the first one was this prompt's own. Best effort. */
+export async function markSlackAddStarted(table: TeamRecordTable, orgId: OrgId, token: string, interactionId: string, project: string): Promise<void> {
   try {
     await table.documentClient.send(new UpdateCommand({
-      TableName: table.tableName, Key: slackAddKey(orgId, token), UpdateExpression: "SET startedBy = :interaction",
-      ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(startedBy)", ExpressionAttributeValues: { ":interaction": interactionId },
+      TableName: table.tableName, Key: slackAddKey(orgId, token), UpdateExpression: "SET startedBy = :interaction, startedProject = :project",
+      ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(startedBy)", ExpressionAttributeValues: { ":interaction": interactionId, ":project": project },
     }));
   } catch { /* a press that began earlier already left its mark, or the item is gone */ }
 }
