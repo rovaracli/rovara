@@ -154,7 +154,7 @@ async function releaseFinishedTaskNow(deps: ReleaseDeps, task: DeveloperTaskReco
     }
   }
   const now = new Date().toISOString();
-  const reason = task.agentRunEnd !== undefined ? "its run ended" : task.workflow?.stage !== "CLOSED" ? "its pull request merged" : task.workflow.outcome === "PASSED" ? "it finished every step" : task.workflow.outcome === "CLOSED" ? "it was stopped while its plan waited for approval" : "its plan was rejected";
+  const reason = task.agentRunEnd !== undefined ? "its run ended" : task.workflow?.stage !== "CLOSED" ? "its pull request merged" : task.workflow.outcome === "PASSED" ? "it finished every step" : task.workflow.outcome === "CLOSED" ? "it was stopped before any code was written" : "its plan was rejected";
   const rest = (): TransactItems => [
     ...(releaseWorkspace ? [{ Update: {
       TableName: deps.tableName,

@@ -146,7 +146,8 @@ export interface ControlPlaneClient {
   commentOnSession(sessionId: string, request: { requestId: string; text: string }): Promise<SessionMessageRead>;
   /** A message to the session's agent; the caller needs "can use". */
   tellSessionAgent(sessionId: string, request: { requestId: string; text: string }): Promise<SessionMessageRead>;
-  stopSession(sessionId: string, requestId: string): Promise<SessionViewRead>;
+  /** `nothingRunning` is the server's words when the stop found nothing to stop (so the tool never says "Stop requested"). */
+  stopSession(sessionId: string, requestId: string): Promise<SessionViewRead & { nothingRunning?: string }>;
   /** Rovara Code (Plan 6 Task 5): answers the questions a task waits on, in one call (every question needs an answer). The caller needs "can use" on the session. */
   answerTaskQuestions(sessionId: string, request: { requestId: string; round: number; answers: Array<{ questionId: string; optionId?: string; text?: string }> }): Promise<SessionViewRead>;
 }
@@ -409,7 +410,11 @@ export function httpControlPlaneClient(options: {
     getSession: async (sessionId) => pinned((await call(SessionResponseReaderSchema, "GET", sessionPath(sessionId))).session),
     commentOnSession: (sessionId, request) => call(SessionMessageReaderSchema, "POST", sessionPath(sessionId, "/messages"), { requestId: request.requestId, kind: "comment", text: request.text }),
     tellSessionAgent: (sessionId, request) => call(SessionMessageReaderSchema, "POST", sessionPath(sessionId, "/messages"), { requestId: request.requestId, kind: "steer", text: request.text }),
-    stopSession: async (sessionId, requestId) => pinned((await call(SessionResponseReaderSchema, "POST", sessionPath(sessionId, "/stop"), { requestId })).session),
+    stopSession: async (sessionId, requestId) => {
+      const answer = await call(SessionResponseReaderSchema, "POST", sessionPath(sessionId, "/stop"), { requestId });
+      const view = await pinned(answer.session);
+      return answer.stop === "NOTHING_RUNNING" ? { ...view, nothingRunning: answer.message ?? "Nothing was running to stop." } : view;
+    },
     answerTaskQuestions: async (sessionId, request) => pinned((await call(SessionResponseReaderSchema, "POST", sessionPath(sessionId, "/answers"), request)).session),
     approvalConfirmLink: (approvalId) => call(z.object({ confirmUrl: z.string(), ticketed: z.boolean() }), "POST", `/v1/app/approvals/${encodeURIComponent(approvalId)}/confirm-link`),
   };

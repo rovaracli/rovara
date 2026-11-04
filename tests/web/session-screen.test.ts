@@ -125,7 +125,7 @@ it("retries the header session once and navigates to the returned session", asyn
 });
 it("posts stop only after explicit confirmation and refreshes the session", async () => {
  const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["stop"] } }), async () => ({ status: 200, body: { session: sessionFixture() } }));
- fireEvent.click(await screen.findByRole("button", { name: "Stop" }));expect(screen.getByText("Payments expert stops after its current step.")).toBeTruthy();
+ fireEvent.click(await screen.findByRole("button", { name: "Stop" }));expect(screen.getByText("Payments expert stops after its current step. If the task is blocked instead of running, Stop ends it and frees its workspace only while it is still planning; after that, use Close task.")).toBeTruthy();
  expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/stop"))).toBe(false);
  fireEvent.click(screen.getByRole("button", { name: "Stop session" }));fireEvent.click(screen.getByRole("button", { name: "Stop session" }));await screen.findByText("Stop requested.");
  expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/stop"))).toHaveLength(1);f.close();
@@ -158,6 +158,13 @@ it("closes the task only after a confirmation, asks again before discarding unpu
  expect(closes()).toHaveLength(2);expect(closes()[1]!.body).toMatchObject({ discardUnpublished: true });
  expect((closes()[1]!.body as { requestId: string }).requestId).not.toBe((closes()[0]!.body as { requestId: string }).requestId);f.close();
 });
+it("shows the broker's own words when a stop of a blocked task left it as it was", async () => {
+ const base = sessionFixture(), words = "This task is blocked, not running. To end it, use Close task (it checks for unpublished work first).";
+ const f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["stop"] } }), async () => ({ status: 200, body: { session: sessionFixture(), stop: "NOTHING_RUNNING", message: words } }));
+ fireEvent.click(await screen.findByRole("button", { name: "Stop" }));fireEvent.click(screen.getByRole("button", { name: "Stop session" }));
+ await screen.findByText(words);expect(screen.queryByText("Stop requested.")).toBeNull();f.close();
+});
+
 it("does not carry a pending takeover into a different already-cached session", async () => {
  const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, owner: false, actions: ["take_over"] } }), async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["You will own this session."] } }));
  fireEvent.click(await screen.findByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");

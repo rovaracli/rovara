@@ -423,7 +423,14 @@ jobs:
       # a hit runs `install-deps` for them, a miss runs the full `install --with-deps`.
       - name: Playwright version
         id: playwright-version
-        run: echo "version=$(node -p "require('./package-lock.json').packages['node_modules/playwright-core'].version")" >> "$GITHUB_OUTPUT"
+        # A version that cannot be read stops the job here: a constant key would serve one Playwright's browsers to another.
+        run: |
+          version="$(node -p "require('./package-lock.json').packages['node_modules/playwright-core']?.version")"
+          if [ -z "$version" ] || [ "$version" = "undefined" ]; then
+            echo "::error::Could not read the Playwright version from package-lock.json (packages['node_modules/playwright-core'].version); the browser cache key needs it."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Playwright browsers cache
         id: playwright-cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
