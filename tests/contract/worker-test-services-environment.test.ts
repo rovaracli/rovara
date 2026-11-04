@@ -374,14 +374,14 @@ describe("the pre-pull runs only with test services on, from the install's own r
   }
   const durations = (calls: string): number[] => [...calls.matchAll(/^timeout --foreground --kill-after=10s (\d+)s /gmu)].map((match) => Number(match[1]));
 
-  it("with test services off (or the switch missing, or anything but 1) reads no list, logs in to nothing, pulls nothing and logs nothing; the facts say off and the worker offers no feature", () => {
+  it("with test services off (or the switch missing, or anything but 1) reads no list, logs in to nothing, pulls nothing and logs nothing; the facts say off", () => {
     for (const value of [undefined, "0", "", "true", " 1"]) {
       const r = drive({ env: value === undefined ? { AGENTX_TEST_SERVICES: "" } : { AGENTX_TEST_SERVICES: value } });
       expect(r.status, String(value)).toBe(0);
       expect(r.calls, String(value)).toBe("");
       expect(r.log, String(value)).toBe("");
-      expect(r.summary, String(value)).toContain("rc=0 result=off failed=all");
-      expect(r.worker, String(value)).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=all");
+      expect(r.summary, String(value)).toContain("rc=0 result=off failed= ");
+      expect(r.worker, String(value)).not.toContain("NOT_PULLED");
     }
   });
   it("with test services on, pulls the shipped list; a release-flavor image still pre-pulls (the worker image is release flavor even on staging)", () => {
@@ -446,4 +446,55 @@ describe("the pre-pull runs only with test services on, from the install's own r
     expect(ran.stdout).toContain("result=failed");
     expect(Number(/elapsed=(\d+)/u.exec(ran.stdout)?.[1])).toBeLessThanOrEqual(42);
   }, 90_000);
+});
+
+describe("a worker withheld for IPv6 stays withheld after the pre-pull's per-image list", () => {
+  // The real functions, in the boot's order (pre-pull result, settings, then the IPv6 withhold and the boot facts), with the host tools stubbed.
+  function sequence(order: "withhold-after" | "withhold-before", options: { partial: boolean }) {
+    const directory = mkdtempSync(join(tmpdir(), "tsl-withhold-"));
+    const envFile = join(directory, "worker.env");
+    writeFileSync(envFile, "AGENTX_RUNTIME=ec2\n");
+    const path = tools(directory, { docker: 'echo 25.0.18', iptables: "exit 0", mktemp: `exec /usr/bin/mktemp "$@"`, sync: "exit 0" });
+    const prepull = options.partial ? 'PREPULL_RESULT=partial; PREPULL_COUNT=1; PREPULL_FAILED_REPOS=svc/local-aws' : 'PREPULL_RESULT=ok; PREPULL_COUNT=2; PREPULL_FAILED_REPOS=""';
+    const program = [
+      `log() { echo "$*" >> "${directory}/log"; }`,
+      `readonly WORKER_ENV_FILE=${envFile}`,
+      "metadata_blocked() { return 0; }",
+      fn("withhold_test_services_for_ipv6"), fn("write_test_services_environment"), fn("write_test_services_boot_facts"),
+      `AGENTX_WORKER_IMAGE=${IMAGE}; AGENTX_LOG_GROUP=/agentx/staging/worker; PREPULL_LOGGED_OUT=true; IPV6_WALL_REASON=""`,
+      prepull,
+      ...(order === "withhold-after"
+        ? ["write_test_services_environment", "withhold_test_services_for_ipv6 rule-not-added", "write_test_services_boot_facts"]
+        : ["withhold_test_services_for_ipv6 rule-not-added", "write_test_services_environment", "write_test_services_boot_facts"]),
+    ].join("\n");
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path } });
+    return { status: ran.status, stderr: ran.stderr, lines: readFileSync(envFile, "utf8").split("\n").filter((line) => line !== "") };
+  }
+  for (const order of ["withhold-after", "withhold-before"] as const) {
+    for (const partial of [true, false]) {
+      it(`${order}, pre-pull ${partial ? "partial" : "ok"}: exactly one NOT_PULLED line, and it is all; the facts carry the pre-pull state and the IPv6 reason`, () => {
+        const r = sequence(order, { partial });
+        expect(r.status, r.stderr).toBe(0);
+        expect(r.lines.filter((line) => line.startsWith("AGENTX_TEST_SERVICES_NOT_PULLED="))).toEqual(["AGENTX_TEST_SERVICES_NOT_PULLED=all"]);
+        const facts = r.lines.filter((line) => line.startsWith("AGENTX_TEST_SERVICES_BOOT_FACTS="));
+        expect(facts).toHaveLength(1);
+        const parsed = parseBootFacts(facts[0]!.slice("AGENTX_TEST_SERVICES_BOOT_FACTS=".length));
+        expect(parsed).toMatchObject({ ipv6Drops: false, ipv6DropsReason: "rule-not-added", prepull: partial ? "partial" : "ok", prepulled: partial ? 1 : 2 });
+      });
+    }
+  }
+  it("in the boot's order the pre-pull's settings come first and the IPv6 withhold after them, then the facts", () => {
+    const main = fn("stage2_main");
+    expect(main.indexOf("pull_catalog_images")).toBeLessThan(main.indexOf("withhold_test_services_for_ipv6"));
+    expect(main.indexOf("write_test_services_environment")).toBeLessThan(main.indexOf("withhold_test_services_for_ipv6"));
+    expect(main.indexOf("withhold_test_services_for_ipv6")).toBeLessThan(main.indexOf("write_test_services_boot_facts"));
+  });
+  it("without the withhold the per-image list is written as before", () => {
+    const directory = mkdtempSync(join(tmpdir(), "tsl-nowithhold-"));
+    const envFile = join(directory, "worker.env");
+    writeFileSync(envFile, "AGENTX_RUNTIME=ec2\n");
+    const program = [`readonly WORKER_ENV_FILE=${envFile}`, fn("write_test_services_environment"), `AGENTX_WORKER_IMAGE=${IMAGE}; AGENTX_LOG_GROUP=/agentx/staging/worker; PREPULL_FAILED_REPOS=svc/local-aws`, "write_test_services_environment"].join("\n");
+    expect(spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } }).status).toBe(0);
+    expect(readFileSync(envFile, "utf8")).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=svc/local-aws\n");
+  });
 });

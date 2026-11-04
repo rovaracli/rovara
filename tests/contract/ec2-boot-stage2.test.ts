@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ec2WorkerBootScript, type Ec2WorkerBootConfig } from "../../packages/contracts/src/session.js";
+import { parseBootFacts } from "../../packages/worker/src/test-services-report.js";
+import { testServicesAdvertisedFeatures } from "../../packages/worker/src/test-services-run.js";
 
 // Task 10: a named environment's boot is two files. boot.sh is user data and stops after it pulls the worker image; the rest, boot-stage2.sh, is
 // read out of that image, checked against a hash the control plane launched the worker with, and sourced. A legacy worker keeps today's boot.sh as
@@ -126,7 +128,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(stage1).toContain(legacyMainHead);
     const stage2Main = /^stage2_main\(\) \{\n([\s\S]*?)^\}$/m.exec(stage2)?.[1] ?? "";
     // The one addition: in a named environment, after the worker environment is written and before the worker unit, Docker's address pools and the rvi-to-rvi wall (design test-services.md 4.0.1).
-    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    if pull_catalog_images "$region"; then\n      write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"\n    else\n      log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"\n    fi\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n    wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"\n    install_run_walls_unit || fail "could not install the unit that restores the run network walls"\n    write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"\n  fi\n';
+    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    if pull_catalog_images "$region"; then\n      write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"\n    else\n      log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"\n    fi\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n    wall_ipv6_into_host || withhold_test_services_for_ipv6 "${IPV6_WALL_REASON:-ip6tables-unusable}" || fail "could not withhold test services after the IPv6 wall failed"\n    install_run_walls_unit || fail "could not install the unit that restores the run network walls"\n    write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"\n  fi\n';
     expect(legacyTail).toContain('  write_worker_environment "$region"\n');
     expect(stage2Main).toBe(`  local region=$1 instance_id=$2\n  BOOT_STEP="download the worker image"\n${legacyTail.replace('  write_worker_environment "$region"\n', addition)}`);
   });
@@ -149,7 +151,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(sourced.status, sourced.stderr).toBe(0);
     expect(sourced.stderr).toBe("");
     const defined = sourced.stdout.split("\n").filter(Boolean).map((line) => line.replace(/^declare -f /, "")).sort();
-    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "install_run_walls_unit", "catalog_seconds", "pull_catalog_images", "write_test_services_boot_facts", "write_test_services_environment", "stage2_main"].sort());
+    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "withhold_test_services_for_ipv6", "install_run_walls_unit", "catalog_seconds", "pull_catalog_images", "write_test_services_boot_facts", "write_test_services_environment", "stage2_main"].sort());
     expect(stage2).not.toMatch(/^main "\$@"/m);
   });
 });
@@ -628,22 +630,49 @@ describe("stage 1 runs stage 2 from the worker image", () => {
     expect(readFileSync(join(run.directory, "etc", "agentx", "worker.env"), "utf8")).toContain('"ipv6Drops":true');
   });
 
+  const workerEnv = (run: Run) => readFileSync(join(run.directory, "etc", "agentx", "worker.env"), "utf8");
+  const bootFacts = (run: Run) => parseBootFacts(workerEnv(run).split("\n").find((line) => line.startsWith("AGENTX_TEST_SERVICES_BOOT_FACTS="))?.slice("AGENTX_TEST_SERVICES_BOOT_FACTS=".length));
+  // Owner decision 2026-11-04: an IPv6 wall that cannot be put in place does not stop the worker. It runs normal tasks without test services.
   for (const ip6tables of ["missing", "unusable"] as const) {
-    it(`with IPv6 on and ip6tables ${ip6tables}, the boot stops with the exact message and starts no worker unit`, async () => {
+    it(`with IPv6 on and ip6tables ${ip6tables}, the boot completes, withholds test services before the worker unit is written, reports ipv6Drops false with a reason, and the worker advertises no test-services feature`, async () => {
       const run = await boot({ served: placedStage2, ip6tables, ipv6: true });
-      expect(run.status).not.toBe(0);
-      expect(run.failure).toBe("could not drop IPv6 from run networks into the host");
-      expect(run.calls.some((call) => call.startsWith("systemctl enable --now"))).toBe(false);
-      expect(run.calls.some((call) => call.startsWith("systemctl daemon-reload"))).toBe(false);
+      expect(run.failure, run.stderr).toBeUndefined();
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.calls.some((call) => call.startsWith("systemctl enable --now"))).toBe(true);
+      const env = workerEnv(run);
+      expect(env.split("\n").filter((line) => line.startsWith("AGENTX_TEST_SERVICES_NOT_PULLED="))).toEqual(["AGENTX_TEST_SERVICES_NOT_PULLED=all"]);
+      expect(env).toContain('"ipv6Drops":false,"ipv6DropsReason":"ip6tables-unusable"');
+      expect(bootFacts(run)).toMatchObject({ metadataBlocked: true, runWalls: true, ipv6Drops: false, ipv6DropsReason: "ip6tables-unusable" });
+      expect(run.stderr).toContain("TEST SERVICES WITHHELD");
+      // The walls that stay fatal were still put in place, and the walls unit was installed.
+      expect(run.calls.some((call) => call.startsWith("iptables -I DOCKER-USER -i rvi+"))).toBe(true);
+      expect(run.calls.some((call) => call.includes("systemctl enable rovara-run-walls.service"))).toBe(true);
+      // What the worker does with that environment: no test-services feature, whatever else is configured.
+      const environment = Object.fromEntries(env.split("\n").filter((line) => /^[A-Z0-9_]+=/u.test(line)).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+      const withRunDirectory = { ...environment, AGENTX_TEST_SERVICES_RUN_DIR: join(run.directory, "tsrun") };
+      expect(testServicesAdvertisedFeatures(withRunDirectory)).toEqual([]);
+      // Positive control: the same environment without the withhold does offer test services, so the empty answer above is the withhold's doing.
+      expect(testServicesAdvertisedFeatures({ ...withRunDirectory, AGENTX_TEST_SERVICES_NOT_PULLED: undefined })).toContain("task.testServices.v1");
     });
 
-    it(`with IPv6 off on the host and ip6tables ${ip6tables}, the boot goes on (there is no IPv6 to drop)`, async () => {
+    it(`with IPv6 off on the host and ip6tables ${ip6tables}, the boot goes on as before: no withhold, ipv6Drops true`, async () => {
       const run = await boot({ served: placedStage2, ip6tables, ipv6: false });
       expect(run.failure, run.stderr).toBeUndefined();
       expect(run.status, run.stderr).toBe(0);
-      expect(readFileSync(join(run.directory, "etc", "agentx", "worker.env"), "utf8")).toContain('"ipv6Drops":true');
+      expect(workerEnv(run)).toContain('"ipv6Drops":true');
+      expect(workerEnv(run)).not.toContain("ipv6DropsReason");
+      expect(workerEnv(run)).not.toContain("AGENTX_TEST_SERVICES_NOT_PULLED");
+      expect(run.stderr).not.toContain("TEST SERVICES WITHHELD");
     });
   }
+
+  it("with IPv6 on and a usable ip6tables, nothing is withheld and the facts carry no reason", async () => {
+    const run = await boot({ served: placedStage2 });
+    expect(run.status, run.stderr).toBe(0);
+    expect(workerEnv(run)).not.toContain("AGENTX_TEST_SERVICES_NOT_PULLED");
+    expect(workerEnv(run)).not.toContain("ipv6DropsReason");
+    expect(bootFacts(run)).toMatchObject({ ipv6Drops: true });
+  });
 
   it("fails when the launch carries no stage 2 hash, before it creates a container", async () => {
     const run = await boot({ served: placedStage2, noHash: true });
