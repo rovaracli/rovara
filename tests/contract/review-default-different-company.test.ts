@@ -12,7 +12,7 @@ const gpt = { provider: "openai", modelId: "gpt-5" };
 const gemini = { provider: "google", modelId: "gemini-2.5-pro" };
 const REVIEWS = ["code_review", "security_review", "plan_check"] as const;
 const row = (model: { provider: string; modelId: string }, sourceId = "rovara") => ({ model, sourceId, enabled: true, inEffectiveOrder: true, evidence: { orgId: "org_a", sourcesRevision: 2, kind: "rovara_catalog" as const } });
-const input = (stage: (typeof REVIEWS)[number], models = [sonnet, opus, gpt, gemini], more: Partial<StageModelInput> = {}): StageModelInput => ({
+const input = (stage: StageModelInput["stage"], models = [sonnet, opus, gpt, gemini], more: Partial<StageModelInput> = {}): StageModelInput => ({
   orgId: "org_a", stage, sourcesRevision: 2, candidates: models.map((model) => row(model)), forbidden: [], builtinDefault: sonnet, referenceModel: sonnet, allowLegacyDefaultFallback: true, reviewDefaultDifferentCompany: true, ...more,
 });
 
