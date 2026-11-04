@@ -394,7 +394,8 @@ export type ChannelClassResponse =
 
 /**
  * Team record source pickers (lane task 10): the channels the bot can see, one page of `conversations.list` at a time, read fresh with the same bot token. Only for the team the bot token belongs to.
- * Public and private channels only: direct messages and group messages are never listed (a bot token sees only its own, so a list of them would mislead; they are added by typing the ID). `joined` says whether the bot is in the
+ * Public channels only: private channels (their names would reach people who are not in them), direct messages and group messages are never listed; they are added by typing the ID. `private` stays in the type so a reply
+ * that carries one can be read and dropped on the broker side. `joined` says whether the bot is in the
  * channel (`is_member`; missing is not joined). `cursor` is Slack's own, passed back as Slack gave it.
  * `missing_scope`: the Slack app was installed without the scopes that listing needs (the broker says so in one fixed sentence).
  */

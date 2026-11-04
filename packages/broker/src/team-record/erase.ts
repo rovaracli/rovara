@@ -355,6 +355,13 @@ export async function eraseProject(deps: PurgeDependencies, orgId: OrgId, projec
   left -= sources.items.length;
   result.other += sources.items.length;
 
+  // 1b. The pickers' listing sessions of this project (`SRCOPT#`) sit in the company's project-less partition, so the prefix walk below never finds them; they hold only the project's name and a page count and
+  // expire by themselves after 15 minutes. Found by their `project` field and removed with the project (the first 500 of the company's sessions; any left expire on their own).
+  if (project !== undefined) {
+    const sessions = await queryPrefix(deps.table, orgId, undefined, SOURCE_OPTIONS_SK_PREFIX, 500);
+    for (const item of sessions.items) if (item.project === project && typeof item.sk === "string") await deleteItem(deps.table, { pk: teamRecordPk(orgId), sk: item.sk });
+  }
+
   // 2. The lake: the whole project is queued before any hot row goes.
   if (project !== undefined) await queue.enqueue(orgId, [{ kind: "project", project }]);
 

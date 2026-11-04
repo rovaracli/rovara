@@ -48,11 +48,11 @@ export const T = {
  SRC_SHOW_MORE: "Show more", SRC_NOT_JOINED: "Invite Rovara to this channel so it can read it.",
  SRC_LIST_LOADING: "Loading the list\u2026", SRC_LIST_FAIL: "Rovara can't load the list right now. Enter an ID instead.", SRC_LIST_SCOPE: "Rovara can't list channels. Ask an admin to reinstall the Slack app.", SRC_LIST_EMPTY: "There is nothing to pick from yet. Enter an ID instead.",
  SRC_LIST_MORE: "Showing the first 100. Type to narrow the list.", SRC_TYPE_INSTEAD: "Enter an ID instead", SRC_PICK_INSTEAD: "Pick from the list instead",
- SRC_OPT_ADDED: "Already a source of this project", SRC_OPT_TAKEN: "Used by another project", SRC_OPT_CONNECT: "Slack Connect channels can't be used", SRC_TAG_PRIVATE: "Private",
+ SRC_OPT_ADDED: "Already a source of this project", SRC_OPT_TAKEN: "Used by another project", SRC_OPT_CONNECT: "Slack Connect channels can't be used", SRC_OPT_CLEARING: "Still being cleared after a removal. Try again in about an hour.", SRC_NOTES_LIVE_ONLY: "Your company keeps Slack sources live only.",
  SRC_NOTES_LINK_TEXT: "Slack's API terms", SRC_NOTES_LINK: "https://slack.com/terms-of-service/api",
- SRC_CLEARING: "Being removed", SRC_BEING_REMOVED: "(being removed)", SRC_CLEARING_ROW: "Removing \u2014 deleting its stored data. You can add it again when this finishes (about an hour).",
+ SRC_CLEARING: "Being removed", SRC_BEING_REMOVED: "(being removed)", SRC_CLEARING_ROW: "Removing: deleting its stored data. You can add it again when this finishes (about an hour).",
  SRC_SKIPPED: "items weren't kept because their author isn't linked to a Rovara person.", SRC_NO_EDIT: "Changing sources isn't available to you right now.", SRC_SAVING: "Saving",
- SRC_ERR_STALE: "Someone changed this source meanwhile. Reload and try again.", SRC_ERR_REMOVAL: "This source was just removed and its stored data is still being deleted. You can add it again in about an hour.", SRC_ERR_BUSY: "Rovara is still deleting data from recently removed sources. Try again in an hour.", 
+ SRC_ERR_STALE: "Someone changed this source meanwhile. Reload and try again.", SRC_ERR_REMOVAL: "This source was just removed and its stored data is still being deleted. You can add it again in about an hour.", SRC_ERR_CLEARING: "This source is still being cleared after a recent removal. You can add it again in about an hour.", SRC_ERR_BUSY: "Rovara is still deleting data from recently removed sources. Try again in an hour.", 
  SRC_ERR_PLACE: "That source can't be used here.", SRC_ERR_KIND: "That kind of source can't be added yet.", SRC_ERR_FORBIDDEN: "You can't change the sources of this project.",
  SRC_ERR_UNAVAILABLE: "Rovara can't check that right now. Try again shortly.", SRC_ERR_INVALID: "Those details aren't valid. Check them and try again.", SRC_ERR_GONE: "That source no longer exists. The list was read again.", SRC_ERR_OTHER: "Couldn't save that. Try again.",
  LOADED_TITLE: "Lessons the agent loaded", LOADED_NONE: "No lesson was loaded for this task.", LOADED_HIDDEN: "A lesson from a source you can't see", LOADED_THANKS: "Thanks. Your mark is recorded.",
@@ -108,7 +108,7 @@ export function failureText(error: unknown, fallback: string): string {
 export const isStale = (error: unknown): boolean => error instanceof ApiError && (error.code === "CHANGE_STALE" || error.code === "NOT_FOUND");
 
 const SOURCE_FAILURES: Readonly<Record<string, string>> = {
- CHANGE_STALE: T.SRC_ERR_STALE, SOURCE_REMOVAL_RUNNING: T.SRC_ERR_REMOVAL, SOURCE_REMOVAL_BUSY: T.SRC_ERR_BUSY, SOURCE_NOT_ALLOWED: T.SRC_ERR_PLACE, SOURCE_KIND_NOT_YET: T.SRC_ERR_KIND,
+ CHANGE_STALE: T.SRC_ERR_STALE, SOURCE_REMOVAL_RUNNING: T.SRC_ERR_REMOVAL, SOURCE_CLEARING: T.SRC_ERR_CLEARING, SOURCE_REMOVAL_BUSY: T.SRC_ERR_BUSY, SOURCE_NOT_ALLOWED: T.SRC_ERR_PLACE, SOURCE_KIND_NOT_YET: T.SRC_ERR_KIND,
  FORBIDDEN: T.SRC_ERR_FORBIDDEN, RUNTIME_UNAVAILABLE: T.SRC_ERR_UNAVAILABLE, CONFIG_INVALID: T.SRC_ERR_INVALID, NOT_FOUND: T.SRC_ERR_GONE, PROJECT_NOT_FOUND: T.SRC_ERR_GONE,
 };
 /** What a failed source change says: a fixed sentence for the code, never the server's own text. */

@@ -8,6 +8,7 @@ import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packag
 import { deleteDeps } from "../../support/team-record-delete.js";
 import { eraseWorkspace } from "../../../packages/broker/src/team-record/erase.js";
 import { teamRecordPk } from "@agentx/contracts";
+import { putScopeWork } from "../../../packages/broker/src/team-record/store.js";
 import { dynamoRateLimiter } from "../../../packages/broker/src/team-record/query.js";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import type { SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
@@ -153,11 +154,10 @@ describe("Slack: the channels of the company's bound workspace", () => {
     expect(reply.status).toBe(200);
     expect(reply.body).toMatchObject({ kind: "slack" });
     expect(optionList(reply)).toEqual([
-      { scope: slackScope(CH.pub), name: "name-c0public1", slackKind: "public", joined: true, state: "available" },
-      { scope: slackScope(CH.priv), name: "name-c0private", slackKind: "private", joined: true, state: "available" },
-      { scope: slackScope(CH.connect), name: "name-c0connect1", slackKind: "public", joined: true, state: "slack_connect" },
-      { scope: slackScope(CH.taken), name: "name-c0taken001", slackKind: "public", joined: true, state: "available" },
-      { scope: slackScope(CH.mine), name: "name-c0mine0001", slackKind: "public", joined: true, state: "available" },
+      { scope: slackScope(CH.pub), name: "name-c0public1", joined: true, state: "available" },
+      { scope: slackScope(CH.connect), name: "name-c0connect1", joined: true, state: "slack_connect" },
+      { scope: slackScope(CH.taken), name: "name-c0taken001", joined: true, state: "available" },
+      { scope: slackScope(CH.mine), name: "name-c0mine0001", joined: true, state: "available" },
     ]);
     // Slack is asked only for the company's own bound team, and the strict reply schema holds.
     expect(h.calls).toEqual([{ teamId: TEAM_A }]);
@@ -176,7 +176,7 @@ describe("Slack: the channels of the company's bound workspace", () => {
       expect(stateOf(reply, slackScope(CH.pub))).toBe("available");
       // The other project's name never appears, nor anything beyond the fixed fields.
       expect(JSON.stringify(reply.body)).not.toContain("api");
-      for (const option of optionList(reply)) expect(Object.keys(option).sort()).toEqual(["joined", "name", "scope", "slackKind", "state"]);
+      for (const option of optionList(reply)) expect(Object.keys(option).sort()).toEqual(["joined", "name", "scope", "state"]);
     }
     // From the other project, "mine" is claimed elsewhere and "taken" is its own.
     const fromApi = await options(h, WHO.owner, { kind: "slack" }, { project: "api" });
@@ -189,8 +189,7 @@ describe("Slack: the channels of the company's bound workspace", () => {
     h.pages = [[entry(CH.pub, { joined: false }), entry(CH.priv)]];
     const reply = await options(h, WHO.maint, { kind: "slack" });
     expect(optionList(reply)).toEqual([
-      { scope: slackScope(CH.pub), name: "name-c0public1", slackKind: "public", joined: false, state: "available" },
-      { scope: slackScope(CH.priv), name: "name-c0private", slackKind: "private", joined: true, state: "available" },
+      { scope: slackScope(CH.pub), name: "name-c0public1", joined: false, state: "available" },
     ]);
     const missing = harness();
     missing.pages = [[{ id: CH.pub, name: "bare", kind: "public", extShared: false } as never]];
@@ -203,7 +202,7 @@ describe("Slack: the channels of the company's bound workspace", () => {
       h.pages = [[entry(CH.pub), { id: CH.dm, name: "U0PERSON1", kind: "im", extShared: false, joined: true } as never, { id: CH.mpim, name: "mpdm-a--b-1", kind: "mpim", extShared: false, joined: true } as never, entry(CH.priv)]];
       const shown = await options(h, WHO.maint, { kind: "slack" });
       expect(h.calls[0], edition).toEqual({ teamId: TEAM_A });
-      expect(optionList(shown).map((option) => option.slackKind), edition).toEqual(["public", "private"]);
+      expect(optionList(shown).map((option) => option.scope), edition).toEqual([slackScope(CH.pub)]);
     }
   });
 
@@ -535,6 +534,128 @@ describe("Linear teams and Jira projects of the company's connected apps", () =>
     expect(app.reads).toBe(0);
     expect((await options(h, WHO.maint, { kind: "linear" })).status).toBe(200);
     expect(app.reads).toBe(1);
+  });
+});
+
+describe("final fix 2: every tracker page is rationed, and a bad cursor costs nothing", () => {
+  const manyPlaces = (h: Harness, kind: "linear" | "jira" = "jira") => {
+    const places = Array.from({ length: 5000 }, (_, index) => ({ scope: kind === "jira" ? `jira:project/K${String(index).padStart(4, "0")}` : linearScope(`${"1".repeat(8)}-aaaa-4aaa-8aaa-${String(index).padStart(12, "0")}`), name: `P${String(index)}` }));
+    h.apps.set(ORG_A, [{ kind, places, reads: 0, pageSize: 1 }]);
+    return h.apps.get(ORG_A)![0]!;
+  };
+  it("Linear and Jira pages are rationed per company (30 a minute, every editor and every page counts), with a fixed 429; the tool is not asked past it; the minute gives it back", async () => {
+    const h = harness();
+    const app = manyPlaces(h);
+    let cursor = (await options(h, WHO.maint, { kind: "jira" })).body.next as string; // first page opens the session
+    expect(app.reads).toBe(1);
+    // 29 more reads in the minute, from different editors, mixing first pages and later pages (the session allows 10 pages, so first pages carry the rest)
+    for (let call = 1; call < 30; call += 1) {
+      const who = call % 2 === 0 ? WHO.maint : WHO.owner;
+      const reply = await options(h, who, call % 3 === 0 && call < 9 ? { kind: "jira", cursor } : { kind: "jira" });
+      expect(reply.status, String(call)).toBe(200);
+      if (call % 3 === 0 && call < 9) cursor = (reply.body.next as string | undefined) ?? cursor;
+    }
+    expect(app.reads).toBe(30);
+    const denied = await options(h, WHO.admin, { kind: "jira" });
+    expect(denied).toMatchObject({ status: 429, body: { code: "TOO_MANY_REQUESTS" } });
+    const deniedLater = await options(h, WHO.maint, { kind: "jira", cursor });
+    expect(deniedLater).toMatchObject({ status: 429, body: { code: "TOO_MANY_REQUESTS" } });
+    expect(app.reads).toBe(30);
+    // Another company has its own budget; Linear has its own too (a different tool and key).
+    h.apps.get(ORG_B)![0]!.reads = 0;
+    expect((await options(h, WHO.otherMaint, { kind: "linear" }, { org: ORG_B })).status).toBe(200);
+    expect((await options(h, WHO.maint, { kind: "linear" })).status).toBe(200);
+    h.w.clock.ms += 61_000;
+    expect((await options(h, WHO.maint, { kind: "jira" })).status).toBe(200);
+    expect(app.reads).toBe(31);
+  });
+
+  it("a failed tracker read still uses the company's minute: failures cannot repeat past it, and the tool is not asked once it is spent", async () => {
+    const h = harness();
+    const app = manyPlaces(h);
+    const cursor = (await options(h, WHO.maint, { kind: "jira" })).body.next as string;
+    app.fails = true;
+    const statuses: number[] = [];
+    for (let again = 0; again < 40; again += 1) statuses.push((await options(h, WHO.maint, { kind: "jira", cursor })).status);
+    expect(statuses.filter((status) => status === 503)).toHaveLength(29); // the first page used one of the 30
+    expect(statuses.filter((status) => status === 429)).toHaveLength(11);
+    expect(app.reads).toBe(30);
+    // The failures gave their session page back (a failed read is not a page), but not the company's minute.
+    expect(sessionsOf(h)[0]).toMatchObject({ pages: 1 });
+  });
+
+  const sessionsOf = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_OPTIONS");
+
+  it("the inner tracker cursor is checked before the tool is called, the session is not spent and the minute is not used", async () => {
+    const h = harness();
+    const app = manyPlaces(h);
+    const session = String((await options(h, WHO.maint, { kind: "jira" })).body.next).split(".")[0]!;
+    const readsBefore = app.reads;
+    for (const inner of ["abc", "1", "100.abc", "x.1", "1.a b", `1.${"x".repeat(301)}`]) {
+      expect(await options(h, WHO.maint, { kind: "jira", cursor: `${session}.${inner}` }), inner).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    }
+    expect(app.reads).toBe(readsBefore);
+    expect(sessionsOf(h)[0]).toMatchObject({ pages: 1 });
+    // The company's minute is untouched: 29 more reads still go through.
+    for (let call = 0; call < 29; call += 1) expect((await options(h, WHO.maint, { kind: "jira" })).status, String(call)).toBe(200);
+  });
+
+  it("one person may open 60 first pages a minute, whatever the kind, and the 61st is refused (429) before anything is read; another person is not affected", async () => {
+    const h = harness();
+    const jira = manyPlaces(h);
+    for (let call = 0; call < 30; call += 1) expect((await options(h, WHO.maint, { kind: "jira" })).status, `jira ${String(call)}`).toBe(200);
+    h.apps.set(ORG_A, [{ kind: "linear", places: Array.from({ length: 5000 }, (_, index) => ({ scope: linearScope(`${"2".repeat(8)}-aaaa-4aaa-8aaa-${String(index).padStart(12, "0")}`), name: `L${String(index)}` })), reads: 0, pageSize: 1 }]);
+    for (let call = 0; call < 30; call += 1) expect((await options(h, WHO.maint, { kind: "linear" })).status, `linear ${String(call)}`).toBe(200);
+    // 60 are spent. Slack's own company budget is untouched, so only the person's limit can refuse this.
+    const slackBefore = h.calls.length;
+    expect(await options(h, WHO.maint, { kind: "slack" })).toMatchObject({ status: 429, body: { code: "TOO_MANY_REQUESTS" } });
+    expect(h.calls.length).toBe(slackBefore);
+    expect(jira.reads).toBe(30);
+    expect((await options(h, WHO.owner, { kind: "slack" })).status).toBe(200);
+    h.w.clock.ms += 61_000;
+    expect((await options(h, WHO.maint, { kind: "slack" })).status).toBe(200);
+  });
+});
+
+describe("final fix 2: private channels are not in the Slack picker", () => {
+  it("a private channel the read sent anyway is dropped on the broker side, and a public one is listed", async () => {
+    const h = harness();
+    h.pages = [[entry(CH.priv), entry(CH.pub)]];
+    const reply = await options(h, WHO.maint, { kind: "slack" });
+    expect(optionList(reply).map((option) => option.scope)).toEqual([slackScope(CH.pub)]);
+    expect(JSON.stringify(reply.body)).not.toContain("private");
+    expect(JSON.stringify(reply.body)).not.toContain("name-c0private");
+  });
+});
+
+describe("final fix 2: a place another project (or a tap) is clearing shows as being cleared, with no project named", () => {
+  const work = (scope: string, project: string | undefined) => putScopeWork(h0.w.table, ORG_A, { type: "tombstone", system: "slack", cause: "excluded", hidePending: true, hidden: 0, childPending: true, requestId: randomUUID(), scope, ...(project === undefined ? {} : { project }), at: AT, queuedAtSeconds: 1 });
+  let h0: Harness;
+  it("marks it 'clearing' for the other project, not for the project that removed it (its own list says so), and names nobody", async () => {
+    h0 = harness();
+    await work(slackScope(CH.taken), "api");
+    await work(slackScope(CH.mine), undefined);
+    const fromWeb = await options(h0, WHO.maint, { kind: "slack" });
+    expect(stateOf(fromWeb, slackScope(CH.taken))).toBe("clearing");
+    expect(stateOf(fromWeb, slackScope(CH.mine))).toBe("clearing");
+    expect(stateOf(fromWeb, slackScope(CH.pub))).toBe("available");
+    expect(JSON.stringify(fromWeb.body)).not.toContain("api");
+    const fromApi = await options(h0, WHO.owner, { kind: "slack" }, { project: "api" });
+    expect(stateOf(fromApi, slackScope(CH.taken))).toBe("available"); // its own removal: its Sources tab lists it as being removed
+    expect(stateOf(fromApi, slackScope(CH.mine))).toBe("clearing");
+    // A text-only job never closes a place and is not shown as clearing.
+    const other = harness();
+    h0 = other;
+    await putScopeWork(other.w.table, ORG_A, { type: "tombstone", system: "slack", cause: "excluded", hidePending: true, hidden: 0, childPending: true, textOnly: true, requestId: randomUUID(), scope: slackScope(CH.pub), project: "api", at: AT, queuedAtSeconds: 1 });
+    expect(stateOf(await options(other, WHO.maint, { kind: "slack" }), slackScope(CH.pub))).toBe("available");
+  });
+  it("a queue that cannot be read leaves the page as it was (the server's sentence still refuses the add)", async () => {
+    h0 = harness();
+    await work(slackScope(CH.taken), "api");
+    h0.w.db.injectFault({ command: "QueryCommand", match: (input) => JSON.stringify(input.ExpressionAttributeValues ?? {}).includes("DELQ#"), error: { name: "InternalServerError" }, times: 5 });
+    const reply = await options(h0, WHO.maint, { kind: "slack" });
+    expect(reply.status).toBe(200);
+    expect(stateOf(reply, slackScope(CH.taken))).toBe("available");
   });
 });
 

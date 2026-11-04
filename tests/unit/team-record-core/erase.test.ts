@@ -106,6 +106,19 @@ describe("erase a project and a workspace", () => {
     expect(AuditEventInputSchema.parse(d.audit.find((e) => e.action === "record.erased")!).facts).toMatchObject({ cause: "project_archived", rows: 3 });
   });
 
+  it("removes the pickers' listing sessions of the archived project (they sit in the company's own partition, found by their project); another project's stay", async () => {
+    const w = world();
+    const session = (id: string, project: string) => w.db.set({ pk: teamRecordPk(ORG_A), sk: `SRCOPT#${id}`, entityType: "TEAM_RECORD_SOURCE_OPTIONS", kind: "slack", project, pages: 1, indexExpiresAt: 9_999_999_999 });
+    session("11111111-1111-4111-8111-111111111111", "web");
+    session("22222222-2222-4222-8222-222222222222", "web");
+    session("33333333-3333-4333-8333-333333333333", "api");
+    w.db.set({ pk: teamRecordPk(ORG_B), sk: "SRCOPT#44444444-4444-4444-8444-444444444444", entityType: "TEAM_RECORD_SOURCE_OPTIONS", kind: "slack", project: "web", pages: 1 });
+    const d = deleteDeps(w);
+    expect((await eraseProject(d.deps, ORG_A, "web", "project_archived", "arch-opt")).complete).toBe(true);
+    const left = w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_OPTIONS").map((item) => `${String(item.pk)}|${String(item.project)}`).sort();
+    expect(left).toEqual([`${teamRecordPk(ORG_A)}|api`, `${teamRecordPk(ORG_B)}|web`].sort());
+  });
+
   it("deletes a fact with its project, never re-distilling it from what is left", async () => {
     const w = world();
     await seedComments(w);

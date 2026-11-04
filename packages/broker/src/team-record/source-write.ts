@@ -92,11 +92,14 @@ const WORDS = {
 } as const;
 /** An add is refused while the deletion of the same place is still queued: answered with its own code (route-local, like the two above). */
 class RemovalRunning extends Error {}
+/** The same refusal when the removal that is still being cleared was not this project's (another project's, or a tap's): the sentence does not say this project removed it, and names nobody. */
+class ClearingElsewhere extends Error {}
 /** The delete queue is too long to tell whether this place is in it (500 or more items): every add waits, with its own code, so the person is not told a source "was just removed" that never was. */
 class RemovalBusy extends Error {}
 /** A place the edition's rules never allow (Slack Connect; a DM in Public): answered 422 with its own route-local code, like the two above. */
 class NotAllowed extends Error {}
 const removalRunningReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This source was just removed and its stored data is still being deleted. You can add it again in about an hour." } });
+const clearingElsewhereReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_CLEARING", message: "This source is still being cleared after a recent removal. You can add it again in about an hour." } });
 const removalBusyReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_BUSY", message: "Rovara is still deleting data from recently removed sources. Try again in an hour." } });
 const notAllowedReply = (error: NotAllowed): RecordRouteReply => ({ status: 422, body: { code: "SOURCE_NOT_ALLOWED", message: error.message } });
 const invalid = (message: string = WORDS.invalid) => agentXError("CONFIG_INVALID", message);
@@ -161,6 +164,7 @@ export async function handleSourceWrite(deps: RecordQueryDependencies, request: 
     }
   } catch (error) {
     if (error instanceof RemovalRunning) return removalRunningReply();
+    if (error instanceof ClearingElsewhere) return clearingElsewhereReply();
     if (error instanceof RemovalBusy) return removalBusyReply();
     if (error instanceof NotAllowed) return notAllowedReply(error);
     throw error;
@@ -400,10 +404,31 @@ async function refuseWhileRemoving(run: Run, scope: string): Promise<void> {
   let queue: Awaited<ReturnType<typeof listScopeWork>>;
   try { queue = await listScopeWork(run.deps.table, run.orgId, QUEUE_READ); } catch { throw unavailable(); }
   if (queue.length >= QUEUE_READ) throw new RemovalBusy();
+  const busy = closingWork(queue, scope);
+  if (busy.length === 0) return;
+  // This project's own removal keeps "you removed it"; anyone else's (another project, a tap) is told only that the place is still being cleared.
+  throw busy.some((work) => work.project === run.project) ? new RemovalRunning() : new ClearingElsewhere();
+}
+
+/** The queued deletions that would close the place (or one above or below it) again: a removed place's tombstone. Work that only strips free text never closes a place. */
+function closingWork(queue: ReadonlyArray<{ type: string; textOnly?: boolean; scope?: string; cause?: string; project?: string }>, scope: string) {
   const above = new Set(scopeAndAncestors(scope));
-  const busy = queue.some((work) => work.type === "tombstone" && work.textOnly !== true && work.scope !== undefined && (work.cause === "excluded" || work.cause === "source_deleted")
+  return queue.filter((work) => work.type === "tombstone" && work.textOnly !== true && work.scope !== undefined && (work.cause === "excluded" || work.cause === "source_deleted")
     && (above.has(work.scope) || work.scope.startsWith(`${scope}/`)));
-  if (busy) throw new RemovalRunning();
+}
+
+/**
+ * Of these places of one kind, the ones whose deletion some OTHER project (or a tap) still has queued: the picker shows them as unavailable, without saying who. A project's own removals are on its Sources tab
+ * (`clearingPlaces`). Best effort: a queue that cannot be read, or one too long to read, marks nothing (the add is still refused by the server in its own sentence).
+ */
+export async function clearingElsewhere(deps: RecordQueryDependencies, orgId: OrgId, project: string, scopes: readonly string[]): Promise<Set<string>> {
+  const found = new Set<string>();
+  if (scopes.length === 0) return found;
+  let queue: Awaited<ReturnType<typeof listScopeWork>>;
+  try { queue = await listScopeWork(deps.table, orgId, QUEUE_READ); } catch { return found; }
+  if (queue.length >= QUEUE_READ) return found;
+  for (const scope of scopes) if (closingWork(queue, scope).some((work) => work.project !== project)) found.add(scope);
+  return found;
 }
 
 /**

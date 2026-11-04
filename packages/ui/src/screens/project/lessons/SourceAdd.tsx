@@ -7,7 +7,7 @@ import { Select } from "../../../design/Select.js";
 import { Switch } from "../../../design/Switch.js";
 import { visibleText } from "../../../design/VisibleText.js";
 import { PlacePicker } from "./PlacePicker.js";
-import { AUDIENCE_OPTIONS, NotesNote, offeredFor } from "./SourceRow.js";
+import { AUDIENCE_OPTIONS, NotesSwitch, offeredFor } from "./SourceRow.js";
 import { T, retentionWords } from "./lessons-text.js";
 import { useSourceWrite } from "./use-source-write.js";
 
@@ -68,7 +68,7 @@ export function SourceAdd({ project, view, notify }: { project: string; view: So
    {(chosen === "slack" || chosen === "linear" || chosen === "jira") && <PlacePicker key={chosen} project={project} kind={chosen} value={place} onChange={setPlace} unavailable={candidate => isClearing(view, SOURCE_OF[chosen], candidate)} />}
    {clearingNow && <p role="alert">{T.SRC_ERR_REMOVAL}</p>}
    {chosen !== undefined && <>
-    {notesMode ? <><Switch label={T.SRC_NOTES_SWITCH} checked={notes} onCheckedChange={setNotes} /><NotesNote /></>
+    {notesMode ? <NotesSwitch checked={notes} onChange={setNotes} offered={choices.includes("B")} />
      : <Select label={T.SRC_RETENTION} value={retention} placeholder={T.SRC_CHOOSE} options={choices.map(mode => ({ value: mode, label: retentionWords(mode) }))} onValueChange={setRetention} />}
     {chosen === "rovara" ? <p className="rv-muted">{T.WHO_SEES}: {T.SRC_ROVARA_AUDIENCE}</p> : <Select label={T.SRC_AUDIENCE} value={audience} options={AUDIENCE_OPTIONS} onValueChange={setAudience} />}
     <Switch label={T.SRC_ON} checked={enabled} onCheckedChange={setEnabled} />

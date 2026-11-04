@@ -213,6 +213,15 @@ describe("removing a source", () => {
   for (const dialog of dialogs) expect(dialog).not.toHaveBeenCalled();
   await waitFor(() => { expect(screen.queryByRole("region", { name: /GitHub/u })).toBeNull(); });
  });
+ it("says a place another project removed is still being cleared, in neutral words that do not say this project removed it (never the server's text)", async () => {
+  await openEditor({ write: () => flat("SOURCE_CLEARING", "server words that must not show", 409) });
+  const github = row(/GitHub/u);
+  fireEvent.click(within(github).getByRole("button", { name: "Remove" }));
+  fireEvent.click(within(github).getByRole("button", { name: "Yes, remove it" }));
+  expect(await within(github).findByText("This source is still being cleared after a recent removal. You can add it again in about an hour.")).toBeTruthy();
+  expect(document.body.textContent).not.toContain("server words that must not show");
+  expect(document.body.textContent).not.toMatch(/just removed/u);
+ });
  it("says the source was just removed and is still being deleted, in the UI's fixed sentence (never the server's text), when a flat refusal says so", async () => {
   await openEditor({ write: () => flat("SOURCE_REMOVAL_RUNNING", "server words that must not show", 409) });
   const github = row(/GitHub/u);
@@ -327,6 +336,30 @@ describe("T9: the Public edition's notes-with-links switch", () => {
   await waitFor(() => { expect(f.posts).toHaveLength(1); });
   expect(f.posts[0]).toMatchObject({ action: "change", retention: "A", notesOptIn: null, expectedRevision: 3 });
  });
+ it("when the company only allows retention A for Slack, the switch is shown disabled with the fixed reason, in the add form and in a row; Add still sends A", async () => {
+  const REASON = "Your company keeps Slack sources live only.";
+  const liveOnly = publicView({ sources: [slackRow()], offered: { github: ["A", "B", "C", "D"], rovara: ["A", "B", "C", "D"], slack: ["A"], linear: ["A", "B", "C"], jira: ["A", "B", "C"], codehost: ["A"], mcp: ["A"] } });
+  const f = await openEditor({ view: liveOnly });
+  const form = screen.getByRole("region", { name: "Add a source" });
+  pick("What to add", "slack");
+  fireEvent.change(await within(form).findByLabelText("Slack channel"), { target: { value: "slack:T1/C8" } });
+  for (const scope of [form, slackRegion()]) {
+   const notes = within(scope).getByRole("switch", { name: "Keep notes with links" });
+   expect(notes.hasAttribute("disabled")).toBe(true);
+   expect(within(scope).getByText(REASON)).toBeTruthy();
+   fireEvent.click(notes);
+   expect(notes.getAttribute("aria-checked")).toBe("false");
+  }
+  fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
+  await waitFor(() => { expect(f.posts).toHaveLength(1); });
+  expect(f.posts[0]).toMatchObject({ action: "add", scope: "slack:T1/C8", retention: "A" });
+ });
+ it("the reason is not shown when retention B is offered", async () => {
+  await openEditor({ view: publicView({ sources: [slackRow()] }) });
+  pick("What to add", "slack");
+  expect(screen.queryByText("Your company keeps Slack sources live only.")).toBeNull();
+  expect(within(slackRegion()).getByRole("switch", { name: "Keep notes with links" }).hasAttribute("disabled")).toBe(false);
+ });
  it("other changes to a Slack row in Public (on or off, who sees it) send no retention and no notesOptIn", async () => {
   const f = await openEditor({ view: publicView({ sources: [slackRow()] }) });
   const slack = slackRegion();
@@ -361,7 +394,7 @@ describe("accessibility", () => {
 });
 
 
-const REMOVING = "Removing \u2014 deleting its stored data. You can add it again when this finishes (about an hour).";
+const REMOVING = "Removing: deleting its stored data. You can add it again when this finishes (about an hour).";
 const clearing = (over: Record<string, unknown> = {}) => ({ source: "github", scope: "github:repo/9", since: "2026-10-30T10:00:00.000Z", ...over });
 
 describe("T8: a source that was removed and is still being cleared", () => {

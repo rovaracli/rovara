@@ -39,14 +39,13 @@ function slack(options: { pages?: Raw[][]; error?: string; status?: number; down
 }
 
 describe("channel-list: the directory lists the channels the bot can see", () => {
-  it("answers id, name, kind, the Slack Connect flag and whether the bot has joined; leaves out what Slack did not state plainly, and every direct message", async () => {
+  it("answers id, name, kind, the Slack Connect flag and whether the bot has joined; leaves out what Slack did not state plainly, every private channel and every direct message", async () => {
     const { dir } = slack();
     const answer = await dir.channelList(TEAM);
     expect(answer).toEqual({
       ok: true,
       channels: [
         { id: "C0PUBLIC1", name: "general", kind: "public", extShared: false, joined: true },
-        { id: "C0PRIVATE", name: "secret", kind: "private", extShared: false, joined: true },
         { id: "C0CONNECT", name: "shared", kind: "public", extShared: true, joined: false },
         { id: "C0PENDING", name: "pending", kind: "public", extShared: true, joined: false },
       ],
@@ -59,22 +58,22 @@ describe("channel-list: the directory lists the channels the bot can see", () =>
     expect(answer.ok && answer.channels.map((channel) => [channel.id, channel.joined])).toEqual([["C0NOFLAG1", false], ["C0STRING1", false], ["C0JOINED1", true]]);
   });
 
-  it("asks for public and private channels only, never direct messages, without archived ones, 200 at a time", async () => {
+  it("asks for public channels only (never private channels or direct messages), without archived ones, 200 at a time", async () => {
     const plain = slack();
     await plain.dir.channelList(TEAM);
-    expect(plain.queries[0]).toEqual({ types: "public_channel,private_channel", exclude_archived: "true", limit: "200" });
+    expect(plain.queries[0]).toEqual({ types: "public_channel", exclude_archived: "true", limit: "200" });
   });
 
-  it("a direct message or group message Slack sends anyway is dropped (the bot sees only its own, so the picker never lists them)", async () => {
+  it("a private channel, direct message or group message Slack sends anyway is dropped (private names would reach people who are not in them)", async () => {
     const { dir } = slack();
     const answer = await dir.channelList(TEAM);
-    expect(answer.ok && answer.channels.map((channel) => channel.kind).sort()).toEqual(["private", "public", "public", "public"]);
+    expect(answer.ok && answer.channels.map((channel) => channel.kind).sort()).toEqual(["public", "public", "public"]);
   });
 
   it("reads one page and hands back Slack's cursor; the next call passes it on", async () => {
-    const { dir, queries } = slack({ pages: [[CHANNELS[0]!], [CHANNELS[1]!]] });
+    const { dir, queries } = slack({ pages: [[CHANNELS[0]!], [CHANNELS[4]!]] });
     expect(await dir.channelList(TEAM)).toEqual({ ok: true, channels: [{ id: "C0PUBLIC1", name: "general", kind: "public", extShared: false, joined: true }], next: "cursor-1=" });
-    expect(await dir.channelList(TEAM, { cursor: "cursor-1=" })).toEqual({ ok: true, channels: [{ id: "C0PRIVATE", name: "secret", kind: "private", extShared: false, joined: true }] });
+    expect(await dir.channelList(TEAM, { cursor: "cursor-1=" })).toEqual({ ok: true, channels: [{ id: "C0CONNECT", name: "shared", kind: "public", extShared: true, joined: false }] });
     expect(queries[1]!.cursor).toBe("cursor-1=");
   });
 
@@ -140,6 +139,8 @@ describe("channel-list: the request shape and the Lambda wire", () => {
     // Entries that do not have the shape are left out, not guessed at.
     const answer = await channelListThroughLambda(async () => reply({ ok: true, channels: [{ id: "C0PUBLIC1", name: "general", kind: "public", extShared: false, joined: false }, { id: "C0X", name: 1, kind: "public", extShared: false, joined: false }, { id: "C0Y1", name: "y", kind: "weird", extShared: false, joined: false }, { id: "C0Z1", name: "z", kind: "public", extShared: false }, { id: "D0DM1", name: "dm", kind: "im", extShared: false, joined: true }, "x"] }))(request);
     expect(answer).toEqual({ ok: true, channels: [{ id: "C0PUBLIC1", name: "general", kind: "public", extShared: false, joined: false }] });
+    // A private channel in the reply is dropped on the broker side too.
+    expect(await channelListThroughLambda(async () => reply({ ok: true, channels: [{ id: "C0PRIVATE", name: "secret", kind: "private", extShared: false, joined: true }, { id: "C0PUBLIC1", name: "general", kind: "public", extShared: false, joined: true }] }))(request)).toEqual({ ok: true, channels: [{ id: "C0PUBLIC1", name: "general", kind: "public", extShared: false, joined: true }] });
     expect(await channelListThroughLambda(async () => reply({ ok: false, error: "invalid_request" }))(request)).toEqual({ ok: false, error: "invalid_request" });
     expect(await channelListThroughLambda(vi.fn(async () => { throw new Error("no route"); }))(request)).toEqual(unavailable);
     expect(await channelListThroughLambda(async () => ({ FunctionError: "Unhandled" }))(request)).toEqual(unavailable);

@@ -17,7 +17,7 @@ import type { TeamRecordTable } from "./types.js";
 export const SOURCE_SCOPE_SK_PREFIX = "SRCSCOPE#";
 export const SOURCE_REQUEST_SK_PREFIX = "SRCREQ#";
 export const SOURCE_REVISION_SK_PREFIX = "SRCREV#";
-/** The pickers' listing sessions (`source-options.ts`): in the WORKSPACE partition, a page count with a short expiry; no person and no text. Company close removes them (`erase.ts`). */
+/** The pickers' listing sessions (`source-options.ts`): in the WORKSPACE partition, a page count with a short expiry; no person and no text. Company close removes them, and a project archive removes that project's (`erase.ts`, found by the `project` field). */
 export const SOURCE_OPTIONS_SK_PREFIX = "SRCOPT#";
 /** How long a request item answers a repeat. */
 export const SOURCE_REQUEST_TTL_SECONDS = 86_400;

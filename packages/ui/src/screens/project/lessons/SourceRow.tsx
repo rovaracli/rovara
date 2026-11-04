@@ -18,6 +18,10 @@ export function NotesNote() {
  const at = T.SRC_NOTES_NOTE.indexOf(T.SRC_NOTES_LINK_TEXT);
  return <p className="rv-muted">{T.SRC_NOTES_NOTE.slice(0, at)}<a href={T.SRC_NOTES_LINK} target="_blank" rel="noopener noreferrer">{T.SRC_NOTES_LINK_TEXT}</a>{T.SRC_NOTES_NOTE.slice(at + T.SRC_NOTES_LINK_TEXT.length)}</p>;
 }
+/** The Public notes switch with its note. When the company only allows live reading for Slack (retention B is not offered) the switch is shown off and disabled, with one fixed reason. */
+export function NotesSwitch({ checked, onChange, offered }: { checked: boolean; onChange: (next: boolean) => void; offered: boolean }) {
+ return <><Switch label={T.SRC_NOTES_SWITCH} checked={checked} onCheckedChange={onChange} disabled={!offered} />{!offered && <p className="rv-muted">{T.SRC_NOTES_LIVE_ONLY}</p>}<NotesNote /></>;
+}
 export const AUDIENCE_OPTIONS = [{ value: "project", label: T.SRC_AUDIENCE_PROJECT }, { value: "maintainers", label: T.SRC_AUDIENCE_MAINTAINERS }] as const;
 const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((value, index) => value === b[index]);
 
@@ -57,7 +61,7 @@ function RowControls({ row, offered, notesSwitch, writer, notify }: { row: Row; 
   notify(lowered ? T.SRC_SAVED + " " + T.SRC_LOWERED : T.SRC_SAVED);
  };
  return <fieldset className="rv-lessons-edit" disabled={writer.busy}><legend>{T.SRC_SAVE}</legend>
-  {notesMode ? <><Switch label={T.SRC_NOTES_SWITCH} checked={notes} onCheckedChange={setNotes} /><NotesNote /></>
+  {notesMode ? <NotesSwitch checked={notes} onChange={setNotes} offered={choices.includes("B")} />
    : <Select label={T.SRC_RETENTION} value={retention === "" ? (choices.includes(row.retention) ? row.retention : "") : retention} placeholder={retentionWords(row.retention)} options={choices.map(mode => ({ value: mode, label: retentionWords(mode) }))} onValueChange={setRetention} />}
   {lowered && <p className="rv-muted">{T.SRC_LOWERED}</p>}
   {rovara ? <p className="rv-muted">{T.WHO_SEES}: {T.SRC_ROVARA_AUDIENCE}</p> : <Select label={T.SRC_AUDIENCE} value={audience} options={AUDIENCE_OPTIONS} onValueChange={setAudience} />}

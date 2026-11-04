@@ -13,8 +13,7 @@ const WORDS: Readonly<Record<SourcePickerKind, { pick: string; find: string; non
  jira: { pick: T.SRC_PICK_JIRA, find: T.SRC_FIND_JIRA, none: T.SRC_NO_MATCH_JIRA, partial: T.SRC_PARTIAL_JIRA, cut: T.SRC_CUT_JIRA, typed: T.SRC_PLACE_JIRA, hint: T.SRC_HINT_JIRA },
 };
 const SHOWN_MAX = 100;
-const TAG: Readonly<Record<string, string>> = { private: T.SRC_TAG_PRIVATE };
-const REASON: Readonly<Record<string, string>> = { added: T.SRC_OPT_ADDED, taken: T.SRC_OPT_TAKEN, slack_connect: T.SRC_OPT_CONNECT };
+const REASON: Readonly<Record<string, string>> = { added: T.SRC_OPT_ADDED, taken: T.SRC_OPT_TAKEN, slack_connect: T.SRC_OPT_CONNECT, clearing: T.SRC_OPT_CLEARING };
 
 /**
  * Where the person picks the place of a Slack, Linear or Jira source: a searchable list read from the server (the company's channels, teams or projects), with the typed id kept as "Enter an ID instead" and as the
@@ -48,9 +47,9 @@ export function PlacePicker({ project, kind, value, onChange, unavailable }: { p
       <TextField label={words.find} value={search} autoComplete="off" onChange={event => { setSearch(event.target.value); }} />
       {matching.length === 0 ? <p className="rv-muted">{partial ? words.partial : words.none}</p>
        : <ul>{matching.slice(0, SHOWN_MAX).map(option => {
-          const blocked = option.state !== "available" || unavailable(option.scope), reason = option.state !== "available" ? REASON[option.state] : blocked ? T.SRC_CLEARING : undefined, tag = option.slackKind === undefined ? undefined : TAG[option.slackKind];
+          const blocked = option.state !== "available" || unavailable(option.scope), reason = option.state !== "available" ? REASON[option.state] : blocked ? T.SRC_CLEARING : undefined;
           return <li key={option.scope}><label className="rv-lessons-option" data-unavailable={blocked}><input type="radio" name={group} value={option.scope} checked={value === option.scope} disabled={blocked} onChange={() => { if (!blocked) onChange(option.scope); }} />
-           <span>{visibleText(option.name)}</span>{tag !== undefined && <span className="rv-muted">{tag}</span>}{reason !== undefined && <span className="rv-muted">{reason}</span>}{option.joined === false && option.state === "available" && <span className="rv-muted">{T.SRC_NOT_JOINED}</span>}</label></li>;
+           <span>{visibleText(option.name)}</span>{reason !== undefined && <span className="rv-muted">{reason}</span>}{option.joined === false && option.state === "available" && <span className="rv-muted">{T.SRC_NOT_JOINED}</span>}</label></li>;
          })}</ul>}
       {matching.length > SHOWN_MAX && <p className="rv-muted">{T.SRC_LIST_MORE}</p>}
       {cut && <p className="rv-muted">{words.cut}</p>}

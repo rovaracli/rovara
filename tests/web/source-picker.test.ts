@@ -13,11 +13,11 @@ afterEach(() => { cleanup(); });
 type Raw = Record<string, unknown>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const SESSION = "11111111-2222-4333-8444-555555555555";
-const slackOption = (id: string, name: string, over: Raw = {}) => ({ scope: `slack:T1/${id}`, name, state: "available", slackKind: "public", joined: true, ...over });
+const slackOption = (id: string, name: string, over: Raw = {}) => ({ scope: `slack:T1/${id}`, name, state: "available", joined: true, ...over });
 const list = (kind: string, options: Raw[], next?: string) => ok(SourceOptionsViewSchema.parse({ kind, options, ...(next === undefined ? {} : { next }) }));
 const SLACK = [
   slackOption("C0GENERAL", "general"),
-  slackOption("C0PRIVATE", "secret-plans", { slackKind: "private" }),
+  slackOption("C0CLEAR01", "cleanup", { state: "clearing" }),
   slackOption("C0MINE001", "payments", { state: "added" }),
   slackOption("C0TAKEN01", "platform", { state: "taken" }),
   slackOption("C0SHARED1", "partners", { state: "slack_connect" }),
@@ -59,7 +59,7 @@ describe("the Slack channel picker", () => {
     expect(within(form).getByText("No channel matches that.")).toBeTruthy();
   });
 
-  it("marks what already is a source, what another project holds (not named), and Slack Connect as disabled, each with its reason; tags private channels", async () => {
+  it("marks what already is a source, what another project holds (not named), and Slack Connect as disabled, each with its reason; a place being cleared after a removal is disabled without naming a project", async () => {
     const { form } = await open({ options: () => list("slack", SLACK) });
     pick("What to add", "slack");
     await within(form).findByRole("radio", { name: /general/u });
@@ -70,8 +70,9 @@ describe("the Slack channel picker", () => {
     expect(radio(form, /partners/u).disabled).toBe(true);
     expect(within(form).getByText("Slack Connect channels can't be used")).toBeTruthy();
     expect(radio(form, /general/u).disabled).toBe(false);
-    expect(radio(form, /secret-plans/u).disabled).toBe(false);
-    expect(within(form).getByText("Private")).toBeTruthy();
+    expect(radio(form, /cleanup/u).disabled).toBe(true);
+    expect(within(form).getByText("Still being cleared after a removal. Try again in about an hour.")).toBeTruthy();
+    expect(within(form).queryByText("Private")).toBeNull();
     expect(within(form).queryByText("Direct message")).toBeNull();
     expect(within(form).queryByText("Group message")).toBeNull();
     expect(document.body.textContent).not.toMatch(/other project's name|api/u);

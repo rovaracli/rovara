@@ -778,6 +778,28 @@ describe("T8: the editors' view lists a removed source while its data is still b
   });
 });
 
+describe("final fix 2: a place another project (or a tap) is still clearing is refused in neutral words", () => {
+  const NEUTRAL = { status: 409, body: { code: "SOURCE_CLEARING", message: "This source is still being cleared after a recent removal. You can add it again in about an hour." } };
+  it("project api adding the place project web just removed is told it is still being cleared, never that it was removed; web itself keeps the old sentence", async () => {
+    const h = harness();
+    await seeded(h);
+    await post(h, WHO.owner, remove(1)); // project web removes it
+    const fromApi = await post(h, WHO.owner, add(), { project: "api" });
+    expect(fromApi).toEqual(NEUTRAL);
+    expect(JSON.stringify(fromApi.body)).not.toMatch(/removed|web/u);
+    expect(await post(h, WHO.owner, add())).toMatchObject({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: expect.stringContaining("just removed") as string } });
+    await worker(h);
+    expect(await post(h, WHO.owner, add(), { project: "api" })).toMatchObject({ status: 200 });
+  });
+  it("work queued with no project (a tap, an erasure) is neutral for everyone", async () => {
+    const h = harness();
+    await putScopeWork(h.w.table, ORG_A, { type: "tombstone", system: "github", cause: "excluded", hidePending: true, hidden: 0, childPending: true, requestId: randomUUID(), scope: "github:repo/9", at: AT, queuedAtSeconds: 1 });
+    expect(await post(h, WHO.owner, add())).toEqual(NEUTRAL);
+    expect(await post(h, WHO.owner, add(), { project: "api" })).toEqual(NEUTRAL);
+  });
+});
+
+
 describe("T8 round 1: a full delete queue is not a removal", () => {
   const fill = async (h: Harness, count: number) => {
     for (let index = 0; index < count; index += 1) await putScopeWork(h.w.table, ORG_A, { type: "tombstone", system: "github", cause: "excluded", hidePending: true, hidden: 0, childPending: true, requestId: randomUUID(), scope: `github:repo/${String(5000 + index)}`, at: new Date(Date.parse(AT) + index).toISOString(), queuedAtSeconds: 1 + index });

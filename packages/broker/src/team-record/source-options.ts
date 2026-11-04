@@ -1,5 +1,5 @@
 // What an editor may pick instead of typing an id (source-row lane, task 10): `GET /v1/app/projects/{p}/record/sources/options?kind=slack|linear|jira&cursor=`.
-//   Slack   the channels the bot sees in the workspace this company bound (read fresh through DeveloperIdentity, which holds the bot token; direct messages only where the edition allows them);
+//   Slack   the channels the bot sees in the workspace this company bound (read fresh through DeveloperIdentity, which holds the bot token; public channels only: private channels and direct messages are added by typing their id);
 //   Linear  the teams of the company's connected app; Jira  the projects of the company's connections (the same live readers the write route checks a typed place against).
 // WHO. The same people as the write route (`gate`): an owner, an admin or a maintainer of this project, on a live browser session. Everyone else is refused before anything is read.
 // ORG. Only the caller's session org: the Slack workspace is listed only when it is bound to THAT company (another company gets an empty list and Slack is never asked), and the connected apps are
@@ -7,7 +7,8 @@
 // BOUNDS. At most 200 an answer, at most 10 pages in all, held by the SERVER: the first page that has a next one opens a short-lived session item (`SRCOPT#<uuid>`: kind, project and a page count, no person and no text,
 // expiring in 15 minutes), the cursor is `<session>.<the tool's own cursor>`, and every later page adds one to the count in a conditional update that refuses at 10 (and for an unknown, expired or other project's,
 // kind's or company's session). A client cannot reset the count by editing a cursor. The reply says `truncated: true` when the server stopped while more existed. Slack page reads are also rationed per company
-// (12 a minute, the existing rate limiter) because `conversations.list` is one rate-limited method shared with the channel-by-name lookup. Every failure is a fixed code: Slack down or unreadable, an app
+// (12 a minute, the existing rate limiter) because `conversations.list` is one rate-limited method shared with the channel-by-name lookup, and EVERY Linear or Jira page is rationed per company too (30 a minute each,
+// taken before the tool is asked and never given back, so a failing read cannot repeat past it); the tool's own cursor is checked before anything is spent. Every failure is a fixed code: Slack down or unreadable, an app
 // that cannot be read, no reader wired, all 503 `RUNTIME_UNAVAILABLE` (the screen then offers the typed field); a bot without the listing scopes is 503 `SLACK_SCOPE_MISSING`. No text from Slack or a tool
 // is ever in an error; names appear only in the options, cut to 200 characters, and the screen shows them as plain text.
 import { randomUUID } from "node:crypto";
@@ -17,8 +18,8 @@ import { Aliases, NOT_EXISTS, errorName } from "../agents/table-writes.js";
 import { SOURCE_OPTIONS_SK_PREFIX } from "./source-store.js";
 import type { RecordQueryDependencies } from "./query.js";
 import type { RecordRouteReply, RecordRouteRequest } from "./routes.js";
-import { gate, type SourceWriteContext } from "./source-write.js";
-import { classifySlack } from "./source-places.js";
+import { clearingElsewhere, gate, type SourceWriteContext } from "./source-write.js";
+import { classifySlack, validTrackerCursor } from "./source-places.js";
 import { readScopeClaim } from "./source-store.js";
 import { listSourceConfigs } from "./store.js";
 
@@ -28,6 +29,8 @@ export const OPTION_PAGES_MAX = 10;
 export const OPTION_SESSION_SECONDS = 900;
 /** Slack page reads a company may make a minute (Slack's `conversations.list` allows about twenty a minute for the whole app, and the channel-by-name lookup shares it). */
 export const SLACK_LIST_PER_MINUTE = 12;
+/** Linear (or Jira) page reads a company may make a minute, every page counted: the tracker sync and the ticket recorder use the same app key, and the tool's limits are per key. */
+export const TRACKER_LIST_PER_MINUTE = 30;
 /** First pages one person may open a minute. */
 export const LISTINGS_PER_PERSON_PER_MINUTE = 60;
 const CURSOR = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(.*)$/su;
@@ -52,6 +55,8 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
   let session = cursorMatch?.[1];
   const inner = cursorMatch === null || cursorMatch === undefined || cursorMatch[2] === "" ? undefined : cursorMatch[2];
   const orgId = request.caller.orgId;
+  // The tool's own cursor is checked before anything is spent or asked: a made-up one costs no page and no rate.
+  if (kind === "slack" ? inner !== undefined && !SLACK_CURSOR.test(inner) : !validTrackerCursor(inner)) throw invalidRequest();
 
   // The server's own count of pages read in this session (a later page adds one, and is refused at the bound), or, for a first page, the person's rate.
   let pages = 1;
@@ -62,9 +67,10 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
   let found: Found | RecordRouteReply;
   try {
     if (kind === "slack") {
-      if (inner !== undefined && !SLACK_CURSOR.test(inner)) throw invalidRequest();
       found = await slackOptions(deps, ctx, orgId, inner);
     } else {
+      // Every page is rationed per company BEFORE the tool is asked, and a failed read does not give the minute back, so failures cannot repeat past it.
+      await ration(deps, orgId, "org", `source-options-${kind}`, TRACKER_LIST_PER_MINUTE);
       found = await trackerOptions(deps, orgId, kind, inner);
     }
   } catch (error) {
@@ -80,11 +86,13 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
     if (session === undefined) { session = await openSession(deps, orgId, project, kind); pages = 1; }
     if (pages >= OPTION_PAGES_MAX) truncated = true; else next = `${session}.${found.next}`;
   }
-  const states = await statesOf(deps, orgId, project, kind, found.options.map((option) => option.scope));
+  const scopes = found.options.map((option) => option.scope);
+  const states = await statesOf(deps, orgId, project, kind, scopes);
+  const clearing = await clearingElsewhere(deps, orgId, project, scopes);
   const options: SourceOption[] = found.options.map((option) => {
     const { connect, ...rest } = option;
     const held = states.get(option.scope);
-    return { ...rest, state: held === "added" ? "added" : connect === true ? "slack_connect" : held === "taken" ? "taken" : "available" };
+    return { ...rest, state: held === "added" ? "added" : connect === true ? "slack_connect" : held === "taken" ? "taken" : clearing.has(option.scope) ? "clearing" : "available" };
   });
   return { status: 200, body: SourceOptionsViewSchema.parse({ kind, options, ...(next === undefined ? {} : { next }), ...(truncated ? { truncated: true as const } : {}) }) };
 }
@@ -105,10 +113,11 @@ async function slackOptions(deps: RecordQueryDependencies, ctx: SourceWriteConte
   const options: Found["options"] = [];
   for (const channel of answer.channels) {
     if (options.length >= OPTIONS_MAX) break;
-    if (channel.kind !== "public" && channel.kind !== "private") continue; // a direct message or group message is never listed (the bot sees only its own)
+    // Only public channels are listed: a private channel's name would reach editors who are not in it, and a direct message or group message is the bot's own. Those are added by typing the id.
+    if (channel.kind !== "public") continue;
     const name = channel.name.slice(0, 200);
     if (name === "" || !/^[CG][A-Z0-9]{2,31}$/u.test(channel.id)) continue;
-    options.push({ scope: `slack:${teamId}/${channel.id}`, name, slackKind: channel.kind, joined: channel.joined === true, ...(classifySlack({ kind: channel.kind, extShared: channel.extShared }) === "slack_connect" ? { connect: true as const } : {}) });
+    options.push({ scope: `slack:${teamId}/${channel.id}`, name, joined: channel.joined === true, ...(classifySlack({ kind: channel.kind, extShared: channel.extShared }) === "slack_connect" ? { connect: true as const } : {}) });
   }
   return { options, ...(answer.next !== undefined && SLACK_CURSOR.test(answer.next) ? { next: answer.next } : {}) };
 }

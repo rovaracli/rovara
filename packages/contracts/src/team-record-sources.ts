@@ -115,8 +115,8 @@ export const SourcesAdminViewReaderSchema = forwardReader(SourcesAdminViewSchema
 export const SOURCE_PICKER_KINDS = ["slack", "linear", "jira"] as const;
 export const SourcePickerKindSchema = z.enum(SOURCE_PICKER_KINDS);
 export type SourcePickerKind = z.infer<typeof SourcePickerKindSchema>;
-/** Where an option stands for this project: free to add, already one of this project's sources, held by another project (never named), or a Slack Connect channel (never a source). */
-export const SOURCE_OPTION_STATES = ["available", "added", "taken", "slack_connect"] as const;
+/** Where an option stands for this project: free to add, already one of this project's sources, held by another project (never named), a Slack Connect channel (never a source), or still being cleared after a removal by another project or a tap (never named). */
+export const SOURCE_OPTION_STATES = ["available", "added", "taken", "slack_connect", "clearing"] as const;
 export const SourceOptionStateSchema = z.enum(SOURCE_OPTION_STATES);
 export type SourceOptionState = z.infer<typeof SourceOptionStateSchema>;
 export const SourceOptionSchema = z.object({
@@ -124,8 +124,6 @@ export const SourceOptionSchema = z.object({
   /** The place's name as its tool shows it. Shown to people as text only. */
   name: z.string().min(1).max(200),
   state: SourceOptionStateSchema,
-  /** Slack only: a public or a private channel (direct messages and group messages are never listed). */
-  slackKind: z.enum(["public", "private"]).optional(),
   /** Slack only: false when the bot is not in the channel (`is_member` was not true), so the screen says to invite Rovara. The option stays pickable. */
   joined: z.boolean().optional(),
 }).strict();

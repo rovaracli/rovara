@@ -182,7 +182,8 @@ export function channelClassThroughLambda(invoke: (payload: Uint8Array) => Promi
   }, "developer.channel_class");
 }
 
-const LIST_KINDS = new Set(["public", "private"]);
+// Public only: a private channel in a reply is left out here too (the directory never asks for one).
+const LIST_KINDS = new Set(["public"]);
 const isListEntry = (entry: unknown): entry is ChannelListEntry => {
   const candidate = entry as Partial<Record<keyof ChannelListEntry, unknown>> | null;
   return typeof candidate === "object" && candidate !== null && typeof candidate.id === "string" && typeof candidate.name === "string"

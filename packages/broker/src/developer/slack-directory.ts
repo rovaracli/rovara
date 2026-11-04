@@ -44,8 +44,8 @@ export interface SlackDirectory {
    */
   channelClass(teamId: string, channelId: string): Promise<ChannelClassResponse>;
   /**
-   * Team record pickers: one page (at most 200) of the public and private channels the bot can see, with Slack's cursor for the next. Only for this install's own team. A bot installed without the listing scopes is
-   * `missing_scope`; every other failure is unavailable. Direct messages and group messages are never listed (the bot sees only its own).
+   * Team record pickers: one page (at most 200) of the PUBLIC channels the bot can see, with Slack's cursor for the next. Only for this install's own team. A bot installed without the listing scopes is
+   * `missing_scope`; every other failure is unavailable. Private channels, direct messages and group messages are never asked for or listed (a private channel's name would reach people who are not in it): they are added by typing the id.
    */
   channelList(teamId: string, options?: { cursor?: string | undefined }): Promise<ChannelListResponse>;
   /** A13: whether the bot token works, with the team Slack says it belongs to. Never the token. */
@@ -474,7 +474,7 @@ export function slackDirectory(input: {
     async channelList(teamId, options = {}) {
       if (input.teamId === undefined || input.teamId !== teamId) return { ok: false, error: "slack_unavailable" };
       const reply = await get("conversations.list", {
-        types: "public_channel,private_channel", exclude_archived: "true", limit: String(CHANNEL_LIST_PAGE),
+        types: "public_channel", exclude_archived: "true", limit: String(CHANNEL_LIST_PAGE),
         ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
       });
       if (reply === undefined) return { ok: false, error: "slack_unavailable" };
@@ -482,14 +482,14 @@ export function slackDirectory(input: {
         refused("conversations.list", reply);
         return { ok: false, error: reply.body.error === "missing_scope" ? "missing_scope" : "slack_unavailable" };
       }
-      const channels: Array<{ id: string; name: string; kind: "public" | "private"; extShared: boolean; joined: boolean }> = [];
+      const channels: Array<{ id: string; name: string; kind: "public"; extShared: boolean; joined: boolean }> = [];
       for (const entry of reply.body.channels as unknown[]) {
         if (channels.length >= CHANNEL_LIST_PAGE) break;
         if (typeof entry !== "object" || entry === null) continue;
         const channel = entry as Record<string, unknown>;
-        // Fail closed: an entry without a plain id, a name or a stated kind is left out, never guessed at; a direct message or group message is never listed (the bot sees only its own).
+        // Fail closed: an entry without a plain id, a name or a stated kind is left out, never guessed at; only a public channel is listed (a private one, a direct message or a group message never is).
         const kind = slackKindOf(channel);
-        if (typeof channel.id !== "string" || !/^[CG][A-Z0-9]{2,31}$/.test(channel.id) || (kind !== "public" && kind !== "private")) continue;
+        if (typeof channel.id !== "string" || !/^[CG][A-Z0-9]{2,31}$/.test(channel.id) || kind !== "public") continue;
         if (typeof channel.name !== "string" || channel.name === "") continue;
         // `joined`: only when Slack says plainly the bot is in the channel (`is_member`); otherwise the picker tells the editor to invite Rovara.
         channels.push({ id: channel.id, name: channel.name.slice(0, 120), kind, extShared: channel.is_ext_shared === true || channel.is_pending_ext_shared === true, joined: channel.is_member === true });
