@@ -55,3 +55,14 @@ TaskStopEditor exposes the step only to owners and dynamically loads TaskStopEnf
 ## Verification / checkpoints
 
 Expanded RED tests preceded implementation. Additional compatibility, audit provenance, inactive-setting and JSON-order findings were observed RED, then fixed. Money/auth guard mutations run individually with restoration and a final green run. Required typechecks/lint shards, focused contracts/inventories, components, Chromium screenshots and initial-bundle checks are recorded in M2-READY.md. No CI/AWS/deploy/Docker, public push, merge, stash or shared git config edits. Stop at M2 for REVIEW-M2.md before Tasks 2–4.
+
+
+## Tasks 2–4 after the authorized integ/054 merge
+
+Start preview is POST /v1/app/projects/{project}/start-preview. It resolves visible project and current work role, then the enabled state, the same project process and its use access, and the selected planning path (or the existing PER_TASK_BUDGET_USD path without a proxy). continueAdmissionIdentity builds its numeric identity; captureTaskStopAdmission delegates all stop arithmetic to calculateTaskStop. The existing trusted approval_terms read purpose permits representing zero, while real start/Continue retain their zero refusal. No task, receipt, audit or key is written or minted by this advisory endpoint. Only org/project, kind and calculated effective/approval values cross the wire. Exclusive own-source ordering returns unknown until a frozen recipe can prove exemption; disabled/ready return disabled before monetary-source reads.
+
+StartWorkBox asks independently of Start, with retry never, a 30-second bound, abort cleanup, response-schema/project validation and stale-effect suppression. It displays only a confirmed captured amount. Disabled, unknown, malformed, timeout and error results show no amount and never affect starting. The wording says admission checks again; a preview is not permission or a reservation.
+
+Health and How we work are ordinary NavLinks inside the existing companyAdmin and host/admin-feature checks. Their existing routes remain lazy. Navigation requests neither page's data.
+
+Optional Task 4 is inapplicable at fae38ff6f: neither the React web session UI nor the server-rendered task page contains a Send back control. The remaining Send back button is the shared Slack workflow message (developer/workflow-messages.ts), which is not a per-reader web component. No new control or Slack policy was introduced. The server work gate and pageAccess/projectWorkAllowed remain unchanged.

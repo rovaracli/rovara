@@ -37,7 +37,7 @@ No CI, full suite, typecheck:all, Linux runtime gate, AWS commands, deployment, 
 
 ## Next checkpoint
 
-STOP at M2 and wait for REVIEW-M2.md. Address findings before proceeding. Task 2 start-preview, Task 3 menu links and optional Task 4 Send back visibility are not implemented and remain behind M2 approval. M3 is not started.
+Historical M2 stop completed. REVIEW-M2 was addressed and the owner explicitly authorized the integ/054 merge and continuation to M3. See the current M3 section below.
 
 
 ## M2-FIXES (REVIEW-M2)
@@ -56,3 +56,21 @@ The historical M2-READY gate table describes ec8bd9baf, not this fix revision. F
 
 
 M2-FIXES verification complete: `npm run typecheck`, strict pkg-broker/pkg-contracts/tests-contract-a/tests-contract-t-z, changed-file lint, seven owning lint shards, build:web, 21 named files / 1262 tests, six Chromium admin-spending journeys, codemap and diff checks passed. Four new mutations were killed by assertions and automatically restored; the final restored run passed four files / 609 tests. Initial JS is 184561 gzip bytes (historical M2 184564; original base 183820; cap 256000 unchanged). Review screenshot inspected. Exact commands/exits remain in local m2-fixes-gates.json and m2-fix-mutations.json.
+
+
+## M3 implementation and integration
+
+Merged exactly fae38ff6f272596cb5a4099ee3fe48980d8461b2 into the feature branch as 8956d344e after c218dc6a6's M2 fixes. One conflict, contracts/src/web.ts, resolved by retaining both export blocks. Required post-merge typecheck:all passed: zero strict errors against the zero-error baseline. No product branch, release tag or deployment changed.
+
+Task 2 adds the read-only canonical start-preview route and independent, bounded StartWorkBox preview. Zero can be displayed by the existing request-building capture purpose; actual admission still refuses it. Body-supplied money is rejected. Disabled/ready, invalid/unknown/error and potential own-source exemptions show nothing. The selected planning limit (and existing no-proxy default), project process, native source records, identity helper and calculator are shared with work admission. The calculator retains the explicit-agent ceiling rule and its distinction between a general starting allowance and an approval cap; no second formula was added.
+
+Task 3 adds Health and How we work under existing company-admin/web/admin-feature checks. Both screens remain lazy and no data is fetched from navigation. Task 3's RED tests failed for both missing links, then all 52 admin-foundation tests passed.
+
+Task 4 skipped as inapplicable: a repository search at the merged head finds no Send back control in packages/ui, packages/web, aws/task-web.ts or aws/task-page-assets.ts. Its remaining button is in Slack's shared workflow message, outside this optional per-reader web change. Server pageAccess/projectWorkAllowed and the server Send back gate are untouched. No Ask/Fix panel or other lane-owned implementation file was edited; the integration's changes were merged intact.
+
+Bundle stages (gzip bytes): original base 183820; historical M2 184564; M2 fixes 184561; integ/054 merged baseline 185009; Task 2 185009; after Task 3 185004. Thus navigation adds no initial growth. INITIAL_JS_BUDGET_GZIP_BYTES stays 256000, with 70996 bytes headroom.
+
+During M2 verification one accidentally duplicated queued gate was terminated before it ran; subsequent gates and all mutations ran sequentially. No shared tool settings were changed.
+
+
+Final M3 verification: 24 files / 1346 tests, 10 Chromium journeys, required root typecheck, three strict typecheck shards, all changed-file lint and six owning lint shards, web build, inventories, codemap and diff check passed. Both new preview mutations were killed and restored before the final green gates. Initial bundle 185004 gzip bytes. See M3-READY.md for complete commands/scope and local screenshot links. STOP at M3 for REVIEW-M3.md.

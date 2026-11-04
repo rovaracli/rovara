@@ -97,6 +97,7 @@
   "packages/contracts/src/task-stop-editing.ts",
   "packages/contracts/src/task-stop-enrollment.ts",
   "packages/contracts/src/task-stop-project.ts",
+  "packages/contracts/src/task-stop-start-preview.ts",
   "packages/contracts/src/task-stop.ts",
   "packages/contracts/src/task-workflow.ts",
   "packages/contracts/src/test-env-dependency.ts",

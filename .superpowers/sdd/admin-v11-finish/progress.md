@@ -14,3 +14,5 @@ Task 1 M2 verification complete: final 21-file set 1241/1241; final npm typechec
 
 
 2026-11-04 — REVIEW-M2 fixes: corrected admitted-proof exemption and R38 new-window projection; shared Continue identity; malformed-policy emergency disable; ready registration inheritance; 100-task counts/25-row truncation; checked readiness resource and fixed UI errors; sessions-ended request/commit coverage. RED run showed five expected regression failures. Final gates: root typecheck and four strict shards, changed lint and seven owning lint shards, build, 21 files/1262 tests, six Chromium journeys, codemap and diff checks all pass. Initial bundle 184561 gzip bytes. Four new guard mutations are being checked before the authorized integ/054 merge.
+
+2026-11-04 — M3 verification complete after integ/054 fae38ff6f merge (8956d344e), post-merge typecheck:all 0 errors, canonical nonblocking start preview and lazy admin links. Optional web Send back change inapplicable (no current control). Final 24 files/1346 tests, 10 Chromium journeys, typecheck/strict/lint/map/build gates green; initial JS 185004 gzip bytes. M3-READY written; commit/private push next, then stop.

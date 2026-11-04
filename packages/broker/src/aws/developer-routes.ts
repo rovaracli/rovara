@@ -1,3 +1,4 @@
+import { previewTaskStartStop } from "../org/task-stop-start-preview.js";
 import { getTaskStopEnrollment, reviewTaskStopEnrollment, writeTaskStopEnrollment } from "../org/task-stop-enrollment.js";
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
 // The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
@@ -573,6 +574,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (knownFailingMarksReply !== undefined) return knownFailingMarksReply;
   const intakeReply = await routeIntake(deps, caller, request, url);
   if (intakeReply !== undefined) return intakeReply;
+  const startPreviewRoute = /^\/v1\/app\/projects\/([^/]+)\/start-preview$/.exec(url.pathname);
+  if (request.method === "POST" && startPreviewRoute !== null) return previewTaskStartStop(deps, caller, startPreviewRoute[1]!, jsonBody(request));
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
   if (request.method === "POST" && codeIntentRoute !== null) return routeCodeIntentStart(codeIntentDependenciesOf(deps, caller), caller, codeIntentRoute[1]!, jsonBody(request), request.headers);
   // Rovara Code (Plan 6 Task 19): a project's code settings. Anyone who can see the project reads them; a maintainer changes them.
