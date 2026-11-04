@@ -4,6 +4,7 @@ import {
   DESIGN_REVIEW_LOCKED_FIELDS,
   ProjectPlaybookBodySchema,
   agentXError,
+  designReviewSettingOf,
   featureEnabled,
   projectAllows,
   type AgentId,
@@ -79,7 +80,8 @@ async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, pla
   const lock: DesignReviewLockRead = await readDesignReviewLock(deps, orgId).catch((): DesignReviewLockRead => ({ kind: "unreadable" }));
   // Groups can be named as the high-risk approver only where the edition has them (Enterprise): the page offers the choice from this flag alone.
   const groups = deps.edition !== undefined && featureEnabled(deps.edition, "groups") ? { designReviewGroups: true as const } : {};
-  if (lock.kind === "none") return { playbook, ...groups };
+  // ON reading: the answer always carries the setting the project runs with (the owner's defaults where none is stored), so a client reads an absent `designReview` as "off" and shows no design review card.
+  if (lock.kind === "none") return { playbook: { ...playbook, designReview: designReviewSettingOf(playbook) }, ...groups };
   const held = effectiveDesignReviewSetting(playbook, lock);
   return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewLocked: lock.kind === "lock" ? lockedFields(lock.lock) : [...DESIGN_REVIEW_LOCKED_FIELDS], ...groups };
 }

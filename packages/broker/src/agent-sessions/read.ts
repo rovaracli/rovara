@@ -14,6 +14,7 @@ import {
   agentSessionKey,
   agentXError,
   cleanSessionName,
+  hideEmailAddresses,
   mySessionsKey,
   projectAllows,
   projectSessionsKey,
@@ -34,6 +35,7 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 import { safeDisplayName } from "../developer/person-name.js";
 import { anchorTargetsOf } from "./anchors.js";
 import { closableSession, newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
+import { sessionLiveFlags } from "./live-flags.js";
 import { viewingNow } from "./followers.js";
 import { chosenOwnerNames, withChosenOwnerName } from "./owner-names.js";
 import type { AuditRuntime } from "../audit/outbox.js";
@@ -120,6 +122,12 @@ function statusOfTask(view: DeveloperTaskView): SessionStatus {
   return "running";
 }
 
+/**
+ * S3 (C59): the words of a session that a model or a person wrote (title, step, latest line) read without an email address to everyone but the session's owner, whose own text they are.
+ * The stored record keeps the raw words: the summary refresh, a move to the cloud and "make this an agent" work from them.
+ */
+const wordsFor = (mine: boolean) => (text: string): string => (mine ? text : hideEmailAddresses(text));
+
 async function nameOf(deps: SessionReadDependencies, developerId: string): Promise<string | undefined> {
   try {
     const record = await deps.signInStore.getDeveloper(developerId);
@@ -194,6 +202,8 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
   if (session.subject.kind === "task") {
     task = await taskOf(deps, session);
     taskShown = withoutForeignLinks(await deps.taskView(task, { events: 20, details: true, actor: access.owner ? "owner" : "viewer" }), mineIds);
+    // The task's own title is the session's: it reads like the session's.
+    if (!access.owner && taskShown.title !== undefined) taskShown = { ...taskShown, title: hideEmailAddresses(taskShown.title) };
     body = { kind: "task", task: taskShown };
   } else if (session.subject.kind === "chain") {
     if (deps.chain === undefined) throw UNAVAILABLE();
@@ -236,20 +246,22 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
   const canMakeAgent = deps.mayMakeAgent !== undefined && session.kind === "task" && session.project !== undefined && await deps.mayMakeAgent({ orgId: caller.orgId, developerId: caller.developerId, orgRole: access.orgRole }, session.project);
   // The parts a comment can be pinned to, from the very view shown (Task 10b).
   const anchors = taskShown === undefined ? [] : anchorTargetsOf(taskShown);
+  // Ask about this task / Fix with agent: offered only where the switch is on and the routes' own gate lets this reader use it (`live-flags.ts`).
+  const live = await sessionLiveFlags(deps, caller, access, { errorRef: taskShown?.errorRef, closed: task?.closedAt !== undefined });
   return {
     contractVersion: AGENT_SESSION_CONTRACT_VERSION,
     sessionId: session.sessionId,
     kind: session.kind,
     mode: session.mode,
-    title: session.title,
+    title: wordsFor(access.owner)(session.title),
     ...(session.project === undefined ? {} : { project: session.project }),
     ...(session.agent === undefined ? {} : { agent: session.agent }),
     owner: withChosenOwnerName(access.effectiveOwner, ownerNames),
     startedBy: session.startedBy,
     where: session.where.kind === "cloud" ? { kind: "cloud" } : { kind: "mac", label: session.where.label, offline: summary.offline === true },
     status,
-    ...(step === undefined ? {} : { step }),
-    ...(summary.peek === undefined ? {} : { peek: summary.peek }),
+    ...(step === undefined ? {} : { step: wordsFor(access.owner)(step) }),
+    ...(summary.peek === undefined ? {} : { peek: wordsFor(access.owner)(summary.peek) }),
     ...(summary.lastRunFailed === undefined ? {} : { lastRunFailed: summary.lastRunFailed }),
     // Live interaction F1: the task's own reference, read from the very view shown (a session whose task shows no error has none).
     ...(taskShown?.errorRef === undefined ? {} : { errorRef: taskShown.errorRef }),
@@ -265,7 +277,8 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     viewingNow: await viewingNow(deps, session, deps.now()),
     you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status, workflowBlocked, closable: closableSession(session) }), ...(canMakeAgent ? ["make_agent" as const] : [])],
       // Merge's rule (pressMerge): the effective owner, a maintainer of the project (granted or inherited) or an org admin. A reader at `view` who is one of the last two still presses it (C59).
-      ...(session.subject.kind === "task" && levelOf(access) === "view" && (access.projectRole === "maintainer" || access.orgAdmin) ? { mayMerge: true as const } : {}) },
+      ...(session.subject.kind === "task" && levelOf(access) === "view" && (access.projectRole === "maintainer" || access.orgAdmin) ? { mayMerge: true as const } : {}),
+      ...(live === undefined ? {} : { live }) },
     link: sessionLink(deps.origin, session.sessionId),
     bindings: await bindingsOf(deps, session),
     legs: session.legs,
@@ -318,19 +331,27 @@ const DEFAULT_PAGE = 50;
 const PROBE_ID = "ses_00000000000000000000";
 const PROBE_AT = "2000-01-01T00:00:00.000Z";
 
-function tileOf(session: AgentSessionRecord, level: SessionTile["level"], owner: SessionTile["owner"]): SessionTile {
+/** The summary a tile carries: the step and latest line without an email address, unless the tile is its owner's own. A summary with none is returned as it is. */
+function summaryFor(summary: AgentSessionRecord["summary"], mine: boolean): AgentSessionRecord["summary"] {
+  if (mine) return summary;
+  const step = summary.step === undefined ? undefined : hideEmailAddresses(summary.step);
+  const peek = summary.peek === undefined ? undefined : hideEmailAddresses(summary.peek);
+  return step === summary.step && peek === summary.peek ? summary : { ...summary, ...(step === undefined ? {} : { step }), ...(peek === undefined ? {} : { peek }) };
+}
+
+function tileOf(session: AgentSessionRecord, level: SessionTile["level"], owner: SessionTile["owner"], mine: boolean): SessionTile {
   return {
     contractVersion: AGENT_SESSION_CONTRACT_VERSION,
     sessionId: session.sessionId,
     kind: session.kind,
-    title: session.title,
+    title: wordsFor(mine)(session.title),
     ...(session.project === undefined ? {} : { project: session.project }),
     ...(session.agent === undefined ? {} : { agent: session.agent }),
     owner,
     where: session.where,
     level,
     revision: session.revision,
-    summary: session.summary,
+    summary: summaryFor(session.summary, mine),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt }),
@@ -437,7 +458,7 @@ async function listSessionTiles(deps: SessionReadDependencies, caller: SessionRe
       }
       const ended = access.session.endedAt !== undefined;
       if ((query.status === "open" && ended) || (query.status === "ended" && !ended)) continue;
-      tiles.push(tileOf(access.session, levelOf(access), access.effectiveOwner));
+      tiles.push(tileOf(access.session, levelOf(access), access.effectiveOwner, access.owner));
     }
     start = page.LastEvaluatedKey;
     if (start === undefined) return { sessions: tiles };

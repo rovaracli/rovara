@@ -1,4 +1,5 @@
 // Plan 3 Task 6b: who can do what with an agent (access levels, shares, visible lists, the owner rules).
+import { fixtureActor } from "../support/money-authority.js";
 import { describe, expect, it } from "vitest";
 import {
   agentAccess,
@@ -171,8 +172,8 @@ describe("agentAccess", () => {
     const agent = await memberAgent("Old one");
     await share(agent, [{ principal: { kind: "member", developerId: BOB }, level: "edit" }, { principal: { kind: "member", developerId: CAROL }, level: "use" }]);
     const project = await projectAgent("Old project one");
-    await store.archive(ORG_A, agent.agentId, ALICE);
-    await store.archive(ORG_A, project.agentId, BOB);
+    await store.archive(ORG_A, agent.agentId, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
+    await store.archive(ORG_A, project.agentId, BOB, undefined, { actor: fixtureActor(store, ORG_A, BOB) });
     const archived = (await store.get(ORG_A, agent.agentId))!;
     const archivedProject = (await store.get(ORG_A, project.agentId))!;
     expect(await access(ALICE, archived)).toBe("manage");
@@ -306,7 +307,7 @@ describe("requireAgentAccess", () => {
     const { deps, memberAgent, share, store } = setup();
     const agent = await memberAgent("Retired");
     await share(agent, [{ principal: { kind: "member", developerId: BOB }, level: "use" }]);
-    await store.archive(ORG_A, agent.agentId, ALICE);
+    await store.archive(ORG_A, agent.agentId, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     expect(await code(requireAgentAccess(deps, caller(BOB), agent.agentId, "use"))).toEqual({ code: "FORBIDDEN", message: "You can view Retired; use needs its owner or an org admin to unarchive it." });
     expect((await requireAgentAccess(deps, caller(BOB), agent.agentId, "view")).access).toBe("view");
   });
@@ -314,7 +315,7 @@ describe("requireAgentAccess", () => {
   it("names a project's maintainers too when an archived project agent needs unarchiving", async () => {
     const { deps, projectAgent, store } = setup();
     const agent = await projectAgent("Retired web helper");
-    await store.archive(ORG_A, agent.agentId, BOB);
+    await store.archive(ORG_A, agent.agentId, BOB, undefined, { actor: fixtureActor(store, ORG_A, BOB) });
     expect(await code(requireAgentAccess(deps, caller(CAROL), agent.agentId, "use"))).toEqual({
       code: "FORBIDDEN",
       message: "You can view Retired web helper; use needs a maintainer of web or an org admin to unarchive it.",
@@ -557,7 +558,7 @@ describe("listVisibleAgents", () => {
 
   it("keeps an archived agent in the list, with access capped at view", async () => {
     const w = await world();
-    await w.store.archive(ORG_A, w.sharedToCarol.agentId, BOB);
+    await w.store.archive(ORG_A, w.sharedToCarol.agentId, BOB, undefined, { actor: fixtureActor(w.store, ORG_A, BOB) });
     const carol = await listVisibleAgents(w.deps, caller(CAROL), "all");
     expect(carol.find((entry) => entry.name === "Shared to Carol")).toMatchObject({ access: "view", record: { status: "archived" } });
   });

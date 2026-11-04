@@ -1,6 +1,8 @@
-// Plain one-line text for cards: whatever came from a person, a plan or a repository is flattened to one line, stripped of hidden and control characters and cut at a word. Nothing here is markup.
+import { hideEmailAddresses } from "@agentx/contracts";
+
+// Plain one-line text for cards: no email address (S3), whatever came from a person, a plan or a repository is flattened to one line, stripped of hidden and control characters and cut at a word. Nothing here is markup.
 export function plainLine(value: string, max: number): string {
-  const text = value.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim();
+  const text = hideEmailAddresses(value).replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim();
   const chars = [...text];
   if (chars.length <= max) return text;
   const head = chars.slice(0, Math.max(1, max - 1)).join("");

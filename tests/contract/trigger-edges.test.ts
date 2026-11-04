@@ -96,7 +96,7 @@ describe("what a trigger needs", () => {
     const offRoster = await triggerProblems(v.routeDeps, await v.seed({ target, createdBy: DANA, project: "api" }));
     expect(offRoster[0]).toMatchObject({ code: "CHAIN_UNAVAILABLE" });
     expect(offRoster[0]!.message).toContain("which can't run now");
-    await v.chains.archive(ORG_A, chain.chainId, DANA);
+    await v.chains.archive(ORG_A, chain.chainId, DANA, undefined, { actor: fixtureActor(v.chains, ORG_A, DANA) });
     expect((await triggerProblems(v.routeDeps, await v.seed({ target, createdBy: PRIYA })))[0]).toMatchObject({ code: "CHAIN_UNAVAILABLE", message: `${chain.name} is archived, so it can't start new runs.` });
   });
 

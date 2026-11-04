@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { agentXError, chainRunKey, orgAutonomousKey, pendingTriggerScheduleKey, triggerKey, triggerRateKey } from "@agentx/contracts";
 import { taskEndKey } from "../../packages/broker/src/agents/task-end.js";
 import { deleteOrgTriggers } from "../../packages/broker/src/triggers/lifecycle.js";
+import { fixtureActor } from "../support/money-authority.js";
 import {
   CHAIN_SCHEDULE_SOURCE, createChainScheduler, createDeadLetters, handleChainSchedule, putSchedule, scheduleExpression, scheduleSettingsFromEnvironment, sweepSchedules, type ScheduleSettings,
 } from "../../packages/broker/src/triggers/schedules.js";
@@ -509,6 +510,7 @@ describe("archiving and closing", () => {
     const s = setup();
     const { chain, trigger } = await chainTrigger(s.v, { createdBy: DANA });
     await s.putOwn(trigger.triggerId);
+    fixtureActor(s.v.db, ORG_A, DANA); // archiving holds the admin to their company access in its own transaction
     const archived = await s.v.chainCall(DANA, "POST", `/v1/app/chains/${chain.chainId}/archive`, {});
     expect(archived.status).toBeLessThan(300);
     expect(await s.v.triggers.get(ORG_A, trigger.triggerId)).toMatchObject({ enabled: false });

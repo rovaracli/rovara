@@ -6,7 +6,7 @@ import { DIAGNOSIS_RATE, ErrorRefSchema, diagnosisKey, errorRefKey } from "../..
 import { DIAGNOSIS_TURN_INSTRUCTIONS, completeDiagnosis, diagnosisStatusFor, prepareDiagnosisTurn, startLightDiagnosis, waitingForKey } from "../../packages/broker/src/diagnosis/light.js";
 import { admitDiagnosis, eraseDiagnosisPerson, readDiagnosisRecord, readDiagnosisRequest } from "../../packages/broker/src/diagnosis/store.js";
 import { ARJUN, MAX, ORG_A, PRIYA, diagnosisWorld, type DiagnosisWorld } from "../support/diagnosis-world.js";
-import { BO, MIA, OLA, ZED } from "../support/agent-session-world.js";
+import { BO, MIA, OLA, ORG_B, ZED } from "../support/agent-session-world.js";
 
 const TOKEN = `ghp_${"a1B2".repeat(9)}`;
 const snapshot = (w: DiagnosisWorld): string => JSON.stringify([...w.w.db.items.entries()].sort(([a], [b]) => a.localeCompare(b)));
@@ -251,7 +251,22 @@ describe("the turn, the answer and what a person reads", () => {
     const ref = { orgId: ORG_A, diagnosisId: status.diagnosisId };
     await expect(prepareDiagnosisTurn(w.diagnosis, { orgId: ORG_A, diagnosisId: "dgn_zzzzzzzzzzzzzzzzzzzz" })).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(prepareDiagnosisTurn(w.diagnosis, { orgId: "org_bbbbbbbbbbbbbbbbbbbb", diagnosisId: status.diagnosisId })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    for (const who of [MIA, ZED, BO]) await expect(diagnosisStatusFor(w.diagnosis, w.caller(who), status.diagnosisId), who.slice(0, 4)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    // A reader who may not read it (a viewer, a member with no access, an admin who only views, a non-member claiming the org) is told exactly what an id that was never issued is told.
+    const never = await diagnosisStatusFor(w.diagnosis, w.caller(PRIYA), "dgn_zzzzzzzzzzzzzzzzzzzz").then(() => undefined, (error: { code?: string; message: string }) => error);
+    expect(never).toMatchObject({ code: "NOT_FOUND" });
+    for (const who of [MIA, ZED, BO, OLA]) {
+      const refused = await diagnosisStatusFor(w.diagnosis, w.caller(who), status.diagnosisId).then(() => undefined, (error: { code?: string; message: string }) => error);
+      expect(refused, who.slice(0, 4)).toMatchObject({ code: "NOT_FOUND" });
+      expect(refused?.message, who.slice(0, 4)).toBe(never?.message);
+    }
+    // A signed-in member of another org, and the requester's own developer id under the wrong org, read nothing: the key is the caller's org's.
+    for (const who of [BO, PRIYA]) {
+      const crossOrg = await diagnosisStatusFor(w.diagnosis, { orgId: ORG_B, developerId: who }, status.diagnosisId).then(() => undefined, (error: { code?: string; message: string }) => error);
+      expect(crossOrg, `org B ${who.slice(0, 4)}`).toMatchObject({ code: "NOT_FOUND" });
+      expect(crossOrg?.message, `org B ${who.slice(0, 4)}`).toBe(never?.message);
+    }
+    // Positive control: the requester in the right org does read it.
+    await expect(diagnosisStatusFor(w.diagnosis, w.caller(PRIYA), status.diagnosisId)).resolves.toMatchObject({ diagnosisId: status.diagnosisId });
     await completeDiagnosis(w.diagnosis, { ...ref, outcome: "FAILED" });
     await expect(prepareDiagnosisTurn(w.diagnosis, ref)).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(diagnosisStatusFor(w.diagnosis, w.caller(PRIYA), "not-an-id")).rejects.toMatchObject({ code: "NOT_FOUND" });
