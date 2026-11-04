@@ -78,7 +78,7 @@ async function world(options: { slack?: boolean; modelAccess?: boolean; budgetUs
   });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
-  seedDesignReviewCompany(harness.db, TEST_ORG);
+  seedDesignReviewCompany(harness.db, TEST_ORG, { project: "payments" });
   await new AgentStore({ documentClient: harness.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
   harness.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
   // `slack`: the task is started from a Slack thread, so a Slack press on its card reaches the same transition as every other door.
@@ -1089,7 +1089,7 @@ describe("slice C: the design review's routes", () => {
 
   it("Design first turns the review on for a task that has none: the Full path, recorded with who asked, the planner due; the project must run design review", async () => {
     const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, cloud: true } });
-    seedDesignReviewCompany(harness.db, TEST_ORG);
+    seedDesignReviewCompany(harness.db, TEST_ORG, { project: "payments" });
     await new AgentStore({ documentClient: harness.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
     harness.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
     const started = await harness.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Retry timed-out payments" }, path: "QUICK" });
@@ -1102,7 +1102,7 @@ describe("slice C: the design review's routes", () => {
     harness.db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "contributor" });
     seedDesignReviewCompany(harness.db, TEST_ORG, { allowed: false, revision: 2 });
     expect((await harness.dev(MAYA, "POST", `/v1/app/tasks/${taskId}/design-review/first`, { requestId: randomUUID() })).status, "the company has not allowed design review").toBe(404);
-    seedDesignReviewCompany(harness.db, TEST_ORG, { revision: 3 });
+    seedDesignReviewCompany(harness.db, TEST_ORG, { revision: 3, project: "payments" });
     // ON-11: a contributor who did not ask for the task is not the one to move it to the Full path.
     seedMembership(harness.db, OMAR.developerId, { orgId: TEST_ORG, role: "member" });
     harness.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "contributor" });

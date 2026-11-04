@@ -8,8 +8,9 @@ import {
 import type { Mark, Row } from "./how-we-work-rows.js";
 
 export type SettingField = "mode" | "tier" | "allowSkip" | "capUsdPerTask" | "highRiskApprover";
-const LOCK_NAME: Readonly<Record<SettingField, string>> = {
-  mode: "designReview.mode", tier: "designReview.tier", allowSkip: "designReview.allowSkip", capUsdPerTask: "designReview.capUsdPerTask", highRiskApprover: "designReview.highRiskApprover",
+/** The fields a company lock can hold fixed. The mode is not one of them: the company never stops a project turning itself Off. */
+const LOCK_NAME: Readonly<Record<Exclude<SettingField, "mode">, string>> = {
+  tier: "designReview.tier", allowSkip: "designReview.allowSkip", capUsdPerTask: "designReview.capUsdPerTask", highRiskApprover: "designReview.highRiskApprover",
 };
 export const LOCK_REASON = "Your company has locked this setting. A company admin can change it.";
 export const MODE_WORDS: Readonly<Record<DesignReviewSetting["mode"], string>> = {
@@ -24,7 +25,7 @@ export const TIER_OPTIONS = DESIGN_REVIEW_TIERS.map(value => ({ value, label: TI
 /** The fields the company holds fixed, from the playbook answer's `designReviewLocked` (names only). */
 export function lockedSet(locked: readonly string[] | undefined): ReadonlySet<SettingField> {
   const found = new Set<SettingField>();
-  for (const field of Object.keys(LOCK_NAME) as SettingField[]) if (locked?.includes(LOCK_NAME[field]) === true) found.add(field);
+  for (const field of Object.keys(LOCK_NAME) as Array<Exclude<SettingField, "mode">>) if (locked?.includes(LOCK_NAME[field]) === true) found.add(field);
   return found;
 }
 

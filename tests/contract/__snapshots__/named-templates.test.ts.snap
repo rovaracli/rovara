@@ -3020,7 +3020,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
     "DesignReviewProjects": {
       "AllowedPattern": "^$|^[a-z][a-z0-9-]{0,62}(:[a-z][a-z0-9-]{0,62})*$",
       "Default": "",
-      "Description": "Retired: this list no longer decides anything and cannot be set (agentx config set designReview.projects is refused). Design review is turned on per project in How we work. An old value is moved into stored settings once, and this parameter is removed in the next release",
+      "Description": "Retired: this list no longer decides anything and cannot be set (agentx config set designReview.projects is refused). Design review is turned on per project in How we work. An old value is moved into stored settings once, and this parameter is removed in 0.5.6",
       "MaxLength": 20,
       "Type": "String",
     },

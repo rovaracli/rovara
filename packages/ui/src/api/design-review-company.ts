@@ -12,8 +12,8 @@ export function createDesignReviewCompanyApi(host: AppHost) {
  const send = (body: DesignReviewCompanyBody) => api.sendAnswer("POST", DESIGN_REVIEW_COMPANY_PATH, DesignReviewCompanyBodySchema.parse(body), DesignReviewCompanyAnswerReaderSchema, NEVER);
  return {
   state: () => api.get(DESIGN_REVIEW_COMPANY_PATH, DesignReviewCompanyStateReaderSchema),
-  /** The default mode and/or the lock: applied at once. */
-  save: (expectedRevision: number, change: Pick<Extract<DesignReviewCompanyBody, { action: "save" }>, "defaultMode" | "lock">) => send({ action: "save", expectedRevision, ...change }),
+  /** The lock: a change that only tightens applies at once; one that loosens waits for a different admin (`needs_approval`). */
+  save: (expectedRevision: number, change: Pick<Extract<DesignReviewCompanyBody, { action: "save" }>, "lock">) => send({ action: "save", expectedRevision, ...change }),
   /** Not allowing applies at once; allowing waits for a different admin when there is one (`needs_approval`). */
   allow: (expectedRevision: number, allowed: boolean) => send({ action: "allow", expectedRevision, allowed }),
   /** A different admin approves allowing it. The server asks for a sign-in within the last 10 minutes (`REAUTH_REQUIRED` otherwise). */

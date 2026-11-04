@@ -19,10 +19,10 @@ import { companyPolicyRaw } from "./support/company-policy-raw.js";
 const PATH = "/v1/app/org/design-review";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const EXPIRES = "2026-11-03T12:30:00.000Z";
-type State = { revision: number; allowed: boolean; defaultMode: "never" | "auto" | "always"; lock: Record<string, unknown>; unreadable: boolean; groups?: boolean; pending?: { changeId: string; kind: "allowed" | "lock"; proposedByYou: boolean; expiresAt: string } };
+type State = { revision: number; allowed: boolean; lock: Record<string, unknown>; unreadable: boolean; groups?: boolean; pending?: { changeId: string; kind: "allowed" | "lock"; proposedByYou: boolean; expiresAt: string } };
 type Handler = (request: ApiRequest) => ApiResponse | undefined | Promise<ApiResponse | undefined>;
 const refuse = (status: number, code: string, message: string) => ({ status, body: { error: { code, message } } });
-const OFF: State = { revision: 0, allowed: false, defaultMode: "never", lock: {}, unreadable: false };
+const OFF: State = { revision: 0, allowed: false, lock: {}, unreadable: false };
 
 function mount(options: { state?: State; missing?: boolean; post?: Handler; role?: "owner" | "admin" | "member"; theme?: "light" | "dark" } = {}) {
  const role = options.role ?? "owner";
@@ -41,8 +41,8 @@ function mount(options: { state?: State; missing?: boolean; post?: Handler; role
   if (path === PATH && request.method === "POST") {
    const custom = await options.post?.(request);
    if (custom !== undefined) return custom;
-   const body = request.body as { action: string; allowed?: boolean; defaultMode?: State["defaultMode"]; lock?: Record<string, unknown> };
-   if (body.action === "save") { state = { ...state, revision: state.revision + 1, defaultMode: body.defaultMode ?? state.defaultMode, lock: body.lock ?? state.lock }; return { status: 200, body: { status: "applied", ...state } }; }
+   const body = request.body as { action: string; allowed?: boolean; lock?: Record<string, unknown> };
+   if (body.action === "save") { state = { ...state, revision: state.revision + 1, lock: body.lock ?? state.lock }; return { status: 200, body: { status: "applied", ...state } }; }
    if (body.action === "allow" && body.allowed === true) { state = { ...state, pending: { changeId: "chg_1", kind: "allowed", proposedByYou: true, expiresAt: EXPIRES } }; return { status: 202, body: { status: "needs_approval", changeId: "chg_1", ...state } }; }
    if (body.action === "cancel") { const { pending: _gone, ...rest } = state;void _gone;state = rest;return { status: 200, body: { status: "applied", ...state } }; }
    const { pending: _pending, ...rest } = state;void _pending;
@@ -84,7 +84,9 @@ describe("who sees the card, and when", () => {
   mount({ role: "admin" });
   const section = await card();
   expect((await section.findByRole("switch", { name: "Allow design review in this company" })).getAttribute("aria-checked")).toBe("false");
-  expect(section.getByRole<HTMLSelectElement>("combobox", { name: "Projects that have not chosen" }).value).toBe("never");
+  expect(section.queryByRole("combobox", { name: "Projects that have not chosen" })).toBeNull();
+  expect(section.queryByRole("combobox", { name: "Design review at least" })).toBeNull();
+  expect(section.getByText(/each project's maintainers turn it on \(Auto or Always\) or off/u)).toBeTruthy();
   expect(section.getByText(/Off until an admin turns it on/)).toBeTruthy();
  });
 });
@@ -167,25 +169,40 @@ describe("the one waiting request", () => {
   mount({ state: { ...OFF, revision: 2, allowed: true, lock: { allowSkip: false } }, post: () => ({ status: 202, body: { status: "needs_approval", changeId: "chg_7", ...OFF, revision: 2, allowed: true, lock: { allowSkip: false }, pending: { changeId: "chg_7", kind: "lock", proposedByYou: true, expiresAt: EXPIRES } } }) });
   const section = await card();
   fireEvent.click(await section.findByRole("switch", { name: "Nobody can skip design review" }));
-  fireEvent.click(section.getByRole("button", { name: "Save default and rules" }));
-  await section.findByText("Saved. The looser rules wait for a different admin to confirm; the default applies now.");
+  fireEvent.click(section.getByRole("button", { name: "Save rules" }));
+  await section.findByText("The looser rules wait for a different admin to confirm.");
+ });
+});
+
+describe("the off switch and the card's words", () => {
+ it("R3: the off switch is disabled only while an allow request waits and design review is off; a waiting rules request never locks it", async () => {
+  mount({ state: { ...OFF, allowed: true, lock: { allowSkip: false }, pending: { changeId: "chg_5", kind: "lock", proposedByYou: true, expiresAt: EXPIRES } } });
+  const on = await card();
+  expect((await on.findByRole("switch", { name: "Allow design review in this company" })).hasAttribute("disabled")).toBe(false);
+  mount({ state: { ...OFF, pending: { changeId: "chg_1", kind: "allowed", proposedByYou: true, expiresAt: EXPIRES } } });
+  await waitFor(() => expect(screen.getAllByRole("switch", { name: "Allow design review in this company" }).some(node => node.hasAttribute("disabled"))).toBe(true));
+ });
+
+ it("R5: says that turning design review off also withdraws a waiting change, and that rules never stop a project turning itself off", async () => {
+  mount({ state: { ...OFF, allowed: true } });
+  const section = await card();
+  expect(await section.findByText(/Turning it off again also withdraws a change that is waiting for confirmation/u)).toBeTruthy();
+  expect(section.getByText(/These rules never stop a project's maintainers turning their own project off/u)).toBeTruthy();
  });
 });
 
 describe("the default and the rules", () => {
- it("saves the default mode and the rules in one request on the revision read", async () => {
+ it("saves the rules in one request on the revision read", async () => {
   const f = mount({ state: { ...OFF, revision: 4, allowed: true } });
   const section = await card();
-  expect((await section.findByRole("button", { name: "Save default and rules" })).hasAttribute("disabled")).toBe(true);
-  fireEvent.change(await section.findByLabelText("Projects that have not chosen"), { target: { value: "auto" } });
-  fireEvent.change(section.getByLabelText("Design review at least"), { target: { value: "auto" } });
-  fireEvent.change(section.getByLabelText("Tier at least"), { target: { value: "standard" } });
+  expect((await section.findByRole("button", { name: "Save rules" })).hasAttribute("disabled")).toBe(true);
+  fireEvent.change(await section.findByLabelText("Tier at least"), { target: { value: "standard" } });
   fireEvent.click(section.getByRole("switch", { name: "Nobody can skip design review" }));
   fireEvent.change(section.getByLabelText("Highest cost limit per task (USD)"), { target: { value: "8" } });
-  fireEvent.click(section.getByRole("button", { name: "Save default and rules" }));
+  fireEvent.click(section.getByRole("button", { name: "Save rules" }));
   await section.findByText("Saved. New design reviews use these settings; running ones keep theirs.");
   expect(f.posts()).toHaveLength(1);
-  expect(f.posts()[0]!.body).toEqual({ action: "save", expectedRevision: 4, defaultMode: "auto", lock: { mode: "auto", tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8 } });
+  expect(f.posts()[0]!.body).toEqual({ action: "save", expectedRevision: 4, lock: { tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8 } });
  });
 
  it("refuses a cost ceiling outside the range before sending anything", async () => {
@@ -193,7 +210,7 @@ describe("the default and the rules", () => {
   const section = await card();
   fireEvent.change(await section.findByLabelText("Highest cost limit per task (USD)"), { target: { value: "500" } });
   expect(await section.findByText("Use an amount between $0.50 and $100.00.")).toBeTruthy();
-  expect(section.getByRole("button", { name: "Save default and rules" }).hasAttribute("disabled")).toBe(true);
+  expect(section.getByRole("button", { name: "Save rules" }).hasAttribute("disabled")).toBe(true);
   expect(f.posts()).toHaveLength(0);
  });
 
@@ -207,7 +224,7 @@ describe("the default and the rules", () => {
   mount({ state: { ...OFF, unreadable: true } });
   const section = await card();
   expect(await section.findByRole("alert")).toBeTruthy();
-  expect(section.queryByRole("button", { name: "Save default and rules" })).toBeNull();
+  expect(section.queryByRole("button", { name: "Save rules" })).toBeNull();
   expect(section.queryByRole("switch")).toBeNull();
  });
 

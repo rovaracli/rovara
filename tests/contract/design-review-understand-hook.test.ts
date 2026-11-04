@@ -21,7 +21,7 @@ async function understoodAs(assessment: IntentAssessment, options: { switchOn: b
   const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: { rovaraCodeV2Live: true }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
-  if (options.company !== null) seedDesignReviewCompany(h.db, TEST_ORG, options.company);
+  if (options.company !== null) seedDesignReviewCompany(h.db, TEST_ORG, { ...(options.playbook === undefined ? { project: "payments" } : {}), ...options.company });
   await new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
   h.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
   if (options.playbook !== undefined) h.db.set({ ...projectPlaybookKey(TEST_ORG, "payments"), entityType: "PROJECT_PLAYBOOK", ...options.playbook });
@@ -70,7 +70,7 @@ describe("the design review at the Understand step's ready answer", () => {
   });
 
   it("the switch alone runs no project: `dr` on with no company policy, or a company that has not allowed design review, is OFF and the playbook is never read (fail closed)", async () => {
-    for (const company of [null, { allowed: false }, { allowed: false, defaultMode: "always" }] as const) {
+    for (const company of [null, { allowed: false }] as const) {
       const result = await understoodAs(needed(), { switchOn: true, company });
       expect(result.workflow, JSON.stringify(company)).toMatchObject({ stage: "PLAN", state: "RUNNING", path: "QUICK" });
       expect(result.workflow).not.toHaveProperty("designReview");
@@ -86,20 +86,25 @@ describe("the design review at the Understand step's ready answer", () => {
     }
   });
 
-  it("a project with no setting of its own runs the company's default mode: Off runs nothing, Auto decides from the request, Always reviews every design", async () => {
+  it("a project with no setting of its own is Off: nothing runs, whatever the company allows; the project's maintainers turn it on or off", async () => {
+    const none = { revision: 1, defaultProcess: { kind: "builtin" } };
+    const own = (mode: string) => ({ revision: 1, defaultProcess: { kind: "builtin" }, designReview: { mode, tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } });
     const small = needed({ design: { needed: false, reasons: ["small_change"], note: "A one-line fix." } });
-    const off = await understoodAs(needed(), { switchOn: true, company: { defaultMode: "never" } });
-    expect(off.workflow).toMatchObject({ path: "QUICK" });
-    expect(off.workflow).not.toHaveProperty("designReview");
-    expect((await understoodAs(small, { switchOn: true, company: { defaultMode: "auto" } })).workflow).not.toHaveProperty("designReview");
-    expect((await understoodAs(small, { switchOn: true, company: { defaultMode: "always" } })).workflow).toMatchObject({ path: "FULL", designReview: { decidedBy: "always" } });
+    const unset = await understoodAs(needed(), { switchOn: true, playbook: none });
+    expect(unset.workflow).toMatchObject({ path: "QUICK" });
+    expect(unset.workflow).not.toHaveProperty("designReview");
+    expect((await understoodAs(needed(), { switchOn: true, playbook: own("never") })).workflow).not.toHaveProperty("designReview");
+    expect((await understoodAs(small, { switchOn: true, playbook: own("auto") })).workflow).not.toHaveProperty("designReview");
+    expect((await understoodAs(needed(), { switchOn: true, playbook: own("auto") })).workflow).toMatchObject({ path: "FULL", designReview: { decidedBy: "auto" } });
+    expect((await understoodAs(small, { switchOn: true, playbook: own("always") })).workflow).toMatchObject({ path: "FULL", designReview: { decidedBy: "always" } });
   });
 
-  it("a project's own setting beats the company default, and the company lock still clamps it", async () => {
-    const own = (mode: string) => ({ revision: 1, defaultProcess: { kind: "builtin" }, designReview: { mode, tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } });
-    expect((await understoodAs(needed(), { switchOn: true, company: { defaultMode: "never" }, playbook: own("auto") })).workflow).toMatchObject({ path: "FULL", designReview: { decidedBy: "auto" } });
-    expect((await understoodAs(needed(), { switchOn: true, company: { defaultMode: "always" }, playbook: own("never") })).workflow).not.toHaveProperty("designReview");
-    expect((await understoodAs(needed(), { switchOn: true, company: { defaultMode: "never", lock: { mode: "always" } }, playbook: own("never") })).workflow).toMatchObject({ designReview: { decidedBy: "always" } });
+  it("the company's rules never turn a project on or stop its maintainers turning it off: a lock holds the other fields only", async () => {
+    const own = (mode: string) => ({ revision: 1, defaultProcess: { kind: "builtin" }, designReview: { mode, tier: "light", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } });
+    const off = await understoodAs(needed(), { switchOn: true, company: { lock: { allowSkip: false, tierAtLeast: "thorough", capCeilingUsd: 4 } }, playbook: own("never") });
+    expect(off.workflow).not.toHaveProperty("designReview");
+    const on = await understoodAs(needed(), { switchOn: true, company: { lock: { allowSkip: false, tierAtLeast: "thorough", capCeilingUsd: 4 } }, playbook: own("auto") });
+    expect(on.workflow).toMatchObject({ designReview: { decidedBy: "auto", tier: "thorough", capUsd: 4 } });
   });
 
   it("ON, a design that is needed: the effective setting decides, the task is forced onto the Full path at the requirements, and the review is switched on with the project's tier and cap", async () => {

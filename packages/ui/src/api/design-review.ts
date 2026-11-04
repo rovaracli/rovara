@@ -28,7 +28,7 @@ export function spendChoiceOf(card: ReadDecisionCard, action: ReadDecisionCard["
 /** The playbook answer, read exactly: the gateway's own fields are set aside, and a setting this version cannot read is refused rather than shown as something else. */
 const exactPlaybook = { parse(value: unknown): ProjectPlaybookResponse {
  const read = ProjectPlaybookResponseReaderSchema.parse(value);
- return ProjectPlaybookResponseSchema.parse({ playbook: read.playbook, ...(read.designReviewLocked === undefined ? {} : { designReviewLocked: read.designReviewLocked }), ...(read.designReviewGroups === undefined ? {} : { designReviewGroups: read.designReviewGroups }), ...(read.designReviewAllowed === undefined ? {} : { designReviewAllowed: read.designReviewAllowed }), ...(read.designReviewInherited === undefined ? {} : { designReviewInherited: read.designReviewInherited }) });
+ return ProjectPlaybookResponseSchema.parse({ playbook: read.playbook, ...(read.designReviewLocked === undefined ? {} : { designReviewLocked: read.designReviewLocked }), ...(read.designReviewGroups === undefined ? {} : { designReviewGroups: read.designReviewGroups }), ...(read.designReviewAllowed === undefined ? {} : { designReviewAllowed: read.designReviewAllowed }) });
 } };
 const AnyAnswer = { parse: (value: unknown): unknown => value };
 

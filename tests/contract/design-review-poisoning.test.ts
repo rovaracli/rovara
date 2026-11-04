@@ -270,7 +270,7 @@ describe("Understand's reading is a reading: a note that sets a tier, a cap or a
     const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: { rovaraCodeV2Live: true }, modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
-    seedDesignReviewCompany(h.db, TEST_ORG);
+    seedDesignReviewCompany(h.db, TEST_ORG, { ...(playbook === undefined ? { project: "payments" } : {}) });
     await new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
     h.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
     if (playbook !== undefined) h.db.set({ ...projectPlaybookKey(TEST_ORG, "payments"), entityType: "PROJECT_PLAYBOOK", ...playbook });

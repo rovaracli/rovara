@@ -1,4 +1,4 @@
-// Design review stage (DR8): the setting a task runs with, read in one place. The project's How we work value (the playbook's `designReview`, or the company's default mode with the owner's defaults when it has none) held to the
+// Design review stage (DR8): the setting a task runs with, read in one place. The project's How we work value (the playbook's `designReview`, or Off with the owner's defaults when it has none) held to the
 // company's lock. Consumers (mode resolution, the cost gate, approval by risk) call this and never read the playbook or the lock themselves. A lock that cannot be read gives the strictest posture; a read that fails is
 // the caller's to handle (a task is not started on a guessed setting).
 import type { OrgId } from "@agentx/contracts";
@@ -17,7 +17,7 @@ export interface EffectiveDesignReview {
 }
 
 const effectiveOf = (playbook: Awaited<ReturnType<typeof readProjectPlaybook>>, company: DesignReviewCompanyRead): EffectiveDesignReview => ({
-  setting: effectiveDesignReviewSetting(playbook, company.lock, company.policy.defaultMode),
+  setting: effectiveDesignReviewSetting(playbook, company.lock),
   locked: company.lock.kind === "lock" ? lockedFields(company.lock.lock) : [], lockUnreadable: company.lock.kind === "unreadable", allowed: company.policy.allowed,
 });
 

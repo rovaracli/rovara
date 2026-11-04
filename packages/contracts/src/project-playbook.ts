@@ -38,7 +38,7 @@ export const ProjectPlaybookBodySchema = z
 export type ProjectPlaybookBody = z.infer<typeof ProjectPlaybookBodySchema>;
 
 /** The design review fields a company lock holds fixed (the project cannot change them). Names only, never values. */
-export const DESIGN_REVIEW_LOCKED_FIELDS = ["designReview.mode", "designReview.tier", "designReview.allowSkip", "designReview.capUsdPerTask", "designReview.highRiskApprover"] as const;
+export const DESIGN_REVIEW_LOCKED_FIELDS = ["designReview.tier", "designReview.allowSkip", "designReview.capUsdPerTask", "designReview.highRiskApprover"] as const;
 export const DesignReviewLockedFieldSchema = z.enum(DESIGN_REVIEW_LOCKED_FIELDS);
 
 /**
@@ -52,8 +52,6 @@ export const ProjectPlaybookResponseSchema = z.object({
   designReviewGroups: z.boolean().optional(),
   /** DR-FU4: present only where the design review stage exists in the environment (`dr` on). False: the company has not allowed design review, so the project's setting is not shown or editable; true: it is. */
   designReviewAllowed: z.boolean().optional(),
-  /** DR-FU4: true when the project has no setting of its own, so `playbook.designReview` is the company default (with the owner's defaults) held to the lock. The first save of any design review field makes it the project's own. */
-  designReviewInherited: z.boolean().optional(),
 }).strict();
 export type ProjectPlaybookResponse = z.infer<typeof ProjectPlaybookResponseSchema>;
 

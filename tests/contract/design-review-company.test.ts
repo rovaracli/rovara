@@ -1,12 +1,13 @@
 // Design review (DR-FU4): the company's design review policy (allowed, default mode, lock) on the DESIGNREVIEW#LOCK item, who may change it, the switch that reads it, and the one-time move of the old `dp` list into it.
 // A project runs design review only when `dr` is on AND the company allows it AND the project's effective mode (its own setting, or the company's default, held to the lock) is not Off.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WORKSPACE_PROJECT_INDEX, agentXError, orgMetaKey, projectMetaKey, projectPlaybookKey, workspaceProjectIndexValue, type OrgId } from "../../packages/contracts/src/index.js";
+import { DESIGN_REVIEW_DEFAULT_SETTING, WORKSPACE_PROJECT_INDEX, agentXError, orgMetaKey, projectMetaKey, projectPlaybookKey, workspaceProjectIndexValue, type OrgId } from "../../packages/contracts/src/index.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
-import { DESIGN_REVIEW_LOCK_SK, readDesignReviewCompany, type DesignReviewLock } from "../../packages/broker/src/design-review/lock.js";
+import { DESIGN_REVIEW_LOCK_SK, DesignReviewLockSchema, readDesignReviewCompany, type DesignReviewLock } from "../../packages/broker/src/design-review/lock.js";
 import { designReviewAvailableFor, designReviewEnabledFor, designReviewStillOn } from "../../packages/broker/src/design-review/switch.js";
 import { DESIGN_REVIEW_CHANGE_TTL_MS, DESIGN_REVIEW_DP_MIGRATION_SK, approveDesignReviewChange, cancelDesignReviewChange, lockLoosens, requestDesignReviewAllowed, saveDesignReviewCompany, type DesignReviewCompanyDeps } from "../../packages/broker/src/design-review/company.js";
-import { projectHadDesignReviewOf } from "../../packages/broker/src/design-review/wait-wiring.js";
+import { designDpMigrationOf, projectHadDesignReviewOf } from "../../packages/broker/src/design-review/wait-wiring.js";
+import { MODEL_SOURCES_DIRECTORY_PK } from "../../packages/broker/src/model-sources/store.js";
 import { migrateDesignReviewOrg, runDesignReviewDpMigration, type DpMigrationPorts } from "../../packages/broker/src/design-review/dp-migration.js";
 import { readProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -38,15 +39,16 @@ describe("the card's route", () => {
     for (const value of [undefined, "0", "true", " 1"]) {
       if (value === undefined) vi.unstubAllEnvs(); else dr(value);
       expect((await get(t)).status, String(value)).toBe(404);
-      expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, defaultMode: "auto" })).status, String(value)).toBe(404);
+      expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { allowSkip: false } })).status, String(value)).toBe(404);
     }
   });
 
   it("is for company owners and admins only, on GET and POST: a member, a project maintainer and a token are refused, and nothing is written or audited", async () => {
     const { t, audit } = await bench({ maya: "maintainer" });
     dr();
-    expect(await get(t)).toMatchObject({ status: 200, body: { revision: 0, allowed: false, defaultMode: "never", lock: {}, unreadable: false } });
-    for (const body of [{ action: "save", expectedRevision: 0, defaultMode: "auto" }, { action: "allow", expectedRevision: 0, allowed: true }, { action: "approve", changeId: "abc" }]) {
+    expect(await get(t)).toMatchObject({ status: 200, body: { revision: 0, allowed: false, lock: {}, unreadable: false } });
+    expect((await get(t)).body).not.toHaveProperty("defaultMode");
+    for (const body of [{ action: "save", expectedRevision: 0, lock: { allowSkip: false } }, { action: "allow", expectedRevision: 0, allowed: true }, { action: "approve", changeId: "abc" }]) {
       const maintainer = await t.web(MAYA, "POST", PATH, body);
       expect(maintainer.status, JSON.stringify(body)).toBe(403);
       expect(JSON.stringify(maintainer.body)).toContain("Only a company owner or admin");
@@ -56,43 +58,43 @@ describe("the card's route", () => {
     }
     expect((await get(t, MAYA)).status).toBe(403);
     await t.person(MAYA, "member");
-    expect((await t.web(MAYA, "POST", PATH, { action: "save", expectedRevision: 0, defaultMode: "always" })).status).toBe(403);
-    expect(await get(t)).toMatchObject({ body: { revision: 0, defaultMode: "never" } });
+    expect((await t.web(MAYA, "POST", PATH, { action: "save", expectedRevision: 0, lock: { allowSkip: false } })).status).toBe(403);
+    expect(await get(t)).toMatchObject({ body: { revision: 0, lock: {} } });
     expect(events(audit)).toEqual([]);
   });
 
   it("another company's item is never read: a second company starts from the defaults whatever the first one set", async () => {
     const { t } = await bench();
     dr();
-    expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, defaultMode: "always" })).status).toBe(200);
-    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, "org_zzzzzzzzzzzzzzzzzzzz")).policy).toEqual({ allowed: false, defaultMode: "never" });
-    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy).toEqual({ allowed: false, defaultMode: "always" });
+    expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { allowSkip: false } })).status).toBe(200);
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, "org_zzzzzzzzzzzzzzzzzzzz")).lock).toEqual({ kind: "none" });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).lock).toMatchObject({ kind: "lock", lock: { allowSkip: false } });
   });
 
-  it("saves the default mode and the lock at once, audited with fixed words, on the revision read; a stale revision is POLICY_STALE and changes nothing", async () => {
+  it("saves a lock that only tightens at once, audited with fixed words, on the revision read; a stale revision is POLICY_STALE and changes nothing", async () => {
     const { t, audit } = await bench();
     dr();
-    const saved = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, defaultMode: "auto", lock: { mode: "auto", tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8 } });
-    expect(saved, JSON.stringify(saved.body)).toMatchObject({ status: 200, body: { status: "applied", revision: 1, allowed: false, defaultMode: "auto", lock: { mode: "auto", tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8 } } });
-    expect(events(audit).map((event) => event.facts)).toEqual([
-      { field: "defaultMode", from: "never", to: "auto", mode: "direct", revision: 1 },
-      { field: "lock", from: "0", to: "4", mode: "direct", revision: 1 },
-    ]);
+    const saved = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8 } });
+    expect(saved, JSON.stringify(saved.body)).toMatchObject({ status: 200, body: { status: "applied", revision: 1, allowed: false, lock: { tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8 } } });
+    expect(events(audit).map((event) => event.facts)).toEqual([{ field: "lock", from: "0", to: "3", mode: "direct", revision: 1 }]);
     expect(events(audit)[0]).toMatchObject({ actor: { kind: "member", id: OMAR.developerId }, target: { kind: "org" } });
-    const stale = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, defaultMode: "always" });
+    const stale = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { allowSkip: false } });
     expect(stale.status).toBe(409);
     expect(JSON.stringify(stale.body)).toContain("POLICY_STALE");
-    expect(await get(t)).toMatchObject({ body: { revision: 1, defaultMode: "auto" } });
+    expect(await get(t)).toMatchObject({ body: { revision: 1, lock: { tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8 } } });
     // Nothing changed, so nothing is written or audited.
-    const same = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, defaultMode: "auto" });
+    const same = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, lock: { tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8 } });
     expect(same).toMatchObject({ status: 200, body: { revision: 1 } });
-    expect(events(audit)).toHaveLength(2);
+    expect(events(audit)).toHaveLength(1);
   });
 
   it("refuses a body that is not one of the actions, a lock value outside its range and a group lock where the edition has no groups, with field names only", async () => {
     const { t } = await bench();
     dr();
-    expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, defaultMode: "sometimes" })).status).toBe(400);
+    expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, defaultMode: "auto", lock: {} })).status).toBe(400);
+    // There is no company default mode and no mode floor: neither is a field of the card.
+    expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { mode: "auto" } })).status).toBe(400);
+    expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0 })).status).toBe(400);
     expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { capCeilingUsd: 1000 } })).status).toBe(400);
     expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { surprise: true } })).status).toBe(400);
     expect((await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0 })).status).toBe(400);
@@ -105,7 +107,22 @@ describe("the card's route", () => {
     dr();
     t.db.set({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK, entityType: "DESIGN_REVIEW_COMPANY", revision: 1, lock: { surprise: true }, policy: { allowed: true } });
     expect(await get(t)).toMatchObject({ status: 200, body: { unreadable: true } });
-    expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, defaultMode: "auto" })).status).toBe(400);
+    expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, lock: { allowSkip: false } })).status).toBe(400);
+  });
+
+  it("an item written before the mode floor and the default mode were removed still reads: lock.mode and defaultMode are ignored, never shown and never written back", async () => {
+    const { t } = await bench();
+    dr();
+    t.db.set({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK, entityType: "DESIGN_REVIEW_COMPANY", revision: 2, lock: { mode: "always", allowSkip: false }, policy: { allowed: true, defaultMode: "always" } });
+    const read = await get(t);
+    expect(read).toMatchObject({ status: 200, body: { revision: 2, allowed: true, lock: { allowSkip: false }, unreadable: false } });
+    expect(read.body.lock).not.toHaveProperty("mode");
+    expect(read.body).not.toHaveProperty("defaultMode");
+    // A tightening writes the new item without either field.
+    expect((await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 2, lock: { allowSkip: false, capCeilingUsd: 6 } })).status).toBe(200);
+    const stored = t.db.get({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK }) as { lock: Record<string, unknown>; policy: Record<string, unknown> };
+    expect(stored.lock).toEqual({ allowSkip: false, capCeilingUsd: 6 });
+    expect(stored.policy).toEqual({ allowed: true });
   });
 });
 
@@ -185,9 +202,9 @@ describe("allowing design review is a loosening", () => {
     expect(await approveDesignReviewChange(deps([OMAR.developerId, "b"]), { orgId: ORG, changeId: "nope", approverId: "b" })).toEqual({ ok: false, code: "not_found" });
     expect(await saveDesignReviewCompany(deps([OMAR.developerId]), { orgId: ORG, by: OMAR.developerId, expectedRevision: 0, lock: { surprise: 1 } as never })).toEqual({ ok: false, code: "invalid" });
     // The default mode and the lock need the same live authority as "allowed": a name the route's role check let through is still refused when the live records do not list it.
-    expect(await saveDesignReviewCompany(deps(["someone-else"]), { orgId: ORG, by: OMAR.developerId, expectedRevision: 0, defaultMode: "auto" })).toEqual({ ok: false, code: "not_eligible" });
-    expect(await saveDesignReviewCompany({ ...deps([OMAR.developerId]), actor: undefined }, { orgId: ORG, by: OMAR.developerId, expectedRevision: 0, defaultMode: "auto" })).toEqual({ ok: false, code: "eligibility_unavailable" });
-    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.defaultMode).toBe("never");
+    expect(await saveDesignReviewCompany(deps(["someone-else"]), { orgId: ORG, by: OMAR.developerId, expectedRevision: 0, lock: { allowSkip: false } })).toEqual({ ok: false, code: "not_eligible" });
+    expect(await saveDesignReviewCompany({ ...deps([OMAR.developerId]), actor: undefined }, { orgId: ORG, by: OMAR.developerId, expectedRevision: 0, lock: { allowSkip: false } })).toEqual({ ok: false, code: "eligibility_unavailable" });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).lock).toEqual({ kind: "none" });
     expect(events(audit)).toEqual([]);
   });
 });
@@ -195,18 +212,17 @@ describe("allowing design review is a loosening", () => {
 describe("the switch: dr AND the company allows it AND the project is not Off", () => {
   const table = (t: Bench) => ({ documentClient: t.db, tableName: "state" });
   const cases: Array<{ name: string; dr: string | undefined; company: CompanyPolicySeed | null; project?: string; extra?: Record<string, unknown>; enabled: boolean }> = [
-    { name: "dr off: nothing, even for a company that allows it and a project at Always", dr: "0", company: { allowed: true, defaultMode: "always" }, project: "always", enabled: false },
+    { name: "dr off: nothing, even for a company that allows it and a project at Always", dr: "0", company: { allowed: true }, project: "always", enabled: false },
     { name: "dr unset", dr: undefined, company: { allowed: true }, enabled: false },
     { name: "dr on, the company has no policy", dr: "1", company: null, project: "always", enabled: false },
-    { name: "the company has not allowed it: nothing, even if the project says Always", dr: "1", company: { allowed: false, defaultMode: "always" }, project: "always", enabled: false },
-    { name: "allowed, the project has no setting: the company default Off", dr: "1", company: { allowed: true, defaultMode: "never" }, enabled: false },
-    { name: "allowed, the project has no setting: the company default Auto", dr: "1", company: { allowed: true, defaultMode: "auto" }, enabled: true },
-    { name: "allowed, the project has no setting: the company default Always", dr: "1", company: { allowed: true, defaultMode: "always" }, enabled: true },
-    { name: "allowed, the project says Off (the default says Always): nothing", dr: "1", company: { allowed: true, defaultMode: "always" }, project: "never", enabled: false },
-    { name: "allowed, the project says Auto (the default says Off): it runs", dr: "1", company: { allowed: true, defaultMode: "never" }, project: "auto", enabled: true },
-    { name: "allowed, the project says Always: it runs", dr: "1", company: { allowed: true, defaultMode: "never" }, project: "always", enabled: true },
-    { name: "the lock clamps: a project at Off under a lock of at least Auto runs", dr: "1", company: { allowed: true, defaultMode: "never", lock: { mode: "auto" } }, project: "never", enabled: true },
-    { name: "the lock clamps the default too: a project with no setting under a lock of at least Auto runs", dr: "1", company: { allowed: true, defaultMode: "never", lock: { mode: "auto" } }, enabled: true },
+    { name: "the company has not allowed it: nothing, even if the project says Always", dr: "1", company: { allowed: false }, project: "always", enabled: false },
+    { name: "allowed, the project has no setting: Off, nothing runs", dr: "1", company: { allowed: true }, enabled: false },
+    { name: "allowed, the project says Off: nothing", dr: "1", company: { allowed: true }, project: "never", enabled: false },
+    { name: "allowed, the project says Auto: it runs", dr: "1", company: { allowed: true }, project: "auto", enabled: true },
+    { name: "allowed, the project says Always: it runs", dr: "1", company: { allowed: true }, project: "always", enabled: true },
+    { name: "the company's rules never turn a project on: a project at Off stays Off under every lock field", dr: "1", company: { allowed: true, lock: { allowSkip: false, tierAtLeast: "thorough", capCeilingUsd: 2 } }, project: "never", enabled: false },
+    { name: "the company's rules never turn off a project that chose Auto", dr: "1", company: { allowed: true, lock: { allowSkip: false, tierAtLeast: "thorough", capCeilingUsd: 2 } }, project: "auto", enabled: true },
+    { name: "an old item whose lock still carries a mode floor does not turn an Off project on", dr: "1", company: { allowed: true, lock: { mode: "always" } as never }, project: "never", enabled: false },
     { name: "a lock that cannot be read runs the strictest posture, but only where the company allows it", dr: "1", company: { allowed: false, lock: { surprise: true } as DesignReviewLock }, project: "never", enabled: false },
   ];
   for (const entry of cases) {
@@ -245,6 +261,7 @@ describe("the switch: dr AND the company allows it AND the project is not Off", 
     expect(reads({ send })[0]).toContain(DESIGN_REVIEW_LOCK_SK);
     send.mockClear();
     seedDesignReviewCompany(t.db, ORG, { allowed: true });
+    setProject(t, "auto");
     expect(await designReviewEnabledFor(client, ORG, "web")).toBe(true);
     expect(reads({ send }).some((input) => input.includes("PLAYBOOK"))).toBe(true);
   });
@@ -252,7 +269,9 @@ describe("the switch: dr AND the company allows it AND the project is not Off", 
   it("a review the person asked for goes on while design review is allowed, even in a project that is Off; any other review ends when the project is Off or the company stops allowing it (B2-m3)", async () => {
     const { t } = await bench();
     dr();
-    seedDesignReviewCompany(t.db, ORG, { allowed: true, defaultMode: "auto" });
+    seedDesignReviewCompany(t.db, ORG, { allowed: true });
+    setProject(t, "auto");
+    expect(await designReviewStillOn(table(t), ORG, "web", "auto")).toBe(true);
     setProject(t, "never");
     expect(await designReviewStillOn(table(t), ORG, "web", "auto")).toBe(false);
     expect(await designReviewStillOn(table(t), ORG, "web", "always")).toBe(false);
@@ -291,7 +310,7 @@ describe("the one-time move of the old `dp` list into stored settings", () => {
     expect(await designReviewEnabledFor({ documentClient: t.db, tableName: "state" }, ORG, "demo-tasklog")).toBe(false);
     expect(await runDesignReviewDpMigration(ports, ENV)).toBe("done");
     const after = { company: (await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy, project: (await playbookOf(t)).designReview };
-    expect(after.company).toEqual({ allowed: true, defaultMode: "never" });
+    expect(after.company).toEqual({ allowed: true });
     expect(after.project).toMatchObject({ mode: "auto", tier: "standard", allowSkip: true, capUsdPerTask: 10 });
     // The env no longer holds the list: dr alone, and the stored settings decide.
     expect(await designReviewEnabledFor({ documentClient: t.db, tableName: "state" }, ORG, "demo-tasklog", { DESIGN_REVIEW_ENABLED: "1" })).toBe(true);
@@ -391,34 +410,47 @@ describe("H1: the sole-owner exception is the shared rule, not 'the only admin I
 
 describe("H1: a lock change that loosens goes through the same flow as allowing; a tightening applies at once", () => {
   it("lockLoosens: removed or lowered fields, a raised ceiling, skipping allowed again and a changed group loosen; additions and tightenings do not", () => {
-    expect(lockLoosens({}, { mode: "auto", allowSkip: false, capCeilingUsd: 5 })).toBe(false);
-    expect(lockLoosens({ mode: "auto" }, { mode: "always" })).toBe(false);
+    expect(lockLoosens({}, { allowSkip: false, capCeilingUsd: 5, tierAtLeast: "standard" })).toBe(false);
     expect(lockLoosens({ capCeilingUsd: 8 }, { capCeilingUsd: 5 })).toBe(false);
-    expect(lockLoosens({ mode: "always" }, { mode: "auto" })).toBe(true);
-    expect(lockLoosens({ mode: "auto" }, {})).toBe(true);
+    expect(lockLoosens({ tierAtLeast: "standard" }, { tierAtLeast: "thorough" })).toBe(false);
     expect(lockLoosens({ tierAtLeast: "thorough" }, { tierAtLeast: "standard" })).toBe(true);
+    expect(lockLoosens({ tierAtLeast: "light" }, {})).toBe(true);
     expect(lockLoosens({ allowSkip: false }, {})).toBe(true);
     expect(lockLoosens({ capCeilingUsd: 5 }, { capCeilingUsd: 8 })).toBe(true);
     expect(lockLoosens({ capCeilingUsd: 5 }, {})).toBe(true);
     expect(lockLoosens({ approverGroupId: "a" }, { approverGroupId: "b" })).toBe(true);
-    expect(lockLoosens({ mode: "always", allowSkip: false }, { mode: "auto", allowSkip: false, capCeilingUsd: 3 })).toBe(true);
+    expect(lockLoosens({ approverGroupId: "a" }, {})).toBe(true);
+    expect(lockLoosens({ allowSkip: false, capCeilingUsd: 5 }, { allowSkip: false, capCeilingUsd: 8 })).toBe(true);
+    expect(lockLoosens({ tierAtLeast: "thorough", allowSkip: false }, { tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 3 })).toBe(true);
   });
 
-  it("with another admin a loosening waits (the default mode in the same call applies now), a different admin confirms it, and a tightening needs nobody", async () => {
+  it("guard: every field of the lock schema is classified by lockLoosens, so a field added later cannot be loosened by one admin unseen", () => {
+    // For each field, a value that appears (a tightening), and the same field removed (a loosening): a field `lockLoosens` does not know fails here, and so does one it treats as free.
+    const sample: Record<string, unknown> = { tierAtLeast: "thorough", allowSkip: false, capCeilingUsd: 5, approverGroupId: "leads" };
+    const fields = Object.keys(DesignReviewLockSchema.shape);
+    expect(fields.sort()).toEqual(Object.keys(sample).sort());
+    for (const field of fields) {
+      const withField = { [field]: sample[field] } as DesignReviewLock;
+      expect(lockLoosens({}, withField), `adding ${field}`).toBe(false);
+      expect(lockLoosens(withField, {}), `removing ${field}`).toBe(true);
+    }
+    expect(DesignReviewLockSchema.shape).not.toHaveProperty("mode");
+  });
+
+  it("with another admin a loosening waits, a different admin confirms it, and a tightening needs nobody", async () => {
     const { t, audit } = await bench({ maya: "admin" });
     dr();
     const tight = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { allowSkip: false, capCeilingUsd: 5 } });
     expect(tight, JSON.stringify(tight.body)).toMatchObject({ status: 200, body: { status: "applied", revision: 1, lock: { allowSkip: false, capCeilingUsd: 5 } } });
-    const loose = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, defaultMode: "auto", lock: { allowSkip: false } });
-    expect(loose, JSON.stringify(loose.body)).toMatchObject({ status: 202, body: { status: "needs_approval", defaultMode: "auto", lock: { allowSkip: false, capCeilingUsd: 5 }, pending: { kind: "lock", proposedByYou: true } } });
+    const loose = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, lock: { allowSkip: false } });
+    expect(loose, JSON.stringify(loose.body)).toMatchObject({ status: 202, body: { status: "needs_approval", lock: { allowSkip: false, capCeilingUsd: 5 }, pending: { kind: "lock", proposedByYou: true } } });
     const changeId = (loose.body as { changeId: string }).changeId;
     expect((await t.web(OMAR, "POST", PATH, { action: "approve", changeId })).status).toBe(403);
     expect((await t.web(MAYA, "POST", PATH, { action: "approve", changeId })).status).toBe(200);
-    expect(await get(t)).toMatchObject({ body: { lock: { allowSkip: false }, defaultMode: "auto" } });
+    expect(await get(t)).toMatchObject({ body: { lock: { allowSkip: false } } });
     expect((await get(t)).body.lock).not.toHaveProperty("capCeilingUsd");
     expect(events(audit).map((event) => [event.action, (event.facts as Record<string, unknown>).field, (event.facts as Record<string, unknown>).mode])).toEqual([
       ["company.design_review_policy_changed", "lock", "direct"],
-      ["company.design_review_policy_changed", "defaultMode", "direct"],
       ["company.design_review_policy_proposed", "lock", undefined],
       ["company.design_review_policy_changed", "lock", "second_person"],
     ]);
@@ -427,7 +459,7 @@ describe("H1: a lock change that loosens goes through the same flow as allowing;
   it("the only owner loosens alone (the shared exception); a loosening made by a member is refused before anything is read", async () => {
     const { t, audit } = await bench();
     dr();
-    await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { mode: "always" } });
+    await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 0, lock: { capCeilingUsd: 5 } });
     const alone = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, lock: {} });
     expect(alone, JSON.stringify(alone.body)).toMatchObject({ status: 200, body: { status: "applied", lock: {} } });
     expect(events(audit).at(-1)).toMatchObject({ facts: { field: "lock", mode: "sole_owner_exception" } });
@@ -435,18 +467,18 @@ describe("H1: a lock change that loosens goes through the same flow as allowing;
 });
 
 describe("M1: the company's off switch and every tightening work without a complete roster", () => {
-  it("a legacy company (no approval membership record) can turn allowed off, save the default and tighten the lock; allowing still needs the roster", async () => {
+  it("a legacy company (no approval membership record) can tighten the lock and turn allowed off; allowing still needs the roster", async () => {
     const { t, audit } = await bench();
     dr();
-    seedDesignReviewCompany(t.db, ORG, { allowed: true, defaultMode: "always", revision: 1 });
+    seedDesignReviewCompany(t.db, ORG, { allowed: true, revision: 1 });
     const { approvalMembershipVersion: _version, approvalTrackingSince: _since, ...legacy } = t.db.get(orgMetaKey(ORG)) as Record<string, unknown>;
     void _version; void _since;
     t.db.set(legacy);
-    const mode = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, defaultMode: "never", lock: { allowSkip: false } });
-    expect(mode, JSON.stringify(mode.body)).toMatchObject({ status: 200, body: { defaultMode: "never", lock: { allowSkip: false } } });
+    const mode = await t.web(OMAR, "POST", PATH, { action: "save", expectedRevision: 1, lock: { allowSkip: false } });
+    expect(mode, JSON.stringify(mode.body)).toMatchObject({ status: 200, body: { lock: { allowSkip: false } } });
     const off = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 2, allowed: false });
     expect(off, JSON.stringify(off.body)).toMatchObject({ status: 200, body: { status: "applied", allowed: false } });
-    expect(events(audit).map((event) => (event.facts as Record<string, unknown>).field)).toEqual(["defaultMode", "lock", "allowed"]);
+    expect(events(audit).map((event) => (event.facts as Record<string, unknown>).field)).toEqual(["lock", "allowed"]);
     // Allowing is a loosening and needs the complete roster: unavailable here, and nothing changes.
     const on = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 3, allowed: true });
     expect(on.status).toBe(503);
@@ -468,7 +500,7 @@ describe("M2: an unreadable lock while allowed is true means design review is NO
     const { t } = await bench();
     dr();
     // A newer release added a lock field this broker does not know: the lock is unreadable, the policy still says allowed.
-    t.db.set({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK, entityType: "DESIGN_REVIEW_COMPANY", revision: 3, lock: { mode: "auto", futureField: true }, policy: { allowed: true, defaultMode: "always" } });
+    t.db.set({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK, entityType: "DESIGN_REVIEW_COMPANY", revision: 3, lock: { allowSkip: false, futureField: true }, policy: { allowed: true } });
     const client = { documentClient: t.db, tableName: "state" };
     setProject(t, "never");
     expect(await designReviewEnabledFor(client, ORG, "web")).toBe(false);
@@ -611,7 +643,7 @@ describe("M3: the move under a lock, a failure, and partial ticks", () => {
     const { t, audit } = made;
     const base = { documentClient: t.db, tableName: "state", now: Date.now, audit: audit.audit };
     const log: Array<Record<string, unknown>> = [];
-    if (lock !== undefined) t.db.set({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK, entityType: "DESIGN_REVIEW_COMPANY", revision: 2, lock, policy: { allowed: false, defaultMode: "never" } });
+    if (lock !== undefined) t.db.set({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK, entityType: "DESIGN_REVIEW_COMPANY", revision: 2, lock, policy: { allowed: false } });
     const ports: DpMigrationPorts = { playbook: base, company: base, listOrgs: async (after) => (after === undefined ? [ORG] : []), installOrg: () => ORG, projectHadDesignReview: async () => true, now: Date.now, log: (entry) => log.push(entry) };
     vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
     return { ...made, base, ports, log };
@@ -678,5 +710,87 @@ describe("L2: an admin's choice made before the move reached the company stands"
     expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(false);
     expect(t.db.get({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_DP_MIGRATION_SK })).toMatchObject({ outcome: "moved" });
     expect(audit.recordedBy("playbook.default_process_changed")).toEqual([]);
+  });
+});
+
+describe("R1: on a cloud install the evidence walk runs through the real wiring", () => {
+  it("designDpMigrationOf with a cloud config: the company whose project already had a design review is moved, the company with only the same name is not, and both are named in the logs", async () => {
+    const { t, audit } = await bench();
+    for (const org of [ORG, ORG_B]) {
+      t.db.set({ ...projectMetaKey(org, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId });
+      t.db.set({ pk: MODEL_SOURCES_DIRECTORY_PK, sk: org, entityType: "MODEL_SOURCES_ORG", updatedAt: "2026-10-01T00:00:00.000Z" });
+    }
+    const id = "wsb";
+    t.db.set({ pk: `WORKSPACE#${id}`, sk: "META", entityType: "WORKSPACE", id, orgId: ORG_B, [WORKSPACE_PROJECT_INDEX.partitionKey]: workspaceProjectIndexValue(ORG_B, "web"), [WORKSPACE_PROJECT_INDEX.sortKey]: "2026-10-20T00:00:00.000Z" });
+    t.db.set({ ...taskPointerKey(id), entityType: "TASK_POINTER", taskId: `task-${id}` });
+    t.db.set({ ...taskKey(`task-${id}`), entityType: "DEVELOPER_TASK", taskId: `task-${id}`, orgId: ORG_B, project: "web", workflow: { designReview: { status: "done", rounds: [] } } });
+    vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
+    vi.stubEnv("DESIGN_REVIEW_PROJECTS", "web");
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => { logs.push(String(line)); });
+    const cloud = { documentClient: t.db, tableName: "state", audit: audit.audit, cloud: true } as never;
+    expect(await designDpMigrationOf(cloud)).toBe("done");
+    spy.mockRestore();
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG_B)).policy.allowed).toBe(true);
+    expect((await readProjectPlaybook({ documentClient: t.db, tableName: "state" }, ORG_B, "web", { lenient: true })).designReview).toMatchObject({ mode: "auto" });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(false);
+    expect(t.db.get(projectPlaybookKey(ORG, "web"))).toBeUndefined();
+    expect(logs.some((line) => line.includes("design_review.dp_migration_not_enabled") && line.includes('"project":"web"') && line.includes("no_design_review_task"))).toBe(true);
+  });
+
+  it("without the cloud flag the install's own company is the only one, and the directory is never walked", async () => {
+    const { t, audit } = await bench();
+    t.db.set({ ...projectMetaKey(ORG, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId });
+    t.db.set({ ...projectMetaKey(ORG_B, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId });
+    t.db.set({ pk: MODEL_SOURCES_DIRECTORY_PK, sk: ORG_B, entityType: "MODEL_SOURCES_ORG", updatedAt: "2026-10-01T00:00:00.000Z" });
+    vi.stubEnv("AGENTX_ENV", "staging");
+    vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
+    vi.stubEnv("DESIGN_REVIEW_PROJECTS", "web");
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect(await designDpMigrationOf({ documentClient: t.db, tableName: "state", audit: audit.audit } as never)).toBe("done");
+    vi.restoreAllMocks();
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(true);
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG_B)).policy.allowed).toBe(false);
+  });
+
+  it("the install's own company says so when it has none of the projects, and when nothing qualified (no silent return)", async () => {
+    const { t, audit } = await bench();
+    const base = { documentClient: t.db, tableName: "state", now: Date.now, audit: audit.audit };
+    const log: Array<Record<string, unknown>> = [];
+    const ports: DpMigrationPorts = { playbook: base, company: base, listOrgs: async () => [], installOrg: () => ORG, projectHadDesignReview: async () => false, now: Date.now, log: (entry) => log.push(entry) };
+    expect(await migrateDesignReviewOrg(ports, ORG, ["ghost"], "install")).toBe(0);
+    expect(log).toEqual([{ event: "design_review.dp_migration_not_enabled", project: "ghost", reason: "no_such_project" }, { event: "design_review.dp_migration_nothing_qualified", projectCount: 1 }]);
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(false);
+  });
+});
+
+describe("R2: with several projects in dp, one refused project does not undo the others", () => {
+  it("dp = a:b where b is refused: a keeps its stored Auto, the company is allowed so a keeps running, and b is logged by name", async () => {
+    const { t, audit } = await bench();
+    for (const name of ["alpha", "beta"]) t.db.set({ ...projectMetaKey(ORG, name), entityType: "PROJECT_META", name, status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId });
+    // A group approver in an edition without groups is refused for any project that has no setting yet; alpha already chose, beta did not.
+    t.db.set({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_LOCK_SK, entityType: "DESIGN_REVIEW_COMPANY", revision: 2, lock: { approverGroupId: "leads" }, policy: { allowed: false } });
+    t.db.set({ ...projectPlaybookKey(ORG, "alpha"), entityType: "PROJECT_PLAYBOOK", orgId: ORG, revision: 1, defaultProcess: { kind: "builtin" }, designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "auto" }, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAYA.developerId });
+    const base = { documentClient: t.db, tableName: "state", now: Date.now, audit: audit.audit };
+    const log: Array<Record<string, unknown>> = [];
+    const ports: DpMigrationPorts = { playbook: base, company: base, listOrgs: async () => [], installOrg: () => ORG, projectHadDesignReview: async () => true, now: Date.now, log: (entry) => log.push(entry) };
+    expect(await migrateDesignReviewOrg(ports, ORG, ["alpha", "beta"], "install")).toBe(1);
+    expect(log).toContainEqual({ event: "design_review.dp_migration_not_enabled", project: "beta", reason: "refused" });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(true);
+    expect(t.db.get(projectPlaybookKey(ORG, "beta"))).toBeUndefined();
+    expect(t.db.get({ pk: orgMetaKey(ORG).pk, sk: DESIGN_REVIEW_DP_MIGRATION_SK })).toMatchObject({ outcome: "moved", projectCount: 1 });
+  });
+});
+
+describe("R4: a lost race on an allow request is stale, not 'already open'", () => {
+  it("the membership fence moving between the roster read and the commit answers stale", async () => {
+    const { t, audit } = await bench();
+    const ids = [OMAR.developerId, MAYA.developerId];
+    const deps: DesignReviewCompanyDeps = {
+      documentClient: t.db, tableName: "state", now: Date.now, audit: audit.audit, actor: async () => [],
+      authority: { eligibility: async () => ({ complete: true, membershipVersion: 1, ownerIds: ids, eligibleIds: ids, lastEligibleLossAtMs: null, fence: [{ ConditionCheck: { TableName: "state", Key: { pk: "NO", sk: "SUCH" }, ConditionExpression: "attribute_exists(pk)" } }] }) },
+    };
+    expect(await requestDesignReviewAllowed(deps, { orgId: ORG, by: OMAR.developerId, allowed: true, expectedRevision: 0 })).toEqual({ ok: false, code: "stale" });
+    expect((await readDesignReviewCompany({ documentClient: t.db, tableName: "state" }, ORG)).policy.allowed).toBe(false);
   });
 });

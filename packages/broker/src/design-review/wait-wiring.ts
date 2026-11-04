@@ -84,7 +84,7 @@ export async function designWaitSweepOf(dependencies: AwsBrokerDependencies): Pr
 
 /**
  * The recovery sweep's one-time move of the old `dp` project list into stored settings (dp-migration.ts). It reads nothing while `dr` is off or `dp` names nothing. Audited as the system; idempotent; removed with `dp`
- * in the next release.
+ * in 0.5.6.
  */
 export async function designDpMigrationOf(dependencies: AwsBrokerDependencies): Promise<"off" | "done" | "partial" | "failed"> {
   const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
@@ -93,7 +93,8 @@ export async function designDpMigrationOf(dependencies: AwsBrokerDependencies): 
     playbook: { ...table, now: Date.now, ...audit, edition: dependencies.editionPolicy },
     company: { ...table, now: Date.now, ...audit, edition: dependencies.editionPolicy },
     listOrgs: (after, limit) => modelSourceStoreOf(dependencies).listOrgs(after, limit),
-    installOrg: () => { try { return installOrgIdFromEnvironment(); } catch { return undefined; } },
+    // A cloud install has no company of its own (it has several, with random ids), as `singleOrgIdFor` says: it takes the evidence walk. Anything else has exactly one.
+    installOrg: () => (dependencies.cloud === true ? undefined : installOrgIdFromEnvironment()),
     projectHadDesignReview: projectHadDesignReviewOf(dependencies),
     now: Date.now, log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
   });

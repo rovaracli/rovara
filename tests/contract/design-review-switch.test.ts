@@ -79,7 +79,7 @@ describe("the retired design review project list (`dp`): kept for one release, d
     expect(entry.description).toMatch(/^Retired:/);
   });
 
-  it("an upgrade still carries a value set before (the parameter stays in OPERATOR_PARAMETERS this release); the next release removes it from the template and from OPERATOR_PARAMETERS, and the upgrade then reports it as dropped", () => {
+  it("an upgrade still carries a value set before (the parameter stays in OPERATOR_PARAMETERS this release); 0.5.6 removes it from the template and from OPERATOR_PARAMETERS, and the upgrade then reports it as dropped", () => {
     expect(OPERATOR_PARAMETERS["control-plane"]).toEqual(expect.arrayContaining(["DesignReviewProjects"]));
   });
 

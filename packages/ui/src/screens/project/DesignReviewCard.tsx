@@ -56,14 +56,13 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
    if (failure instanceof ApiError && failure.code === "PLAYBOOK_STALE") void playbook.refetch();
   } finally { setSaving(false); }
  }
- const lockNote = (field: "mode" | "tier" | "allowSkip" | "capUsdPerTask" | "highRiskApprover") => locked.has(field) ? <p className="rv-muted" id={"design-lock-" + field}>{LOCK_REASON}</p> : null;
+ const lockNote = (field: "tier" | "allowSkip" | "capUsdPerTask" | "highRiskApprover") => locked.has(field) ? <p className="rv-muted" id={"design-lock-" + field}>{LOCK_REASON}</p> : null;
  const kinds = approverKinds(groups), kindOptions = (kinds.includes(current.approverKind) ? kinds : [...kinds, current.approverKind]).map(value => ({ value, label: APPROVER_WORDS[value] + (value === "group" && !groups ? " (not available here)" : ""), disabled: value === "group" && !groups }));
  const people = members.data?.members ?? [];
  return <Card className="rv-hww-card rv-hww-design" aria-labelledby={id + "-title"} id={id}>
   <h3 id={id + "-title"} tabIndex={-1}>Design review</h3>
   <p className="rv-muted">Before Rovara builds, reviewers that never saw the conversation read the design and raise what it assumes or gets wrong. A person approves the design.</p>
-  {response.designReviewInherited === true && <p className="rv-muted">This project follows the company default. Saving any design review setting here makes it the project's own.</p>}
-  {anyLocked && <p className="rv-hww-note" role="status">{locked.size === 5 ? "Your company controls every design review setting here." : "Your company locks some of these settings. Locked settings are read-only."}</p>}
+  {anyLocked && <p className="rv-hww-note" role="status">{locked.size === 4 ? "Your company controls every design review setting here." : "Your company locks some of these settings. Locked settings are read-only."}</p>}
   {shownRows.length === 0 ? <p className="rv-muted">Nothing here is changed or locked. Show all settings to see everything.</p> : <dl className="rv-hww-rows">{shownRows.map(row => <div className="rv-hww-row" key={row.id}>
    <dt>{row.title}</dt>
    <dd><ul>{row.values.map((value, index) => <li key={index} className={value.block ? "rv-hww-block" : undefined}><span className="rv-hww-text"><VisibleText text={value.text} /></span> <HowWeWorkMarker mark={value.mark} /></li>)}</ul></dd>
@@ -73,7 +72,7 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
   </div>)}</dl>}
   {canEdit && <section className="rv-design-setting" aria-label="Design review settings editor">
    <h4>Change these settings</h4>
-   <div className="rv-design-field"><Select label="When it runs" value={current.mode} options={MODE_OPTIONS} disabled={locked.has("mode") || saving} onValueChange={value => patch({ mode: value as SettingDraft["mode"] })} />{lockNote("mode")}</div>
+   <div className="rv-design-field"><Select label="When it runs" value={current.mode} options={MODE_OPTIONS} disabled={saving} onValueChange={value => patch({ mode: value as SettingDraft["mode"] })} /></div>
    <div className="rv-design-field"><Select label="Tier" value={current.tier} options={TIER_OPTIONS} disabled={locked.has("tier") || saving} onValueChange={value => patch({ tier: value as SettingDraft["tier"] })} />{lockNote("tier")}</div>
    <div className="rv-design-field"><Switch label="Allow skipping design review" checked={current.allowSkip} disabled={locked.has("allowSkip") || saving} onCheckedChange={value => patch({ allowSkip: value })} />{lockNote("allowSkip")}</div>
    <div className="rv-design-field"><TextField label="Cost limit per task (USD)" type="number" inputMode="decimal" min={0.5} max={100} step={0.5} value={current.capText} disabled={locked.has("capUsdPerTask") || saving} hint="Between $0.50 and $100. Above it, a person decides." {...(problems.cap === undefined ? {} : { error: problems.cap })} onChange={event => patch({ capText: event.target.value })} />{lockNote("capUsdPerTask")}</div>
@@ -84,7 +83,7 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
     {current.approverKind === "group" && <TextField label="Group" value={current.groupId} disabled={locked.has("highRiskApprover") || saving || !groups} {...(problems.group === undefined ? {} : { error: problems.group })} onChange={event => patch({ groupId: event.target.value })} />}
    </div>
    <div className="rv-hww-actions">
-    <Button variant="primary" busy={saving} disabled={!changed || locked.size === 5} onClick={() => { void save(); }}>Save design review settings</Button>
+    <Button variant="primary" busy={saving} disabled={!changed || locked.size === 4} onClick={() => { void save(); }}>Save design review settings</Button>
     {editing && <Button disabled={saving} onClick={() => { setDraft(undefined);setError(undefined); }}>Discard</Button>}
    </div>
    {saved && <p role="status">Saved. New design reviews use these settings; running ones keep theirs.</p>}

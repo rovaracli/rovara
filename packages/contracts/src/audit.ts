@@ -198,7 +198,7 @@ export const AUDIT_ACTIONS = [
   "playbook.default_process_changed",
   // Design review stage (DR8): a maintainer changed the project's design review setting in How we work.
   "playbook.design_review_changed",
-  // Design review (DR-FU4): a company admin changed the company's design review policy (allowed, default mode, lock) or the system moved `dp` projects into it; turning "allowed" on waits for a different admin.
+  // Design review (DR-FU4): a company admin changed the company's design review policy (allowed, lock) or the system moved `dp` projects into it; turning "allowed" on waits for a different admin.
   "company.design_review_policy_proposed",
   "company.design_review_policy_changed",
   "company.change_applied_to_project",
@@ -516,7 +516,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "playbook.default_process_changed": ["revision", "processKind"],
   // `mode` is auto, always or never; `tier` light, standard or thorough; `approverKind` maintainers, people or group (never the people or the group named); `capCents` the per-task cap in whole cents.
   "playbook.design_review_changed": ["revision", "mode", "tier", "allowSkip", "capCents", "approverKind", "approverCount"],
-  // `field` is `allowed`, `defaultMode` or `lock`; `from` and `to` are fixed words (on/off, never/auto/always) or, for `lock`, how many fields the lock holds; `mode` is `direct`, `second_person`, `sole_owner_exception`, `migration` or `cancelled` (a waiting request withdrawn: `from` is `requested`, `to` is `withdrawn`).
+  // `field` is `allowed` or `lock`; `from` and `to` are fixed words (on/off) or, for `lock`, how many fields the lock holds; `mode` is `direct`, `second_person`, `sole_owner_exception`, `migration` or `cancelled` (a waiting request withdrawn: `from` is `requested`, `to` is `withdrawn`).
   "company.design_review_policy_proposed": ["field", "from", "to"],
   "company.design_review_policy_changed": ["field", "from", "to", "mode", "revision"],
   "company.change_applied_to_project": ["changeRevision", "settingCount"],

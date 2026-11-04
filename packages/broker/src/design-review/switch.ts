@@ -1,7 +1,7 @@
 // Design review stage, DR7 + DR-FU4: the switch. Three things decide whether a project runs design review, all off by default:
 //   `dr`  (BROKER_SETTINGS.designReview, variable DESIGN_REVIEW_ENABLED)   the operator's environment-wide master switch; the stage exists in this environment only when the value is exactly "1";
 //   the company's `allowed` (design-review/lock.ts, set by a company admin in How we work)   whether the company allows design review at all;
-//   the project's effective mode (its How we work setting, or the company's default mode when it has none, held to the company's lock)   not Off (`never`).
+//   the project's effective mode (its How we work setting, or Off when it has none, held to the company's lock)   not Off (`never`).
 // `dp` (BROKER_SETTINGS.designReviewProjects, stack parameter DesignReviewProjects) no longer gates anything: it stays one more release so an upgrade can move its projects into stored settings (dp-migration.ts), and is removed after.
 // Fail closed: a value that is not "1" in `dr` is OFF with NO table read at all, so with `dr` off nothing else runs, `resolveDesignMode` is never called, and no task ever carries a `designReview`. A company item or a project
 // setting that cannot be read gives OFF here (the caller of a read that must not guess uses `readEffectiveDesignReview`, which throws).

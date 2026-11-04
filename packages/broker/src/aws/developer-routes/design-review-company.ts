@@ -1,8 +1,8 @@
 // Design review (DR-FU4): `/v1/app/org/design-review`, the company's How we work card for design review, for company owners and admins only. It exists only while the `dr` switch is on: with it off the path is not found, as any
 // unknown path, and nothing is read. `org` is a browser route family, so the app reaches it as `/v1/web/org/design-review`.
-//   GET     an owner or admin: whether design review is allowed for the company, the default mode of projects with no setting (never = Off by default), the stricter-only lock, and the one request that waits, if any.
+//   GET     an owner or admin: whether design review is allowed for the company, the stricter-only lock, and the one request that waits, if any. (Projects choose their own mode in their How we work; unset means Off.)
 //   POST    an owner or admin, from a live browser session only (a token, the CLI or Slack never change it), on the revision they read (`POLICY_STALE` when it moved):
-//             { action: "save", expectedRevision, defaultMode?, lock? }   the default mode and any lock change that only tightens apply at once; a lock change that LOOSENS anything waits for a different admin (202);
+//             { action: "save", expectedRevision, lock }                   a lock change that only tightens applies at once; a lock change that LOOSENS anything waits for a different admin (202);
 //             { action: "allow", expectedRevision, allowed: false }       applied at once (the stricter side; it also withdraws a waiting request), audited;
 //             { action: "allow", expectedRevision, allowed: true }        202 needs_approval: a DIFFERENT admin approves. Alone only through the shared sole-owner exception (the only owner, 24 hours after the last admin was lost);
 //             { action: "approve", changeId }                              a different admin approves the waiting request, signed in within the last 10 minutes (REAUTH_REQUIRED otherwise);
@@ -65,7 +65,7 @@ async function stateOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller
   const open = await openPolicyChange(table, caller.orgId, deps.now()).catch(() => undefined);
   const groups = deps.editionPolicy !== undefined && featureEnabled(deps.editionPolicy, "groups");
   return {
-    revision: view.revision ?? 0, allowed: view.allowed, defaultMode: view.defaultMode, lock: view.lock, unreadable: view.unreadable,
+    revision: view.revision ?? 0, allowed: view.allowed, lock: view.lock, unreadable: view.unreadable,
     ...(groups ? { groups: true as const } : {}),
     ...(open === undefined ? {} : { pending: { changeId: open.id, kind: open.kind, proposedByYou: sameId(open.proposedBy, caller.developerId), expiresAt: new Date(open.expiresAt).toISOString() } }),
   };
@@ -93,7 +93,7 @@ export async function routeDesignReviewCompany(deps: DeveloperRouteDependencies,
   const body = parsed.data;
   if (body.action === "save") {
     const result = await saveDesignReviewCompany(company, {
-      orgId, by: caller.developerId, expectedRevision: body.expectedRevision, defaultMode: body.defaultMode, lock: body.lock,
+      orgId, by: caller.developerId, expectedRevision: body.expectedRevision, lock: body.lock,
       // A lock change that loosens anything is a loosening: it needs a sign-in within the last 10 minutes, like allowing.
       onLoosening: async () => { await requireFreshSignIn(deps, caller); },
     });

@@ -2,11 +2,11 @@
 // The setting rides the existing playbook document and PUT (DR1 put the field on the schema and the body); this file pins what the broker does with it.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookBodySchema, agentXError, designReviewSettingOf, editionPolicy, orgMetaKey, projectPlaybookKey, type DesignReviewSetting, type OrgRole,
+  DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookBodySchema, agentXError, editionPolicy, orgMetaKey, projectPlaybookKey, type DesignReviewSetting, type OrgRole,
 } from "../../packages/contracts/src/index.js";
 import { getProjectPlaybook, putProjectPlaybook, type ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { readProjectPlaybook, readProjectPlaybookState, writeProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
-import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, DESIGN_REVIEW_LOCK_SK, DESIGN_REVIEW_LOCK_GROUP_EDITION, applyLock, checkDesignReviewLockWrite, effectiveDesignReviewSetting, lockViolations, type DesignReviewLock } from "../../packages/broker/src/design-review/lock.js";
+import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, DESIGN_REVIEW_LOCK_SK, readDesignReviewCompany, DESIGN_REVIEW_LOCK_GROUP_EDITION, applyLock, checkDesignReviewLockWrite, effectiveDesignReviewSetting, lockViolations, type DesignReviewLock } from "../../packages/broker/src/design-review/lock.js";
 import { isEffectiveSetting } from "../../packages/broker/src/design-review/effective-setting.js";
 import { readEffectiveDesignReview } from "../../packages/broker/src/design-review/setting.js";
 import { MAX, MIA, OLA, ORG_A, PRIYA } from "../support/agent-session-world.js";
@@ -47,9 +47,10 @@ describe("an old playbook", () => {
     // A document exactly as the code before this stage wrote it.
     w.db.set({ ...projectPlaybookKey(ORG_A, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG_A, revision: 3, defaultProcess: { kind: "builtin" }, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAX });
     const read = await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web");
-    expect(read).toEqual({ designReviewAllowed: true, designReviewInherited: true, designReviewGroups: true, playbook: { revision: 3, defaultProcess: { kind: "builtin" }, designReview: DESIGN_REVIEW_DEFAULT_SETTING } });
-    expect(designReviewSettingOf(read.playbook)).toEqual(DESIGN_REVIEW_DEFAULT_SETTING);
-    expect((await readEffectiveDesignReview(playbookDeps(w), ORG_A, "web")).setting).toEqual(DESIGN_REVIEW_DEFAULT_SETTING);
+    // A project with no setting of its own is Off (DR-FU4): only its own How we work turns it on.
+    const OFF_DEFAULT: DesignReviewSetting = { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" };
+    expect(read).toEqual({ designReviewAllowed: true, designReviewGroups: true, playbook: { revision: 3, defaultProcess: { kind: "builtin" }, designReview: OFF_DEFAULT } });
+    expect((await readEffectiveDesignReview(playbookDeps(w), ORG_A, "web")).setting).toEqual(OFF_DEFAULT);
     // A company that set no policy: design review is not allowed and a project with no setting is Off (DR-FU4).
     const empty = world(null);
     const bare = await readEffectiveDesignReview(playbookDeps(empty), ORG_A, "web");
@@ -148,12 +149,12 @@ describe("saving the setting", () => {
 describe("the company's lock is stricter-only", () => {
   it("refuses every way a project could loosen it, naming only the fields, and writes nothing", async () => {
     const w = world();
-    const lock: DesignReviewLock = { mode: "always", tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 5, approverGroupId: "security-leads" };
+    const lock: DesignReviewLock = { tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 5, approverGroupId: "security-leads" };
     setLock(w, lock);
     const loose: DesignReviewSetting = { mode: "never", tier: "light", allowSkip: true, capUsdPerTask: 20, highRiskApprover: { kind: "maintainers" } };
     const result = await failure(put(w, MAX, { designReview: loose }));
     expect(result).toMatchObject({ code: "CONFIG_INVALID", status: 400 });
-    expect(result?.message).toBe("designReview.mode, designReview.tier, designReview.allowSkip, designReview.capUsdPerTask, designReview.highRiskApprover: your company has set a stricter rule for design review");
+    expect(result?.message).toBe("designReview.tier, designReview.allowSkip, designReview.capUsdPerTask, designReview.highRiskApprover: your company has set a stricter rule for design review");
     // No value of the lock or of the request is echoed.
     expect(result?.message).not.toMatch(/security-leads|always|20|\b5\b/u);
     expect(stored(w)).toBeUndefined();
@@ -161,7 +162,7 @@ describe("the company's lock is stricter-only", () => {
     // Each field alone is enough to be refused.
     const okAll: DesignReviewSetting = { mode: "always", tier: "standard", allowSkip: false, capUsdPerTask: 5, highRiskApprover: { kind: "group", groupId: "security-leads" } };
     for (const [field, change] of [
-      ["designReview.mode", { mode: "auto" }], ["designReview.tier", { tier: "light" }], ["designReview.allowSkip", { allowSkip: true }],
+      ["designReview.tier", { tier: "light" }], ["designReview.allowSkip", { allowSkip: true }],
       ["designReview.capUsdPerTask", { capUsdPerTask: 5.01 }], ["designReview.highRiskApprover", { highRiskApprover: { kind: "group", groupId: "other-group" } }],
     ] as const) {
       expect(await failure(put(w, MAX, { designReview: { ...okAll, ...change } }))).toMatchObject({ code: "CONFIG_INVALID", message: `${field}: your company has set a stricter rule for design review` });
@@ -171,28 +172,37 @@ describe("the company's lock is stricter-only", () => {
     expect((await put(w, MAX, { expectedRevision: 1, designReview: { ...okAll, tier: "thorough", capUsdPerTask: 1 } })).statusCode).toBe(200);
   });
 
-  it("a mode lock of auto forbids never but allows always; a lock that sets no field locks nothing", async () => {
+  it("there is no mode floor: a lock never stops a project turning itself Off, and a lock that sets no field locks nothing; a legacy `mode` in a stored lock is ignored on read and never written", async () => {
     const w = world();
-    setLock(w, { mode: "auto" });
-    expect(await failure(put(w, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } }))).toMatchObject({ code: "CONFIG_INVALID" });
-    expect((await put(w, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "always" } })).statusCode).toBe(200);
+    setLock(w, { allowSkip: false });
+    expect((await put(w, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never", allowSkip: false } })).statusCode).toBe(200);
     const open = world();
     setLock(open, {});
     expect((await put(open, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never", allowSkip: true } })).statusCode).toBe(200);
+    // An item written before the floor was removed still carries `mode`: it reads as the rest of the lock, the mode is not a locked field, and the project stays Off.
+    const old = world();
+    setLock(old, { mode: "always", allowSkip: false });
+    expect((await readDesignReviewCompany(playbookDeps(old), ORG_A)).lock).toEqual({ kind: "lock", lock: { allowSkip: false }, revision: 1 });
+    expect((await put(old, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never", allowSkip: false } })).statusCode).toBe(200);
+    const read = await getProjectPlaybook(playbookDeps(old), old.caller(PRIYA), "web");
+    expect(read.designReviewLocked).toEqual(["designReview.allowSkip"]);
+    expect(read.playbook.designReview).toMatchObject({ mode: "never", allowSkip: false });
+    // A stricter-looking legacy lock never turns a project on.
+    expect((await readEffectiveDesignReview(playbookDeps(old), ORG_A, "web")).setting.mode).toBe("never");
   });
 
   it("clamps what is stored when a lock is added AFTER a project chose something looser: the effective setting holds the lock, the stored one is untouched", async () => {
     const w = world();
     await put(w, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never", tier: "light", allowSkip: true, capUsdPerTask: 30 } });
-    setLock(w, { mode: "always", tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8, approverGroupId: "leads" });
+    setLock(w, { tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8, approverGroupId: "leads" });
     const effective = await readEffectiveDesignReview(playbookDeps(w), ORG_A, "web");
-    expect(effective.setting).toEqual({ mode: "always", tier: "standard", allowSkip: false, capUsdPerTask: 8, highRiskApprover: { kind: "group", groupId: "leads" } });
-    expect(effective.locked).toEqual(["designReview.mode", "designReview.tier", "designReview.allowSkip", "designReview.capUsdPerTask", "designReview.highRiskApprover"]);
+    expect(effective.setting).toEqual({ mode: "never", tier: "standard", allowSkip: false, capUsdPerTask: 8, highRiskApprover: { kind: "group", groupId: "leads" } });
+    expect(effective.locked).toEqual(["designReview.tier", "designReview.allowSkip", "designReview.capUsdPerTask", "designReview.highRiskApprover"]);
     expect(stored(w)).toMatchObject({ designReview: { mode: "never", tier: "light" } });
     // A project already stricter than the lock keeps its own stricter values.
     const strict = world();
     await put(strict, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "always", tier: "thorough", allowSkip: false, capUsdPerTask: 2 } });
-    setLock(strict, { mode: "auto", tierAtLeast: "standard", capCeilingUsd: 8 });
+    setLock(strict, { tierAtLeast: "standard", capCeilingUsd: 8 });
     expect((await readEffectiveDesignReview(playbookDeps(strict), ORG_A, "web")).setting).toMatchObject({ mode: "always", tier: "thorough", allowSkip: false, capUsdPerTask: 2 });
   });
 
@@ -208,18 +218,19 @@ describe("the company's lock is stricter-only", () => {
     expect(direct?.message).toContain("can't be read");
     expect(stored(w)).toBeUndefined();
     const effective = await readEffectiveDesignReview(playbookDeps(w), ORG_A, "web");
-    expect(effective).toMatchObject({ lockUnreadable: true, setting: { mode: "always", allowSkip: false } });
+    expect(effective).toMatchObject({ lockUnreadable: true, setting: { mode: "never", allowSkip: false } });
     // A write with no design review setting is not blocked by the lock.
     expect((await put(w, MAX, {})).statusCode).toBe(200);
   });
 
   it("the pure rules: violations, applying a lock and the effective setting agree", () => {
-    const lock: DesignReviewLock = { mode: "auto", tierAtLeast: "thorough", allowSkip: false, capCeilingUsd: 3 };
+    const lock: DesignReviewLock = { tierAtLeast: "thorough", allowSkip: false, capCeilingUsd: 3 };
     const clamped = applyLock({ ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" }, lock);
     expect(lockViolations(clamped, lock)).toEqual([]);
-    expect(clamped).toMatchObject({ mode: "auto", tier: "thorough", allowSkip: false, capUsdPerTask: 3 });
-    expect(effectiveDesignReviewSetting({}, { kind: "lock", lock, revision: 1 })).toEqual(applyLock(DESIGN_REVIEW_DEFAULT_SETTING, lock));
-    expect(effectiveDesignReviewSetting({}, { kind: "none" })).toEqual(DESIGN_REVIEW_DEFAULT_SETTING);
+    expect(clamped).toMatchObject({ mode: "never", tier: "thorough", allowSkip: false, capUsdPerTask: 3 });
+    // A project with no setting is Off, and the lock never changes the mode.
+    expect(effectiveDesignReviewSetting({}, { kind: "lock", lock, revision: 1 })).toEqual(applyLock({ ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" }, lock));
+    expect(effectiveDesignReviewSetting({}, { kind: "none" })).toEqual({ ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" });
   });
 });
 
@@ -291,7 +302,7 @@ describe("fix round: the lock is enforced in the write transaction and on the re
 
   it("a lock added between the writer's read and its commit refuses the write; nothing looser is stored", async () => {
     const w = world();
-    const result = await failure(write(racing(w, () => setLock(w, { mode: "always", allowSkip: false }, 2)), LOOSE));
+    const result = await failure(write(racing(w, () => setLock(w, { allowSkip: false }, 2)), LOOSE));
     expect(result).toMatchObject({ code: "PLAYBOOK_STALE" });
     expect(stored(w)).toBeUndefined();
     expect(designEvents(w)).toEqual([]);
@@ -321,21 +332,21 @@ describe("fix round: the lock is enforced in the write transaction and on the re
   it("GET shows the setting held to the lock, with the locked fields named; the stored value is untouched", async () => {
     const w = world();
     await put(w, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never", allowSkip: true, capUsdPerTask: 30 } });
-    setLock(w, { mode: "always", allowSkip: false, capCeilingUsd: 8 });
+    setLock(w, { allowSkip: false, capCeilingUsd: 8 });
     const read = await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web");
-    expect(read.playbook.designReview).toMatchObject({ mode: "always", allowSkip: false, capUsdPerTask: 8 });
-    expect(read.designReviewLocked).toEqual(["designReview.mode", "designReview.allowSkip", "designReview.capUsdPerTask"]);
+    expect(read.playbook.designReview).toMatchObject({ mode: "never", allowSkip: false, capUsdPerTask: 8 });
+    expect(read.designReviewLocked).toEqual(["designReview.allowSkip", "designReview.capUsdPerTask"]);
     expect(stored(w)).toMatchObject({ designReview: { mode: "never", allowSkip: true, capUsdPerTask: 30 } });
-    // No lock: the project runs its own setting, or (with none) the company's default mode.
+    // No lock: the project runs its own setting, or (with none) Off.
     const open = world();
-    expect(await getProjectPlaybook(playbookDeps(open), w.caller(PRIYA), "web")).toEqual({ designReviewAllowed: true, designReviewInherited: true, designReviewGroups: true, playbook: { revision: 0, defaultProcess: { kind: "builtin" }, designReview: DESIGN_REVIEW_DEFAULT_SETTING } });
+    expect(await getProjectPlaybook(playbookDeps(open), w.caller(PRIYA), "web")).toEqual({ designReviewAllowed: true, designReviewGroups: true, playbook: { revision: 0, defaultProcess: { kind: "builtin" }, designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } } });
     // An unreadable lock (M2): design review is not available, so no setting is shown and the page says it is not on; reviews already under way read the strictest posture.
     const broken = world();
     setLock(broken, { surprise: true });
     const shown = await getProjectPlaybook(playbookDeps(broken), w.caller(PRIYA), "web");
     expect(shown.playbook).not.toHaveProperty("designReview");
     expect(shown.designReviewAllowed).toBe(false);
-    expect((await readEffectiveDesignReview(playbookDeps(broken), ORG_A, "web")).setting).toMatchObject({ mode: "always", allowSkip: false });
+    expect((await readEffectiveDesignReview(playbookDeps(broken), ORG_A, "web")).setting).toMatchObject({ mode: "never", allowSkip: false });
   });
 
   it("only a setting held to the lock is the effective one: the brand is set by the lock code alone", async () => {
@@ -349,7 +360,7 @@ describe("fix round: the lock is enforced in the write transaction and on the re
 describe("fix round: an unreadable lock clamps the cap, tier and approver too (L1)", () => {
   it("a project's loose cap, light tier and named approver are replaced by the default cap, at least the default tier and the maintainers", () => {
     const own: DesignReviewSetting = { mode: "auto", tier: "light", allowSkip: true, capUsdPerTask: 80, highRiskApprover: { kind: "people", memberIds: ["me"] } };
-    expect(effectiveDesignReviewSetting({ designReview: own }, { kind: "unreadable" })).toEqual({ mode: "always", tier: DESIGN_REVIEW_DEFAULT_SETTING.tier, allowSkip: false, capUsdPerTask: DESIGN_REVIEW_DEFAULT_SETTING.capUsdPerTask, highRiskApprover: { kind: "maintainers" } });
+    expect(effectiveDesignReviewSetting({ designReview: own }, { kind: "unreadable" })).toEqual({ mode: "auto", tier: DESIGN_REVIEW_DEFAULT_SETTING.tier, allowSkip: false, capUsdPerTask: DESIGN_REVIEW_DEFAULT_SETTING.capUsdPerTask, highRiskApprover: { kind: "maintainers" } });
     // A project already stricter on cap and tier keeps those.
     expect(effectiveDesignReviewSetting({ designReview: { ...own, tier: "thorough", capUsdPerTask: 2 } }, { kind: "unreadable" })).toMatchObject({ tier: "thorough", capUsdPerTask: 2, highRiskApprover: { kind: "maintainers" } });
   });
@@ -360,7 +371,7 @@ describe("fix round: a group lock needs Enterprise (L2)", () => {
     expect(checkDesignReviewLockWrite({ approverGroupId: "g" }, editionPolicy("public"))).toEqual({ ok: false, reason: "group_not_available", message: DESIGN_REVIEW_LOCK_GROUP_EDITION });
     expect(checkDesignReviewLockWrite({ approverGroupId: "g" }, undefined)).toMatchObject({ ok: false });
     expect(checkDesignReviewLockWrite({ approverGroupId: "g" }, editionPolicy("enterprise"))).toEqual({ ok: true });
-    expect(checkDesignReviewLockWrite({ mode: "always" }, editionPolicy("public"))).toEqual({ ok: true });
+    expect(checkDesignReviewLockWrite({ tierAtLeast: "thorough" }, editionPolicy("public"))).toEqual({ ok: true });
   });
 });
 
@@ -396,13 +407,13 @@ describe("money fix round 2: L4 fails closed, N7 one view", () => {
   it("N7: the answer to a PUT is the same clamped view as a GET, with the locked fields named; the stored value is still the project's own", async () => {
     const w = world();
     await put(w, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never", allowSkip: true, capUsdPerTask: 30 } });
-    setLock(w, { mode: "always", allowSkip: false, capCeilingUsd: 8 });
+    setLock(w, { allowSkip: false, capCeilingUsd: 8 });
     const reply = await put(w, MAX, { expectedRevision: 1 });
     const read = await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web");
     expect(reply.statusCode).toBe(200);
     expect(reply.body).toEqual(read);
-    expect(read.designReviewLocked).toEqual(["designReview.mode", "designReview.allowSkip", "designReview.capUsdPerTask"]);
-    expect(read.playbook.designReview).toMatchObject({ mode: "always", allowSkip: false, capUsdPerTask: 8 });
+    expect(read.designReviewLocked).toEqual(["designReview.allowSkip", "designReview.capUsdPerTask"]);
+    expect(read.playbook.designReview).toMatchObject({ mode: "never", allowSkip: false, capUsdPerTask: 8 });
     expect(stored(w)).toMatchObject({ revision: 2, designReview: { mode: "never", allowSkip: true, capUsdPerTask: 30 } });
   });
 });
@@ -420,7 +431,7 @@ describe("A3: the playbook where the design review stage does not exist", () => 
       process.env.DESIGN_REVIEW_ENABLED = variant.env;
       const w = world(variant.seed);
       w.db.set({ ...projectPlaybookKey(ORG_A, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG_A, revision: 3, defaultProcess: { kind: "builtin" }, designReview: SETTING, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAX });
-      if (variant.seed !== null) seedDesignReviewCompany(w.db, ORG_A, { ...variant.seed, lock: { mode: "always" } });
+      if (variant.seed !== null) seedDesignReviewCompany(w.db, ORG_A, { ...variant.seed, lock: { allowSkip: false } });
       expect(await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web")).toEqual({ playbook: { revision: 3, defaultProcess: { kind: "builtin" } }, ...variant.extra });
     });
 

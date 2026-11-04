@@ -32,7 +32,7 @@ export async function designWorld(options: { tier?: DesignReviewTier; capUsd?: n
   const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, cloud: true, modelAccess: { access, proxyUrl: PROXY_URL } } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
-  seedDesignReviewCompany(harness.db, TEST_ORG);
+  seedDesignReviewCompany(harness.db, TEST_ORG, { project: "payments" });
   await new AgentStore({ documentClient: harness.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
   harness.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
   const started = await harness.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Retry timed-out payments" }, path: "QUICK" });

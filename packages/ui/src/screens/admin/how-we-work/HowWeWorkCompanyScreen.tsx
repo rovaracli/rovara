@@ -24,7 +24,7 @@ import "./how-we-work.css";
 
 // SU-1: the company's setup locks. Its own chunk; it shows nothing while the setup agent is off.
 const SetupLocksRow = lazy(() => import("./SetupLocksRow.js"));
-// DR-FU4: the company's design review card (allowed, default mode, rules). Its own chunk; it shows nothing while design review is off in the environment, and for anyone but an admin.
+// DR-FU4: the company's design review card (allowed, rules). Its own chunk; it shows nothing while design review is off in the environment, and for anyone but an admin.
 const DesignReviewCompanyRow = lazy(() => import("./DesignReviewCompanyRow.js"));
 
 const effortChoice = (effort: CompanyOverride["thinkingLevel"]): EffortChoice => effort === undefined ? "inherit" : effort === null ? "null" : effort;

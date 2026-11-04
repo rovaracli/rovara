@@ -76,7 +76,7 @@ async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, pla
     void _kept;
     return { playbook: plain };
   }
-  const company: DesignReviewCompanyRead = await readDesignReviewCompany(deps, orgId).catch((): DesignReviewCompanyRead => ({ lock: { kind: "unreadable" }, policy: { allowed: false, defaultMode: "never" }, policyUnreadable: true, revision: undefined }));
+  const company: DesignReviewCompanyRead = await readDesignReviewCompany(deps, orgId).catch((): DesignReviewCompanyRead => ({ lock: { kind: "unreadable" }, policy: { allowed: false }, policyUnreadable: true, revision: undefined }));
   // `dr` is on but design review is not available for the company (DR-FU4): not allowed, or its stored rules cannot be read (fail closed to off): the setting is not shown or edited, and the page says why from this one flag.
   if (!company.policy.allowed || company.lock.kind === "unreadable") {
     const { designReview: _kept, ...plain } = playbook;
@@ -86,10 +86,10 @@ async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, pla
   // Groups can be named as the high-risk approver only where the edition has them (Enterprise): the page offers the choice from this flag alone.
   const groups = deps.edition !== undefined && featureEnabled(deps.edition, "groups") ? { designReviewGroups: true as const } : {};
   const { lock } = company;
-  // What the project RUNS with: its own setting, or the company's default mode when it has none, held to the lock.
-  const held = effectiveDesignReviewSetting(playbook, lock, company.policy.defaultMode);
+  // What the project RUNS with: its own setting, or Off when it has none, held to the lock.
+  const held = effectiveDesignReviewSetting(playbook, lock);
   const locked = lock.kind === "lock" ? lockedFields(lock.lock) : [];
-  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewAllowed: true, ...(playbook.designReview === undefined ? { designReviewInherited: true as const } : {}), ...(locked.length === 0 ? {} : { designReviewLocked: locked }), ...groups };
+  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewAllowed: true, ...(locked.length === 0 ? {} : { designReviewLocked: locked }), ...groups };
 }
 
 /** `GET /v1/app/projects/{p}/playbook`: to anyone who can see the project. */

@@ -9,7 +9,7 @@
 //
 // It runs from the recovery sweep AFTER the dispatch work, in a small budget, only while `dr` is on and `dp` names something (otherwise it reads nothing at all). It is idempotent: a project with a setting and a company with its
 // record are skipped. A company where the move is REFUSED (the lock cannot take the write) is recorded as skipped once and never retried; one that fails for a transient reason is retried at the next tick (kept in the
-// state item). Every change is audited as the system. `dp` itself is removed in the next release.
+// state item). Every change is audited as the system. `dp` itself is removed in 0.5.6.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { AGENTX_NAME_PATTERN, BROKER_SETTINGS, BROKER_SETTING_VALUE, DESIGN_REVIEW_DEFAULT_SETTING, type OrgId } from "@agentx/contracts";
 import { readProjectMeta } from "../developer/project-roles.js";
@@ -54,34 +54,42 @@ const refused = (error: unknown): boolean => error instanceof Error && (error as
 export async function migrateDesignReviewOrg(ports: DpMigrationPorts, orgId: OrgId, names: readonly string[], evidence: "install" | "tasks" = "install"): Promise<MigrateOrgResult> {
   if (await dpMigrationRan(ports.company, orgId)) return "ran";
   const lock = await readDesignReviewLock(ports.company, orgId);
-  let qualified = 0;
+  let qualified = 0, refusedCount = 0;
   for (const name of names) {
-    if ((await readProjectMeta(ports.playbook, orgId, name)) === undefined) continue;
+    if ((await readProjectMeta(ports.playbook, orgId, name)) === undefined) {
+      // The install's own company is the only one `dp` meant, so a name it does not have is worth a line (a company among many simply lacks most names).
+      if (evidence === "install") ports.log({ event: "design_review.dp_migration_not_enabled", project: name, reason: "no_such_project" });
+      continue;
+    }
     if (evidence === "tasks" && !(await ports.projectHadDesignReview(orgId, name))) {
       // A bare name match is no evidence: nothing is set for this company, and the log names the project.
       ports.log({ event: "design_review.dp_migration_not_enabled", project: name, reason: "no_design_review_task" });
       continue;
     }
-    qualified += 1;
     const current = await readProjectPlaybook(ports.playbook, orgId, name, { lenient: true });
-    if (current.designReview !== undefined) continue;
-    // The setting is held to the company's lock first, so a lock that forbids Auto's defaults does not refuse the move: the project still runs what the lock allows.
+    if (current.designReview !== undefined) { qualified += 1; continue; }
+    // A project with no setting is Off, so the move gives it its own: Auto, held to the company's lock first so a lock that forbids Auto's defaults does not refuse the move.
     const wanted = { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "auto" as const, highRiskApprover: { ...DESIGN_REVIEW_DEFAULT_SETTING.highRiskApprover } };
     const setting = lock.kind === "lock" ? applyLock(wanted, lock.lock) : wanted;
     try {
       await writeProjectPlaybook(ports.playbook, {
         orgId, project: name, developerId: "system", expectedRevision: current.revision, defaultProcess: current.defaultProcess, designReview: setting, skipProcessEvent: true,
       });
+      qualified += 1;
     } catch (error) {
       if (!refused(error)) { ports.log({ event: "design_review.dp_migration_project_failed", project: name, error: error instanceof Error ? error.name : "unknown" }); return "failed"; }
-      // Refused (an unreadable lock, a group the edition lacks): recorded once as skipped and never retried; the log names the project so the operator can turn it on in How we work.
+      // Refused (an unreadable lock, a group the edition lacks): only this project is skipped, and the log names it so the operator can turn it on in How we work. The others of the list are still moved.
       ports.log({ event: "design_review.dp_migration_not_enabled", project: name, reason: "refused" });
-      await recordDpMigration(ports.company, { orgId, projectCount: 0, allow: false, reason: "refused" });
-      return "skipped";
+      refusedCount += 1;
     }
   }
-  // A company that qualifies for none of the names is left alone: no record, no change.
-  if (qualified === 0) return 0;
+  if (qualified === 0) {
+    // Every project that qualified was refused: the refusal is recorded once and never retried. Otherwise nothing qualified: no record, no change, and the install's own company says so.
+    if (refusedCount > 0) { await recordDpMigration(ports.company, { orgId, projectCount: 0, allow: false, reason: "refused" }); return "skipped"; }
+    if (evidence === "install") ports.log({ event: "design_review.dp_migration_nothing_qualified", projectCount: names.length });
+    return 0;
+  }
+  // At least one project holds a stored setting: the company is allowed so that it keeps running (an admin's own earlier choice stands).
   const recorded = await recordDpMigration(ports.company, { orgId, projectCount: qualified, allow: true });
   return recorded === "done" || recorded === "kept" || recorded === "ran" ? qualified : "failed";
 }
