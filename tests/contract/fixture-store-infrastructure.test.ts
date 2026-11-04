@@ -105,7 +105,7 @@ describe("the service role and the default boundary are untouched", () => {
     const services = statements.find((statement) => statement.Sid === "Services")!.Action;
     expect(services).toEqual(expect.arrayContaining(["s3:*", "kms:*", "dynamodb:*"]));
   });
-  it("the default boundary is 6,048 of 6,144 in the worst case, as before this lane", () => {
-    expect(size(withoutSids(defaultBoundaryStatements(scope("a".repeat(20)))))).toBe(6048);
+  it("the default boundary is 5,585 of 6,144 in the worst case (integ/054 tightened it from 6,048; this lane adds nothing to it)", () => {
+    expect(size(withoutSids(defaultBoundaryStatements(scope("a".repeat(20)))))).toBe(5585);
   });
 });
