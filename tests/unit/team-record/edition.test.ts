@@ -59,10 +59,12 @@ describe("company locks", () => {
     expect(checkRetentionChange({ edition: "enterprise", source: "nope", stored: "C", to: "C" })).toEqual({ ok: false, refusal: "SOURCE_UNKNOWN" });
     expect(checkRetentionChange({ edition: "enterprise", source: "github", stored: "C", to: "Q" })).toEqual({ ok: false, refusal: "RETENTION_NOT_OFFERED" });
   });
-  it("widens what is kept when retention is raised in Enterprise, and not when it is lowered or in Public (no second person: T9)", () => {
+  it("widens what is kept when retention is raised, in both editions, and not when it is lowered (no second person: T9, fix round 1)", () => {
     expect(checkRetentionChange({ edition: "enterprise", source: "github", stored: "B", to: "C" })).toEqual({ ok: true, widens: true });
     expect(checkRetentionChange({ edition: "enterprise", source: "github", stored: "D", to: "C" })).toEqual({ ok: true, widens: false });
-    expect(checkRetentionChange({ edition: "public", source: "github", stored: "C", to: "D" })).toEqual({ ok: true, widens: false });
+    expect(checkRetentionChange({ edition: "public", source: "github", stored: "C", to: "D" })).toEqual({ ok: true, widens: true });
+    expect(checkRetentionChange({ edition: "public", source: "slack", stored: "A", to: "B" })).toEqual({ ok: true, widens: true });
+    expect(checkRetentionChange({ edition: "public", source: "slack", stored: undefined, to: "A" })).toEqual({ ok: true, widens: false });
   });
 });
 
@@ -74,7 +76,7 @@ describe("slack scopes", () => {
     expect(slackScopeAllowed("public", "mpim").allowed).toBe(false);
     expect(slackScopeAllowed("enterprise", "dm")).toEqual({ allowed: true, explicitOnly: true, widens: true });
     expect(slackScopeAllowed("enterprise", "private_channel")).toEqual({ allowed: true, explicitOnly: true, widens: true });
-    expect(slackScopeAllowed("public", "private_channel")).toEqual({ allowed: true, explicitOnly: true, widens: false });
+    expect(slackScopeAllowed("public", "private_channel")).toEqual({ allowed: true, explicitOnly: true, widens: true });
     expect(slackScopeAllowed("public", "public_channel")).toEqual({ allowed: true, explicitOnly: false, widens: false });
   });
 });

@@ -6,7 +6,7 @@
 //
 // WHO. A company owner or admin, or a maintainer of this project (`projectRole` is the effective role the broker already found, and admins count as maintainers there), on a live browser
 // session. The Auditor and everyone below maintainer are refused; a person with no role in the project gets the missing-project answer.
-// NO SECOND PERSON (owner decision 2026-11-04, task 9). Every editor's change applies at once, in both editions, and is audited. A write that WIDENS what is kept (Enterprise: a retention raise, adding
+// NO SECOND PERSON (owner decision 2026-11-04, task 9). Every editor's change applies at once, in both editions, and is audited. A write that WIDENS what is kept (a retention raise, adding
 // above the edition default, a private channel, a DM or a group DM) says so in the audit event's `widened` fact, and is refused when that audit item cannot be written (the audit is its only control).
 // This replaces the earlier waiting-change flow (`SRCCHG#`, approve and reject). Slack Connect stays refused, DMs stay Enterprise only, Public Slack stays at A, or B with the notes opt-in.
 // EVERY WRITE is one transaction: the row, its scope claim, the request item that makes a repeat answer the same, and the audit item. Refusals are fixed codes and
@@ -108,7 +108,7 @@ export function mayEditSources(caller: { projectRole: string | undefined }, writ
   return isWriterOrgRole(write.orgRole) && caller.projectRole === "maintainer";
 }
 
-/** What a Slack place widens, from its kind (the server's own reading of the channel): a private channel, a DM or a group DM in Enterprise. Public widens nothing. */
+/** What a Slack place widens, from its kind (the server's own reading of the channel): a private channel, a DM or a group DM (a DM is refused in Public before this is asked). */
 export function placeWidened(edition: TeamRecordEdition, kind: SlackScope | undefined): SourceWidenedWord[] {
   if (kind === undefined || !slackScopeAllowed(edition, kind).widens) return [];
   return kind === "private_channel" ? ["private_channel"] : kind === "dm" ? ["dm"] : kind === "mpim" ? ["mpim"] : [];
@@ -221,7 +221,7 @@ async function locksOf(run: Run): Promise<CompanyLocks | undefined> {
   try { return await run.sources.locks?.(run.orgId); } catch { throw unavailable(); }
 }
 
-/** Whether the retention change is a raise that widens what is kept (Enterprise). Refuses what the edition does not offer (Public Slack: C and D never, B only with the notes opt-in) and what the company's ceiling forbids. */
+/** Whether the retention change is a raise that widens what is kept (either edition). Refuses what the edition does not offer (Public Slack: C and D never, B only with the notes opt-in) and what the company's ceiling forbids. */
 async function retentionWidens(run: Run, source: string, stored: string | undefined, to: RetentionMode, notesOptIn: boolean): Promise<boolean> {
   const edition = run.sources.edition;
   if (retentionRefusal(edition, source, to, notesOptIn) !== undefined) throw invalid(WORDS.notOffered);
@@ -342,10 +342,11 @@ async function saveChange(run: Run, body: Extract<SourceWriteBody, { action: "ch
   // The starting point of a retention change is the STORED row, never anything the caller says.
   const raises = body.retention !== undefined && body.retention !== current.retention
     ? await retentionWidens(run, body.source, current.retention, body.retention, notesOptIn === true) : false;
-  // The notes opt-in and the retention stay a pair in the Public edition: taking the opt-in away (or putting it on a row that is not B) while the retention does not move must still be an allowed pair (B without the opt-in never is).
-  if (body.notesOptIn !== undefined && body.retention === undefined && retentionRefusal(run.sources.edition, body.source, current.retention, notesOptIn === true) !== undefined) throw invalid(WORDS.notOffered);
+  // The notes opt-in and the retention stay a pair in the Public edition: whenever the body names either, the FINAL pair is checked (B without the opt-in is never stored, whatever the body says;
+  // a retention that moves is also checked above against the edition and the company's ceiling).
+  if ((body.retention !== undefined || body.notesOptIn !== undefined) && retentionRefusal(run.sources.edition, body.source, retention, notesOptIn === true) !== undefined) throw invalid(WORDS.notOffered);
   // A Slack row turned on, or kept more (more retained, a wider audience), looks at the channel again: it may have become Slack Connect, private or a DM since. Turning off or keeping less never asks Slack.
-  // Turning it on or widening who sees it widens what is kept as much as adding the place did, so the class the server just read brings its words (Enterprise: private_channel, dm, mpim).
+  // Turning it on or widening who sees it widens what is kept as much as adding the place did, so the class the server just read brings its words (private_channel, dm, mpim).
   const turnsOn = body.enabled === true && !current.enabled;
   const widensAudience = body.audienceDefault === "project" && current.audienceDefault !== "project";
   let placeWords: SourceWidenedWord[] = [];

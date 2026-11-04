@@ -76,7 +76,7 @@ export type RetentionRefusal = "RETENTION_NOT_OFFERED" | "RETENTION_ABOVE_COMPAN
 export type RetentionCheck = { ok: true; widens: boolean } | { ok: false; refusal: RetentionRefusal };
 
 /**
- * Checks a request to set a source's retention. Raising retention (for example B to C, or C to D) in Enterprise `widens` what is kept: the change applies at once and the audit event
+ * Checks a request to set a source's retention. Raising retention (for example A to B, B to C, or C to D), in either edition, `widens` what is kept: the change applies at once and the audit event
  * says so (owner decision 2026-11-04: no second person for any source change; this replaces design 4.2's "a less-safe change needs a second person").
  */
 export function checkRetentionChange(input: { edition: TeamRecordEdition; source: string; stored: string | undefined; to: string; locks?: CompanyLocks }): RetentionCheck {
@@ -88,25 +88,25 @@ export function checkRetentionChange(input: { edition: TeamRecordEdition; source
   if (ceiling !== undefined && rank(to) > rank(ceiling)) return { ok: false, refusal: "RETENTION_ABOVE_COMPANY_CEILING" };
   // The starting point is derived from the stored row, never taken from the caller (review M-4).
   const from = effectiveRetention(input.edition, source, input.stored, input.locks);
-  return { ok: true, widens: input.edition === "enterprise" && rank(to) > rank(from) };
+  return { ok: true, widens: rank(to) > rank(from) };
 }
 
 export type SlackScope = "public_channel" | "private_channel" | "dm" | "mpim" | "slack_connect";
 
 /**
  * Which Slack places may be a source (design 4.4.1). Slack Connect: never. DMs and group DMs: Enterprise only, and only added explicitly.
- * Private channels: only added explicitly, in either edition. In Enterprise adding a private channel, DM or group DM `widens` what is kept: it applies at once and the
- * audit event says so (owner decision 2026-11-04: no second person for any source change).
+ * Private channels: only added explicitly, in either edition. Adding a private channel, DM or group DM `widens` what is kept, in either edition (a DM is refused in Public, so it never gets that far): it applies at once and the
+ * audit event says so (owner decision 2026-11-04: no second person for any source change; lead ruling: `widened` in both editions).
  */
 export function slackScopeAllowed(edition: TeamRecordEdition, scope: SlackScope): { allowed: boolean; explicitOnly: boolean; widens: boolean } {
   switch (scope) {
     case "public_channel":
       return { allowed: true, explicitOnly: false, widens: false };
     case "private_channel":
-      return { allowed: true, explicitOnly: true, widens: edition === "enterprise" };
+      return { allowed: true, explicitOnly: true, widens: true };
     case "dm":
     case "mpim":
-      return { allowed: edition === "enterprise", explicitOnly: true, widens: edition === "enterprise" };
+      return { allowed: edition === "enterprise", explicitOnly: true, widens: true };
     case "slack_connect":
       return { allowed: false, explicitOnly: true, widens: false };
   }

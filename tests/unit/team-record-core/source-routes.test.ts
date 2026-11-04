@@ -336,14 +336,15 @@ describe("retention rules (no second person: T9)", () => {
 });
 
 describe("what a place widens", () => {
-  it("a private channel, a DM and a group DM widen what is kept in Enterprise only; a public channel and Slack Connect never do", () => {
+  it("a private channel, a DM and a group DM widen what is kept, in both editions; a public channel and Slack Connect never do", () => {
     expect(placeWidened("enterprise", "private_channel")).toEqual(["private_channel"]);
     expect(placeWidened("enterprise", "dm")).toEqual(["dm"]);
     expect(placeWidened("enterprise", "mpim")).toEqual(["mpim"]);
     expect(placeWidened("enterprise", "public_channel")).toEqual([]);
     expect(placeWidened("enterprise", "slack_connect")).toEqual([]);
-    expect(placeWidened("public", "private_channel")).toEqual([]);
-    expect(placeWidened("public", "dm")).toEqual([]);
+    expect(placeWidened("public", "private_channel")).toEqual(["private_channel"]);
+    expect(placeWidened("public", "dm")).toEqual(["dm"]); // refused by the route in Public; the word is still the same
+    expect(placeWidened("public", "public_channel")).toEqual([]);
     expect(placeWidened("enterprise", undefined)).toEqual([]);
   });
 });
@@ -554,16 +555,27 @@ describe("T9: every editor's change applies at once, with a `widened` audit fact
     await nothingWaits(h);
   });
 
-  it("a change that widens nothing carries no widened fact: a lowering, an on/off switch, the Public edition's raise, and an add at the default", async () => {
+  it("a change that widens nothing carries no widened fact: a lowering, an on/off switch, and an add at or below the default", async () => {
     const h = harness();
     expect((await post(h, WHO.owner, add({ retention: "C" }))).status).toBe(200);
     expect((await post(h, WHO.owner, change(1, { retention: "B" }))).status).toBe(200);
     expect((await post(h, WHO.owner, change(2, { enabled: false }))).status).toBe(200);
     for (const event of await sourceEvents(h)) expect(event.facts, JSON.stringify(event.facts)).not.toHaveProperty("widened");
     const pub = harness({ edition: "public" });
-    expect((await post(pub, WHO.owner, add({ retention: "B" }))).status).toBe(200);
-    expect((await post(pub, WHO.owner, change(1, { retention: "D" }))).status).toBe(200);
+    expect((await post(pub, WHO.owner, add({ retention: "B" }))).status).toBe(200); // below Public's default (D)
     for (const event of await sourceEvents(pub)) expect(event.facts).not.toHaveProperty("widened");
+  });
+
+  it("the Public edition says widened too (fix round 1): a raise from the stored retention is audited with retention_raise, and without a ledger it is refused like Enterprise", async () => {
+    const h = harness({ edition: "public" });
+    expect((await post(h, WHO.owner, add({ retention: "B" }))).status).toBe(200);
+    expect(await post(h, WHO.owner, change(1, { retention: "D" }), { context: { audit: {} } })).toMatchObject({ status: 503, body: { code: "AUDIT_UNAVAILABLE" } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "B", revision: 1 });
+    expect((await post(h, WHO.owner, change(1, { retention: "D" }))).status).toBe(200);
+    const changed = (await sourceEvents(h)).filter((event) => event.action === "record.source_changed");
+    expect(changed[0]).toMatchObject({ facts: { fromRetention: "B", toRetention: "D", widened: "retention_raise" } });
+    // An ordinary Public write still goes on without a ledger.
+    expect((await post(h, WHO.owner, change(2, { enabled: false }), { context: { audit: {} } })).status).toBe(200);
   });
 
   it("the write context has no second-person check, roster or fresh sign-in (T9): a context of role, session, body and audit saves the same raise, for a maintainer", async () => {

@@ -64,7 +64,7 @@ export type SourceWriteBody = z.infer<typeof SourceWriteBodySchema>;
 // ---------------------------------------------------------------------------------------------------------------------------
 // What a write widened (the audit fact `widened`)
 
-/** The fixed words of what a write widened, in the order they are written: a retention raise (adding above the edition default counts), then the kind of place (a private channel, a DM, a group DM). Enterprise only. */
+/** The fixed words of what a write widened, in the order they are written: a retention raise (adding above the edition default counts), then the kind of place (a private channel, a DM, a group DM). Both editions. */
 export const SOURCE_WIDENED_WORDS = ["retention_raise", "private_channel", "dm", "mpim"] as const;
 export const SourceWidenedWordSchema = z.enum(SOURCE_WIDENED_WORDS);
 export type SourceWidenedWord = z.infer<typeof SourceWidenedWordSchema>;

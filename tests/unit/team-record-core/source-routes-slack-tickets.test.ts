@@ -157,11 +157,13 @@ describe("Slack: the server decides what the channel is", () => {
     }
   });
 
-  it("a private channel in Public is saved at once with no widened fact (explicit add; Public widens nothing)", async () => {
+  it("a private channel in Public is saved at once and says widened: private_channel (both editions, fix round 1); without a ledger it is refused", async () => {
     const pub = harness({ edition: "public" });
+    expect(await post(pub, WHO.owner, add({ scope: slackScope(CH.priv), retention: "A" }), { context: { audit: {} } })).toMatchObject({ status: 503, body: { code: "AUDIT_UNAVAILABLE" } });
+    nothingWritten(pub);
     expect(await post(pub, WHO.owner, add({ scope: slackScope(CH.priv), retention: "A" }))).toEqual({ status: 200, body: { status: "saved", revision: 1 } });
     expect(sourceRows(pub)).toHaveLength(1);
-    expect((await flushed(pub)).find((event) => event.action === "record.source_added")?.facts).not.toHaveProperty("widened");
+    expect((await flushed(pub)).find((event) => event.action === "record.source_added")?.facts).toMatchObject({ restricted: true, widened: "private_channel" });
   });
 
   it("the words of what was widened come from what the server read, never from the body: a body that names reasons, widened or a kind is refused as invalid", async () => {
@@ -313,7 +315,7 @@ describe("Slack: a change that turns a row on or widens it says what the channel
     }
   });
 
-  it("a retention raise alone on a private row says only retention_raise; Public turns a private row on with no widened fact", async () => {
+  it("a retention raise alone on a private row says only retention_raise; Public turns a private row on and says private_channel", async () => {
     const h = harness();
     expect((await post(h, WHO.maint, add({ scope: slackScope(CH.priv) }))).status).toBe(200);
     expect(await post(h, WHO.owner, change(1, { scope: slackScope(CH.priv), retention: "D" }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
@@ -321,7 +323,7 @@ describe("Slack: a change that turns a row on or widens it says what the channel
     const pub = harness({ edition: "public" });
     expect((await post(pub, WHO.owner, add({ scope: slackScope(CH.priv), retention: "A", enabled: false }))).status).toBe(200);
     expect(await post(pub, WHO.owner, change(1, { scope: slackScope(CH.priv), enabled: true }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
-    expect(await widenedOf(pub)).toEqual([undefined]);
+    expect(await widenedOf(pub)).toEqual(["private_channel"]);
   });
 });
 
@@ -602,7 +604,7 @@ describe("T9: Slack and tracker sources apply at once", () => {
     expect(sourceRows(h)[0]).toMatchObject({ retention: "A", revision: 1 });
   });
 
-  it("the notes switch: Public turns it on with retention B + notesOptIn true, and off with retention A + notesOptIn null, both at once, with no widened fact", async () => {
+  it("the notes switch: Public turns it on with retention B + notesOptIn true, and off with retention A + notesOptIn null, both at once; turning it on says retention_raise (A to B) and off says nothing", async () => {
     const h = harness({ edition: "public" });
     expect((await post(h, WHO.maint, add({ retention: "A" }))).status).toBe(200);
     expect(await post(h, WHO.maint, change(1, { retention: "B", notesOptIn: true }))).toEqual({ status: 200, body: { status: "saved", revision: 2 } });
@@ -612,8 +614,31 @@ describe("T9: Slack and tracker sources apply at once", () => {
     expect(await post(h, WHO.maint, change(2, { retention: "A", notesOptIn: null }))).toEqual({ status: 200, body: { status: "saved", revision: 3 } });
     expect(sourceRows(h)[0]).toMatchObject({ retention: "A", revision: 3 });
     expect(sourceRows(h)[0]).not.toHaveProperty("notesOptIn");
-    for (const event of await events(h, "record.source_changed")) expect(event.facts).not.toHaveProperty("widened");
+    expect((await events(h, "record.source_changed")).map((event) => event.facts?.widened)).toEqual(["retention_raise", undefined]);
     await nothingWaits(h);
+  });
+
+  it("the notes switch on, with no ledger, is refused (it widens what is kept) and nothing moves; turning it off is not", async () => {
+    const h = harness({ edition: "public" });
+    expect((await post(h, WHO.maint, add({ retention: "A" }))).status).toBe(200);
+    expect(await post(h, WHO.maint, change(1, { retention: "B", notesOptIn: true }), { context: { audit: {} } })).toMatchObject({ status: 503, body: { code: "AUDIT_UNAVAILABLE" } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "A", revision: 1 });
+    expect((await post(h, WHO.maint, change(1, { retention: "B", notesOptIn: true }))).status).toBe(200);
+    expect(await post(h, WHO.maint, change(2, { retention: "A", notesOptIn: null }), { context: { audit: {} } })).toEqual({ status: 200, body: { status: "saved", revision: 3 } });
+  });
+
+  it("B without the opt-in is never stored, whatever the body: retention B with notesOptIn null (or none, on a row without it) is refused and the row does not move (fix round 1)", async () => {
+    const h = harness({ edition: "public" });
+    expect((await post(h, WHO.owner, add({ retention: "B", notesOptIn: true }))).status).toBe(200);
+    expect(await post(h, WHO.owner, change(1, { retention: "B", notesOptIn: null }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(sourceRows(h)[0]).toMatchObject({ retention: "B", notesOptIn: true, revision: 1 });
+    // The final pair is what counts: a row at A with no opt-in cannot be sent to B without one, and B plus the opt-in stays fine.
+    const a = harness({ edition: "public" });
+    expect((await post(a, WHO.owner, add({ retention: "A" }))).status).toBe(200);
+    expect(await post(a, WHO.owner, change(1, { retention: "B", notesOptIn: null }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(await post(a, WHO.owner, change(1, { retention: "B" }))).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
+    expect(sourceRows(a)[0]).toMatchObject({ retention: "A", revision: 1 });
+    expect((await post(h, WHO.owner, change(1, { retention: "B", notesOptIn: true }))).status).toBe(200);
   });
 
   it("taking the opt-in away while the row stays at B is refused (B without the opt-in is never stored); the stored row does not move", async () => {
