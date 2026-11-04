@@ -198,6 +198,55 @@ describe("web application runtime", () => {
     });
   }
 
+  // The review of FLK-1: a step that reported how it ended keeps that ending when the download wait around it then throws; a fault of the evidence writer or the download read is not the agent's.
+  const downloadCase = (options: { runStep: () => Promise<{ verdict: "concluded" | "failed"; stopCode: string | null; receiptIds: string[] }>; waitFault?: Error; readFault?: Error; fireDownload?: boolean }) => {
+    const logged: string[] = [];
+    const handlers: Array<() => void> = [];
+    const fakePage = { on: (event: string, handler: () => void) => { if (event === "download") handlers.push(handler); }, off: () => {}, context: () => ({ on: () => {}, off: () => {} }) };
+    const fixtures = { app: { open: async () => {} }, screen: { getByTestId: () => ({}) }, agent: { act: async () => {} },
+      browser: { goto: async () => {}, reload: async () => {}, waitForDownload: async (operation: () => Promise<void>) => {
+        try { await operation(); } catch (error) { if (options.waitFault !== undefined) throw options.waitFault; throw error; }
+        if (options.waitFault !== undefined) throw options.waitFault;
+        return { suggestedFilename: "orders.csv", path: "/protected/download" };
+      } } } as never;
+    const evidence = { recordCaseEvidence: async ({ bytes, mediaType }: { bytes: Uint8Array; mediaType: string }) => ({ artifactId: "artifact-x", sha256: (await import("node:crypto")).createHash("sha256").update(bytes).digest("hex"), byteLength: bytes.byteLength, mediaType }) };
+    const agent = { runStep: async () => { const outcome = await options.runStep(); if (options.fireDownload === true) for (const handler of handlers) handler(); return outcome; } };
+    const casePorts = { ...ports(), evidence, agent, log: (line: string) => { logged.push(line); },
+      readOwnedDownload: async () => { if (options.readFault !== undefined) throw options.readFault; return Buffer.from("id\na1\n"); } } as unknown as E2EWebRuntimePorts;
+    const run = () => executeWebSteps({ caseId: "case-1", scenario: { steps: [{ kind: "agent", goal: "Check the orders page", maxActions: 2 }],
+      assertions: [{ kind: "csv", downloadName: "orders.csv", columns: ["id"], rows: [["a1"]] }] } as never, fixtures, ports: casePorts, signal: new AbortController().signal, page: fakePage } as never);
+    return { run, logged };
+  };
+
+  it("keeps the stop code a step already reported when the download wait then throws something else, and still carries the fault", async () => {
+    const fault = new Error("download wait timed out");
+    const { run, logged } = downloadCase({ runStep: async () => ({ verdict: "failed", stopCode: "typed-value-not-replayable", receiptIds: [] }), waitFault: fault });
+    const result = await run();
+    expect(result.agentStopped).toMatchObject({ stopCode: "typed-value-not-replayable", fault });
+    expect(result.steps.map((step) => step.outcome)).toEqual(["unavailable"]);
+    expect(logged).toHaveLength(1);
+  });
+
+  it("replaces a concluded step's ending with ACTION_FAILED when the download wait then throws", async () => {
+    const fault = new Error("target closed");
+    const { run } = downloadCase({ runStep: async () => ({ verdict: "concluded", stopCode: null, receiptIds: [] }), waitFault: fault });
+    expect((await run()).agentStopped).toMatchObject({ stopCode: "ACTION_FAILED", fault });
+  });
+
+  it("does not take a fault of the download read for the agent step's", async () => {
+    const { run } = downloadCase({ runStep: async () => ({ verdict: "concluded", stopCode: null, receiptIds: [] }), readFault: new Error("disk gone"), fireDownload: true });
+    await expect(run()).rejects.toThrow("disk gone");
+  });
+
+  it("logs the fault by name and a bounded one-line message, and nothing else of it", async () => {
+    const fault = Object.assign(new Error(`line one\nline two ${"x".repeat(500)}`), { name: "TimeoutError" });
+    const { run, logged } = downloadCase({ runStep: async () => { throw fault; } });
+    await run();
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatch(/^agent step fault: step 0 of case case-1 ended ACTION_FAILED after it threw TimeoutError: line one line two x+$/);
+    expect(logged[0]!.length).toBeLessThan(330);
+  });
+
   it("a cancelled case is not an agent step that failed: the throw leaves the case as before", async () => {
     const controller = new AbortController();
     const fixtures = { app: { open: async () => {} }, screen: { getByTestId: () => ({}) }, browser: { goto: async () => {}, reload: async () => {}, waitForDownload: async (operation: () => Promise<void>) => { await operation(); return { suggestedFilename: "x", path: "x" }; } }, agent: { act: async () => {} } } as never;

@@ -134,6 +134,8 @@ export type E2EWebRuntimePorts = Readonly<{
   media?: E2EWebMediaPorts;
   /** Present only when the executor was given a model channel (a group with an agent step). */
   agent?: E2EWebAgentPorts;
+  /** One line for the executor's own log (redacted by the host); absent in a run that has none. Never a verdict input. */
+  log?(line: string): void;
   casePlans: E2EApplicationCliCasePlanReader;
   caseObservations: E2EApplicationProtectedCaseObservationReader;
   evidence: E2EApplicationCliEvidenceWriter;
@@ -266,6 +268,12 @@ const AGENT_DOWNLOAD_GRACE_MS = 2_000;
 const AGENT_STEP_MAX_MS = 90_000;
 /** The stop code of an agent step that threw: the code the model driver's own ledger gives a step that ended in a fault. */
 const AGENT_FAULT_STOP_CODE = "ACTION_FAILED";
+/** What a fault is called in the executor log: its name and a short, single-line, bounded message (the log is redacted of credentials when it is written). */
+function faultNote(error: unknown): string {
+  const name = error instanceof Error ? error.name : typeof error;
+  const message = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 200) : "";
+  return `${name}${message === "" ? "" : `: ${message}`}`;
+}
 class NoAgentDownload extends Error { constructor() { super("the agent step caused no download"); this.name = "NoAgentDownload"; } }
 
 /** Counts the downloads the owned page, and any page it opens, starts while it is watched. */
@@ -378,8 +386,15 @@ export async function executeWebSteps(input: { caseId: string; scenario: E2EScen
       // An agent step that THROWS (a fault of the executor, the browser or the runner that is not the runner's own answer) is an agent step that did not conclude, and is recorded as one: the
       // case ends there exactly as it does for a step that failed, with the step in its capture. Letting the throw leave the case would write no capture at all, and the identity evidence
       // recorded before the step would then be bytes no capture reaches, which the collector can only call "extra or unreferenced bytes" (FLK-1) instead of naming the case's own reason.
-      // A cancelled case (its signal) is not a step that failed: that still leaves the case as it always did.
-      try {
+      // Only the call of the agent step (and the download wait around it) is held to this: the evidence writer, the download read and the invariants below still throw out of the case.
+      // A cancelled case (its signal) is not a step that failed, and an outcome the step already reported (a failed step with its own stop code) is never replaced.
+      const heldAsFault = (error: unknown): void => {
+        if (signal.aborted) throw error;
+        agentFault = error;
+        const kept: E2EWebAgentStepOutcome = outcome === undefined || outcome.verdict === "concluded" ? { verdict: "failed", stopCode: AGENT_FAULT_STOP_CODE, receiptIds: [] } : outcome;
+        outcome = kept;
+        input.ports.log?.(`agent step fault: step ${stepIndex} of case ${input.caseId} ended ${kept.stopCode ?? "without a stop code"} after it threw ${faultNote(error)}`);
+      };
       if (csvAssertions.length > 0 && stepIndex === finalDownloadTrigger) {
         if (download !== null) throw new Error("CSV download trigger association is ambiguous");
         // The download is the one the step caused. The pinned browser fixture arms its waiter before the step runs and keeps it for the whole step, then saves the first download it saw;
@@ -393,7 +408,9 @@ export async function executeWebSteps(input: { caseId: string; scenario: E2EScen
             await watching.first(AGENT_DOWNLOAD_GRACE_MS);
             if (watching.count() === 0) throw new NoAgentDownload();
           }, { timeout: timeoutMs + 10_000 });
-        } catch (error) { if (!(error instanceof NoAgentDownload)) throw error; }
+        } catch (error) {
+          if (!(error instanceof NoAgentDownload)) { heldAsFault(error); saved = undefined; }
+        }
         finally { watching.stop(); }
         if (outcome === undefined) throw new Error("the agent step did not report how it ended");
         if (outcome.verdict === "failed") status = null;
@@ -406,15 +423,9 @@ export async function executeWebSteps(input: { caseId: string; scenario: E2EScen
           status = "captured";
         }
       } else {
-        outcome = await runAgent();
+        try { outcome = await runAgent(); } catch (error) { heldAsFault(error); }
       }
-      } catch (error) {
-        if (signal.aborted) throw error;
-        agentFault = error;
-        outcome = { verdict: "failed", stopCode: AGENT_FAULT_STOP_CODE, receiptIds: [] };
-        captured = null;
-        status = null;
-      }
+      if (outcome === undefined) throw new Error("the agent step did not report how it ended");
       // A step that did not conclude stops the case here: its facts are in the ledger and the report, and no assertion is observed on a page it left half-way. The step is recorded as
       // it ended, so the case's capture can name it and the collector can say why the case is UNKNOWN; the case still fails (the caller throws once the capture is written).
       if (outcome.verdict === "failed") {
