@@ -207,22 +207,36 @@ describe("the boot pulls are bounded per image and run in parallel (slice-1 foll
     expect(Math.max(...seen)).toBeGreaterThan(1);
     expect(Math.max(...seen)).toBeLessThanOrEqual(4);
   });
-  it("a hung pull is killed at its own limit and fails the pre-pull; the others are not held behind it, and no new pull starts once one has failed", () => {
+  it("a hung pull is killed at its own limit and only that image is not offered: the others are pulled and stay available (partial, status 0)", () => {
     // Image 0 hangs (a long sleep); the limit is 2 s. The other images pull at once.
     const hungDigest = digests(5)[0]!.digest;
     const r = drive(5, { pullScript: `case "$2" in *${hungDigest}) exec sleep 60 ;; *) exit 0 ;; esac`, realTimeout: true, env: { CATALOG_PULL_TIMEOUT_S: "2" } });
-    expect(r.status).toBe(1);
-    expect(r.log).toContain("CATALOG PRE-PULL FAILED");
-    expect(r.log).toContain(hungDigest);
+    expect(r.status).toBe(0);
+    expect(r.log).toContain("CATALOG PRE-PULL PARTIAL");
+    expect(r.log).toContain("pulled 4");
+    expect(r.log).toContain("svc/thing0");
+    expect(r.log).not.toContain("svc/thing1");
     expect(r.seconds).toBeLessThan(12);
     expect(r.calls).toContain("logout");
-    expect(r.pulls.length).toBeLessThanOrEqual(5);
+    expect(r.pulls).toHaveLength(5);
     expect(r.pulls.filter((line) => line.includes(hungDigest))).toHaveLength(1);
   });
-  it("one at a time (parallel 1): the first failure stops the rest from starting", () => {
-    const r = drive(4, { pullScript: "exit 1", env: { CATALOG_PULL_PARALLEL: "1" } });
+  it("a failed pull never stops the others from starting, even one at a time; with nothing pulled at all it is a failure (status 1)", () => {
+    const failing = drive(4, { pullScript: "exit 1", env: { CATALOG_PULL_PARALLEL: "1" } });
+    expect(failing.status).toBe(1);
+    expect(failing.pulls).toHaveLength(4);
+    expect(failing.log).toContain("CATALOG PRE-PULL FAILED");
+    // The second image fails, the rest arrive: partial, and the failure is named by repository.
+    const digestOfSecond = digests(4)[1]!.digest;
+    const some = drive(4, { pullScript: `case "$2" in *${digestOfSecond}) exit 1 ;; *) exit 0 ;; esac`, env: { CATALOG_PULL_PARALLEL: "1" } });
+    expect(some.status).toBe(0);
+    expect(some.pulls).toHaveLength(4);
+    expect(some.log).toContain("CATALOG PRE-PULL PARTIAL: pulled 3, not offered on this worker: svc/thing1");
+  });
+  it("once the boot deadline has passed the images not yet started count as not pulled (the boot is not held)", () => {
+    const r = drive(3, { pullScript: "exit 0", env: { BOOT_DEADLINE: "0" } });
+    expect(r.pulls).toHaveLength(0);
     expect(r.status).toBe(1);
-    expect(r.pulls).toHaveLength(1);
     expect(r.log).toContain("CATALOG PRE-PULL FAILED");
   });
   it("counts every image it pulled in the boot facts and still logs out", () => {
@@ -299,6 +313,21 @@ describe("the facts root hands to the worker for its CloudWatch self-report (sta
     expect(parseBootFacts(facts({ metadata: false }).value)).toMatchObject({ metadataBlocked: false });
     expect(parseBootFacts(facts({ walls: false }).value)).toMatchObject({ runWalls: false });
     expect(parseBootFacts(facts({ prepull: "failed", count: 0, loggedOut: false }).value)).toMatchObject({ prepull: "failed", prepulled: 0, loggedOut: false });
+  });
+  it("carries a partial pre-pull (some images arrived) as `partial`, and the not-pulled repositories reach the worker's environment file, well-formed only", () => {
+    expect(parseBootFacts(facts({ prepull: "partial", count: 2 }).value)).toMatchObject({ prepull: "partial", prepulled: 2 });
+    const write = (repos: string) => {
+      const directory = mkdtempSync(join(tmpdir(), "tsl-notpulled-"));
+      const envFile = join(directory, "worker.env");
+      writeFileSync(envFile, "AGENTX_RUNTIME=ec2\n");
+      const program = [`readonly WORKER_ENV_FILE=${envFile}`, `PREPULL_FAILED_REPOS='${repos}'`, fn("write_test_services_environment"), "write_test_services_environment"].join("\n");
+      spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker" } });
+      return readFileSync(envFile, "utf8");
+    };
+    expect(write("svc/local-aws,svc/postgres")).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=svc/local-aws,svc/postgres\n");
+    expect(write("")).not.toContain("NOT_PULLED");
+    for (const bad of ["../x", "svc/Upper", "svc/a;rm", "svc/a,", "other/a"]) expect(write(bad), bad).not.toContain("NOT_PULLED");
+    expect(write("svc/local-aws")).toContain("AGENTX_TEST_SERVICES_REGISTRY=");
   });
   it("never writes a version it did not read as a version", () => {
     expect(parseBootFacts(facts({ version: "25.0.5; echo hi" }).value)).toMatchObject({ dockerVersion: "0" });

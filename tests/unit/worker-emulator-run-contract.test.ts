@@ -201,7 +201,7 @@ describe("helperSecretValues and the redactor cover all three", () => {
   });
 });
 
-describe("what the sandboxes are given (TS15): per-service endpoints, the sinkhole for the rest, and none of the three values", () => {
+describe("what the sandboxes are given (TS15): per-service endpoints, the emulator (which refuses and counts) for the rest, and none of the three values", () => {
   const sinkholeUrl = "http://sinkhole";
   const build = (sandbox: "working" | "check", c = newLocalAwsCredentials()) => ({
     c,
@@ -211,7 +211,7 @@ describe("what the sandboxes are given (TS15): per-service endpoints, the sinkho
     }),
   });
   for (const sandbox of ["working", "check"] as const) {
-    it(`the ${sandbox} sandbox: S3, SQS and DynamoDB point at the emulator, every other AWS service at the sinkhole`, () => {
+    it(`the ${sandbox} sandbox: S3, SQS and DynamoDB point at the emulator, every other AWS service and the global endpoint at the emulator too`, () => {
       const { environment } = build(sandbox);
       const map = new Map(environment.entries);
       expect(map.get("AWS_ENDPOINT_URL_S3")).toBe("http://aws:4566");
@@ -219,9 +219,10 @@ describe("what the sandboxes are given (TS15): per-service endpoints, the sinkho
       expect(map.get("AWS_ENDPOINT_URL_DYNAMODB")).toBe("http://aws:4566");
       const others = [...map].filter(([name]) => name.startsWith("AWS_ENDPOINT_URL_") && !["S3", "SQS", "DYNAMODB"].includes(name.slice("AWS_ENDPOINT_URL_".length)));
       expect(others.length).toBeGreaterThanOrEqual(10);
-      for (const [name, value] of others) expect(value, name).toBe(sinkholeUrl);
-      // In the sealed sandbox the global endpoint is the sinkhole too; in the working one it is left unset.
-      expect(map.has("AWS_ENDPOINT_URL")).toBe(sandbox === "check");
+      for (const [name, value] of others) expect(value, name).toBe("http://aws:4566");
+      // The global endpoint is the emulator in both sandboxes: a call to a service nobody named is refused by the emulator and written to its ledger (a sinkhole host is never looked up, so nothing would count it).
+      expect(map.get("AWS_ENDPOINT_URL")).toBe("http://aws:4566");
+      expect(JSON.stringify([...map])).not.toContain("sinkhole");
     });
     it(`the ${sandbox} sandbox's variables hold none of the three values and no ROVARA_* name`, () => {
       const { c, environment } = build(sandbox);
@@ -231,13 +232,6 @@ describe("what the sandboxes are given (TS15): per-service endpoints, the sinkho
       expect(environment.secretValues.some((value) => [c.password, c.controlToken, c.sqsReceiptSecret].includes(value))).toBe(false);
     });
   }
-  it("sinkholeUnmapped puts the global endpoint at the sinkhole in the working sandbox too; without it the working sandbox is slice 1's", () => {
-    const aws = { alias: "aws", port: 4566, region: "us-east-1", emulatedServices: ["s3"], unbackedServices: unbackedAwsServices(["s3"]) };
-    const names = (flag: boolean) => new Map(buildServiceEnvironment({ sandbox: "working", sinkholeUrl, dependencies: [], aws: { ...aws, ...(flag ? { sinkholeUnmapped: true } : {}) } }).entries);
-    expect(names(false).has("AWS_ENDPOINT_URL")).toBe(false);
-    expect(names(true).get("AWS_ENDPOINT_URL")).toBe(sinkholeUrl);
-    expect(names(true).get("AWS_ENDPOINT_URL_S3")).toBe("http://aws:4566");
-  });
   it("a variable that would carry any of the three values is refused (the builder fails closed instead of handing the sandbox the token)", () => {
     const c = newLocalAwsCredentials();
     for (const leaked of [c.controlToken, c.password, c.sqsReceiptSecret]) {

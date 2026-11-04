@@ -11,7 +11,7 @@ import { withDetachedWorking } from "../../packages/worker/src/check-sandbox.js"
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 import {
-  SEALED_ROUND_PORTS, TestServicesError, emulatorImagePrepulled, startTestServicesRun, testServicesAdvertisedFeatures,
+  SEALED_ROUND_PORTS, TestServicesError, emulatorImagePrepulled, forgetEmulatorImageCache, notPulledRepositories, startTestServicesRun, testServicesAdvertisedFeatures,
   type SealedRoundPorts, type TestServicesConfig,
 } from "../../packages/worker/src/test-services-run.js";
 import type { CheckRunners } from "../../packages/worker/src/verification/checks.js";
@@ -177,7 +177,7 @@ describe("the working phase", () => {
     await h.sandbox.dispose();
     await nothingLeft(h);
   });
-  it("the working sandbox's variables: S3, SQS and DynamoDB at the emulator's first alias, every other service and the global endpoint at the sinkhole, the plan's region; none of the three values", async () => {
+  it("the working sandbox's variables: S3, SQS and DynamoDB at the emulator's first alias, every other service and the global endpoint at the emulator too, the plan's region; none of the three values", async () => {
     const h = await harness();
     const run = await h.start(parse(plan3()));
     const secrets = secretsOf(h.emulatorEnv[0]!);
@@ -185,8 +185,8 @@ describe("the working phase", () => {
     expect(exec.args).toContain(h.sandbox.name);
     const env = new Map(exec.envFile!.trim().split("\n").map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
     for (const name of ["S3", "SQS", "DYNAMODB"]) expect(env.get(`AWS_ENDPOINT_URL_${name}`)).toBe("http://aws:4566");
-    for (const name of ["SNS", "STS", "LAMBDA", "KMS", "SSM", "SECRETS_MANAGER", "EVENTBRIDGE"]) expect(env.get(`AWS_ENDPOINT_URL_${name}`), name).toBe("http://sinkhole");
-    expect(env.get("AWS_ENDPOINT_URL")).toBe("http://sinkhole");
+    for (const name of ["SNS", "STS", "LAMBDA", "KMS", "SSM", "SECRETS_MANAGER", "EVENTBRIDGE"]) expect(env.get(`AWS_ENDPOINT_URL_${name}`), name).toBe("http://aws:4566");
+    expect(env.get("AWS_ENDPOINT_URL")).toBe("http://aws:4566");
     expect(env.get("AWS_REGION")).toBe("us-east-1");
     expect(env.get("AWS_DEFAULT_REGION")).toBe("us-east-1");
     expect(env.get("AWS_ACCESS_KEY_ID")).toBe("ROVARATESTKEY");
@@ -206,7 +206,7 @@ describe("the working phase", () => {
     expect(envValue(exec.envFile!, "AWS_REGION")).toBe("eu-west-2");
     expect(envValue(exec.envFile!, "AWS_DEFAULT_REGION")).toBe("eu-west-2");
     expect(envValue(exec.envFile!, "AWS_ENDPOINT_URL_S3")).toBe("http://aws:4566");
-    expect(envValue(exec.envFile!, "AWS_ENDPOINT_URL_STS")).toBe("http://sinkhole");
+    expect(envValue(exec.envFile!, "AWS_ENDPOINT_URL_STS")).toBe("http://aws:4566");
     await run.dispose();
     await h.sandbox.dispose();
   });
@@ -459,6 +459,23 @@ describe("the /ping feature", () => {
     expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: [] }), true))).toEqual(["task.testServices.v1"]);
     expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: listed(shipped).images.map((image) => (image.id === "local-aws@r1" ? { ...image, digest: "c".repeat(64) } : image)) }), true))).toEqual(["task.testServices.v1"]);
     expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: listed(shipped).images.filter((image) => image.id !== "local-aws@r1") }), true))).toEqual(["task.testServices.v1"]);
+  });
+  it("per image: root's note of a repository that did not pre-pull takes only that image out (local-aws gone: slice 1's feature stays; postgres gone: both stay); a malformed note changes nothing", async () => {
+    const shipped = await files(listed, true);
+    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/local-aws" }, shipped)).toEqual(["task.testServices.v1"]);
+    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/mysql" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.aws.v1"]);
+    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/local-aws" }, shipped)).toEqual(["task.testServices.v1"]);
+    for (const bad of ["svc/LOCAL-AWS", "local-aws", "svc/local-aws;", ""]) expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: bad }, shipped), bad).toEqual(["task.testServices.v1", "task.testServices.aws.v1"]);
+    expect([...notPulledRepositories({ AGENTX_TEST_SERVICES_NOT_PULLED: "svc/a,svc/b" })]).toEqual(["svc/a", "svc/b"]);
+  });
+  it("reads the shipped files once, not on every /ping (the answer is cached for the life of the process)", async () => {
+    const shipped = await files(listed, true);
+    expect(emulatorImagePrepulled(shipped)).toBe(true);
+    await rm(join(shipped.catalog, ".."), { recursive: true, force: true });
+    expect(emulatorImagePrepulled(shipped)).toBe(true);
+    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.aws.v1"]);
+    forgetEmulatorImageCache();
+    expect(emulatorImagePrepulled(shipped)).toBe(false);
   });
   it("any unreadable or invalid shipped file means not advertised", async () => {
     const dir = await temp("rsv-ship-");

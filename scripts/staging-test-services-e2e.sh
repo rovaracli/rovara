@@ -45,12 +45,14 @@
 # on staging with the owner's OK, the pin committed, a worker image rebuild and upgrade: .superpowers/sdd/s2-integration/report.md). The project is the escape project with its `aws/` overlay copied over it (see the fixture's README).
 #   PA     the catalog repository rovara-catalog/<env>/svc/local-aws holds the committed pin of local-aws@r1.
 #   1      (changed) the proposal also lists S3, SQS and DynamoDB as `emulated` on local-aws@r1, each with its source line and the template as its resource pointer.
+#   4, 5   (changed, MAIN task only) FAIL whenever the task's view or evidence holds any AWS usage sentence (AWS_USAGE_WORDS below, the same words as TEST_SERVICES_AWS_USAGE_WORDS in the contracts): a clean check run with
+#          an out-of-plan call, an unsupported operation, a flooded or unreadable ledger is never a pass. A4 is REQUIRED under --aws: without --aws-flag-project or --aws-flag-task it FAILS (no OPERATOR fallback).
 #   4      (changed) the five escape tests AND aws-positive (the declared bucket, queue and table exist: the worker seeded the project's template) have a passed check entry.
 #   5      (changed) the PR line reads `Integration tests ran against: Postgres (real), <S3, SQS and DynamoDB> (Rovara local AWS).` (the order follows the proposal's), with all three names.
 #   A2     the IAM line: `AWS permissions (IAM) were not checked: Rovara local AWS does not enforce IAM`.
 #   A3     aws-control: the emulator's /_rovara/* control paths, tried from the sealed round with no token and a made-up one, were refused (403 or 401): a passed check entry.
-#   A4     --aws-flag-project <name> (or --aws-flag-task <id>): a task whose code calls SNS at the emulator: the emulator refused (the aws-out-of-plan check passed) AND the evidence flags
-#          `The code called AWS services that are not in the plan` naming sns; the worker's run_end for that task is clean. Without either, an OPERATOR line.
+#   A4     --aws-flag-project <name> (or --aws-flag-task <id>), REQUIRED: a task whose code calls SNS through the SDK's own endpoint variable: the emulator refused (the aws-out-of-plan check passed) AND the evidence flags
+#          `The code called AWS services that are not in the plan` naming sns; the worker's run_end for that task is clean. Without either option it FAILS.
 #   P4     (changed) the worker's pre-pull count is at least 2 (Postgres and local-aws).
 # Everything else (2, 3, 6, L3, 7, 7c, 7k) is the slice-1 check, on the same project.
 #
@@ -489,13 +491,25 @@ if [[ -n "$TASK_ID" && -z "$SINCE_GIVEN" ]] && created=$(py created < "$WORK/vie
 # the sources the verdicts of 4-6 and L3 read: the task's view and the evidence file the person saved
 SOURCES=(); [[ -s "$WORK/view.json" ]] && SOURCES+=("$WORK/view.json"); [[ -n "$EVIDENCE_FILE" ]] && SOURCES+=("$EVIDENCE_FILE")
 TEXT="$WORK/text"; : > "$TEXT"; for source in ${SOURCES[@]+"${SOURCES[@]}"}; do cat "$source" >> "$TEXT"; done
+# The sentences the broker writes when the AWS usage of a run was not clean (TEST_SERVICES_AWS_USAGE_WORDS; a test keeps this list equal to the contracts'). "AWS usage could not be checked" also starts the flooded sentence.
+AWS_USAGE_WORDS=("AWS usage could not be checked" "The code called AWS services that are not in the plan" "The code called AWS operations that Rovara local AWS does not support")
+# aws_usage_flag FILE... -> prints the first AWS usage sentence found in the files and returns 0; returns 1 when none is there.
+aws_usage_flag() {
+  local word
+  for word in "${AWS_USAGE_WORDS[@]}"; do
+    if cat "$@" 2>/dev/null | grep -F -q -- "$word"; then printf '%s' "$word"; return 0; fi
+  done
+  return 1
+}
 ESCAPE_TESTS="tests/internet.test.js,tests/ipv6.test.js,tests/neighbours.test.js,tests/planted-state.test.js,tests/relay.test.js"
 [[ -n "$AWS_MODE" ]] && ESCAPE_TESTS="$ESCAPE_TESTS,tests/aws-positive.test.js"
 if wanted 4; then
   if [[ ${#SOURCES[@]} -eq 0 ]]; then say 4 OPERATOR "the escape project's tests passed" "pass --task and/or --evidence <file>"
   else
     verdict=$(REQUIRED="$ESCAPE_TESTS" py entries "${SOURCES[@]}" 2>&1); code=$?
-    if [[ "$code" -eq 0 ]]; then
+    if [[ "$code" -eq 0 && -n "$AWS_MODE" ]] && flagged=$(aws_usage_flag "${SOURCES[@]}"); then
+      say 4 FAIL "the escape project's tests passed" "the checks passed but the evidence says: $flagged"
+    elif [[ "$code" -eq 0 ]]; then
       if wait_reports run_end "$RUN_FROM"; then
         outcome=$(py last-outcome < "$WORK/reports" 2>&1)
         if [[ "$outcome" == "completed" ]]; then say 4 PASS "the escape project's tests passed" "$verdict by name (internet, ipv6, neighbours, planted-state, relay${AWS_MODE:+, aws-positive}); the worker's last run_end is completed"
@@ -507,6 +521,8 @@ if wanted 4; then
 fi
 if wanted 5; then
   if [[ ! -s "$TEXT" ]]; then say 5 OPERATOR "the PR line" "pass --task and/or --evidence <file>"
+  elif [[ -n "$AWS_MODE" ]] && flagged=$(aws_usage_flag "$TEXT"); then
+    say 5 FAIL "the PR line" "the evidence says: $flagged (a line that names Rovara local AWS is not a clean result)"
   elif [[ -n "$AWS_MODE" ]]; then
     if line=$(grep -m1 -o 'Integration tests ran against: Postgres (real), [^"\\]*(Rovara local AWS)\.' "$TEXT") && [[ "$line" == *S3* && "$line" == *SQS* && "$line" == *DynamoDB* ]]; then say 5 PASS "the PR line" "$line"
     else say 5 FAIL "the PR line" "no line 'Integration tests ran against: Postgres (real), <S3, SQS and DynamoDB> (Rovara local AWS).' in the task's view or the evidence file"; fi
@@ -555,7 +571,7 @@ if [[ -n "$AWS_MODE" ]]; then
       if start_task "$ESCAPE_PROMPT"; then flag_task="$TASK_ID"; else say A4 FAIL "out-of-plan call is flagged" "the flag task was not started: $(cat "$WORK/py.err")"; flag_task="-"; fi
       ESCAPE_PROJECT="$saved_project"
     fi
-    if [[ -z "$flag_task" ]]; then say A4 OPERATOR "out-of-plan call is flagged" "pass --aws-flag-project <name> (the project with the out-of-plan variant, see the fixture's README) or --aws-flag-task <id>"
+    if [[ -z "$flag_task" ]]; then say A4 FAIL "out-of-plan call is flagged" "required under --aws: pass --aws-flag-project <name> (the project with the out-of-plan variant, see the fixture's README) or --aws-flag-task <id>"
     elif [[ "$flag_task" != "-" ]]; then
       TASK_ID="$flag_task"; cp "$WORK/view.json" "$WORK/view.main.json" 2>/dev/null; : > "$WORK/view.json"
       if wait_task_end "$POLL_TASK" || [[ -s "$WORK/view.json" ]]; then

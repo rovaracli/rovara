@@ -88,14 +88,17 @@ write_test_services_environment() {
   [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 1
   environment=${BASH_REMATCH[1]}
   { printf 'AGENTX_TEST_SERVICES_REGISTRY=%s\n' "$registry"; printf 'AGENTX_TEST_SERVICES_ENV=%s\n' "$environment"; } >>"$WORKER_ENV_FILE"
+  # Per image: the repositories that did not pre-pull (a comma list of svc/<name>); the worker does not offer them. Only well-formed names are written.
+  if [[ "${PREPULL_FAILED_REPOS:-}" =~ ^svc/[a-z0-9][a-z0-9._-]{0,62}(,svc/[a-z0-9][a-z0-9._-]{0,62}){0,15}$ ]]; then printf 'AGENTX_TEST_SERVICES_NOT_PULLED=%s\n' "$PREPULL_FAILED_REPOS" >>"$WORKER_ENV_FILE"; fi
 }
 # The worker container has no registry login and no AWS credentials (only root on the host has the instance role), so ROOT pulls, before the worker starts, every digest in the pre-pull list baked into the worker image
 # (catalog repositories `svc/*` only, by digest, never a tag). The worker never pulls: it runs a dependency only if its digest is pinned in the image AND already here. Nothing to pull (no catalog, an empty list) is fine and
-# silent; a login or a pull that fails is logged loudly and returns 1, and the caller then does not offer test services on this worker (the broker refuses a plan to it) while the worker still takes everything else.
-# What the last pull_catalog_images did, for the boot facts the worker reports (CloudWatch): none | ok | failed, how many digests, and whether the registry login was removed.
-PREPULL_RESULT=none; PREPULL_COUNT=0; PREPULL_LOGGED_OUT=false
+# silent. A login that fails, or no image arriving at all, is logged loudly and returns 1, and the caller then does not offer test services on this worker (the broker refuses a plan to it) while the worker still takes everything else.
+# Some images arriving and others not (slice 2) is `partial`: returns 0, the settings are written, and the repositories that did not arrive are listed in AGENTX_TEST_SERVICES_NOT_PULLED (not offered; the rest stay available).
+# What the last pull_catalog_images did, for the boot facts the worker reports (CloudWatch): none | ok | partial (some images arrived, the rest are named in AGENTX_TEST_SERVICES_NOT_PULLED) | failed, how many digests, and whether the registry login was removed.
+PREPULL_RESULT=none; PREPULL_COUNT=0; PREPULL_LOGGED_OUT=false; PREPULL_FAILED_REPOS=""
 pull_catalog_images() {
-  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 failed="" pairs=() reference results file index=0
+  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 failed="" pairs=() pair reference results file index=0
   local timeout_s=180 parallel=4
   # Overrides count only as plain positive whole numbers; anything else (0, empty, text) is the default.
   [[ "${CATALOG_PULL_TIMEOUT_S:-}" =~ ^[1-9][0-9]*$ ]] && timeout_s=$CATALOG_PULL_TIMEOUT_S
@@ -115,30 +118,37 @@ pull_catalog_images() {
   { timeout --foreground --kill-after=10s 120s aws ecr get-login-password --region "$region" \
       | timeout --foreground --kill-after=10s 120s docker login --username AWS --password-stdin "$registry" >/dev/null 2>&1; } \
     || { docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true; PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: the registry login failed"; return 1; }
-  # Each pull is bounded on its own (180 s, then killed; CATALOG_PULL_TIMEOUT_S overrides) and up to 4 run at once (CATALOG_PULL_PARALLEL), so one hung pull holds boot for one timeout and not for ten minutes. The first failure stops new pulls
-  # from starting; the ones already running finish or are killed by their own timeout. Results are one file per pull in a private directory (a background pull cannot set this shell's variables).
+  # Each pull is bounded on its own (180 s, then killed; CATALOG_PULL_TIMEOUT_S overrides) and up to 4 run at once (CATALOG_PULL_PARALLEL), so one hung pull holds boot for one timeout and not for ten minutes. A pull that fails
+  # does NOT stop the others (slice 2, per image): the rest are pulled and stay available, and each repository that did not arrive is named in AGENTX_TEST_SERVICES_NOT_PULLED so the worker does not offer it (a plan that needs
+  # it is refused at run time with the fixed "not available on this worker" words). Once the boot deadline has passed, the images not yet started count as not pulled. Results are one file per pull in a private directory
+  # (a background pull cannot set this shell's variables).
+  PREPULL_FAILED_REPOS=""
   results=$(mktemp -d) || { docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true; PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: no scratch directory"; return 1; }
-  for reference in "${pairs[@]}"; do
-    reference="$registry/rovara-catalog/$environment/$reference"
-    [[ -z "$failed" ]] || break
-    while (($(jobs -rp | wc -l) >= parallel)); do sleep 1; done
-    for file in "$results"/*.fail; do [[ ! -e "$file" ]] || { failed=$(cat "$file"); break; }; done
-    [[ -z "$failed" ]] || break
+  for pair in "${pairs[@]}"; do
     index=$((index + 1))
+    if [[ -n "${BOOT_DEADLINE:-}" ]] && ((SECONDS >= BOOT_DEADLINE)); then printf '%s' "${pair%%@*}" >"$results/$index.fail"; continue; fi
+    reference="$registry/rovara-catalog/$environment/$pair"
+    while (($(jobs -rp | wc -l) >= parallel)); do sleep 1; done
     (
       docker image inspect "$reference" >/dev/null 2>&1 && : >"$results/$index.ok" && exit 0
       timeout --foreground --kill-after=10s "${timeout_s}s" docker pull "$reference" >/dev/null 2>&1 && : >"$results/$index.ok" && exit 0
-      printf '%s' "$reference" >"$results/$index.fail"
+      printf '%s' "${pair%%@*}" >"$results/$index.fail"
     ) &
   done
   wait
   for file in "$results"/*.ok; do [[ ! -e "$file" ]] || count=$((count + 1)); done
-  for file in "$results"/*.fail; do [[ ! -e "$file" ]] || { failed=$(cat "$file"); break; }; done
+  for file in "$results"/*.fail; do [[ ! -e "$file" ]] || failed="$failed $(cat "$file")"; done
   rm -rf "$results"
   # No ECR token stays on disk after the pulls (the worker has no login of its own and needs none).
   docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true
   PREPULL_COUNT=$count
-  [[ -z "$failed" ]] || { PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: $failed"; return 1; }
+  if [[ -n "$failed" ]]; then
+    PREPULL_FAILED_REPOS=$(printf '%s\n' $failed | sort -u | paste -sd, -)
+    if ((count == 0)); then PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: $failed"; return 1; fi
+    PREPULL_RESULT=partial
+    log "CATALOG PRE-PULL PARTIAL: pulled $count, not offered on this worker: $PREPULL_FAILED_REPOS"
+    return 0
+  fi
   PREPULL_RESULT=ok
   log "pulled $count catalog image(s) by digest"
 }

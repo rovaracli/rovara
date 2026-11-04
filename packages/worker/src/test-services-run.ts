@@ -455,7 +455,7 @@ export function neverValuesFor(resolved: ReadonlyArray<Pick<Resolved, "request" 
 
 /**
  * The variables of one sandbox for a phase's helpers: the connection variables of the real-software dependencies, and, when the plan has an emulator, the `aws` block: `AWS_ENDPOINT_URL_S3` / `_SQS` / `_DYNAMODB` at the
- * emulator's first alias, every other AWS service the table knows (and, in both sandboxes, the global endpoint) at the sinkhole, `AWS_REGION` and `AWS_DEFAULT_REGION` from the plan's region (only a label inside the emulator:
+ * emulator's first alias, every other AWS service the table knows (and, in both sandboxes, the global endpoint) at the EMULATOR too (it has them switched off: it refuses the call and records it in its ledger, so the broker flags it; the sinkhole is used only where no emulator runs), `AWS_REGION` and `AWS_DEFAULT_REGION` from the plan's region (only a label inside the emulator:
  * every endpoint is overridden, so no SDK call goes to the region's real AWS), fake credentials. The emulator's control token and secrets are `neverValues`: a variable holding one is refused.
  */
 function environmentFor(sandbox: "working" | "check", resolved: readonly Resolved[]): ServiceEnvironment {
@@ -463,7 +463,7 @@ function environmentFor(sandbox: "working" | "check", resolved: readonly Resolve
   return buildServiceEnvironment({
     sandbox, sinkholeUrl: SINKHOLE_URL, dependencies: resolved.flatMap((item) => (item.env === undefined ? [] : [item.env])), neverValues: neverValuesFor(resolved),
     ...(emulator?.emulator === undefined ? {} : {
-      aws: { alias: emulator.host, port: emulator.port, region: emulator.emulator.region, emulatedServices: emulator.emulator.services, unbackedServices: unbackedAwsServices(emulator.emulator.services), sinkholeUnmapped: true },
+      aws: { alias: emulator.host, port: emulator.port, region: emulator.emulator.region, emulatedServices: emulator.emulator.services, unbackedServices: unbackedAwsServices(emulator.emulator.services) },
     }),
   });
 }
@@ -1072,26 +1072,48 @@ export async function startTaskTestServices(input: StartTaskTestServicesInput): 
 /** The features this worker adds to /ping for test services: the plan feature only when the worker has a test-services configuration (a worker without one would only refuse such a plan). */
 export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env, shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE> {
   if (testServicesConfigFromEnvironment(environment, undefined, undefined) === undefined) return [];
-  return emulatorImagePrepulled(shipped) ? [TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE] : [TEST_SERVICES_PLAN_FEATURE];
+  return emulatorImagePrepulled(shipped, environment) ? [TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE] : [TEST_SERVICES_PLAN_FEATURE];
 }
 
 /** The two files the worker image ships beside `dist/`: the pinned catalog and the list root pulled at boot. */
 export interface ShippedCatalogFiles { catalog: URL | string; prepull: URL | string }
 export const SHIPPED_CATALOG_FILES: ShippedCatalogFiles = { catalog: BAKED_CATALOG_URL, prepull: new URL("../service-catalog/prepull.json", import.meta.url) };
 
-/**
- * Whether this worker can run an emulated (Rovara local AWS) plan: the catalog baked into its image pins a `local-aws` entry AND root's boot pre-pull list holds exactly that digest. (A worker with a test-services configuration
- * is one whose pre-pull succeeded: boot-stage2 writes the settings only then, so a listed image is on the host.) Read from the image's own files, synchronously, never a Docker call per ping; any problem is false.
- */
-export function emulatorImagePrepulled(shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): boolean {
+/** Root's note of the catalog repositories that did NOT pre-pull at boot (boot-stage2.sh, a comma list of `svc/<name>`). Anything not well formed is read as empty (those are the names; a malformed value cannot widen anything). */
+export const TEST_SERVICES_NOT_PULLED_ENVIRONMENT = "AGENTX_TEST_SERVICES_NOT_PULLED";
+export function notPulledRepositories(environment: NodeJS.ProcessEnv = process.env): ReadonlySet<string> {
+  const value = environment[TEST_SERVICES_NOT_PULLED_ENVIRONMENT];
+  if (value === undefined || !/^svc\/[a-z0-9][a-z0-9._-]{0,62}(,svc\/[a-z0-9][a-z0-9._-]{0,62}){0,15}$/u.test(value)) return new Set();
+  return new Set(value.split(","));
+}
+
+/** The emulator image the shipped files pin and list, read from the image's own (immutable) files ONCE per path pair: /ping asks on every call and must not read two files each time. Tests clear it with `forgetEmulatorImageCache`. */
+const emulatorImageCache = new Map<string, { repository: string } | undefined>();
+export function forgetEmulatorImageCache(): void { emulatorImageCache.clear(); }
+function shippedEmulatorImage(shipped: ShippedCatalogFiles): { repository: string } | undefined {
+  const key = `${String(shipped.catalog)}\n${String(shipped.prepull)}`;
+  if (emulatorImageCache.has(key)) return emulatorImageCache.get(key);
+  let found: { repository: string } | undefined;
   try {
     const catalog = ServiceCatalogSchema.parse(JSON.parse(readFileSync(shipped.catalog, "utf8")));
     const list = PrepullListSchema.parse(JSON.parse(readFileSync(shipped.prepull, "utf8")));
-    return catalog.entries.some((entry) => entry.backing === "emulated" && entry.family === "local-aws" && entry.status !== "retired" && entry.image.digest !== undefined
-      && list.images.some((image) => image.repository === entry.image.repository && image.digest === entry.image.digest));
+    const entry = catalog.entries.find((item) => item.backing === "emulated" && item.family === "local-aws" && item.status !== "retired" && item.image.digest !== undefined
+      && list.images.some((image) => image.repository === item.image.repository && image.digest === item.image.digest));
+    found = entry === undefined ? undefined : { repository: entry.image.repository };
   } catch {
-    return false;
+    found = undefined;
   }
+  emulatorImageCache.set(key, found);
+  return found;
+}
+
+/**
+ * Whether this worker can run an emulated (Rovara local AWS) plan: the catalog baked into its image pins a `local-aws` entry, root's boot pre-pull list holds exactly that digest, AND root did not report that image as not
+ * pulled (per image: one image failing to pre-pull takes only itself out). Read from the image's own files (cached) and the environment; never a Docker call per ping; any problem is false.
+ */
+export function emulatorImagePrepulled(shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES, environment: NodeJS.ProcessEnv = process.env): boolean {
+  const image = shippedEmulatorImage(shipped);
+  return image !== undefined && !notPulledRepositories(environment).has(image.repository);
 }
 
 // ---- the candidate check (Prove, worker side): prepare.ts

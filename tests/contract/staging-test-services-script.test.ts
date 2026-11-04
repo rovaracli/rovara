@@ -7,6 +7,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { TEST_SERVICES_AWS_USAGE_PROBLEMS, TEST_SERVICES_AWS_USAGE_WORDS } from "@agentx/contracts";
 
 const SCRIPT = new URL("../../scripts/staging-test-services-e2e.sh", import.meta.url).pathname;
 const code = readFileSync(SCRIPT, "utf8").split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
@@ -573,10 +574,12 @@ describe("slice 2 (--aws): Postgres plus S3, SQS and DynamoDB on Rovara local AW
     expect(verdictOf(run(awsScenario(), ["--aws", "--only", "5,A2"]).out, "A2")).toBe("OPERATOR");
   });
 
-  it("A4: the SNS call is refused and flagged: PASS. No flag project or task: OPERATOR. Each way it can fail is a FAIL", () => {
+  it("A4: the SNS call is refused and flagged: PASS. No flag project or task: FAIL (it is required). Each way it can fail is a FAIL", () => {
     const a4 = (change: (s: Scenario) => void, args = ["--aws", "--aws-flag-task", FLAG_TASK, "--only", "A4"]) => run(awsScenario(change), args);
     expect(verdictOf(a4(() => undefined).out, "A4")).toBe("PASS");
-    expect(verdictOf(run(awsScenario(), ["--aws", "--only", "A4"]).out, "A4")).toBe("OPERATOR");
+    // A4 is REQUIRED under --aws: no flag project or task is a FAIL, never an OPERATOR line.
+    expect(verdictOf(run(awsScenario(), ["--aws", "--only", "A4"]).out, "A4")).toBe("FAIL");
+    expect(run(awsScenario(), ["--aws", "--only", "A4"]).out).toMatch(/TSE A4 FAIL.*required under --aws/u);
     // The refusal test did not pass, or has no entry, or the evidence does not flag the service (or names another).
     expect(verdictOf(a4((s) => { s.routes[`GET /v1/dev/tasks/${FLAG_TASK}`] = [{ status: 200, body: flagView({ entry: "failed" }) }]; }).out, "A4")).toBe("FAIL");
     expect(verdictOf(a4((s) => { s.routes[`GET /v1/dev/tasks/${FLAG_TASK}`] = [{ status: 200, body: { ...flagView(), checks: [] } }]; }).out, "A4")).toBe("FAIL");
@@ -588,6 +591,29 @@ describe("slice 2 (--aws): Postgres plus S3, SQS and DynamoDB on Rovara local AW
     expect(verdictOf(a4((s) => { s.routes["POST /v1/dev/tasks"] = [{ status: 500 }]; }, ["--aws", "--aws-flag-project", "flag", "--only", "A4"]).out, "A4")).toBe("FAIL");
     expect(verdictOf(a4((s) => { s.events = [start({ bootFacts: { ...FACTS, prepulled: 2 } }), end({ leftoverContainers: 1 })]; }).out, "A4")).toBe("FAIL");
     expect(verdictOf(a4((s) => { s.events = [start({ bootFacts: { ...FACTS, prepulled: 2 } })]; }).out, "A4")).toBe("FAIL");
+  });
+
+  it("steps 4 and 5 FAIL whenever the main task's evidence holds any AWS usage sentence, and the script's list is the contracts' list", () => {
+    expect([...TEST_SERVICES_AWS_USAGE_PROBLEMS].map((problem) => TEST_SERVICES_AWS_USAGE_WORDS[problem]).sort()).toEqual([
+      "AWS usage could not be checked", "AWS usage could not be checked: the code made too many different AWS calls", "The code called AWS operations that Rovara local AWS does not support", "The code called AWS services that are not in the plan",
+    ]);
+    // Each sentence, as the pack writes it (with the service key where there is one), planted in the main evidence next to otherwise perfect checks.
+    for (const sentence of [...Object.values(TEST_SERVICES_AWS_USAGE_WORDS), `${TEST_SERVICES_AWS_USAGE_WORDS.out_of_plan}: sns`]) {
+      const text = JSON.stringify({ checks: awsEntries(), pullRequestLines: [PR_AWS, `- ${IAM}`], notTested: [sentence], environment: { blocked: "Blocked by environment: 3 calls to names no dependency answers: example.com (2), example.net (1)" } });
+      const r = runWith(awsScenario(), text, ["--aws", "--task", TASK, "--only", "4,5", "--expect-outcome", "completed"]);
+      expect(verdictOf(r.out, "4"), sentence).toBe("FAIL");
+      expect(r.out, sentence).toMatch(/TSE 4 FAIL.*the evidence says/u);
+      expect(verdictOf(r.out, "5"), sentence).toBe("FAIL");
+    }
+    // The same evidence without the sentence passes both; and the sentence in the FLAG task's view (where it belongs) does not fail the main task's steps.
+    const clean = runWith(awsScenario(), awsEvidence(), ["--aws", "--task", TASK, "--only", "4,5", "--expect-outcome", "completed"]);
+    expect(verdictOf(clean.out, "4")).toBe("PASS");
+    expect(verdictOf(clean.out, "5")).toBe("PASS");
+    const full = runWith(awsScenario(), awsEvidence(), ARGS);
+    expect(verdictOf(full.out, "4")).toBe("PASS");
+    expect(verdictOf(full.out, "A4")).toBe("PASS");
+    // Without --aws nothing changes: slice 1's evidence with such a sentence still passes step 5's slice-1 check.
+    expect(verdictOf(runWith(scenario(), evidence({ pr: "Integration tests ran against: Postgres (real). AWS usage could not be checked" }), ["--task", TASK, "--only", "5"]).out, "5")).toBe("PASS");
   });
 
   it("every slice-2 step is a named step (--only accepts it) and the summary counts them", () => {

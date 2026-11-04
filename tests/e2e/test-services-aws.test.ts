@@ -298,10 +298,12 @@ describe("3. a task passes a check round against Postgres and Rovara local AWS, 
     const document = JSON.parse(seed[0]!.body!) as { s3: { buckets: Array<{ name: string }> }; sqs: { queues: Array<{ name: string }> }; dynamodb: { tables: Array<{ request: { TableName: string } }> } };
     expect([document.s3.buckets[0]!.name, document.sqs.queues[0]!.name, document.dynamodb.tables[0]!.request.TableName]).toEqual(["orders-archive", "order-events", "orders"]);
     expect(JSON.stringify(document)).not.toContain("alerts");
-    // The sandbox sees S3, SQS and DynamoDB at the emulator and every other service at the sinkhole; none of the three values.
+    // The sandbox sees S3, SQS and DynamoDB at the emulator and every other service and the global endpoint at the emulator too (it refuses what the plan did not ask for AND counts it); none of the three values.
     const exec = bench.fake.execs.find((entry) => entry.envFile?.includes("AWS_ENDPOINT_URL_S3=") === true)!;
     for (const name of ["S3", "SQS", "DYNAMODB"]) expect(envOf(exec.envFile, `AWS_ENDPOINT_URL_${name}`)).toBe("http://aws:4566");
-    expect(envOf(exec.envFile, "AWS_ENDPOINT_URL_SNS")).toBe("http://sinkhole");
+    expect(envOf(exec.envFile, "AWS_ENDPOINT_URL_SNS")).toBe("http://aws:4566");
+    expect(envOf(exec.envFile, "AWS_ENDPOINT_URL")).toBe("http://aws:4566");
+    expect(exec.envFile).not.toContain("sinkhole");
     for (const secret of secrets) { expect(exec.envFile).not.toContain(secret); expect(bench.fake.calls.flat().join(" ")).not.toContain(secret); }
     expect(bench.aws.order.indexOf("marked")).toBeGreaterThan(bench.aws.order.indexOf("seed"));
     expect(bench.aws.order.indexOf("seed")).toBeGreaterThan(bench.aws.order.indexOf("emulator"));
@@ -353,10 +355,21 @@ describe("3. a task passes a check round against Postgres and Rovara local AWS, 
 });
 
 describe("4. failure cases are flagged, never a quiet pass", () => {
-  it("an out-of-plan service call (SNS) is in the ledger: the record names it, the pack carries the aws-usage item and the PR says so", async () => {
+  it("an out-of-plan service call (SNS) made through the SDK's own endpoint variable reaches the emulator, is counted by its ledger, and is flagged: the record names it, the pack carries the aws-usage item and the PR says so", async () => {
     const { broker, checks } = await plans();
-    const bench = await workerBench({ aws: { ledger: ledgerOf({ s3: { PutObject: { calls: 3 } }, sns: { Publish: { calls: 2 } } }) } });
+    // The fake emulator's ledger follows WHERE the sealed sandbox's SNS endpoint points: only a call that reaches the emulator (which has SNS switched off) is refused AND written to the ledger. A call to any other host is
+    // nobody's: a static sinkhole name is never looked up, so nothing counts it. This is what the SDK does with AWS_ENDPOINT_URL_SNS.
+    let bench: Bench;
+    const callsSns = (): boolean => {
+      const exec = bench.fake.execs.find((entry) => entry.envFile?.includes("AWS_ENDPOINT_URL_SNS=") === true);
+      return exec !== undefined && envOf(exec.envFile, "AWS_ENDPOINT_URL_SNS") === "http://aws:4566";
+    };
+    bench = await workerBench({ aws: { ledger: () => ledgerOf({ s3: { PutObject: { calls: 3 } }, ...(callsSns() ? { sns: { Publish: { calls: 2, unsupported: 0, errors: 2 } } } : {}) }) } });
     const { started, round } = await run(bench, checks, broker.readiness);
+    const sealedExec = bench.fake.execs.filter((entry) => entry.envFile?.includes("AWS_ENDPOINT_URL_SNS=") === true).at(-1)!;
+    expect(envOf(sealedExec.envFile, "AWS_ENDPOINT_URL_SNS")).toBe("http://aws:4566");
+    expect(envOf(sealedExec.envFile, "AWS_ENDPOINT_URL")).toBe("http://aws:4566");
+    expect(callsSns()).toBe(true);
     const record = lastUsage(bench);
     expect(record.aws?.services.map((entry) => entry.service)).toContain("sns");
     const { pack, lines } = await evidenceFor(broker, record, round);

@@ -76,21 +76,21 @@ describe("connection variables", () => {
 
 describe("AWS: endpoints, fake credentials and the sinkhole (4.0.5)", () => {
   const aws = { alias: "aws", port: 4566, region: "us-west-2", emulatedServices: ["s3", "dynamodb", "secretsmanager", "sagemaker-runtime", "events"], unbackedServices: ["sqs"] };
-  it("working sandbox: per-service endpoints to the emulator, the unbacked one to the sinkhole, fake credentials, and no global endpoint", () => {
+  it("working sandbox: per-service endpoints to the emulator, the unbacked one to the emulator too (it refuses and counts it), fake credentials, and the global endpoint at the emulator", () => {
     const env = asObject(buildServiceEnvironment(input({ aws })).entries);
     expect(env).toMatchObject({
       AWS_ENDPOINT_URL_S3: "http://aws:4566", AWS_ENDPOINT_URL_DYNAMODB: "http://aws:4566", AWS_ENDPOINT_URL_SECRETS_MANAGER: "http://aws:4566", AWS_ENDPOINT_URL_SAGEMAKER_RUNTIME: "http://aws:4566", AWS_ENDPOINT_URL_EVENTBRIDGE: "http://aws:4566",
-      AWS_ENDPOINT_URL_SQS: "http://sinkhole",
+      AWS_ENDPOINT_URL_SQS: "http://aws:4566", AWS_ENDPOINT_URL: "http://aws:4566",
       AWS_ACCESS_KEY_ID: AWS_FAKE_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY: AWS_FAKE_SECRET_ACCESS_KEY,
       AWS_REGION: "us-west-2", AWS_DEFAULT_REGION: "us-west-2", AWS_EC2_METADATA_DISABLED: "true", AWS_CONFIG_FILE: "/dev/null", AWS_SHARED_CREDENTIALS_FILE: "/dev/null",
     });
-    expect(env).not.toHaveProperty("AWS_ENDPOINT_URL");
     expect(env).not.toHaveProperty("AWS_SESSION_TOKEN");
     expect(env).not.toHaveProperty("AWS_PROFILE");
   });
-  it("sealed sandbox: the same, and the global endpoint is the sinkhole, so a service nobody found fails loudly", () => {
+  it("sealed sandbox: the same, and the global endpoint is the emulator, so a service nobody found is refused and counted by it", () => {
     const env = asObject(buildServiceEnvironment(input({ sandbox: "check", aws })).entries);
-    expect(env["AWS_ENDPOINT_URL"]).toBe("http://sinkhole");
+    expect(env["AWS_ENDPOINT_URL"]).toBe("http://aws:4566");
+    expect(JSON.stringify(env)).not.toContain("sinkhole");
     expect(env["AWS_ENDPOINT_URL_S3"]).toBe("http://aws:4566");
   });
   it("the fake credentials are letters and digits only, and nothing like a real key", () => {

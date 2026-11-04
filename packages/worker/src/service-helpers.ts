@@ -127,7 +127,7 @@ export interface HelperRequest {
   region?: string;
   /**
    * Rovara local AWS only: the AWS services the run asked for (`s3`, `sqs`, `dynamodb`). Every OTHER service the emulator can serve is switched off in its env file (`ROVARA_AWS_SERVICES_<NAME>_ENABLED=false`, the fork's
-   * per-service switch, enforced by its `ServiceEnabledFilter`), so a call outside the plan is refused by the emulator itself and shows in the ledger. Absent: every service stays on (the development default).
+   * per-service switch, enforced by its `ServiceEnabledFilter`), so a call outside the plan is refused by the emulator itself and shows in the ledger. That only happens if the code's call REACHES the emulator: the worker points every non-plan `AWS_ENDPOINT_URL_<SERVICE>` and the global `AWS_ENDPOINT_URL` at it (service-env.ts), not at a sinkhole. The fork's ledger filter must run before the disable filter (fork: LedgerFilter priority). Absent: every service stays on (the development default).
    */
   awsServices?: readonly string[];
   files?: readonly HelperFile[];
