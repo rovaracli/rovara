@@ -125,7 +125,7 @@ it("retries the header session once and navigates to the returned session", asyn
 });
 it("posts stop only after explicit confirmation and refreshes the session", async () => {
  const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["stop"] } }), async () => ({ status: 200, body: { session: sessionFixture() } }));
- fireEvent.click(await screen.findByRole("button", { name: "Stop" }));expect(screen.getByText("Payments expert stops after its current step. If the task is blocked instead of running, Stop ends it and frees its workspace only while it is still planning; after that, use Close task.")).toBeTruthy();
+ fireEvent.click(await screen.findByRole("button", { name: "Stop" }));expect(screen.getByText("Payments expert stops after its current step. If the task is blocked instead of running, Stop ends it and frees its workspace only while no code has been written; after that, use Close task.")).toBeTruthy();
  expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/stop"))).toBe(false);
  fireEvent.click(screen.getByRole("button", { name: "Stop session" }));fireEvent.click(screen.getByRole("button", { name: "Stop session" }));await screen.findByText("Stop requested.");
  expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/stop"))).toHaveLength(1);f.close();

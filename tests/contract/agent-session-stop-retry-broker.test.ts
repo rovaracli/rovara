@@ -2,7 +2,7 @@
 // `cancelled`, and a failed run is retried into a new session of the retrier's own, linked by `retryOf`, through the real run start.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { agentSessionKey, openAgentSessionKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, createCandidateManifest, openAgentSessionKey } from "../../packages/contracts/src/index.js";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
 import { retryRunRequestId } from "../../packages/broker/src/agent-sessions/retry.js";
@@ -344,6 +344,54 @@ describe("a Rovara Code task, through the real broker", () => {
         const again = await t.dev(who === "owner" ? MAYA : OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
         expect(again.body, label).toMatchObject({ stop: "NOTHING_RUNNING", message: stopped.body.message });
         expect(t.meta(task.taskId).releasedAt, label).toBeUndefined();
+      }
+    }
+  });
+
+  it("does not end or release a task that was sent back to planning after code was written, blocked at a plan stage or waiting for the plan's approval, for the owner, an edit sharee and an org admin", async () => {
+    const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "a".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
+    const evidence = {
+      // The earlier code's candidate stays when a plan is sent back.
+      candidate: async (_t: Awaited<ReturnType<typeof setup>>, _task: { workspaceId: string }) => ({ candidate }),
+      // Code ran in the workspace (an implement step), whatever the workflow still carries.
+      "an earlier implement step": async (t: Awaited<ReturnType<typeof setup>>, task: { workspaceId: string }) => {
+        const earlier = t.steps(task.workspaceId)[0]!;
+        t.db.set({ ...earlier, sk: `${String(earlier.sk)}-implement`, id: randomUUID(), workflowMode: "IMPLEMENT", status: "SUCCEEDED", fence: 99 });
+        return {};
+      },
+    };
+    for (const [name, prove] of Object.entries(evidence)) {
+      for (const shape of ["blocked at PLAN", "blocked at PLAN_CRITIQUE", "PLAN_REVIEW waiting"] as const) {
+        for (const who of ["owner", "share holder", "admin"] as const) {
+          const label = `${name} / ${shape} / ${who}`;
+          const audit = capturingAuditDeps();
+          const t = await setup({ audit });
+          const task = await startWorkflow(t);
+          grantProject(t.db, OMAR);
+          expect((await t.share(task.sessionId, who === "admin" ? "view" : "edit")).status).toBe(200);
+          if (who === "admin") seedMembership(t.db, OMAR.developerId, { orgId: TEST_ORG, role: "admin" });
+          const planning = t.steps(task.workspaceId)[0]!;
+          if (shape === "PLAN_REVIEW waiting") await finishPlanningWithMarkdown(t, task.workspaceId, planning.id, "# Plan\n\n1. Fix retry handling.\n");
+          else await t.finish(task.workspaceId, planning.id, "FAILED", { error: "the planner stopped" });
+          const extra = await prove(t, task);
+          const current = (t.meta(task.taskId) as unknown as { workflow: Item }).workflow;
+          const workflow = shape === "blocked at PLAN_CRITIQUE" ? { ...current, ...extra, stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: "the critic failed" } : { ...current, ...extra };
+          await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${task.taskId}`, sk: "META" }, UpdateExpression: "SET workflow = :workflow", ExpressionAttributeValues: { ":workflow": workflow } }));
+          await refreshSessionSummary({ documentClient: t.db, tableName: "state", now: Date.now }, TEST_ORG, task.sessionId);
+          expect(t.meta(task.taskId), label).toMatchObject({ workflow: { stage: shape === "PLAN_REVIEW waiting" ? "PLAN_REVIEW" : shape === "blocked at PLAN" ? "PLAN" : "PLAN_CRITIQUE" } });
+          const workspaceBefore = JSON.stringify(t.db.get(`WORKSPACE#${task.workspaceId}`, "META"));
+          const stopped = await t.dev(who === "owner" ? MAYA : OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId: randomUUID() });
+          expect(stopped.status, `${label}: ${JSON.stringify(stopped.body)}`).toBe(200);
+          expect(stopped.body, label).toMatchObject({ stop: "NOTHING_RUNNING", message: expect.stringContaining("use Close task") as unknown });
+          const after = t.meta(task.taskId);
+          expect(after, label).toMatchObject({ workflow: { stage: shape === "PLAN_REVIEW waiting" ? "PLAN_REVIEW" : shape === "blocked at PLAN" ? "PLAN" : "PLAN_CRITIQUE" } });
+          expect((after as unknown as { workflow: { state: string } }).workflow.state, label).not.toBe("COMPLETE");
+          expect(after.closedAt, label).toBeUndefined();
+          expect(after.releasedAt, label).toBeUndefined();
+          expect(after.releaseClaimedAt, label).toBeUndefined();
+          expect(JSON.stringify(t.db.get(`WORKSPACE#${task.workspaceId}`, "META")), label).toBe(workspaceBefore);
+          expect(audit.recordedBy("session.stopped"), label).toHaveLength(0);
+        }
       }
     }
   });
