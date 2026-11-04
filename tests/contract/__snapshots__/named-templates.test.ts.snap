@@ -13812,6 +13812,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "STATE_TABLE_NAME": {
               "Ref": "State1C20CC9A",
             },
+            "TEST_SERVICES_ENABLED": {
+              "Ref": "TestServicesEnabled",
+            },
             "WORKER_LOG_GROUP_NAME": "/agentx/staging/worker",
             "WORKER_SETTINGS_PREFIX": "/agentx/staging/",
           },
