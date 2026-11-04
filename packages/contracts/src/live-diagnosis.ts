@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { DIAGNOSIS_PREFILL_ALLOW, DIAGNOSIS_PROPOSALS_MAX, DIAGNOSIS_SETTINGS_TARGETS, DIAGNOSIS_TIERS, DiagnosisProposalSchema, DiagnosisTierSchema, ErrorRefSchema, SettingValueSchema } from "./live-interaction.js";
 import { ASK_ROUTE_ATTRIBUTE_NAME } from "./live-ask.js";
+import { forwardReader } from "./forward-reader.js";
 import { ModelIdentifierSchema } from "./models.js";
 import { OrgIdSchema } from "./org.js";
 
@@ -96,6 +97,8 @@ export const DiagnosisStatusSchema = z.object({
   failure: z.string().max(200).optional(),
 }).strict();
 export type DiagnosisStatus = z.infer<typeof DiagnosisStatusSchema>;
+/** The web app reads a diagnosis with this (a newer server's extra fields, states and proposal kinds do not break an older page). */
+export const DiagnosisStatusReaderSchema = forwardReader(DiagnosisStatusSchema);
 
 /** What "Apply this change" answers: what was raised and where to look; never the setting's value. */
 export const DiagnosisProposalOutcomeSchema = z.object({

@@ -34,6 +34,7 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 import { safeDisplayName } from "../developer/person-name.js";
 import { anchorTargetsOf } from "./anchors.js";
 import { closableSession, newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
+import { sessionLiveFlags } from "./live-flags.js";
 import { viewingNow } from "./followers.js";
 import { chosenOwnerNames, withChosenOwnerName } from "./owner-names.js";
 import type { AuditRuntime } from "../audit/outbox.js";
@@ -236,6 +237,8 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
   const canMakeAgent = deps.mayMakeAgent !== undefined && session.kind === "task" && session.project !== undefined && await deps.mayMakeAgent({ orgId: caller.orgId, developerId: caller.developerId, orgRole: access.orgRole }, session.project);
   // The parts a comment can be pinned to, from the very view shown (Task 10b).
   const anchors = taskShown === undefined ? [] : anchorTargetsOf(taskShown);
+  // Ask about this task / Fix with agent: offered only where the switch is on and the routes' own gate lets this reader use it (`live-flags.ts`).
+  const live = await sessionLiveFlags(deps, caller, access, taskShown?.errorRef);
   return {
     contractVersion: AGENT_SESSION_CONTRACT_VERSION,
     sessionId: session.sessionId,
@@ -265,7 +268,8 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     viewingNow: await viewingNow(deps, session, deps.now()),
     you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status, workflowBlocked, closable: closableSession(session) }), ...(canMakeAgent ? ["make_agent" as const] : [])],
       // Merge's rule (pressMerge): the effective owner, a maintainer of the project (granted or inherited) or an org admin. A reader at `view` who is one of the last two still presses it (C59).
-      ...(session.subject.kind === "task" && levelOf(access) === "view" && (access.projectRole === "maintainer" || access.orgAdmin) ? { mayMerge: true as const } : {}) },
+      ...(session.subject.kind === "task" && levelOf(access) === "view" && (access.projectRole === "maintainer" || access.orgAdmin) ? { mayMerge: true as const } : {}),
+      ...(live === undefined ? {} : { live }) },
     link: sessionLink(deps.origin, session.sessionId),
     bindings: await bindingsOf(deps, session),
     legs: session.legs,
