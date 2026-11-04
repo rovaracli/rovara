@@ -1,15 +1,22 @@
-import { mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";
 import { buildRelease } from "../../scripts/release/build.js";
+import type { ReleaseManifest } from "../../scripts/release/manifest.js";
 import { containedPath, loadRelease } from "../../packages/cli/src/deploy/release.js";
 
 let dir: string;
+let pristine: string;
+let pristineManifest: ReleaseManifest;
 beforeAll(async () => {
-  dir = join(await mkdtemp(join(tmpdir(), "agentx-load-")), "r");
-  await buildRelease({ version: "1.2.3", out: dir, gitCommit: "a".repeat(40) });
+  // One real build. `dir` is the copy the cases share (some add links to it); `pristine` stays untouched for the case that tampers with its own copy.
+  const root = await mkdtemp(join(tmpdir(), "agentx-load-"));
+  pristine = join(root, "pristine");
+  pristineManifest = await buildRelease({ version: "1.2.3", out: pristine, gitCommit: "a".repeat(40) });
+  dir = join(root, "r");
+  await cp(pristine, dir, { recursive: true });
 }, 900_000);
 
 describe("loading a release for install", () => {
@@ -28,7 +35,8 @@ describe("loading a release for install", () => {
 
   it("refuses a release whose files do not match release.json", async () => {
     const tampered = join(await mkdtemp(join(tmpdir(), "agentx-tamper-")), "r");
-    const manifest = await buildRelease({ version: "1.2.3", out: tampered, gitCommit: "a".repeat(40) });
+    await cp(pristine, tampered, { recursive: true });
+    const manifest = pristineManifest;
     await writeFile(join(tampered, manifest.packages[0]!.file), "tampered");
     await expect(loadRelease(tampered)).rejects.toThrow(manifest.packages[0]!.file);
   }, 900_000);
