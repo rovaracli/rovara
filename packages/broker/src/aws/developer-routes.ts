@@ -291,6 +291,7 @@ export {
 } from "./developer-routes/authentication.js";
 import { LEARNING_PATH, routeLearning } from "../learning/routes.js";
 import { routeLessonsFor, routeLoadedKnowledgeFor } from "./developer-routes/lessons.js";
+import { recordWriteContextOf } from "./developer-routes/team-record-source-write.js";
 import { LEARNING_SETTINGS_PATH, routeLearningSettings } from "../learning/settings-routes.js";
 import { REVIEW_DEFAULT_NOTICE_PATH, dismissReviewDefaultNotice, readReviewDefaultNotice } from "../model-selection/review-default-notice.js";
 import { clearArchivedProjectLearning } from "./developer-routes/project-archive-setup.js";
@@ -663,7 +664,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     let projectName: string;
     try { projectName = decodeURIComponent(recordRoute[1]!); } catch { throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP); }
     const found = await projectRoleForRoute(deps, caller, projectName);
-    const reply = await deps.teamRecord.routes({ method: request.method, path: url.pathname, query: Object.fromEntries(url.searchParams), caller: { orgId: caller.orgId, developerId: caller.developerId, projectRole: found.role } });
+    const reply = await deps.teamRecord.routes({ method: request.method, path: url.pathname, query: Object.fromEntries(url.searchParams), caller: { orgId: caller.orgId, developerId: caller.developerId, projectRole: found.role }, write: recordWriteContextOf(deps, caller, request) });
     if (reply !== undefined) return reply.status === 200 ? reply.body : new StatusReply(reply.status, reply.body as object);
   }
   // Design review: Design first, Skip, the cost card's choices, the question card's answers, the Retry of a review that did not run, and the confirmation page of a high-risk design. A task with no design review answers as a missing one.

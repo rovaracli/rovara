@@ -93,7 +93,7 @@ instead: give it a one-line header comment when you next edit it.
 | Feature | Where |
 |---|---|
 | Money: budgets, reservations, settlement | `packages/broker/src/spend/` (routes: `packages/broker/src/spend/routes.ts#routeSpendRequest`) |
-| Team record (switch `tn`) | `packages/broker/src/team-record/` (routes: `packages/broker/src/team-record/routes.ts#handleRecordRoute`; wiring: `packages/broker/src/aws/broker/team-record-wiring.ts`) |
+| Team record (switch `tn`) | `packages/broker/src/team-record/` (routes: `packages/broker/src/team-record/routes.ts#handleRecordRoute`; wiring: `packages/broker/src/aws/broker/team-record-wiring.ts`; source rows written from the app: `packages/broker/src/team-record/source-write.ts` and `packages/broker/src/team-record/source-store.ts`) |
 | Track record (per-step stats in the playbook) | `packages/broker/src/playbook/track-record.ts`. Not the same thing as the Team record. |
 | Lessons (learning v2, switch `ll`) | `packages/broker/src/lessons/`. Loaded into a run by `packages/broker/src/aws/broker/lessons-dispatch.ts#learnedContextForOperation`. Learning capture is in `packages/broker/src/learning/`. |
 | Test environment, nightly run, saved images (`ev`, `nh`, `sv`) | `packages/broker/src/test-env/`. Routes: `packages/broker/src/aws/developer-routes/test-environment.ts`. Contracts: `packages/contracts/src/test-environment.ts`. |

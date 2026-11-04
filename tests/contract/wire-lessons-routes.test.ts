@@ -86,6 +86,26 @@ describe("both route families answer, each by its own handler", () => {
     expect((await f.request("GET", "/v1/app/projects/demo/lessons/sources")).status).toBe(200);
   });
 
+  it("the record sources write path: with no Team record it is a path that does not exist; with one, the route is handed the caller's role, session kind and a body that is read only when asked for", async () => {
+    const off = withRecord({ record: false });
+    const missing = await off.request("POST", "/v1/app/projects/demo/nothing-here/sources", { action: "add" });
+    expect(await off.request("POST", "/v1/app/projects/demo/record/sources", { action: "add" })).toEqual(missing);
+    const f = withRecord();
+    const seen: Array<{ browserSession: boolean; orgRole: string; body: unknown; hasSecondPerson: boolean }> = [];
+    (f.deps as { teamRecord?: unknown }).teamRecord = {
+      routes: async (request: { write?: { browserSession: boolean; orgRole: string; body(): unknown; secondPerson?: unknown } }) => {
+        seen.push({ browserSession: request.write!.browserSession, orgRole: request.write!.orgRole, body: request.write!.body(), hasSecondPerson: request.write!.secondPerson !== undefined });
+        return { status: 200, body: { from: "team-record" } };
+      },
+    };
+    expect((await f.request("POST", "/v1/app/projects/demo/record/sources", { action: "add", marker: 1 })).body).toMatchObject({ from: "team-record" });
+    expect((await f.request("POST", "/v1/app/projects/demo/record/sources", { action: "add", marker: 2 }, f.callerOf(me, "owner", false))).body).toMatchObject({ from: "team-record" });
+    expect(seen).toEqual([
+      { browserSession: true, orgRole: "owner", body: { action: "add", marker: 1 }, hasSecondPerson: true },
+      { browserSession: false, orgRole: "owner", body: { action: "add", marker: 2 }, hasSecondPerson: true },
+    ]);
+  });
+
   it("with the lessons ports unwired the record still answers and the lessons paths do not", async () => {
     const f = withRecord({ wired: false });
     expect((await f.request("GET", "/v1/app/projects/demo/record/sources")).body).toMatchObject({ from: "team-record" });

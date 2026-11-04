@@ -1,5 +1,6 @@
 // Audit events of the record core (R1's `record.*` and `lesson.withdrawn` actions). Ids, fixed words and counts only: never a row's text, a lesson's text or a
 // source's name. The caller binds `emit` to the audit outbox (`tryAuditEvent`); a failed emit never blocks a delete (the delete is the privacy duty).
+import { createHash } from "node:crypto";
 import { auditEventId, type AuditActor, type AuditEventInput } from "@agentx/contracts";
 
 export type RecordAuditSink = (event: AuditEventInput) => Promise<void>;
@@ -36,4 +37,29 @@ export function auditLessonWithdrawn(input: { orgId: string; lessonId: string; v
     eventId: auditEventId("lesson.withdrawn", input.lessonId, String(input.version)), ...base(input.orgId, input.at), action: "lesson.withdrawn",
     target: { kind: "lesson", id: input.lessonId }, facts: { cause: input.cause },
   };
+}
+
+// ---- the source write route (`source-write.ts`). The actor is the person; the target names the source row by a hash of its project, kind and place (the place itself is not an audit fact);
+// the facts are the fixed words the contract lists. `occurrence` is what makes one occurrence unique (the request id, or the change id and the decision).
+const rowTarget = (project: string, source: string, scope: string) => ({ kind: "record_source" as const, id: createHash("sha256").update(`${project}\0${source}\0${scope}`).digest("hex").slice(0, 40) });
+const person = (id: string): AuditActor => ({ kind: "member", id });
+
+interface SourceEventBase { orgId: string; actorId: string; at: string; occurrence: string; project: string; source: string; scope: string; related?: string[] }
+const sourceBase = (action: "record.source_added" | "record.source_changed" | "record.source_change_proposed" | "record.source_change_decided", input: SourceEventBase) => ({
+  eventId: auditEventId(action, input.occurrence), orgId: input.orgId, action, actor: person(input.actorId), occurredAt: input.at, target: rowTarget(input.project, input.source, input.scope),
+  ...(input.related === undefined || input.related.length === 0 ? {} : { related: input.related }),
+});
+
+export function auditRecordSourceAdded(input: SourceEventBase & { retention: string; restricted: boolean }): AuditEventInput {
+  return { ...sourceBase("record.source_added", input), facts: { source: sourceWord(input.source), retention: input.retention, restricted: input.restricted } };
+}
+export function auditRecordSourceChanged(input: SourceEventBase & { fromRetention: string; toRetention: string; enabled: boolean }): AuditEventInput {
+  return { ...sourceBase("record.source_changed", input), facts: { source: sourceWord(input.source), fromRetention: input.fromRetention, toRetention: input.toRetention, enabled: input.enabled } };
+}
+/** `reasons` are the contract's fixed words, joined with commas. */
+export function auditRecordSourceChangeProposed(input: SourceEventBase & { reasons: readonly string[] }): AuditEventInput {
+  return { ...sourceBase("record.source_change_proposed", input), facts: { source: sourceWord(input.source), reasons: input.reasons.join(",") } };
+}
+export function auditRecordSourceChangeDecided(input: SourceEventBase & { decision: "approved" | "rejected"; soleOwner: boolean }): AuditEventInput {
+  return { ...sourceBase("record.source_change_decided", input), facts: { source: sourceWord(input.source), decision: input.decision, soleOwner: input.soleOwner } };
 }

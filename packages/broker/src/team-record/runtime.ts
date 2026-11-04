@@ -12,9 +12,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { STSClient } from "@aws-sdk/client-sts";
-import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, teamRecordPk, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, repositoryHostOf, githubMemberKey, teamRecordPk, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
 import { companyIsOpen, readProjectRole, readStanding } from "../learning/standing.js";
 import { readProjectMeta } from "../developer/project-roles.js";
+import { latestRevision } from "../org/project-settings.js";
 import { OrgStore } from "../org/store.js";
 import { resolveSlackOrg } from "../org/resolve.js";
 import { orgOfInstallation, projectsOf as projectsOfRepository } from "../triggers/github-events.js";
@@ -38,6 +39,7 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { tableModeReader, type LearningModeReader } from "./mode.js";
 import { buildRecordCaller, handleRecordRoute, type RecordRouteReply } from "./routes.js";
 import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
+import type { SourceRouteDependencies, SourceWriteContext } from "./source-write.js";
 import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
@@ -157,7 +159,7 @@ export interface TeamRecordRuntime {
   readonly actors: ActorResolverPort;
   readonly modes: LearningModeReader;
   /** `/v1/app/projects/{project}/record/...` (the caller's project role already found by the broker). `undefined` for any other path. */
-  routes(request: { method: string; path: string; query: Readonly<Record<string, string | undefined>>; caller: TeamRecordCallerInput }): Promise<RecordRouteReply | undefined>;
+  routes(request: { method: string; path: string; query: Readonly<Record<string, string | undefined>>; caller: TeamRecordCallerInput; /** What a source write needs from the broker's request (`source-write.ts`); absent: reads only. */ write?: SourceWriteContext }): Promise<RecordRouteReply | undefined>;
   /** The record tools an agent step may be offered, and one call of them. */
   tools: {
     list(context: Pick<RecordToolContext, "memory">): ReadonlyArray<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
@@ -523,13 +525,24 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     };
   }
 
-  const routes: TeamRecordRuntime["routes"] = async ({ method, path, query, caller }) => {
+  /** The source write route's dependencies: this install's edition, the project's repositories read live from its latest revision, and the learning loop's paused sources. No company retention ceiling is stored anywhere yet, so none is read. */
+  const sourceRoutes: SourceRouteDependencies = {
+    edition,
+    projectRepositories: async (orgId, project) => {
+      const latest = await latestRevision(state, orgId, project);
+      if (latest === undefined) return undefined;
+      return latest.definition.repositories.flatMap((repository) => { const host = repositoryHostOf(repository); return host.kind === "github" && "repositoryId" in host && host.repositoryId !== undefined ? [host.repositoryId] : []; });
+    },
+    pausedSources: async (orgId, project) => Object.keys((await new DynamoLessonStore(table, now).flags({ workspaceId: orgId, project })).pausedSources ?? {}),
+  };
+
+  const routes: TeamRecordRuntime["routes"] = async ({ method, path, query, caller, write }) => {
     // The org is the caller's session's. The route handler never reads one from the path or the query.
     const orgId = OrgIdSchema.parse(caller.orgId);
     const identities = { identitiesOf: async (org: OrgId, developerId: string) => identitiesOf(org, developerId) };
     const built = await buildRecordCaller(identities, { orgId, developerId: caller.developerId, projectRole: caller.projectRole });
     try {
-      return await handleRecordRoute(await queryFor(orgId), { method, path, query, caller: built });
+      return await handleRecordRoute({ ...(await queryFor(orgId)), sources: sourceRoutes }, { method, path, query, caller: built, ...(write === undefined ? {} : { write }) });
     } catch (error) {
       // A project segment that is not valid percent-encoding is a project that does not exist.
       if (error instanceof URIError) return { status: 404, body: { code: "PROJECT_NOT_FOUND", message: "No such project." } };

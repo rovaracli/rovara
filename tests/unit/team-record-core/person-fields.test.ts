@@ -7,7 +7,7 @@ import { ACTOR_STRUCTURED_FIELDS, ERASE_STEPS, PERSON_FIELDS, REQUIRED_ERASE_STE
 
 const ROOT = join(__dirname, "../../..");
 const SCHEMA_FILES = [
-  "packages/contracts/src/team-record.ts", "packages/contracts/src/lessons.ts", "packages/contracts/src/learned-context.ts", "packages/contracts/src/audit.ts",
+  "packages/contracts/src/team-record.ts", "packages/contracts/src/team-record-sources.ts", "packages/contracts/src/lessons.ts", "packages/contracts/src/learned-context.ts", "packages/contracts/src/audit.ts",
   "packages/broker/src/lessons/types.ts", "packages/broker/src/team-record/types.ts", "packages/broker/src/team-record/shared-types.ts",
 ];
 /** A field name that looks like it holds a person. */
@@ -22,6 +22,8 @@ const NOT_A_PERSON: Record<string, string> = {
   userVisible: "a flag",
   approval: "the approval policy of a tier (one, two, auto), not a person",
   soleOwnerException: "a flag that a sole owner approved alone; the approver is in approvals[].by",
+  membershipDigest: "a one-way hash of the approvers membership version and ids, taken when a source change was proposed; it holds no id",
+  soleApprover: "a flag: the viewer is the only person who could approve; the id is not shown",
   memberSignal: "a flag that a member asked for the lesson; the member is in provenance.authors",
 };
 

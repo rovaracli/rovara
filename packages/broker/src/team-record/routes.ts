@@ -13,6 +13,7 @@ import {
   type ProjectRole,
 } from "@agentx/contracts";
 import { recordFacts, pastWork, recordSearch, recordStats, type RecordQueryDependencies } from "./query.js";
+import { handleSourceWrite, mayEditSources, sourcesAdminView, type SourceWriteContext } from "./source-write.js";
 import { listSourceConfigs } from "./store.js";
 import type { CallerIdentities, RecordCaller } from "./types.js";
 
@@ -37,6 +38,8 @@ export interface RecordRouteRequest {
   /** The query string as key and value pairs. */
   query: Readonly<Record<string, string | undefined>>;
   caller: RecordCaller;
+  /** What only the broker's request knows, for the source write route and the editors' view of the sources (`source-write.ts`). Absent: reads only, as before. */
+  write?: SourceWriteContext;
 }
 export interface RecordRouteReply { status: number; body: unknown }
 
@@ -51,12 +54,15 @@ function numberOf(value: string | undefined): number | undefined {
 export async function handleRecordRoute(deps: RecordQueryDependencies, request: RecordRouteRequest): Promise<RecordRouteReply | undefined> {
   const match = ROUTE.exec(request.path);
   if (match === null) return undefined;
-  if (request.method !== "GET") return { status: 405, body: { code: "CONFIG_INVALID", message: "That method is not allowed here." } };
+  // The one write: `POST .../record/sources`, only where the install wired the source routes and the caller passed what a write needs.
+  const sourceWrite = request.method === "POST" && match[2] === "sources" && deps.sources !== undefined && request.write !== undefined;
+  if (request.method !== "GET" && !sourceWrite) return { status: 405, body: { code: "CONFIG_INVALID", message: "That method is not allowed here." } };
   const project = RecordProjectSchema.safeParse(decodeURIComponent(match[1] ?? ""));
   if (!project.success) return { status: 404, body: { code: "PROJECT_NOT_FOUND", message: "No such project." } };
   const audience = { kind: "caller" as const, caller: request.caller };
   const route = match[2] as string;
   try {
+    if (sourceWrite) return await handleSourceWrite(deps, request, project.data);
     if (route === "search") {
       const parsed = RecordSearchQuerySchema.safeParse({
         query: request.query.query, limit: numberOf(request.query.limit), ...(request.query.since === undefined ? {} : { since: request.query.since }), ...(request.query.until === undefined ? {} : { until: request.query.until }),
@@ -77,6 +83,8 @@ export async function handleRecordRoute(deps: RecordQueryDependencies, request: 
     }
     if (route === "sources") {
       if (request.caller.projectRole === undefined) throw agentXError("PROJECT_ACCESS_DENIED", "You don't have access to this project.");
+      // A person who may edit the project's sources reads the editors' view; everyone else gets the reply below, unchanged.
+      if (deps.sources !== undefined && request.write !== undefined && mayEditSources(request.caller, request.write)) return { status: 200, body: await sourcesAdminView(deps, request, project.data) };
       const rows = await listSourceConfigs(deps.table, request.caller.orgId, project.data);
       // The approval and who added a source are the maintainers' business; a member reads what is kept and how.
       // What the record left out because the author is not a linked Rovara person, per source: for the project's maintainers (TRW-4). Counts only.

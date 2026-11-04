@@ -323,19 +323,21 @@ export async function putSourceConfig(table: TeamRecordTable, config: SourceConf
   if (elsewhere) return { status: "refused", reason: "scope_in_other_project" };
   // An admin saving a source row for a place opens it again (a repository transferred back, a channel brought back): the closed-place marker goes.
   await reopenScope(table, parsed.data.workspaceId, parsed.data.scope);
-  await table.documentClient.send(new PutCommand({
-    TableName: table.tableName,
-    Item: withoutUndefined({
-      ...recordSourceKey(parsed.data.workspaceId, parsed.data.project, parsed.data.source, parsed.data.scope),
-      entityType: "TEAM_RECORD_SOURCE",
-      ...parsed.data,
-      [TEAM_RECORD_GSI1.partition]: recordSourceConfigIndexValue(parsed.data.workspaceId, parsed.data.source, parsed.data.scope),
-      // The place is indexed under its own partition value (the sparse "places" list), so a tombstone of a place above it finds every place with a source row, even one with nothing stored yet, without reading any item row.
-      [TEAM_RECORD_GSI3.partition]: recordPlaceIndexValue(parsed.data.workspaceId, parsed.data.scope),
-      [TEAM_RECORD_GSI3.sort]: parsed.data.scope,
-    }),
-  }));
+  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: sourceRowItem(parsed.data) }));
   return { status: "saved" };
+}
+
+/** A source row as it is stored: its key, its type and its two index values. `putSourceConfig` and the source write route (`source-write.ts`) store exactly this. */
+export function sourceRowItem(config: SourceConfig): Item {
+  return withoutUndefined({
+    ...recordSourceKey(config.workspaceId, config.project, config.source, config.scope),
+    entityType: "TEAM_RECORD_SOURCE",
+    ...config,
+    [TEAM_RECORD_GSI1.partition]: recordSourceConfigIndexValue(config.workspaceId, config.source, config.scope),
+    // The place is indexed under its own partition value (the sparse "places" list), so a tombstone of a place above it finds every place with a source row, even one with nothing stored yet, without reading any item row.
+    [TEAM_RECORD_GSI3.partition]: recordPlaceIndexValue(config.workspaceId, config.scope),
+    [TEAM_RECORD_GSI3.sort]: config.scope,
+  });
 }
 
 export async function listSourceConfigs(table: TeamRecordTable, orgId: OrgId, project: string, maxItems = 200): Promise<SourceConfig[]> {

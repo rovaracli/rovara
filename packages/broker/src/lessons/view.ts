@@ -201,7 +201,7 @@ export async function buildLessonsDigest(deps: LessonViewDeps, caller: LessonCal
 }
 
 /** Does a pause key (`slack:C9`, `github:acme/api`) belong to a source row? Either the whole scope, or the source's name and the last part of its scope. */
-function pauseMatches(pauseKey: string, source: string, scope: string): boolean {
+export function pauseMatches(pauseKey: string, source: string, scope: string): boolean {
   const key = normSource(pauseKey).toLowerCase();
   return key === scope.toLowerCase() || key === `${source}:${scope.split("/").pop() ?? ""}`.toLowerCase();
 }

@@ -39,6 +39,7 @@ import { filterVisible, type FilterDependencies, type FilterResult, type LiveChe
 import { parseEventVectorRef } from "./ingest.js";
 import { assembleItem, itemKeyOf, isChangeRow, visibleItemRows } from "./item-assembly.js";
 import type { LearningModeReader } from "./mode.js";
+import type { SourceRouteDependencies } from "./source-write.js";
 import { getRecordEvent, getRecordFact, pendingHidesOf, queryRecordEvents, queryRecordFacts, type StoredEvent, type StoredFact } from "./store.js";
 import type { LiveAclCheck, ReadAudience, RecordEmbedder, RecordLog, TeamRecordTable } from "./types.js";
 
@@ -96,6 +97,8 @@ export interface RecordQueryDependencies {
   stats?: StatsPort;
   /** TRW-4: how many rows were skipped for want of a linked author, per source, for a project (counts only). Shown to the project's maintainers. */
   skipped?: { read(orgId: OrgId, project: string): Promise<Record<string, number>> };
+  /** The source write route's dependencies (`source-write.ts`). Absent: the route answers only reads, as before. */
+  sources?: SourceRouteDependencies;
   now?: () => number;
   log?: RecordLog;
 }
