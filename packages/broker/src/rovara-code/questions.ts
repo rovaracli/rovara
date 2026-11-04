@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, IntentAnswerRefusal, IntentAnswerSchema, UNDERSTAND_ROUNDS_MAX, agentXError, answerIntentQuestions, atLeast,
+  INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, IntentAnswerRefusal, IntentAnswerSchema, UNDERSTAND_ROUNDS_MAX, agentXError, answerIntentQuestions, atLeast, hideEmailAddresses,
   memberGrantsPk, MEMBER_GRANT_SK_PREFIX, sharedSessionsKey, SessionIdSchema, SessionLevelSchema,
   type AgentPrincipal, type AgentSessionRecord, type SessionView, type WorkflowSnapshot,
 } from "@agentx/contracts";
@@ -181,7 +181,7 @@ const questionSource: HomeCardSource = {
       if (access === undefined || !atLeast(access.level, "use")) continue;
       const words = `Rovara has ${asked.length === 1 ? "1 question" : `${String(asked.length)} questions`} about ${quoted(session.title)}`.replace(/[<>]/gu, " ");
       cards.push({
-        cardId: `question:${session.sessionId}`, kind: "question", title: session.title, reason: fit(words, ""), sessionId: session.sessionId, at: session.updatedAt,
+        cardId: `question:${session.sessionId}`, kind: "question", title: access.owner ? session.title : hideEmailAddresses(session.title), reason: fit(words, ""), sessionId: session.sessionId, at: session.updatedAt,
         buttons: [openSession(deps, session.sessionId, "Answer")],
       });
     }

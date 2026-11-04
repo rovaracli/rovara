@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  ASK_ANSWER_LABEL, ASK_LIMITS, ASK_RATE, ASK_UNAVAILABLE_MESSAGE, redactText, AskAnsweredRequestSchema, AskBodySchema, AskQueueMessageSchema, AskStatusSchema, AskTurnRequestSchema, ASK_TURN_RULES, INDEX_EXPIRY_ATTRIBUTE,
+  ASK_ANSWER_LABEL, ASK_LIMITS, ASK_RATE, ASK_UNAVAILABLE_MESSAGE, hideEmailAddresses, redactText, AskAnsweredRequestSchema, AskBodySchema, AskQueueMessageSchema, AskStatusSchema, AskTurnRequestSchema, ASK_TURN_RULES, INDEX_EXPIRY_ATTRIBUTE,
   agentXError, askLockKey, askRequestKey, projectArchivedMessage, askRouteAttributes, sessionAskKey, sessionRateKey,
   type AskAnsweredRequest, type AskStatus, type AskTurnResult, type OrgId, type SessionLevel,
 } from "@agentx/contracts";
@@ -76,7 +76,7 @@ export interface AskDependencies {
 export type AskCaller = SessionCaller;
 
 /** Posts a comment on a Linear issue as Rovara (see `LinearReplyPort`; this is the part an Ask needs). `commentKey` makes a retry the same comment; `workspace` is the one the issue's binding names. */
-export interface LinearAnswerPort { reply(input: { orgId: OrgId; issueKey: string; text: string; commentKey?: string | undefined; workspace?: string | undefined }): Promise<{ commentId: string } | void> }
+export interface LinearAnswerPort { reply(input: { orgId: OrgId; issueKey: string; text: string; commentKey?: string | undefined; workspace?: string | undefined }): Promise<{ commentId: string; workspace?: string | undefined } | void> }
 
 /** How many times one answer is posted to Linear before it is given up on (the post is idempotent by its key, so a repeat after a lost answer is safe). */
 export const LINEAR_POST_ATTEMPTS = 3;
@@ -87,7 +87,7 @@ export const askAnswerCommentKey = (askId: string): string => `ask:${askId}`;
 export const withoutMentions = (text: string): string => text.replace(/@(?=[\p{L}\p{N}_])/gu, "@\u200b");
 
 /** An answer for a Linear issue: secrets redacted, mentions broken, with the AI label. */
-export const linearAnswerText = (text: string): string => `${withoutMentions(redactText(text))}\n\n_${ASK_ANSWER_LABEL}_`;
+export const linearAnswerText = (text: string): string => `${withoutMentions(hideEmailAddresses(redactText(text)))}\n\n_${ASK_ANSWER_LABEL}_`;
 
 const getItem = async (deps: Pick<AskDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
   ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
@@ -420,7 +420,11 @@ export async function completeAsk(deps: AskDependencies, value: unknown): Promis
     if (pending.audience !== "linear" || pending.issueId === undefined || deps.linearReply === undefined) return;
     for (let attempt = 1; attempt <= LINEAR_POST_ATTEMPTS; attempt += 1) {
       try {
-        await deps.linearReply.reply({ orgId: answer.orgId, issueKey: pending.issueId, text, commentKey: key, ...(pending.workspace === undefined ? {} : { workspace: pending.workspace }) });
+        const posted = await deps.linearReply.reply({ orgId: answer.orgId, issueKey: pending.issueId, text, commentKey: key, ...(pending.workspace === undefined ? {} : { workspace: pending.workspace }) });
+        // AL-1: a binding that named no workspace still leaves a comment in one. The workspace of the connection that posted it is recorded on the Ask, so an erase asks in that workspace and no other.
+        if (key === askAnswerCommentKey(answer.askId) && pending.workspace === undefined && posted !== undefined && typeof posted.workspace === "string" && posted.workspace !== "") {
+          await recordLinearPost(deps, answer.orgId, answer.sessionId, answer.askId, { issueKey: pending.issueId, commentId: linearCommentIdFor(answer.orgId, askAnswerCommentKey(answer.askId)), workspace: posted.workspace });
+        }
         return;
       } catch (error) {
         deps.log?.({ event: "ask.linear_reply_failed", attempt, error: error instanceof Error ? error.name : "unknown" });

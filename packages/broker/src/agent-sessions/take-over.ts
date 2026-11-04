@@ -30,6 +30,7 @@ import {
   type NeedsConfirmation,
   type OrgId,
   type Payer,
+  hideEmailAddresses,
 } from "@agentx/contracts";
 import {
   createPendingChange,
@@ -215,7 +216,7 @@ export async function askTakeOver(deps: SessionTakeOverDependencies, caller: Sha
   const record = await createPendingChange(approvals, {
     orgId: caller.orgId, requestId: input.requestId, requestedBy: caller.developerId,
     subject: { kind: "session_owner", sessionId: session.sessionId, to: caller.developerId, sessionRevision: session.revision },
-    changes: [`${taker} becomes the owner of "${session.title}".`, `New AI spend counts against ${payerWords(payer, taker, session)}.`, `${nameOrMember(access.effectiveOwner.name)} keeps "can edit".`],
+    changes: [`${taker} becomes the owner of "${hideEmailAddresses(session.title)}".`, `New AI spend counts against ${payerWords(payer, taker, session)}.`, `${nameOrMember(access.effectiveOwner.name)} keeps "can edit".`],
     approvers: { kind: "rule", rule: TAKE_OVER_RULE, candidates: [caller.developerId] },
   });
   // A replay of a request that was decided since is not waiting any more.
@@ -238,7 +239,7 @@ export async function takeOverFacts(deps: SessionTakeOverDependencies | undefine
     const taker = nameOrMember(await nameOf(deps, subject.to));
     const { payer } = await payerOfSession(deps, session, task);
     return [
-      fact("Session", session.title), ...(session.project === undefined ? [] : [fact("Project", session.project)]),
+      fact("Session", hideEmailAddresses(session.title)), ...(session.project === undefined ? [] : [fact("Project", session.project)]),
       fact("Owner now", nameOrMember(now.name)), fact("New owner", taker), fact("Who pays from now", payerWords(payer, taker, session)),
     ];
   } catch {

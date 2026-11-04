@@ -5,7 +5,7 @@
 //   - the same when the session is deleted, when it is past its retention (its record may outlive it by the table's TTL lag), when it is another org's, when it can't be read right now (fail closed), and when the
 //     stored origin does not parse.
 // The session is read through `resolveSessionAccess`, so the access rules are exactly the session's own (shares, the task's people, project roles, org admins).
-import { AgentOriginSchema, SESSION_RETENTION_DAYS, sessionLink, type AgentOrigin, type AgentOriginView, type OrgId } from "@agentx/contracts";
+import { AgentOriginSchema, SESSION_RETENTION_DAYS, hideEmailAddresses, sessionLink, type AgentOrigin, type AgentOriginView, type OrgId } from "@agentx/contracts";
 import { resolveSessionAccess, type SessionAccessDependencies } from "./access.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -34,7 +34,7 @@ async function shownOf(deps: OriginDependencies, caller: { orgId: OrgId; develop
   try {
     const { session } = await resolveSessionAccess(deps, caller, sessionId);
     if (pastRetention(deps.now(), session)) return undefined;
-    return { title: session.title, link: sessionLink(deps.confirmOrigin, session.sessionId) };
+    return { title: hideEmailAddresses(session.title), link: sessionLink(deps.confirmOrigin, session.sessionId) };
   } catch (error) {
     // A session the person can't read, or that is gone, is NOT_FOUND: hidden, and nothing to report. Anything else is reported by name and hidden too.
     if (!(error instanceof Error && error.name === "AgentXError" && (error as { code?: string }).code === "NOT_FOUND")) {
