@@ -3,28 +3,17 @@
 // developer-routes import chain reached it before the unpacking ran, so the EC2 session manager held an empty table name and an empty deleter ARN.
 // This loads the real broker entry module the way the Lambda does: the environment is what the control plane gives the broker (the synthesized
 // function's variables, only the packed ones), plus the region and account Lambda gives it.
-import { Stack } from "aws-cdk-lib";
-import { Template } from "aws-cdk-lib/assertions";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE } from "@agentx/contracts";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { buildAgentXApp } from "../../infra/lib/app.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
-import { lambdaEnvironments, DEPLOY_PARAMETER_VALUES, type Template as ResolvableTemplate } from "../support/lambda-environment-size.js";
+import { brokerVariables } from "../support/broker-packed-variables.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
 
 const REGION = "ap-southeast-4";
 const ACCOUNT = "123456789012";
-
-function brokerVariables(): Record<string, string> {
-  const app = buildAgentXApp({ agentxEnv: "staging", agentxCloud: true });
-  const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane")!;
-  const found = lambdaEnvironments(Template.fromStack(stack).toJSON() as ResolvableTemplate, { env: "staging", stackName: stack.stackName, parameterValues: DEPLOY_PARAMETER_VALUES })
-    .find((entry) => /^Broker[0-9A-F]{8}$/.test(entry.logicalId));
-  return found!.variables;
-}
 
 /** The accessor changed from a constant (v0.5.3) to a function; this reads either, so the test fails on an assertion and not on a missing name. */
 type Ec2SessionsExport = unknown;
