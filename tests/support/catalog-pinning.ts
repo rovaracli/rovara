@@ -15,6 +15,8 @@ export function pinnedCatalog(change: (entries: Array<Record<string, unknown>>) 
   raw.revision = 2;
   for (const entry of raw.entries) {
     const id = entry["id"] as string;
+    // Slice 3: a helper that runs from the worker's own image has no image to pin.
+    if (entry["workerImage"] === true) continue;
     (entry["image"] as { digest?: string }).digest = digestOfId(id);
     entry["sbomRef"] = sha(`sbom:${id}`);
     entry["scan"] = { scannedAt: "2026-11-02T00:00:00.000Z", criticalOpen: 0, highOpen: 1 };

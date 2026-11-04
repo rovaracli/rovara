@@ -316,7 +316,8 @@ describe("the catalog as a whole", () => {
       const pinned = () => {
         const data = file();
         data.pinned = true;
-        data.entries = data.entries.map((entry) => ({ ...entry, image: { ...entry.image, digest: sha("a") }, sbomRef: sha("b"), scan: { scannedAt: "2026-11-02T00:00:00.000Z", criticalOpen: 0, highOpen: 1 } }));
+        // Slice 3: the helpers that run from the worker's own image (`workerImage`) have no image of their own to pin.
+        data.entries = data.entries.map((entry) => (entry["workerImage"] === true ? entry : { ...entry, image: { ...entry.image, digest: sha("a") }, sbomRef: sha("b"), scan: { scannedAt: "2026-11-02T00:00:00.000Z", criticalOpen: 0, highOpen: 1 } }));
         return data;
       };
       expect(catalogOk(pinned())).toBe(true);

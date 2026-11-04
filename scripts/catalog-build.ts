@@ -143,7 +143,7 @@ export interface CatalogBuildPorts {
 
 /** A carried-over pin's recorded scan may be this old at most. */
 export const CARRIED_PIN_MAX_SCAN_AGE_DAYS = 30;
-export const BUILD_REFUSAL_CODES = ["no_source", "unknown_source", "digest_mismatch", "platforms_mismatch", "sbom_invalid", "scan_not_for_image", "scan_incomplete", "scan_critical", "port_failed", "unsigned", "unknown_entry", "retired_entry", "unselected_source", "carried_pin_missing", "carried_pin_stale", "built_source_not_allowed", "built_source_invalid"] as const;
+export const BUILD_REFUSAL_CODES = ["no_source", "unknown_source", "digest_mismatch", "platforms_mismatch", "sbom_invalid", "scan_not_for_image", "scan_incomplete", "scan_critical", "port_failed", "unsigned", "unknown_entry", "retired_entry", "unselected_source", "carried_pin_missing", "carried_pin_stale", "built_source_not_allowed", "built_source_invalid", "worker_image_entry"] as const;
 export type BuildRefusalCode = (typeof BUILD_REFUSAL_CODES)[number];
 export class CatalogBuildError extends Error {
   constructor(readonly refusals: ReadonlyArray<{ id: string; code: BuildRefusalCode; message: string }>) {
@@ -241,6 +241,13 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
   const entries: CatalogEntry[] = [];
   const evidence: Array<{ path: string; bytes: Buffer }> = [];
   for (const entry of current.entries) {
+    if (entry.workerImage === true) {
+      // Slice 3: the fake server, the DNS helper and the test-account proxy run from the worker's own image: there is no image of theirs to mirror, scan or pin. They are carried over as they are; naming one (as a
+      // selection or with a source) is refused, so nobody believes it was pinned.
+      if (selected?.has(entry.id) === true || sources.sources[entry.id] !== undefined) refuse(entry.id, "worker_image_entry", "this helper runs from the worker's own image: it has no image to pin");
+      entries.push(entry);
+      continue;
+    }
     if (entry.status === "retired") {
       // A retired entry is not rebuilt; what the previous pin said stays (a pinned environment may still name it).
       entries.push(entry);

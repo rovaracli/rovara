@@ -80,6 +80,33 @@ export const TestServicesAwsUsageSchema = z
   });
 export type TestServicesAwsUsage = z.infer<typeof TestServicesAwsUsageSchema>;
 
+/**
+ * Slice 3: what one fake server's request ledger said about a run. A fake is Rovara's own code answering from a reviewed set, but WHICH requests it was asked is the program's choice, so every count is a coarse bucket (the
+ * worker's `bucketCount`) like the other counts of this record, and nothing the program sent (a path, a host, a header, a body) is in it. `ledger: "read"` only when the fake was still running when the round ended, its
+ * ledger parsed without a malformed line and was not past its bound (the fake's ledger rules, `parseFakeLedger`); anything else is `unreadable` with every count zero: never "no calls".
+ */
+export const TestServicesFakeUsageSchema = z
+  .object({
+    /** The dependency's id in the plan. */
+    id: TestEnvDependencyIdSchema,
+    ledger: z.enum(["read", "unreadable"]),
+    /** Requests answered from the approved set. */
+    matched: Count,
+    /** Requests nothing in the set matched, answered with an error (policy `fail`): the tests that made them failed. */
+    unmatched: Count,
+    /** Requests answered with a made-up answer (policy `schema_synth`; not available in slice 3, so always 0 there). */
+    synthesized: Count,
+    /** Armed faults the fake served. */
+    faults: Count,
+    /** Calls from an address that is not the run's check sandbox: refused, never counted as the tests'. A sealed round has none. */
+    foreign: Count,
+  })
+  .strict()
+  .superRefine((usage, context) => {
+    if (usage.ledger !== "read" && (usage.matched > 0 || usage.unmatched > 0 || usage.synthesized > 0 || usage.faults > 0 || usage.foreign > 0)) context.addIssue({ code: "custom", path: ["ledger"], message: "a ledger that was not read says nothing" });
+  });
+export type TestServicesFakeUsage = z.infer<typeof TestServicesFakeUsageSchema>;
+
 export const TestServicesUsageRecordSchema = z
   .object({
     schemaVersion: z.literal(TEST_SERVICES_USAGE_SCHEMA_VERSION),
@@ -95,9 +122,12 @@ export const TestServicesUsageRecordSchema = z
       .strict(),
     /** Slice 2: the emulator's ledger as a record of facts (see `TestServicesAwsUsageSchema`). Absent when no emulator ran, so a record without one is slice 1's record byte for byte. */
     aws: TestServicesAwsUsageSchema.optional(),
+    /** Slice 3: one row for every fake server the run started, from its ledger. Absent when no fake ran, so a record without one is the earlier slices' record byte for byte. */
+    fakes: z.array(TestServicesFakeUsageSchema).max(TEST_SERVICES_USAGE_LIMITS.dependencies).optional(),
   })
   .strict()
   .superRefine((record, context) => {
+    if (record.fakes !== undefined && new Set(record.fakes.map((entry) => entry.id)).size !== record.fakes.length) context.addIssue({ code: "custom", path: ["fakes"], message: "a fake is listed once" });
     if (new Set(record.dependencies.map((entry) => entry.id)).size !== record.dependencies.length) context.addIssue({ code: "custom", path: ["dependencies"], message: "a dependency is listed once" });
     if (new Set(record.unknownCalls.domains.map((entry) => entry.domain)).size !== record.unknownCalls.domains.length) context.addIssue({ code: "custom", path: ["unknownCalls", "domains"], message: "a domain is listed once" });
   });
@@ -138,5 +168,33 @@ export function testServicesAwsUsageVerdict(usage: TestServicesUsageRecord | und
   const outside = aws.services.filter((entry) => !planned.includes(entry.service)).map((entry) => entry.service);
   if (outside.length > 0 || aws.otherCalls > 0) return { ok: false, problem: "out_of_plan", services: outside };
   if (aws.services.some((entry) => entry.unsupported > 0) || aws.unsupportedOperations.length > 0 || aws.otherUnsupported > 0) return { ok: false, problem: "unsupported", services: [] };
+  return { ok: true };
+}
+
+// ---- what a fake's usage means for a result (the broker's rule, in one place)
+
+/** Why the usage of the planned fakes is not clean: in the order they are decided. */
+export const TEST_SERVICES_FAKE_USAGE_PROBLEMS = ["not_checked", "foreign", "unmatched"] as const;
+export type TestServicesFakeUsageProblem = (typeof TEST_SERVICES_FAKE_USAGE_PROBLEMS)[number];
+/** The fixed words for each problem (a person reads these on the Prove report, the pull request and the Evidence tab). */
+export const TEST_SERVICES_FAKE_USAGE_WORDS: Readonly<Record<TestServicesFakeUsageProblem, string>> = {
+  not_checked: "A fake's requests could not be checked",
+  foreign: "Something other than the tests called a fake",
+  unmatched: "The tests made requests a fake had no recording for",
+};
+export type TestServicesFakeUsageVerdict = { ok: true } | { ok: false; problem: TestServicesFakeUsageProblem; /** The planned fakes the problem is about, by id. */ ids: string[] };
+
+/**
+ * Whether the record's usage of the fakes the plan started is clean. NOT clean, and never a quiet pass, when: the record has no row for a planned fake or its ledger was not read, a call came from an address that is not the
+ * check sandbox, or a request nothing in the set matched (policy `fail`: the test that made it failed, and this keeps the result from reading as a clean run). Call it only when the plan has a fake.
+ */
+export function testServicesFakeUsageVerdict(usage: TestServicesUsageRecord | undefined, plannedFakeIds: readonly string[]): TestServicesFakeUsageVerdict {
+  const rows = new Map((usage?.fakes ?? []).map((entry) => [entry.id, entry]));
+  const missing = plannedFakeIds.filter((id) => rows.get(id)?.ledger !== "read");
+  if (missing.length > 0) return { ok: false, problem: "not_checked", ids: missing };
+  const foreign = plannedFakeIds.filter((id) => (rows.get(id)?.foreign ?? 0) > 0);
+  if (foreign.length > 0) return { ok: false, problem: "foreign", ids: foreign };
+  const unmatched = plannedFakeIds.filter((id) => (rows.get(id)?.unmatched ?? 0) > 0);
+  if (unmatched.length > 0) return { ok: false, problem: "unmatched", ids: unmatched };
   return { ok: true };
 }
