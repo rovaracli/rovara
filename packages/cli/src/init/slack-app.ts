@@ -33,11 +33,16 @@ export function slackBotScopes(input: { publicInvitations?: boolean; privateInvi
   ];
 }
 /**
- * The Events API subscriptions: mentions, messages in public and private channels the bot is in, and `member_joined_channel` (task 12 of the Team record source rows: when a person invites Rovara into a private
- * channel, the inviter alone is offered the private "Add to project" prompt; where the Team record is off the ingress ignores the event). It needs no new scope: `channels:read` and `groups:read` are already requested.
- * An app created before this was added must subscribe to the event by hand (Event Subscriptions, bot events); nothing breaks until it does, the invite prompt just does not appear.
+ * The Events API subscriptions: mentions, messages in public and private channels the bot is in (these also deliver a channel's conversion to or from private, as message subtypes), and the events the Team record tap acts on.
+ * `member_joined_channel` and `member_left_channel` go together, both or neither: once the bot's own join arrives, a private channel's access is kept from member events alone, and without `member_left_channel` nobody who leaves is ever removed (final review 3, C1).
+ * `channel_deleted`, `channel_id_changed`, `channel_shared`, `app_uninstalled` and `tokens_revoked` remove what was recorded when a channel is deleted, changes id or becomes a Slack Connect channel, or when the app is uninstalled. Where the Team record is off the ingress ignores all of them.
+ * No new scope: `channels:read` and `groups:read` already cover the member and channel events (Slack's event reference), `channels:history` and `groups:history` the message subtypes, and `channel_id_changed`, `app_uninstalled` and `tokens_revoked` need none.
+ * An app created before these were added must subscribe to them by hand (Event Subscriptions, bot events), the member events together; nothing breaks until it does, but the Team record then cannot follow joins, leaves, deletions or an uninstall.
  */
-export const SLACK_BOT_EVENTS: readonly string[] = ["app_mention", "message.channels", "message.groups", "member_joined_channel"];
+export const SLACK_BOT_EVENTS: readonly string[] = [
+  "app_mention", "message.channels", "message.groups",
+  "member_joined_channel", "member_left_channel", "channel_deleted", "channel_id_changed", "channel_shared", "app_uninstalled", "tokens_revoked",
+];
 /** Sign in with Slack (OpenID Connect). */
 export const SLACK_USER_SCOPES: readonly string[] = ["email", "openid", "profile"];
 /** What developer sign-in needs of the bot token: users.info, users.lookupByEmail, conversations.members, and 25e's DMs. */

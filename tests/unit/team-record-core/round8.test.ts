@@ -185,6 +185,21 @@ describe("N-13 / C1 / C2 through the Slack tap", () => {
     expect((await search(w, V1, "zebra")).hits).toHaveLength(0);
   });
 
+  it("final review 3 C1: the bot's own join (it comes first, on every invite), then a person's leave: the leaver can no longer read what was recorded", async () => {
+    const { w, live, tap } = setup();
+    await addSource(w, { source: "slack", scope: `slack:${TEAM}/${PRIV}`, retention: "D" });
+    live.info = { kind: "private", extShared: false, memberIds: ["U0USER00001", "U0USER00002", "U0ROVARABOT"] };
+    await tap({ type: "event_callback", team_id: TEAM, event: { type: "member_joined_channel", channel: PRIV, channel_type: "G", user: "U0ROVARABOT", inviter: "U0USER00001", event_ts: ts(0) } });
+    await tap(message(10, "kickoff zebra alpha", PRIV));
+    expect((await search(w, V1, "zebra")).hits).toHaveLength(1); // still a member
+    await tap({ type: "event_callback", team_id: TEAM, event: { type: "member_left_channel", channel: PRIV, channel_type: "G", user: "U0USER00001", event_ts: ts(60) } });
+    expect((await search(w, V1, "zebra")).hits).toHaveLength(0);
+    expect((await search(w, V2, "zebra")).hits).toHaveLength(1);
+    // a later message, even one built from a cached list that still names the leaver, does not give the access back
+    await tap(message(70, "more zebra beta", PRIV));
+    expect((await search(w, V1, "zebra")).hits).toHaveLength(0);
+  });
+
   it("C2 a public channel turns private with the broker clock behind Slack's: the team group loses the old rows", async () => {
     const { w, live, tap } = setup();
     const CH = "C0123456789";

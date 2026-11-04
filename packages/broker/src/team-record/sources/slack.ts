@@ -98,6 +98,12 @@ export function slackRetention(edition: Edition, configured: Retention, notesOpt
   return configured === "B" && notesOptIn ? "B" : "A";
 }
 
+/**
+ * The Slack event types the tap acts on, other than messages. The install's event subscriptions (`SLACK_BOT_EVENTS` in the CLI's Slack app manifest) must list every one: a join without leaves locks a private channel's access to events that never remove anyone
+ * (final review 3, C1), so the two member events are subscribed together. Conversions to or from private are `message` subtypes in Slack's Events API (they arrive through `message.channels` and `message.groups`); the tap also accepts them as top-level types, which Slack does not send.
+ */
+export const SLACK_TAP_EVENT_TYPES: readonly string[] = ["member_joined_channel", "member_left_channel", "channel_deleted", "channel_id_changed", "channel_shared", "app_uninstalled", "tokens_revoked"];
+
 export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload: unknown) => Promise<SlackTapOutcome> {
   const log: TapLog = deps.log ?? (() => undefined);
   const ignored = (reason: SlackIgnoreReason): SlackTapOutcome => ({ outcome: "ignored", reason });

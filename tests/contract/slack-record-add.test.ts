@@ -97,6 +97,26 @@ describe("the switch is off (no record wiring): the phrase is an ordinary mentio
   });
 });
 
+describe("the switch is off: the event types the manifest now subscribes to are ignored, as an unsubscribed app never sent them", () => {
+  it("answers each with 200, queues and shows nothing", async () => {
+    const r = rig({ learn: false });
+    for (const event of [
+      { type: "member_left_channel", user: maya, channel: privateChannel, channel_type: "G", team },
+      { type: "channel_deleted", channel: privateChannel },
+      { type: "channel_id_changed", old_channel_id: privateChannel, new_channel_id: "G0NEWCHAN01" },
+      { type: "channel_shared", connected_team_id: "T0OTHER000", channel: privateChannel },
+      { type: "app_uninstalled" },
+      { type: "tokens_revoked", tokens: { bot: [bot] } },
+    ]) {
+      const reply = await r.say({ type: "event_callback", team_id: team, event_id: `Ev${String(counter++).padStart(6, "0")}`, authorizations: [{ team_id: team, user_id: bot, is_bot: true }], event });
+      expect(reply.statusCode, event.type).toBe(200);
+    }
+    expect(r.queued).toHaveLength(0);
+    expect(r.slack.ephemerals).toHaveLength(0);
+    expect(r.asked).toHaveLength(0);
+  });
+});
+
 describe("the switch is on", () => {
   it("any other mention text keeps today's handling (it is queued as a request; the prompt is not asked)", async () => {
     const r = rig();

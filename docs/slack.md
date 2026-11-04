@@ -168,13 +168,22 @@ Then configure the Slack app:
   request URL. The app-level `xapp-` token is no longer used and can be revoked.
 - Under **Event Subscriptions**, enable events and set the request URL to the `SlackEventsUrl`
   output. Slack verifies the URL immediately, which succeeds only after the secret is stored.
-- Subscribe to the bot events `app_mention`, `message.channels`, `message.groups` and
-  `member_joined_channel`. The two message events deliver replies in the thread of a task started in
-  Slack, which are saved as input for the task's next step; Rovara ignores, and does not store, any
-  other channel message. `member_joined_channel` needs no new scope (`channels:read` and `groups:read`
-  already cover it): when a person invites Rovara into a private channel and the Team record is on,
-  the inviter alone is offered a private "Add to project" prompt. An app made before this event was
-  listed must subscribe to it by hand; where the Team record is off Rovara ignores the event.
+- Subscribe to the bot events `app_mention`, `message.channels`, `message.groups`,
+  `member_joined_channel`, `member_left_channel`, `channel_deleted`, `channel_id_changed`,
+  `channel_shared`, `app_uninstalled` and `tokens_revoked`. The two message events deliver replies
+  in the thread of a task started in Slack, which are saved as input for the task's next step;
+  Rovara ignores, and does not store, any other channel message. The other events are for the Team
+  record and are ignored where it is off: `member_joined_channel` also shows the inviter alone a
+  private "Add to project" prompt when a person invites Rovara into a private channel, and the
+  member events, the deletion, id-change, sharing and uninstall events keep what was recorded
+  correct (a person who leaves a private channel stops reading its rows; a deleted or shared
+  channel's rows are removed). **The two member events go together: subscribe to both or to
+  neither.** With only the join, Rovara's own join would switch a private channel's access to
+  events alone and a person who leaves would keep reading it. None of these needs a new scope
+  (`channels:read` and `groups:read` already cover them; `channel_id_changed`, `app_uninstalled`
+  and `tokens_revoked` need none). **An app made before these events were listed must add them
+  by hand** under Event Subscriptions, bot events, and save; nothing else changes, and no
+  reinstall is needed because no scope changes.
 - Bot token scopes: `app_mentions:read`, `channels:history`, `groups:history`, `chat:write` and
   `users:read` (`channels:history` and `groups:history` go with the message events). The manifest
   `agentx init` generates (`packages/cli/src/init/slack-app.ts`) lists every scope and event AgentX
