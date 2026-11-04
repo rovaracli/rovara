@@ -2806,3 +2806,22 @@ it("funding review: an exempt key receives only the remaining customer limit", a
  const reply = await f.modelAccess();expect(reply.status, JSON.stringify(reply.body)).toBe(200);
  expect(f.t.access.mintKey).toHaveBeenCalledWith(expect.objectContaining({ maxBudgetUsd: 3 }));
 });
+
+it("enrollment cutover reports verified own-source funding as exempt, without changing the task", async () => {
+ const { captureCompanyCutover } = await import("../../packages/broker/src/org/task-stop-cutover-review.js"), { BUILTIN_AGENT_IDS } = await import("@agentx/contracts");
+ const f = await ownSourceFundingFixture(), reply = await f.start();expect(reply.status).toBe(200);
+ const taskId = (reply.body.task as { taskId: string }).taskId, before = f.t.meta(taskId), agents = f.t.deps();expect(agents.modelRouting).toBeDefined();
+ for (const id of BUILTIN_AGENT_IDS) { const key = builtinSettingsKey(TEST_ORG, id);if (f.t.db.get(key) === undefined) f.t.db.set({ ...key, orgId: TEST_ORG, entityType: "BUILTIN_AGENT_SETTINGS", agentId: id, revision: 1, stopKind: "inherit" }); }
+ f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "ready" }, enrollmentReview: { reviewId: randomUUID(), digest: "d".repeat(64), sourceDigest: "e".repeat(64), by: ADA.developerId, at: new Date().toISOString(), tasksReviewed: 0 } });
+ const captured = await captureCompanyCutover({ documentClient: f.t.db, tableName: "state", now: () => f.fundingNow, agents,
+  developer: { issuer: "https://cell.example", env: "test", signInTableName: "signin", methods: { cloud: true, slack: false, oidc: false }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) },
+ }, { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner", name: ADA.name, amr: "oidc", sessionId: ADA.sessionId });
+ expect(captured.tasks).toEqual(expect.arrayContaining([expect.objectContaining({ taskId, outcome: "exempt", effectiveStopMicrousd: 0 })]));
+ expect(f.t.meta(taskId)).toEqual(before);
+});
+for (const state of ["ready", "enabled"] as const) it(`spend-request decider recognizes M2 ${state} sibling binding`, async () => {
+ const f = await approvalWindow("company");
+ f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state }, enrollmentReview: { reviewId: randomUUID(), digest: "d".repeat(64), sourceDigest: "e".repeat(64), by: ADA.developerId, at: new Date().toISOString(), tasksReviewed: 0 } });
+ if (state === "enabled") await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+ else expect((await f.t.decide(MAYA, f.spendRequest.spendRequestId)).spendRequest.status).toBe("APPROVED");
+});

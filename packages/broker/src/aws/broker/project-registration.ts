@@ -414,6 +414,11 @@ export async function registerProjectFor(
         const key = projectAiKey(orgId, definition.name);
         const existing = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: key, ConsistentRead: true }))).Item;
         projectSpendingItems.push(...nativeSnapshotConditions(dependencies.tableName, [policyKey], [policy], ["enrollment"]), ...(existing === undefined ? taskStopProjectCreationItems(dependencies.tableName, orgId, definition.name, Date.parse(now)) : nativeSnapshotConditions(dependencies.tableName, [key], [existing], ["taskStopPolicy"])));
+      } else if (policy !== undefined) {
+        // No new item while off; a cutover after this read retries registration on the enabled path.
+        const policySource = policy as Record<string, unknown>;
+        const enrollmentSource = { ...policyKey, orgId: policySource.orgId, entityType: policySource.entityType, enrollment: policySource.enrollment };
+        projectSpendingItems.push(...nativeSnapshotConditions(dependencies.tableName, [policyKey], [enrollmentSource], ["enrollment"]));
       }
     }
     const registrationItems: TransactItems = [

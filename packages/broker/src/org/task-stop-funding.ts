@@ -15,10 +15,10 @@ export type FundingDependencies = StageEvidenceDependencies & { documentClient: 
 /** Controller-approved strict shortcut: no catalog source anywhere in the
  * effective order. This proves every frozen stage without forecasting references.
  * Real model evidence is still required; empty/unverified sources never exempt. */
-export async function captureTaskFundingProof(deps: FundingDependencies, input: { orgId: OrgId; project: string; models: readonly ModelIdentifier[]; payerDeveloperId?: string; admittedProof?: TaskFundingProof }): Promise<TaskFundingProof | undefined> {
+export async function captureTaskFundingProof(deps: FundingDependencies, input: { orgId: OrgId; project: string; models: readonly ModelIdentifier[]; purpose?: "cutover_review"; payerDeveloperId?: string; admittedProof?: TaskFundingProof }): Promise<TaskFundingProof | undefined> {
  if (deps.routing.sources === undefined) return undefined;
  const policy = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgSettingsKey(input.orgId, "TASK_STOP_POLICY"), ConsistentRead: true })) as { Item?: { entityType?: string; revision?: number; enrollment?: { version?: number; state?: string } } };
- if (input.admittedProof === undefined && (policy.Item?.entityType !== "ORG_TASK_STOP_POLICY" || !Number.isSafeInteger(policy.Item.revision) || Number(policy.Item.revision) < 1 || policy.Item.enrollment?.version !== 1 || policy.Item.enrollment.state !== "enabled")) return undefined;
+ if (input.purpose !== "cutover_review" && input.admittedProof === undefined && (policy.Item?.entityType !== "ORG_TASK_STOP_POLICY" || !Number.isSafeInteger(policy.Item.revision) || Number(policy.Item.revision) < 1 || policy.Item.enrollment?.version !== 1 || policy.Item.enrollment.state !== "enabled")) return undefined;
  if (input.admittedProof !== undefined && (TaskFundingProofSchema.parse(input.admittedProof).orgId !== input.orgId || input.admittedProof.project !== input.project)) return undefined;
  const sources = await effectiveSources(deps.routing, input.orgId, input.project);
  if (sources === undefined || sources.order.length === 0 || sources.order.includes("rovara")) return undefined;

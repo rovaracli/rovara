@@ -14,6 +14,7 @@ export const AgentXErrorCodeSchema = z.enum([
   "RUNTIME_UNAVAILABLE",
   "SPENDING_APPROVAL_STALE",
   "TASK_STOP_ZERO",
+  "TASK_STOP_REVIEW_TOO_LARGE",
   "TASK_STOP_CONFIG_MISSING",
   "TASK_STOP_CONFIG_INVALID",
   "TASK_STOP_APPROVAL_ABOVE_CEILING",
@@ -146,7 +147,7 @@ export class AgentXError extends Error {
 }
 
 export function errorStatus(code: AgentXErrorCode): number {
-  if (code === "TASK_STOP_ZERO") return 409;
+  if (code === "TASK_STOP_ZERO" || code === "TASK_STOP_REVIEW_TOO_LARGE") return 409;
   if (code === "SPENDING_APPROVAL_STALE") return 409;
   if (code === "TASK_STOP_CONFIG_MISSING" || code === "TASK_STOP_CONFIG_INVALID" || code === "TASK_STOP_APPROVAL_ABOVE_CEILING") return 409;
   if (code === "AUTH_REQUIRED") return 401;

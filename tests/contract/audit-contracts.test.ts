@@ -123,7 +123,7 @@ describe("the event catalog", () => {
   it("lists the actions exactly, in order", () => {
     expect([...AUDIT_ACTIONS]).toEqual([
       "approval.decided", "approval.expired", "approval.requested", "approval.rerouted", "write.executed", "spend_request.created", "spend_request.decided",
-      "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "spending.stop_admitted", "spending.stop_refused", "spending.stop_reached", "spending.stop_exempted", "spending.policy_seeded", "spending.policy_changed", "spending.policy_change_requested", "spending.policy_change_decided", "pull_request.opened",
+      "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "spending.stop_admitted", "spending.stop_refused", "spending.stop_reached", "spending.stop_exempted", "spending.policy_seeded", "spending.enrollment_changed", "spending.policy_changed", "spending.policy_change_requested", "spending.policy_change_decided", "pull_request.opened",
   "pull_request.merged",
   "pull_request.merge_requested",
   "member.joined",
@@ -495,4 +495,10 @@ describe("auditEventId", () => {
       expect(AuditEventIdSchema.safeParse(auditEventId(action, "occurrence-1")).success).toBe(true);
     }
   });
+});
+
+it("validates enrollment change facts and refuses unreviewed detail fields", () => {
+ const sample = event({ action: "spending.enrollment_changed", target: { kind: "org", id: ORG }, facts: { requestId: "change", reviewId: "review", reviewDigest: "d".repeat(64), before: "ready", after: "enabled", revision: 3, tasksReviewed: 1, tasksAtEnable: 2, newImpacts: 1, pendingExpired: false } });
+ expect(AuditEventInputSchema.safeParse(sample).success).toBe(true);
+ expect(AuditEventInputSchema.safeParse({ ...sample, facts: { taskTitle: "private" } }).success).toBe(false);
 });

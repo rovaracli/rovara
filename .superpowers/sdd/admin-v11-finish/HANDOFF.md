@@ -1,23 +1,40 @@
-# Admin v11 finish handoff
+# Admin v11 finish handoff — Task 1 / M2
 
-## Scope and checkpoints
+Controller: Claude session abhishekgarg-37, sole merger. Branch feat/admin-v11-finish, based on v0.5.3 (030a4b716beeb816f7a17eb4f960a6afa6727c39). M1 was pushed at aef096def and REVIEW-M1.md authorized proceeding with changes. Work stayed in the dedicated worktree and was implemented alone.
 
-Working alone as required by the repo checklist. Controller Claude session abhishekgarg-37 owns reviews and all merges. M1 contains design and RED tests only; Tasks 1 implementation and 2–4 await their required checkpoints.
+## Implemented
 
-## Decisions / items for controller
+Owner-only, audited, revision-fenced disabled -> ready -> enabled and enabled/ready -> disabled. The owner explicitly decided that disabling enabled enforcement requires fresh sign-in and does not require a second owner; ready cancellation needs no fresh sign-in. Native membership, pointer, open-org, identity and session evidence fence commits; strict JSON decoding occurs after owner authority. Receipts/TTL, policy and audit pending events are atomic and ambiguous acknowledgements recover by receipt.
 
-- Design proposes a five-minute cutover-review lifetime, strict owner-only review reads, and ready-to-disabled cancellation.
-- Existing workspace-project inventory is eventually consistent. DESIGN.md explicitly documents its limits and does not certify an instant exhaustive cutover.
-- Existing calculateTaskStop treats the ceiling as an approval cap, retaining ordinary unapproved estimates above it. Task 2's “strictest” wording must use that shared calculator, without a competing UI/route formula.
-- Preserve existing accepted windows and customer limits for own-source exemptions. Existing named regression tests already cover exempt max-per-run refusal and remaining customer room.
-- No other lane files, IAM, env vars, budget constant, production code or dependencies changed at M1.
+Server-built cutover reviews validate the entire bounded project/agent/builtin configuration, reuse captureTaskStopCutoverReview/calculateTaskStop and current funding proof, and persist no native conditions. Economic source changes block enable; inventory changes do not. Bound/fresh reviews survive the ready revision bump through an economic projection that excludes the company revision/enrollment. A new review can be captured while ready after expiry/re-authentication. Existing captured task windows and customer limits remain untouched through both directions.
 
-## Setup
+The owner-only enforcement step in TaskStopEditor is lazy, checks sign-in freshness before review, presents impacts before separate ready/enable confirmations, handles REAUTH and drops stale scope responses. Monthly-table wording now describes the table's coverage while enforcement has its own step.
 
-Ran the brief's exact new-lane command. The sandboxed attempt could not create the outside-workspace worktree; the authorized escalated rerun completed. Branch feat/admin-v11-finish, base v0.5.3 at 030a4b716beeb816f7a17eb4f960a6afa6727c39; dependencies cloned and contracts built by setup.
+## Additional findings resolved
 
-## M1 evidence and remaining work
+- The existing Spending editor could not parse enrollment_changed as a pending-proposal expiry reason. Observed RED, extended the historical outcome schema and UI message, verified the editor can read the resulting row.
+- Disable initially omitted the bound review's provenance from its event; observed RED, now retains reviewId/digest.
+- Inactive company/ceiling data must meet the same canonical-field and microdollar precision rules as active admission. Observed RED, added readiness validation.
+- Router argument evaluation could decode malformed JSON before checking ownership. Observed RED, decoding moved inside the owner-checked enrollment store.
+- Registration's first cutover condition was broader than needed and caused an unrelated numeric-policy edit while disabled to interrupt registration. Observed RED, narrowed to enrollment and company identity, preserving the ready-to-enabled race refusal with no added off-state Put.
+- Strict checks caught a token fixture that used false for a true-or-absent browser flag, and lint caught test assertions/local const style. Corrected the fixtures/style; no production permission was weakened.
 
-See M1-READY.md for exact commands and results. Final run: 50 expected RED enrollment tests; 66 neighboring tests and 2 focused exempt-task customer-limit regressions passed. Required npm typecheck, owning strict typecheck, changed-file lint and owning strict lint shard passed. Initial web build passed and scripts/web-bundle-budget.ts measured 183820 gzip bytes against 256000. No implementation yet; mutation/UI/inventory additions await M2. An initial collection failure from absent model-runtime dist was resolved by the required reference build, not counted as RED evidence.
+## Limits and deliberately unchanged behavior
 
-Await REVIEW-M1.md before Task 1 implementation. Tasks 2–4 and M2/M3 remain deferred by the mandatory checkpoint sequence. No CI result exists because the brief expressly prohibits CI runs; Linux/full-suite validation belongs to the controller's merge workflow.
+The workspace index is eventually consistent; the review is an as-of preview, not a serializable exhaustive rollout certificate. Admission is the safety mechanism. One-step bounds are W=2P+A+B <=80, <=25 active tasks, <=500 workspaces, <=128 KiB review, <=94 conservative transaction actions plus checked byte/item limits. Oversize is TASK_STOP_REVIEW_TOO_LARGE. Missing spend evidence with existing model keys refuses review; settled spend is advisory. newImpacts counts newly observed task ids whose fresh outcome is stop_at_next_admission or refuse_next_admission, relative to the supplied review.
+
+The existing calculator treats the ceiling as an approval cap and keeps ordinary unapproved estimates; no second formula was added. Task 2 must honor the shared calculation rather than invent a client-side minimum. New same-id/different-body requests follow checklist CONFIG_INVALID; task-stop-editing's older IDEMPOTENCY_CONFLICT convention was left unchanged.
+
+No switch/env/IAM/default-boundary/budget constant, worker protocol or deployment changes. Broker Lambda env and IAM headroom are unchanged. No agents/chains, team-record/*, email-scrub, Ask/Fix panels, test-services or design-review files changed. Shared-file hunks are limited to route dispatch/browser gate, audit action/facts, exports/web-safe list, checked review key, error code and lazy-bundle markers. The registration/funding edits are small feature-local integrations.
+
+## Gates and artifacts
+
+M2-READY.md records final gate commands/results and a requirement-by-requirement review map. Initial bundle before: 183820 gzip bytes. The final measured value is recorded there; INITIAL_JS_BUDGET_GZIP_BYTES remains 256000. Local logs, m2-final-gates.json, m2-registration-final-gates.json, m2-mutations.json and the reproducible mutation runner are in this lane folder. Each of 29 money/auth mutations was observed to fail a focused test, then restored; no mutant remains.
+
+Chromium evidence (local, ignored build output) is under .test-build/web-e2e/results/admin-spending.e2e.ts-owne-fdde8-backed-audited-transactions-chromium/: enforcement-review-light.png, enforcement-review-dark.png and enforcement-enabled.png. Light/dark accessibility checks pass and the screenshots were inspected.
+
+No CI, full suite, typecheck:all, Linux runtime gate, AWS commands, deployment, Docker/colima, merge, stash or shared git-config writes were run. CI/Linux/full-suite verification is deliberately left to the controller's merge workflow, as required by the brief. This is a local M2 implementation handoff, not a deployment.
+
+## Next checkpoint
+
+STOP at M2 and wait for REVIEW-M2.md. Address findings before proceeding. Task 2 start-preview, Task 3 menu links and optional Task 4 Send back visibility are not implemented and remain behind M2 approval. M3 is not started.

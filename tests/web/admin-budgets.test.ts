@@ -81,3 +81,48 @@ it("reloads a failed task stop deliberately even within the same clock tick", as
  const clock = vi.spyOn(Date, "now").mockReturnValue(1), f = mount({ respond: async r => r.path.includes("task-stop-policy") ? ++reads === 1 ? { status: 503, body: {} } : { status: 200, body: context } : { status: 200, body: settings } });
  try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));await screen.findByRole("alert");fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));await screen.findByText("Current task stop: $0.000001. Revision 1.");expect(reads).toBe(2); } finally { f.close();clock.mockRestore(); }
 });
+
+it("owner reviews impacts before two explicit enforcement confirmations, after freshness preflight", async () => {
+ let state = "disabled", revision = 1;
+ const reviewId = "11111111-1111-4111-8111-111111111111", digest = "d".repeat(64);
+ const f = mount({ respond: async r => {
+  if (r.path.includes("/enrollment")) {
+   if (r.method === "PUT") { state = (r.body as { state: string }).state;revision += 1;return { status: 200, body: { orgId, requestId: (r.body as { requestId: string }).requestId, state, revision, tasksReviewed: 0, tasksAtEnable: 0, newImpacts: 0 } }; }
+   return { status: 200, body: { orgId, state, revision } };
+  }
+  if (r.path.endsWith("/cutover-review")) return { status: 200, body: { orgId, reviewId, digest, revision, complete: true, capturedAt: "2026-11-04T15:00:00.000Z", expiresAt: "2026-11-04T15:05:00.000Z", tasks: [] } };
+  return { status: 200, body: settings };
+ } });
+ try {
+  await screen.findByRole("table");expect(f.request.mock.calls.some(([r]) => r.path.includes("enrollment"))).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));
+  await screen.findByRole("heading", { name: "Review enforcement impacts" });
+  const calls = f.request.mock.calls.map(([r]) => r).filter(r => /enrollment|cutover-review/.test(r.path));
+  expect(calls[0]).toMatchObject({ method: "GET", path: "/v1/app/org/task-stop-policy/enrollment?fresh=1" });
+  expect(calls[1]).toMatchObject({ method: "POST", path: "/v1/app/org/task-stop-policy/cutover-review" });
+  expect(f.request.mock.calls.some(([r]) => r.method === "PUT")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Confirm review and mark ready" }));
+  await screen.findByRole("button", { name: "Enable enforcement" });
+  expect(state).toBe("ready");fireEvent.click(screen.getByRole("button", { name: "Enable enforcement" }));
+  await screen.findByText("Enforcement is enabled.");expect(state).toBe("enabled");
+  expect(f.request.mock.calls.filter(([r]) => r.method === "PUT").map(([r]) => r.body)).toEqual([
+   expect.objectContaining({ state: "ready", expectedRevision: 1, reviewId, expectedReviewDigest: digest }),
+   expect.objectContaining({ state: "enabled", expectedRevision: 2, reviewId, expectedReviewDigest: digest }),
+  ]);
+ } finally { f.close(); }
+});
+it("admin cannot load or change company enforcement", async () => {
+ const f = mount({ role: "admin" });try { await screen.findByRole("table");expect(screen.queryByRole("button", { name: "Turn on enforcement" })).toBeNull();expect(f.request.mock.calls.some(([r]) => /enrollment|cutover-review/.test(r.path))).toBe(false); } finally { f.close(); }
+});
+it("stale sign-in stops before review and offers the existing sign-in flow", async () => {
+ const f = mount({ respond: async r => r.path.includes("/enrollment") ? { status: 403, body: { error: { code: "REAUTH_REQUIRED" } } } : { status: 200, body: settings } });
+ try {
+  await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Sign in again" }));expect(f.host.signIn).toHaveBeenCalled();
+  expect(f.request.mock.calls.some(([r]) => r.method !== "GET")).toBe(false);
+ } finally { f.close(); }
+});
+it("turning off enabled enforcement also handles REAUTH without a second-owner flow", async () => {
+ const f = mount({ respond: async r => r.path.includes("/enrollment") ? r.method === "GET" ? { status: 200, body: { orgId, state: "enabled", revision: 3 } } : { status: 403, body: { error: { code: "REAUTH_REQUIRED" } } } : { status: 200, body: settings } });
+ try { await screen.findByRole("table");fireEvent.click(screen.getByRole("button", { name: "Turn on enforcement" }));fireEvent.click(await screen.findByRole("button", { name: "Turn off enforcement" }));await screen.findByRole("button", { name: "Sign in again" });expect(screen.queryByText(/second owner/i)).toBeNull(); } finally { f.close(); }
+});

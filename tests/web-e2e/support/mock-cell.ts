@@ -147,9 +147,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   const result=await adminDirectory.request(deps,webCaller,method,(url.pathname+url.search).replace("/v1/web/","/v1/app/"),undefined,headers);json(200,result);return;
  }
  // M47: the same cookie/CSRF boundary and actual Spending adapters, over persisted fixture rows.
- if (current.name === "admin" && /^\/v1\/web\/org\/task-stop-policy(?:\/projects\/[^/]+)?(?:\/(editing|decisions))?$/.test(url.pathname)) {
+ if (current.name === "admin" && /^\/v1\/web\/org\/task-stop-policy(?:\/projects\/[^/]+)?(?:\/(editing|decisions|enrollment|cutover-review))?$/.test(url.pathname)) {
   let body: unknown;if (method !== "GET") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 16384) throw new Error("Mock body limit."); }body = JSON.parse(raw) as unknown; }
-  const result = await adminDirectory.request(deps, webCaller, method, url.pathname.replace("/v1/web/", "/v1/app/"), body, headers);json(200, result);return;
+  const result = await adminDirectory.request(deps, webCaller, method, (url.pathname + url.search).replace("/v1/web/", "/v1/app/"), body, headers);json(200, result);return;
  }
  // Lane B: real read handlers; the scenario endpoint seeds only synthetic persisted rows.
  if (current.name === "admin" && method === "GET" && (url.pathname === "/v1/web/projects" || /^\/v1\/web\/projects\/[^/]+(?:\/members)?$/.test(url.pathname) || url.pathname === "/v1/web/agents" || /^\/v1\/web\/agents\/[^/]+\/versions$/.test(url.pathname) || url.pathname === "/v1/web/org/agent-guardrails")) {
