@@ -45,6 +45,7 @@ import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies
 import { decideSecondPersonApproval } from "./second-person-approval.js";
 import { clearSetupRunProposal } from "../rovara-code/setup-run-proposal.js";
 import { dependenciesStartableNow, emulatorServesAll, isPrepulledEntry } from "../test-env/dependency-plan.js";
+import { approvedFixturesOf, recordsOf, type FixtureStoreFactory } from "../test-env/fixture-lookup.js";
 import { refuseDependenciesWithDevcontainer } from "../test-env/devcontainer-check.js";
 import { SEED_COMMAND_PROBLEM_WORDS, dependencySeedCommands, seedCommandProblem } from "../test-env/refused-command.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
@@ -66,6 +67,8 @@ export interface TestEnvDeps extends AuditDeps {
   secondPerson?: SecondPersonPort;
   /** The install switches, for the test-services refusals. Absent: the process environment. */
   env?: NodeJS.ProcessEnv;
+  /** Slice 3: the install's fixture store (a factory over the production list). A fake is proposed and approved only for a set it says is approved for the company; without it none is. */
+  fixtureStore?: FixtureStoreFactory | undefined;
 }
 
 /**
@@ -163,12 +166,14 @@ function refuseRecordingOnShared(body: TestEnvironmentBody): void {
   if ((body.capture.video || body.capture.traces) && !mediaTierAllowed(body.tier)) throw invalid("capture: video and traces are kept only in the sandbox and per-task preview tiers");
 }
 
+/** The fixed words of a fake whose set of answers is not approved (slice 3). */
+const FAKE_NOT_APPROVED = "dependencies: a fake needs an approved set of answers for this company; approve its fixture set first";
 /** The fixed words of a dependency that cannot be started yet (slice 2: real software from the catalog, and S3, SQS and DynamoDB on Rovara local AWS). */
 const DEPENDENCIES_NOT_AVAILABLE_YET = "dependencies: this kind of backing is not available yet; Rovara starts real software from its image list, and S3, SQS and DynamoDB on Rovara local AWS, only";
 
 /**
  * Test services (slice 1): dependencies are proposed and approved only with the switch `tx` on, only as real software from the catalog (a fake, a test account, a project image or a substitute image is "not available
- * yet"), and not for a project that uses a dev container (the sealed check runners cannot be combined with one). Refused when proposed AND when approved, so a card is never offered that could not be carried out.
+ * yet"; slice 3 adds a fake of an approved fixture set), and not for a project that uses a dev container (the sealed check runners cannot be combined with one). Refused when proposed AND when approved, so a card is never offered that could not be carried out.
  * A body without dependencies reads nothing and is never refused here.
  */
 async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, project: string, body: TestEnvironmentBody, previous?: TestEnvironmentBody): Promise<void> {
@@ -189,6 +194,15 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
       const entry = catalogEntryById(catalog, dependency.backing.catalogId);
       if (!catalog.pinned || entry === undefined || entry.image.digest === undefined || !isPrepulledEntry(catalog, dependency.backing.catalogId)) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
       if (dependency.backing.kind === "emulated" && !emulatorServesAll(entry, dependency.backing.awsServices)) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
+    }
+  }
+  // Slice 3: a fake is approved only for a fixture set that is approved for THIS organisation, for the dependency's own family (the store is asked; without one no fake is "available").
+  const fakes = changed.filter((dependency) => dependency.backing.kind === "fake");
+  if (fakes.length > 0) {
+    const approvedSets = await approvedFixturesOf(recordsOf(deps.fixtureStore), orgId, { dependencies: fakes });
+    for (const dependency of fakes) {
+      const ref = dependency.backing.kind === "fake" ? dependency.backing.fixtureSetRef : undefined;
+      if (ref === undefined || approvedSets.get(ref)?.family !== dependency.family) throw invalid(FAKE_NOT_APPROVED);
     }
   }
   // A seed is a command run with the dependency's network access: it gets the same refusal as any command (a download-and-run, or a secret).

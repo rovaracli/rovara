@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): workspace preparation, Slack identities, shared threads and Slack bindings.
 
+import { fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
 import { approvalGrantChange } from "../../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -156,6 +157,9 @@ export async function newWorkspacePreparation(
   // The digest this operation was told to pull is kept with the operation, so the login exchange gives a login for THAT image only and never for one the worker names.
   if (savedEnv.savedEnv !== undefined) operation.savedEnvDigest = savedEnv.savedEnv.digest;
   if (pins !== undefined) operation.preparePins = pins;
+  // Test services (slice 3): a candidate check whose plan has a fake may ask for that set's read address and no other (the capability has the action only then).
+  const fixtureDigests = fixtureDigestsOfPlan({ dependencies: options.testServices });
+  if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "prepare",
@@ -163,7 +167,7 @@ export async function newWorkspacePreparation(
     workspaceId,
     fence: workspace.fence,
     projectRevision,
-    callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
+    callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence, fixtureDigests.length > 0 ? { fixtureDelivery: true } : {}),
     payload: {
       project: workerProjectDefinition(project.definition, options.setupDraft === true ? { includeMeta: true } : {}),
       repositoryGrant: issueRepositoryGrant(

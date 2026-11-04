@@ -3,7 +3,7 @@
 // missing from the image, they fall back to running unguarded (with one log line), so a packaging fault would otherwise only show in production logs.
 // Test services (TS-RUN-1, image part) add two more: `dist/service-probe.js`, which the helper launcher runs in a probe container for tcp and http health questions (service-helpers.ts PROBE_ENTRY), and
 // `dist/sealed-dns-helper.js`, which the sealed check sandbox's name server runs (check-sandbox.ts SEALED_DNS_HELPER_ENTRY). A worker image without either would fail every dependency's health check or leave the sealed
-// round without its name server, and only at run time, so the build refuses it.
+// round without its name server, and only at run time, so the build refuses it. Slice 3 adds `dist/fake-helper.js`, the fake server's program (service-helpers.ts FAKE_HELPER_ENTRY): a worker image without it could start no fake.
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -12,6 +12,7 @@ export const REQUIRED_WORKER_DIST_FILES = [
   "packages/worker/dist/env-detect/guarded.js",
   "packages/worker/dist/service-probe.js",
   "packages/worker/dist/sealed-dns-helper.js",
+  "packages/worker/dist/fake-helper.js",
 ] as const;
 
 /** The required files that are missing or empty under `root`. */

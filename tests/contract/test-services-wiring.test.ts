@@ -110,7 +110,7 @@ describe("the dependencies the broker is built with", () => {
 describe("the one-line hunks in the hot files", () => {
   const read = (path: string) => readFileSync(path, "utf8");
   it("the task plan gets the catalog, and the route dependencies carry it", () => {
-    expect(read("packages/broker/src/aws/broker/task-operations.ts")).toContain("now: Date.now, serviceCatalog: dependencies.serviceCatalog }");
+    expect(read("packages/broker/src/aws/broker/task-operations.ts")).toContain("now: Date.now, serviceCatalog: dependencies.serviceCatalog, ...fixtureStoreForRoutes(dependencies) }");
     expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("{ serviceCatalog: dependencies.serviceCatalog }");
     expect(read("packages/broker/src/aws/broker/dependency-wiring.ts")).toContain("rest.serviceCatalog ?? releaseServiceCatalogSource()");
     expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("noteInvokedFunctionArn(context?.invokedFunctionArn)");

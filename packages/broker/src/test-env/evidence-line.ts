@@ -28,10 +28,18 @@ export async function evidenceEnvironmentOf(deps: TestEnvDeps, task: { orgId?: O
     const found = await usableTestEnvironment(deps, task.orgId, task.project, pin.revision, env);
     if (!found.ok) return { note: { kind: "environment", id: "test_environment", text: `${UNUSED_WORDS[found.reason]}: the project's own test setup was used`, reason: "not applied" } };
     const body = found.environment.environment;
-    const dependencies = (body.dependencies ?? []).flatMap((dependency): PinnedDependency[] => {
-      if (dependency.backing.kind === "emulated") return [{ id: dependency.id, name: dependency.name, backing: "emulated", awsServices: dependency.backing.awsServices }];
-      return dependency.backing.kind === "local" ? [{ id: dependency.id, name: dependency.name, backing: "local", ...(dependency.backing.substituteImage === undefined ? {} : { substituteImage: true }) }] : [];
-    });
+    const dependencies: PinnedDependency[] = [];
+    for (const dependency of body.dependencies ?? []) {
+      if (dependency.backing.kind === "emulated") dependencies.push({ id: dependency.id, name: dependency.name, backing: "emulated", awsServices: dependency.backing.awsServices });
+      else if (dependency.backing.kind === "local") dependencies.push({ id: dependency.id, name: dependency.name, backing: "local", ...(dependency.backing.substituteImage === undefined ? {} : { substituteImage: true }) });
+      else if (dependency.backing.kind === "fake") {
+        // Slice 3: what the evidence says about a fake (recorded or hand-written, which revision, when it was recorded) is the STORE's, read for THIS organisation by the pinned digest; the worker's words never set it. A set the store
+        // cannot give (no store, withdrawn since) is shown as the less trusted word, hand-written, without a revision.
+        const read = await Promise.resolve(deps.fixtureStore?.(() => Promise.resolve(body.prodDeny)).readApproved(task.orgId, dependency.backing.fixtureSetRef)).catch(() => undefined);
+        const set = read?.ok === true ? read.set : undefined;
+        dependencies.push({ id: dependency.id, name: dependency.name, backing: "fake", fake: { origin: set?.origin === "recorded" ? "recorded" : "hand_written", ...(set === undefined ? {} : { revision: set.revision }), ...(set?.origin === "recorded" && set.recordedAt !== undefined ? { recordedAt: set.recordedAt } : {}) } });
+      }
+    }
     return { environment: { tier: body.tier, envRevision: found.environment.revision, services: [], data: "synthetic", accounts: [] }, deny: body.prodDeny, ...(dependencies.length === 0 ? {} : { dependencies }) };
   } catch {
     return {};

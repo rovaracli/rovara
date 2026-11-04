@@ -24,7 +24,7 @@
 // fixed sentence; Docker's own words are never repeated. Everything started is removed.
 import { createHash, randomBytes } from "node:crypto";
 import {
-  CATALOG_FIXED_ARGS, CatalogEntrySchema, TEST_ENV_RESERVED_ALIASES, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName,
+  CATALOG_FIXED_ARGS, CatalogEntrySchema, FIXTURE_SET_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName,
   type CatalogEntry,
 } from "@agentx/contracts";
 import { DOCKER_CALL_TIMEOUT_MS } from "./setup-network.js";
@@ -42,6 +42,13 @@ const HEALTH_POLL_MS = 500;
 const PROBE_CALL_TIMEOUT_MS = 15_000;
 const EXEC_CALL_TIMEOUT_MS = 10_000;
 export const PROBE_ENTRY = "/opt/agentx/packages/worker/dist/service-probe.js";
+/** Slice 3: the fake server's program in the worker's own image (fake-helper.ts), and where the launcher puts the verified fixture set and the fake keeps its ledger. */
+export const FAKE_HELPER_ENTRY = "/opt/agentx/packages/worker/dist/fake-helper.js";
+export const FAKE_FIXTURE_TARGET = "/rovara/fixture.json";
+export const FAKE_LEDGER_TARGET = "/tmp/fake-ledger.jsonl";
+/** The largest fixture set a fake serves: the contract's own limit. */
+const FAKE_FIXTURE_MAX_BYTES = FIXTURE_SET_MAX_BYTES;
+const FIXTURE_DIGEST = /^[a-f0-9]{64}$/u;
 const NODE = "/usr/local/bin/node";
 const MAX_FILES_PER_HELPER = 8;
 const MAX_FILE_BYTES = 1_048_576;
@@ -131,6 +138,23 @@ export interface HelperRequest {
    */
   awsServices?: readonly string[];
   files?: readonly HelperFile[];
+  /**
+   * The fake server only (family `fake-server`, which runs from the worker's own image): which sandbox this phase's fake answers and the fixture set it serves. Present exactly on a fake server's request. The set is the text the
+   * worker fetched and checked against the plan's digest (fixture-delivery.ts); the launcher puts it in a read-only file of the run's directory, and the fake checks the digest again before it serves.
+   */
+  fake?: FakeHelperRequest;
+}
+
+export interface FakeHelperRequest {
+  /**
+   * `working`: the coding phase, answered to the working sandbox's address only. `check`: a sealed round, answered to the check sandbox's address only. Never both: the caller list has exactly one address, so a fake of a
+   * round cannot be reached from the working sandbox even if something put it on the round's network (it would be answered with the fixed 599 and counted as a foreign call).
+   */
+  phase: "working" | "check";
+  /** The digest of the set (64 hex): the plan's pin. */
+  digest: string;
+  /** The set as JSON text. */
+  fixtureJson: string;
 }
 
 /** Where a run's secret and seed files live: a directory on a tmpfs that only the worker can write. TS15 gives the worker its implementation. */
@@ -247,11 +271,29 @@ interface Plan {
   aliases: string[];
   prepared: Prepared;
   image: string;
+  /** The files mounted into the helper: the request's own, and a fake's fixture set. */
+  files: readonly HelperFile[];
+  /** A helper that runs a program of the worker's own image: the program's arguments, all built here from numbers and checked values (the image's entrypoint is replaced by node). */
+  program?: string[];
 }
 
 function refused(request: { name?: unknown; id?: unknown }): HelperStartError {
   const name = typeof request.name === "string" ? plainName(request.name) : "a service";
   return new HelperStartError("refused", `${name} cannot be started here`, typeof request.id === "string" && TestEnvDependencyIdSchema.safeParse(request.id).success ? request.id : undefined);
+}
+
+/**
+ * The fake server's program arguments and its fixture file, from the request and the run's network. Every value is a number (an address of the run's slot, the port of the catalog entry), a digest, or a fixed word: nothing a
+ * repository wrote. The caller is exactly one address, the one of the sandbox the phase serves (4.0.2): the working sandbox's for the coding phase, the check sandbox's for a sealed round.
+ */
+function fakeProgram(net: ServicesNetwork, fake: FakeHelperRequest, address: string, port: number | undefined): { file: HelperFile; program: string[] } {
+  if ((fake.phase !== "working" && fake.phase !== "check") || !FIXTURE_DIGEST.test(fake.digest) || typeof fake.fixtureJson !== "string" || port === undefined) throw new RangeError("fake");
+  const caller = fake.phase === "working" ? net.workingSandboxIp : net.checkSandboxIp;
+  if (!/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(caller) || !/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(address)) throw new RangeError("fake");
+  return {
+    file: { name: "fixture.json", content: fake.fixtureJson, to: FAKE_FIXTURE_TARGET },
+    program: [FAKE_HELPER_ENTRY, "--listen", address, "--port", String(port), "--caller", caller, "--digest", fake.digest, "--unmatched", "fail", "--fixture", FAKE_FIXTURE_TARGET, "--ledger", FAKE_LEDGER_TARGET],
+  };
 }
 
 /** Checks every request and builds its plan; nothing is started or written before this has passed for all of them. */
@@ -272,7 +314,9 @@ function planHelpers(net: ServicesNetwork, input: StartHelpersInput): Plan[] {
       if (!parsed.success) throw new RangeError("entry");
       const entry = parsed.data;
       // Only pinned, current, offered entries of a family this launcher knows; Rovara's own helpers (the DNS helper, the proxy) are started by the code that owns them, never as a dependency.
-      if (entry.status === "retired" || entry.backing === "helper" || !entry.editions.includes(input.edition) || entry.image.digest === undefined) throw new RangeError("entry");
+      // The one exception is the fake server (slice 3): a helper that runs from the worker's own image, so it has no digest, and it must come with the fake request that says what it serves (and no other entry may).
+      const isFake = entry.backing === "fake" && entry.family === "fake-server" && entry.workerImage === true && entry.image.digest === undefined;
+      if (entry.status === "retired" || (entry.backing === "helper" && !isFake) || !entry.editions.includes(input.edition) || (entry.image.digest === undefined && !isFake) || isFake !== (request.fake !== undefined)) throw new RangeError("entry");
       const rule = FAMILY_RULES[entry.family];
       if (rule === undefined) throw new RangeError("family");
       const aliases = [...(request.aliases ?? entry.connect.defaultAliases)];
@@ -285,12 +329,14 @@ function planHelpers(net: ServicesNetwork, input: StartHelpersInput): Plan[] {
       if (!REGION.test(region)) throw new RangeError("region");
       const address = net.helperIp(index);
       const prepared = rule.prepare({ credentials: request.credentials ?? {}, address, region, aliases, port: entry.run.ports[0] ?? 4566, awsServices: request.awsServices });
-      for (const [fileIndex, file] of (request.files ?? []).entries()) {
-        if (fileIndex >= MAX_FILES_PER_HELPER || !FILE_NAME.test(file.name) || RESERVED_FILE_NAMES.includes(file.name) || Buffer.byteLength(file.content) > MAX_FILE_BYTES) throw new RangeError("file");
+      const fake = request.fake === undefined ? undefined : fakeProgram(net, request.fake, address, entry.run.ports[0]);
+      const files: HelperFile[] = [...(request.files ?? []), ...(fake === undefined ? [] : [fake.file])];
+      for (const [fileIndex, file] of files.entries()) {
+        if (fileIndex >= MAX_FILES_PER_HELPER || !FILE_NAME.test(file.name) || RESERVED_FILE_NAMES.includes(file.name) || Buffer.byteLength(file.content) > (fake !== undefined && file === fake.file ? FAKE_FIXTURE_MAX_BYTES : MAX_FILE_BYTES)) throw new RangeError("file");
         const segments = file.to.split("/");
         if (!MOUNT_TARGET.test(file.to) || segments.includes("..") || FORBIDDEN_MOUNT_ROOTS.some((root) => file.to === `/${root}` || file.to.startsWith(`/${root}/`)) || file.to.endsWith(".sock")) throw new RangeError("file");
       }
-      plans.push({ request, index, entry, name: plainName(request.name), address, aliases, prepared, image: `${input.registry}/${entry.image.repository}@sha256:${entry.image.digest}` });
+      plans.push({ request, index, entry, name: plainName(request.name), address, aliases, prepared, files, image: fake === undefined ? `${input.registry}/${entry.image.repository}@sha256:${entry.image.digest}` : input.probeImage, ...(fake === undefined ? {} : { program: fake.program }) });
     } catch (error) {
       if (error instanceof HelperStartError) throw error;
       throw refused(request);
@@ -344,7 +390,10 @@ function runArgs(net: ServicesNetwork, plan: Plan, container: string, paths: { e
     ...(paths.config === undefined ? [] : mount(paths.config, plan.prepared.config!.to)),
     ...paths.files.flatMap((file) => mount(file.path, file.to)),
     ...(paths.env === undefined ? [] : ["--env-file", paths.env]),
+    // A helper of the worker's own image runs the worker's node on its program, in place of the image's entrypoint.
+    ...(plan.program === undefined ? [] : ["--entrypoint", NODE]),
     plan.image,
+    ...(plan.program ?? []),
     ...(plan.prepared.config === undefined ? [] : [plan.prepared.config.to]),
     ...catalogFixedArgv(entry.run.extraArgs.filter((id) => id in CATALOG_FIXED_ARGS)),
   ];
@@ -495,7 +544,7 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
         if (plan.entry.reset.kind === "restart") keptUntilStop.add(name);
         configPath = await input.files.write(name, plan.prepared.config.content, 0o644);
       }
-      for (const file of plan.request.files ?? []) {
+      for (const file of plan.files) {
         const name = `${container}.${file.name}`;
         written.push(name);
         if (plan.entry.reset.kind === "restart") keptUntilStop.add(name);

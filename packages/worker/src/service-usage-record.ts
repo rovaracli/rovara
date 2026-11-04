@@ -23,14 +23,20 @@
 // by name, and the lists are capped. A ledger that cannot be read is `ledger: "unreadable"` with nothing else, never "no calls". Residual (as for the names above, accepted and declared): an operation name that passes the shape
 // check can still carry a value the redactor's spellings do not cover, up to ~64 characters in each of 30 names; that is why this record is never fed back to the agent or a model.
 //
+// SLICE 3, THE FAKES' LEDGERS (one port, `ServiceUsageRecordInput.fakes`): each fake server of the round keeps a request ledger, and a summary of it (`FakeLedgerSummary`, fake-helper.ts) is read while the fake still runs. What the record keeps of it is a row
+// of five counts per fake (matched, unmatched, made-up, armed faults, calls from an address that is not the check sandbox), each a coarse bucket (`bucketCount`), and NOTHING the program sent: no path, no host, no header, no
+// body. A fake whose ledger cannot be read, was not trusted (a malformed line, a ledger past its bound), or whose summary is past its limits is `ledger: "unreadable"` with nothing counted, never "no calls"; the broker
+// reads that as "could not be checked" and fails the usage step.
+//
 // The record is the broker contract's `TestServicesUsageRecord` (contracts/src/test-services-usage.ts, s1-broker T1); the tests parse every record this module builds with `TestServicesUsageRecordSchema`.
 import {
   AwsOperationNameSchema, AwsServiceKeySchema, TEST_SERVICES_AWS_USAGE_LIMITS, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_SCHEMA_VERSION, TestServicesAwsUsageSchema, hostProblem, looksLikeSecretValue, registrableDomain,
-  type TestServicesAwsUsage, type TestServicesDependencyUsage, type TestServicesStartFailure, type TestServicesUsageRecord,
+  type TestServicesAwsUsage, type TestServicesDependencyUsage, type TestServicesFakeUsage, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { readSealedDnsRecord, type SealedDnsRecord } from "./check-sandbox.js";
 import { EmulatorControlError } from "./emulator-control.js";
 import { EmulatorLedgerError, type EmulatorLedger, type EmulatorLedgerPort } from "./emulator-ledger.js";
+import type { FakeUsagePort } from "./fake-usage.js";
 import type { ServiceRedactor } from "./service-env.js";
 import type { ResetOutcome, ServiceSession } from "./service-runner.js";
 import type { DockerCli } from "./swebench/containers.js";
@@ -71,7 +77,13 @@ export interface ServiceUsageRecordInput {
   emulator?: EmulatorLedgerPort;
   /** The longest the ledger port may take. Default USAGE_LEDGER_LIMIT_MS. */
   ledgerLimitMs?: number;
+  /**
+   * Slice 3, the ONE port for the round's fake servers: reads each fake's ledger summary, bound to the round's own fakes while they still run. Present only when the run started a fake. A summary that is missing (undefined), or a
+   * port that throws or never answers within the ledger limit, gives `ledger: "unreadable"` for that fake; absent, the record has no `fakes` field at all (the earlier slices' record, byte for byte).
+   */
+  fakes?: FakeUsagePort;
 }
+
 
 /** The coarse buckets of a count, as lower bounds: 1, 2 (2-5), 6 (6-20), 21 (21 or more). */
 export const USAGE_COUNT_BUCKETS: readonly number[] = [1, 2, 6, 21];
@@ -145,7 +157,59 @@ export async function buildServiceUsageRecord(input: ServiceUsageRecordInput): P
   const dns = input.dns === undefined ? undefined : "unknown" in input.dns ? input.dns : await readSealedDnsRecord(input.dns.docker, input.dns.dnsHelperName).catch(() => undefined);
   const unknownCalls = dns === undefined ? { domains: [], otherCount: 0 } : reduceUnknownNames(dns, input.redactor);
   const aws = input.emulator === undefined ? undefined : await readAwsUsage(input.emulator, input.redactor, input.ledgerLimitMs ?? USAGE_LEDGER_LIMIT_MS);
-  return { schemaVersion: TEST_SERVICES_USAGE_SCHEMA_VERSION, dependencies, unknownCalls, ...(aws === undefined ? {} : { aws }) };
+  const fakes = input.fakes === undefined ? undefined : await readFakeUsage(input.fakes, input.planned, input.ledgerLimitMs ?? USAGE_LEDGER_LIMIT_MS);
+  return { schemaVersion: TEST_SERVICES_USAGE_SCHEMA_VERSION, dependencies, unknownCalls, ...(aws === undefined ? {} : { aws }), ...(fakes === undefined ? {} : { fakes }) };
+}
+
+// ---- the fakes' ledgers
+
+/** What the record says of a fake whose ledger could not be read: nothing, and that it could not be read. */
+export const unreadableFakeUsage = (id: string): TestServicesFakeUsage => ({ id, ledger: "unreadable", matched: 0, unmatched: 0, synthesized: 0, faults: 0, foreign: 0 });
+
+/**
+ * Reads the fakes' summaries through the port with at most `limitMs` to answer, and reduces each to a row of buckets. Never throws: a port that fails or stays silent makes every fake `unreadable`. Only ids in `planned` get a row
+ * (the port is the worker's own, but the record is built from what the PLAN named). At most one row per id; the port answers for every fake of the round (a fake it cannot read is `summary: undefined`).
+ */
+export async function readFakeUsage(port: FakeUsagePort, planned: readonly string[], limitMs: number): Promise<TestServicesFakeUsage[]> {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const silence = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject(new RangeError("silence")); }, Math.max(1, limitMs)); });
+  let answers: Awaited<ReturnType<FakeUsagePort>> = [];
+  try {
+    answers = await Promise.race([port(controller.signal), silence]);
+  } catch {
+    controller.abort();
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  const wanted = new Set(planned);
+  const rows = new Map<string, TestServicesFakeUsage>();
+  for (const answer of answers) {
+    if (!wanted.has(answer.id) || rows.has(answer.id)) continue;
+    const summary = answer.summary;
+    rows.set(answer.id, summary === undefined || !summary.trusted ? unreadableFakeUsage(answer.id) : {
+      id: answer.id, ledger: "read", matched: bucketCount(summary.matched), unmatched: bucketCount(summary.unmatched), synthesized: bucketCount(summary.synthesized), faults: bucketCount(summary.faults), foreign: bucketCount(summary.foreign),
+    });
+  }
+  return [...rows.values()];
+}
+
+/** Adds two `fakes` rows lists of one run (the rounds' records): counts add (they are lower bounds, so their sums are too), and a ledger unreadable in either round is unreadable. A fake in only one of them is kept as it is. */
+export function mergeFakeUsage(earlier: readonly TestServicesFakeUsage[] | undefined, later: readonly TestServicesFakeUsage[] | undefined): TestServicesFakeUsage[] | undefined {
+  if (earlier === undefined) return later === undefined ? undefined : [...later];
+  if (later === undefined) return [...earlier];
+  const max = USAGE_LIMITS.count;
+  const merged = new Map<string, TestServicesFakeUsage>(earlier.map((row) => [row.id, row]));
+  for (const row of later) {
+    const before = merged.get(row.id);
+    if (before === undefined) { merged.set(row.id, row); continue; }
+    if (before.ledger !== "read" || row.ledger !== "read") { merged.set(row.id, unreadableFakeUsage(row.id)); continue; }
+    merged.set(row.id, {
+      id: row.id, ledger: "read", matched: Math.min(max, before.matched + row.matched), unmatched: Math.min(max, before.unmatched + row.unmatched), synthesized: Math.min(max, before.synthesized + row.synthesized),
+      faults: Math.min(max, before.faults + row.faults), foreign: Math.min(max, before.foreign + row.foreign),
+    });
+  }
+  return [...merged.values()];
 }
 
 // ---- the emulator's ledger
