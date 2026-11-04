@@ -34,6 +34,17 @@ describe("the boot facts", () => {
     void _version;
     expect(parseBootFacts(JSON.stringify(fewer))).toBe("unreadable");
   });
+  it("carry an optional IPv6 reason, only with ipv6Drops false and only a fixed word (the IPv6 wall failed: the worker runs without test services)", () => {
+    for (const reason of ["ip6tables-unusable", "rule-not-added"] as const) {
+      const failed = { ...FACTS, ipv6Drops: false, ipv6DropsReason: reason };
+      expect(parseBootFacts(JSON.stringify(failed))).toEqual(failed);
+      expect(checkReport({ ...report({ outcome: "booted", phase: "worker_start" }), bootFacts: failed })).toBe(true);
+    }
+    expect(parseBootFacts(JSON.stringify({ ...FACTS, ipv6Drops: false }))).toEqual({ ...FACTS, ipv6Drops: false });
+    for (const bad of [{ ...FACTS, ipv6DropsReason: "rule-not-added" }, { ...FACTS, ipv6Drops: false, ipv6DropsReason: "free text from an error" }, { ...FACTS, ipv6Drops: false, ipv6DropsReason: 1 }]) {
+      expect(parseBootFacts(JSON.stringify(bad)), JSON.stringify(bad)).toBe("unreadable");
+    }
+  });
 });
 
 describe("the report", () => {
