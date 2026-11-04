@@ -8,7 +8,7 @@ import { BUNDLE_SIGNATURE_FILE, BundleSignatureSchema, sha256OfBytes, verifyBund
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildBundle } from "../../scripts/release/bundle.js";
 import { signPreparedBundle } from "../../scripts/release/sign-bundle.js";
-import { IMAGES, NO_KIT_CHECK, fakeExporter, newTestKey, writeRelease } from "../support/bundle-fixture.js";
+import { IMAGES, NO_KIT_CHECK, RELEASE_LABELS, fakeExporter, newTestKey, writeRelease } from "../support/bundle-fixture.js";
 import { writeFakeKit } from "../support/synth-kit-fixture.js";
 
 let root: string;
@@ -29,7 +29,7 @@ async function prepared(withKit = true): Promise<string> {
   const out = join(root, `bundle-${String(counter += 1)}`);
   const kit = join(root, `kit-${String(counter)}`);
   if (withKit) await writeFakeKit(kit, { releaseSha256: releaseSha });
-  await buildBundle({ releaseDir, out, images: IMAGES, exportImage: fakeExporter, ...(withKit ? { synthKitDir: kit, kitCheck: NO_KIT_CHECK } : {}) });
+  await buildBundle({ releaseDir, out, images: IMAGES, readImageLabels: RELEASE_LABELS, exportImage: fakeExporter, ...(withKit ? { synthKitDir: kit, kitCheck: NO_KIT_CHECK } : {}) });
   return out;
 }
 const countingSigner = () => { const key = newTestKey(); let signed = 0; return { key, signer: { publicKeyPem: key.publicKeyPem, sign: async (message: Buffer) => { signed += 1; return key.signer.sign(message); } }, count: () => signed }; };

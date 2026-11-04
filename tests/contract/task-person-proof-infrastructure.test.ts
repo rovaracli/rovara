@@ -362,6 +362,7 @@ describe("the named TEST proof-only installation gate", () => {
     // (nothing hand-computed); the only template additions are ts-accounts' TestAccountSecretsRole, the broker's AssumeTestAccountSecretsRole statement and the lookup ARN. The legacy digests did not move.
     // 2026-11-03, integration tip fixes (ENV-ROOM): the four named and foreign digests were retaken once more, from the values the digest test itself reports. The broker's GITHUB_APP_CREDENTIAL_REF, GITHUB_APP_ID and WEB_FEATURES
     // variables and (cloud) DEVELOPER_GITHUB_CLIENT_ID moved into AGENTX_SETTINGS to win back its 400 bytes of room, and those parameters gained a plain-text AllowedPattern in a named environment. The legacy digests did not move.
+    // 2026-11-04, 0.5.3 integration (4241fd159: test-services slice 2 plus design review on top of slice 1): the four named and foreign digests were retaken from the values the digest test itself reports (nothing hand-computed); each lane had retaken them on its own base, and the merge holds both additions. The legacy digests did not move.
     // 2026-11-04, merge of cloud/next cf34811c6 (env packing, usable models) with the test-services chain and lane ts-accounts: the named and foreign digests were retaken from the values the digest test itself reports for the merged
     // template (nothing hand-computed). The legacy digests did not move.
     // 2026-11-03, usable models: the four named and foreign digests were retaken after ONE intended addition (the legacy digests did not move; named environments only): the broker's role gained
@@ -372,14 +373,14 @@ describe("the named TEST proof-only installation gate", () => {
       {
         label: "named",
         template: named,
-        withRoute: "68a1584d806692a99a8615b0c75f6b2f223dcd316d178d92007e80dfa7631051",
-        withoutRoute: "570c7c7bea637081b75de33268ae02924951843ff4c3a777d712a25d80ffa074",
+        withRoute: "0571bc58f0358157ecff73f1d9c9bab05689cfc2078ca1b22bd28b39b4b846b8",
+        withoutRoute: "f9d25efa73eac1a75ccaabbad8660a8c666497f07b173355ba9559bb34bd14cf",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "05e30e25c67b8f7e0f337f4c6cb2726457eb8b88442ae8f9a67f32e85c8e3168",
-        withoutRoute: "20924d7f2b6fc801beb0cda0fa04230fd52274786eebb2f1dcb95913634fd09d",
+        withRoute: "126df5ca8806dab23cf4920cf258c19d00ae39c8f31ddfb7463f33f78c6981e0",
+        withoutRoute: "03b34b62b18aa40155e7b4394889472a10699dca8ef90452fd5461bee1fe85e3",
       },
       {
         label: "legacy",
