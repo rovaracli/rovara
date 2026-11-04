@@ -74,3 +74,6 @@ During M2 verification one accidentally duplicated queued gate was terminated be
 
 
 Final M3 verification: 24 files / 1346 tests, 10 Chromium journeys, required root typecheck, three strict typecheck shards, all changed-file lint and six owning lint shards, web build, inventories, codemap and diff check passed. Both new preview mutations were killed and restored before the final green gates. Initial bundle 185004 gzip bytes. See M3-READY.md for complete commands/scope and local screenshot links. STOP at M3 for REVIEW-M3.md.
+
+
+Publication: feature checkpoint 8b7f0bdc9ac88212417d4d02654ca879841fec06 was pushed to private/feat/admin-v11-finish after the required visibility check printed PRIVATE; the remote ref matched and the worktree was clean. GitHub's push response reported one moderate advisory on the repository's default branch: https://github.com/PrepLabsAI/Rovara-cloud/security/dependabot/36. This lane did not investigate or change that separate default-branch dependency issue. This publication note changes documentation only; the verified source remains 8b7f0bdc9.
