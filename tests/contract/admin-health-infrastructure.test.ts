@@ -303,6 +303,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agent-sessions/ask-linear-scrub.ts",
       // 2026-11-03, DR7 slice A (design review): the packets built for a round's reviewer slots and the sealed key minted for each slot are working rows of one design-review operation; both expire a day after they are written (SLOT_PACKET_TTL_SECONDS) and are removed when the round is recorded. Only packet-store.ts and slot-keys.ts write them.
       "packages/broker/src/design-review/packet-store.ts", "packages/broker/src/design-review/slot-keys.ts",
+      // 2026-11-04, 0.5.5 integration: task spending-stop review snapshots (admin-v11-finish) last 5 minutes, the team record's source request receipts (24 h, source-store.ts), picker listing sessions (15 min, source-options.ts) and erase sweep markers (erase.ts) are working rows of one operation each; all expire by the TTL, none is a durable record.
+      "packages/broker/src/org/task-stop-enrollment.ts", "packages/broker/src/team-record/source-store.ts", "packages/broker/src/team-record/source-options.ts", "packages/broker/src/team-record/erase.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

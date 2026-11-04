@@ -862,6 +862,10 @@ describe("I4: the builders", () => {
     ["auditSavedEnvChanged", (occurrence) => builders.auditSavedEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", change: "build_recorded", cause: "no_image", digest: "sha256:" + "a".repeat(64) })],
     ["auditSavedEnvSettingChanged", (occurrence) => builders.auditSavedEnvSettingChanged({ ...base, occurrence, details, projectName: "Secret Project", enabled: true })],
     ["auditTestAccountChange", (occurrence) => builders.auditTestAccountChange({ ...base, occurrence, details, action: "test_account.approved", accountId: "ta-0000000000000001", facts: { digest: "a".repeat(64), approvalMode: "second_person", approvals: 2, expiresInDays: 90 } })],
+    // Test services slice 3 (answer sets), 2026-11-04 integration
+    ["auditProjectFixtureSetDecided", (occurrence) => builders.auditProjectFixtureSetDecided({ ...base, occurrence, details, projectName: "Secret Project", decision: "approved", digest: "a".repeat(64) })],
+    // Send-back access gate (S2), 2026-11-04 integration: a refused person-pressed path
+    ["auditTaskWorkRefused", (occurrence) => builders.auditTaskWorkRefused({ ...base, occurrence, details, taskId: "task_1", path: "retry", reason: "owner_no_access" })],
     ["auditProjectSetupRestored", (occurrence) => builders.auditProjectSetupRestored({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, fromRevision: 3, provenRevision: 2 })],
   ];
 

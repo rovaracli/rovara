@@ -66,8 +66,12 @@ export interface LambdaLoadReport {
   problems: string[];
 }
 
-/** The only init error a minimal environment may cause: the repo's `requiredEnvironment` message, `NAME is required`. */
-const MISSING_ENVIRONMENT_VARIABLE = /^[A-Z][A-Z0-9_]*[A-Z0-9] is required$/;
+/**
+ * The only init error a minimal environment may cause: the repo's `requiredEnvironment` message, `NAME is required`, with the one fixed hint
+ * that function appends for a name the broker receives packed (`(on the broker it arrives packed in AGENTX_NAMES, code ts)`, CLOSE-ENV-1).
+ * No other trailing words are accepted.
+ */
+const MISSING_ENVIRONMENT_VARIABLE = /^[A-Z][A-Z0-9_]*[A-Z0-9] is required(?: \(on the broker it arrives packed in AGENTX_(?:NAMES|SETTINGS), code [a-z0-9]+\))?$/;
 const RESULT_MARKER = "__LAMBDA_LOAD_RESULT__";
 const LOAD_TIMEOUT_MS = 60_000;
 
