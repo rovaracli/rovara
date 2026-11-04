@@ -212,6 +212,7 @@ import { EVIDENCE_DOWNLOAD_PATH, routeEvidenceDownload } from "./task-evidence-d
 import { isDecisionPath, decisionRouteDepsOf } from "./developer-routes/decisions.js";
 import { routeSetupAgent } from "./developer-routes/setup-agent.js";
 import { routeDecisionCards } from "../decisions/routes.js";
+import { designPlaybookDeps, isDesignReviewPath, routeDesignReview } from "./developer-routes/design-review.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./developer-routes/types.js";
 import { PROJECT_NOT_FOUND_IN_APP, bodyError } from "./developer-routes/common.js";
 import { authenticateDeveloper, authenticateDeveloperSessionId } from "./developer-routes/authentication.js";
@@ -585,6 +586,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     const playbookDeps = {
       documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, audit: deps.agents?.audit, approvals: deps.agents,
       projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName),
+      ...designPlaybookDeps(deps),
     };
     if (playbookProcessRoute !== null) return routeProjectProcess(playbookDeps, caller, playbookProcessRoute[1]!);
     return routeProjectPlaybook(playbookDeps, caller, request.method as "GET" | "PUT", playbookRoute![1]!, () => jsonBody(request));
@@ -664,6 +666,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     const reply = await deps.teamRecord.routes({ method: request.method, path: url.pathname, query: Object.fromEntries(url.searchParams), caller: { orgId: caller.orgId, developerId: caller.developerId, projectRole: found.role } });
     if (reply !== undefined) return reply.status === 200 ? reply.body : new StatusReply(reply.status, reply.body as object);
   }
+  // Design review: Design first, Skip, the cost card's choices, the question card's answers, the Retry of a review that did not run, and the confirmation page of a high-risk design. A task with no design review answers as a missing one.
+  if ((request.method === "POST" || request.method === "GET") && isDesignReviewPath(url.pathname)) return routeDesignReview(deps, caller, request, url);
   const specChoice = SPEC_CHOICE_ROUTE.exec(url.pathname);
   if (request.method === "POST" && specChoice !== null) return routeSpecChoice(deps, caller, specChoice[1]!, specChoice[2]!);
   // SH14 (switch `su`, off by default): the setup run that runs commands. With the switch off this answers undefined and the path falls through as any unknown path.

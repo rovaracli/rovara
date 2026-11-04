@@ -51,7 +51,7 @@ describe("agentx config list and get", () => {
     }
     // 2026-11-03: the install-wide ceiling on Rovara-paid diagnoses (liveFix.rovaraPaidDailyCents) is gone: the company pays for a diagnosis, so there is no key for it.
     expect(rows.find((row) => row.key === "liveFix.rovaraPaidDailyCents")).toBeUndefined();
-    expect(rows).toHaveLength(37);
+    expect(rows).toHaveLength(39);
   });
 
   it("never shows the alert address itself, only that it is set", async () => {

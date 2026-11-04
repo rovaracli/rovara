@@ -182,7 +182,20 @@ const ROWS: readonly Row[] = [
   ["aws/broker/workflow-items.ts", "completedWorkflowItems", "money", ".developerId*2", ".startedBy"],
   // SR-1: the second review is admitted against the same payer as the first review (whose budget pays), exactly as the understand-to-full admission above reads it.
   ["rovara-code/second-review-start.ts", "prepareSecondReview", "money", ".developerId*2", ".startedBy"],
-  ["aws/broker/plan-answers.ts", "storePlanAnswer", "principal", ".ownerKey*2"],
+  ["aws/broker/plan-answers.ts", "storePlanAnswer", "principal", ".ownerKey*3"],
+  // Design review: the principal's storage path for a design document the broker stores (the planner's template design, a revised design). It carries no authority.
+  ["design-review/resolve-run.ts", "designResolveOutcome", "principal", ".ownerKey"],
+  ["design-review/template-store.ts", "storeDesignTemplate", "principal", ".ownerKey"],
+  // DR7 slice C: "the requester" of a design (the person who asked for the task, a fixed fact of the record) as the approval rules compare it: the requester may not be the second person on a high-risk design. A taker is not the requester.
+  ["aws/developer-routes/design-review.ts", "approvePortsOf>context", "history", ".developerId"],
+  ["aws/developer-routes/design-review.ts", "spendContextOf", "history", ".developerId"],
+  ["aws/developer-routes/design-review.ts", "answersPortsOf>context", "history", ".developerId"],
+  ["aws/developer-routes/design-review.ts", "resumePortsOf>context", "history", ".developerId"],
+  // Final fix round: the same fixed fact (the requester) read where a card is listed for each person (the requester sees it, an approver who is not the requester is checked by the approval rules), and where Design first and Retry ask whether the caller is the requester
+  // (or the current owner, read through `tryEffectiveTaskOwner`). A press that approved a design is recognised by the caller's own actor id in the decision it recorded: it names a person, it decides nothing about who owns the task.
+  ["aws/developer-routes/design-review.ts", "cardsForTask", "history", ".developerId*3"],
+  ["aws/developer-routes/design-review.ts", "mayDirectWork", "history", ".developerId"],
+  ["aws/developer-routes/design-review.ts", "approveOnPage", "caller-actor", "taskOwnerKey()"],
   // Mainline #408 (plan self-check and grounding): the object prefix of the plan the planner answered and of the task's stored plan document, and the task's principal for the grounding step's workspace: the task's principal, never changes
   ["aws/broker/e2e-rounds.ts", "runGroundingStep", "principal", ".ownerKey"],
   ["aws/task-plan-document.ts", "readTaskPlanDocument", "principal", ".ownerKey"],

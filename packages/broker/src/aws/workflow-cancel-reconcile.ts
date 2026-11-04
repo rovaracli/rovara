@@ -8,7 +8,8 @@
 // - the owner's Retry planning on a row an earlier release already stranded (`strandedPlanningRun`, `recoverStrandedPlanning`).
 // Nothing here adds an approval or starts an operation: the only change is RUNNING to BLOCKED, and for a VERIFY or REVIEW step the AUTOFIX row (DISPATCHEXHAUST) that has the policy look at the block.
 import { GetCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, closePlanCritique, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, type WorkflowSnapshot } from "@agentx/contracts";
+import { closeEndedCheck } from "../design-review/check-ends.js";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { workflowRunEndedReason } from "./outbox-failure.js";
 import { endedRunRows } from "./workflow-autofix-dispatch-exhaust.js";
@@ -36,6 +37,9 @@ export interface StoppedRunOperation {
   workflowDependencies?: unknown;
   workflowE2EAdmission?: { purpose?: "baseline" | "replay" | "grounding" | undefined } | undefined;
   workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string } | undefined;
+  /** A design review's binding and org, for releasing the round's packets when its run is stopped. */
+  orgId?: string | undefined;
+  designReview?: unknown;
 }
 
 /** The task fields these rules read; a `DeveloperTaskRecord` fits. */
@@ -102,7 +106,7 @@ export async function blockStoppedWorkflowRun(client: Client, tableName: string,
         ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
         ExpressionAttributeValues: { ":workflow": mode === "PLAN_CRITIQUE"
           // Plan 6 Task 8: the plan check is advice, so a check that was stopped lets the plan go on to the person, shown as not checked.
-          ? closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now }) : blockWorkflow(workflow, stoppedStepReason(mode, endedAs), now), ":now": now,
+          ? await closeEndedCheck({ documentClient: client, tableName }, workflow, run, now) : blockWorkflow(workflow, stoppedStepReason(mode, endedAs), now), ":now": now,
           ":revision": workflow.revision, ":stage": workflow.stage, ":running": "RUNNING" },
       } },
       { ConditionCheck: {

@@ -1,5 +1,6 @@
 // Learning v2: the learning mode, the approval policy and the edition caps (design §1.2, §4.5.3, §4.8.2 C10/C14; owner decisions Q2 and Q8).
 import { z } from "zod";
+import { approversRequired as sharedApproversRequired } from "../org/approval-by-risk.js";
 import type { LessonAuditEvent, LessonAuditSink } from "./ports.js";
 import type { Tier } from "./types.js";
 
@@ -36,11 +37,8 @@ export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = { tier0: TIER0_APPROVAL_D
 /** What the project runs with when nothing is set (Q2). A company lock or a project setting may choose another mode. */
 export const DEFAULT_LEARNING_MODE: LearningMode = "On";
 
-export function approversRequired(tier: Tier, policy: ApprovalPolicy): 0 | 1 | 2 {
-  if (tier === 2) return 2;
-  const level = tier === 0 ? policy.tier0 : policy.tier1;
-  return level === "auto" ? 0 : level === "one" ? 1 : 2;
-}
+/** The rule is shared with the design review stage and lives in `org/approval-by-risk.ts`; lessons call it from here as before. */
+export const approversRequired: (tier: Tier, policy: ApprovalPolicy) => 0 | 1 | 2 = sharedApproversRequired;
 
 export type Edition = "enterprise" | "public";
 /** Spend caps for learning. Enterprise has none: only the customer's own spend limits apply (decision Q8). Public keeps the caps. An absent value is no cap. */

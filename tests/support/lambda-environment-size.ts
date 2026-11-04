@@ -49,6 +49,8 @@ export const DEPLOY_PARAMETER_VALUES: Record<string, string> = {
   DeveloperOidcSince: "999999999999",
   SlackMemberWorkspaceLimit: "999999",
   SlackOrganizationWorkspaceLimit: "999999",
+  // B2-m2: `dp` (the design review's project list) is packed into AGENTX_SETTINGS and holds up to its 20 characters (its default is empty, which is not the worst case).
+  DesignReviewProjects: `${"a".repeat(9)}:${"b".repeat(10)}`,
   CloudSignInEmailFrom: "Rovara <no-reply@mail.example-company.com>",
   CloudSignInEmailSourceArn: "arn:aws:ses:us-east-1:123456789012:identity/mail.example-company.com",
 };

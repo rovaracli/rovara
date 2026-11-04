@@ -64,6 +64,10 @@ import { parseRuntimeBinding, type AdaptedHttpRequest } from "../lambda.js";
 import { SETUP_DRAFT_PREAMBLE } from "../../rovara-code/setup-draft.js";
 import { setupAgentWireOf } from "../../rovara-code/setup-agent.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
+import { designReviewCapability } from "../../design-review/capability.js";
+import { chatgptPlanUse } from "../../design-review/chatgpt-plan.js";
+import { designTemplateInstructions } from "../../design-review/template.js";
+import type { DesignReviewDispatch } from "../../design-review/round-ports.js";
 import { recordedOffersOf, setupRecipeOffersFor } from "../../org/setup-recipe-dispatch.js";
 import { testEnvImplementPlanFor, testEnvPlanFor } from "../../test-env/task-plan.js";
 import { isNightlyOperation, nightlyRunPayloadOf } from "../../test-env/nightly-run.js";
@@ -315,7 +319,7 @@ async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId
 export async function taskOperationParts(
   dependencies: AwsBrokerDependencies,
   workspace: WorkspaceInstance,
-  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT" | "SETUP_AGENT" | "SPEC_WRITE"; specWrite?: SpecWriteBinding; workflowReviewSpec?: SpecReviewInput; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; ownerRedirect?: OwnerRedirectInvocation; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
+  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT" | "SETUP_AGENT" | "SPEC_WRITE"; specWrite?: SpecWriteBinding; workflowReviewSpec?: SpecReviewInput; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; ownerRedirect?: OwnerRedirectInvocation; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput; designReview?: DesignReviewDispatch },
   now: string,
 ): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number;modelChecks?:TransactItems;turnAudit?:ReturnType<typeof prepareTurnModelFallback>;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
@@ -363,9 +367,11 @@ export async function taskOperationParts(
   if(resolvedModel.selectionUnavailable===true&&(applied?.modelDecision===undefined||applied.modelDecision.reason==="PROJECT_SELECTION")&&input.workflowMode!=="CHECKS"&&input.agentRun===undefined)throw agentXError("MODEL_NOT_ALLOWED","The project model selection is unavailable. Check How we work.");
   // A step that picks a model of its own which the person's plan does not serve runs on the model proxy, not on the plan. An agent step of a run never
   // uses a person's ChatGPT plan: the run is the agent's work (it may be started by an event or paid for by a project), not the person's own coding turn.
-  let chatgpt = applied?.dropChatgpt === true || input.agentRun !== undefined ? undefined : planSelection;
+  const planUse = chatgptPlanUse({ dropChatgpt: applied?.dropChatgpt === true, agentRun: input.agentRun !== undefined, designReview: input.designReview !== undefined, governedPersonal: applied?.modelDecision?.sourceId === "personal-chatgpt" });
+  let chatgpt = planUse.selection ? planSelection : undefined;
   // Governed personal plans execute the exact verified resolver tuple, never the connection's preferred model.
-  if(applied?.modelDecision?.sourceId==="personal-chatgpt") {
+  // A design review never runs on a person's ChatGPT plan (B-m5): the plan stays undefined, and the round is not run for want of a route with an alias.
+  if(planUse.governed&&applied!==undefined) {
     if((turnPolicy===undefined&&task?.payer?.kind!=="member")||applied.model===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's verified personal model is unavailable.");
     chatgpt={developerId:turnPolicy?.frozen.payerDeveloperId??(task!.payer as {developerId:string}).developerId,model:applied.model};
   }
@@ -398,6 +404,8 @@ export async function taskOperationParts(
   const { load: learnedLoad, ...learned } = await learnedContextForOperation(dependencies, { orgId, task, workflowMode: input.workflowMode, legacyTask: input.legacyTask, agentRun: input.agentRun, definition: settings.definition });
   const operationId = input.operationId ?? randomUUID();
   const fence = workspace.fence + 1;
+  // Design review (switch `dr`; a round is dispatched only for a task that has one): the round's checks, budgets and packets, given the plan-check model just resolved. It answers the binding this operation is created with, or throws `DesignReviewRoundStop`.
+  const designBinding = input.designReview === undefined ? undefined : await input.designReview.prepare({ operationId, model: payloadModel, modelRoute: routed?.wire, sourceId: routed?.route?.sourceId });
   const operation = operationRecord({
     ...operationOrg(workspace),
     id: operationId,
@@ -427,6 +435,7 @@ export async function taskOperationParts(
     ...input.requester,
   });
   operation.settingsRevision = settings.definition.revision;
+  if (designBinding !== undefined) operation.designReview = designBinding;
   // Plan 6 Task 8: the project allows only one model, so the same model that wrote the plan checks it; the plan view says so.
   // Learning v2: which stage's manifest the worker's load report belongs to.
   if (learnedLoad !== undefined) operation.learnedLoad = learnedLoad;
@@ -477,7 +486,9 @@ export async function taskOperationParts(
   // The prompt below carries the plan quality guidance; delivery clears this for a worker that cannot read the members it names (see createPlanQualityNegotiationRecorder).
   if (input.workflowMode === "PLAN" && codingPlan) operation.planQualityAsked = true;
   const requiredParts = codingPlan && input.workflowMode === "PLAN" && input.legacyTask !== true && await codingPlanRequiresParts(dependencies, workspace.id);
-  const documentInstructions = planDocumentInstructions({ kind: planKind, path: input.workflowPhase === undefined ? "QUICK" : "FULL", anchors: true, planQuality: true,
+  // Design review (off: no task has a `designReview`, so this is false): the DESIGN phase writes the fixed Rovara template (design-review/template.ts), as Markdown, not as structured claims.
+  const designTemplate = input.workflowMode === "PLAN" && input.workflowPhase === "DESIGN" && task?.workflow?.designReview !== undefined;
+  const documentInstructions = designTemplate ? designTemplateInstructions({ resolving: input.planRevision === true }) : planDocumentInstructions({ kind: planKind, path: input.workflowPhase === undefined ? "QUICK" : "FULL", anchors: true, planQuality: true,
     // Rovara Code version 2 only: a plan may say that no code change is needed (version 1's prompt, and so its recorded behaviour, is unchanged).
     ...(task?.workflow?.definitionVersion === "1.1.0" ? { noChangeOption: true } : {}),
     ...(requiredParts ? { requiredParts: true } : {}),
@@ -522,7 +533,7 @@ export async function taskOperationParts(
   if (askGroundingSource) operation.groundingSourceAsked = true;
   const askBaselineSource = input.workflowE2EBaselineSource === true || (input.workflowMode === "IMPLEMENT" && await baselineSourceStillRequested(dependencies, workspace.id));
   // Lane E: the project's MCP context sources, in the four stages that may read them and never in Build (stageHasContextSources).
-  const contextToolsOn = await stageHasContextSources({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, contextSourcesConfigured: dependencies.contextSources !== undefined }, orgId, workspace.projectName, input.workflowMode);
+  const contextToolsOn = input.designReview === undefined && await stageHasContextSources({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, contextSourcesConfigured: dependencies.contextSources !== undefined }, orgId, workspace.projectName, input.workflowMode);
   // Review M9, N3: the stage is about to start, so the package-run servers it reads are started now. The requests are awaited for a few seconds at most (this runs in a Lambda that is frozen when it
   // returns); a failure or a slow host changes nothing.
   if (contextToolsOn && dependencies.contextSources?.prewarm !== undefined) await prewarmStageServers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, prewarm: dependencies.contextSources.prewarm }, orgId, workspace.projectName, input.workflowMode);
@@ -544,7 +555,7 @@ export async function taskOperationParts(
     workspaceId: workspace.id,
     fence,
     projectRevision: workspace.projectRevision,
-    callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence, {
+    callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence, designReviewCapability(designBinding, {
       modelPolicy:applied?.modelPolicy,
       feedbackBundles: input.workflowMode === "FEEDBACK_REVIEW", feedbackApproval: input.workflowFeedbackApproval !== undefined, chatGptToken: chatgpt !== undefined,
       candidateExport: input.workflowMode === "IMPLEMENT", groundingSource: askGroundingSource, workflowE2E: input.workflowE2EAdmission !== undefined, modelAccess: dependencies.modelAccess !== undefined && (input.workflowMode !== "CHECKS" || input.agentRun !== undefined),
@@ -558,12 +569,14 @@ export async function taskOperationParts(
       setupAgent: input.workflowMode === "SETUP_AGENT",
       // NH-1: the nightly run's one action, granted only to the verification operation of a nightly task.
       nightlyResult: isNightlyOperation(task, input.workflowMode),
-    }),
+    })),
     payload: {
       conversationId: input.conversationId,
       prompt,
       conversationStarted: input.conversationStarted,
       ...(input.workflowMode === undefined ? {} : { workflowMode: input.workflowMode }),
+      // Design review: the binding the worker runs the reviewers from. A worker without "task.designReview.v1" is refused the run at delivery (ec2-delivery.ts), never sent it without the field.
+      ...(designBinding === undefined ? {} : { designReview: designBinding }),
       // Meta repo lane B: a setup proposal run is told which repository is the project's meta repository, so it looks there for the team's rules, specs and runbooks.
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
       // Test environment (wire-testenv): the setup draft also runs the environment detectors over the default branch. A worker without "task.testEnvDetect.v1" is sent the run without the field at delivery (no environment draft is made, and the omission is logged).
@@ -578,7 +591,7 @@ export async function taskOperationParts(
       // The worker reads a planning answer as this kind of document (a Quick plan has no phase and is a coding plan).
       ...(input.workflowMode === "PLAN" && input.workflowPhase !== undefined ? { workflowPhase: input.workflowPhase } : {}),
       // Every planning step asks for a structured plan, so the worker checks the answer and asks once more when it is unreadable.
-      ...(input.workflowMode === "PLAN" ? { planFormat: "structured" as const } : {}),
+      ...(input.workflowMode === "PLAN" && !designTemplate ? { planFormat: "structured" as const } : {}),
       // The prompt asks for the v2 application intent exactly when the context offers executable kinds; the worker is asked to parse it only then.
       ...(input.workflowMode === "PLAN" && offersApplicationE2EPlan(e2ePlanningContext) ? { workflowE2EPlanVersion: 2 as const } : {}),
       ...(input.workflowFeedbackReview === undefined ? {} : { workflowFeedbackReview: input.workflowFeedbackReview }),

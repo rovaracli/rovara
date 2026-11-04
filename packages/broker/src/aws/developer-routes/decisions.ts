@@ -34,6 +34,8 @@ import type { DecisionRouteDependencies } from "../../decisions/routes.js";
 import { pressMerge } from "../../rovara-code/merge.js";
 import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
+import { designReviewEnabled } from "../../design-review/switch.js";
+import { designApproveHandlerFor, designReviewItemsFor } from "./design-review.js";
 import { setupAgentEnabled } from "../../rovara-code/setup-agent-switch.js";
 import { hostAskItemsFor, setupHostHandler, type HostDecisionDeps } from "../../rovara-code/setup-host-ask.js";
 import { companyApprovedHostMarks } from "../../org/setup-recipe-host-marks.js";
@@ -91,7 +93,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
   return {
     sources: {
       async list(who) {
-        const [merges, specs, testEnv, envChanges, fixSetup, hosts, secondReviewNotices] = await Promise.all([
+        const [merges, specs, testEnv, envChanges, fixSetup, hosts, secondReviewNotices, designCards] = await Promise.all([
           mergeItemsFor({
             ...table, now: deps.now,
             sessionIdOf: async (task) => (await new AgentSessionStore(sessions).getForTask(who.orgId, task))?.sessionId,
@@ -105,8 +107,10 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
           hostsOn ? hostAskItemsFor({ ...hostDeps, approvableProjects: (caller) => approvableHostProjects(caller as DeveloperCaller), staffStep: deps.cloud === true, companyApproved: (orgId, project) => companyApprovedHostMarks(hostDeps, { orgId, project, cloud: deps.cloud === true }) }, who) : Promise.resolve([]),
           // Second review (`cr`): the model that gives the second opinion stopped qualifying, told to the company's owners and admins. Empty while `cr` is off.
           secondReviewEnabled(env) ? secondReviewNoticeItemsFor({ table, isAdmin: (person) => (person as DeveloperCaller).orgRole === "owner" || (person as DeveloperCaller).orgRole === "admin" }, who) : Promise.resolve([]),
+          // Design review (`dr`): the design to approve, the cost question and the questions of the caller's own tasks that carry a review. Empty while `dr` is off.
+          designReviewEnabled(env) ? designReviewItemsFor(deps, who) : Promise.resolve([]),
         ]);
-        return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup, ...hosts, ...secondReviewNotices];
+        return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup, ...hosts, ...secondReviewNotices, ...designCards];
       },
       // Company locks that raise a card's tier are not stored anywhere yet: none apply, so the tiers are the projector's own.
       async locks() { return {}; },
@@ -122,6 +126,8 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
         markKnownFailing: (who, item, requestId) => markKnownFailing(fixSetupPorts, who, item, requestId),
         dismiss: (who, item) => dismissFixSetup(fixSetupPorts, who, item),
       }),
+      // Design review (`dr`): approving a design goes through `designApproveHandler`, which refuses a task that carries no design review. Not registered while `dr` is off: the kind stays page-decided.
+      ...(designReviewEnabled(env) ? { approve_design: designApproveHandlerFor(deps, caller) } : {}),
       ...(hostsOn ? { setup_host: setupHostHandler<DeveloperCaller>(hostDeps, { webOrigin: deps.developer.webOrigin ?? new URL(deps.developer.issuer).origin }) } : {}),
     }),
     store: dynamoDecisionStore({ ...table, now: deps.now }),

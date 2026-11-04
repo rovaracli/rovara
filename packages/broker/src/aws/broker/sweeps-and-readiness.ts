@@ -1,7 +1,8 @@
 // Part of the broker (split out of ../broker.ts): scheduled event predicates, dispatch failure records, E2E readiness.
 
 import { DeleteCommand, GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, AGENTX_PROTOCOL_VERSION, closePlanCritique, blockWorkflow, WorkflowSnapshotSchema, WORKFLOW_BLOCK_REASONS, WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, blockWorkflowPullRequestUpdate, nextWorkflowPullRequestUpdate, endWorkflowBranchSync, BRANCH_SYNC_UNSURE_MESSAGE, blockWorkflowBranchSync, WorkspaceInstanceSchema, agentXError, workspaceRecordFields, workflowRequestId, workspaceSessionKey, type WorkerInvocation, type WorkflowSnapshot, projectAllows, orgMemberKey, projectMemberKey, type OrgId } from "@agentx/contracts";
+import { AgentXError, AGENTX_PROTOCOL_VERSION, blockWorkflow, WorkflowSnapshotSchema, WORKFLOW_BLOCK_REASONS, WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, blockWorkflowPullRequestUpdate, nextWorkflowPullRequestUpdate, endWorkflowBranchSync, BRANCH_SYNC_UNSURE_MESSAGE, blockWorkflowBranchSync, WorkspaceInstanceSchema, agentXError, workspaceRecordFields, workflowRequestId, workspaceSessionKey, type WorkerInvocation, type WorkflowSnapshot, projectAllows, orgMemberKey, projectMemberKey, type OrgId } from "@agentx/contracts";
+import { closeUnstartedCheck } from "../../design-review/check-ends.js";
 import { codeMilestoneItems } from "../../rovara-code/milestones.js";
 import { TERMINAL, getItem, issueCapability, operationKey, operationOrg, operationRecord, outboxRecord, type OperationRecord } from "../cancellation.js";
 import { giveUpAgentRun } from "../../agents/run-engine.js";
@@ -283,7 +284,7 @@ async function endUnstartedBranchSync(dependencies: AwsBrokerDependencies, item:
  * Plan 6 Task 8: the plan check can't be started (its start was given up, or no model Rovara could recommend is usable): its dispatch row goes and the plan goes to the person at PLAN_REVIEW, shown
  * as not checked. One transaction, conditional on the row and on the task still waiting for exactly this check; a task that moved on, or a row someone else took, is left alone.
  */
-export async function closeUncheckedPlanCheck(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
+export async function closeUncheckedPlanCheck(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord, reason?: "no_model_source"): Promise<void> {
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
   const workflow = task?.workflow;
   const deleteRow = { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } };
@@ -292,7 +293,7 @@ export async function closeUncheckedPlanCheck(dependencies: AwsBrokerDependencie
     return;
   }
   const now = new Date().toISOString();
-  const next = closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now });
+  const next = closeUnstartedCheck(workflow, now, reason);
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow, { Update: {
       TableName: dependencies.tableName, Key: taskKey(item.taskId),

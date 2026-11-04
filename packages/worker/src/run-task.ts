@@ -11,6 +11,7 @@ import type { BashOperations, ToolDefinition } from "@earendil-works/pi-coding-a
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
 import { PLAN_CRITIQUE_ARTIFACT, settlePlanCritique } from "./plan-critic.js";
+import { createReviewSessionOpener, designReviewBindingOf, reviewFileToolsOf, runDesignReviewOperation, type DesignReviewDependencies } from "./design-review-sessions.js";
 import { checkCodeCitations, sameCitedRanges, withCorrectedRanges } from "./plan-citations.js";
 import { UNDERSTAND_DEADLINE_MS, settleUnderstanding } from "./understand.js";
 import {
@@ -146,6 +147,8 @@ export interface TaskInvocationDependencies {
   authorizeFeedbackApproval?: FeedbackApprovalAuthorizer;
   piAdapter?: PiSessionAdapter;
   /** SR-1: the models (each with its session) the second reviewer may try; absent when the invocation names none. */
+  /** DR5: the packet source and the per-slot models of a design-review operation (PLAN_CRITIQUE with a `designReview` binding). */
+  designReview?: DesignReviewDependencies;
   secondReviewer?: { candidates: ReadonlyArray<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }>; context?: SecondReviewContext };
   cancellationController?: WorkerCancellationController;
   /** SH14: the broker's setup callback with this invocation's own capability (callback-client.ts `setupAgent`). A setup run does not run without it. */
@@ -683,6 +686,8 @@ async function runTask(
   // Understand reads the project and the request with read-only tools and answers with one `rovara-intent` block; it has its own clock (UNDERSTAND_TIMEOUT_MINUTES).
   const understanding = invocation.payload.workflowMode === "UNDERSTAND";
   const planCritique = payloadMode === "PLAN_CRITIQUE";
+  // DR5: the design-review form of the plan check. The plan check without the binding is unchanged.
+  const designReviewBinding = designReviewBindingOf(invocation.payload);
   const reviewing = invocation.payload.workflowMode === "REVIEW";
   /**
    * Reviewers' rule files come from the broker's base alone, never from the manifest's commit, which the agent can write. The plan check and Understand are
@@ -1266,7 +1271,21 @@ async function runTask(
           throw error;
         }
       };
-      if (workflowDependencies === undefined) {
+      if (designReviewBinding !== undefined) {
+        // Reviewers are sessions of their own (design-review-sessions.ts); this operation's own session is never prompted, so it makes no model call and mints no key.
+        const designReview = dependencies.designReview;
+        if (designReview === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "this worker cannot run a design review");
+        monitor.stop();
+        await runDesignReviewOperation({
+          binding: designReviewBinding, artifactSink,
+          ports: {
+            loadPacket: designReview.loadPacket,
+            openSession: createReviewSessionOpener({ rootPath: dependencies.rootPath, ...reviewFileToolsOf(fileTools), runtimeFor: designReview.runtimeFor(designReviewBinding), onDiagnostic }),
+            progress: async (message) => { await emit("progress", { message }); },
+          },
+          options: { signal: verificationStop.signal },
+        });
+      } else if (workflowDependencies === undefined) {
         await promptAndSettle(diagnosing ? `${invocation.payload.prompt}\n\n${diagnosisInstructions(manifest.repositories)}` : settingUpDraft ? `${invocation.payload.prompt}\n\n${setupProposalInstructions(manifest.repositories, { metaRepo: invocation.payload.setupMetaRepo })}` : specBinding !== undefined ? `${invocation.payload.prompt}\n\n${specWriteInstructions(specBinding)}` : taskPrompt);
       } else {
         const graph = workflowDependencies.graph;
@@ -1349,7 +1368,11 @@ async function runTask(
           await runCompletedPrefixProjectChecks(repositoryInputs, execution.finalTreeSha);
         }
       }
-      if (critiquing) {
+      if (designReviewBinding !== undefined) {
+        outcome = "SUCCEEDED";
+        await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "PLAN_CRITIQUE" });
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN_CRITIQUE" };
+      } else if (critiquing) {
         const critique = await settlePlanCritique(finalText,
           async (retry) => { await promptAndSettle(retry); return finalText; },
           async () => { await emit("progress", { message: "The plan check could not be read; the agent is asked to answer again." }); });

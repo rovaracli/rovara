@@ -4,6 +4,7 @@ import {
   ANSWER_EVERY_QUESTION_MESSAGE, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, UNDERSTAND_ROUNDS_MAX, UNDERSTAND_TIMED_OUT_MESSAGE, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, isBranchConflictAskReason, CONFLICT_PATHS_MAX, SYNC_FAILURES_MAX, SYNC_BACKOFF_MINUTES, isBranchSyncGiveUpReason, type BranchSyncReason, type WorkflowBranchSync, intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds, FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_CI_CHECKS_MAX, WorkflowFeedbackAutonomySchema, type FeedbackCiFailures, type WorkflowFeedbackAutonomy,
 } from "./rovara-code.js";
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
+import { designReviewActive, designReviewAwaitsDesign, rearmedDesignReview, workflowIsDesignReviewing } from "./design-review-state.js";
 import { redactText } from "./redaction.js";
 import type { WorkflowAcceptedFindingSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackThreadObservationSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramSchema, WorkflowCheckPolicySchema, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WorkflowReviewBaseSchema} from "./task-workflow.js";
 import { WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_SEND_BACK_LIMIT, type WORKFLOW_AUTO_STAGES, WorkflowDecisionRecordSchema } from "./task-workflow.js";
@@ -1936,6 +1937,10 @@ export function submitWorkflowArtifact(
   void _oldDependencyProgress;
   // Plan 6 Task 8: a Rovara Code version 2 coding plan is checked by a second model before a person sees it (a Full task's requirements and design are not).
   // MERGE-DECISION: a plan that says the request needs no code change (Task 4) has no change to check, so it goes straight to the person.
+  if (artifact.data.type === "design" && workflowIsDesignReviewing(current) && !designReviewAwaitsDesign(current.designReview) && designReviewActive(current.designReview)) {
+    // A revision after a review is the planner's resolution of the findings (`resolveDesignReview`), which carries the document with it.
+    throw new WorkflowTransitionError("the design review resolves its findings with the revised design");
+  }
   const checked = input.noChangeNeeded !== true && planCritiqued(current, artifact.data.type);
   const next = WorkflowSnapshotSchema.parse({
     ...withoutOldDependencyApproval,
@@ -1950,14 +1955,19 @@ export function submitWorkflowArtifact(
 }
 
 /** Whether a plan of this type, made by this workflow, goes through the plan check: a version 2 coding plan of a sequence that has a plan check step. */
-function planCritiqued(workflow: Pick<WorkflowSnapshot, "definitionVersion" | "program">, type: WorkflowArtifact["type"]): boolean {
-  return workflow.definitionVersion === "1.1.0" && type === "plan" && workflow.program?.steps.some((step) => step.kind === "plan_critic") === true;
+function planCritiqued(workflow: Pick<WorkflowSnapshot, "definitionVersion" | "program"> & { reviewPhase?: WorkflowSnapshot["reviewPhase"]; designReview?: WorkflowSnapshot["designReview"] }, type: WorkflowArtifact["type"]): boolean {
+  if (workflow.definitionVersion !== "1.1.0" || workflow.program?.steps.some((step) => step.kind === "plan_critic") !== true) return false;
+  // Design review (DR6): with it ON for the task, the first design document of a Full task goes through the plan-check stage in its design form. With it OFF `designReview` is absent and this is the plan check as it was.
+  if (type === "design") return workflow.reviewPhase === "DESIGN" && designReviewAwaitsDesign(workflow.designReview);
+  return type === "plan";
 }
 
 function runningPlanCheck(currentInput: unknown, expectedRevision: number, states: readonly WorkflowState[] = ["RUNNING"]): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
   if (current.revision !== expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
   if (current.stage !== "PLAN_CRITIQUE" || !states.includes(current.state)) throw new WorkflowTransitionError("the workflow is not running the plan check");
+  // The design review (DR6) runs in this stage too, with its own moves (task-workflow-design-review.ts); the plan check's never act on it.
+  if (workflowIsDesignReviewing(current)) throw new WorkflowTransitionError("the workflow is running the design review, not the plan check");
   return current;
 }
 
@@ -2743,8 +2753,11 @@ export function decideWorkflow(
   // Changes the person asks for make a new plan, which is checked afresh: the critique of the plan they sent back is dropped (the approved plan's stays for the record).
   const { critique: _sentBackCritique, ...withoutCritique } = current;
   void _sentBackCritique;
+  // The same for a design review: the design the person sent back is reviewed afresh (bounded, and never past a cost stop), what the review cost so far stays counted, and its paid rounds are archived.
+  const rearmed = request.data.decision === "REQUEST_CHANGES" && current.reviewPhase === "DESIGN" && current.designReview !== undefined ? { designReview: rearmedDesignReview(current.designReview, { at: options.now, by: { actorId: actor.actorId } }) } : {};
   return WorkflowSnapshotSchema.parse({
     ...(request.data.decision === "REQUEST_CHANGES" ? withoutCritique : current),
+    ...rearmed,
     revision: current.revision + 1,
     stage: nextStage,
     state: request.data.decision === "REJECT" ? "COMPLETE" : "READY",

@@ -3,7 +3,9 @@
 //
 // The shrink order, level by level (`proofSection(...)(level)`): 0 full evidence; 1 fewer and shorter evidence entries; 2 evidence as counts; 3 the same, and the proven and passed rows folded into one
 // count line; 4 shorter requirement text and bullets without text. A failed row, a partly tested row and a not-tested item are listed at every level: they are what a reader must not miss.
-import { TestProofSchema, workflowCheckResultBroken, workflowSelectedChecks, type PlanDocument, type TestProof, type WorkflowSnapshot } from "@agentx/contracts";
+import { TestProofSchema, workflowCheckResultBroken, workflowSelectedChecks, type PlanClaim, type PlanDocument, type TestProof, type WorkflowSnapshot } from "@agentx/contracts";
+import { designLinksByClaim } from "../design-review/proof-links.js";
+import { designProofLine, type ProofDesignContext } from "../design-review/proof-line.js";
 import { evidenceLines, type ProofEvidenceContext } from "./evidence-lines.js";
 import { buildProofTable, type ProofCheckResult, type ProofEvidence, type ProofResult, type ProofRow, type ProofScenarioRow } from "./proof-table.js";
 
@@ -19,6 +21,8 @@ export interface ProofContext {
   evidence?: ProofEvidenceContext | undefined;
   /** The description already had a Proof section but the inputs above could not be read in time (see proof-keep.ts): the section shows `PROOF_STALE_LINE` instead of the old table. Used instead of `plan`. */
   stale?: boolean | undefined;
+  /** Design review (DR12): the approved design and how it was reviewed and approved. Absent (design review off, or no approved design): the section is exactly as it was, byte for byte. */
+  design?: ProofDesignContext | undefined;
 }
 
 /** The whole body of a Proof section whose table is out of date and could not be rebuilt in time. */
@@ -55,6 +59,8 @@ export function earlierProofCheckResults(workflow: WorkflowSnapshot): ProofCheck
   return recorded === undefined || recorded.candidateDigest === workflow.candidate?.digest ? [] : recordedCheckResults(workflow, recorded);
 }
 
+const flatClaimIds = (claims: readonly PlanClaim[]): string[] => claims.flatMap((claim) => [claim.id, ...flatClaimIds(claim.children ?? [])]);
+
 const cut = (text: string, max: number) => {
   const points = Array.from(text);
   return points.length <= max ? text : `${points.slice(0, max - 1).join("")}…`;
@@ -64,6 +70,12 @@ const cell = (text: string) => text.replaceAll("|", "¦");
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 function evidenceCell(row: ProofRow, level: number): string {
+  const design = row.designSections === undefined ? undefined : `design ${row.designSections.join(", ")}`;
+  const own = evidenceCellOf(row, level);
+  return design === undefined ? own : `${design}; ${own}`;
+}
+
+function evidenceCellOf(row: ProofRow, level: number): string {
   if (row.evidence.length === 0) return "none";
   const entry = (item: ProofEvidence, max: number) => `${item.kind === "scenario" ? "Scenario: " : ""}${cut(item.label, max)} (${STATE_WORDS[item.state]})`;
   if (level === 0) return row.evidence.slice(0, 4).map((item) => entry(item, 80)).join("; ") + (row.evidence.length > 4 ? ` and ${row.evidence.length - 4} more` : "");
@@ -90,13 +102,19 @@ export function proofSection(workflow: WorkflowSnapshot, proof: ProofContext | u
   if (proof?.stale === true) return () => ["### Proof", "", PROOF_STALE_LINE];
   const plan = proof?.plan;
   if (plan === undefined || !Array.isArray(plan.claims) || plan.claims.length === 0) return undefined;
-  const table = buildProofTable({ plan, checkResults: proofCheckResults(workflow), scenarioRows: proof?.scenarioRows ?? [], testProof: proof?.testProof, candidateDigest: workflow.candidate?.digest, recordedCheckIds: recordedCheckIdsOf(workflow) });
+  // Design review (DR12): links to sections that exist in the APPROVED design only; with no design context the table is built exactly as before.
+  const design = proof?.design;
+  const designLinks = design === undefined ? undefined : designLinksByClaim(flatClaimIds(plan.claims), design.approved);
+  const table = buildProofTable({
+    plan, checkResults: proofCheckResults(workflow), scenarioRows: proof?.scenarioRows ?? [], testProof: proof?.testProof, candidateDigest: workflow.candidate?.digest, recordedCheckIds: recordedCheckIdsOf(workflow),
+    ...(designLinks === undefined ? {} : { designLinks }),
+  });
   return (level) => {
     const requirementMax = level >= 4 ? 60 : level >= 3 ? 120 : level >= 2 ? 160 : level === 1 ? 200 : 300;
     const folded = level >= 3 ? table.rows.filter((row) => row.result === "proven" || row.result === "passed") : [];
     const shown = table.rows.filter((row) => !folded.includes(row));
     // Setup and test health SH18: with the four results on, the table starts with the result (one of four fixed words), the same as the Testing section's heading.
-    const lines = ["### Proof", "", ...(resultLabel === undefined ? [] : [`Result: ${resultLabel}`, ""])];
+    const lines = ["### Proof", "", ...(resultLabel === undefined ? [] : [`Result: ${resultLabel}`, ""]), ...(design === undefined ? [] : [designProofLine(design), ""])];
     if (shown.length > 0) {
       lines.push("| Requirement | Evidence | Result |", "| --- | --- | --- |",
         ...shown.map((row) => `| ${cell(`${row.claimId}: ${cut(row.requirement, requirementMax)}`)} | ${cell(evidenceCell(row, level))} | ${RESULT_WORDS[row.result]} |`));

@@ -992,6 +992,13 @@ export class ControlPlaneStack extends Stack {
         target: `integrations/${integration.ref}`,
         authorizationType: "NONE",
       });
+      // DR7: a design-review reviewer's stored packet. Same reason and same authentication (the `design-review-packet` capability, verified in handleDesignReviewPacket).
+      new apigwv2.CfnRoute(this, "DesignReviewPacketRoute", {
+        apiId: api.ref,
+        routeKey: "GET /v1/internal/design-review/packet",
+        target: `integrations/${integration.ref}`,
+        authorizationType: "NONE",
+      });
     }
     // GitHub signs webhook bodies itself; the broker verifies its HMAC and linked repository scope.
     new apigwv2.CfnRoute(this, "GithubWebhookRoute", {
@@ -1349,6 +1356,9 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("setupRecipes", signInParameters.setupRecipesEnabled.valueAsString);
       // Saved environments (SH25): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("savedEnv", signInParameters.savedEnvEnabled.valueAsString);
+      // Design review stage (DR7): the switch and the projects it runs for, two packed settings. Off ("0") and no project unless the operator sets the parameters.
+      brokerSettings.add("designReview", signInParameters.designReviewEnabled.valueAsString);
+      brokerSettings.add("designReviewProjects", signInParameters.designReviewProjects.valueAsString);
       // Nightly health (SH28): a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("nightlyHealth", signInParameters.nightlyHealthEnabled.valueAsString);
       // The dispatcher honours the same switch when it builds a queued stage's lessons at delivery (WL-6): off, no queued, parked or retried stage gets lessons. A plain variable (its environment is small).

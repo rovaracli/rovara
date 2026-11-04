@@ -33,6 +33,7 @@ import { DIAGNOSIS_WORKER_FEATURE, DiagnosisInvocationSchema } from "./live-diag
 import { EVIDENCE_CAPTURE_FEATURE } from "./evidence.js";
 import { TASK_DEPENDENCY_PLAN_MAX, TEST_ENV_COVERAGE_PATH_FEATURE, TEST_ENV_DETECT_FEATURE, TEST_ENV_PLAN_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_PLAN_FEATURE, TaskDependencyPlanSchema, TestEnvTaskPlanSchema } from "./test-environment-wire.js";
 import { PeekPayloadSchema } from "./live-peek.js";
+import { DESIGN_REVIEW_REVIEWERS_MAX, ReviewerRoleSchema } from "./design-review.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
 
@@ -45,7 +46,9 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  */
 /** SR-1 (switch `cr`): the second reviewer inside a REVIEW operation. Sent only to a worker that lists it; an older worker gets the review without it (it runs as today) and its result has no second-review key. */
 export const SECOND_REVIEWER_FEATURE = "task.workflowSecondReviewer.v1" as const;
-export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "task.workflowReviewSpec.v1", "task.learnedContext.v1", OWNER_REDIRECT_FEATURE, PEEK_FEATURE, "publish.attribution", DIAGNOSIS_WORKER_FEATURE, EVIDENCE_CAPTURE_FEATURE, TEST_ENV_DETECT_FEATURE, TEST_ENV_PLAN_FEATURE, TEST_ENV_COVERAGE_PATH_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE, PREPARE_REGISTRIES_FEATURE, PREPARE_SAVED_ENV_FEATURE, PREPARE_SAVED_ENV_BUILD_FEATURE, PREPARE_PINS_FEATURE, WORKER_CREDENTIAL_KINDS_FEATURE, SECOND_REVIEWER_FEATURE,
+/** DR5: the design-review form of the PLAN_CRITIQUE operation (`designReview` binding). A worker without it is never sent the binding; the broker refuses delivery instead (ec2-delivery.ts). */
+export const DESIGN_REVIEW_WORKER_FEATURE = "task.designReview.v1" as const;
+export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "task.workflowReviewSpec.v1", "task.learnedContext.v1", OWNER_REDIRECT_FEATURE, PEEK_FEATURE, "publish.attribution", DIAGNOSIS_WORKER_FEATURE, EVIDENCE_CAPTURE_FEATURE, TEST_ENV_DETECT_FEATURE, TEST_ENV_PLAN_FEATURE, TEST_ENV_COVERAGE_PATH_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE, PREPARE_REGISTRIES_FEATURE, PREPARE_SAVED_ENV_FEATURE, PREPARE_SAVED_ENV_BUILD_FEATURE, PREPARE_PINS_FEATURE, WORKER_CREDENTIAL_KINDS_FEATURE, SECOND_REVIEWER_FEATURE, DESIGN_REVIEW_WORKER_FEATURE,
   NIGHTLY_RUN_FEATURE] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
@@ -238,6 +241,40 @@ export const SecondReviewerSchema = z.object({
   context: SecondReviewContextSchema.optional(),
 }).strict();
 export type SecondReviewerPayload = z.infer<typeof SecondReviewerSchema>;
+
+const DesignReviewKeySlot = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,31}$/);
+/**
+ * DR5: the design-review form of a PLAN_CRITIQUE operation (design-review-stage.md 3.2 and 3.10). The binding is small on purpose: it names each reviewer, the model key slot the broker minted for that reviewer alone, the packet digest
+ * the broker built, and the model; the packets themselves (up to 400 KB each) are fetched from the broker by the worker, which then digests what it really sends. Reviewers resolve their model through the `plan_check` stage, so
+ * the worker never picks one. `merge` is absent for the Light tier (a code-only merge). Nothing in a binding can set a tier, an approver, a cost or a mode.
+ */
+export const DesignReviewBindingSchema = z.object({
+  version: z.literal(1),
+  round: z.union([z.literal(1), z.literal(2)]),
+  reviewers: z.array(z.object({
+    role: ReviewerRoleSchema,
+    /** Names the model key this reviewer alone uses: the worker asks the broker's model-access route for this slot, and no other reviewer is given its key. */
+    keySlot: DesignReviewKeySlot,
+    /** The digest of the packet the broker built; the worker refuses to start the reviewer when the packet it fetches hashes to anything else. */
+    packetDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    model: ModelSelectionSchema,
+    modelRoute: ModelRouteSchema.optional(),
+  }).strict()).min(1).max(DESIGN_REVIEW_REVIEWERS_MAX),
+  /** The round's pinned base commit of each repository (by the name section 8 uses): the worker's early citation check accepts a code citation at these pins. The broker checks again with its own. */
+  baseCommits: z.record(z.string().min(1).max(200), z.string().regex(/^[a-f0-9]{40}$/)).optional().refine((pins) => pins === undefined || Object.keys(pins).length <= 20, "at most 20 repositories"),
+  merge: z.object({
+    keySlot: DesignReviewKeySlot,
+    model: ModelSelectionSchema,
+    modelRoute: ModelRouteSchema.optional(),
+    prompt: z.object({ id: z.string().min(1).max(100), version: z.number().int().min(1), text: z.string().min(1).max(64_000) }).strict(),
+  }).strict().optional(),
+}).strict().superRefine((binding, context) => {
+  const roles = binding.reviewers.map((reviewer) => reviewer.role);
+  if (new Set(roles).size !== roles.length) context.addIssue({ code: "custom", path: ["reviewers"], message: "a reviewer role is used once per round" });
+  const slots = [...binding.reviewers.map((reviewer) => reviewer.keySlot), ...(binding.merge === undefined ? [] : [binding.merge.keySlot])];
+  if (new Set(slots).size !== slots.length) context.addIssue({ code: "custom", path: ["reviewers"], message: "every reviewer and the merge step have a model key of their own" });
+});
+export type DesignReviewBinding = z.infer<typeof DesignReviewBindingSchema>;
 /** Broker-created task context, never a client choice or permission to fallback. */
 export const TaskModelPolicyBindingSchema=z.object({version:z.literal(1),stage:StageIdSchema,companyRevision:z.number().int().min(0),recipeDigest:z.string().regex(/^[a-f0-9]{64}$/u)}).strict();
 export type TaskModelPolicyBinding=z.infer<typeof TaskModelPolicyBindingSchema>;
@@ -398,6 +435,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         /** SR-1: the second reviewer (another AI company's model) that runs after the reviews above, inside this operation. Review operations only; a worker without "task.workflowSecondReviewer.v1" is sent the review without it. */
         workflowSecondReviewer: SecondReviewerSchema.optional(),
         /**
+         * DR5: this PLAN_CRITIQUE operation reviews a design with several fresh reviewers (see DesignReviewBindingSchema). Plan-check mode only; sent only to a worker that lists "task.designReview.v1"; never dropped,
+         * because an older worker would run the plan check on the design with one session that has the planner's workspace and history.
+         */
+        designReview: DesignReviewBindingSchema.optional(),
+        /**
          * Rovara Code (Plan 6 Task 15): this coding run fixes a pull request that is already open (failing CI, a conflict, comments), so it changes that code and leaves it alone when
          * nothing it can do helps. Implementation mode only. Sent only to a worker whose /ping lists "task.workflowFix"; never dropped, because an older worker would take the run for a first build.
          */
@@ -542,6 +584,9 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         }
         if (payload.workflowSecondReviewer !== undefined && (payload.workflowMode !== "REVIEW" || (payload.workflowReviewers !== undefined && !payload.workflowReviewers.includes("CRITIC")))) {
           context.addIssue({ code: "custom", path: ["workflowSecondReviewer"], message: "the second reviewer requires review mode with the code review" });
+        }
+        if (payload.designReview !== undefined && payload.workflowMode !== "PLAN_CRITIQUE") {
+          context.addIssue({ code: "custom", path: ["designReview"], message: "the design review requires plan-check mode" });
         }
         if (payload.workflowReviewRisk !== undefined && payload.workflowMode !== "REVIEW") {
           context.addIssue({ code: "custom", path: ["workflowReviewRisk"], message: "the review's risk level requires review mode" });

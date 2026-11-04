@@ -11,7 +11,7 @@ export function readsTaskViewVersion2(headers: Headers): boolean {
 }
 
 /** What version 1 clients do not know and must not be sent: the new snapshot fields (all of them, on both versions) and a pull request's `syncedFrom`. */
-const NEW_WORKFLOW_FIELDS = ["intent", "critique", "risk", "fixRounds", "fixSource", "branchSync", "conflictBase"] as const;
+const NEW_WORKFLOW_FIELDS = ["intent", "critique", "designReview", "risk", "fixRounds", "fixSource", "branchSync", "conflictBase"] as const;
 
 /** The run estimate without the time range (Plan 6 Task 7), which version 1 clients' strict estimate does not know. A view with no time range is returned as it is. */
 function withoutRunMinutes(view: DeveloperTaskView): DeveloperTaskView {

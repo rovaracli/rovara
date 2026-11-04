@@ -153,6 +153,8 @@ export interface DeveloperRouteDependencies {
   publishSpecFiles?: DeveloperTaskRouteDependencies["publishSpecFiles"];
   currentBaseCommit?: DeveloperTaskRouteDependencies["currentBaseCommit"];
   taskAutonomyNow?: DeveloperTaskRouteDependencies["taskAutonomyNow"];
+  /** Design review: the round's ports, so an immediate start after the owner's Retry can run (without them the dispatch row waits for the sweep). */
+  designReview?: DeveloperTaskRouteDependencies["designReview"];
   workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];
   workflowE2EArtifact?: DeveloperTaskRouteDependencies["workflowE2EArtifact"];
   /** Proof and evidence (wire-proof): present only while the proof switch is on. */

@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { prefixedIdPattern } from "./agent.js";
 import { forwardReader } from "./forward-reader.js";
+import { DesignReviewSettingSchema } from "./design-review.js";
 
 /** A process layer is a custom agent, so a built-in agent's id is not one. */
 const ProcessAgentIdSchema = z.string().regex(prefixedIdPattern("agt"));
@@ -17,6 +18,8 @@ export const ProjectPlaybookSchema = z
   .object({
     revision: z.number().int().min(0),
     defaultProcess: DefaultProcessSchema,
+    /** Design review stage: absent means the owner's defaults (`designReviewSettingOf`). */
+    designReview: DesignReviewSettingSchema.optional(),
   })
   .strict();
 export type ProjectPlaybook = z.infer<typeof ProjectPlaybookSchema>;
@@ -29,12 +32,25 @@ export const ProjectPlaybookBodySchema = z
   .object({
     expectedRevision: z.number().int().min(0),
     defaultProcess: DefaultProcessSchema,
+    designReview: DesignReviewSettingSchema.optional(),
   })
   .strict();
 export type ProjectPlaybookBody = z.infer<typeof ProjectPlaybookBodySchema>;
 
-/** `GET` and an applied `PUT` of a project's playbook. */
-export const ProjectPlaybookResponseSchema = z.object({ playbook: ProjectPlaybookSchema }).strict();
+/** The design review fields a company lock holds fixed (the project cannot change them). Names only, never values. */
+export const DESIGN_REVIEW_LOCKED_FIELDS = ["designReview.mode", "designReview.tier", "designReview.allowSkip", "designReview.capUsdPerTask", "designReview.highRiskApprover"] as const;
+export const DesignReviewLockedFieldSchema = z.enum(DESIGN_REVIEW_LOCKED_FIELDS);
+
+/**
+ * `GET` and an applied `PUT` of a project's playbook. When the company has a design review lock, `playbook.designReview` is the setting HELD TO that lock (what the project really runs with, never a looser stored
+ * value) and `designReviewLocked` names the fields the project cannot change. A lock that cannot be read shows the strictest setting with every field locked.
+ */
+export const ProjectPlaybookResponseSchema = z.object({
+  playbook: ProjectPlaybookSchema,
+  designReviewLocked: z.array(DesignReviewLockedFieldSchema).max(DESIGN_REVIEW_LOCKED_FIELDS.length).optional(),
+  /** DR11: true only in an edition that has groups (Enterprise). The editor offers "a group" as the high-risk approver only then; the broker refuses a group elsewhere. Absent reads as false. */
+  designReviewGroups: z.boolean().optional(),
+}).strict();
 export type ProjectPlaybookResponse = z.infer<typeof ProjectPlaybookResponseSchema>;
 
 /** How a client reads that answer: the gateway's `requestId` beside the fields is kept, not refused (as `CodeSettingsResponseReaderSchema`). */

@@ -66,8 +66,22 @@ export const DecisionCardsViewReaderSchema = z.looseObject({
 export const DecisionOpenedBodySchema = z.object({ requestId: z.string().uuid(), shownDigest: DecisionDigestSchema }).strict();
 export type DecisionOpenedBody = z.infer<typeof DecisionOpenedBodySchema>;
 
-/** `POST /v1/app/decisions/{kind}/{subject}/approve`. `tab` is required on a card with tabs (one approval per tab) and refused on one without; `shownDigest` is what the person was shown. Not bulk: one card, one tab, one request. */
-export const DecisionApproveBodySchema = z.object({ requestId: z.string().uuid(), shownDigest: DecisionDigestSchema, tab: DecisionTabIdSchema.optional() }).strict();
+/** The longest one-line reason a person gives for approving a design that still has an open blocker (owner Q8). */
+export const DECISION_APPROVE_REASON_MAX = 200;
+
+/**
+ * `POST /v1/app/decisions/{kind}/{subject}/approve`. `tab` is required on a card with tabs (one approval per tab) and refused on one without; `shownDigest` is what the person was shown. Not bulk: one card, one tab, one
+ * request. `reason` is one plain line, accepted ONLY on an `approve_design` card (`approveReasonProblem`: the route refuses it on every other kind), and there only where a blocker is open (the design handler refuses it otherwise) and REQUIRED there (Q8). It is
+ * put on the PR's Proof line, so it is bounded and has no control or hidden characters here, and is cleaned again where it is used.
+ */
+export const DECISION_REASON_ELSEWHERE_MESSAGE = "reason: this card takes no reason";
+/** The card kinds that take a `reason` on approve. Every other kind refuses it (a reason is never smuggled onto a clean approval, and never silently dropped). */
+export const DECISION_REASON_KINDS: readonly string[] = ["approve_design"];
+/** Why an approve body's `reason` is refused for a card of this kind, or undefined. The route calls it; the design handler decides on its own whether a blocker is open. */
+export function approveReasonProblem(itemKind: string, reason: string | undefined): string | undefined {
+  return reason === undefined || DECISION_REASON_KINDS.includes(itemKind) ? undefined : DECISION_REASON_ELSEWHERE_MESSAGE;
+}
+export const DecisionApproveBodySchema = z.object({ requestId: z.string().uuid(), shownDigest: DecisionDigestSchema, tab: DecisionTabIdSchema.optional(), reason: line(DECISION_APPROVE_REASON_MAX).optional() }).strict();
 export type DecisionApproveBody = z.infer<typeof DecisionApproveBodySchema>;
 
 /** What an approve or a reject answers when it was decided: the card, what was recorded and, on a card with tabs, which documents are still waiting. */

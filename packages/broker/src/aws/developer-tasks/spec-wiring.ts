@@ -10,6 +10,7 @@ import { developerTaskIdentity, taskKey, tryEffectiveTaskOwner, type DeveloperTa
 import { specChoiceItemOf } from "../../spec/decision-item.js";
 import type { DecisionItem } from "../../decisions/project.js";
 import { isConditional, workflowDispatchItem } from "../broker-shared.js";
+import { designSpecStateOf } from "./design-spec.js";
 import { createSpecHooks, type PlanApproval, type SpecTaskRef, type SpecWorld } from "../../spec/hooks.js";
 import { approvedPlanDigestOf } from "../../spec/plan.js";
 import { specTargetOf } from "../../spec/due.js";
@@ -140,6 +141,8 @@ export async function specPublicationGate(deps: DeveloperTaskRouteDependencies, 
     if (state === undefined && !corrupt && definition !== undefined && specTargetOf(definition) === undefined) return { proceed: true };
     return await createSpecHooks(worldFor(deps, task)).gate({
       task: refOf(task), approvedPlanDigest: plan?.sha256 ?? "", planMarkdown: () => plan?.text, metaRepositoryUrl: meta?.url, derive: () => deriveApproval(deps, task),
+      // Design review (DR12): the spec waits for an approved design. Off for a task with no design review.
+      design: () => designSpecStateOf({ ...task, workflow }, (key, max) => deps.actions.readArtifact(key, max)),
     });
   } catch (error) {
     // A removed creator is not a failed check: the refusal (the removal's words) reaches the caller (ruling R60).
@@ -187,6 +190,7 @@ export async function specReviewGate(deps: DeveloperTaskRouteDependencies, task:
     const plan = await approvedPlanForSpec(deps, workflow);
     const gate = await createSpecHooks(worldFor(deps, task)).gate({
       task: refOf(task), approvedPlanDigest: plan?.sha256 ?? "", planMarkdown: () => plan?.text, metaRepositoryUrl: meta?.url, purpose: "review", derive: () => deriveApproval(deps, task),
+      design: () => designSpecStateOf({ ...task, workflow }, (key, max) => deps.actions.readArtifact(key, max)),
     });
     if (!gate.proceed) return gate;
     // Continued without the spec (or never due): nothing to walk.

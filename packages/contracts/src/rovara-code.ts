@@ -2,6 +2,7 @@
 // that bound them. Browser-safe on purpose: the web app reads these, so nothing here imports a Node module. What needs `node:crypto` (the tracking item's
 // digest) lives in `rovara-code-node.ts`.
 import { z } from "zod";
+import { IntentDesignSchema } from "./design-review.js";
 import { OrgIdSchema, SessionBindingSchema, SessionIdSchema } from "./browser-ids.js";
 import { forwardReader } from "./forward-reader.js";
 import { EVIDENCE_NOT_TESTED_KINDS, ProofDetailSchema } from "./evidence.js";
@@ -111,6 +112,8 @@ export const IntentAssessmentSchema = z.discriminatedUnion("kind", [
     path: IntentPathSchema,
     restatement: z.string().min(1).max(INTENT_RESTATEMENT_MAX),
     assumptions: z.array(z.string().min(1).max(300)).max(5),
+    /** Design review stage (DR1): does this task need its design checked before code? Absent (an older worker) reads as not needed. */
+    design: IntentDesignSchema.optional(),
   }).strict(),
   z.object({
     kind: z.literal("questions"),

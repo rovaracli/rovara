@@ -73,7 +73,7 @@ import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { OWNER_LABEL, TASK_PAGE_DOCUMENTS, get, log, ownerLabel, removedReasonOf } from "./common.js";
 import { taskView, workspaceReads } from "./task-view.js";
-import { decideTaskWorkflow } from "./decide.js";
+import { DESIGN_CARD_ONLY_MESSAGE, decideTaskWorkflow } from "./decide.js";
 import { retryTaskWorkflow } from "./workflow-retry.js";
 import { specHoldOf } from "./spec-wiring.js";
 import { commentLearningFlags } from "../../learning/comment-flags.js";
@@ -432,6 +432,8 @@ export async function setPageSuggestion(deps: DeveloperTaskRouteDependencies, ca
 
 /** What the page says for each refusal of a work breakdown approval (the core's own sentences are written for Slack and AI tools). Any other error passes through. */
 const PAGE_BREAKDOWN_REFUSALS: ReadonlyMap<string, { pageReason: "changed" | "refused"; message: string }> = new Map([
+  // A design under review is approved from its decision card, not from here (ON-1): the page says so in the refusal's own words.
+  [DESIGN_CARD_ONLY_MESSAGE, { pageReason: "refused", message: DESIGN_CARD_ONLY_MESSAGE }],
   [WORKFLOW_BREAKDOWN_REFUSALS.digestMissing, { pageReason: "changed", message: "This coding plan has a work breakdown. Refresh the page, look it over, and approve again." }],
   [WORKFLOW_BREAKDOWN_REFUSALS.digestChanged, { pageReason: "changed", message: "The work breakdown changed since this page loaded. Refresh the page and look it over before approving." }],
   [WORKFLOW_BREAKDOWN_REFUSALS.noBreakdown, { pageReason: "changed", message: "This plan has no work breakdown now. Refresh the page and approve again." }],

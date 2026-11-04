@@ -8,10 +8,11 @@
 //   - a Full-path requirements and design pair is ONE card with two tabs that still records two approvals (owner Q1).
 // Anything an item says in words (a title, a question, a path) is flattened to plain text and cut; fixed words come from this file.
 import {
-  DECISION_REJECT_REASONS, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
+  DECISION_REJECT_REASONS, DESIGN_SOURCE_ONLY_LABEL, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
   type CardAction, type DecisionCard, type DecisionKind, type DecisionDetailGroup, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip,
 } from "@agentx/contracts";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks, type TierInputs, type TierResult } from "./risk-tier.js";
+import { reviewCoverage, type DesignCardFacts } from "../design-review/risk.js";
 import { cardDigest } from "./digest.js";
 import { isSafeRelativePath, plainLine } from "./text.js";
 
@@ -54,16 +55,31 @@ export interface ProofCounts { proven: number; passed: number; failed: number; n
 export type DecisionItem =
   | (ItemBase & { kind: "approve_plan"; path: "quick" | "full"; files: readonly string[]; claims: number; untestedClaims: number; cost?: Cost | undefined; tooBig?: boolean | undefined })
   | (ItemBase & { kind: "approve_requirements"; claims: number })
-  | (ItemBase & { kind: "approve_design"; files: readonly string[] })
+  | (ItemBase & {
+    kind: "approve_design"; files: readonly string[];
+    /** The design went through design review (DR9, `design-review/card-source.ts`): the tier reads its reasons and touches, and the card shows the reviewers, blockers, disagreements and cost. Absent: the older card. */
+    review?: DesignCardFacts | undefined;
+  })
   | (ItemBase & { kind: "merge"; sessionId?: string | undefined; /** The head of each pull request the person is shown; the press is refused if any moved. Required: a merge card without it is not pressed. */ heads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }> | undefined; /** The pull requests a press would merge and the branch each goes into, for the "Merge #N into <branch>?" question; read from tracking, never from model text. */ targets?: ReadonlyArray<{ repositoryId: string; number: number; baseBranch: string }> | undefined; prRisk: DecisionRisk; prReasons: readonly string[]; proof: ProofCounts; reviewVerdict: "approved" | "concerns" | "none"; ci: "passing" | "failing" | "pending"; securityFindingsHigh: number; fullSuitePending: boolean })
-  | (ItemBase & { kind: "answer_question"; question: string; index: number; of: number })
+  | (ItemBase & {
+    kind: "answer_question"; question: string; index: number; of: number;
+    /** A batch of design questions in ONE card (DR9, 3.7): how many. The questions themselves are the item's `details`, one group each. */
+    batch?: { count: number } | undefined;
+  })
   | (ItemBase & { kind: "choose_checks"; defaultLabels: readonly string[] })
   | (ItemBase & { kind: "approve_dependency"; packages: number; newInstallScripts: boolean })
   | (ItemBase & { kind: "approve_e2e_plan"; scenarios: number; usesAiNavigation: boolean })
   | (ItemBase & { kind: "review_feedback"; comments: number; touchesSensitivePaths: boolean })
   | (ItemBase & { kind: "autofix_ask"; reasonWords: string; attempts: number })
   | (ItemBase & { kind: "approve_setting"; settingLabel: string; secondPerson: boolean })
-  | (ItemBase & { kind: "approve_spend"; amountUsd: number; scopeLabel: string })
+  | (ItemBase & {
+    kind: "approve_spend"; amountUsd: number; scopeLabel: string;
+    /**
+     * A design review's cost gate (DR8, `design-review/spend-card.ts`): the card says why it asks and lists the choices as `choose` actions (each a POST of this server). Absent: the ordinary spend request.
+     * `estimateUsd` is absent for "cost unavailable" (no catalog price: never a guess). `choices` is what the cost gate allowed, already filtered by the skip rules for this person; an empty list opens the page.
+     */
+    design?: { why: "over_cap" | "cost_unavailable"; capUsd: number; estimateUsd?: number | undefined; choices: ReadonlyArray<{ label: string; href: string }> } | undefined;
+  })
   | (ItemBase & { kind: "approve_test_env"; risk: DecisionRisk; riskReasons: readonly string[]; tier: string; /** The revision of the approved environment the person looked at (0: none yet): the approval is bound to it. */ expectedRevision: number })
   | (ItemBase & { kind: "confirm_env_change"; what: "accounts" | "selection" | "environment" })
   /** Wire lane D (MD-1): a task's spec is on hold (people changed the spec pull request, or it could not be made); the owner chooses on the task page. `message` is the broker's fixed sentence. */
@@ -155,8 +171,23 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
     }
     case "approve_requirements":
       return { question: "Approve these requirements?", next: "Rovara moves on to the design.", evidence: [chip("other", "Requirements", plural(item.claims, "claim", "claims"), "unknown")], why: "Requirements are the cheapest place to catch a wrong turn." };
-    case "approve_design":
-      return { question: "Approve this design?", next: "Rovara writes the coding plan from it.", evidence: [chip("other", "Files named", plural(item.files.length, "file", "files"), "unknown")], why: "The design fixes the approach before any code is written." };
+    case "approve_design": {
+      const review = item.review;
+      if (review === undefined) return { question: "Approve this design?", next: "Rovara writes the coding plan from it.", evidence: [chip("other", "Files named", plural(item.files.length, "file", "files"), "unknown")], why: "The design fixes the approach before any code is written." };
+      const coverage = reviewCoverage(review.reviewers);
+      return {
+        question: "Approve this design?",
+        next: "Rovara writes the coding plan from it.",
+        evidence: [
+          chip("review", "Reviewers", coverage === "none" ? "did not run" : `${String(review.reviewers.verified)}/${String(review.reviewers.planned)} verified`, coverage === "all" ? "good" : coverage === "partial" ? "warning" : "bad"),
+          chip("review", "Open blockers", String(review.blockers.length), review.blockers.length === 0 ? "good" : "bad"),
+          chip("review", "Disagreements", String(review.disagreements.length), review.disagreements.length === 0 ? "good" : "warning"),
+          ...(review.costUsd === undefined ? [] : [chip("cost", "Cost", usd(review.costUsd), "unknown")]),
+          chip("other", "Files named", plural(item.files.length, "file", "files"), "unknown"),
+        ],
+        why: review.blockers.length > 0 ? "A blocker is still open: approving needs a one-line reason." : coverage === "all" ? "Fresh-context reviewers read it and no blocker is open." : "Design review did not fully run: look before you approve.",
+      };
+    }
     case "merge": {
       const proof = item.proof;
       const failing = proof.failed > 0 || item.ci === "failing";
@@ -174,6 +205,7 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
       };
     }
     case "answer_question":
+      if (item.batch !== undefined) return { question: plainLine(item.question, 160), next: "Rovara goes on with your answers.", evidence: [chip("other", "Questions", String(item.batch.count), "unknown")], why: "Rovara asks instead of guessing; every question has a recommended answer." };
       return { question: plainLine(item.question, 160), next: "Rovara goes on with your answer.", evidence: [chip("other", "Question", `${String(item.index)} of ${String(item.of)}`, "unknown")], why: "Rovara asks instead of guessing." };
     case "choose_checks":
       return { question: "Which optional checks should run?", next: "The chosen checks run with the build.", evidence: [chip("checks", "Default", plural(item.defaultLabels.length, "check", "checks"), "unknown")], why: "The project's default choice is pre-selected." };
@@ -192,6 +224,19 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
     case "approve_setting":
       return { question: plainLine(`Change this setting: ${item.settingLabel}?`, 160), next: "Rovara works less safely until the setting is changed back.", evidence: [chip("risk", "Effect", "less safe", "bad")], why: "A less-safe setting needs a full look." };
     case "approve_spend":
+      if (item.design !== undefined) {
+        const unpriced = item.design.why === "cost_unavailable";
+        return {
+          question: unpriced ? "Run the design review without a price?" : "The design review costs more than the limit. What now?",
+          next: unpriced ? `The price of the chosen model is not known, so the cost cannot be shown. Nothing runs until you choose. If you run it, Rovara stops it as soon as the measured spend reaches ${usd(item.design.capUsd)}.` : `The design review is estimated at ${usd(item.design.estimateUsd ?? item.amountUsd)}; the limit is ${usd(item.design.capUsd)}. Nothing runs until you choose.`,
+          ...(unpriced || item.design.estimateUsd === undefined ? {} : { costUsd: item.design.estimateUsd }),
+          evidence: [
+            chip("cost", "Estimate", unpriced ? "Cost unavailable" : usd(item.design.estimateUsd ?? item.amountUsd), unpriced ? "unknown" : "warning"),
+            chip("cost", "Limit for this task", usd(item.design.capUsd), "unknown"),
+          ],
+          why: unpriced ? "Without a price, Rovara asks before it spends." : "Rovara never steps the reviewers down to save money; you decide.",
+        };
+      }
       return { question: plainLine(`Raise the limit for ${item.scopeLabel}?`, 160), next: `The limit goes up by ${usd(item.amountUsd)}.`, costUsd: item.amountUsd, evidence: [chip("cost", "Amount", usd(item.amountUsd), item.amountUsd > DECISION_SPEND_LOW_MAX_USD ? "warning" : "good")], why: "The task is paused until the limit is raised." };
     case "approve_test_env":
       return { question: "Approve this test setup?", next: "Tasks in this project use it from now on.", evidence: [chip("environment", "Tier", item.tier, item.risk === "high" ? "warning" : "unknown"), chip("risk", "Risk", item.risk, item.risk === "high" ? "bad" : "warning")], why: "Rovara booted the app and proved the setup." };
@@ -247,7 +292,7 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
 function tierInputsOf(item: DecisionItem): TierInputs {
   switch (item.kind) {
     case "approve_plan": return { plan: { files: item.files, untestedClaims: item.untestedClaims, costHighUsd: item.cost?.highUsd } };
-    case "approve_design": return { design: { files: item.files } };
+    case "approve_design": return { design: { files: item.files, ...(item.review === undefined ? {} : { review: item.review }) } };
     case "merge": return { merge: { prRisk: item.prRisk, prReasons: item.prReasons, failedChecks: item.proof.failed, untestedClaims: item.proof.notTested, securityFindingsHigh: item.securityFindingsHigh, fullSuitePending: item.fullSuitePending, ciFailing: item.ci === "failing" } };
     case "approve_dependency": return { dependency: { newInstallScripts: item.newInstallScripts } };
     case "review_feedback": return { feedback: { touchesSensitivePaths: item.touchesSensitivePaths } };
@@ -279,11 +324,18 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
     const mark: CardAction = { kind: "approve", label: "Mark as known failing", href: `${base}/approve`, method: "POST" };
     return { actions: item.knownFailingTests > 0 ? [{ ...open, label: "Open the setup" }, reject, mark] : [{ ...open, label: "Open the setup" }, reject], recommended: "open" };
   }
+  // A design review's cost gate (DR8): the choices the gate allowed are the card's actions. None allowed: the card only opens the page.
+  if (item.kind === "approve_spend" && item.design !== undefined) {
+    const choices: CardAction[] = item.design.choices.slice(0, 3).map((choice) => ({ kind: "choose", label: plainLine(choice.label, 60), href: choice.href, method: "POST" }));
+    return choices.length === 0 ? { actions: [{ ...open, label: "Open the details" }], recommended: "open" } : { actions: [...choices, { ...open, label: "Open the details" }], recommended: "choose" };
+  }
   if (!APPROVABLE.has(item.kind)) return { actions: [open], recommended: "open" };
-  const approve: CardAction = { kind: "approve", label: "Approve", href: `${base}/approve`, method: "POST" };
+  // A design with an open blocker is never a one-tap approve (owner Q8): the action says a reason goes with it, the approve body takes `reason`, and the handler refuses an approval without one.
+  const openBlockers = item.kind === "approve_design" ? item.review?.blockers.length ?? 0 : 0;
+  const approve: CardAction = { kind: "approve", label: openBlockers > 0 ? "Approve with a reason" : "Approve", href: `${base}/approve`, method: "POST" };
   const reject: CardAction = { kind: "reject", label: "Not now", href: `${base}/reject`, method: "POST" };
-  // The recommendation follows the evidence: something failed, so look first.
-  const look = item.kind === "merge" && (item.proof.failed > 0 || item.ci === "failing");
+  // The recommendation follows the evidence: something failed, or a blocker is open, so look first.
+  const look = openBlockers > 0 || (item.kind === "merge" && (item.proof.failed > 0 || item.ci === "failing"));
   return look ? { actions: [open, reject, approve], recommended: "open" } : { actions: [approve, reject, open], recommended: "approve" };
 }
 
@@ -337,6 +389,11 @@ export function detailsOfItem(item: DecisionItem, card: DecisionCard, tab?: Deci
   const groups: Array<{ title: string; lines: string[] }> = [];
   if (item.kind === "approve_plan" || item.kind === "approve_design") groups.push({ title: "Files that change", lines: listed(item.files) });
   if (item.kind === "merge") groups.push({ title: "Why the pull request has this risk", lines: listed(item.prReasons) });
+  // The design review's findings the approver must weigh (DR9): blockers that are still open (approving needs a reason) and the places the planner and a reviewer disagree.
+  if (item.kind === "approve_design" && item.review !== undefined) {
+    if (item.review.blockers.length > 0) groups.push({ title: "Open blockers", lines: listed(item.review.blockers.map((finding) => `${finding.section}: ${finding.sourceOnly === true ? `(${DESIGN_SOURCE_ONLY_LABEL}) ` : ""}${finding.text}`)) });
+    if (item.review.disagreements.length > 0) groups.push({ title: "Disagreements", lines: listed(item.review.disagreements.map((finding) => `${finding.section}: ${finding.text}`)) });
+  }
   for (const group of item.details ?? []) groups.push({ title: plainLine(group.title, 60), lines: listed(group.lines) });
   groups.push({ title: "Why this needs a look", lines: card.riskReasons.length > 0 ? listed(card.riskReasons) : ["It is a kind of decision that always gets a look first."] });
   return groups.filter((group) => group.lines.length > 0 && group.title !== "").slice(0, 8).map((group) => ({ ...(tab === undefined ? {} : { tab }), title: group.title, lines: group.lines }));

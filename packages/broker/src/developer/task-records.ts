@@ -127,6 +127,8 @@ export interface DeveloperTaskRecord {
   createdAt: string;
   updatedAt: string;
   closedAt?: string;
+  /** Design review (DR11): the person typed `design first:` in the request. Read once, by the Understand step's mode resolution (design-review/understand-mode.ts). */
+  designFirst?: { by: string; at: string };
   /**
    * Plan 5 Task 12a: set when someone other than the creator took the task over (Task 12b writes it). From then on the taker is the task's owner for every read that
    * carries authority (see `effectiveTaskOwner`); the creator's own fields stay as history, and `ownerKey` (the task's principal) never changes.

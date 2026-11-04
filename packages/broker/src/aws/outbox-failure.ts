@@ -1,5 +1,6 @@
 import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_BLOCK_REASONS, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate, closePlanCritique } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate } from "@agentx/contracts";
+import { closeEndedCheck } from "../design-review/check-ends.js";
 import { releaseFailedPreparation } from "./failed-preparation.js";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { REMOVE_STORED_LESSONS, storedLessonsOf } from "./outbox-lessons.js";
@@ -101,6 +102,7 @@ async function blockFailedWorkflowRun(documentClient: Pick<DynamoDBDocumentClien
     const read = async (key: { pk: string; sk: string }) => (await documentClient.send(new GetCommand({ TableName: tableName, Key: key, ConsistentRead: true }))).Item;
     const operation = await read({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` }) as {
       workflowMode?: string; workflowFeedbackReview?: { taskId?: string; workflowRevision?: number; candidateDigest?: string }; workflowE2EAdmission?: { purpose?: string; taskId?: string; planArtifactSha256?: string; attempt?: number };
+      orgId?: string; designReview?: unknown;
     } | undefined;
     const mode = operation?.workflowMode;
     if (mode === undefined) return;
@@ -127,7 +129,7 @@ async function blockFailedWorkflowRun(documentClient: Pick<DynamoDBDocumentClien
         UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
         ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running AND attribute_not_exists(closedAt)",
         ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-        ExpressionAttributeValues: { ":workflow": closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now }), ":now": now, ":revision": workflow.revision, ":stage": "PLAN_CRITIQUE", ":running": "RUNNING" },
+        ExpressionAttributeValues: { ":workflow": await closeEndedCheck({ documentClient, tableName }, workflow, { id: operationId, orgId: operation?.orgId, designReview: operation?.designReview }, now), ":now": now, ":revision": workflow.revision, ":stage": "PLAN_CRITIQUE", ":running": "RUNNING" },
       }));
       return;
     }

@@ -2,6 +2,7 @@
 // the spec is queued again. (The spec's publication is not an operation: the broker does it itself, see publish.ts.)
 import type { SpecFile } from "@agentx/contracts";
 import { acceptSpecWrite } from "./accept-draft.js";
+import type { SpecDesignState } from "./approved-design.js";
 import { specStateItem, type SpecStore, type TransactItem } from "./hooks.js";
 import { specRendererFor } from "./index.js";
 import { stepFailed, writeSucceeded, type SpecFailureCode, type SpecState } from "./state.js";
@@ -25,6 +26,8 @@ export interface SpecEndEnvironment {
   template(state: SpecState): Promise<readonly SpecFile[] | undefined>;
   /** The project's own knowledge folders (steering, skills, runbooks, key docs): a spec is never written into one. */
   forbiddenFolders(state: SpecState): Promise<readonly string[]>;
+  /** Design review (DR12): whether the task's spec waits for an approved design, and the approved design's text. Absent: design review is not part of this install's spec step. */
+  design?(taskId: string): Promise<SpecDesignState>;
   /** The item that queues the held code step again, or none when the task is no longer waiting at one. */
   republishItem(taskId: string): Promise<TransactItem | undefined>;
 }
@@ -59,7 +62,11 @@ export async function specOperationEndItems(
     env.forbiddenFolders(state),
   ]);
   if (folders === undefined) return fail("render_failed");
-  const accepted = acceptSpecWrite({ result: outcome.result, state, approvedPlanDigest: approved, taskKey: env.taskKey(taskId), existingFolders: folders, forbiddenFolders, ...(template === undefined ? {} : { template }) });
+  let design: SpecDesignState | undefined;
+  if (env.design !== undefined) {
+    try { design = await env.design(taskId); } catch { return fail("write_failed"); }
+  }
+  const accepted = acceptSpecWrite({ result: outcome.result, state, approvedPlanDigest: approved, taskKey: env.taskKey(taskId), existingFolders: folders, forbiddenFolders, ...(template === undefined ? {} : { template }), ...(design === undefined ? {} : { design }) });
   if (!accepted.ok) return fail(accepted.code);
   const next = writeSucceeded(state, { operationId: operation.id, title: accepted.title, files: accepted.files, requirementCount: accepted.requirementCount }, now);
   if (next === undefined) return [];

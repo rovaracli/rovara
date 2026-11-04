@@ -55,6 +55,7 @@ export type WorkflowStartRequest = { kind: "start"; path?: WorkflowPath; instruc
  * `workflow full:` start a task on that path; `workflow:` and any other request start a task that asks Quick or Full.
  */
 export function parseWorkflowStartRequest(text: string): WorkflowStartRequest {
+  // `design first:` is NOT read here: this runs in the Slack ingress, which cannot know whether the design review runs for the project. The broker reads it when the task starts (`designFirstRequestOf`).
   const trimmed = text.trim();
   const chat = /^chat\s*:([\s\S]*)$/i.exec(trimmed);
   if (chat !== null) return { kind: "chat", text: chat[1]!.trim() };
