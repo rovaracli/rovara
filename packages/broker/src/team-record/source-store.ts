@@ -76,6 +76,18 @@ export async function dropScopeClaim(table: TeamRecordTable, orgId: OrgId, proje
   }
 }
 
+/** The claim of a place as a transaction item: it goes with the source row, and only when it is this project's (a legacy row has none; another project's claim is left alone). */
+export function claimDrop(table: TeamRecordTable, orgId: OrgId, project: string, system: string, scope: string) {
+  const aliases = new Aliases();
+  return {
+    Delete: {
+      TableName: table.tableName, Key: scopeClaimKey(orgId, system, scope),
+      ConditionExpression: `attribute_not_exists(pk) OR ${aliases.name("project")} = ${aliases.value(project)}`,
+      ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
+    },
+  };
+}
+
 /** A stored proposal, or undefined when absent. One that does not parse throws (never read as absent). The table's own attributes are not part of it. */
 export async function readSourceChange(table: TeamRecordTable, orgId: OrgId, project: string, id: string): Promise<SourceChangeProposal | undefined> {
   const item = await getItem(table, sourceChangeKey(orgId, project, id));

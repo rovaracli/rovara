@@ -208,15 +208,6 @@ describe("the place is resolved on the server", () => {
     expect(await post(h, WHO.owner, undefined, { context: { body: () => { throw new Error("secret body text"); } } })).toMatchObject({ status: 400, body: { code: "CONFIG_INVALID" } });
     nothingWritten(h);
   });
-
-  it("removing a source is the next task: a fixed code, nothing changes", async () => {
-    const h = harness();
-    await post(h, WHO.owner, add());
-    const before = JSON.stringify(sourceRows(h));
-    const reply = await post(h, WHO.owner, { action: "remove", requestId: randomUUID(), source: "github", scope: "github:repo/9", expectedRevision: 1 });
-    expect(reply).toMatchObject({ status: 422, body: { code: "SOURCE_REMOVE_NOT_YET" } });
-    expect(JSON.stringify(sourceRows(h))).toBe(before);
-  });
 });
 
 describe("the revision fence", () => {

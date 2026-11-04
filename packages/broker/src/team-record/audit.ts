@@ -45,7 +45,7 @@ const rowTarget = (project: string, source: string, scope: string) => ({ kind: "
 const person = (id: string): AuditActor => ({ kind: "member", id });
 
 interface SourceEventBase { orgId: string; actorId: string; at: string; occurrence: string; project: string; source: string; scope: string; related?: string[] }
-const sourceBase = (action: "record.source_added" | "record.source_changed" | "record.source_change_proposed" | "record.source_change_decided", input: SourceEventBase) => ({
+const sourceBase = (action: "record.source_added" | "record.source_changed" | "record.source_removed" | "record.source_change_proposed" | "record.source_change_decided", input: SourceEventBase) => ({
   eventId: auditEventId(action, input.occurrence), orgId: input.orgId, action, actor: person(input.actorId), occurredAt: input.at, target: rowTarget(input.project, input.source, input.scope),
   ...(input.related === undefined || input.related.length === 0 ? {} : { related: input.related }),
 });
@@ -55,6 +55,9 @@ export function auditRecordSourceAdded(input: SourceEventBase & { retention: str
 }
 export function auditRecordSourceChanged(input: SourceEventBase & { fromRetention: string; toRetention: string; enabled: boolean }): AuditEventInput {
   return { ...sourceBase("record.source_changed", input), facts: { source: sourceWord(input.source), fromRetention: input.fromRetention, toRetention: input.toRetention, enabled: input.enabled } };
+}
+export function auditRecordSourceRemoved(input: SourceEventBase): AuditEventInput {
+  return { ...sourceBase("record.source_removed", input), facts: { source: sourceWord(input.source) } };
 }
 /** `reasons` are the contract's fixed words, joined with commas. */
 export function auditRecordSourceChangeProposed(input: SourceEventBase & { reasons: readonly string[] }): AuditEventInput {

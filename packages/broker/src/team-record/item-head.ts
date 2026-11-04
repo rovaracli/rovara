@@ -6,9 +6,12 @@
 // The head is one small item per source item in the workspace partition. It is written BEFORE the row, with a condition on the version time, so two racing versions
 // cannot both win; a crash between the two is repaired by the redelivery (same version = same row, and `supersedes` says the cleanup is still owed).
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { minTrust, recordItemHeadKey, recordScopeMarkerKey, scopeAndAncestors, type OrgId, type TrustClass } from "@agentx/contracts";
+import { TEAM_RECORD_GSI3, minTrust, recordItemHeadKey, recordScopeIndexValue, recordScopeMarkerKey, scopeAndAncestors, type OrgId, type TrustClass } from "@agentx/contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "./types.js";
+
+/** The GSI3 partition value of the heads of the items in one top place: apart from the rows' own, so a walk over a place's rows never spends its budget on heads. */
+export const recordHeadIndexValue = (orgId: OrgId, scope: string): string => `${recordScopeIndexValue(orgId, scope)}#HEADS`;
 
 const HEAD_GRACE_DAYS = 30;
 const DAY_SECONDS = 86_400;
@@ -63,7 +66,7 @@ export const versionTimeOf = (draft: { sourceRef: { versionAt?: string | undefin
  * Moves the item to this version, unless a newer one is already there. `row` is where this version's row will be written. The head keeps the lowest trust of every
  * version, including the older ones that arrive late.
  */
-export async function advanceItemHead(table: TeamRecordTable, orgId: OrgId, input: { system: string; sourceId: string; version: string; versionAt: string; trust: TrustClass; row?: { pk: string; sk: string }; indexExpiresAt: number }): Promise<AdvanceOutcome> {
+export async function advanceItemHead(table: TeamRecordTable, orgId: OrgId, input: { system: string; sourceId: string; version: string; versionAt: string; trust: TrustClass; row?: { pk: string; sk: string }; indexExpiresAt: number; scope?: string }): Promise<AdvanceOutcome> {
   const key = recordItemHeadKey(orgId, input.system, input.sourceId);
   const existing = await getItemHead(table, orgId, input.system, input.sourceId);
   if (existing !== undefined && !isNewer(input, existing) && !(input.versionAt === existing.versionAt && input.version === existing.version)) {
@@ -96,6 +99,8 @@ export async function advanceItemHead(table: TeamRecordTable, orgId: OrgId, inpu
       Item: {
         ...key, entityType: "TEAM_RECORD_ITEM_HEAD", versionAt: input.versionAt, version: input.version, lowestTrust: lowest,
         ...(input.row === undefined ? {} : { row: input.row }),
+        // The place the item is in, indexed like a row's: a place that is deleted finds its heads (also those of retention-B items, which have no row) and removes them (TR-E5).
+        ...(input.scope === undefined ? {} : { scope: input.scope, [TEAM_RECORD_GSI3.partition]: recordHeadIndexValue(orgId, input.scope), [TEAM_RECORD_GSI3.sort]: input.scope }),
         ...(existing === undefined ? {} : { supersedes: existing.row === undefined ? {} : { row: existing.row } }),
         indexExpiresAt: input.indexExpiresAt + HEAD_GRACE_DAYS * DAY_SECONDS,
       },

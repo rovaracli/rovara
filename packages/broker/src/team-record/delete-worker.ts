@@ -1,9 +1,10 @@
 // The delete worker (design 4.4.3, task D1): finishes the work a tombstone request queued. It runs hourly per workspace (EventBridge Scheduler plus Lambda).
 // For each queued request it (1) finishes hiding, (2) removes the hot rows, vectors and derived facts and queues the lake delete, (3) settles the lessons that rested
 // on them, and (4) removes the queue item. Work on a scope that has not finished hiding stays queued with `hidePending`, which keeps the scope hidden from everyone.
+// A deleted place (`source_deleted`, `excluded`) also loses its item heads (TR-E5). A `textOnly` request (a removed Rovara source row) removes only the rows that hold free text, walking the place from `walkCursor`.
 // Principal and audience changes that ran out of budget are finished here too. Every run is bounded (requests, items, milliseconds). A request older than an hour is a
 // backlog: the summary says so and the log line is the alarm; hidden rows stay hidden meanwhile.
-import { recordDeleteQueueKey, recordScopeHash, teamRecordSourceHash, type OrgId } from "@agentx/contracts";
+import { recordDeleteQueueKey, recordItemHeadKey, recordScopeHash, teamRecordSourceHash, type OrgId } from "@agentx/contracts";
 import { auditRecordTombstoned, type RecordAuditSink } from "./audit.js";
 import { purgeAccessOfScope } from "./access.js";
 import { runErasureSweeps } from "./erase.js";
@@ -12,7 +13,7 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
 import { changeScopePrincipals, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { bySource, byScope, childScopes, deleteItem, listScopeWork, putScopeWork, type PlaceCursor, type ScopeWork } from "./store.js";
+import { bySource, byScope, childScopes, deleteItem, listScopeWork, putScopeWork, scopePage, type PlaceCursor, type ScopeWork } from "./store.js";
 import type { Item } from "../agents/table-writes.js";
 
 /** A request older than this many seconds is a backlog (design: hot rows are deleted within 1 hour). */
@@ -117,7 +118,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     }
     // A tombstone request: finish hiding (a busy place is walked from its cursor, never from the start), queue the lake targets of the places below it, then delete.
     if (entry.hideDone !== true) {
-      const hidden = await tombstoneRows(work0, orgId, { system: entry.system, ...(entry.scope === undefined ? {} : { scope: entry.scope }), ...(entry.sourceIds === undefined ? {} : { sourceIds: entry.sourceIds }), cause: entry.cause ?? "source_deleted" }, remaining, entry.hideCursor);
+      const hidden = await tombstoneRows(work0, orgId, { system: entry.system, ...(entry.scope === undefined ? {} : { scope: entry.scope }), ...(entry.sourceIds === undefined ? {} : { sourceIds: entry.sourceIds }), cause: entry.cause ?? "source_deleted", ...(entry.textOnly === true ? { textOnly: true } : {}) }, remaining, entry.hideCursor);
       if (!hidden.complete) {
         await putScopeWork(deps.table, orgId, { ...entry, hidePending: true, ...(hidden.cursor === undefined ? {} : { hideCursor: hidden.cursor }) });
         summary.stillHidden += 1;
@@ -152,12 +153,22 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     }
     // Source ids that never had a row in the hot table may still have lake rows: their hashes are queued first, before any hot row goes.
     if (entry.sourceIds !== undefined) await queueNamedSources(deps, orgId, entry);
-    const found = await itemsOf(deps, orgId, entry, remaining);
+    // A place whose text rows only go (a removed Rovara source row) walks the place page by page from `walkCursor`: its other rows stay, so the first rows of the place are not always the ones that go.
+    let found: { items: Item[]; truncated: boolean };
+    let nextWalk: ScopeWork["walkCursor"];
+    if (entry.textOnly === true && entry.scope !== undefined) {
+      const page = await scopePage(deps.table, orgId, entry.scope, remaining.maxItems, { ...(entry.walkCursor === undefined ? {} : { cursor: entry.walkCursor }) });
+      found = { items: page.items.filter((item) => item.tombstone !== undefined && (item.entityType === "TEAM_RECORD_EVENT" || item.entityType === "TEAM_RECORD_DERIVATION")), truncated: page.cursor !== undefined };
+      nextWalk = page.cursor;
+    } else found = await itemsOf(deps, orgId, entry, remaining);
     const purged = await purgeItems(deps, orgId, found.items);
     summary.rows += purged.rows; summary.facts += purged.facts; summary.redistilled += purged.redistilled; summary.vectors += purged.vectors;
     summary.lessonsWithdrawn += purged.lessonsWithdrawn; summary.lessonsKept += purged.lessonsKept; summary.blocked += purged.blocked;
     // The deleted place keeps no member list (the place stays closed, so nothing reads it again): its entries go a few thousand a run, and the request stays until they are gone.
-    const scopeDeleted = entry.scope !== undefined && (entry.cause === "source_deleted" || entry.cause === "excluded");
+    const scopeDeleted = entry.scope !== undefined && entry.textOnly !== true && (entry.cause === "source_deleted" || entry.cause === "excluded");
+    // TR-E5: the item heads of a deleted place go with it (the index finds a head by its place; a row's own head is found by the row's source item). A head holds a hash and a time, no text,
+    // and nothing reads it once the place is closed, so it goes even when a row of the batch is blocked.
+    const headsLeft = scopeDeleted ? await deleteItemHeads(deps, orgId, entry.scope as string, found.items, remaining.maxItems) : false;
     // The units under the place (an issue, a comment, an MCP item: each has its own record) are named by the rows' own snapshots; they go with the rows, in the same run.
     let unitsGone = true;
     if (scopeDeleted) {
@@ -165,7 +176,11 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
       for (const unit of units) unitsGone = (await purgeAccessOfScope(deps.table, orgId, unit, remaining.maxItems)) && unitsGone;
     }
     const accessGone = scopeDeleted && purged.blocked === 0 && !found.truncated ? (await purgeAccessOfScope(deps.table, orgId, entry.scope as string, remaining.maxItems)) && unitsGone : unitsGone;
-    if (purged.blocked === 0 && !found.truncated && accessGone) {
+    if (nextWalk !== undefined && purged.blocked === 0) {
+      // Not at the end of the place yet: go on from here next time.
+      await putScopeWork(deps.table, orgId, { ...entry, hidePending: true, hidden: entry.hidden + purged.rows, walkCursor: nextWalk });
+      summary.stillHidden += 1;
+    } else if (purged.blocked === 0 && !found.truncated && accessGone && !headsLeft) {
       await deps.audit?.(auditRecordTombstoned({ orgId, requestId: entry.requestId, at: new Date(now()).toISOString(), scopeOrSource: entry.scope ?? entry.system, cause: entry.cause ?? "source_deleted", count: purged.rows + purged.facts })).catch(() => undefined);
       await deleteItem(deps.table, key);
       summary.finished += 1;
@@ -178,6 +193,24 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
   summary.backlog = summary.oldestAgeSeconds > DELETE_BACKLOG_SECONDS;
   if (summary.backlog) deps.log?.("record.delete_backlog", { requests: summary.requests, oldestAgeSeconds: summary.oldestAgeSeconds });
   return summary;
+}
+
+/**
+ * Deletes the item heads of a deleted place: the head of every row in the batch (found by the row's source item, which also reaches heads written before they carried a place), and a
+ * budget's worth of the heads indexed under the place (those of retention-B items, which have no row). True when more of those are left: the request then stays and the next run
+ * takes the next page (the deleted ones are gone, so it needs no cursor).
+ */
+async function deleteItemHeads(deps: DeleteWorkerDependencies, orgId: OrgId, scope: string, items: readonly Item[], maxItems: number): Promise<boolean> {
+  const keys = new Map<string, { pk: string; sk: string }>();
+  for (const item of items) {
+    if (item.entityType !== "TEAM_RECORD_EVENT") continue;
+    const source = item.sourceRef as { system?: unknown; id?: unknown } | undefined;
+    if (typeof source?.system === "string" && typeof source.id === "string") { const key = recordItemHeadKey(orgId, source.system, source.id); keys.set(`${key.pk}|${key.sk}`, key); }
+  }
+  const page = await scopePage(deps.table, orgId, scope, maxItems, { heads: true });
+  for (const item of page.items) if (item.entityType === "TEAM_RECORD_ITEM_HEAD" && typeof item.pk === "string" && typeof item.sk === "string") keys.set(`${item.pk}|${item.sk}`, { pk: item.pk, sk: item.sk });
+  for (const key of keys.values()) await deleteItem(deps.table, key);
+  return page.cursor !== undefined;
 }
 
 async function queueNamedSources(deps: DeleteWorkerDependencies, orgId: OrgId, entry: ScopeWork): Promise<void> {

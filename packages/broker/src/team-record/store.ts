@@ -37,7 +37,7 @@ import {
   type SourceConfig,
 } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item } from "../agents/table-writes.js";
-import { reopenScope } from "./item-head.js";
+import { recordHeadIndexValue, reopenScope } from "./item-head.js";
 import { retentionRefusal } from "./retention.js";
 import type { Edition, PendingHides, TeamRecordTable } from "./types.js";
 
@@ -158,8 +158,9 @@ export interface ScopeCursor { phase: "own" | "below"; key?: Record<string, unkn
  * returns a cursor to resume from, so a busy place is walked over several calls and never given up on. The sort value is the place itself, so a sibling that only starts the
  * same (`slack:T1/C90` for `slack:T1/C9`) is never matched.
  */
-export async function scopePage(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number, options: { exact?: boolean; cursor?: ScopeCursor } = {}): Promise<{ items: Item[]; cursor?: ScopeCursor }> {
-  const value = recordScopeIndexValue(orgId, scope);
+export async function scopePage(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number, options: { exact?: boolean; cursor?: ScopeCursor; heads?: boolean } = {}): Promise<{ items: Item[]; cursor?: ScopeCursor }> {
+  // `heads`: the item heads of the place (and of the places under it) instead of its rows; they are indexed apart so a walk over rows never reads them.
+  const value = options.heads === true ? recordHeadIndexValue(orgId, scope) : recordScopeIndexValue(orgId, scope);
   const items: Item[] = [];
   let phase: ScopeCursor["phase"] = options.cursor?.phase ?? "own";
   let key = options.cursor?.key;
@@ -366,6 +367,8 @@ export interface ScopeWork {
   /** Audience and member changes walk a big place a budget at a time: where the last run stopped (the changes are idempotent, so a repeated page is harmless). */
   walkCursor?: ScopeCursor;
   cause?: "source_deleted" | "person_erased" | "project_archived" | "excluded";
+  /** A tombstone of a place that hides and deletes only the rows that hold free text (and the facts made from them); the place stays open and its other rows stay (a removed Rovara source row). */
+  textOnly?: boolean;
   add?: string[];
   remove?: string[];
   audience?: unknown;
@@ -380,8 +383,13 @@ export interface ScopeWork {
   queuedAtSeconds: number;
 }
 
+/** A queue item as it is stored: `putScopeWork` writes it, and a transaction that must queue work with its own change (`source-remove.ts`) puts exactly this. */
+export function scopeWorkItem(orgId: OrgId, work: ScopeWork): Item {
+  return withoutUndefined({ ...recordDeleteQueueKey(orgId, work.at, work.requestId), entityType: "TEAM_RECORD_SCOPE_WORK", ...work });
+}
+
 export async function putScopeWork(table: TeamRecordTable, orgId: OrgId, work: ScopeWork): Promise<void> {
-  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: withoutUndefined({ ...recordDeleteQueueKey(orgId, work.at, work.requestId), entityType: "TEAM_RECORD_SCOPE_WORK", ...work }) }));
+  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: scopeWorkItem(orgId, work) }));
 }
 
 export function scopeWorkFromItem(item: Item): (ScopeWork & { pk: string; sk: string }) | undefined {

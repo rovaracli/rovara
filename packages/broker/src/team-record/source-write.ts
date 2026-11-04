@@ -3,7 +3,7 @@
 //   change   retention, who sees it, on/off, the exclusion list; names the revision it read and loses cleanly to any other writer;
 //   approve  a different eligible person applies a waiting less-safe change (or the only eligible approver applies their own: the sole-owner exception);
 //   reject   anyone who may edit the project's sources drops a waiting change;
-//   remove   the next task (answered with a fixed code for now).
+//   remove   deletes the row and, with it, that place's data (one transaction queues the deletion; see `saveRemove`).
 // and the admin read, `GET .../record/sources` for a person who may edit (`sourcesAdminView`).
 //
 // WHO. A company owner or admin, or a maintainer of this project (`projectRole` is the effective role the broker already found, and admins count as maintainers there), on a live browser
@@ -16,7 +16,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  SOURCE_CHANGE_REASONS, SOURCE_PROPOSAL_TTL_MS, SourceChangeProposalSchema, SourceConfigSchema, SourceWriteBodySchema, SourcesAdminViewSchema,
+  SOURCE_CHANGE_REASONS, scopeAndAncestors, SOURCE_PROPOSAL_TTL_MS, SourceChangeProposalSchema, SourceConfigSchema, SourceWriteBodySchema, SourcesAdminViewSchema,
   agentXError, canonicalJson, isWriterOrgRole, recordScopeMarkerKey, recordSourceKey,
   type AuditEventInput, type OrgId, type RetentionMode, type SourceChangeProposal, type SourceChangeReason, type SourceConfig, type SourceWriteBody,
 } from "@agentx/contracts";
@@ -29,14 +29,16 @@ import {
   allowedRetention, checkRetentionChange, slackScopeAllowed, type CompanyLocks, type RecordSourceKind, type SlackScope, type TeamRecordEdition,
 } from "./edition.js";
 import { retentionRefusal } from "./retention.js";
-import { auditRecordSourceAdded, auditRecordSourceChangeDecided, auditRecordSourceChangeProposed, auditRecordSourceChanged } from "./audit.js";
+import { auditRecordSourceAdded, auditRecordSourceChangeDecided, auditRecordSourceChangeProposed, auditRecordSourceChanged, auditRecordSourceRemoved } from "./audit.js";
+import { closeScope } from "./item-head.js";
+import { DEFAULT_WORK_BUDGET, tombstoneRows } from "./scope-work.js";
 import type { RecordQueryDependencies } from "./query.js";
 import type { RecordRouteReply, RecordRouteRequest } from "./routes.js";
 import { rovaraScope } from "./sources/rovara.js";
 import {
-  SOURCE_CHANGES_MAX, claimPut, listSourceChanges, proposalDelete, proposalPut, readScopeClaim, readSourceChange, readSourceRequest, readSourceRow, requestPut,
+  SOURCE_CHANGES_MAX, claimDrop, claimPut, listSourceChanges, proposalDelete, proposalPut, readScopeClaim, readSourceChange, readSourceRequest, readSourceRow, requestPut,
 } from "./source-store.js";
-import { listSourceConfigs, sourceRowItem } from "./store.js";
+import { listScopeWork, listSourceConfigs, putScopeWork, scopeWorkItem, sourceRowItem, type ScopeWork } from "./store.js";
 
 /** What the route needs from the install. */
 export interface SourceRouteDependencies {
@@ -89,6 +91,7 @@ const WORDS = {
   eligibility: "Rovara could not check who may approve this. Try again.",
   audit: "This change needs the audit ledger.",
   full: "Too many changes are waiting. Decide some of them first.",
+  removing: "That source is still being removed. Try again in a little while.",
   unavailable: "The sources can't be changed right now.",
 } as const;
 const invalid = (message: string = WORDS.invalid) => agentXError("CONFIG_INVALID", message);
@@ -147,7 +150,7 @@ export async function handleSourceWrite(deps: RecordQueryDependencies, request: 
     case "change": return saveChange(run, body);
     case "approve": return approveChange(run, body.changeId);
     case "reject": return rejectChange(run, body.changeId);
-    case "remove": return { status: 422, body: { code: "SOURCE_REMOVE_NOT_YET", message: "Removing a source isn't available yet." } };
+    case "remove": return saveRemove(run, body);
   }
 }
 
@@ -251,6 +254,7 @@ async function saveAdd(run: Run, body: Extract<SourceWriteBody, { action: "add" 
   const needsSecond = await needsSecondPersonForRetention(run, body.source, undefined, body.retention, body.notesOptIn === true);
   const table = run.deps.table;
   if ((await readSourceRow(table, run.orgId, run.project, body.source, body.scope)) !== undefined) throw stale();
+  await refuseWhileRemoving(run, body.scope);
   const holder = await readScopeClaim(table, run.orgId, body.source, body.scope);
   if (holder !== undefined && holder !== run.project) throw invalid(WORDS.taken);
 
@@ -327,6 +331,86 @@ async function saveChange(run: Run, body: Extract<SourceWriteBody, { action: "ch
   throw stale();
 }
 
+// ---- remove
+
+const REMOVE_PROPOSALS_MAX = 80;
+const QUEUE_READ = 500;
+
+/**
+ * A place whose deletion is still queued cannot be added again yet: the delete would close it again and take the new rows with it. A queue too long to read counts as busy.
+ * Work that only strips free text (a removed Rovara source row) never closes a place and does not count.
+ */
+async function refuseWhileRemoving(run: Run, scope: string): Promise<void> {
+  let queue: Awaited<ReturnType<typeof listScopeWork>>;
+  try { queue = await listScopeWork(run.deps.table, run.orgId, QUEUE_READ); } catch { throw unavailable(); }
+  if (queue.length >= QUEUE_READ) throw stale(WORDS.removing);
+  const above = new Set(scopeAndAncestors(scope));
+  const busy = queue.some((work) => work.type === "tombstone" && work.textOnly !== true && work.scope !== undefined && (work.cause === "excluded" || work.cause === "source_deleted")
+    && (above.has(work.scope) || work.scope.startsWith(`${scope}/`)));
+  if (busy) throw stale(WORDS.removing);
+}
+
+/**
+ * Removing a source row deletes that place's data. ONE transaction: the row (fenced on its revision), its place claim, every waiting change for the place, the request item, the audit item and a
+ * durable queue item for the delete worker (cause `excluded`, hidden from every read from this commit on). Nothing can be lost between "row gone" and "deletion queued". Then, best effort, the place is
+ * closed at once; if that fails the worker closes it on its next run. Removing is always safe (it only keeps less), so no second person is needed.
+ * The project's own Rovara row is different: it returns the project to the default retention and removes only the rows that hold free text (the structured outcomes and the place stay).
+ */
+async function saveRemove(run: Run, body: Extract<SourceWriteBody, { action: "remove" }>): Promise<Reply> {
+  const hash = bodyHashOf(body);
+  const again = await replayed(run, body.requestId, hash);
+  if (again !== undefined) return again;
+  const table = run.deps.table;
+  const current = await readSourceRow(table, run.orgId, run.project, body.source, body.scope);
+  if (current === undefined) throw agentXError("NOT_FOUND", WORDS.noSource);
+  const was = current.revision ?? 0;
+  if (was !== body.expectedRevision) throw stale();
+  const waiting = (await listSourceChanges(table, run.orgId, run.project, SOURCE_CHANGES_MAX * 3)).filter((change) => change.source === body.source && change.scope === body.scope);
+  if (waiting.length > REMOVE_PROPOSALS_MAX) throw invalid(WORDS.full);
+
+  const at = nowIso(run);
+  const textOnly = body.source === "rovara";
+  const work: ScopeWork = {
+    requestId: randomUUID(), type: "tombstone", system: body.source, scope: body.scope, cause: "excluded", hidePending: true, at, queuedAtSeconds: Math.floor(run.now() / 1000), hidden: 0,
+    ...(textOnly ? { textOnly: true } : { childPending: true }),
+  };
+  const reply: Reply = { status: 200, body: { status: "removed" } };
+  const events = [auditRecordSourceRemoved({ orgId: run.orgId, actorId: run.me, at, occurrence: randomUUID(), project: run.project, source: body.source, scope: body.scope })];
+  const items: TransactItem[] = [
+    rowDelete(run, current, was),
+    claimDrop(table, run.orgId, run.project, body.source, body.scope),
+    ...waiting.map((change) => proposalDelete(table, run.orgId, run.project, change.id)),
+    { Put: { TableName: table.tableName, Item: scopeWorkItem(run.orgId, work) } },
+    requestItem(run, body.requestId, hash, reply),
+    ...auditItems(run, events, false),
+  ];
+  if ((await commit(run, items)) !== "ok") {
+    const earlier = await replayed(run, body.requestId, hash);
+    if (earlier !== undefined) return earlier;
+    throw stale();
+  }
+  await flush(run, events);
+  // Best effort, and only an acceleration: the queued work above already hides the place from every read and makes the worker finish the job.
+  if (textOnly) {
+    try {
+      const result = await tombstoneRows({ table, now: run.now }, run.orgId, { system: body.source, scope: body.scope, cause: "excluded", textOnly: true }, DEFAULT_WORK_BUDGET);
+      await putScopeWork(table, run.orgId, { ...work, hidden: result.changed, hidePending: !result.complete, hideDone: result.complete, ...(result.cursor === undefined ? {} : { hideCursor: result.cursor }) });
+    } catch { /* the worker hides them */ }
+  } else {
+    try { await closeScope(table, run.orgId, body.scope, "excluded", at); } catch { /* the worker closes the place */ }
+  }
+  return reply;
+}
+
+const rowDelete = (run: Run, current: SourceConfig, expected: number): TransactItem => ({
+  Delete: {
+    TableName: run.deps.table.tableName, Key: recordSourceKey(run.orgId, run.project, current.source, current.scope),
+    ...(expected === 0
+      ? { ConditionExpression: "attribute_exists(pk) AND (attribute_not_exists(#r) OR #r = :r)", ExpressionAttributeNames: { "#r": "revision" }, ExpressionAttributeValues: { ":r": 0 } }
+      : { ConditionExpression: "attribute_exists(pk) AND #r = :r", ExpressionAttributeNames: { "#r": "revision" }, ExpressionAttributeValues: { ":r": expected } }),
+  },
+});
+
 // ---- a less-safe change waits
 
 const digestOf = (roster: ApproverRoster): string => sha(canonicalJson({ version: roster.membershipVersion, eligible: [...roster.eligibleIds].sort() }));
@@ -386,6 +470,7 @@ async function approveChange(run: Run, changeId: string): Promise<Reply> {
   if (digestOf(await rosterOf(run)) !== proposal.membershipDigest) throw stale(WORDS.members);
   if (proposal.kind === "add") {
     await checkScope(run, source, scope);
+    await refuseWhileRemoving(run, scope);
     const holder = await readScopeClaim(table, run.orgId, source, scope);
     if (holder !== undefined && holder !== run.project) throw invalid(WORDS.taken);
   }
