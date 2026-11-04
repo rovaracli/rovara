@@ -21,4 +21,10 @@ describe("TR-E2c mentions", () => {
     expect(cleanRecordText("@Injectable() class A {}", { keepCode: true })).toBe("@Injectable() class A {}");
     expect(cleanRecordText("@Injectable() class A {}")).toBe("@member() class A {}");
   });
+  it("the login rule leaves inline code spans and the Slack group words @here, @channel and @everyone alone", () => {
+    expect(scrubPersonalDetails("annotate with `@Transactional` and `@alice` here")).toBe("annotate with `@Transactional` and `@alice` here");
+    expect(scrubPersonalDetails("@here and @channel and @everyone please look")).toBe("@here and @channel and @everyone please look");
+    expect(scrubPersonalDetails("`@Transactional` then thanks @alice")).toBe("`@Transactional` then thanks @member"); // positive control: text outside the span is still scrubbed
+    expect(scrubPersonalDetails("@herein @channels")).toBe("@member @member"); // only the exact group words are exempt
+  });
 });

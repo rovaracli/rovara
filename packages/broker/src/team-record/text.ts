@@ -18,7 +18,8 @@ const MENTION = /<@[A-Z0-9]+(?:\|[^>]*)?>|(?<![\w)\]])\[~(?:accountid:)?[^\]\s]+
 // A Linear mention is a link to the person's profile, as a markdown link (`[@Jane](https://linear.app/ws/profiles/jane)`) or bare.
 const LINEAR_MENTION = /\[@?[^\]\n]*\]\(https?:\/\/linear\.app\/[^\s)]*\/profiles?\/[^\s)]+\)|https?:\/\/linear\.app\/[^\s)]*\/profiles?\/[^\s)]+/g;
 // A GitHub `@login` (1 to 39 letters, digits and hyphens): not inside an email or a word, and not a team (`@org/team`) or a package scope (`@angular/core`).
-const LOGIN_MENTION = /(?<![\w@./-])@[A-Za-z0-9][A-Za-z0-9-]{0,38}(?![\w/])/g;
+// An inline code span (`@Transactional`) is skipped whole, and so are the group words @here, @channel and @everyone.
+const LOGIN_MENTION = /(`[^`\n]*`)|(?<![\w@./-])@(?!(?:here|channel|everyone)(?![\w-]))[A-Za-z0-9][A-Za-z0-9-]{0,38}(?![\w/])/g;
 
 export interface ScrubOptions {
   /** Kept code (a human edit's hunks) holds decorators and annotations such as `@Injectable`; the `@login` rule leaves it alone. Slack and Jira mentions are always scrubbed. */
@@ -27,7 +28,7 @@ export interface ScrubOptions {
 
 export function scrubPersonalDetails(text: string, options: ScrubOptions = {}): string {
   let clean = text.replace(MENTION, "@member").replace(LINEAR_MENTION, "@member");
-  if (options.keepCode !== true) clean = clean.replace(LOGIN_MENTION, "@member");
+  if (options.keepCode !== true) clean = clean.replace(LOGIN_MENTION, (match, span: string | undefined) => (span === undefined ? "@member" : match));
   return clean.replace(EMAIL, "[email]").replace(ACCOUNT_ID, "[account-id]").replace(PHONE, (match) => (/^\d{4}-\d{2}-\d{2}/.test(match) ? match : "[phone]"));
 }
 
