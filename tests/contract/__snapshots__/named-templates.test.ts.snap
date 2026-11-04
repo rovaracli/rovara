@@ -4814,6 +4814,35 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           "Statement": [
             {
               "Action": [
+                "kms:GenerateDataKey",
+                "kms:Decrypt",
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "s3.",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ".amazonaws.com",
+                      ],
+                    ],
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "FixtureKeyED64BC2A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": [
                 "dynamodb:BatchGetItem",
                 "dynamodb:Query",
                 "dynamodb:GetItem",
@@ -8742,6 +8771,61 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "TreatMissingData": "notBreaching",
       },
       "Type": "AWS::CloudWatch::Alarm",
+    },
+    "FixtureKeyAlias8B887067": {
+      "Properties": {
+        "AliasName": "alias/agentx/staging/fixtures",
+        "TargetKeyId": {
+          "Fn::GetAtt": [
+            "FixtureKeyED64BC2A",
+            "Arn",
+          ],
+        },
+      },
+      "Type": "AWS::KMS::Alias",
+    },
+    "FixtureKeyED64BC2A": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "Description": "Rovara: encrypts the answer sets (fakes) kept under private/<company>/fixtures/ in the artifacts bucket",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": "kms:*",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":root",
+                    ],
+                  ],
+                },
+              },
+              "Resource": "*",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::KMS::Key",
+      "UpdateReplacePolicy": "Retain",
     },
     "GithubInstallCallbackRoute": {
       "Properties": {

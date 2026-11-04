@@ -26,6 +26,7 @@ import {
   DESIGN_REVIEW_WORKER_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   TEST_SERVICES_AWS_PLAN_FEATURE,
+  TEST_SERVICES_FAKE_PLAN_FEATURE,
   TEST_SERVICES_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
   PREPARE_SAVED_ENV_FEATURE,
@@ -468,6 +469,10 @@ async function forWorkerFeatures(
   }
   // Test services (slice 2): a plan that starts Rovara local AWS (an `emulated` dependency) also needs the worker to list the AWS feature: an older worker's strict parse would refuse the entry.
   if ((invocation.kind === "task" ? invocation.payload.testEnvironment?.dependencies : invocation.kind === "prepare" ? invocation.payload.testServices?.dependencies : undefined)?.some((dependency) => dependency.backing === "emulated") === true && !features.includes(TEST_SERVICES_AWS_PLAN_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Test services (slice 3): a plan with a fake (the fake server from the worker's own image, and a fixture set fetched through the `fixture-set` callback) also needs the worker to list the fake feature: an older worker's strict parse would refuse the entry.
+  if ((invocation.kind === "task" ? invocation.payload.testEnvironment?.dependencies : invocation.kind === "prepare" ? invocation.payload.testServices?.dependencies : undefined)?.some((dependency) => dependency.backing === "fake") === true && !features.includes(TEST_SERVICES_FAKE_PLAN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.

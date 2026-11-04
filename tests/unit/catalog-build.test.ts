@@ -42,7 +42,8 @@ import {
 import { sha, testSigner, unpinnedCatalog } from "../support/catalog-pinning.js";
 
 const catalog = unpinnedCatalog();
-const live = catalog.entries.filter((entry) => entry.status !== "retired");
+// Slice 3: the helpers that run from the worker's own image have no image to mirror, scan or pin.
+const live = catalog.entries.filter((entry) => entry.status !== "retired" && entry.workerImage !== true);
 const sourceDigest = (id: string): string => sha(`source:${id}`);
 const sources = (): SourcesFile => ({ schemaVersion: 1, sources: Object.fromEntries(live.map((entry) => [entry.id, `registry.example.com/library/${entry.family}@sha256:${sourceDigest(entry.id)}`])) });
 const PLATFORMS = ["linux/arm64", "linux/amd64"] as const;
@@ -103,7 +104,7 @@ describe("pinning the catalog", () => {
     expect(calls.mirror).toContain(`postgres@16 registry.example.com/library/postgres@sha256:${sourceDigest("postgres@16")} -> rovara-catalog/staging/svc/postgres`);
     const pinned = ServiceCatalogSchema.parse(JSON.parse(output.catalogBytes.toString("utf8")));
     expect(pinned).toMatchObject({ pinned: true, revision: catalog.revision + 1 });
-    for (const entry of pinned.entries) {
+    for (const entry of pinned.entries.filter((candidate) => candidate.workerImage !== true)) {
       expect(entry.image.digest, entry.id).toBe(sourceDigest(entry.id));
       // One SBOM hash per entry in the catalog: the combined hash of its platforms' SBOM hashes (each platform's own is in the evidence and the signed statement).
       expect(entry.sbomRef, entry.id).toBe(combinedSbomRef(platformsOf(entry.id).map((platform) => ({ platform, sbomRef: sha256HexOf(sbomDocument(entry.id, platform)) }))));
@@ -264,7 +265,7 @@ describe("what refuses a build (all of them: nothing is returned, so nothing can
   });
   it("high findings do not refuse; they are recorded", async () => {
     const output = await build(fakePorts({ scan: () => ({ highOpen: 40 }) }).ports);
-    expect(output.catalog.entries.every((entry) => entry.status === "retired" || entry.scan?.highOpen === 40)).toBe(true);
+    expect(output.catalog.entries.every((entry) => entry.status === "retired" || entry.workerImage === true || entry.scan?.highOpen === 40)).toBe(true);
   });
   it("a failing port refuses that entry in words, and the rest are still tried (the operator sees every refusal at once)", async () => {
     const { ports } = fakePorts();
@@ -274,7 +275,7 @@ describe("what refuses a build (all of them: nothing is returned, so nothing can
   it("a refusal anywhere means no pinned file at all: a half-pinned catalog cannot come out", async () => {
     let result: unknown;
     try {
-      result = await build(fakePorts({ scan: (id) => (id === "dns-helper@r1" ? { criticalOpen: 3 } : {}) }).ports);
+      result = await build(fakePorts({ scan: (id) => (id === "mysql@8" ? { criticalOpen: 3 } : {}) }).ports);
     } catch {
       result = undefined;
     }
@@ -289,6 +290,26 @@ describe("what refuses a build (all of them: nothing is returned, so nothing can
     const { ports } = fakePorts();
     const stranger = testSigner();
     expect(await refusalsOf(build({ ...ports, signer: { publicKeyPem: ports.signer.publicKeyPem, sign: (message) => stranger.sign(message) } }))).toContainEqual({ id: "postgres@16", code: "unsigned" });
+  });
+});
+
+describe("helpers that run from the worker's own image (slice 3)", () => {
+  const helperIds = catalog.entries.filter((entry) => entry.workerImage === true).map((entry) => entry.id);
+  it("are carried over untouched by a full build: no mirror, no scan, no pin", async () => {
+    const { ports, calls } = fakePorts();
+    const output = await build(ports);
+    const pinned = ServiceCatalogSchema.parse(JSON.parse(output.catalogBytes.toString("utf8")));
+    expect(helperIds.length).toBe(3);
+    for (const id of helperIds) {
+      expect(pinned.entries.find((entry) => entry.id === id)).toEqual(catalog.entries.find((entry) => entry.id === id));
+      expect(calls.mirror.some((call) => call.startsWith(`${id} `))).toBe(false);
+    }
+  });
+  it("are refused when a build names one, as a selection or with a source", async () => {
+    const withSource = { schemaVersion: 1, sources: { ...sources().sources, "fake-server@r1": `registry.example.com/library/fake@sha256:${sourceDigest("fake-server@r1")}` } };
+    expect(await refusalsOf(build(fakePorts().ports, { sources: withSource }))).toContainEqual({ id: "fake-server@r1", code: "worker_image_entry" });
+    const selected = buildPinnedCatalog({ catalog, sources: { schemaVersion: 1, sources: {} }, env: "staging", ports: fakePorts().ports, entries: ["fake-server@r1"] });
+    expect(await refusalsOf(selected)).toContainEqual({ id: "fake-server@r1", code: "worker_image_entry" });
   });
 });
 

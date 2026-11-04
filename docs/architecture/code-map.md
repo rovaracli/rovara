@@ -262,6 +262,7 @@ No single test lists every broker read.
 | `evidence-wiring.ts` | the proof evidence's hook on the end of a verification run (wire-proof). |
 | `feedback-and-codebuild.ts` | callback refusals, feedback approvals, CodeBuild records and pull request updates. |
 | `fix-setup-wiring.ts` | Setup and test health (SH17): what the auto-fix runner needs to turn an ask about the test environment into a Fix setup card. |
+| `fixture-delivery.ts` | The fixture delivery callback, broker side (test services, slice 3, s3-fakes-run): `POST /v1/internal/workspaces/{w}/operations/{o}/fixture-set`. |
 | `handler.ts` | createAwsBrokerHandler: the request router. |
 | `learning-wiring.ts` | the learning lane's hook on the end of a task. |
 | `lessons-dispatch.ts` | the lesson loader's one call at a coding stage's dispatch (learning v2, L4). |
@@ -374,6 +375,7 @@ No single test lists every broker read.
 | `dependencies.ts` | (No header comment.) Exports `setupDraftDepsOf`, `diagnosisRouteDepsOf`, `agentRunStarterOf`. |
 | `design-review-company.ts` | Design review (DR-FU4): `/v1/app/org/design-review`, the company's How we work card for design review, for company owners and admins only. |
 | `design-review.ts` | Design review stage, DR7 slice C: the routes and the decision cards of a design under review, and the ports the design review's handlers need. |
+| `fixtures.ts` | Test services, slice 3 (s3-fakes-store): the routes for a hand-written fake (a FixtureSet v2) and its review. |
 | `identity-lambda.ts` | (No header comment.) Exports `errorName`, `SLACK_UNAVAILABLE`, `channelMembersThroughLambda`. |
 | `install.ts` | Enterprise foundations E2: GET /v1/app/install. |
 | `intake.ts` | Meta repo lane F (F1): the broker's wiring of the intake routes (`rovara-code`-style: one module, so the router needs two lines). |

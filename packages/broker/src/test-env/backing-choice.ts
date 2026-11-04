@@ -75,7 +75,7 @@ export type BackingStep = "local" | "project_image" | "emulated" | "test_account
 export const BACKING_ORDER: readonly BackingStep[] = ["local", "project_image", "emulated", "test_account", "fake"];
 
 /** The dependency kinds a fake cannot stand in for (a database, a cache, a queue, a stream, a search index), unless the family is an AWS one, whose protocol a fake can speak (4.4). */
-const STATEFUL_KINDS: readonly string[] = ["database", "cache", "queue", "stream", "search"];
+export const STATEFUL_KINDS: readonly string[] = ["database", "cache", "queue", "stream", "search"];
 
 /** An approved fixture set for a family (the caller passes approved ones only). */
 export interface FixtureFact {

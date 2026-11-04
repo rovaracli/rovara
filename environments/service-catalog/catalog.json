@@ -579,10 +579,10 @@
       "health": {
         "kind": "tcp",
         "port": 8080,
-        "startTimeoutS": 15
+        "startTimeoutS": 30
       },
       "resources": {
-        "memMiB": 128,
+        "memMiB": 512,
         "cpus": 0.5,
         "pids": 64
       },
@@ -597,7 +597,8 @@
       "editions": [
         "public",
         "enterprise"
-      ]
+      ],
+      "workerImage": true
     },
     {
       "id": "test-account-proxy@r1",
@@ -647,7 +648,8 @@
       "editions": [
         "public",
         "enterprise"
-      ]
+      ],
+      "workerImage": true
     },
     {
       "id": "dns-helper@r1",
@@ -697,7 +699,8 @@
       "editions": [
         "public",
         "enterprise"
-      ]
+      ],
+      "workerImage": true
     }
   ]
 }

@@ -12,7 +12,7 @@ const run = (root: string) => spawnSync(process.execPath, [script, root], { enco
 const fresh = (): string => { const root = mkdtempSync(join(tmpdir(), "worker-dist-")); roots.push(root); return root; };
 const DETECTOR_FILES = ["detect-thread.js", "guarded.js"];
 // TS-RUN-1 (image part): the health probe and the sealed DNS helper run from the worker image by these paths (service-helpers.ts PROBE_ENTRY, check-sandbox.ts SEALED_DNS_HELPER_ENTRY).
-const TEST_SERVICE_FILES = ["service-probe.js", "sealed-dns-helper.js"];
+const TEST_SERVICE_FILES = ["service-probe.js", "sealed-dns-helper.js", "fake-helper.js"];
 function build(root: string, present: { detector?: string[]; services?: string[]; empty?: string[] }): void {
   mkdirSync(join(root, "packages/worker/dist/env-detect"), { recursive: true });
   for (const name of present.detector ?? []) writeFileSync(join(root, "packages/worker/dist/env-detect", name), present.empty?.includes(name) === true ? "" : "export {};\n");

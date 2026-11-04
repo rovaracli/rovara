@@ -237,7 +237,8 @@ describe("the arguments of a helper (snapshot)", () => {
 });
 
 describe("every catalog entry is started under the profile (4.1.4)", () => {
-  const entries = catalog.entries.filter((entry) => entry.backing !== "helper");
+  // The helpers (the DNS helper, the proxy) are started by their own code; the fake server runs from the worker's own image and has its own tests (worker-fake-helper-launch.test.ts).
+  const entries = catalog.entries.filter((entry) => entry.backing !== "helper" && entry.workerImage !== true);
   for (const entry of entries) {
     it(`${entry.id}`, async () => {
       const t = setup();
@@ -395,8 +396,8 @@ describe("small rules", () => {
   });
   it("a port below 1024 gets the one namespaced sysctl that lets a non-root user bind it; a high port gets none", async () => {
     const low = setup();
-    const entry = pinned("fake-server@r1", (copy) => { copy.run.ports = [80]; copy.health = { kind: "tcp", port: 80, startTimeoutS: 15 }; });
-    await low.run([{ id: "fake", name: "fake", entry }]);
+    const entry = pinned("valkey@8", (copy) => { copy.run.ports = [80]; copy.health = { kind: "tcp", port: 80, startTimeoutS: 15 }; });
+    await low.run([{ ...request("cache", "valkey@8"), entry }]);
     expect(flag(low.started()[0]!, "--sysctl")).toEqual(["net.ipv4.ip_unprivileged_port_start=80"]);
     const high = setup();
     await high.run([request("postgres", "postgres@16")]);
@@ -641,10 +642,10 @@ describe("start order and health (4.0.6)", () => {
   });
   it("a tcp health check is a probe without a path", async () => {
     const t = setup();
-    const entry = pinned("fake-server@r1");
-    await t.run([{ id: "fake", name: "fake", entry }]);
+    const entry = pinned("valkey@8", (copy) => { copy.health = { kind: "tcp", port: copy.run.ports[0]!, startTimeoutS: 15 }; });
+    await t.run([{ ...request("cache", "valkey@8"), entry }]);
     const probe = t.calls.find((call) => call[0] === "run" && call.includes("--rm"))!;
-    expect(probe.slice(probe.indexOf(PROBE_IMAGE))).toEqual([PROBE_IMAGE, "/opt/agentx/packages/worker/dist/service-probe.js", "--host", "172.30.153.16", "--port", "8080"]);
+    expect(probe.slice(probe.indexOf(PROBE_IMAGE))).toEqual([PROBE_IMAGE, "/opt/agentx/packages/worker/dist/service-probe.js", "--host", "172.30.153.16", "--port", String(entry.run.ports[0])]);
   });
   it("waits until the helper answers, polling, and returns the started helpers", async () => {
     const t = setup({ healthy: (_name, attempt) => attempt >= 3 });

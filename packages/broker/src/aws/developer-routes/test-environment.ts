@@ -73,7 +73,7 @@ export const isTestEnvironmentPath = (pathname: string): boolean => TEST_ENV_PAT
 export interface TestEnvRouteHooks { onApproved?(orgId: OrgId, project: string, approved: TestEnvironment, approval?: { replayed: boolean }): Promise<void> }
 
 export function testEnvStoreOf(deps: DeveloperRouteDependencies): TestEnvDeps {
-  return { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) };
+  return { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }), ...(deps.fixtureStore === undefined ? {} : { fixtureStore: deps.fixtureStore }) };
 }
 
 /** The store with the second-person check bound to the company's records, for an approval. Without the sign-in table there is no second person, and a less-safe approval is refused. */

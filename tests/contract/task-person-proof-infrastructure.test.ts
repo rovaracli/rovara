@@ -369,18 +369,20 @@ describe("the named TEST proof-only installation gate", () => {
     // bedrock:GetFoundationModelAvailability on Resource "*" (merged into the statement that already allows xray:PutTraceSegments and xray:PutTelemetryRecords), which the named-templates snapshot shows too.
     // 2026-11-03, merge of lane ts-accounts (df8703c51) onto cf34811c6: the four named and foreign digests were retaken from the values the digest test itself reports (nothing hand-computed); the only template additions are
     // ts-accounts' TestAccountSecretsRole, the broker's AssumeTestAccountSecretsRole statement and the lookup ARN. TEST_ACCOUNT_SECRETS_ROLE_ARN is derived in the process, so AGENTX_SETTINGS did not change. Legacy did not move.
+    // 2026-11-03 (s3-fakes-store): the named and foreign digests moved for the control plane's FixtureKey (a retained KMS key and the broker's kms:GenerateDataKey and kms:Decrypt on it). Legacy is unchanged.
+    // 2026-11-03 (s3-integration, M4 and the key condition): retaken again from the values the test reports: the key has the alias alias/agentx/<env>/fixtures, the broker's grant carries kms:ViaService = s3.<region>.amazonaws.com, and the `fk` name is gone (the broker builds the alias ARN from AGENTX_ENV). Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "0571bc58f0358157ecff73f1d9c9bab05689cfc2078ca1b22bd28b39b4b846b8",
-        withoutRoute: "f9d25efa73eac1a75ccaabbad8660a8c666497f07b173355ba9559bb34bd14cf",
+        withRoute: "073e70d669dcd18bc9c79fe44659d2b35218d89bce92701e067d3bb13a16c5ba",
+        withoutRoute: "90bdb99bff5d7f55a1e2b04e9d44aad95c8bd929388ff12609e65fa85fda0916",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "126df5ca8806dab23cf4920cf258c19d00ae39c8f31ddfb7463f33f78c6981e0",
-        withoutRoute: "03b34b62b18aa40155e7b4394889472a10699dca8ef90452fd5461bee1fe85e3",
+        withRoute: "dd54e75756efe60d4467e346f088043bcdc6e2125b2be10a978b29c6053d5a70",
+        withoutRoute: "592242814e457e356b11ce361a678512db4971a568d4e4894fde619fd268b3d2",
       },
       {
         label: "legacy",

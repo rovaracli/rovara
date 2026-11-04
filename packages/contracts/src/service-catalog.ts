@@ -141,6 +141,11 @@ export const CatalogEntrySchema = z
     editions: z.array(z.enum(CATALOG_EDITIONS)).min(1).max(2),
     /** Present exactly on the emulator entry. */
     emulator: EmulatorSchema.optional(),
+    /**
+     * Slice 3: this helper runs from the WORKER'S OWN image (by image id), as its program in `dist/`, not from an image of its own: the fake server, the DNS helper and the test-account proxy. It has no digest, SBOM or scan to
+     * pin (the worker image is the release's), the catalog build carries it over untouched, and it is never in the pre-pull list. Absent on every other entry.
+     */
+    workerImage: z.literal(true).optional(),
   })
   .strict()
   .superRefine((entry, context) => {
@@ -151,6 +156,8 @@ export const CatalogEntrySchema = z
     if (entry.backing === "emulated" && name !== "local-aws") problem(["backing"], "the emulated entry is Rovara local AWS");
     if (entry.backing === "fake" && name !== "fake-server") problem(["backing"], "the fake entry is the fake server");
     if (entry.backing === "helper" && name !== "test-account-proxy" && name !== "dns-helper") problem(["backing"], "a helper entry is the proxy or the DNS helper");
+    if (entry.workerImage === true && name !== "fake-server" && name !== "dns-helper" && name !== "test-account-proxy") problem(["workerImage"], "only Rovara's own helpers run from the worker image");
+    if (entry.workerImage === true && (entry.image.digest !== undefined || entry.sbomRef !== undefined || entry.scan !== undefined || entry.process !== undefined)) problem(["workerImage"], "a helper that runs from the worker image has no image of its own to pin");
     if ((entry.backing === "emulated") !== (entry.emulator !== undefined)) problem(["emulator"], "the emulator block is on the emulated entry and nowhere else");
     if (entry.status === "default" && entry.backing === "helper") problem(["status"], "a helper is started by Rovara, never chosen: it has no default");
     if (new Set(entry.image.platforms).size !== entry.image.platforms.length) problem(["image", "platforms"], "a platform is listed once");

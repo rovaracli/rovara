@@ -268,7 +268,9 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     const prepared = lists === undefined ? project : { ...project, definition: { ...(devcontainer === null ? withoutDevcontainer : project.definition), setup: lists.setup, readiness: lists.readiness, ...(devcontainer === undefined || devcontainer === null ? {} : { devcontainer }) } };
     // Test services: the dependencies a candidate check starts, pinned from the signed catalog (a refusal stops the check before anything is written). Nothing for any other check, so its options are what they were.
     const testServices = candidate !== undefined && "body" in candidate ? await candidateDependencyPlan(deps, candidate.body, { orgId: caller.orgId, project: name }) : undefined;
-    const preparation = await tasks.preparation(identity, prepared, requestId, runCommits === undefined && testServices === undefined ? undefined : { ...(runCommits === undefined ? {} : { pins: runCommits }), ...(testServices === undefined ? {} : { testServices }) });
+    // The proposal's own production list rides with the check (its fixture-set callback scans a fake with it too: the first check has no approved environment).
+    const testServicesDeny = testServices !== undefined && candidate !== undefined && "body" in candidate ? candidate.body.prodDeny : undefined;
+    const preparation = await tasks.preparation(identity, prepared, requestId, runCommits === undefined && testServices === undefined ? undefined : { ...(runCommits === undefined ? {} : { pins: runCommits }), ...(testServices === undefined ? {} : { testServices }), ...(testServicesDeny === undefined ? {} : { testServicesDeny }) });
     const committed = await commitSetupCheck(checks, {
       orgId: caller.orgId, project: name, requestId, actorId: caller.developerId, revision: project.definition.revision,
       workspaceId: preparation.workspace.id, createdAt: preparation.workspace.createdAt, preparation: preparation.items, charge, limits, seenWorkspaceId: previous?.workspaceId,

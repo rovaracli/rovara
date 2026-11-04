@@ -204,6 +204,10 @@ export const AUDIT_ACTIONS = [
   "company.change_applied_to_project",
   // Proof and evidence (W4/W5): the approved test environment changed; a task reader downloaded a stored evidence artifact.
   "project.test_env_changed",
+  // Test services, slice 3 (M1): a maintainer approved, rejected or withdrew a hand-written or recorded answer set (a fake) of a project.
+  "project.fixture_set_approved",
+  "project.fixture_set_rejected",
+  "project.fixture_set_withdrawn",
   // Setup and test health (SH28): a maintainer turned "propose a fix task when tests fail" on or off for a project.
   "project.test_health_setting_changed",
   "evidence.downloaded",
@@ -522,6 +526,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company.change_applied_to_project": ["changeRevision", "settingCount"],
   // `tier` is `sandbox`, `preview` or `shared`; `lessSafeCount` is how many less-safe fields the change turned on. `artifactKind` and `retentionClass` are the fixed words of the evidence contract.
   "project.test_env_changed": ["revision", "tier", "lessSafeCount"],
+  // The set's digest only (64 hex): never a word of its content. The actor, the org and the project are the event's own.
+  "project.fixture_set_approved": ["digest"],
+  "project.fixture_set_rejected": ["digest"],
+  "project.fixture_set_withdrawn": ["digest"],
   "project.test_health_setting_changed": ["setting", "enabled"],
   "evidence.downloaded": ["artifactKind", "retentionClass"],
   // `cause` is a fixed auto-fix code word (the environment fault the card was about); `testCount` is how many tests were added to the project's already-failing list; the rest are the card's epoch, counts, two sha256 hashes (the waiting tasks, the exact set marked) and the list's version and size afterwards. Never a test name.

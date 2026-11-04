@@ -31,6 +31,12 @@ export const TEST_SERVICES_PLAN_FEATURE = "task.testServices.v1";
  * not is never sent such a plan (its strict parse would refuse the field): the broker refuses the run to it at dispatch (`ec2-delivery.ts`). In `WORKER_INVOCATION_FEATURES`; the worker lists it only when it can start the emulator.
  */
 export const TEST_SERVICES_AWS_PLAN_FEATURE = "task.testServices.aws.v1";
+/**
+ * Test services (slice 3): a worker that lists this reads a plan dependency with `backing: "fake"` and its `fake` block (the digest of an approved fixture set), starts the fake server from its own image for each phase and
+ * fetches the set through the `fixture-set` callback at the start of the phase. It also lists `TEST_SERVICES_PLAN_FEATURE`. A worker that does not is never sent such a plan: the broker refuses the run to it at dispatch
+ * (`ec2-delivery.ts`). In `WORKER_INVOCATION_FEATURES`.
+ */
+export const TEST_SERVICES_FAKE_PLAN_FEATURE = "task.testServices.fake.v1";
 /** The AWS services a plan may ask Rovara local AWS for in slice 2. The broker's rule and the worker's contract are this one list. */
 export const TEST_SERVICES_AWS_PLAN_SERVICES = ["s3", "sqs", "dynamodb"] as const;
 
@@ -135,13 +141,22 @@ export const TaskDependencyPlanSchema = z
     name: line(80),
     kind: TestEnvDependencyKindSchema,
     family: FamilyIdSchema,
-    /** `local`: real software from the catalog. `emulated` (slice 2): Rovara local AWS, with the `aws` block below; every emulated entry of one plan names the same image, and all of them share one helper. */
-    backing: z.enum(["local", "emulated"]),
+    /**
+     * `local`: real software from the catalog. `emulated` (slice 2): Rovara local AWS, with the `aws` block below; every emulated entry of one plan names the same image, and all of them share one helper.
+     * `fake` (slice 3): the fake server, from the worker's own image, serving the approved fixture set the `fake` block names.
+     */
+    backing: z.enum(["local", "emulated", "fake"]),
     catalogId: CatalogIdSchema,
     /** The repository under the install's registry (`svc/postgres`); the registry host is the install's. */
     repository: z.string().regex(/^svc\/[a-z0-9][a-z0-9._-]{0,62}$/u),
-    /** The image digest the catalog pinned: required, because an unpinned image is never started. */
-    digest: Sha256,
+    /** The image digest the catalog pinned: required, because an unpinned image is never started. A fake has none: its server is the worker's own image (the catalog marks it a worker-image helper). */
+    digest: Sha256.optional(),
+    /**
+     * Only on a `fake` entry: the digest of the approved fixture set the fake serves, and what it does with a request nothing in the set matches. NOT a URL: a 15-minute read address would expire before the round, so the
+     * worker asks the broker for a fresh one at the start of each phase (the `fixture-set` callback), and holds the downloaded set to this digest. `fail` is the only policy this slice carries: a request with no
+     * recording is answered with an error and counted (a made-up answer is not available yet).
+     */
+    fake: z.object({ fixtureSetRef: Sha256, unmatched: z.literal("fail") }).strict().optional(),
     /** Names and files carried over from the project (database, user, extensions, init files); no password. */
     config: CatalogConfigSchema,
     aliases: z.array(DnsLabelSchema).max(TEST_ENV_DEPENDENCY_LIMITS.hostAliases),
@@ -156,6 +171,15 @@ export const TaskDependencyPlanSchema = z
     const problem = (path: (string | number)[], message: string) => context.addIssue({ code: "custom", path, message });
     if (plan.backing === "local" && (TEST_ENV_HELPER_CATALOG_NAMES as readonly string[]).includes(catalogIdName(plan.catalogId))) problem(["catalogId"], "a local dependency is real software from the catalog, not one of Rovara's helpers");
     if (plan.backing === "local" && plan.aws !== undefined) problem(["aws"], "only an emulated dependency has AWS services");
+    if (plan.backing === "fake") {
+      if (catalogIdName(plan.catalogId) !== "fake-server") problem(["catalogId"], "a fake dependency runs the fake server");
+      if (plan.fake === undefined) problem(["fake"], "a fake dependency names its fixture set");
+      if (plan.digest !== undefined) problem(["digest"], "the fake server is the worker's own image: it has no image digest");
+      if (plan.aws !== undefined) problem(["aws"], "only an emulated dependency has AWS services");
+    } else {
+      if (plan.digest === undefined) problem(["digest"], "an image that is started is pinned by digest");
+      if (plan.fake !== undefined) problem(["fake"], "only a fake dependency has a fixture set");
+    }
     if (plan.backing === "emulated") {
       if (catalogIdName(plan.catalogId) !== "local-aws") problem(["catalogId"], "an emulated dependency runs Rovara local AWS");
       if (!plan.family.startsWith("aws:")) problem(["family"], "Rovara local AWS backs AWS families only");
@@ -218,6 +242,18 @@ export const TestEnvTaskPlanSchema = z
     if (!unique(dependencies.flatMap((dependency) => dependency.aliases))) context.addIssue({ code: "custom", path: ["dependencies"], message: "two dependencies use the same alias" });
   });
 export type TestEnvTaskPlan = z.infer<typeof TestEnvTaskPlanSchema>;
+
+// ---- fixture delivery (slice 3)
+
+/**
+ * `POST .../operations/{o}/fixture-set`: the worker's request, at the start of a phase that serves a fake, for a fresh read address of ONE approved fixture set. It names the digest the pinned plan named and nothing else: the
+ * organisation, the project and the task come from the operation the capability belongs to, never from the body.
+ */
+export const FixtureSetCallbackRequestSchema = z.object({ digest: Sha256 }).strict();
+export type FixtureSetCallbackRequest = z.infer<typeof FixtureSetCallbackRequestSchema>;
+/** The broker's answer: a signed https read address good for 15 minutes, for that digest. The worker downloads at once and holds the bytes to the digest (`fetchFixtureSet`); the address is never kept, logged or sent on. */
+export const FixtureSetCallbackReplySchema = z.object({ digest: Sha256, url: z.string().min(12).max(4_096).regex(/^https:\/\/[^\s]+$/u), expiresAt: z.string().datetime() }).strict();
+export type FixtureSetCallbackReply = z.infer<typeof FixtureSetCallbackReplySchema>;
 
 // ---- the setup routes
 

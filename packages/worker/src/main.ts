@@ -131,7 +131,7 @@ const state = createWorkerServerState(
           // Saved environments (SH25): start from the project's saved image; any problem sets up fresh.
           ...(invocation.payload.savedEnv === undefined ? {} : { savedEnv: savedEnvOptionsOf(invocation.payload.savedEnv, createSavedEnvLoginProvider({ controlPlaneUrl, invocation }), undefined, createSavedEnvFallbackReporter({ controlPlaneUrl, invocation })) }),
           ...(invocation.payload.registries === undefined ? {} : { registries: invocation.payload.registries, registryCredentialProvider: createRegistryCredentialProvider({ controlPlaneUrl, invocation }) }),
-          ...(invocation.payload.testServices === undefined ? {} : { testServices: { dependencies: invocation.payload.testServices.dependencies, operationId: invocation.operationId, cancellation: cancellationController, onUsageRecord: testServicesUsage.collect } }),
+          ...(invocation.payload.testServices === undefined ? {} : { testServices: { dependencies: invocation.payload.testServices.dependencies, operationId: invocation.operationId, cancellation: cancellationController, onUsageRecord: testServicesUsage.collect, fixtureSet: createWorkerCallbackSinks({ controlPlaneUrl, invocation }).fixtureSet } }),
         });
         // Saved project images: a rebuild job builds the project's image from this read-only, pinned preparation (saved-env/rebuild.ts) and posts the result to the broker's lease route.
         if (invocation.payload.savedEnvBuild !== undefined) {

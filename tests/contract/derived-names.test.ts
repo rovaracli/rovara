@@ -72,6 +72,12 @@ for (const [label, env, context, cloud] of [
           }
           expect(started[entry.variable]).toBe(`arn:aws:iam::${ACCOUNT}:role${path as string}${entry.roleName(env)}`);
         });
+      } else if (entry.kind === "kmsAliasArn") {
+        it(`${entry.variable}: is the ARN of the one key alias CDK named ${entry.alias(env)}`, () => {
+          const aliases = withName(resources, "AWS::KMS::Alias", "AliasName", entry.alias(env));
+          expect(aliases).toHaveLength(1);
+          expect(started[entry.variable]).toBe(`arn:aws:kms:${REGION}:${ACCOUNT}:${entry.alias(env)}`);
+        });
       } else {
         it(`${entry.variable}: is the URL of the one queue CDK named ${entry.queueName(env)}`, () => {
           const queues = withName(resources, "AWS::SQS::Queue", "QueueName", entry.queueName(env));
