@@ -368,19 +368,20 @@ describe("the named TEST proof-only installation gate", () => {
     // bedrock:GetFoundationModelAvailability on Resource "*" (merged into the statement that already allows xray:PutTraceSegments and xray:PutTelemetryRecords), which the named-templates snapshot shows too.
     // 2026-11-03, merge of lane ts-accounts (df8703c51) onto cf34811c6: the four named and foreign digests were retaken from the values the digest test itself reports (nothing hand-computed); the only template additions are
     // ts-accounts' TestAccountSecretsRole, the broker's AssumeTestAccountSecretsRole statement and the lookup ARN. TEST_ACCOUNT_SECRETS_ROLE_ARN is derived in the process, so AGENTX_SETTINGS did not change. Legacy did not move.
-    // 2026-11-03 (s3-fakes-store): the named and foreign digests moved for the control plane's FixtureKey (a retained KMS key, the broker's kms:GenerateDataKey and kms:Decrypt on it, and the `fk` name). Legacy is unchanged.
+    // 2026-11-03 (s3-fakes-store): the named and foreign digests moved for the control plane's FixtureKey (a retained KMS key and the broker's kms:GenerateDataKey and kms:Decrypt on it). Legacy is unchanged.
+    // 2026-11-03 (s3-integration, M4 and the key condition): retaken again from the values the test reports: the key has the alias alias/agentx/<env>/fixtures, the broker's grant carries kms:ViaService = s3.<region>.amazonaws.com, and the `fk` name is gone (the broker builds the alias ARN from AGENTX_ENV). Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "1cb91ea74fe982073b0e8d58b8426fc8dfc0db847d3e79850e6a345e23ef09af",
-        withoutRoute: "f70e387a87b305b85f84adb8d34bdfd1d516fd5b4e4d41754905685bafbd399d",
+        withRoute: "d38b82c951fa7007517fb20d96adb05855aa4407a15f74a04cd39b6f4106f311",
+        withoutRoute: "e4ca1506b364ff24f51798891fa9c20e7d04f8cdc2ffe49d9b5f629d41efaeee",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "b5bc8b104de5fc0efc8a6b4922addf67f80bcb66b0ab2c4048763e782dde0339",
-        withoutRoute: "b13c62846b56876edc53b2cd60dc0478085bd0d3e1f0e1808f10ab212382b5fc",
+        withRoute: "6d08176d2e173cf5237964a618e74abdddce9298043a16527d63e3410dd176a4",
+        withoutRoute: "b0c6f7d08a04155de7af446b6f378b3caa345fde003d5ec3abe933b927ec6d70",
       },
       {
         label: "legacy",

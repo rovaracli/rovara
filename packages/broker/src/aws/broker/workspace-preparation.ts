@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { registriesPrepareOf } from "./registry-credentials.js";
 import { savedEnvPrepareOf } from "./saved-env-prepare.js";
-import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, type TaskDependencyPlan, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition, metaRepositoryOf, type CodeHost, type PreparePins } from "@agentx/contracts";
+import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, type TaskDependencyPlan, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition, metaRepositoryOf, type CodeHost, type PreparePins, type TestEnvProdDeny } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { auditPending, tryAuditEvent } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";
@@ -110,7 +110,7 @@ export async function newWorkspacePreparation(
   project: RegisteredProjectRecord,
   targetOwnerKey: string,
   requestId: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; pins?: PreparePins; grantedBy?: unknown; testEnvPin?: { revision: number; digest: string }; testServices?: readonly TaskDependencyPlan[] } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; pins?: PreparePins; grantedBy?: unknown; testEnvPin?: { revision: number; digest: string }; testServices?: readonly TaskDependencyPlan[]; testServicesDeny?: TestEnvProdDeny } = {},
 ): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; membership: MembershipRecord | undefined; pins?: PreparePins }> {
   const projectName = project.definition.name;
   const projectRevision = project.definition.revision;
@@ -160,6 +160,8 @@ export async function newWorkspacePreparation(
   // Test services (slice 3): a candidate check whose plan has a fake may ask for that set's read address and no other (the capability has the action only then).
   const fixtureDigests = fixtureDigestsOfPlan({ dependencies: options.testServices });
   if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;
+  // The proposal's own production list (the project may have no approved environment yet): the fixture-set callback scans with the union of this and the approved environment's.
+  if (fixtureDigests.length > 0 && options.testServicesDeny !== undefined) operation.fixtureProdDeny = options.testServicesDeny;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "prepare",

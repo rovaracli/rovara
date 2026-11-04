@@ -17,7 +17,7 @@ export async function candidateDependencyPlan(
   if (!testServicesEnabled(env)) throw agentXError("CONFIG_INVALID", DEPENDENCY_PLAN_REFUSAL_WORDS.not_available_yet);
   await refuseDependenciesWithDevcontainer(deps, scope.orgId, scope.project, proposal);
   const catalog = await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined);
-  const fixtures = await approvedFixturesOf(recordsOf(deps.fixtureStore), scope.orgId, proposal);
+  const fixtures = await approvedFixturesOf(recordsOf(deps.fixtureStore), scope.orgId, scope.project, proposal);
   const planned = taskDependencyPlansOf({ body: proposal as TestEnvironmentBody, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: scope.project, fixtures });
   if (!planned.ok) throw agentXError("CONFIG_INVALID", DEPENDENCY_PLAN_REFUSAL_WORDS[planned.reason]);
   return planned.dependencies;

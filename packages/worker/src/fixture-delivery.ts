@@ -8,7 +8,8 @@
 //   - Every refusal is ONE of a few fixed words (`FixtureDeliveryRefused.reason`). The address, the broker's words and the download's are never in an error, a log or a return: the address is a bearer credential for 15 minutes.
 //   - Nothing is kept: the set is returned to the caller, which writes it into the run's own directory for ONE helper and never anywhere the agent can read. This module writes no file, logs nothing and holds nothing
 //     after it returns (no cache: a set withdrawn between rounds is not served in the next one).
-//   - The set's content never reaches an agent-facing path: this file and fake-helper.ts may be imported only by the run layer (tests/unit/worker-fixture-source-guards.test.ts).
+//   - The set is never a FILE or a value the agent can read: this file and fake-helper.ts may be imported only by the run layer (tests/unit/worker-fixture-source-guards.test.ts). In the coding phase the fake it feeds IS reachable by the agent, by design:
+//     the agent's own requests to the fake get the set's recorded answers (that is what a fake is for), so a set's answers are visible to the agent that tests against it. The review that approved the set is the control for that; a sealed round's helper is not the agent's.
 import { FixtureSetCallbackReplySchema, type FixtureSet } from "@agentx/contracts";
 import { FixtureFetchRefused, fetchFixtureSet } from "./fixture-fetch.js";
 

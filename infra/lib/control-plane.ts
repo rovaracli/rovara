@@ -46,7 +46,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { BROKER_SETTINGS, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { BROKER_SETTINGS, fixtureKeyAlias, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
@@ -265,12 +265,17 @@ export class ControlPlaneStack extends Stack {
       // Test services, slice 3: the answer sets (fakes) are objects under private/<company>/fixtures/ in the artifacts bucket, written with this key (SSE-KMS) and read back with it. Only the broker may use it, to
       // generate a data key and decrypt, and the grant is on this key alone. Retained like the bucket: the objects outlive a stack deletion and are unreadable without it. Named environments only.
       const fixtureKey = new kms.Key(this, "FixtureKey", {
+        // The broker builds the key's alias ARN from the environment's name (fixtureKeyAlias, contracts/derived-names.ts) and passes nothing: S3 accepts an alias for SSE-KMS.
+        alias: fixtureKeyAlias(naming.env),
         description: "Rovara: encrypts the answer sets (fakes) kept under private/<company>/fixtures/ in the artifacts bucket",
         enableKeyRotation: true,
         removalPolicy: RemovalPolicy.RETAIN,
       });
-      fixtureKey.grant(broker, "kms:GenerateDataKey", "kms:Decrypt");
-      BrokerNames.of(broker).add("fixtureKey", fixtureKey.keyId);
+      // Only through S3 in this region (kms:ViaService): the broker's grant cannot be used for a direct KMS call. (A grant on the key resource alone, not on the alias.)
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["kms:GenerateDataKey", "kms:Decrypt"], resources: [fixtureKey.keyArn],
+        conditions: { StringEquals: { "kms:ViaService": `s3.${Stack.of(this).region}.amazonaws.com` } },
+      }));
     }
     // The merged control plane's broker policy is past CDK's 10,000-character inline limit, and CDK would move the overflow into a
     // managed policy, which the deploy's CloudFormation role may not create (R53). Merge same-shaped statements instead.

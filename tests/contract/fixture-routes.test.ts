@@ -2,12 +2,13 @@
 // `schema_synth` all come from the session and the project's approved environment, never from the request; a set is scanned before it is stored; a decision is one decision on one digest.
 import { afterEach, describe, expect, it } from "vitest";
 import { FixtureSetSchema, fixtureEntry, fixtureSetDigest, projectPk, testEnvDigest, type FixtureSet, type TestEnvProdDeny, type TestEnvironmentBody } from "@agentx/contracts";
-import { createFixtureStore, createMemoryFixturePorts } from "../../packages/broker/src/test-env/fixture-store.js";
+import { createFixtureStore, createMemoryFixturePorts, type FixtureDenyFor } from "../../packages/broker/src/test-env/fixture-store.js";
 import { testServicesEnabled } from "../../packages/broker/src/test-env/test-services-switch.js";
 import { environmentSynthesisesFor } from "../../packages/broker/src/aws/developer-routes/fixtures.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { NAME, draftBody, setupWizardBench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { capturingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
 
 afterEach(() => { delete process.env.TEST_SERVICES_ENABLED; delete process.env.TEST_ENVIRONMENT_ENABLED; });
 const on = () => { process.env.TEST_SERVICES_ENABLED = "1"; };
@@ -36,13 +37,13 @@ function makeSet(over: Record<string, unknown> = {}): FixtureSet {
   });
 }
 
-async function bench(options: { maya?: "viewer" | "contributor" | "maintainer" | "none" } = {}) {
+async function bench(options: { maya?: "viewer" | "contributor" | "maintainer" | "none"; audit?: AuditCapture } = {}) {
   const ports = createMemoryFixturePorts();
   const touched: string[] = [];
   const objects = { ...ports.objects, putIfAbsent: (...a: Parameters<typeof ports.objects.putIfAbsent>) => { touched.push("put"); return ports.objects.putIfAbsent(...a); } };
   const denies: TestEnvProdDeny[] = [];
-  const factory = (denyFor: (orgId: string) => Promise<TestEnvProdDeny>) => createFixtureStore({ enabled: () => testServicesEnabled(), objects, index: ports.index, denyFor: async (org) => { const deny = await denyFor(org); denies.push(deny); return deny; }, now: () => new Date() });
-  const t = await setupWizardBench({ modelProxy: true, brokerExtra: { fixtureStore: factory } });
+  const factory = (denyFor: FixtureDenyFor) => createFixtureStore({ enabled: () => testServicesEnabled(), objects, index: ports.index, denyFor: async (org, project) => { const deny = await denyFor(org, project); denies.push(deny); return deny; }, now: () => new Date() });
+  const t = await setupWizardBench({ modelProxy: true, ...(options.audit === undefined ? {} : { audit: options.audit }), brokerExtra: { fixtureStore: factory } });
   if (options.maya !== undefined && options.maya !== "none") await t.person(MAYA, "member", options.maya);
   else if (options.maya === "none") await t.person(MAYA, "member");
   /** Org-level store as another org's request would see it, to plant a set the caller must never reach. */
@@ -94,7 +95,7 @@ describe("who may", () => {
     for (const role of ["viewer", "contributor"] as const) {
       const { t, store, touched } = await bench({ maya: role });
       on();
-      const planted = await store.submit(TEST_ORG, makeSet(), { actor: OMAR.developerId, recordedFrom: "written" });
+      const planted = await store.submit(TEST_ORG, NAME, makeSet(), { actor: OMAR.developerId, recordedFrom: "written" });
       expect(planted.ok).toBe(true);
       const digest = fixtureSetDigest(makeSet());
       touched.length = 0;
@@ -104,7 +105,7 @@ describe("who may", () => {
       expect((await t.web(MAYA, "POST", BASE, { set: makeSet({ revision: 2 }) })).status, role).toBe(403);
       for (const action of ["approve", "reject", "withdraw"]) expect((await t.web(MAYA, "POST", `${BASE}/${digest}/${action}`, {})).status, `${role} ${action}`).toBe(403);
       expect(touched).toEqual([]);
-      expect(((await store.record(TEST_ORG, digest)) as { record: { status: string } }).record.status).toBe("pending");
+      expect(((await store.record(TEST_ORG, NAME, digest)) as { record: { status: string } }).record.status).toBe("pending");
     }
   });
 });
@@ -166,11 +167,11 @@ describe("deciding", () => {
     await t.web(MAYA, "POST", BASE, { set });
     expect((await t.web(MAYA, "POST", `${BASE}/${digest}/withdraw`, {})).status).toBe(409);
     expect(await t.web(MAYA, "POST", `${BASE}/${digest}/approve`, {})).toMatchObject({ status: 200, body: { status: "approved", digest } });
-    expect((await store.deliver(TEST_ORG, digest)).ok).toBe(true);
+    expect((await store.deliver(TEST_ORG, NAME, digest)).ok).toBe(true);
     expect((await t.web(MAYA, "POST", `${BASE}/${digest}/approve`, {})).status).toBe(409);
     expect((await t.web(MAYA, "POST", `${BASE}/${digest}/reject`, {})).status).toBe(409);
     expect(await t.web(MAYA, "POST", `${BASE}/${digest}/withdraw`, {})).toMatchObject({ status: 200, body: { status: "withdrawn" } });
-    expect(await store.deliver(TEST_ORG, digest)).toEqual({ ok: false, reason: "not_approved" });
+    expect(await store.deliver(TEST_ORG, NAME, digest)).toEqual({ ok: false, reason: "not_approved" });
     expect((await t.web(MAYA, "POST", `${BASE}/${digest}/approve`, {})).status).toBe(409);
   });
   it("rejects a pending set for good", async () => {
@@ -181,7 +182,7 @@ describe("deciding", () => {
     await t.web(MAYA, "POST", BASE, { set });
     expect(await t.web(MAYA, "POST", `${BASE}/${digest}/reject`, {})).toMatchObject({ status: 200, body: { status: "rejected" } });
     expect((await t.web(MAYA, "POST", `${BASE}/${digest}/approve`, {})).status).toBe(409);
-    expect((await store.deliver(TEST_ORG, digest)).ok).toBe(false);
+    expect((await store.deliver(TEST_ORG, NAME, digest)).ok).toBe(false);
   });
   it("takes nothing from the body: the org, the role, the sign-in time and schema_synth are not fields of a decision", async () => {
     const { t, store } = await bench({ maya: "maintainer" });
@@ -192,18 +193,18 @@ describe("deciding", () => {
     for (const body of [{ orgId: OTHER_ORG }, { role: "maintainer" }, { signedInAt: new Date().toISOString() }, { schemaSynth: false }, { actor: "x" }]) {
       expect((await t.web(MAYA, "POST", `${BASE}/${digest}/approve`, body)).status, JSON.stringify(body)).toBe(400);
     }
-    expect(((await store.record(TEST_ORG, digest)) as { record: { status: string } }).record.status).toBe("pending");
+    expect(((await store.record(TEST_ORG, NAME, digest)) as { record: { status: string } }).record.status).toBe("pending");
   });
   it("another org's set is not found: not read, not decided, whatever the caller's role", async () => {
     const { t, store } = await bench({ maya: "maintainer" });
     on();
-    const planted = await store.submit(OTHER_ORG, makeSet({ revision: 9 }), { actor: "someone", recordedFrom: "written" });
+    const planted = await store.submit(OTHER_ORG, NAME, makeSet({ revision: 9 }), { actor: "someone", recordedFrom: "written" });
     expect(planted.ok).toBe(true);
     const digest = fixtureSetDigest(makeSet({ revision: 9 }));
     expect((await t.web(MAYA, "GET", `${BASE}/${digest}`)).status).toBe(404);
     expect((await t.web(OMAR, "GET", `${BASE}/${digest}`)).status).toBe(404);
     for (const action of ["approve", "reject", "withdraw"]) expect((await t.web(OMAR, "POST", `${BASE}/${digest}/${action}`, {})).status, action).toBe(404);
-    expect(((await store.record(OTHER_ORG, digest)) as { record: { status: string } }).record.status).toBe("pending");
+    expect(((await store.record(OTHER_ORG, NAME, digest)) as { record: { status: string } }).record.status).toBe("pending");
   });
   it("an org owner counts as a maintainer", async () => {
     const { t } = await bench();
@@ -211,6 +212,80 @@ describe("deciding", () => {
     const set = makeSet();
     expect((await t.web(OMAR, "POST", BASE, { set })).status).toBe(201);
     expect((await t.web(OMAR, "POST", `${BASE}/${fixtureSetDigest(set)}/approve`, {})).status).toBe(200);
+  });
+});
+
+describe("H1: a set is the PROJECT's: a maintainer of another project cannot reach it by its digest", () => {
+  const OTHER_PROJECT = "billing";
+  it("GET, approve, reject and withdraw of another project's set answer exactly what another org's set and a digest nobody holds answer, and nothing changes", async () => {
+    const { t, store } = await bench({ maya: "maintainer" });
+    on();
+    const projectSet = makeSet({ revision: 7 });
+    const orgSet = makeSet({ revision: 8 });
+    const nobodySet = makeSet({ revision: 9 });
+    expect((await store.submit(TEST_ORG, OTHER_PROJECT, projectSet, { actor: "someone", recordedFrom: "written" })).ok).toBe(true);
+    expect((await store.submit(OTHER_ORG, NAME, orgSet, { actor: "someone", recordedFrom: "written" })).ok).toBe(true);
+    // the other project's set was approved: withdrawing it from this project must not work either
+    const approvedDigest = fixtureSetDigest(projectSet);
+    const answers: Array<[string, number, unknown]> = [];
+    for (const [label, set] of [["other project", projectSet], ["other org", orgSet], ["nobody", nobodySet]] as const) {
+      const digest = fixtureSetDigest(set);
+      const get = await t.web(MAYA, "GET", `${BASE}/${digest}`);
+      answers.push([`${label} GET`, get.status, get.body]);
+      for (const action of ["approve", "reject", "withdraw"]) {
+        const reply = await t.web(MAYA, "POST", `${BASE}/${digest}/${action}`, {});
+        answers.push([`${label} ${action}`, reply.status, reply.body]);
+      }
+    }
+    const by = (label: string) => answers.filter(([name]) => name.startsWith(label)).map(([, status, body]) => ({ status, body }));
+    expect(by("other project").every((answer) => answer.status === 404)).toBe(true);
+    expect(by("other project")).toEqual(by("other org"));
+    expect(by("other project")).toEqual(by("nobody"));
+    expect(JSON.stringify(by("other project"))).not.toContain(OTHER_PROJECT);
+    expect(((await store.record(TEST_ORG, OTHER_PROJECT, approvedDigest)) as { record: { status: string; version: number } }).record).toMatchObject({ status: "pending", version: 1 });
+  });
+  it("the same hand-written set submitted here is this project's own row; the other project's stays as it was", async () => {
+    const { t, store } = await bench({ maya: "maintainer" });
+    on();
+    const set = makeSet({ revision: 11 });
+    const digest = fixtureSetDigest(set);
+    await store.submit(TEST_ORG, OTHER_PROJECT, set, { actor: "someone", recordedFrom: "written" });
+    expect((await t.web(MAYA, "POST", BASE, { set })).status).toBe(201);
+    expect((await t.web(MAYA, "POST", `${BASE}/${digest}/approve`, {})).status).toBe(200);
+    expect(((await store.record(TEST_ORG, OTHER_PROJECT, digest)) as { record: { status: string } }).record.status).toBe("pending");
+    expect(((await store.record(TEST_ORG, NAME, digest)) as { record: { status: string; project: string } }).record).toMatchObject({ status: "approved", project: NAME });
+  });
+});
+
+describe("M1: a decision is on the Audit Ledger (who, which org, which project, which digest; never the set)", () => {
+  it("approve, reject and withdraw each leave one event, and a refused decision leaves none", async () => {
+    const audit = capturingAuditDeps();
+    const { t } = await bench({ maya: "maintainer", audit });
+    on();
+    const first = makeSet({ revision: 21 });
+    const second = makeSet({ revision: 22 });
+    const [d1, d2] = [fixtureSetDigest(first), fixtureSetDigest(second)];
+    await t.web(MAYA, "POST", BASE, { set: first });
+    await t.web(MAYA, "POST", BASE, { set: second });
+    expect(audit.recorded().filter((event) => event.action.startsWith("project.fixture_set_"))).toEqual([]);
+    expect((await t.web(MAYA, "POST", `${BASE}/${d1}/approve`, {})).status).toBe(200);
+    expect((await t.web(MAYA, "POST", `${BASE}/${d1}/approve`, {})).status).toBe(409);
+    expect((await t.web(MAYA, "POST", `${BASE}/${d1}/withdraw`, {})).status).toBe(200);
+    expect((await t.web(MAYA, "POST", `${BASE}/${d2}/reject`, {})).status).toBe(200);
+    expect((await t.web(MAYA, "POST", `${BASE}/${"e".repeat(64)}/approve`, {})).status).toBe(404);
+    const events = audit.recorded().filter((event) => event.action.startsWith("project.fixture_set_"));
+    expect(events.map((event) => event.action).sort()).toEqual(["project.fixture_set_approved", "project.fixture_set_rejected", "project.fixture_set_withdrawn"]);
+    for (const event of events) {
+      expect(event.orgId).toBe(TEST_ORG);
+      expect(event.actor).toEqual({ kind: "member", id: MAYA.developerId });
+      expect(event.target).toEqual({ kind: "project", name: NAME });
+      expect(Object.keys(event.facts ?? {})).toEqual(["digest"]);
+    }
+    expect(events.find((event) => event.action === "project.fixture_set_approved")?.facts).toEqual({ digest: d1 });
+    expect(events.find((event) => event.action === "project.fixture_set_rejected")?.facts).toEqual({ digest: d2 });
+    // no content of the set is in any event
+    expect(JSON.stringify(events)).not.toContain("ch_1");
+    expect(JSON.stringify(events)).not.toContain("payments-api");
   });
 });
 
@@ -237,7 +312,7 @@ describe("a set the environment backs with schema_synth is high: it is approved 
     expect((await t.web(OMAR, "POST", `${BASE}/${digest}/approve`, {})).status).toBe(403);
     t.ageSignIn(OMAR, 1);
     expect((await t.web(OMAR, "POST", `${BASE}/${digest}/approve`, {})).status).toBe(200);
-    expect((await store.deliver(TEST_ORG, digest)).ok).toBe(true);
+    expect((await store.deliver(TEST_ORG, NAME, digest)).ok).toBe(true);
   });
   it("a set the environment answers with `fail` is medium: an old sign-in approves it", async () => {
     const { t } = await bench();

@@ -553,6 +553,11 @@ export function auditProjectTestEnvChanged(input: AuditBuilderBase & { projectNa
   return build("project.test_env_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, tier: input.tier, lessSafeCount: input.lessSafeCount });
 }
 
+/** Test services, slice 3 (M1): a decision on an answer set (a fake). `occurrence`: the set's digest and the row version it was decided at (`auditOccurrence`), so one decision is one event. `digest` is the only fact: the set's content is never in the ledger. */
+export function auditProjectFixtureSetDecided(input: AuditBuilderBase & { projectName: string; decision: "approved" | "rejected" | "withdrawn"; digest: string }): AuditEventInput {
+  return build(`project.fixture_set_${input.decision}`, input, { kind: "project", name: input.projectName }, { digest: input.digest });
+}
+
 /** `occurrence`: the request id of the change. `setting` is the fixed word `propose_fix_task` (the nightly setting `nightly.proposeFixTask`); `enabled` says whether it is on after the change. */
 export function auditProjectTestHealthSettingChanged(input: AuditBuilderBase & { projectName: string; setting: "propose_fix_task"; enabled: boolean }): AuditEventInput {
   return build("project.test_health_setting_changed", input, { kind: "project", name: input.projectName }, { setting: input.setting, enabled: input.enabled });

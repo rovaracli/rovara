@@ -260,6 +260,7 @@ No single test lists every broker read.
 | `evidence-wiring.ts` | the proof evidence's hook on the end of a verification run (wire-proof). |
 | `feedback-and-codebuild.ts` | callback refusals, feedback approvals, CodeBuild records and pull request updates. |
 | `fix-setup-wiring.ts` | Setup and test health (SH17): what the auto-fix runner needs to turn an ask about the test environment into a Fix setup card. |
+| `fixture-delivery.ts` | The fixture delivery callback, broker side (test services, slice 3, s3-fakes-run): `POST /v1/internal/workspaces/{w}/operations/{o}/fixture-set`. |
 | `handler.ts` | createAwsBrokerHandler: the request router. |
 | `learning-wiring.ts` | the learning lane's hook on the end of a task. |
 | `lessons-dispatch.ts` | the lesson loader's one call at a coding stage's dispatch (learning v2, L4). |

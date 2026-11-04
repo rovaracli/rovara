@@ -69,7 +69,7 @@ async function planOf(
     // Sealed check runners cannot be combined with a dev container (the worker throws): refused here, in fixed words, even if the project got one after the task started.
     if (await projectUsesDevcontainer(deps, input.orgId, input.project)) throw agentXError("RUNTIME_UNAVAILABLE", DEPENDENCIES_WITH_DEVCONTAINER_WORDS);
     const catalog = await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined);
-    const fixtures = await approvedFixturesOf(recordsOf(deps.fixtureStore), input.orgId, body);
+    const fixtures = await approvedFixturesOf(recordsOf(deps.fixtureStore), input.orgId, input.project, body);
     const planned = taskDependencyPlansOf({ body, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: input.project, fixtures });
     if (!planned.ok) throw agentXError("RUNTIME_UNAVAILABLE", DEPENDENCY_PLAN_REFUSAL_WORDS[planned.reason]);
     dependencies = planned.dependencies;

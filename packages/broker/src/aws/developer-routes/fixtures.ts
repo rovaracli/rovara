@@ -6,12 +6,17 @@
 // What the request never decides: the org (the session's), the role (read live for the session's person), the sign-in time (the session record's `authTime`), and `schemaSynth` (the project's approved environment:
 // any dependency backed by this set, or by the same dependency id, whose fake answers unmatched requests from the schema). The production deny list is the same approved environment's. An environment that cannot be read
 // is an error, never an empty list.
+// H1: a set belongs to ONE PROJECT. Its row, its store id and its object key name the project it was submitted for; every path above reads and decides only the set of the project in the URL (the role is read for that
+// project), so a maintainer of project B cannot read, approve, reject or withdraw project A's set by its digest. A set of another project, of another org and a digest nobody holds are answered alike (`answer set not found`).
+// The schemaSynth flag, the production list and the sign-in rule are computed from the ROW's project (which is the URL's, or the row was not found).
 import { z } from "zod";
-import { FixtureSetSchema, agentXError, projectAllows, type TestEnvProdDeny } from "@agentx/contracts";
+import { auditOccurrence, auditProjectFixtureSetDecided } from "../../audit/events.js";
+import { recordAuditEventDurably } from "../../audit/flush.js";
+import { FixtureSetSchema, agentXError, projectAllows, type TestEnvironmentBody } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import type { SessionRecord } from "../../developer/store.js";
 import { readApprovedTestEnvironment } from "../../org/test-environment.js";
-import { fixtureSetCardItem, verifiedFixtureDecision, type FixtureDecisionAction, type FixtureRecord, type FixtureStore } from "../../test-env/fixture-store.js";
+import { fixtureSetCardItem, verifiedFixtureDecision, type FixtureDecisionAction, type FixtureDenyFor, type FixtureRecord, type FixtureStore } from "../../test-env/fixture-store.js";
 import { testServicesEnabled } from "../../test-env/test-services-switch.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
@@ -78,17 +83,22 @@ export async function routeFixtures(deps: DeveloperRouteDependencies, caller: De
   if (role === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const maintainer = projectAllows(role, "edit_settings");
   if (wanted === "POST" && !maintainer) throw agentXError("FORBIDDEN", "Only a project maintainer can add or decide on an answer set.");
-  // The project's approved environment: its deny list scans the set, and its dependencies say whether the set is used with `schema_synth`. Unreadable is an error (the store asks for the list at every scan).
-  const environment = (await readApprovedTestEnvironment(testEnvStoreOf(deps), caller.orgId, project))?.environment;
-  const deny: TestEnvProdDeny = environment?.prodDeny ?? { accountIds: [], hosts: [], arnPrefixes: [] };
-  const store: FixtureStore = deps.fixtureStore(() => Promise.resolve(deny));
   const orgId = caller.orgId;
+  // The approved environment of a PROJECT: its deny list scans a set, and its dependencies say whether the set is used with `schema_synth`. Unreadable is an error, never an empty list. It is asked for the project of the ROW.
+  const environmentOf = async (rowProject: string): Promise<TestEnvironmentBody | undefined> => (await readApprovedTestEnvironment(testEnvStoreOf(deps), orgId, rowProject))?.environment;
+  const denyFor: FixtureDenyFor = async (denyOrg, denyProject) => {
+    if (denyOrg !== orgId) throw new Error("the production list is asked for the session's org only");
+    return (await environmentOf(denyProject))?.prodDeny ?? { accountIds: [], hosts: [], arnPrefixes: [] };
+  };
+  const store: FixtureStore = deps.fixtureStore(denyFor);
   const base = `/v1/app/projects/${encodeURIComponent(project)}/fixtures`;
   const reviewOf = async (wantedDigest: string): Promise<StatusReply> => {
-    const found = await store.review(orgId, wantedDigest);
+    const found = await store.review(orgId, project, wantedDigest);
     if (!found.ok) throw refused(found.reason);
-    const schemaSynth = environmentSynthesisesFor(environment?.dependencies, wantedDigest, found.record.dependencyId);
-    const card = fixtureSetCardItem({ record: found.record, review: found.review, project, openPath: `${base}/${wantedDigest}`, schemaSynth });
+    // The row's project is what the card, the flag and the list below are about (the store answered for this project only; this is the second look).
+    if (found.record.project !== project) throw refused("not_found");
+    const schemaSynth = environmentSynthesisesFor((await environmentOf(found.record.project))?.dependencies, wantedDigest, found.record.dependencyId);
+    const card = fixtureSetCardItem({ record: found.record, review: found.review, project: found.record.project, openPath: `${base}/${wantedDigest}`, schemaSynth });
     return new StatusReply(200, { status: found.record.status, review: found.review, card, canDecide: maintainer });
   };
 
@@ -98,7 +108,7 @@ export async function routeFixtures(deps: DeveloperRouteDependencies, caller: De
     // A hand-written set is `written`: a recording is made by the recorder, with its own provenance, and never through here.
     const set = FixtureSetSchema.safeParse(parsed.data.set);
     if (!set.success || set.data.origin !== "written") throw refused("invalid");
-    const stored = await store.submit(orgId, set.data, { actor: caller.developerId, recordedFrom: "written" });
+    const stored = await store.submit(orgId, project, set.data, { actor: caller.developerId, recordedFrom: "written" });
     if (!stored.ok) throw refused(stored.reason);
     logDeveloperEvent({ event: "developer.fixture_set_submitted", orgId, project, digest: stored.record.digest, created: String(stored.created) });
     const reply = await reviewOf(stored.record.digest);
@@ -108,15 +118,21 @@ export async function routeFixtures(deps: DeveloperRouteDependencies, caller: De
 
   const body = DecisionBodySchema.safeParse(jsonBody(request));
   if (!body.success) throw bodyError(body.error);
-  const held = await store.record(orgId, digest);
-  if (!held.ok) throw refused(held.reason);
+  // The set of THIS project only: a digest held by another project (or org) reads as one nobody holds, and nothing below is computed from anything but the row's own project.
+  const held = await store.record(orgId, project, digest);
+  if (!held.ok || held.record.project !== project) throw refused("not_found");
   const decision = verifiedFixtureDecision({
-    orgId, actor: caller.developerId, role, action, digest, signedInAt: await signedInAtOf(deps, caller),
-    schemaSynth: environmentSynthesisesFor(environment?.dependencies, digest, held.record.dependencyId),
+    orgId, project: held.record.project, actor: caller.developerId, role, action, digest, signedInAt: await signedInAtOf(deps, caller),
+    schemaSynth: environmentSynthesisesFor((await environmentOf(held.record.project))?.dependencies, digest, held.record.dependencyId),
   });
   if (decision === undefined) throw refused("unauthorised");
-  const done: { ok: true; record: FixtureRecord } | { ok: false; reason: string } = await (action === "approve" ? store.approve(orgId, digest, decision) : action === "reject" ? store.reject(orgId, digest, decision) : store.withdraw(orgId, digest, decision));
+  const done: { ok: true; record: FixtureRecord } | { ok: false; reason: string } = await (action === "approve" ? store.approve(orgId, project, digest, decision) : action === "reject" ? store.reject(orgId, project, digest, decision) : store.withdraw(orgId, project, digest, decision));
   if (!done.ok) throw refused(done.reason);
   logDeveloperEvent({ event: `developer.fixture_set_${action}`, orgId, project, digest, status: done.record.status });
+  // M1: the decision is on the Audit Ledger (who, which org, which project, which digest; never the set). It is made durable after the decision stands: if the ledger cannot take it the caller is told, and the decision stays.
+  await recordAuditEventDurably(deps, auditProjectFixtureSetDecided({
+    orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: done.record.decidedAt ?? done.record.withdrawnAt ?? new Date().toISOString(),
+    occurrence: auditOccurrence(digest, action, String(done.record.version)), projectName: project, decision: action === "approve" ? "approved" : action === "reject" ? "rejected" : "withdrawn", digest,
+  }));
   return new StatusReply(200, { status: done.record.status, digest });
 }

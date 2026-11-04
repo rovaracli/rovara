@@ -86,7 +86,7 @@ export async function approveTestEnvItemsFor(ports: TestEnvCardPorts, caller: Wh
         openPath: `/app/onboard?project=${encodeURIComponent(project)}&step=setup`, ...(confirmPath === undefined ? {} : { confirmPath }),
         contentVersion: sha(`${newest.digest}:${String(expectedRevision)}`), risk, riskReasons: [...lessSafe.map(flagWords), ...(setupRun ? ["Made by a setup run that ran commands: approve it on the setup page after signing in again."] : []), ...(dependencies.length > 0 ? [dependencyReason(dependencies.length)] : [])], tier: body.tier, expectedRevision,
         // Test services: the plain Dependencies section. Absent for an environment without any, so such a card is what it was.
-        ...(dependencies.length > 0 ? { details: [{ title: "Dependencies", lines: dependencyCardLines(dependencies, await approvedFixturesOf(ports.fixtureStore, orgId, body)) }] } : {}),
+        ...(dependencies.length > 0 ? { details: [{ title: "Dependencies", lines: dependencyCardLines(dependencies, await approvedFixturesOf(ports.fixtureStore, orgId, project, body)) }] } : {}),
       });
     } catch { /* a project whose proposal cannot be read has no card */ }
   }

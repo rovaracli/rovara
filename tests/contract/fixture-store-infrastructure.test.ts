@@ -4,7 +4,7 @@
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { BROKER_NAMES, BROKER_NAMES_VARIABLE, defaultBoundaryStatements, serviceRoleStatements, withoutSids, type PolicyScope } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, defaultBoundaryStatements, fixtureKeyAlias, serviceRoleStatements, withoutSids, type PolicyScope } from "@agentx/contracts";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
@@ -13,7 +13,7 @@ import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
 
-type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown };
+type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: unknown };
 type Policy = { Properties: { PolicyDocument: { Statement: Statement[] }; Roles: Array<{ Ref?: string }> } };
 type LambdaFunction = { Properties: { Role: { "Fn::GetAtt": [string, string] }; Environment?: { Variables?: Record<string, unknown> } } };
 
@@ -45,22 +45,34 @@ describe("the fixture key", () => {
       expect(actionsOf(statement).sort()).toEqual(["kms:Decrypt", "kms:GenerateDataKey"]);
       expect(policy.Properties.Roles).toEqual([{ Ref: brokerRole }]);
       expect(JSON.stringify(statement.Resource)).toBe(JSON.stringify({ "Fn::GetAtt": [keyId, "Arn"] }));
+      // LOW: only through S3 in the stack's region.
+      expect(JSON.stringify(statement.Condition)).toBe(JSON.stringify({ StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["s3.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } } }));
     }
   });
-  it("tells the broker the key's id in its names (not a variable of its own), and the broker builds FIXTURE_KEY_ARN from it", () => {
-    const [keyId] = keys(named)[0]!;
-    expect(BROKER_NAMES.fixtureKey).toEqual({ code: "fk", variable: "FIXTURE_KEY_ARN", kind: "kmsKeyArn" });
-    expect(brokerOf(named)[1].Properties.Environment?.Variables).not.toHaveProperty("FIXTURE_KEY_ARN");
-    expect(brokerNamesIn(brokerOf(named)[1].Properties.Environment?.Variables).fixtureKey).toEqual({ Ref: keyId });
-    const env: MutableEnvironment = { [BROKER_NAMES_VARIABLE]: "fk=1234abcd-12ab-34cd-56ef-1234567890ab", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "944937319445", AGENTX_ENV: "staging" };
+  it("gives the key the fixed alias the broker builds its ARN from (S3 accepts an alias for SSE-KMS)", () => {
+    const aliases = Object.values(named.findResources("AWS::KMS::Alias")) as Array<{ Properties: { AliasName: string; TargetKeyId: unknown } }>;
+    const mine = aliases.filter((alias) => alias.Properties.AliasName === fixtureKeyAlias("staging"));
+    expect(mine).toHaveLength(1);
+    expect(fixtureKeyAlias("staging")).toBe("alias/agentx/staging/fixtures");
+    expect(JSON.stringify(Object.values(legacy.findResources("AWS::KMS::Alias")))).not.toContain("fixtures");
+  });
+  it("passes the broker nothing for the key (M4): no name, no variable; the broker builds the alias ARN from AGENTX_ENV", () => {
+    expect(BROKER_NAMES).not.toHaveProperty("fixtureKey");
+    expect(Object.values(BROKER_NAMES).some((spec) => (spec.code as string) === "fk" || (spec.variable as string) === "FIXTURE_KEY_ARN")).toBe(false);
+    const variables = brokerOf(named)[1].Properties.Environment?.Variables;
+    expect(variables).not.toHaveProperty("FIXTURE_KEY_ARN");
+    expect(JSON.stringify(brokerNamesIn(variables))).not.toContain("fk");
+    const env: MutableEnvironment = { [BROKER_NAMES_VARIABLE]: "{}", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "944937319445", AGENTX_ENV: "staging" };
     hydrateBrokerEnvironment(env);
-    expect(env["FIXTURE_KEY_ARN"]).toBe("arn:aws:kms:us-west-2:944937319445:key/1234abcd-12ab-34cd-56ef-1234567890ab");
+    expect(env["FIXTURE_KEY_ARN"]).toBe("arn:aws:kms:us-west-2:944937319445:alias/agentx/staging/fixtures");
+    const bare: MutableEnvironment = { AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "944937319445" };
+    hydrateBrokerEnvironment(bare);
+    expect(bare["FIXTURE_KEY_ARN"]).toBeUndefined();
   });
   it("adds nothing to the released (legacy) template", () => {
     expect(keys(legacy)).toEqual([]);
     expect(JSON.stringify(legacy.toJSON())).not.toContain("FIXTURE_KEY_ARN");
     expect(JSON.stringify(legacy.toJSON())).not.toContain("FixtureKey");
-    expect(brokerNamesIn(brokerOf(legacy)[1].Properties.Environment?.Variables).fixtureKey).toBeUndefined();
   });
 });
 

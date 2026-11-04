@@ -7,7 +7,7 @@ import {
 } from "@agentx/contracts";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { approvedFixturesOf, fixtureDigestsOfEnvironment, fixtureDigestsOfPlan, recordsOf, type FixtureStoreFactory } from "../../packages/broker/src/test-env/fixture-lookup.js";
-import { createFixtureStore, createMemoryFixturePorts, verifiedFixtureDecision, type FixtureStore } from "../../packages/broker/src/test-env/fixture-store.js";
+import { createFixtureStore, createMemoryFixturePorts, verifiedFixtureDecision, type FixtureDenyFor, type FixtureStore } from "../../packages/broker/src/test-env/fixture-store.js";
 import { environmentUnusedReason, testEnvironmentForStart } from "../../packages/broker/src/test-env/usable.js";
 import { testEnvPlanFor, testEnvImplementPlanFor } from "../../packages/broker/src/test-env/task-plan.js";
 import { handleFixtureSetCallback, FIXTURE_DELIVERY_REFUSED, type FixtureDeliveryOperation } from "../../packages/broker/src/aws/broker/fixture-delivery.js";
@@ -49,12 +49,12 @@ function storeOf(options: { enabled?: () => boolean; signUrl?: (key: string, sec
   const ports = createMemoryFixturePorts(options.signUrl === undefined ? { signUrl: (key, seconds) => `https://fixtures.example.test/${key}?X-Amz-Expires=${String(seconds)}` } : { signUrl: options.signUrl });
   return createFixtureStore({ enabled: options.enabled ?? (() => true), objects: ports.objects, index: ports.index, denyFor: () => Promise.resolve(DENY), now: () => NOW });
 }
-async function approvedSet(store: FixtureStore, set: FixtureSet, org: OrgId = ORG): Promise<string> {
+async function approvedSet(store: FixtureStore, set: FixtureSet, org: OrgId = ORG, project: string = PROJECT): Promise<string> {
   const digest = fixtureSetDigest(set);
-  const stored = await store.submit(org, set, { actor: "maya", recordedFrom: "written" });
+  const stored = await store.submit(org, project, set, { actor: "maya", recordedFrom: "written" });
   if (!stored.ok) throw new Error(stored.reason);
-  const decision = verifiedFixtureDecision({ orgId: org, actor: "maya", role: "maintainer", action: "approve", digest, signedInAt: new Date(NOW.getTime() - 60_000), schemaSynth: false });
-  const approved = await store.approve(org, digest, decision!);
+  const decision = verifiedFixtureDecision({ orgId: org, project, actor: "maya", role: "maintainer", action: "approve", digest, signedInAt: new Date(NOW.getTime() - 60_000), schemaSynth: false });
+  const approved = await store.approve(org, project, digest, decision!);
   if (!approved.ok) throw new Error(approved.reason);
   return digest;
 }
@@ -108,7 +108,7 @@ describe("the plan of a fake", () => {
   it("pins the approved set by digest, with no image digest and no address", async () => {
     const store = storeOf();
     const digest = await approvedSet(store, makeSet());
-    const fixtures = await approvedFixturesOf(store, ORG, body([payments(digest)]));
+    const fixtures = await approvedFixturesOf(store, ORG, PROJECT, body([payments(digest)]));
     const result = plansOf([postgres(), payments(digest)], fixtures);
     expect(reason(result)).toBe("ok");
     if (!result.ok) throw new Error("no plan");
@@ -125,7 +125,7 @@ describe("the plan of a fake", () => {
   it("needs no pinned catalog for a fake alone (it starts no catalog image), and still needs one beside real software", async () => {
     const store = storeOf();
     const digest = await approvedSet(store, makeSet());
-    const fixtures = await approvedFixturesOf(store, ORG, body([payments(digest)]));
+    const fixtures = await approvedFixturesOf(store, ORG, PROJECT, body([payments(digest)]));
     expect(reason(plansOf([payments(digest)], fixtures, verifiedCatalog(unpinnedCatalog())))).toBe("ok");
     expect(reason(plansOf([postgres(), payments(digest)], fixtures, verifiedCatalog(unpinnedCatalog())))).toBe("not_pinned");
   });
@@ -135,37 +135,40 @@ describe("the plan of a fake", () => {
     const digest = fixtureSetDigest(set);
     const environment = body([payments(digest)]);
     // nobody holds it
-    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, ORG, environment)))).toBe("fixture_not_approved");
+    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, ORG, PROJECT, environment)))).toBe("fixture_not_approved");
     // pending
-    await store.submit(ORG, set, { actor: "maya", recordedFrom: "written" });
-    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, ORG, environment)))).toBe("fixture_not_approved");
+    await store.submit(ORG, PROJECT, set, { actor: "maya", recordedFrom: "written" });
+    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, ORG, PROJECT, environment)))).toBe("fixture_not_approved");
     // approved for ORG, asked for by OTHER_ORG
     await approvedSet(store, set);
-    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, ORG, environment)))).toBe("ok");
-    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, OTHER_ORG, environment)))).toBe("fixture_not_approved");
+    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, ORG, PROJECT, environment)))).toBe("ok");
+    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, OTHER_ORG, PROJECT, environment)))).toBe("fixture_not_approved");
+    // H1: another project of the same company cannot name this project's approved set in its environment
+    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, ORG, "billing", environment)))).toBe("fixture_not_approved");
+    expect((await approvedFixturesOf(store, ORG, "billing", environment)).size).toBe(0);
     // withdrawn
-    const withdraw = verifiedFixtureDecision({ orgId: ORG, actor: "maya", role: "maintainer", action: "withdraw", digest, signedInAt: undefined, schemaSynth: false })!;
-    expect((await store.withdraw(ORG, digest, withdraw)).ok).toBe(true);
-    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, ORG, environment)))).toBe("fixture_not_approved");
+    const withdraw = verifiedFixtureDecision({ orgId: ORG, project: PROJECT, actor: "maya", role: "maintainer", action: "withdraw", digest, signedInAt: undefined, schemaSynth: false })!;
+    expect((await store.withdraw(ORG, PROJECT, digest, withdraw)).ok).toBe(true);
+    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(store, ORG, PROJECT, environment)))).toBe("fixture_not_approved");
     // no store at all, and no lookup passed to the plan
-    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(undefined, ORG, environment)))).toBe("fixture_not_approved");
+    expect(reason(plansOf([payments(digest)], await approvedFixturesOf(undefined, ORG, PROJECT, environment)))).toBe("fixture_not_approved");
     expect(reason(plansOf([payments(digest)], undefined))).toBe("fixture_not_approved");
     expect(DEPENDENCY_PLAN_REFUSAL_WORDS.fixture_not_approved).toMatch(/approved/iu);
   });
   it("refuses a set approved for another kind of dependency, a store that throws, and a fake that cannot stand in for a database", async () => {
     const store = storeOf();
     const digest = await approvedSet(store, makeSet());
-    const other = await approvedFixturesOf(store, ORG, body([payments(digest, { family: "http:api.other-pay.com" })]));
+    const other = await approvedFixturesOf(store, ORG, PROJECT, body([payments(digest, { family: "http:api.other-pay.com" })]));
     expect(reason(plansOf([payments(digest, { family: "http:api.other-pay.com" })], other))).toBe("fixture_not_approved");
     const broken = { record: () => Promise.reject(new Error("boom")) };
-    expect((await approvedFixturesOf(broken, ORG, body([payments(digest)]))).size).toBe(0);
-    const fixtures = await approvedFixturesOf(store, ORG, body([payments(digest)]));
+    expect((await approvedFixturesOf(broken, ORG, PROJECT, body([payments(digest)]))).size).toBe(0);
+    const fixtures = await approvedFixturesOf(store, ORG, PROJECT, body([payments(digest)]));
     expect(reason(plansOf([payments(digest, { kind: "database", family: "http:api.example-pay.com" })], fixtures))).toBe("not_available_yet");
   });
   it("needs a name to be reached by, no seeds, and the catalog's marked fake server", async () => {
     const store = storeOf();
     const digest = await approvedSet(store, makeSet());
-    const fixtures = await approvedFixturesOf(store, ORG, body([payments(digest)]));
+    const fixtures = await approvedFixturesOf(store, ORG, PROJECT, body([payments(digest)]));
     expect(reason(plansOf([payments(digest, { connect: { env: [], hostAliases: [] } })], fixtures))).toBe("not_available_yet");
     expect(reason(plansOf([payments(digest, { seeds: [{ command: cmd("node", ["seed.js"]) }] })], fixtures))).toBe("not_available_yet");
     const without = catalog((entries) => { entries.splice(0, entries.length, ...entries.filter((entry) => entry["family"] !== "fake-server")); });
@@ -235,8 +238,8 @@ describe("the plan of a task with a fake (checks and coding)", () => {
     const set = makeSet();
     const digest = await approvedSet(store, set);
     const h = await approvedWith(body([payments(digest)]), store);
-    const withdraw = verifiedFixtureDecision({ orgId: ORG, actor: "maya", role: "maintainer", action: "withdraw", digest, signedInAt: undefined, schemaSynth: false })!;
-    await store.withdraw(ORG, digest, withdraw);
+    const withdraw = verifiedFixtureDecision({ orgId: ORG, project: PROJECT, actor: "maya", role: "maintainer", action: "withdraw", digest, signedInAt: undefined, schemaSynth: false })!;
+    await store.withdraw(ORG, PROJECT, digest, withdraw);
     await expect(testEnvPlanFor(h.deps, { orgId: ORG, project: PROJECT, taskId: "t1", readiness }, ON)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.fixture_not_approved);
     await expect(testEnvImplementPlanFor(h.deps, { orgId: ORG, project: PROJECT, taskId: "t1" }, ON)).rejects.toThrow(DEPENDENCY_PLAN_REFUSAL_WORDS.fixture_not_approved);
     // no store wired in the dispatching broker
@@ -295,7 +298,7 @@ describe("the fixture-set callback", () => {
     const reply = await handleFixtureSetCallback(w.deps, w.operation(), { digest: w.digest }, ON);
     expect(Object.keys(reply).sort()).toEqual(["digest", "expiresAt", "url"]);
     expect(reply.digest).toBe(w.digest);
-    expect(reply.url).toMatch(/^https:\/\/fixtures\.example\.test\/private\/org_a+\/fixtures\/[a-f0-9]{64}\?X-Amz-Expires=900$/u);
+    expect(reply.url).toMatch(/^https:\/\/fixtures\.example\.test\/private\/org_a+\/fixtures\/service\/[a-f0-9]{64}\?X-Amz-Expires=900$/u);
     expect(Date.parse(reply.expiresAt)).toBe(NOW.getTime() + 15 * 60_000);
     // A coding run and a candidate check's preparation may ask too.
     expect((await handleFixtureSetCallback(w.deps, w.operation({ workflowMode: "IMPLEMENT" }), { digest: w.digest }, ON)).digest).toBe(w.digest);
@@ -334,11 +337,11 @@ describe("the fixture-set callback", () => {
   });
   it("refuses a withdrawn set, an operation of another kind, a task of another mode, and a broker with no store, all in the same words", async () => {
     const w = await world();
-    const withdraw = verifiedFixtureDecision({ orgId: ORG, actor: "maya", role: "maintainer", action: "withdraw", digest: w.digest, signedInAt: undefined, schemaSynth: false })!;
+    const withdraw = verifiedFixtureDecision({ orgId: ORG, project: PROJECT, actor: "maya", role: "maintainer", action: "withdraw", digest: w.digest, signedInAt: undefined, schemaSynth: false })!;
     expect(await refused(handleFixtureSetCallback(w.deps, w.operation({ kind: "publish" }), { digest: w.digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
     expect(await refused(handleFixtureSetCallback(w.deps, w.operation({ workflowMode: "REVIEW" }), { digest: w.digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
     expect(await refused(handleFixtureSetCallback({ ...w.deps, fixtureStore: undefined }, w.operation(), { digest: w.digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
-    await w.store.withdraw(ORG, w.digest, withdraw);
+    await w.store.withdraw(ORG, PROJECT, w.digest, withdraw);
     expect(await refused(handleFixtureSetCallback(w.deps, w.operation(), { digest: w.digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
   });
   it("hands on nothing but an https address: an address the store signs over http is refused", async () => {
@@ -348,6 +351,33 @@ describe("the fixture-set callback", () => {
     db.set({ ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: ORG, project: PROJECT, workspaceId: WORKSPACE });
     db.set({ ...taskPointerKey(WORKSPACE), entityType: "DEVELOPER_TASK_POINTER", taskId: TASK, developerId: "dev_a" });
     expect(await refused(handleFixtureSetCallback({ documentClient: db, tableName: "t", fixtureStore: () => store }, { kind: "task", workflowMode: "CHECKS", status: "RUNNING", workspaceId: WORKSPACE, orgId: ORG, fixtureSetDigests: [digest] }, { digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
+  });
+  it("H1: refuses a set that belongs to another PROJECT of the same company, even when the operation's plan names its digest", async () => {
+    const w = await world();
+    const elsewhere = await approvedSet(w.store, makeSet({ revision: 12 }), ORG, "billing");
+    expect(await refused(handleFixtureSetCallback(w.deps, w.operation({ fixtureSetDigests: [elsewhere] }), { digest: elsewhere }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
+    // the same words for a digest nobody holds and for another company's
+    expect(await refused(handleFixtureSetCallback(w.deps, w.operation({ fixtureSetDigests: ["9".repeat(64)] }), { digest: "9".repeat(64) }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
+    // a candidate check's preparation of this workspace (project `service`) is refused the same way
+    expect(await refused(handleFixtureSetCallback(w.deps, w.operation({ kind: "prepare", workflowMode: undefined, fixtureSetDigests: [elsewhere] }), { digest: elsewhere }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
+    expect((await handleFixtureSetCallback(w.deps, w.operation(), { digest: w.digest }, ON)).digest).toBe(w.digest);
+  });
+  it("LOW: a candidate check's preparation scans with the union of the approved list and the proposal's own, kept on the operation; a task run scans with the approved list only", async () => {
+    const ports = createMemoryFixturePorts({ signUrl: (key, seconds) => `https://fixtures.example.test/${key}?X-Amz-Expires=${String(seconds)}` });
+    const seen: unknown[] = [];
+    // The set is submitted and approved with an empty list; delivery re-scans with what the callback hands the factory.
+    const make = (denyFor: FixtureDenyFor) => createFixtureStore({ enabled: () => true, objects: ports.objects, index: ports.index, denyFor: async (org, project) => { const list = await denyFor(org, project); seen.push(list); return list; }, now: () => NOW });
+    const digest = await approvedSet(make(() => Promise.resolve(DENY)), makeSet());
+    const db = new FakeDynamoDb();
+    db.set({ ...workspaceKey(WORKSPACE), entityType: "WORKSPACE", orgId: ORG, projectName: PROJECT });
+    const deps = { documentClient: db, tableName: "t", fixtureStore: (denyFor: FixtureDenyFor) => make(denyFor) };
+    const proposalList = { accountIds: [], hosts: ["api.example-pay.com"], arnPrefixes: [] };
+    const prepare = (over: Partial<FixtureDeliveryOperation> = {}): FixtureDeliveryOperation => ({ kind: "prepare", status: "RUNNING", workspaceId: WORKSPACE, orgId: ORG, fixtureSetDigests: [digest], ...over });
+    seen.length = 0;
+    expect(await refused(handleFixtureSetCallback(deps, prepare({ fixtureProdDeny: proposalList }), { digest }, ON))).toBe(FIXTURE_DELIVERY_REFUSED);
+    expect(seen).toContainEqual(proposalList);
+    // without the proposal's list on the operation the first check would have scanned with nothing at all
+    expect((await handleFixtureSetCallback(deps, prepare(), { digest }, ON)).digest).toBe(digest);
   });
   it("with tx off, answers nothing and reads nothing", async () => {
     const w = await world();
@@ -441,7 +471,7 @@ describe("with no fake in the plan nothing is added", () => {
   it("is slice 2's plan for real software and Rovara local AWS: no fixture lookup is made", async () => {
     let asked = 0;
     const counting = { record: () => { asked += 1; return Promise.reject(new Error("never")); } };
-    expect((await approvedFixturesOf(counting, ORG, body([postgres()]))).size).toBe(0);
+    expect((await approvedFixturesOf(counting, ORG, PROJECT, body([postgres()]))).size).toBe(0);
     expect(asked).toBe(0);
     const result = taskDependencyPlansOf({ body: body([postgres()]), catalog: catalog(), edition: "public" });
     expect(result.ok && result.dependencies.map((entry) => [entry.id, "fake" in entry])).toEqual([["postgres", false]]);
@@ -476,13 +506,13 @@ describe("the approve card", () => {
     const written = await approvedSet(store, makeSet());
     const recorded = await approvedSet(store, recordedSet());
     const environment = body([payments(written), payments(recorded, { id: "geo", name: "Geo API", connect: { env: [], hostAliases: ["fake-geo"] } })]);
-    const origins = await approvedFixturesOf(store, ORG, environment);
+    const origins = await approvedFixturesOf(store, ORG, PROJECT, environment);
     const lines = dependencyCardLines(environment.dependencies!, origins);
     expect(lines).toContain("Payments API: answers from a hand-written fake. Found in src/pay.ts, line 3.");
     expect(lines).toContain("Geo API: answers from a recorded fake. Found in src/pay.ts, line 3.");
     expect(dependencyCardLines(environment.dependencies!)[0]).toBe("Payments API: answers from a fake. Found in src/pay.ts, line 3.");
     // the other company's store answer is no origin
-    expect(dependencyCardLines(environment.dependencies!, await approvedFixturesOf(store, OTHER_ORG, environment))[0]).toBe("Payments API: answers from a fake. Found in src/pay.ts, line 3.");
+    expect(dependencyCardLines(environment.dependencies!, await approvedFixturesOf(store, OTHER_ORG, PROJECT, environment))[0]).toBe("Payments API: answers from a fake. Found in src/pay.ts, line 3.");
   });
 });
 
@@ -490,15 +520,15 @@ describe("the install's store is a factory over the production list", () => {
   it("a read of rows asks for no production list at all (it would fail closed if it did), and a delivery asks for the project's approved list", async () => {
     const ports = createMemoryFixturePorts({ signUrl: (key, seconds) => `https://fixtures.example.test/${key}?X-Amz-Expires=${String(seconds)}` });
     const asked: string[] = [];
-    const factory: FixtureStoreFactory = (denyFor) => createFixtureStore({ enabled: () => true, objects: ports.objects, index: ports.index, denyFor: (org) => { asked.push(org); return denyFor(org); }, now: () => NOW });
+    const factory: FixtureStoreFactory = (denyFor) => createFixtureStore({ enabled: () => true, objects: ports.objects, index: ports.index, denyFor: (org, project) => { asked.push(`${org}/${project}`); return denyFor(org, project); }, now: () => NOW });
     // set up through a store with an empty list, then read rows through the factory with a list that cannot be had
     const digest = await approvedSet(factory(() => Promise.resolve(DENY)) as FixtureStore, makeSet());
     asked.length = 0;
-    const found = await approvedFixturesOf(recordsOf((denyFor) => factory(denyFor)), ORG, body([payments(digest)]));
+    const found = await approvedFixturesOf(recordsOf((denyFor) => factory(denyFor)), ORG, PROJECT, body([payments(digest)]));
     expect(found.get(digest)?.origin).toBe("hand_written");
     expect(asked).toEqual([]);
     expect(recordsOf(undefined)).toBeUndefined();
     const reader = recordsOf(() => factory(() => Promise.reject(new Error("no list"))));
-    expect((await reader!.record(ORG, digest)).ok).toBe(true);
+    expect((await reader!.record(ORG, PROJECT, digest)).ok).toBe(true);
   });
 });

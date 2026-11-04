@@ -9,7 +9,7 @@
 //   - the digest is one the run's PINNED PLAN named: the broker kept the plan's digests on the operation when it dispatched it (`fixtureSetDigests`), so a worker with a valid capability cannot ask for any other set, not
 //     even another approved set of its own company;
 //   - a task's operation must belong to a task of that organisation that is still open and not cancelled: a closed or cancelled task gets nothing, even with a capability that has not run out;
-//   - the store (`deliver`) hands out a set only while it is APPROVED for that organisation, its stored bytes still hash to the digest and it still passes the scan against the project\'s production list as it is NOW, and a withdrawn set stops here: the next phase gets nothing.
+//   - the store (`deliver`) hands out a set only while it is APPROVED for that organisation AND the PROJECT of the task (or workspace) the operation belongs to (H1: a project's environment cannot name another project's set), its stored bytes still hash to the digest and it still passes the scan against the project\'s production list as it is NOW, and a withdrawn set stops here: the next phase gets nothing.
 // The reply is the digest, the address and its expiry, and nothing else. The address is not logged, kept or sent on by this module.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { FixtureSetCallbackReplySchema, FixtureSetCallbackRequestSchema, agentXError, type FixtureSetCallbackReply, type TestEnvProdDeny } from "@agentx/contracts";
@@ -28,6 +28,8 @@ export interface FixtureDeliveryOperation {
   orgId?: string | undefined;
   /** The digests of the fixture sets the run's pinned plan named, written when the run was dispatched. */
   fixtureSetDigests?: readonly string[] | undefined;
+  /** A preparation's (candidate check's) proposal's production list, kept at dispatch. */
+  fixtureProdDeny?: TestEnvProdDeny | undefined;
 }
 
 export interface FixtureDeliveryDeps {
@@ -66,6 +68,11 @@ async function denyOf(deps: FixtureDeliveryDeps, orgId: string, project: string)
   return approved?.environment.prodDeny ?? { accountIds: [], hosts: [], arnPrefixes: [] };
 }
 
+/** Both lists at once: a name on either is a name (a finding on either stops the set). */
+const unionOf = (left: TestEnvProdDeny, right: TestEnvProdDeny | undefined): TestEnvProdDeny => right === undefined ? left : ({
+  accountIds: [...new Set([...left.accountIds, ...right.accountIds])], hosts: [...new Set([...left.hosts, ...right.hosts])], arnPrefixes: [...new Set([...left.arnPrefixes, ...right.arnPrefixes])],
+});
+
 /** Handles one request. Throws CALLBACK_FORBIDDEN (always the same words) for anything outside the rules above, CONFIG_INVALID for a body that is not the shape. */
 export async function handleFixtureSetCallback(deps: FixtureDeliveryDeps, operation: FixtureDeliveryOperation, rawBody: unknown, env: NodeJS.ProcessEnv = process.env): Promise<FixtureSetCallbackReply> {
   if (!testServicesEnabled(env)) return refuse();
@@ -79,9 +86,10 @@ export async function handleFixtureSetCallback(deps: FixtureDeliveryDeps, operat
   // A task's operation belongs to a task of that organisation that is still open; a preparation to a workspace of that organisation. Either way the project is the record's, never the request's.
   const project = await (taskRun ? openTaskProjectOf(deps, operation, orgId) : preparedProjectOf(deps, operation, orgId)).catch(() => undefined);
   if (project === undefined) return refuse();
-  const deny = await denyOf(deps, orgId, project).catch(() => undefined);
+  // A candidate check's preparation scans with the union of the approved environment's list and the proposal's own, which the broker kept on the operation (the first check has no approved environment).
+  const deny = await denyOf(deps, orgId, project).then((approved) => (taskRun ? approved : unionOf(approved, operation.fixtureProdDeny))).catch(() => undefined);
   if (deny === undefined) return refuse();
-  const delivered = await deps.fixtureStore(() => Promise.resolve(deny)).deliver(orgId, digest).catch(() => undefined);
+  const delivered = await deps.fixtureStore(() => Promise.resolve(deny)).deliver(orgId, project, digest).catch(() => undefined);
   // The store checked the organisation, the approval and the stored bytes; its answer must be for the digest that was asked.
   if (delivered === undefined || !delivered.ok || delivered.digest !== digest) return refuse();
   // An address that is not https (or an expiry that is not a time) is not handed on.

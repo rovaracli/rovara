@@ -35,7 +35,7 @@ export async function evidenceEnvironmentOf(deps: TestEnvDeps, task: { orgId?: O
       else if (dependency.backing.kind === "fake") {
         // Slice 3: what the evidence says about a fake (recorded or hand-written, which revision, when it was recorded) is the STORE's, read for THIS organisation by the pinned digest; the worker's words never set it. A set the store
         // cannot give (no store, withdrawn since) is shown as the less trusted word, hand-written, without a revision.
-        const read = await Promise.resolve(deps.fixtureStore?.(() => Promise.resolve(body.prodDeny)).readApproved(task.orgId, dependency.backing.fixtureSetRef)).catch(() => undefined);
+        const read = await Promise.resolve(deps.fixtureStore?.(() => Promise.resolve(body.prodDeny)).readApproved(task.orgId, task.project, dependency.backing.fixtureSetRef)).catch(() => undefined);
         const set = read?.ok === true ? read.set : undefined;
         dependencies.push({ id: dependency.id, name: dependency.name, backing: "fake", fake: { origin: set?.origin === "recorded" ? "recorded" : "hand_written", ...(set === undefined ? {} : { revision: set.revision }), ...(set?.origin === "recorded" && set.recordedAt !== undefined ? { recordedAt: set.recordedAt } : {}) } });
       }

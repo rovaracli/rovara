@@ -3746,10 +3746,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                       "QueueName",
                     ],
                   },
-                  ",fk=",
-                  {
-                    "Ref": "FixtureKeyED64BC2A",
-                  },
                   ",if=",
                   {
                     "Ref": "DeveloperSignInFunction10B62B05",
@@ -4855,6 +4851,22 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 "kms:GenerateDataKey",
                 "kms:Decrypt",
               ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "s3.",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ".amazonaws.com",
+                      ],
+                    ],
+                  },
+                },
+              },
               "Effect": "Allow",
               "Resource": {
                 "Fn::GetAtt": [
@@ -8772,6 +8784,18 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "TreatMissingData": "notBreaching",
       },
       "Type": "AWS::CloudWatch::Alarm",
+    },
+    "FixtureKeyAlias8B887067": {
+      "Properties": {
+        "AliasName": "alias/agentx/staging/fixtures",
+        "TargetKeyId": {
+          "Fn::GetAtt": [
+            "FixtureKeyED64BC2A",
+            "Arn",
+          ],
+        },
+      },
+      "Type": "AWS::KMS::Alias",
     },
     "FixtureKeyED64BC2A": {
       "DeletionPolicy": "RetainExceptOnCreate",

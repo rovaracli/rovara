@@ -21,6 +21,7 @@ import {
   type OrgId,
   type OperationStatus,
   type SpendingAdmissionReference,
+  type TestEnvProdDeny,
   type WorkerInvocation,
   type WorkspaceInstance,
 } from "@agentx/contracts";
@@ -117,6 +118,8 @@ export interface OperationRecord extends Operation {
   groundingSourceAsked?: true;
   /** Test services (slice 3): the digests of the fixture sets the run's pinned plan named, written at dispatch. The `fixture-set` callback delivers only these (absent: the run serves no fake). */
   fixtureSetDigests?: string[];
+  /** Test services (slice 3, a candidate check's PREPARE operation): the production deny list of the proposal under check, kept so the first check (no approved environment yet) scans a fake with it. */
+  fixtureProdDeny?: TestEnvProdDeny;
   workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string } | undefined;
   /** A PR feedback review started by a broker that gives the critic only the owner's notes for its round (absent: an earlier release's run). */
   feedbackNotesScoped?: true;

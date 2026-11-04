@@ -199,7 +199,7 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
   // Slice 3: a fake is approved only for a fixture set that is approved for THIS organisation, for the dependency's own family (the store is asked; without one no fake is "available").
   const fakes = changed.filter((dependency) => dependency.backing.kind === "fake");
   if (fakes.length > 0) {
-    const approvedSets = await approvedFixturesOf(recordsOf(deps.fixtureStore), orgId, { dependencies: fakes });
+    const approvedSets = await approvedFixturesOf(recordsOf(deps.fixtureStore), orgId, project, { dependencies: fakes });
     for (const dependency of fakes) {
       const ref = dependency.backing.kind === "fake" ? dependency.backing.fixtureSetRef : undefined;
       if (ref === undefined || approvedSets.get(ref)?.family !== dependency.family) throw invalid(FAKE_NOT_APPROVED);

@@ -152,6 +152,10 @@ function derived(env: MutableEnvironment, name: string): Array<[string, () => st
         const scope = requiredScope(env, entry.variable);
         return `arn:${scope.partition}:iam::${scope.account}:role${environmentRolePath(name)}${entry.roleName(name)}`;
       }];
+      case "kmsAliasArn": return [entry.variable, () => {
+        const scope = requiredScope(env, entry.variable);
+        return `arn:${scope.partition}:kms:${scope.region}:${scope.account}:${entry.alias(name)}`;
+      }];
     }
   });
 }
