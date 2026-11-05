@@ -1,9 +1,12 @@
 // Owner decision 2026-11-03: a call that Amazon Bedrock refused as "not available for this account" (the worker names it `key-rejected ModelNotEnabled`) teaches the broker that the account cannot use that model, so the next default
 // choice, for any task, leaves it out for a while (`UsableModels.markUnusable`). Only Rovara's own catalog route is learned from: a company's own Bedrock source is another account.
-import { ModelSelectionSchema, type ModelIdentifier } from "@agentx/contracts";
+import { MODEL_NOT_ENABLED_CODE, ModelSelectionSchema, modelFailureCodeOf, type ModelIdentifier } from "@agentx/contracts";
 import type { UsableModels } from "./usable-models.js";
 
-/** The worker's fixed sentence for a model the account has not enabled (an operation's error, or a reviewer's `modelFailure`). */
+/**
+ * The worker's fixed sentence for a model the account has not enabled (an operation's error, or a reviewer's `modelFailure`). DR-KEY-1 (B): only a FALLBACK for results of older workers; a current worker carries the
+ * structured code (`modelFailureCode` on the failed operation's result, MODEL_NOT_ENABLED_CODE), which is what this module keys on, so a change of wording cannot silently stop the learning.
+ */
 export const MODEL_NOT_ENABLED_FAILURE = /\bthe model call failed: key-rejected ModelNotEnabled\b/u;
 
 interface Learnable {
@@ -15,7 +18,8 @@ interface Learnable {
 export function modelsNotEnabled(operation: Learnable, terminalStatus: string, terminalError: string | undefined, result: unknown): ModelIdentifier[] {
   if (operation.modelRoute != null && operation.modelRoute.sourceId !== "rovara") return [];
   const found: ModelIdentifier[] = [];
-  if (terminalStatus !== "SUCCEEDED" && terminalError !== undefined && MODEL_NOT_ENABLED_FAILURE.test(terminalError)) {
+  const coded = terminalStatus !== "SUCCEEDED" && modelFailureCodeOf(result) === MODEL_NOT_ENABLED_CODE;
+  if (coded || (terminalStatus !== "SUCCEEDED" && terminalError !== undefined && MODEL_NOT_ENABLED_FAILURE.test(terminalError))) {
     const model = ModelSelectionSchema.safeParse(operation.model);
     if (model.success) found.push({ provider: model.data.provider, modelId: model.data.modelId });
   }

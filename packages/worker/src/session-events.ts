@@ -1,23 +1,26 @@
 // What the worker reads from a Pi session's events, shared by a coding task (run-task.ts) and an agent step
 // (agent-run/run-agent-step.ts): the end of a model turn, whether it failed, and the kind of an event for the log.
-import { agentXError } from "@agentx/contracts";
+import { MODEL_NOT_ENABLED_CODE, agentXError, type AgentXError, type ModelFailureCode } from "@agentx/contracts";
 import { budgetExhaustedFromMarker, modelNotAllowedFromMarker } from "@agentx/model-runtime";
 import { redactCredentials } from "./events.js";
-import { describeModelCallNote, modelFailureNextAction, type ModelCallNote } from "./model-call-monitor.js";
+import { describeModelCallNote, modelFailureNextAction, sanitizeModelCallEvent, type ModelCallNote } from "./model-call-monitor.js";
 
 export interface AssistantOutcome {
   stopReason: string;
   errorMessage?: string;
+  /** The provider that answered (Pi's own field), so a failure without a monitor's note can still be classified. */
+  provider?: string;
 }
 
 /** The outcome an assistant message_end event reports, or undefined for any other event. */
 export function assistantOutcome(event: unknown): AssistantOutcome | undefined {
   if (!event || typeof event !== "object") return undefined;
-  const value = event as { type?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown } };
+  const value = event as { type?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown; provider?: unknown } };
   if (value.type !== "message_end" || value.message?.role !== "assistant" || typeof value.message.stopReason !== "string") return undefined;
   return {
     stopReason: value.message.stopReason,
     ...(typeof value.message.errorMessage === "string" ? { errorMessage: value.message.errorMessage } : {}),
+    ...(typeof value.message.provider === "string" ? { provider: value.message.provider } : {}),
   };
 }
 
@@ -40,10 +43,12 @@ export function failedTurn(outcome: AssistantOutcome | undefined, monitoring?: {
       const note = monitoring.note;
       const detail = note === undefined ? "the model call failed: unknown" : describeModelCallNote(note);
       const next = note?.outcome === "failed" ? modelFailureNextAction(note) : "retry the step";
-      return agentXError("RUNTIME_UNAVAILABLE", `${detail}; ${next}`);
+      return withModelFailureCode(agentXError("RUNTIME_UNAVAILABLE", `${detail}; ${next}`), note);
     }
     const detail = String(redactCredentials(outcome.errorMessage ?? "no error message")).slice(0, 1_000);
-    return agentXError("RUNTIME_UNAVAILABLE", `the model call failed: ${detail}`);
+    // DR-KEY-1 (B): the same classification as the monitor's (class and signal from the provider's error, never its words), so the error carries the structured code.
+    const classified = sanitizeModelCallEvent({ type: "message_end", message: { role: "assistant", stopReason: "error", ...(outcome.provider === undefined ? {} : { provider: outcome.provider }), ...(outcome.errorMessage === undefined ? {} : { errorMessage: outcome.errorMessage }) } })?.modelCall;
+    return withModelFailureCode(agentXError("RUNTIME_UNAVAILABLE", `the model call failed: ${detail}`), classified);
   }
   // The caller reports it as CANCELLED when a cancellation was requested, and as FAILED otherwise.
   if (outcome?.stopReason === "aborted") return agentXError("OPERATION_INTERRUPTED", "the model call was aborted");
@@ -57,4 +62,13 @@ export function eventType(event: unknown): "progress" | "tool_start" | "tool_end
     if (type === "tool_execution_end" || type === "tool_result") return "tool_end";
   }
   return "progress";
+}
+
+/**
+ * DR-KEY-1 (B): the structured code of a failed model call, carried on the error (`modelFailureCode`) to the operation's result and a reviewer's failure, so the broker never has to read the words.
+ * Only a call the classifier named `key-rejected ModelNotEnabled` (the proxy's 403 for a model the account may not use) has one.
+ */
+function withModelFailureCode(error: AgentXError, note: ModelCallNote | undefined): AgentXError & { modelFailureCode?: ModelFailureCode } {
+  if (note?.outcome === "failed" && note.class === "key-rejected" && note.signal === MODEL_NOT_ENABLED_CODE) return Object.assign(error, { modelFailureCode: MODEL_NOT_ENABLED_CODE });
+  return error;
 }

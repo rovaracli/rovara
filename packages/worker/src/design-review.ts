@@ -15,8 +15,8 @@
 // The model sessions are behind a port (`DesignReviewPorts`), so the real pi sessions (design-review-sessions.ts) and the tests use the same orchestration.
 import { createHash } from "node:crypto";
 import {
-  DESIGN_REVIEW_ANSWER_MAX_BYTES, DESIGN_REVIEW_REVIEWER_TIMEOUT_MS, DESIGN_REVIEW_STAGE_TIMEOUT_MS, DESIGN_REVIEW_INFO_STRING, PacketDeliverySchema, READ_ONLY_TOOLS,
-  filterReviewerCitations, itemOf, lightCriticWritesParaphrase, mergeDesignFindings, packetDigestOf, readDesignReview, reviewerMessagesOf,
+  DESIGN_REVIEW_ANSWER_MAX_BYTES, DESIGN_REVIEW_REVIEWER_TIMEOUT_MS, DESIGN_REVIEW_STAGE_TIMEOUT_MS, DESIGN_REVIEW_INFO_STRING, MODEL_NOT_ENABLED_CODE, PacketDeliverySchema, READ_ONLY_TOOLS,
+  filterReviewerCitations, itemOf, lightCriticWritesParaphrase, mergeDesignFindings, modelFailureCodeOf, packetDigestOf, readDesignReview, reviewerMessagesOf,
   type DesignReviewBinding, type DesignReviewRunFailure, type DesignReviewWorkerResult, type DesignReviewerOutcome, type InvocationModelRoute, type ModelSelection,
   type PacketDelivery, type RawDesignFinding, type ReviewerRole,
 } from "@agentx/contracts";
@@ -97,6 +97,8 @@ function failureOf(error: unknown, opening: boolean): DesignReviewRunFailure {
   if (error instanceof Stopped) return error.failure;
   if (error instanceof ModelBudgetExhaustedError) return "budget_exhausted";
   if (error instanceof ModelNotAllowedError || (error instanceof Error && (error as { code?: unknown }).code === "MODEL_NOT_ALLOWED")) return "model_not_allowed";
+  // DR-KEY-1 (B/C): the account may not use the reviewer's model (the structured code, never the words): the round is tried on the next model.
+  if (modelFailureCodeOf(error) === MODEL_NOT_ENABLED_CODE) return "model_not_enabled";
   return opening ? "session_failed" : "model_failed";
 }
 

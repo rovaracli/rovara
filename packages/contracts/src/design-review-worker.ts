@@ -14,6 +14,20 @@ export const DESIGN_REVIEW_STAGE_TIMEOUT_MS = 40 * 60_000;
 /** The most bytes of one answer that are uploaded; an over-long answer keeps its end, where the block is. */
 export const DESIGN_REVIEW_ANSWER_MAX_BYTES = 65_536;
 
+/**
+ * DR-KEY-1 (B): the structured reason a model call failed, carried from the worker to the broker beside the words: on a failed operation's result (`modelFailureCode`) and as a reviewer's failure
+ * (`model_not_enabled`). `ModelNotEnabled` is Amazon Bedrock refusing the model for this ACCOUNT (the proxy's 403 PermissionDeniedError / AccessDeniedException "<model> is not available for this account"),
+ * which the broker learns from (learn-not-enabled.ts) so the next default choice leaves the model out. A refused key or a missing permission is not this code.
+ */
+export const MODEL_NOT_ENABLED_CODE = "ModelNotEnabled" as const;
+export const MODEL_FAILURE_CODES = [MODEL_NOT_ENABLED_CODE] as const;
+export type ModelFailureCode = (typeof MODEL_FAILURE_CODES)[number];
+/** The code an error object carries (`modelFailureCode`), when it is one of the fixed codes. */
+export function modelFailureCodeOf(value: unknown): ModelFailureCode | undefined {
+  const code = value !== null && typeof value === "object" ? (value as { modelFailureCode?: unknown }).modelFailureCode : undefined;
+  return (MODEL_FAILURE_CODES as readonly unknown[]).includes(code) ? code as ModelFailureCode : undefined;
+}
+
 /** Why a reviewer (or the merge step) gave no result. Fixed codes; nothing the model or a provider wrote. */
 export const DESIGN_REVIEW_RUN_FAILURES = [
   /** The answer had no readable block, even after the one retry. */
@@ -28,6 +42,8 @@ export const DESIGN_REVIEW_RUN_FAILURES = [
   "model_failed",
   "budget_exhausted",
   "model_not_allowed",
+  /** The account may not use the reviewer's model (`MODEL_NOT_ENABLED_CODE`): the round is tried again on the next model. */
+  "model_not_enabled",
   /** The packet the worker fetched does not hash to the digest the broker built, so nothing was sent. */
   "packet_changed",
   /** The session did not say its first request was the rendered packet (the user message exactly, a system text that begins with the role prompt). */

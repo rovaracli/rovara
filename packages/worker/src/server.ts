@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { AgentXError, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, noChangeFindingsFrom, redactText, type WorkerInvocation, type WorkerInvocationFeature } from "@agentx/contracts";
+import { AgentXError, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, modelFailureCodeOf, noChangeFindingsFrom, redactText, type WorkerInvocation, type WorkerInvocationFeature } from "@agentx/contracts";
 import { WORKER_IMPLEMENTED_FEATURES } from "./implemented-features.js";
 import type { OperationJournal } from "./journal.js";
 import { WorkerOperationCancelledError } from "./cancel.js";
@@ -246,7 +246,7 @@ async function executeInBackground(invocation: WorkerInvocation, state: WorkerSe
  * Spec 051 Ruling Y: a task that ends failed or cancelled with a regression AgentX found carries its report, so the
  * broker keeps the regression standing. No other failure sends a result.
  */
-function checksResult(error: unknown): { result?: { checks?: unknown; workflowDependenciesResult?: unknown; noChangeFindings?: unknown; workflowMode?: unknown; setupProposal?: unknown; setupRunSummary?: unknown } } {
+function checksResult(error: unknown): { result?: { checks?: unknown; workflowDependenciesResult?: unknown; noChangeFindings?: unknown; workflowMode?: unknown; setupProposal?: unknown; setupRunSummary?: unknown; modelFailureCode?: unknown } } {
   // F5: a stopped setup run's own report (its partial proposal and summary; the broker reads both again) is the whole result.
   const setupRun = error instanceof WorkerOperationCancelledError && typeof error.setupRunResult === "object" && error.setupRunResult !== null ? error.setupRunResult as Record<string, unknown> : undefined;
   if (setupRun?.["workflowMode"] === "SETUP_AGENT") return { result: { workflowMode: "SETUP_AGENT", ...(setupRun["setupProposal"] === undefined ? {} : { setupProposal: setupRun["setupProposal"] }), ...(setupRun["setupRunSummary"] === undefined ? {} : { setupRunSummary: setupRun["setupRunSummary"] }) } };
@@ -254,8 +254,10 @@ function checksResult(error: unknown): { result?: { checks?: unknown; workflowDe
   const workflowDependenciesResult = typeof error === "object" && error !== null && "workflowDependenciesResult" in error ? error.workflowDependenciesResult : undefined;
   // A coding run that left the code as it was carries what it found (already redacted and bounded by the run; redacted again here, as every failure's text is).
   const noChangeFindings = typeof error === "object" && error !== null && "noChangeFindings" in error ? noChangeFindingsFrom(error.noChangeFindings) : undefined;
-  return checks === undefined && workflowDependenciesResult === undefined && noChangeFindings === undefined ? {} : {
-    result: { ...(checks === undefined ? {} : { checks }), ...(workflowDependenciesResult === undefined ? {} : { workflowDependenciesResult }), ...(noChangeFindings === undefined ? {} : { noChangeFindings }) },
+  // DR-KEY-1 (B): a failed model call's fixed code (never its words), which the broker learns from.
+  const modelFailureCode = modelFailureCodeOf(error);
+  return checks === undefined && workflowDependenciesResult === undefined && noChangeFindings === undefined && modelFailureCode === undefined ? {} : {
+    result: { ...(checks === undefined ? {} : { checks }), ...(workflowDependenciesResult === undefined ? {} : { workflowDependenciesResult }), ...(noChangeFindings === undefined ? {} : { noChangeFindings }), ...(modelFailureCode === undefined ? {} : { modelFailureCode }) },
   };
 }
 

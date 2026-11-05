@@ -5,8 +5,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  DesignReviewBindingSchema, WorkflowSnapshotSchema, createWorkflowSnapshot, decideWorkflow, enableDesignReview, submitWorkflowArtifact,
-  type InvocationModelRoute, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
+  DesignReviewBindingSchema, WorkflowSnapshotSchema, canonicalModelName, createWorkflowSnapshot, decideWorkflow, enableDesignReview, submitWorkflowArtifact,
+  DesignReviewWorkerResultSchema, modelFailureCodeOf, type InvocationModelRoute, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
 } from "../../packages/contracts/src/index.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -14,7 +14,7 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { lazyModelProxy, modelAccessSource } from "../../packages/worker/src/model-access.js";
-import { operationModelProxy, slotRuntimeFor } from "../../packages/worker/src/design-review-sessions.js";
+import { modelUnusableRound, operationModelProxy, slotRuntimeFor } from "../../packages/worker/src/design-review-sessions.js";
 import { resolveTaskSessionModel } from "../../packages/worker/src/task-model.js";
 import { workerModelRuntime } from "../../packages/worker/src/pi-session.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -39,9 +39,12 @@ async function rawGet(handler: (event: never) => Promise<{ statusCode: number; b
 }
 
 /** A Rovara Code v2 task (its recipe pinned with the company's model policy) whose design was just submitted: the dispatch starts the design review's operation. */
-async function world() {
+async function world(options: { learned?: Set<string> } = {}) {
   const access = fakeModelAccess();
-  const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, cloud: true, modelAccess: { access, proxyUrl: PROXY_URL } } });
+  // `learned`: the account's usable-model record, as learning from refused calls fills it (usable-models.ts).
+  const learned = options.learned;
+  const usableModels = learned === undefined ? undefined : { unusable: async () => new Set(learned), markUnusable: async (model: { provider: string; modelId: string }) => { learned.add(canonicalModelName(model)); } };
+  const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, cloud: true, modelAccess: { access, proxyUrl: PROXY_URL }, ...(usableModels === undefined ? {} : { usableModels }) } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
   seedDesignReviewCompany(harness.db, TEST_ORG, { project: "payments" });
@@ -94,6 +97,8 @@ function reviewOperation(w: Awaited<ReturnType<typeof world>>, options: { haiku?
   const binding = DesignReviewBindingSchema.parse(current.designReview);
   return { operation: current, binding, capability: invocation.callbackCapability, payload: { ...invocation.payload, designReview: binding } };
 }
+
+const capabilityOf = (w: Awaited<ReturnType<typeof world>>, operationId: string): string => (w.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { callbackCapability: string }).callbackCapability;
 
 /** The worker's transport, answered by the real broker handler; every request is recorded with its answer. */
 function brokerTransport(w: Awaited<ReturnType<typeof world>>, capability: string) {
@@ -152,5 +157,35 @@ describe("a design review of a task with a pinned model policy", () => {
     expect(asked).toEqual(["403 /v1/internal/model-access"]);
     expect(error?.message).toBe("RUNTIME_UNAVAILABLE: the model proxy key could not be obtained: model access request failed with HTTP 403 (FORBIDDEN)");
     expect(lines.filter((line) => line.event === "design_review.slot_key_refused")).toEqual([{ component: "broker", event: "design_review.slot_key_refused", operationId: operation.id, slot: "none", code: "FORBIDDEN" }]);
+  });
+
+  it("a round whose reviewers' model the account may not use is tried again on the next usable model (learned from the structured code), and that round runs", async () => {
+    const learned = new Set<string>();
+    const w = await world({ learned });
+    const { operation, binding, capability } = reviewOperation(w);
+    const first = DesignReviewBindingSchema.parse(operation.designReview).reviewers[0]!.model;
+    // Every reviewer's model call is refused as not enabled (the proxy's 403); the worker uploads its result and, as its real code decides (modelUnusableRound), ends the operation with the coded failure.
+    const result = {
+      version: 1, round: binding.round, merge: { status: "skipped", tokensIn: 0, tokensOut: 0, costUsd: 0 }, findings: [], mergeSource: "code", omitted: 0, droppedCitations: [], droppedFindings: [], stageTimedOut: false,
+      reviewers: binding.reviewers.map((entry) => ({ role: entry.role, keySlot: entry.keySlot, status: "no_result", failure: "model_not_enabled", retried: false, tokensIn: 0, tokensOut: 0, costUsd: 0, startedAt: "2026-11-03T12:10:00.000Z", endedAt: "2026-11-03T12:10:01.000Z" })),
+    };
+    const ended = modelUnusableRound(DesignReviewWorkerResultSchema.parse(result));
+    expect(ended).toBeDefined();
+    await w.artifact(w.workspaceId, String(operation.id), "design-review.json", JSON.stringify(result));
+    // The terminal result carries the structured code, as the worker's server sends it (server.ts checksResult).
+    await w.finish(w.workspaceId, String(operation.id), "FAILED", { error: ended!.message, result: { modelFailureCode: modelFailureCodeOf(ended) } });
+    expect(learned).toEqual(new Set([canonicalModelName(first)]));
+    // The same round again (not "did not run"), on another model, with fresh slots and keys.
+    const rounds = w.operations().sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+    expect(w.task().workflow.designReview).toMatchObject({ status: "running", rounds: [] });
+    expect(w.task().workflow.designReview?.notRunReason).toBeUndefined();
+    expect(rounds).toHaveLength(2);
+    const second = DesignReviewBindingSchema.parse(rounds[1]!.designReview);
+    expect(canonicalModelName(second.reviewers[0]!.model)).not.toBe(canonicalModelName(first));
+    for (const slot of [...second.reviewers.map((entry) => entry.keySlot), second.merge!.keySlot]) {
+      const reply = await rawGet(w.handler, `/v1/internal/model-access?slot=${slot}`, capabilityOf(w, String(rounds[1]!.id)));
+      expect(reply.status, `${slot}: ${reply.body}`).toBe(200);
+    }
+    expect(capability).not.toBe(capabilityOf(w, String(rounds[1]!.id)));
   });
 });

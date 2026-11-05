@@ -333,6 +333,8 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
   // Anthropic client retries a thrown fetch error but never a 422, and Pi then reports an error, which safeError words.
   let exhausted: ModelBudgetScope | undefined;
   let refusal: ChatGptFallbackReason | undefined;
+  // Set when the model proxy answered 403 because Amazon Bedrock refused the model for this account (not a key or permission problem): the error then says so in its own fixed words.
+  let notEnabled = false;
   let returnedModel: string | undefined;
   let returnedProvider: string | undefined;
   const observedFetch: typeof fetch = async (input, init) => {
@@ -342,6 +344,8 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
     if (response.status === 422) exhausted = budgetScopeOfProxyBody(422, (await response.clone().text().catch(() => "")).slice(0, 65_536)) ?? exhausted;
     // A ChatGPT refusal is told apart by its body, which is read here and never kept, logged or shown.
     if (!response.ok && plan?.fallback !== undefined) refusal = chatGptRefusal(response.status, (await response.clone().text().catch(() => "")).slice(0, 65_536));
+    // DR-KEY-1 (B): the model proxy's 403 body is read (matched, never kept) to tell a model the account cannot use from a refused key.
+    if (response.status === 403 && proxyKey !== undefined && plan === undefined) notEnabled = modelNotEnabledBody((await response.clone().text().catch(() => "")).slice(0, 65_536)) || notEnabled;
     if (!response.ok || !response.body) return response;
     // Observe only the serving model and router provider identifiers; never record request/response bodies.
     const decoder = new TextDecoder();
@@ -415,7 +419,7 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
           return await fallBack(plan.fallback, refusal);
         }
         started = true;
-        if (event.type === "error") event.error.errorMessage = safeError(provider, event.reason === "aborted", failureStatus, chatgpt, exhausted, route !== undefined);
+        if (event.type === "error") event.error.errorMessage = safeError(provider, event.reason === "aborted", failureStatus, chatgpt, exhausted, route !== undefined, notEnabled);
         if (event.type === "done" || event.type === "error") {
           const message = event.type === "done" ? event.message : event.error;
           // Pi retains the response in the transcript. This record also identifies the serving model
@@ -435,7 +439,7 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
     } catch (error) {
       const aborted = options?.signal?.aborted === true;
       const message: AssistantMessage = { role: "assistant", api: model.api, provider, model: model.id,
-        content: [], timestamp: Date.now(), stopReason: aborted ? "aborted" : "error", errorMessage: error instanceof ModelNotAllowedError && !aborted ? modelNotAllowedMarker(error.text) : safeError(provider, aborted, failureStatus, chatgpt, exhausted ?? (error instanceof ModelBudgetExhaustedError ? error.scope : undefined), route !== undefined),
+        content: [], timestamp: Date.now(), stopReason: aborted ? "aborted" : "error", errorMessage: error instanceof ModelNotAllowedError && !aborted ? modelNotAllowedMarker(error.text) : safeError(provider, aborted, failureStatus, chatgpt, exhausted ?? (error instanceof ModelBudgetExhaustedError ? error.scope : undefined), route !== undefined, notEnabled),
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       };
       output.push({ type: "error", reason: aborted ? "aborted" : "error", error: message });
@@ -445,8 +449,27 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
   return output;
 }
 
+/**
+ * A model the ACCOUNT may not use (its access, agreement or entitlement is not in place, e.g. a cross-region profile reaching a region the account is not entitled in), as the model proxy passes Amazon Bedrock's refusal on in
+ * its 403 body: the error CLASS (LiteLLM's PermissionDeniedError, Bedrock's AccessDeniedException) and the shape of Bedrock's words for an unentitled model. A refused key or a missing IAM permission has another class or other
+ * words ("is not authorized to perform", "invalid api key") and stays a refused key.
+ */
+const MODEL_NOT_ENABLED_CLASS = /\b(?:PermissionDeniedError|AccessDeniedException)\b/u;
+const MODEL_NOT_ENABLED_SHAPE = [
+  /\bis not available for this account\b/iu,
+  /\byou don't have access to the model with the specified model id\b/iu,
+  /\bmodel use case details have not been submitted for this account\b/iu,
+];
+/** Whether a proxy 403 body says the account cannot use the model. Only matched; nothing of the body is kept. */
+export function modelNotEnabledBody(body: string): boolean {
+  return MODEL_NOT_ENABLED_CLASS.test(body) && MODEL_NOT_ENABLED_SHAPE.some((pattern) => pattern.test(body));
+}
+
+/** The fixed sentence for a model the account cannot use (the worker reads it as `key-rejected ModelNotEnabled`, which the broker learns from). */
+export const MODEL_NOT_ENABLED_DETAIL = "the model is not available for this account";
+
 /** A diagnostic chosen from the HTTP status alone, so provider error bodies (which can echo prompts) never surface. */
-function safeError(provider: KeyedModelProvider, aborted: boolean, status?: number, chatgpt = false, exhausted?: ModelBudgetScope, routed = false): string {
+function safeError(provider: KeyedModelProvider, aborted: boolean, status?: number, chatgpt = false, exhausted?: ModelBudgetScope, routed = false, notEnabled = false): string {
   // A routed model is a company's source, whichever API it speaks: it is not named after a provider it may not be.
   const label = routed ? "Model source" : KEYED_MODEL_PROVIDERS[provider].label;
   if (aborted) return `${label} request cancelled`;
@@ -456,7 +479,8 @@ function safeError(provider: KeyedModelProvider, aborted: boolean, status?: numb
   if (chatgpt && (status === 401 || status === 403)) return "ChatGPT request failed; the ChatGPT connection was refused, so connect ChatGPT again";
   if (chatgpt && status === 429) return "ChatGPT request failed; your ChatGPT plan's usage limit may be reached, see https://chatgpt.com/settings/usage";
   if (chatgpt && (status === 400 || status === 404)) return "ChatGPT request failed; your ChatGPT plan may not allow this model";
-  const detail = status === 401 || status === 403 ? "check the API key and its permissions"
+  const detail = status === 403 && notEnabled ? MODEL_NOT_ENABLED_DETAIL
+    : status === 401 || status === 403 ? "check the API key and its permissions"
     : status === 402 ? "check the key's credit balance and spending limit"
     : status === 404 ? (provider === "openrouter" ? "check model availability and the provider allowlist" : "check the model ID and that the key's organization can use it")
     : status === 429 ? (provider === "openrouter" ? "rate limited; wait before retrying" : "rate limited or out of credits; check the key's usage limits before retrying")

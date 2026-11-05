@@ -2,7 +2,7 @@
 // Each reviewer is a NEW pi session made by `createWorkspacePiSession` as an agent-run session: its own system prompt (the role prompt), no repository context files and no coding preamble, the
 // read-only file tools (nothing for the merge step), and no history. The one user message is sent by `design-review.ts`; this file only wires pi to the port.
 import { randomUUID } from "node:crypto";
-import { DESIGN_REVIEW_ARTIFACT, PACKET_DELIVERY_BYTES_MAX, agentXError, type DesignReviewBinding } from "@agentx/contracts";
+import { DESIGN_REVIEW_ARTIFACT, MODEL_NOT_ENABLED_CODE, PACKET_DELIVERY_BYTES_MAX, agentXError, type DesignReviewBinding, type DesignReviewWorkerResult } from "@agentx/contracts";
 import type { ArtifactSink } from "./artifacts.js";
 import { runDesignReview, modelKeyIdOf, type DesignReviewOptions, type DesignReviewPorts, type DesignReviewSession, type OpenDesignReviewSession } from "./design-review.js";
 import type { FileOpsTarget } from "./file-ops-exec.js";
@@ -166,6 +166,22 @@ export async function runDesignReviewOperation(input: {
 }): Promise<void> {
   const result = await runDesignReview(input.binding, input.ports, input.options);
   await input.artifactSink({ name: DESIGN_REVIEW_ARTIFACT, mediaType: "application/json", content: JSON.stringify(result) });
+  const unusable = modelUnusableRound(result);
+  if (unusable !== undefined) throw unusable;
+}
+
+/**
+ * DR-KEY-1 (C): a round in which NO reviewer gave a result because the account could not use the reviewers' model (every failure is `model_not_enabled` or `model_not_allowed`) ends the operation as the plan check's
+ * failure on that model does, so the broker tries the round again on the next model (`retryDesignReview`, bounded like the plan check's) instead of recording a review that did not run. The error carries the
+ * structured code (`modelFailureCode`) the broker learns from, and fixed words only. A round with any other failure, or any answer, is recorded as it ran.
+ */
+export function modelUnusableRound(result: DesignReviewWorkerResult): Error | undefined {
+  const failures = result.reviewers.map((reviewer) => (reviewer.status === "answered" ? undefined : reviewer.failure));
+  if (failures.length === 0 || failures.some((failure) => failure !== "model_not_enabled" && failure !== "model_not_allowed")) return undefined;
+  if (failures.every((failure) => failure === "model_not_enabled")) {
+    return Object.assign(agentXError("RUNTIME_UNAVAILABLE", `the model call failed: key-rejected ${MODEL_NOT_ENABLED_CODE} HTTP 403; the reviewers' model is not available for this account`), { modelFailureCode: MODEL_NOT_ENABLED_CODE });
+  }
+  return agentXError("MODEL_NOT_ALLOWED", "the reviewers' model cannot be used on this account right now");
 }
 
 /** What run-task.ts needs for a design-review operation: the packet source and the per-slot models. Built by main.ts from the invocation's capability. */
