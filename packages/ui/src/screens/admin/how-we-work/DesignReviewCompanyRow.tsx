@@ -16,7 +16,7 @@ const T = {
  HEADING: "Design review",
  HELP: "Before Rovara builds, reviewers that never saw the conversation read the design and raise what it assumes or gets wrong. A person approves the design. Only company owners and admins can change these settings.",
  ALLOWED: "Allow design review in this company",
- ALLOWED_HELP: "Off until an admin turns it on. While it is off, no project runs design review, whatever the project chose. Allowing it needs a different admin to confirm, unless you are the company's only owner and only admin: then you can allow it alone. Turning it off again also withdraws a change that is waiting for confirmation.",
+ ALLOWED_HELP: "Off until an admin turns it on. While it is off, no project runs design review, whatever the project chose. Allowing it needs a different admin to confirm, unless you are the company's only owner and there is no other admin, and no admin was removed in the last 24 hours: then you can turn it on alone. Turning it off again also withdraws a change that is waiting for confirmation.",
  DESIGN_FIRST_NOTE: "Projects set to Off can still ask for a design review on a single task with Design first.",
  PROJECTS_HELP: "Once design review is allowed, each project's maintainers turn it on (Auto or Always) or off on the project's own How we work page. Projects start Off.",
  RULES_HEADING: "Rules every project must follow",

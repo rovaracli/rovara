@@ -139,10 +139,10 @@ describe("allowing design review", () => {
   expect(toggle.getAttribute("aria-checked")).toBe("false");
  });
 
- it("DR-UI-2: says that the company's only owner and admin can allow it alone", async () => {
+ it("DR-UI-2: says when the company's only owner can turn it on alone", async () => {
   mount();
   const section = await card();
-  expect(await section.findByText(/unless you are the company's only owner and only admin: then you can allow it alone/u)).toBeTruthy();
+  expect(await section.findByText(/unless you are the company's only owner and there is no other admin, and no admin was removed in the last 24 hours: then you can turn it on alone/u)).toBeTruthy();
  });
 
  it("not allowing applies at once", async () => {
