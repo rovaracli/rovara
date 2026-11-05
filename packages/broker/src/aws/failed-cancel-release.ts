@@ -16,9 +16,7 @@ type Client = { send(command: unknown): Promise<unknown> };
 export const FAILED_CANCEL_GRACE_MS = 10 * 60_000;
 
 /** Why a failed cancel's workspace was freed, recorded on the operation as workspaceReleaseReason. */
-export type FailedCancelReleaseReason = "compute-gone" | "worker-idle" | "own-result"
-  // 058-stop-close: the task's owner asked to close it. The close's own check for unpublished work (a worker inspects the workspace) is what keeps work safe, and it refuses on any.
-  | "close-requested";
+export type FailedCancelReleaseReason = "compute-gone" | "worker-idle" | "own-result";
 
 /** What the task's status says, and a Slack thread is told, once its workspace is free again. */
 export const FAILED_CANCEL_RELEASED_MESSAGE = "The stop request did not reach the task, but the task is no longer running, so its workspace is free again. A request that was waiting starts now, or you can send a new one.";

@@ -108,7 +108,9 @@ function statusOfTask(view: DeveloperTaskView): SessionStatus {
       return "succeeded";
     // Closed: finished only when the work was merged or answered; any other closed task was closed before its work finished (QA6-07).
     case "CLOSED":
-      return view.workflow !== undefined && view.workflow.stage !== "MERGED" && view.workflow.outcome !== "ANSWERED" ? "cancelled" : "succeeded";
+      // A plain task (no workflow) is finished only when its agent run completed; a closed one whose run did not read as closed, never as finished (as the computed summary reads it).
+      return view.workflow === undefined ? (view.run?.state === "COMPLETE" ? "succeeded" : "cancelled")
+        : view.workflow.stage !== "MERGED" && view.workflow.outcome !== "ANSWERED" ? "cancelled" : "succeeded";
     case "FAILED":
     case "INTERRUPTED":
       return "failed";

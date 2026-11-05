@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { WorkerInvocationSchema, agentXError, type WorkerInvocation } from "@agentx/contracts";
 
@@ -19,6 +19,8 @@ export interface JournalRecord {
 
 /** The payload hash of a record written by a cancel that arrived before its operation (see `tombstone`): no invocation hashes to it. */
 export const CANCELLED_BEFORE_ARRIVAL = "cancelled-before-arrival";
+/** A cancel's record of an operation that never arrived is useful while that operation's delivery can still be on its way (its queue keeps a message for days at most). */
+export const TOMBSTONE_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 
 export class OperationJournal {
   readonly directory: string;
@@ -75,6 +77,7 @@ export class OperationJournal {
       schemaVersion: 1, operationId: input.operationId, workspaceId: input.workspaceId, fence: input.fence, payloadHash: CANCELLED_BEFORE_ARRIVAL,
       status: "CANCELLED", acceptedAt: now, updatedAt: now, error: "cancelled before it reached this worker",
     };
+    await this.pruneTombstones().catch(() => undefined);
     try {
       await writeFile(this.path(input.operationId), `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
       return record;
@@ -82,6 +85,16 @@ export class OperationJournal {
       if (isNodeError(error) && error.code === "EEXIST") return (await this.get(input.operationId)) ?? record;
       throw error;
     }
+  }
+
+  /** Deletes the records of cancels that arrived before their operation and are older than `maxAgeMs`. Returns how many. Records of operations that ran are never touched. */
+  async pruneTombstones(maxAgeMs: number = TOMBSTONE_MAX_AGE_MS, now: number = Date.now()): Promise<number> {
+    let pruned = 0;
+    for (const record of await this.list()) {
+      if (record.payloadHash !== CANCELLED_BEFORE_ARRIVAL || now - Date.parse(record.acceptedAt) <= maxAgeMs) continue;
+      try { await unlink(this.path(record.operationId)); pruned += 1; } catch (error) { if (!(isNodeError(error) && error.code === "ENOENT")) throw error; }
+    }
+    return pruned;
   }
 
   async get(operationId: string): Promise<JournalRecord | undefined> {

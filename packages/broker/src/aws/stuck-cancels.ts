@@ -93,6 +93,8 @@ interface StuckOperation {
   fence?: unknown;
   updatedAt?: unknown;
   cancelRetriedAt?: unknown;
+  /** 058-stop-close: set by the owner's Close while the hold stays; lets the sweep free the hold on the worker's idle answer alone. */
+  closeRequestedAt?: unknown;
   closePreviousStatus?: unknown;
   error?: unknown;
 }
@@ -143,7 +145,9 @@ async function settle(
     } else if (worker === "idle") {
       // A retried one keeps #200's retry limit (30 minutes from when its retried cancel failed),
       // longer than the 10 minutes a first failed cancel waits.
-      if (!(waited > (retried ? STUCK_CANCEL_RETRY_MS : FAILED_CANCEL_GRACE_MS))) return;
+      // 058-stop-close: the owner asked to close the task (`closeRequestedAt`): the worker's idle answer is the evidence, and the grace that guards a task POST still in flight has passed with it
+      // (the close's own request came after the stop). Only an idle answer frees it; a busy or unknown worker keeps the hold, as ever.
+      if (typeof operation.closeRequestedAt !== "string" && !(waited > (retried ? STUCK_CANCEL_RETRY_MS : FAILED_CANCEL_GRACE_MS))) return;
       reason = "worker-idle";
     } else {
       // Busy: never freed on time alone. Unknown (the ping failed): the ping-failure rule replaces

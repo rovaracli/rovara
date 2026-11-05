@@ -9,6 +9,7 @@ import {
   WorkspaceClosePreflightResultSchema,
   agentXError,
   sharedTaskKey,
+  workspaceSessionKey,
   type DeveloperCloseResponse,
   type DeveloperPullRequestResponse,
   type Operation,
@@ -394,23 +395,52 @@ async function closeNeverStarted(deps: DeveloperTaskRouteDependencies, task: Dev
 const GROUNDING_STOP_WAIT_MS = 12_000;
 const GROUNDING_STOP_POLL_MS = 400;
 
+/** What Close answers while an earlier stop that did not reach the task is still being confirmed: the workspace stays held, as the reconciler holds it, until the worker is shown to have stopped. */
+export const CLOSE_STOP_NOT_CONFIRMED = "The earlier stop did not reach this task, and Rovara has not yet confirmed that its worker has stopped, so the workspace stays held (closing now could discard work the old run is still writing). Rovara checks within about 10 minutes and frees it; then close the task again.";
+
+/** The session states that mean no worker runs the workspace's task any more (the reconciler's `compute: gone`, as far as the control plane can tell without asking the worker). */
+const COMPUTE_GONE_STATES: ReadonlySet<string> = new Set(["STOPPED", "FAILED", "DELETING", "DELETED"]);
+
 /**
- * 058-stop-close (QA6-13): a task whose stop did not reach it ended INTERRUPTED but still holds its workspace, "as the worker may still run it" (issue 202); the reconciler frees it only on
- * evidence the worker is idle, ten minutes or more later, and Close answered "still working" until then. Close is the owner's decision to end the task, so it frees that hold (only that: a
- * running operation is never released) and goes on to its own check, which a worker runs on the workspace and which refuses the close on any unpublished work. If that check cannot run, the
- * close fails and deletes nothing. Answers the workspace as it is afterwards.
+ * 058-stop-close (QA6-13): a task whose stop did not reach it ended INTERRUPTED but still holds its workspace, "as the worker may still run it" (issue 202). Close does not drop that hold on its
+ * own say-so: the old run may still be writing to the workspace, and two operations must never run in one workspace.
+ * - The workspace's compute is gone (its session is stopped, failed or deleted, or there is none): nothing can run there. The hold is freed, and Close goes on to its own check for unpublished work.
+ * - Otherwise Close marks the operation (`closeRequestedAt`), so the reconciler's next run frees it as soon as the worker answers its ping idle, without the usual ten-minute wait, and answers that
+ *   the stop is not yet confirmed. The hold stays; nothing is closed or deleted.
+ * A running operation is never released. Answers the workspace as it is afterwards, and what to do once Close's own step has been tried (the engine wake and the workflow step's block).
  */
-async function releaseHeldInterruptedOperation(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workspace: Awaited<ReturnType<DeveloperTaskActions["workspace"]>>) {
-  if (workspace.activeOperationId === undefined || workspace.activeOperationId === null) return workspace;
-  const held = await get<{ id?: string; kind?: string; status?: string; fence?: number; workspaceReleasedAt?: string } & Record<string, unknown>>(deps, { pk: `WORKSPACE#${task.workspaceId}`, sk: `OPERATION#${workspace.activeOperationId}` });
-  if (held === undefined || held.kind !== "task" || held.status !== "INTERRUPTED" || typeof held.fence !== "number" || held.workspaceReleasedAt !== undefined) return workspace;
-  const released = await releaseFailedCancelWorkspace(deps.documentClient, deps.tableName, { workspaceId: task.workspaceId, operationId: workspace.activeOperationId }, held, "close-requested", new Date());
-  if (released) {
-    log(deps, { event: "developer.task_close_released_hold", taskId: task.taskId, operationId: workspace.activeOperationId });
-    await wakeAgentRun(deps.documentClient, deps.tableName, task.workspaceId, workspace.activeOperationId);
-    await blockStoppedWorkflowRun(deps.documentClient, deps.tableName, { ...(held as object), id: workspace.activeOperationId, workspaceId: task.workspaceId } as unknown as StoppedRunOperation, "INTERRUPTED");
+async function releaseHeldInterruptedOperation(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workspace: Awaited<ReturnType<DeveloperTaskActions["workspace"]>>): Promise<{ workspace: Awaited<ReturnType<DeveloperTaskActions["workspace"]>>; afterwards?: () => Promise<void> }> {
+  if (workspace.activeOperationId === undefined || workspace.activeOperationId === null) return { workspace };
+  const operationId = workspace.activeOperationId;
+  const held = await get<{ id?: string; kind?: string; status?: string; fence?: number; workspaceReleasedAt?: string } & Record<string, unknown>>(deps, { pk: `WORKSPACE#${task.workspaceId}`, sk: `OPERATION#${operationId}` });
+  if (held === undefined || held.kind !== "task" || held.status !== "INTERRUPTED" || typeof held.fence !== "number" || held.workspaceReleasedAt !== undefined) return { workspace };
+  const session = await get<{ state?: string }>(deps, workspaceSessionKey(task.workspaceId));
+  const gone = session === undefined || (typeof session.state === "string" && COMPUTE_GONE_STATES.has(session.state));
+  if (!gone) {
+    try {
+      await deps.documentClient.send(new UpdateCommand({
+        TableName: deps.tableName, Key: { pk: `WORKSPACE#${task.workspaceId}`, sk: `OPERATION#${operationId}` },
+        UpdateExpression: "SET closeRequestedAt = if_not_exists(closeRequestedAt, :now)",
+        ConditionExpression: "#status = :interrupted AND attribute_not_exists(workspaceReleasedAt)",
+        ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":now": iso(deps), ":interrupted": "INTERRUPTED" },
+      }));
+    } catch (error) {
+      if (!isConditional(error)) throw error;
+    }
+    log(deps, { event: "developer.task_close_hold_kept", taskId: task.taskId, operationId });
+    throw agentXError("TASK_BUSY", CLOSE_STOP_NOT_CONFIRMED);
   }
-  return deps.actions.workspace(task.workspaceId);
+  const released = await releaseFailedCancelWorkspace(deps.documentClient, deps.tableName, { workspaceId: task.workspaceId, operationId }, held, "compute-gone", new Date());
+  if (!released) return { workspace: await deps.actions.workspace(task.workspaceId) };
+  log(deps, { event: "developer.task_close_released_hold", taskId: task.taskId, operationId });
+  return {
+    workspace: await deps.actions.workspace(task.workspaceId),
+    // After Close's own step has been tried, not before: the old run's step and the engine are told only once the workspace has been claimed again.
+    afterwards: async () => {
+      await wakeAgentRun(deps.documentClient, deps.tableName, task.workspaceId, operationId);
+      await blockStoppedWorkflowRun(deps.documentClient, deps.tableName, { ...(held as object), id: operationId, workspaceId: task.workspaceId } as unknown as StoppedRunOperation, "INTERRUPTED");
+    },
+  };
 }
 
 export async function closeTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<DeveloperCloseResponse> {
@@ -452,7 +482,8 @@ export async function closeTask(deps: DeveloperTaskRouteDependencies, caller: De
           workspace = await deps.actions.workspace(task.workspaceId);
         }
       }
-      workspace = await releaseHeldInterruptedOperation(deps, task, workspace);
+      const hold = await releaseHeldInterruptedOperation(deps, task, workspace);
+      workspace = hold.workspace;
       let started: Awaited<ReturnType<DeveloperTaskActions["startClose"]>>;
       try {
         // startClose answers a close in flight, and a repeated requestId, with the existing close
@@ -463,8 +494,10 @@ export async function closeTask(deps: DeveloperTaskRouteDependencies, caller: De
         ], request.discard_unpublished === true);
       } catch (error) {
         if (isConditional(error)) await authorizeTaskActor(deps, caller, taskId, "close");
+        await hold.afterwards?.().catch(() => undefined);
         busy(error, taskId);
       }
+      await hold.afterwards?.().catch(() => undefined);
       operation = (await deps.actions.operations(task.workspaceId)).find((entry) => entry.id === started.operationId);
       if (operation?.status === "SUCCEEDED") unpublished = unpublishedOf(operation.result);
     }

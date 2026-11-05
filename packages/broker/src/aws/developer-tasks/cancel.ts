@@ -54,7 +54,7 @@ const PLAN_STAGES: ReadonlySet<string> = new Set(["UNDERSTAND", "PLAN", "PLAN_CR
 export const BLOCKED_NOT_RUNNING = "This task is blocked, not running. To end it, use Close task (it checks for unpublished work first).";
 
 /** What a Stop answers when an earlier stop did not reach the task (it ended INTERRUPTED and still holds its workspace until Rovara confirms the worker stopped): it is not "nothing was running". */
-export const STOP_NOT_CONFIRMED = "The earlier stop did not reach this task. Rovara is confirming that its worker has stopped and will free the workspace; to end the task now, use Close task (it checks for unpublished work first).";
+export const STOP_NOT_CONFIRMED = "The earlier stop did not reach this task. Rovara is confirming that its worker has stopped and will free the workspace within about 10 minutes; Close task works once it has (it checks for unpublished work first).";
 
 /** What a Stop answers for a plan that waits for approval after code was written (a re-plan): it neither closes nor releases anything. */
 export const WAITING_NOT_RUNNING = "This task is waiting for a decision, not running, and it may hold unpublished code. To end it, use Close task (it checks for unpublished work first).";

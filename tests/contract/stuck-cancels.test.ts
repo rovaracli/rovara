@@ -626,3 +626,33 @@ describe("where the retry is wired", () => {
     expect(stuckCancelRetrier({ BROKER_FUNCTION_NAME: "agentx-staging-broker" }, state)).toBeUndefined();
   });
 });
+
+
+describe("a failed stop's hold when the owner asked to close the task (058-stop-close)", () => {
+  const interrupted = (db: FakeDynamoDb, minutes: number, fields: Record<string, unknown> = {}) => seedTask(db, "INTERRUPTED", minutes, { error: "NOT_FOUND: active operation not found", ...fields });
+
+  it("is freed on the worker's idle answer alone, without the ten-minute wait", async () => {
+    const { db, sweep } = setup();
+    const task = interrupted(db, 1, { closeRequestedAt: minutesAgo(0.5) });
+    expect((await sweep([{ workspaceId: task.workspaceId, compute: "alive", worker: "idle" }])).interrupted).toEqual([task.operationId]);
+    expect(task.operation()).toMatchObject({ workspaceReleaseReason: "worker-idle" });
+    expect(task.meta()).toMatchObject({ status: "READY" });
+  });
+
+  it("is kept while the worker answers busy, however long the owner has asked", async () => {
+    const { db, sweep } = setup();
+    const task = interrupted(db, 60, { closeRequestedAt: minutesAgo(50) });
+    await sweep([{ workspaceId: task.workspaceId, compute: "alive", worker: "busy" }]);
+    expect(task.meta()).toMatchObject({ status: "BUSY", activeOperationId: task.operationId });
+  });
+
+  it("is kept when the worker did not answer (unknown), and without the owner's request still waits its grace", async () => {
+    const { db, sweep } = setup();
+    const unknown = interrupted(db, 1, { closeRequestedAt: minutesAgo(0.5) });
+    await sweep([{ workspaceId: unknown.workspaceId, compute: "alive" }]);
+    expect(unknown.meta()).toMatchObject({ status: "BUSY" });
+    const plain = interrupted(db, 1);
+    await sweep([{ workspaceId: plain.workspaceId, compute: "alive", worker: "idle" }]);
+    expect(plain.meta()).toMatchObject({ status: "BUSY" });
+  });
+});
