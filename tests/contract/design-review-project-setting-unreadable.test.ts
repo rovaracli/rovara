@@ -98,7 +98,7 @@ describe("a stored project setting that cannot be read reads as Off at every rea
     expect(await designReviewStillOn(deps, ORG_A, "web", "person")).toBe(true);
 
     // Mode resolution on that setting: a task gets no design review, even one Understand says needs it, unless the person asked for design first.
-    const needs = { kind: "ready", path: "FULL", restatement: "x", assumptions: [], design: { needed: true, reasons: ["new_api"], note: "n" } } as const;
+    const needs: Parameters<typeof resolveDesignMode>[0]["assessment"] = { kind: "ready", path: "FULL", restatement: "x", assumptions: [], design: { needed: true, reasons: ["new_api"], note: "n" } };
     expect(resolveDesignMode({ setting: effective.setting, assessment: needs })).toMatchObject({ decided: true, on: false, decidedBy: "never" });
     expect(resolveDesignMode({ setting: effective.setting, assessment: needs, designFirst: true })).toMatchObject({ decided: true, on: true, decidedBy: "person" });
 
