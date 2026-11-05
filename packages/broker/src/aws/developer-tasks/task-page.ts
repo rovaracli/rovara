@@ -94,6 +94,15 @@ async function mergeViewForWords(deps: Pick<DeveloperTaskRouteDependencies, "doc
   }
 }
 
+/**
+ * QA6-03: whether the task page replaces Approve with a link to the design's decision card: the reader may decide, the waiting document is a design, and the design is under review (the same condition as the guard in
+ * `decideTaskWorkflow`, which refuses a plain approval then). Anything else keeps the ordinary Approve button.
+ */
+export function designCardOnlyApplies(input: { canDecide: boolean; waitingKind: string | undefined; workflow: WorkflowSnapshot | undefined; env?: NodeJS.ProcessEnv }): boolean {
+  const { workflow } = input;
+  return input.canDecide && input.waitingKind === "design" && workflow?.designReview !== undefined && workflow.reviewPhase === "DESIGN" && designReviewEnabled(input.env);
+}
+
 /** Where a workflow task stands and what happens next, in the words the task page shows. */
 export function taskPageStage(
   workflow: WorkflowSnapshot | undefined, closed: boolean, owner: boolean, publication: "failed" | "retrying" | undefined = undefined, removedReason: string | undefined = undefined,
@@ -761,8 +770,9 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   const noChangeView = workflow !== undefined && workflow.state === "BLOCKED" && task.closedAt === undefined && isNoCodeChangedReason(workflow.blockReason)
     ? { ...(noChangeFound === undefined ? {} : { findings: noChangeFound }) } : undefined;
   const deciding = await pageDecidingView(deps, { task, caller, comments, suggestions: shownSuggestions, citations, claimIds });
-  // QA6-03: while a design is under review its approval is only on its decision card (`DESIGN_CARD_ONLY_MESSAGE`; the same condition as the guard in `decideTaskWorkflow`), so the page points to the card instead of offering a button the server refuses.
-  const designCardOnly = owner && deciding.waiting?.kind === "design" && workflow?.designReview !== undefined && workflow.reviewPhase === "DESIGN" && designReviewEnabled();
+  const permissions = pageAccess(access, await projectWorkAllowed(deps, task, caller));
+  // QA6-03: while a design is under review its approval is only on its decision card; the page points to the card instead of offering a button the server refuses.
+  const designCardOnly = designCardOnlyApplies({ canDecide: permissions?.canDecide === true, waitingKind: deciding.waiting?.kind, workflow });
   const stage = taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task), noChangeHasThread(task.share));
   const stageWords = designCardOnly ? { status: stage.status, nextStep: "Approve the design on its decision card in Rovara, or request changes here." } : stage;
   return {
@@ -778,7 +788,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     ...(specHold === undefined ? {} : { specHold }),
     ...(autofixLines.length === 0 ? {} : { autofix: { lines: autofixLines } }),
     ...(noChangeView === undefined ? {} : { noChange: noChangeView }),
-    history, access: pageAccess(access, await projectWorkAllowed(deps, task, caller)), ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
+    history, access: permissions, ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
     canTakeOwnership: capabilities.canTakeOwnership, comments, suggestions: shownSuggestions, askAvailable: await commentAnswersAvailable(deps, task),
     ...deciding,
     ...(designCardOnly ? { designCardOnly: { href: "/app" } } : {}),

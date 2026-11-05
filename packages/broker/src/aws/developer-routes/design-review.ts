@@ -83,8 +83,7 @@ const nowIso = (env: Env): string => new Date(env.deps.now()).toISOString();
 
 async function sessionPathOf(env: Env, task: DeveloperTaskRecord): Promise<string> {
   // A task's own session id is on its record (no read needed); a chain step's session is found through the store. Neither: the project's page (QA6-02: there is no route for a task by its id).
-  if (task.sessionId !== undefined) return taskOpenPath(task);
-  if (env.deps.agentSessions === undefined) return taskOpenPath(task);
+  if (task.sessionId !== undefined || env.deps.agentSessions === undefined) return taskOpenPath(task);
   try {
     const session = await new AgentSessionStore({ documentClient: env.deps.documentClient, tableName: env.deps.tableName } as never).getForTask(env.caller.orgId, task);
     return taskOpenPath({ project: task.project, ...(session === undefined ? {} : { sessionId: session.sessionId }) });

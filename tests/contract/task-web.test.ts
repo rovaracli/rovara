@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { WorkflowSnapshotSchema, canonicalPlanJson, createCandidateManifest, createWorkflowSnapshot, workflowFindingFingerprint, type PlanDocument } from "@agentx/contracts";
-import { taskPageStage } from "../../packages/broker/src/aws/developer-tasks/task-page.js";
+import { designCardOnlyApplies, taskPageStage } from "../../packages/broker/src/aws/developer-tasks/task-page.js";
 import { claimAnchor } from "../../packages/broker/src/aws/plan-page/render-plan.js";
 import { createTaskWeb, type TaskDocumentEntry, type TaskDocumentKind, type TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
 import { TASK_PAGE_DECIDING_SCRIPT, TASK_PAGE_SCRIPT, TASK_PAGE_STYLE } from "../../packages/broker/src/aws/task-page-assets.js";
@@ -1252,6 +1252,30 @@ describe("deciding and commenting on the task page (slice 2)", () => {
     // A coding plan is never carded.
     const plan = await render({ documents: [requirements, codingPlan], waiting: { kind: "coding plan", version: 1, artifactDigest: digest }, access: owner });
     expect(plan.body).not.toContain("decide-approve-card");
+  });
+
+  it("the card-only wording applies only to a reader who may decide, on a design under review with the stage on", async () => {
+    const base = createWorkflowSnapshot({ taskId, ownerId: "a".repeat(64), now: "2026-11-05T10:00:00.000Z" });
+    const review = { status: "done" } as never;
+    const underReview = WorkflowSnapshotSchema.parse({ ...base, stage: "PLAN_REVIEW", state: "WAITING", reviewPhase: "DESIGN" });
+    const withReview = { ...underReview, designReview: review } as typeof underReview;
+    const on = { DESIGN_REVIEW_ENABLED: "1" };
+    const applies = (over: Partial<Parameters<typeof designCardOnlyApplies>[0]> = {}) =>
+      designCardOnlyApplies({ canDecide: true, waitingKind: "design", workflow: withReview, env: on, ...over });
+    expect(applies(), "positive control").toBe(true);
+    expect(applies({ canDecide: false }), "a reader who may not decide (closed task, project work not allowed, a teammate)").toBe(false);
+    expect(applies({ env: {} }), "the stage is switched off").toBe(false);
+    expect(applies({ workflow: underReview }), "no design review on the task").toBe(false);
+    expect(applies({ workflow: { ...withReview, reviewPhase: "REQUIREMENTS" } as never }), "the requirements phase").toBe(false);
+    expect(applies({ waitingKind: "coding plan" }), "a coding plan").toBe(false);
+    expect(applies({ waitingKind: "requirements" }), "requirements").toBe(false);
+    expect(applies({ waitingKind: undefined }), "nothing waiting").toBe(false);
+    // Not applying means the page shows the ordinary Approve button and no link.
+    const requirements = structuredDoc("requirements", 1, planDocument({ claims: [{ id: "1", text: "Retries happen." }], decisions: [] }), { approved: true });
+    const design = structuredDoc("design", 1, planDocument({ claims: [{ id: "1", text: "Retries wait." }], decisions: [] }));
+    const page = await render({ documents: [requirements, design], waiting: { kind: "design", version: 1, artifactDigest: digest }, access: owner });
+    expect(page.body).toMatch(/id="decide-approve"[^>]*hidden>Approve design v1<\/button>/);
+    expect(page.body).not.toContain("decide-approve-card");
   });
 
   it("says 'People unavailable' only for a task that has a People list it could not read", async () => {

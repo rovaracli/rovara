@@ -1,5 +1,5 @@
 // Where a decision card's "Open the details" goes for a task. The web app has no route for a task by its own id: a task is read on its session's page (`/app/sessions/:id`, `paths.session` in the UI),
-// so every card source that opens a task builds its link here, and `tests/unit/decision-open-paths.test.ts` checks each one against the app's real routes (QA6-02: `/app/tasks/<uuid>` was "Not found").
+// so every card source that opens a task builds its link here, and `tests/web/decision-open-paths.test.ts` checks each one against the app's real routes (QA6-02: `/app/tasks/<uuid>` was "Not found").
 import { SessionIdSchema } from "@agentx/contracts";
 
 /** The page of a session in the web app. */
