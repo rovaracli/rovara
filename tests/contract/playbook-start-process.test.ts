@@ -1,7 +1,7 @@
 // "How we work" (S1): starting work runs the project's process. `startCodeIntent` asks `projectProcessOf` for the project and runs that agent instead of always running the built-in
 // Rovara Code; a pointer that no longer holds refuses the start with one message (never a quiet fall back to the built-in). Every start path goes through it, so the app route and the
 // Slack start are covered here; the setup draft keeps the built-in. The broker is built with `agents: {}` as the deployed handler is.
-import { fixtureActor } from "../support/money-authority.js";
+import { fixtureActor, seedMaintainerGrant } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
@@ -145,6 +145,8 @@ describe("starting work from the app", () => {
     const t = await setup();
     const agentId = await t.processLayer();
     t.point(agentId);
+    // Maya archives a project's layer as its maintainer, so the write pins her grant.
+    seedMaintainerGrant(t.db, TEST_ORG, MAYA.developerId, "payments");
     await t.store.archive(TEST_ORG, agentId, MAYA.developerId, undefined, { actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId) });
     const reply = await t.send();
     expect(reply.status).toBe(400);
@@ -182,6 +184,8 @@ describe("starting work from Slack", () => {
     const t = await setup();
     const agentId = await t.processLayer();
     t.point(agentId);
+    // Maya archives a project's layer as its maintainer, so the write pins her grant.
+    seedMaintainerGrant(t.db, TEST_ORG, MAYA.developerId, "payments");
     await t.store.archive(TEST_ORG, agentId, MAYA.developerId, undefined, { actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId) });
     const owner = "U0SLACKPROC2";
     t.slackOwner(owner);

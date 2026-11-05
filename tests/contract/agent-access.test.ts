@@ -1,5 +1,5 @@
 // Plan 3 Task 6b: who can do what with an agent (access levels, shares, visible lists, the owner rules).
-import { fixtureActor } from "../support/money-authority.js";
+import { fixtureActor, seedMaintainerGrant } from "../support/money-authority.js";
 import { describe, expect, it } from "vitest";
 import {
   agentAccess,
@@ -173,6 +173,7 @@ describe("agentAccess", () => {
     await share(agent, [{ principal: { kind: "member", developerId: BOB }, level: "edit" }, { principal: { kind: "member", developerId: CAROL }, level: "use" }]);
     const project = await projectAgent("Old project one");
     await store.archive(ORG_A, agent.agentId, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
+    seedMaintainerGrant(store, ORG_A, fixtureActor(store, ORG_A, BOB).developerId, "web"); // Bob archives a project's agent as its maintainer: the write pins his grant (S1-M2)
     await store.archive(ORG_A, project.agentId, BOB, undefined, { actor: fixtureActor(store, ORG_A, BOB) });
     const archived = (await store.get(ORG_A, agent.agentId))!;
     const archivedProject = (await store.get(ORG_A, project.agentId))!;
@@ -315,6 +316,7 @@ describe("requireAgentAccess", () => {
   it("names a project's maintainers too when an archived project agent needs unarchiving", async () => {
     const { deps, projectAgent, store } = setup();
     const agent = await projectAgent("Retired web helper");
+    seedMaintainerGrant(store, ORG_A, fixtureActor(store, ORG_A, BOB).developerId, "web"); // Bob archives a project's agent as its maintainer: the write pins his grant (S1-M2)
     await store.archive(ORG_A, agent.agentId, BOB, undefined, { actor: fixtureActor(store, ORG_A, BOB) });
     expect(await code(requireAgentAccess(deps, caller(CAROL), agent.agentId, "use"))).toEqual({
       code: "FORBIDDEN",

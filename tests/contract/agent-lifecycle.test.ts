@@ -1,5 +1,5 @@
 import { orgMetaKey } from "@agentx/contracts";
-import { fixtureActor } from "../support/money-authority.js";
+import { fixtureActor, seedMaintainerGrant } from "../support/money-authority.js";
 // Plan 3 Task 11: what happens to agents when a member is merged into another, a member is removed, or a project is archived. The sign-in
 // function only leaves a marker in the `MEMBER_MERGE_QUEUE` partition; the broker's 5-minute sweep drains it and moves what the duplicate
 // owned. A removal moves what the person owned at once, and leaves the same kind of marker until it has.
@@ -156,7 +156,11 @@ function agentWorld(options: { audit?: AuditCapture } = {}) {
   };
   const projectAgent = async (project: string, accountable: string, name: string, budgetUsd?: number) => {
     const agent = await store.create({ orgId: ORG_A, name, owner: { kind: "project", project }, accountable: { developerId: accountable }, overlay: SCRATCH, createdBy: accountable });
-    if (budgetUsd !== undefined) await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: budgetUsd }, fixtureActor(store, ORG_A, accountable).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, accountable) });
+    if (budgetUsd !== undefined) {
+      // The accountable maintainer sets the budget through the store as the project's maintainer, so the write pins their grant (S1-M2); the row is only for this seed.
+      const actor = fixtureActor(store, ORG_A, accountable), unseed = seedMaintainerGrant(db, ORG_A, actor.developerId, project);
+      try { await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: budgetUsd }, actor.developerId, undefined, { ...({}), actor }); } finally { unseed(); }
+    }
     return agent;
   };
   const shareWith = (agentId: AgentId, who: string, level: "view" | "use" | "edit", orgId: OrgId = ORG_A) =>
