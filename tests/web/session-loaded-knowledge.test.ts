@@ -98,3 +98,26 @@ it("says so when the record cannot be loaded", async () => {
  await waitFor(() => { expect(screen.getByRole("alert").textContent).toContain("could not be loaded"); }, { timeout: 8000 });
  s.close();
 });
+
+it("says it is not recorded for this task (not a failed load) when the record is not served, as on a project with learning off (QA6-08)", async () => {
+ const s = setup(async () => ({ status: 404, body: {} }));
+ const details = (await screen.findByText("What the agent loaded")).closest("details")!;
+ details.open = true; fireEvent(details, new Event("toggle"));
+ await waitFor(() => { expect(screen.getByRole("status").textContent).toContain("not recorded for this task"); }, { timeout: 8000 });
+ expect(screen.getByRole("status").textContent).toContain("learning is off");
+ expect(screen.queryByText(/could not be loaded/u)).toBeNull();
+ s.close();
+});
+
+it("keeps 'could not be loaded' for a real failure, and explains an empty record in words (QA6-08)", async () => {
+ const failed = setup(async () => ({ status: 500, body: {} }));
+ const details = (await screen.findByText("What the agent loaded")).closest("details")!;
+ details.open = true; fireEvent(details, new Event("toggle"));
+ await waitFor(() => { expect(screen.getByRole("alert").textContent).toContain("could not be loaded"); }, { timeout: 8000 });
+ failed.close();
+ const empty = setup(async request => request.path.endsWith("/loaded-knowledge") ? { status: 200, body: { stages: [], requestId: "r" } } : { status: 404, body: {} });
+ const again = (await screen.findByText("What the agent loaded")).closest("details")!;
+ again.open = true; fireEvent(again, new Event("toggle"));
+ await waitFor(() => { expect(screen.getByText(/Nothing was recorded for this task/u).textContent).toContain("before"); });
+ empty.close();
+});
