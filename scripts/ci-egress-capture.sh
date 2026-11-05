@@ -81,6 +81,10 @@ eg_probes() {
   docker network rm "$EG_SEALED_NETWORK" "$EG_OPEN_NETWORK" >/dev/null 2>&1 || true
   # The sealed network: internal, on a /24 of its own, with an rvi bridge name, so the boot firewall's rvi walls apply to it exactly as to a run's network.
   docker network create --internal --driver bridge --subnet "$EG_SEALED_SUBNET_PREFIX.0/24" --gateway "$EG_SEALED_SUBNET_PREFIX.1" --opt "com.docker.network.bridge.name=$EG_BRIDGE" "$EG_SEALED_NETWORK" >/dev/null || { eg_log "could not create the sealed probe network"; return 1; }
+  # The bridge is deleted before the capture is rendered, and tcpdump then prints "?" for its name (CI run 42104894037). Its ifindex is what the judge matches those lines on.
+  EG_BRIDGE_IFINDEX=$(cat "/sys/class/net/$EG_BRIDGE/ifindex" 2>/dev/null || true)
+  [[ "$EG_BRIDGE_IFINDEX" =~ ^[0-9]+$ ]] || { eg_log "could not read the probe bridge's ifindex"; EG_BRIDGE_IFINDEX=""; }
+  eg_log "probe bridge $EG_BRIDGE has ifindex ${EG_BRIDGE_IFINDEX:-unknown}"
   docker network create --driver bridge "$EG_OPEN_NETWORK" >/dev/null || { eg_log "could not create the control network"; docker network rm "$EG_SEALED_NETWORK" >/dev/null 2>&1 || true; return 1; }
   common=(--rm --cap-drop ALL --security-opt no-new-privileges --read-only --pids-limit 4096 --entrypoint /usr/local/bin/node)
   timeout --foreground 60 docker run "${common[@]}" --name "$EG_SEALED_CONTAINER" --network "$EG_SEALED_NETWORK" --ip "$EG_SEALED_SUBNET_PREFIX.4" --user 1000:1000 "$image" -e "$EG_PROBE_JS" sealed "$EG_TOKEN-sealed.example" "$EG_SEALED_SUBNET_PREFIX.1" > "$EG_DIR/probe-sealed.json" 2> "$EG_DIR/probe-sealed.err" || eg_log "the sealed probe exited non-zero"
@@ -110,9 +114,13 @@ eg_capture_stop() {
 # eg_verdict TEXT_FILE: prints ONE verdict line `TSL L3.egress-capture PASS|FAIL ...`; on FAIL it adds up to EG_EVIDENCE_LINES lines `egress-evidence: ...` (interface, direction and addresses of the offending packets, the sealed token's own
 # lines, the probes' stderr; never a payload) so a failed run can be diagnosed from the log. Reads EG_TOKEN EG_UPLINK EG_UPLINK_IPS EG_BRIDGE EG_PACKETS EG_DIR (and EG_TCPDUMP_ALIVE, default 1).
 # Packet lines look like `12:00:00.000001 <iface> <In|Out|B|M|P> ifindex N <mac> ethertype IPv4 (0x0800), length N: <src>[.port] > <dst>[.port]: ...` (the Linux cooked v2 header of `-i any`).
+# An interface deleted before the render (the probe bridge and every run's bridge and veth) prints as "?". A "?" line is the probe bridge only when its ifindex is EG_BRIDGE_IFINDEX, read when
+# the bridge was made; any other "?" line is an unknown, deleted interface: it never counts as the bridge, and the IPv6 rule below treats it like an rvi bridge (fail closed).
 eg_verdict() {
-  local txt=$1 fails="" flows flows6 ev sys_up direct_up sealed_any lan_src bridge_n bridge_out v6_n probe f
+  local raw=$1 txt fails="" flows flows6 ev sys_up direct_up sealed_any lan_src bridge_n bridge_out v6_n probe f
   flows=$(mktemp "${TMPDIR:-/tmp}/eg-flows.XXXXXX"); flows6=$(mktemp "${TMPDIR:-/tmp}/eg-flows6.XXXXXX"); ev=$(mktemp "${TMPDIR:-/tmp}/eg-evidence.XXXXXX")
+  txt="$flows.txt"
+  awk -v b="$EG_BRIDGE" -v i="${EG_BRIDGE_IFINDEX:-}" 'i ~ /^[0-9]+$/ && $2 == "?" && $4 == "ifindex" && $5 == i { sub(/ \? /, " " b " ") } { print }' "$raw" > "$txt"
   # flows: iface direction source destination (IPv4); flows6: the same for IPv6.
   sed -nE 's/^[0-9:.]+ +([^ ]+) +([A-Za-z]+) .*ethertype IPv4 \(0x0800\), length [0-9]+: ([0-9]+(\.[0-9]+){3})(\.[0-9]+)? > ([0-9]+(\.[0-9]+){3})(\.[0-9]+)?:.*/\1 \2 \3 \6/p' "$txt" > "$flows"
   sed -nE 's/^[0-9:.]+ +([^ ]+) +([A-Za-z]+) .*ethertype IPv6 \(0x86dd\), length [0-9]+: ([0-9a-fA-F:]+)(\.[0-9]+)? > ([0-9a-fA-F:]+)(\.[0-9]+)?:.*/\1 \2 \3 \5/p' "$txt" > "$flows6"
@@ -144,15 +152,16 @@ eg_verdict() {
   if [[ "$bridge_n" -lt 1 ]]; then
     fails="$fails capture-blind-nothing-seen-on-the-rvi-bridge"
     # So the next blind run can be diagnosed: lines per interface, and what the rvi interfaces carried (headers only; the snap length keeps payloads out).
-    awk '{ c[$2]++ } END { for (i in c) print "lines-per-interface: " i " " c[i] }' "$txt" | sort | head -n 12 >> "$ev"
+    awk '{ k = $2; if ($2 == "?" && $4 == "ifindex") k = "?(ifindex " $5 ")"; c[k]++ } END { for (i in c) print "lines-per-interface: " i " " c[i] }' "$txt" | sort | head -n 12 >> "$ev"
+    printf 'probe-bridge: %s ifindex %s\n' "$EG_BRIDGE" "${EG_BRIDGE_IFINDEX:-unknown}" >> "$ev"
     awk '$2 ~ /^(rvi|veth)/' "$txt" | head -n 10 | cut -c1-200 | sed 's/^/rvi-or-veth-line: /' >> "$ev"
   fi
   # Destinations outside the probe bridge's /24. Multicast (224/4), broadcast and 0.0.0.0 are the segment's own and are not counted.
   awk -v b="$EG_BRIDGE" -v p="$EG_SEALED_SUBNET_PREFIX." '$1 == b && index($4, p) != 1 && $4 !~ /^(22[4-9]|23[0-9])\./ && $4 != "255.255.255.255" && $4 != "0.0.0.0" { print "rvi-outside-subnet: " $0 }' "$flows" > "$flows.out"
   bridge_out=$(wc -l < "$flows.out" | tr -d ' ')
   [[ "$bridge_out" -eq 0 ]] || { fails="$fails rvi-bridge-packets-to-outside-the-run-subnet-${bridge_out}"; head -n "$EG_EVIDENCE_LINES" "$flows.out" >> "$ev"; }
-  # IPv6 on ANY rvi* bridge: only link-local (fe80::/10), ff02::/16 and the unspecified address.
-  awk '$1 ~ /^rvi/ && !($3 ~ /^([fF][eE][89abAB][0-9a-fA-F]:|[fF][fF]02:|::$)/ && $4 ~ /^([fF][eE][89abAB][0-9a-fA-F]:|[fF][fF]02:|::$)/) { print "rvi-ipv6: " $0 }' "$flows6" > "$flows.v6"
+  # IPv6 on ANY rvi* bridge, or on any deleted interface ("?"): only link-local (fe80::/10), ff02::/16 and the unspecified address.
+  awk '($1 ~ /^rvi/ || $1 == "?") && !($3 ~ /^([fF][eE][89abAB][0-9a-fA-F]:|[fF][fF]02:|::$)/ && $4 ~ /^([fF][eE][89abAB][0-9a-fA-F]:|[fF][fF]02:|::$)/) { print "rvi-ipv6: " $0 }' "$flows6" > "$flows.v6"
   v6_n=$(wc -l < "$flows.v6" | tr -d ' ')
   [[ "$v6_n" -eq 0 ]] || { fails="$fails rvi-bridge-non-link-local-ipv6-${v6_n}-packets"; head -n "$EG_EVIDENCE_LINES" "$flows.v6" >> "$ev"; }
   if [[ -z "$fails" ]]; then
@@ -165,6 +174,6 @@ eg_verdict() {
     done
     head -n "$EG_EVIDENCE_LINES" "$ev" | cut -c1-240 | sed 's/^/egress-evidence: /'
   fi
-  rm -f "$flows" "$flows.lan" "$flows.out" "$flows.v6" "$flows6" "$ev"
+  rm -f "$flows" "$flows.txt" "$flows.lan" "$flows.out" "$flows.v6" "$flows6" "$ev"
   [[ -z "$fails" ]]
 }
