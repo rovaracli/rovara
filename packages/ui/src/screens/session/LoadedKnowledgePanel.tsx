@@ -23,9 +23,12 @@ function RulesBody({ taskId }: { taskId: string }) {
  const query = useLoadedKnowledge(taskId, true);
  const [target, setTarget] = useState<{ operationId: string; stage: string; index: number } | undefined>();
  if (query.isPending) return <p className="rv-muted" role="status">Loading</p>;
- if (query.isError) return <p className="rv-muted" role="alert">This could not be loaded right now.</p>;
+ // 404: the record is not served for this task (the project's learning is off, or the install does not keep it). That is not a failed load, so it is not shown as one.
+ if (query.isError) return query.error instanceof ApiError && query.error.status === 404
+  ? <p className="rv-muted" role="status">{"What the agent loaded is not recorded for this task. Loading is only recorded where the learning feature is on for the project, and learning is off here or was off when this task ran."}</p>
+  : <p className="rv-muted" role="alert">This could not be loaded right now.</p>;
  const stages = query.data.stages;
- if (stages.length === 0) return <p className="rv-muted">Nothing was recorded for this task.</p>;
+ if (stages.length === 0) return <p className="rv-muted">Nothing was recorded for this task. Tasks that ran before loading was recorded, or while it was off, have no record.</p>;
  return <div>
   {stages.map(record => {
    const manifest = record.manifest;

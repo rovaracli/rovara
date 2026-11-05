@@ -381,7 +381,8 @@ export async function taskView(
     ...(run === undefined ? {} : { run }),
     ...pausedView,
     ...(runLimit === undefined ? {} : { runLimit }),
-    ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate }),
+    // QA6-12: the run limit shown is the one approving the plan sets (`planRunLimit`: the estimate, held to a lower limit the start asked for), the same as the confirmation and the broker use.
+    ...(task.runEstimate === undefined ? {} : { runEstimate: task.requestedRunLimitUsd === undefined ? task.runEstimate : { ...task.runEstimate, runLimitUsd: Math.min(task.runEstimate.runLimitUsd, task.requestedRunLimitUsd) } }),
     ...(sessionId === undefined ? {} : { sessionId, ...(deps.issuer === undefined ? {} : { sessionUrl: sessionLink(new URL(deps.issuer).origin, sessionId) }) }),
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.

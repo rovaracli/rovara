@@ -21,6 +21,8 @@ import { appendSessionEvent, readSessionEvents, slackReplyAuthor } from "../../p
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { recordWorkflowThreadNote } from "../../packages/broker/src/aws/developer-tasks.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
+import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
@@ -120,6 +122,28 @@ describe("reading events", () => {
     const drained = await drain(e);
     expect(drained.events.map((event) => event.eventId)).toEqual(expected);
     expect(SessionEventPageReaderSchema.safeParse(first).success).toBe(true);
+  });
+
+  // QA6-11: an event stores the name its person had when it was written, which for work begun before they chose a name is the "Member xxxxxxxx" placeholder. The header already reads the
+  // chosen name now; the conversation must too (by the stored person's id, never by the stored name).
+  it("shows a member actor by the name they chose now, in the actor and in the words, and leaves a person who chose none as stored", async () => {
+    const e = eventsWorld();
+    const placeholder = placeholderDisplayName(PRIYA);
+    await put(e,
+      e.event("started", "a", at(0), { actor: { kind: "member", developerId: PRIYA, name: placeholder }, text: `${placeholder} started Rovara Code: Bump the Stripe SDK` }),
+      e.event("linked", "b", at(1_000), { actor: { kind: "member", developerId: MIA, name: "Mia Real" }, text: "linked this session to Linear issue CHA-13." }),
+      e.event("status", "c", at(2_000), { text: "Running" }));
+    // Before a name is chosen the placeholder reads as stored (a positive control: the events were read and carry it).
+    const before = (await e.read(PRIYA)).events;
+    expect(before.find((event) => event.eventId === sessionEventId("started", "a"))?.actor).toEqual({ kind: "member", developerId: PRIYA, name: placeholder });
+    e.w.db.set({ ...chosenNameKey(PRIYA), entityType: "DEVELOPER_NAME", developerId: PRIYA, name: "Priya R", chosenAt: "2026-10-27T09:00:00.000Z" });
+    const after = (await e.read(PRIYA)).events;
+    const started = after.find((event) => event.eventId === sessionEventId("started", "a"))!;
+    expect(started.actor).toEqual({ kind: "member", developerId: PRIYA, name: "Priya R" });
+    expect(started.text).toBe("Priya R started Rovara Code: Bump the Stripe SDK");
+    expect(started.text).not.toContain(placeholder);
+    expect(after.find((event) => event.eventId === sessionEventId("linked", "b"))?.actor).toEqual({ kind: "member", developerId: MIA, name: "Mia Real" });
+    expect(after.find((event) => event.eventId === sessionEventId("status", "c"))?.actor).toBeUndefined();
   });
 
   // S3-L2: a timeline entry is free text, so it is read through the one email rule (the same as every other free text), not a rule of its own.

@@ -429,7 +429,9 @@ export async function decideTaskWorkflow(
   // Plan 3, Task 34: approving the coding plan accepts its run limit (what the plan under review carried, or works out now) when the approver's tier allows it.
   // Else the request is made first (a repeat of it is the same request) and the workflow blocks here with the decision recorded: its Retry coding, after the
   // limit is raised, starts what the approval would have started.
-  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId) : undefined;
+  // QA6-12: an approval that names the limit it was shown (the task page does) is checked against the limit `acceptRunLimit` itself works out, inside `settleRunLimit`, so the limit
+  // written is exactly the one acknowledged (a second, separate recompute could differ if the estimate's history or the spend policy changed in between).
+  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd) : undefined;
   // The corrected plan's approval ends the E2E correction fence, whether coding starts now or waits for the run limit.
   const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
     && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
@@ -537,6 +539,10 @@ export async function decideTaskWorkflow(
   return { task: view };
 }
 
+/** QA6-12: said when the plan's run limit is not the one the person was shown (the estimate was redone, or the project's limits changed, since the page loaded). */
+const runLimitChangedMessage = (shownUsd: number, nowUsd: number): string =>
+  `This plan's run limit is now $${String(nowUsd)}, not the $${String(shownUsd)} you were shown. Refresh the page, check the limit, and approve again.`;
+
 /** Plan 3, Task 34: what approving the coding plan did with its run limit. `baselineUsd` is what planning spent, where the run limit's window starts. */
 type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: number } | { accepted: false; message: string };
 
@@ -545,12 +551,16 @@ type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: numbe
  * (a proxy that can't say refuses the approval, as a Continue is). Not accepted: the `run_limit` request is made through Task 32's seam before anything is
  * written, so a workflow is never blocked on a request that was not made; without the seam (until Task 32 is wired) no request is made and the words are the same.
  */
-async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string): Promise<RunLimitOutcome> {
+async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd?: number): Promise<RunLimitOutcome> {
   const decision = await acceptRunLimit(
     // The approver's project role is read now: from the project's people where agents are set up, else through the caller's own project access.
     { ...estimateDependencies(deps), projectMembers: deps.agentRuns?.projectMembers ?? { roleOf: async () => (await deps.checkAccess(task.project)).role } },
     { task, approver: { developerId: caller.developerId, orgRole: caller.orgRole } },
   );
+  // QA6-12: both outcomes carry the limit that would be set; a different one than the person was shown is refused before anything is asked or written.
+  if (acknowledgedUsd !== undefined && decision.runLimitUsd !== acknowledgedUsd) {
+    throw Object.assign(agentXError("CONFIG_INVALID", runLimitChangedMessage(acknowledgedUsd, decision.runLimitUsd)), { pageReason: "changed" });
+  }
   if (decision.accepted) return { accepted: true, runLimitUsd: decision.runLimitUsd, baselineUsd: await capWindowBaseline(deps, task) ?? 0 };
   const ask = deps.agentRuns?.requestRunLimit;
   let asked = false;

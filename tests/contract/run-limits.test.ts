@@ -15,7 +15,7 @@ import {
   acceptRunLimit, estimateRun, recordRunCost, suggestMaxPerRun, type EstimatePath, type RequestRunLimit,
 } from "../../packages/broker/src/spend/estimate.js";
 import { writeSpendPolicy } from "../../packages/broker/src/spend/settings.js";
-import { createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { WorkflowDecisionRequestSchema, createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import type { AgentId } from "../../packages/contracts/src/agent-node.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
@@ -451,6 +451,15 @@ describe("a plan that reaches review", () => {
     expect((view.body.task as { runEstimate?: RunEstimate }).runEstimate).toEqual({ lowUsd: 1, highUsd: 3, runLimitUsd: 6, stopAtUsd: 6, basis: "default", samples: 0 });
   });
 
+  it("shows the limit approving the plan sets: the estimate held to a lower limit the start asked for, the same as the confirmation (QA6-12)", async () => {
+    const t = await world();
+    const { taskId } = await t.planned("QUICK");
+    t.h.db.set({ ...t.meta(taskId), requestedRunLimitUsd: 3 });
+    const view = await t.api(MAYA, "GET", `/v1/dev/tasks/${taskId}`);
+    expect((view.body.task as { runEstimate?: RunEstimate }).runEstimate).toMatchObject({ runLimitUsd: 3, highUsd: 3 });
+    expect(t.meta(taskId).runEstimate!.runLimitUsd).toBe(6);
+  });
+
   it("estimates from this project's and agent's history, and stops at the task's max per run when that is lower", async () => {
     const t = await world();
     seedCosts(t.h.db, "FULL", [1, 2, 2, 3, 4, 9]);
@@ -530,6 +539,86 @@ describe("approving the plan", () => {
     expect(again.status, JSON.stringify(again.body)).toBe(200);
     expect(t.requestRunLimit).toHaveBeenCalledTimes(1);
     expect(t.meta(taskId).workflow.revision).toBe(after.workflow.revision);
+  });
+
+  // QA6-12: the confirmation shows "current limit -> proposed limit" and the person's approval names the proposed limit; the broker refuses an approval that would set another one.
+  describe("the confirmation names the limit it sets (QA6-12)", () => {
+    const pageView = (t: Awaited<ReturnType<typeof world>>, taskId: string) => {
+      const deps = { documentClient: t.h.db, tableName: "state", actions: t.h.actions, log: () => undefined, orgId: TEST_ORG, ...(t.access === undefined ? {} : { modelAccess: t.access }),
+        checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() };
+      return getTaskDocumentView(deps, { orgId: TEST_ORG, developerId: MAYA.developerId } as never, taskId);
+    };
+    const decideShowing = (t: Awaited<ReturnType<typeof world>>, taskId: string, plan: { digest: string; revision: number }, acknowledgedRunLimitUsd: number) =>
+      t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: plan.digest, acknowledgedRunLimitUsd });
+
+    it("gives the waiting coding plan's view the limit the task has now and the limit the approval would set", async () => {
+      const t = await world();
+      seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      const { taskId } = await t.planned("QUICK");
+      expect(t.meta(taskId).budgetUsd).toBe(2);
+      const view = await pageView(t, taskId);
+      expect(view).toMatchObject({ waiting: { kind: "coding plan" }, runLimit: { currentUsd: 2, proposedUsd: 20 } });
+    });
+
+    it("takes an acknowledged limit of 0 (nothing to spend) as valid input", () => {
+      const base = { requestId: randomUUID(), expectedRevision: 1, decision: "APPROVE", reason: "ok", artifactDigest: "a".repeat(64) };
+      expect(WorkflowDecisionRequestSchema.safeParse({ ...base, acknowledgedRunLimitUsd: 0 }).success).toBe(true);
+      expect(WorkflowDecisionRequestSchema.safeParse({ ...base, acknowledgedRunLimitUsd: -1 }).success).toBe(false);
+    });
+
+    it("accepts an approval that names the limit it was shown, and sets that limit", async () => {
+      const t = await world();
+      seedCosts(t.h.db, "QUICK", [1, 2, 2, 3, 4, 9]);
+      const { taskId, plan } = await t.planned("QUICK");
+      const approved = await decideShowing(t, taskId, plan, 8);
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(t.meta(taskId)).toMatchObject({ budgetUsd: 8, workflow: { stage: "IMPLEMENT", state: "RUNNING" } });
+    });
+
+    it("writes exactly the acknowledged limit when the live estimate changes during the approval (no stored estimate): it is worked out once", async () => {
+      const t = await world();
+      const { taskId, workspaceId, plan } = await t.planned("QUICK");
+      // No stored estimate: the limit is worked out live from the cost history every time it is asked for.
+      const { runEstimate: _gone, ...bare } = t.meta(taskId); // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
+      t.h.db.set(bare);
+      expect(t.meta(taskId).runEstimate).toBeUndefined();
+      // The history grows right after the first read of it, as a run's cost landing mid-approval would.
+      const send = t.h.db.send.bind(t.h.db);
+      let reads = 0;
+      t.h.db.send = (async (command: { constructor: { name: string }; input?: { KeyConditionExpression?: string } }) => {
+        const answer = await send(command as never);
+        if (command.constructor.name === "QueryCommand" && JSON.stringify(command.input).includes("RUN_COST")) {
+          reads += 1;
+          if (reads === 1) seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+        }
+        return answer;
+      });
+      const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: plan.digest, acknowledgedRunLimitUsd: 6 });
+      expect(reads, "the history was read").toBeGreaterThan(0);
+      // The limit written is the 6 the person was shown, not the 20 the grown history would give a second read.
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(t.meta(taskId).budgetUsd).toBe(6);
+      expect(t.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toHaveLength(1);
+    });
+
+    it("refuses an approval that names another limit than the one it would set: nothing is written, started or asked", async () => {
+      const t = await world();
+      seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      const { taskId, workspaceId, plan } = await t.planned("QUICK");
+      const before = t.meta(taskId);
+      const refused = await decideShowing(t, taskId, plan, 6);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+      expect(JSON.stringify(refused.body)).toContain("$20");
+      expect(JSON.stringify(refused.body)).toContain("$6");
+      const after = t.meta(taskId);
+      expect(after.budgetUsd).toBe(before.budgetUsd);
+      expect(after.workflow).toMatchObject({ stage: before.workflow.stage, state: "WAITING", revision: before.workflow.revision, decisions: [] });
+      expect(t.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toEqual([]);
+      expect(t.requestRunLimit).not.toHaveBeenCalled();
+      // Positive control: the same approval naming the real limit goes on to the same place a plain approval does (blocked on the maintainer's approval at $20).
+      expect((await decideShowing(t, taskId, plan, 20)).status).toBe(200);
+      expect(t.requestRunLimit).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("owner decision 3 (option E): when the project or an agent's owner pays", () => {

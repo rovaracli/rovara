@@ -404,7 +404,7 @@ const RETRYABLE: readonly SessionStatus[] = ["failed", "cancelled"];
 const BLOCKED_STATUSES: readonly SessionStatus[] = ["needs_person", "paused"];
 
 /**
- * What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, takes over and shares, and retries a session that failed or was
+ * What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, takes over (not the owner: they already own it) and shares, and retries a session that failed or was
  * cancelled, or whose workflow is blocked (`state` is the session's summary now). Handing off is the owner's.
  */
 export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined; closable?: true | undefined; /** The task was closed by its owner: nothing can be steered, stopped, retried, taken over, handed off or closed again (it can still be watched, commented on and, at edit level, shared). */ closed?: true | undefined }): SessionAction[] {
@@ -417,7 +417,9 @@ export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" 
   if (atLeast(access.level, "edit")) {
     actions.push("stop");
     if (RETRYABLE.includes(state.status) || (state.workflowBlocked === true && BLOCKED_STATUSES.includes(state.status))) actions.push("retry");
-    actions.push("take_over", "share");
+    // QA6-11: taking over means becoming the owner, so the owner is never offered it.
+    if (!access.owner) actions.push("take_over");
+    actions.push("share");
   }
   if (access.orgAdmin && !actions.includes("stop")) actions.push("stop");
   if (access.owner) actions.push("handoff");

@@ -37,7 +37,7 @@ export function LoadedLessons({ taskId }: { taskId: string }) {
  const read = useLoadedLessons(taskId, true);
  if (read.isPending) return null;
  // The route is not there (learning not set up here), or this person can't open it: nothing is said about lessons.
- if (read.isError) return read.error instanceof ApiError && read.error.code !== "NOT_FOUND" ? <p className="rv-muted">The lessons could not be loaded right now.</p> : null;
+ if (read.isError) return read.error instanceof ApiError && read.error.code !== "NOT_FOUND" && read.error.status !== 404 ? <p className="rv-muted">The lessons could not be loaded right now.</p> : null;
  const groups = new Map<string, LoadedLessonRow[]>();
  for (const row of read.data.lessons) { const key = row.stage + "|" + String(row.round);groups.set(key, [...(groups.get(key) ?? []), row]); }
  return <section aria-label={T.LOADED_TITLE}>

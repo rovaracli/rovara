@@ -299,7 +299,8 @@ describe("sessionActionsFor", () => {
     expect(actions("view")).toEqual(["watch", "comment"]);
     expect(actions("use")).toEqual(["watch", "comment", "steer"]);
     expect(actions("edit")).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share"]);
-    expect(actions("edit", { owner: true })).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share", "handoff"]);
+    // QA6-11: the owner already owns the session, so Take over is not offered to them (and is to everyone else who can edit).
+    expect(actions("edit", { owner: true })).toEqual(["watch", "comment", "steer", "stop", "retry", "share", "handoff"]);
     expect(actions("view", { orgAdmin: true })).toEqual(["watch", "comment", "stop"]);
     expect(actions("edit", { orgAdmin: true })).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share"]);
   });
@@ -308,7 +309,8 @@ describe("sessionActionsFor", () => {
     for (const status of ["failed", "cancelled"] as const) expect(actions("edit", {}, status)).toContain("retry");
     for (const status of ["starting", "running", "needs_person", "paused", "waiting", "stopped", "succeeded"] as const) {
       expect(actions("edit", { owner: true }, status), status).not.toContain("retry");
-      expect(actions("edit", { owner: true }, status), status).toEqual(expect.arrayContaining(["stop", "take_over", "share", "handoff"]));
+      expect(actions("edit", { owner: true }, status), status).toEqual(expect.arrayContaining(["stop", "share", "handoff"]));
+      expect(actions("edit", { owner: true }, status), status).not.toContain("take_over");
     }
     // A lower level never gets it, whatever the status.
     expect(actions("use", {}, "failed")).not.toContain("retry");

@@ -62,6 +62,8 @@ export const PageDecisionInputSchema = z.object({
   selectedOptionalCheckIds: z.array(z.string().max(64)).max(20).optional(),
   /** Binds an approval to the exact ordered work breakdown the owner saw (the same value as the MCP tool's work_breakdown_digest); the broker checks it. */
   workBreakdownDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  /** QA6-12: the run limit the confirmation showed (a coding plan's approval sets it); the broker refuses the approval if it would set another. */
+  acknowledgedRunLimitUsd: z.number().nonnegative().max(100_000).optional(),
   note: z.string().trim().min(1).max(PAGE_NOTE_MAX_CHARS).optional(),
 }).strict().superRefine((input, context) => {
   if (new Set(input.answers.map((answer) => answer.decisionId)).size !== input.answers.length) context.addIssue({ code: "custom", path: ["answers"], message: "each decision once" });
