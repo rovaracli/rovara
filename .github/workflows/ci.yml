@@ -460,12 +460,21 @@ jobs:
           docker ps -aq --filter label=rovara.mcp-ci | xargs -r docker rm -f
           docker volume ls -q --filter label=rovara.mcp-ci | xargs -r docker volume rm -f
 
+  # One leg per browser, in parallel. The three browsers ran one after another in one job on the private repo's 2 vCPU runners: 36 of the 45 minutes in run 41973400105 (CI-E2E-2), and past 30 minutes
+  # once v1.2 landed (run 41270914332). The job keeps the name web-e2e: GitHub reports a matrix job's result as success only when every leg succeeded, so `local` and scripts/ci-gate.ts
+  # still wait for all three browsers through this one name, and a Markdown-only change still skips all three legs through the same `if`. Each leg installs, caches and uploads only its own browser.
+  # Every leg still builds the packages itself (tsc -b and build:web, about 3 minutes): the legs start together, so building once in a job of its own would not shorten the run, only
+  # add an artifact hand-off of every package's dist and the web build to keep correct.
   web-e2e:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    # Three browsers on the private repo's 2 vCPU runners ran past 30 minutes once v1.2 landed (run 41270914332).
     timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 45 || 20 }}
+    strategy:
+      # A failure in one browser must not cancel the others: each one's result is evidence.
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -479,7 +488,7 @@ jobs:
           # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
           NODE_OPTIONS: --max-old-space-size=6144
       - run: npm run build:web
-      # The browsers are ~500 MB each run; they only change with the Playwright version, which package-lock pins, so the key is that version. The system packages (apt) are not in the cache:
+      # A browser is ~500 MB; it only changes with the Playwright version, which package-lock pins, so the key is that version and the browser of this leg. The system packages (apt) are not in the cache:
       # a hit runs `install-deps` for them, a miss runs the full `install --with-deps`.
       - name: Playwright version
         id: playwright-version
@@ -496,22 +505,22 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-${{ matrix.browser }}
       - name: Install Playwright browsers and system packages
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium firefox webkit
+        run: npx playwright install --with-deps ${{ matrix.browser }}
       - name: Install Playwright system packages
         if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium firefox webkit
+        run: npx playwright install-deps ${{ matrix.browser }}
       - run: npx playwright test -c tests/web-e2e/playwright.config.ts
         env:
-          ROVARA_E2E_ALL_BROWSERS: "1"
-      # A failed run leaves the Playwright traces (retained on failure) and the HTML report to open with `npx playwright show-trace` or `show-report`.
+          ROVARA_E2E_BROWSER: ${{ matrix.browser }}
+      # A failed leg leaves the Playwright traces (retained on failure) and the HTML report of its browser to open with `npx playwright show-trace` or `show-report`.
       - name: Upload Playwright traces and report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: web-e2e-playwright
+          name: web-e2e-playwright-${{ matrix.browser }}
           path: |
             .test-build/web-e2e/results
             .test-build/web-e2e/report

@@ -49,18 +49,34 @@ test("repairs missing project spending settings through the authenticated editor
 });
 
 test("owner reviews, enables and disables enforcement through cookie-backed audited transactions", async ({ page, request }, testInfo) => {
- await page.goto("/app/admin/money/budgets");await activate(page.getByRole("button", { name: "Turn on enforcement" }));
- await expect(page.getByRole("heading", { name: "Review enforcement impacts" })).toBeVisible();
- await expect(page.getByText("No active tasks were visible at review time.")).toBeVisible();
- await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: testInfo.outputPath("enforcement-review-light.png"), fullPage: true });
- await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: testInfo.outputPath("enforcement-review-dark.png"), fullPage: true });
- await activate(page.getByRole("button", { name: "Confirm review and mark ready" }));await expect(page.getByRole("button", { name: "Enable enforcement" })).toBeVisible();
- await expect(page.getByText("Current enforcement: ready. Revision 2.")).toBeVisible();
- await activate(page.getByRole("button", { name: "Enable enforcement" }));await expect(page.getByText("Enforcement is enabled.", { exact: true })).toBeVisible();
- await evidenceShot(page, { path: testInfo.outputPath("enforcement-enabled.png"), fullPage: true });
- await activate(page.getByRole("button", { name: "Turn off enforcement" }));await expect(page.getByText("Current enforcement: disabled. Revision 4.")).toBeVisible();
- const evidence = await (await request.get("/__mock/admin-evidence")).json() as { audit: Array<{ action: string; facts?: { before?: string; after?: string } }> };
- expect(evidence.audit.filter(event => event.action === "spending.enrollment_changed").map(event => [event.facts?.before, event.facts?.after])).toEqual([["disabled", "ready"], ["ready", "enabled"], ["enabled", "disabled"]]);
- const calls = await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string }>;
- expect(calls.filter(row => row.method === "PUT" && row.path === "/v1/web/org/task-stop-policy/enrollment")).toHaveLength(3);
+ // ADMIN-E2E-FLK-1: this test timed out once at 30 s under load without saying where. Each stage is a named step (a timeout now names it), and nothing is asserted, photographed or read
+ // back until the section reports it is idle again (aria-busy="false": its fetch or transition has finished), so a slow runner delays the next action instead of racing it.
+ // The audit and request evidence is polled to its end state rather than read once.
+ const enforcement = page.getByRole("region", { name: "Company enforcement" }), idle = () => expect(enforcement).toHaveAttribute("aria-busy", "false");
+ await test.step("owner opens the review", async () => {
+  await page.goto("/app/admin/money/budgets");await activate(page.getByRole("button", { name: "Turn on enforcement" }));
+  await expect(page.getByRole("heading", { name: "Review enforcement impacts" })).toBeVisible();
+  await expect(page.getByText("No active tasks were visible at review time.")).toBeVisible();await idle();
+ });
+ await test.step("the review passes the accessibility check in both themes", async () => {
+  await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: testInfo.outputPath("enforcement-review-light.png"), fullPage: true });
+  await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: testInfo.outputPath("enforcement-review-dark.png"), fullPage: true });
+ });
+ await test.step("owner confirms the review and marks enforcement ready", async () => {
+  await activate(page.getByRole("button", { name: "Confirm review and mark ready" }));await expect(page.getByRole("button", { name: "Enable enforcement" })).toBeVisible();
+  await expect(page.getByText("Current enforcement: ready. Revision 2.")).toBeVisible();await idle();
+ });
+ await test.step("owner enables enforcement", async () => {
+  await activate(page.getByRole("button", { name: "Enable enforcement" }));await expect(page.getByText("Enforcement is enabled.", { exact: true })).toBeVisible();await idle();
+  await evidenceShot(page, { path: testInfo.outputPath("enforcement-enabled.png"), fullPage: true });
+ });
+ await test.step("owner turns enforcement off", async () => {
+  await activate(page.getByRole("button", { name: "Turn off enforcement" }));await expect(page.getByText("Current enforcement: disabled. Revision 4.")).toBeVisible();await idle();
+ });
+ await test.step("the audit trail and the writes show exactly the three transitions", async () => {
+  type Evidence = { audit: Array<{ action: string; facts?: { before?: string; after?: string } }> };
+  await expect.poll(async () => ((await (await request.get("/__mock/admin-evidence")).json()) as Evidence).audit.filter(event => event.action === "spending.enrollment_changed").map(event => [event.facts?.before, event.facts?.after]))
+   .toEqual([["disabled", "ready"], ["ready", "enabled"], ["enabled", "disabled"]]);
+  await expect.poll(async () => ((await (await request.get("/__mock/requests")).json()) as Array<{ method: string; path: string }>).filter(row => row.method === "PUT" && row.path === "/v1/web/org/task-stop-policy/enrollment").length).toBe(3);
+ });
 });
