@@ -78,7 +78,7 @@ function harness(options: {
   // The hourly claim is the one the AWS wiring sends (F13), evaluated by the fake table.
   const threadsTable = new FakeDynamoDb();
   const strict = new StrictSlackWeb();
-  const unlinkedStore = createUnlinkedChannelNoticeStore({ documentClient: threadsTable as never, tableName: "threads" });
+  const unlinkedStore = createUnlinkedChannelNoticeStore({ documentClient: threadsTable, tableName: "threads" });
   const releases: string[] = [];
   const noticedAt = (subject: string) => sharedNoticeKeyItem(threadsTable, subject)?.noticedAt;
   let countFailures = options.failCount ?? 0;
@@ -1649,17 +1649,17 @@ describe("the unlinked-channel notice's hour (QA6-06 follow-up)", () => {
     const client = (failWith?: { name: string }) => ({ send: async (command: unknown) => { sent.push(command); if (failWith !== undefined) throw Object.assign(new Error("x"), failWith); return {}; } });
 
     it("answers false for a hour already held (ConditionalCheckFailedException), true for a new one, and passes any other failure on", async () => {
-      expect(await createUnlinkedChannelNoticeStore({ documentClient: client() as never, tableName: "threads" }).claim("T/C", nowSeconds)).toBe(true);
-      expect(await createUnlinkedChannelNoticeStore({ documentClient: client({ name: "ConditionalCheckFailedException" }) as never, tableName: "threads" }).claim("T/C", nowSeconds)).toBe(false);
-      await expect(createUnlinkedChannelNoticeStore({ documentClient: client({ name: "ProvisionedThroughputExceededException" }) as never, tableName: "threads" }).claim("T/C", nowSeconds)).rejects.toMatchObject({ name: "ProvisionedThroughputExceededException" });
+      expect(await createUnlinkedChannelNoticeStore({ documentClient: client(), tableName: "threads" }).claim("T/C", nowSeconds)).toBe(true);
+      expect(await createUnlinkedChannelNoticeStore({ documentClient: client({ name: "ConditionalCheckFailedException" }), tableName: "threads" }).claim("T/C", nowSeconds)).toBe(false);
+      await expect(createUnlinkedChannelNoticeStore({ documentClient: client({ name: "ProvisionedThroughputExceededException" }), tableName: "threads" }).claim("T/C", nowSeconds)).rejects.toMatchObject({ name: "ProvisionedThroughputExceededException" });
     });
 
     it("removes only its own marker: a marker a later claim replaced stays (the release's condition fails quietly)", async () => {
-      await expect(createUnlinkedChannelNoticeStore({ documentClient: client({ name: "ConditionalCheckFailedException" }) as never, tableName: "threads" }).release("T/C", nowSeconds)).resolves.toBeUndefined();
-      await expect(createUnlinkedChannelNoticeStore({ documentClient: client({ name: "InternalServerError" }) as never, tableName: "threads" }).release("T/C", nowSeconds)).rejects.toMatchObject({ name: "InternalServerError" });
+      await expect(createUnlinkedChannelNoticeStore({ documentClient: client({ name: "ConditionalCheckFailedException" }), tableName: "threads" }).release("T/C", nowSeconds)).resolves.toBeUndefined();
+      await expect(createUnlinkedChannelNoticeStore({ documentClient: client({ name: "InternalServerError" }), tableName: "threads" }).release("T/C", nowSeconds)).rejects.toMatchObject({ name: "InternalServerError" });
       // Against the real condition: the marker of another time is not deleted, the one written at that time is.
       const table = new FakeDynamoDb();
-      const store = createUnlinkedChannelNoticeStore({ documentClient: table as never, tableName: "threads" });
+      const store = createUnlinkedChannelNoticeStore({ documentClient: table, tableName: "threads" });
       expect(await store.claim("T/C", nowSeconds)).toBe(true);
       await store.release("T/C", nowSeconds + 5);
       expect(table.get("CHANNEL#T/C", "UNLINKED_CHANNEL_NOTICE")).toBeDefined();
