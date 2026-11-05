@@ -3,11 +3,11 @@
 import { describe, expect, it } from "vitest";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
-import { eraseWorkspace } from "../../../packages/broker/src/team-record/erase.js";
+import { ERASE_SWEEP_DELAY_MS, erasePerson, eraseWorkspace, runErasureSweeps } from "../../../packages/broker/src/team-record/erase.js";
 import { readOpsFailures, recordOpsFailure } from "../../../packages/broker/src/team-record/ops-failures.js";
 import { createCodeHostTap, type CodeHostEvent, type CodeHostRepo } from "../../../packages/broker/src/team-record/sources/codehost.js";
 import { ORG_A, ORG_B, world } from "../../support/team-record-core.js";
-import { deleteDeps } from "../../support/team-record-delete.js";
+import { deleteDeps, seedComments } from "../../support/team-record-delete.js";
 import { world as ingestWorld, WS } from "../../support/team-record-ingest-fakes.js";
 
 const HOUR = 3_600_000;
@@ -65,6 +65,30 @@ describe("the writers", () => {
     const before = (await readOpsFailures(w.table, ORG_A, w.clock.ms)).eraseSweep;
     await runDeleteWorker(d.deps, ORG_A);
     expect((await readOpsFailures(w.table, ORG_A, w.clock.ms)).eraseSweep).toBe(before);
+  });
+
+  it("an erase second pass that is STUCK, though nothing threw, is counted too (it is re-queued, not failed)", async () => {
+    const w = world();
+    await seedComments(w);
+    const d = deleteDeps(w);
+    expect((await erasePerson(d.deps, ORG_A, { developerId: "dev-1", projects: ["web"] }, "stuck-1")).complete).toBe(true);
+    // positive control: a sweep that finishes counts nothing
+    w.clock.ms += ERASE_SWEEP_DELAY_MS + 1;
+    // the second pass finds a step it cannot finish (the lessons store is down): erasePerson catches it, reports incomplete and returns
+    const stuck = { ...d.deps, lessons: { ...d.deps.lessons!, erasePerson: async () => { throw new Error("lessons store down"); } } };
+    const first = await runErasureSweeps(stuck, ORG_A, w.clock.ms);
+    expect(first).toEqual({ ran: 1, final: 0 });
+    expect(await readOpsFailures(w.table, ORG_A, w.clock.ms)).toMatchObject({ eraseSweep: 1, tombstone: 0 });
+    // still stuck at the next run: counted again, and the sweep item is kept for another try
+    w.clock.ms += ERASE_SWEEP_DELAY_MS + 1;
+    await runErasureSweeps(stuck, ORG_A, w.clock.ms);
+    expect((await readOpsFailures(w.table, ORG_A, w.clock.ms)).eraseSweep).toBe(2);
+    expect(w.db.find((item) => item.entityType === "TEAM_RECORD_ERASE_SWEEP")).toHaveLength(1);
+    // recovered: the sweep finishes, nothing more is counted, the item goes
+    w.clock.ms += ERASE_SWEEP_DELAY_MS + 1;
+    expect(await runErasureSweeps(d.deps, ORG_A, w.clock.ms)).toEqual({ ran: 1, final: 1 });
+    expect((await readOpsFailures(w.table, ORG_A, w.clock.ms)).eraseSweep).toBe(2);
+    expect(w.db.find((item) => item.entityType === "TEAM_RECORD_ERASE_SWEEP")).toHaveLength(0);
   });
 
   it("a source delete nothing accepted (record.tombstone_failed) is reported to the tap's failure port with the company, never a person", async () => {

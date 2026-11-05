@@ -12,8 +12,8 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { addPurge, emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
 import { markAccessErased, placeOfUnit, removePersonFromUnit, unitsOfPerson } from "./access.js";
 import { identitySystem, markPersonErased } from "./erased.js";
-import { OPS_FAILURE_SK_PREFIX } from "./ops-failures.js";
-import { PERSON_RATE_KINDS, personRatePrefix } from "./query.js";
+import { OPS_FAILURE_SK_PREFIX, recordOpsFailure } from "./ops-failures.js";
+import { PERSON_RATE_KINDS, personRatePrefix, pickerPersonHash, slackAddRatePrefix } from "./query.js";
 import { changeScopePrincipals } from "./scope-work.js";
 import { REQUIRED_ERASE_STEPS, type EraseStep } from "./person-fields.js";
 import { eraseAskPerson } from "../agent-sessions/ask-erase.js";
@@ -167,7 +167,11 @@ export async function runErasureSweeps(deps: PurgeDependencies, orgId: OrgId, no
     ran += 1;
     const result = await erasePerson(deps, orgId, item.who as ErasedPerson, item.occurrence, DEFAULT_ERASE_BUDGET, { sweep: true });
     if (result.complete) { await deleteItem(deps.table, { pk: teamRecordPk(orgId), sk: item.sk }); final += 1; }
-    else await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { ...item, dueAt: nowMs + ERASE_SWEEP_DELAY_MS, indexExpiresAt: sweepExpiry(nowMs + ERASE_SWEEP_DELAY_MS) } }));
+    else {
+      await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { ...item, dueAt: nowMs + ERASE_SWEEP_DELAY_MS, indexExpiresAt: sweepExpiry(nowMs + ERASE_SWEEP_DELAY_MS) } }));
+      // SRL-6: an erase whose second pass found work it could not finish is STUCK, though nothing threw: counted once for each run that finds it so, for the company's Health page.
+      await recordOpsFailure(deps.table, orgId, "erase_sweep", nowMs);
+    }
   }
   return { ran, final };
 }
@@ -224,8 +228,10 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     }
     // The company's own tier-0 floor and proposals live in the workspace's project-less partition.
     if (context.who.developerId !== undefined) await scrubTier0Developer(context.deps.table, context.orgId, undefined, context.who.developerId);
-    // SRL-9: the rate items that carry the developer id in their sort key (record searches, the source picker). They expire within hours, but an erase still covers them. The prefix includes the closing `#`.
-    if (context.who.developerId !== undefined) await eraseRateItems(context.deps.table, context.orgId, context.who.developerId);
+    // SRL-9: the items that carry the developer id (record searches and the source picker's rate items in the sort key, the picker's listing sessions as a hash) and the slack-add rate items keyed by a hash of a
+    // Slack user id. They expire within hours, but an unkeyed hash of an enumerable id is personal data, so an erase still covers them. A failure here FAILS the config step on purpose (privacy over best
+    // effort): the step is reported unfinished and the next run, and the delayed second pass, try again.
+    await eraseRateItems(context.deps.table, context.orgId, context.who.developerId, context.ids);
     return known;
   },
   // Lessons: those that rest on the person are HARD-deleted whatever their code citations say, the person is scrubbed from the rest (authorship, approvals), and the id leaves every
@@ -280,12 +286,47 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
   },
 };
 
-/** Removes the person's rate items (`RATE#<what>|person:<id>#<window>`). A few items per kind at most (each window expires within hours), so one bounded query per kind. */
-async function eraseRateItems(table: PurgeDependencies["table"], orgId: OrgId, developerId: string): Promise<void> {
-  for (const what of PERSON_RATE_KINDS) {
-    const { items } = await queryPrefix(table, orgId, undefined, personRatePrefix(what, developerId), 500);
-    for (const item of items) if (typeof item.pk === "string" && typeof item.sk === "string") await deleteItem(table, { pk: item.pk, sk: item.sk });
+/** The most pages (500 items each) of one prefix an erase walks; past it the step fails and the next run goes on. */
+const RATE_ERASE_MAX_PAGES = 100;
+/** Slack user ids as slack-add keys them (a rate item is keyed by a hash of the bare id). A source id that is not shaped like one is not a candidate. */
+const SLACK_USER_ID = /^[UW][A-Z0-9]{2,31}$/u;
+
+/**
+ * Deletes every item under `prefix` whose sort key continues with `tail` (the rest after the prefix must be exactly the writer's shape, so an id that merely starts with this one, or contains `#`, is never touched),
+ * a page at a time until the query is no longer truncated (what is deleted no longer shows up, so the next query reads the rest). A full page that deletes nothing cannot make progress: the step fails.
+ */
+async function deleteAllUnder(table: PurgeDependencies["table"], orgId: OrgId, prefix: string, tail: RegExp): Promise<void> {
+  for (let page = 0; page < RATE_ERASE_MAX_PAGES; page += 1) {
+    const { items, truncated } = await queryPrefix(table, orgId, undefined, prefix, 500);
+    let deleted = 0;
+    for (const item of items) {
+      if (typeof item.pk !== "string" || typeof item.sk !== "string" || !tail.test(item.sk.slice(prefix.length))) continue;
+      await deleteItem(table, { pk: item.pk, sk: item.sk });
+      deleted += 1;
+    }
+    if (!truncated) return;
+    if (deleted === 0) break;
   }
+  throw new Error("erase: too many rate items");
+}
+/** The window a rate item ends with: `#<digits>`. A person's item is `<prefix><window digits>` (the prefix ends in `#`); a slack-add item has the channel first. */
+const RATE_WINDOW = /^\d+$/u;
+const SLACK_ADD_TAIL = /^[^#|]+#\d+$/u;
+
+/**
+ * Removes the person's rate items (`RATE#<what>|person:<id>#<window>`; each window expires within hours), the slack-add rate items of each of their Slack ids (`RATE#slack-add|<hash>|<channel>#<window>`) and the
+ * picker listing sessions they opened (`SRCOPT#`, whose `person` is a hash of the company and the developer id).
+ */
+async function eraseRateItems(table: PurgeDependencies["table"], orgId: OrgId, developerId: string | undefined, sourceIds: readonly string[]): Promise<void> {
+  if (developerId !== undefined) {
+    for (const what of PERSON_RATE_KINDS) await deleteAllUnder(table, orgId, personRatePrefix(what, developerId), RATE_WINDOW);
+    // Sessions expire in 15 minutes, so the company has few; if the query still cannot read them all, the step fails and is repeated.
+    const wanted = pickerPersonHash(orgId, developerId);
+    const sessions = await queryPrefix(table, orgId, undefined, SOURCE_OPTIONS_SK_PREFIX, 5_000);
+    for (const item of sessions.items) if (item.person === wanted && typeof item.sk === "string") await deleteItem(table, { pk: teamRecordPk(orgId), sk: item.sk });
+    if (sessions.truncated) throw new Error("erase: too many picker sessions");
+  }
+  for (const id of new Set(sourceIds.filter((value) => SLACK_USER_ID.test(value)))) await deleteAllUnder(table, orgId, slackAddRatePrefix(orgId, id), SLACK_ADD_TAIL);
 }
 
 /** The most passes of the Ask erasure in one erase run (each pass handles up to 200 Asks and 200 mentions). */

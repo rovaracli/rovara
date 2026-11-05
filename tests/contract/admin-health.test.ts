@@ -112,8 +112,8 @@ describe("GET /v1/admin/health, each check's other answers", () => {
     const asked: string[] = [];
     const answer = (counts: { eraseSweep: number; tombstone: number; lastAt?: string }) => ({ teamRecordFailures: async (orgId: string) => { asked.push(orgId); return counts; } });
     expect((await health(answer({ eraseSweep: 0, tombstone: 0 }))).teamRecordCheck).toEqual({ status: "ok", detail: "no erase or source delete failures in the last 24 hours" });
-    expect((await health(answer({ eraseSweep: 1, tombstone: 0, lastAt: "2026-11-05T10:00:00.000Z" }))).teamRecordCheck).toEqual({ status: "warn", detail: "1 erase second pass failed in the last 24 hours; latest 2026-11-05T10:00:00.000Z" });
-    expect((await health(answer({ eraseSweep: 2, tombstone: 3 }))).teamRecordCheck).toEqual({ status: "warn", detail: "2 erase second passes failed, 3 source deletes not accepted in the last 24 hours" });
+    expect((await health(answer({ eraseSweep: 1, tombstone: 0, lastAt: "2026-11-05T10:00:00.000Z" }))).teamRecordCheck).toEqual({ status: "warn", detail: "1 erase second pass failed or stuck in the last 24 hours; latest 2026-11-05T10:00:00.000Z" });
+    expect((await health(answer({ eraseSweep: 2, tombstone: 3 }))).teamRecordCheck).toEqual({ status: "warn", detail: "2 erase second passes failed or stuck, 3 source deletes not accepted in the last 24 hours" });
     // the probe is asked for the caller's company, never another
     expect(asked).toEqual([TEST_ORG, TEST_ORG, TEST_ORG]);
     const failing = await health({ teamRecordFailures: async () => { throw Object.assign(new Error("secret detail"), { name: "AccessDenied" }); } });

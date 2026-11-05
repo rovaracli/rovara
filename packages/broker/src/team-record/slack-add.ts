@@ -30,7 +30,7 @@ import { readProjectRole } from "../learning/standing.js";
 import { OrgStore } from "../org/store.js";
 import type { AuditDeps } from "../audit/outbox.js";
 import { allowedRetention, defaultRetention, type TeamRecordEdition } from "./edition.js";
-import type { RateLimiter } from "./query.js";
+import { slackAddPersonHash, type RateLimiter } from "./query.js";
 import type { RecordRouteReply } from "./routes.js";
 import { classifySlack, type SlackFacts } from "./source-places.js";
 import { markSlackAddStarted, markSlackAddUsed, putSlackAddPrompt, readSlackAddPrompt } from "./source-store.js";
@@ -144,7 +144,7 @@ export interface SlackAddDeps {
 }
 
 const sha = (value: string): string => createHash("sha256").update(value).digest("hex");
-const personOf = (orgId: OrgId, slackUserId: string): string => sha(`slack-add\0${orgId}\0${slackUserId}`);
+const personOf = slackAddPersonHash;
 /** A requestId (a UUID the route accepts) derived from the Slack interaction: one press, however many times Slack delivers it, is one request. */
 function requestIdOf(teamId: string, userId: string, interactionId: string): string {
   const hex = sha(`slack-add-request\0${teamId}\0${userId}\0${interactionId}`);

@@ -4,6 +4,7 @@
 import { ADMIN_API_VERSION, DEVELOPER_API_VERSION, MISSING_ALARM_STATE, type AdminHealthCheck, type OrgId, type AdminHealthResponse, type SlackAuthCheckResponse } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import { requireOrgId } from "../org/resolve.js";
+import { opsFailuresCheck } from "../team-record/ops-failures.js";
 import { adminProjects, projectWorkspaceRows, readFailures, type AdminReadDependencies } from "./admin-reads.js";
 
 /** Function-valued fields, not methods, so a probe can be called on its own (no `this`). */
@@ -54,19 +55,6 @@ function queuesCheck(depths: ReadonlyArray<{ depth: number | null }>): AdminHeal
   if (holding > 0) return { status: "warn", detail: `${queueCount(holding)} ${holding === 1 ? "holds" : "hold"} messages${unread === 0 ? "" : `; ${unread} could not be read`}` };
   if (unread > 0) return { status: "unknown", detail: `${unread} of ${queueCount(depths.length)} could not be read` };
   return { status: "ok", detail: `${queueCount(depths.length)}, all empty` };
-}
-
-/**
- * SRL-6: erase second passes that failed and source deletes no durable path accepted, in the last 24 hours. Any is a warning: a delete is stuck or was lost (the record keeps the rows hidden meanwhile), and an admin
- * should look at the logs (`record.erase_sweep_failed`, `record.tombstone_failed`). Counts only; the detail names no person, source or error text.
- */
-function teamRecordCheck(failures: { eraseSweep: number; tombstone: number; lastAt?: string }): AdminHealthCheck {
-  const problems = [
-    ...(failures.eraseSweep === 0 ? [] : [`${failures.eraseSweep} erase second pass${failures.eraseSweep === 1 ? "" : "es"} failed`]),
-    ...(failures.tombstone === 0 ? [] : [`${failures.tombstone} source delete${failures.tombstone === 1 ? "" : "s"} not accepted`]),
-  ];
-  if (problems.length === 0) return { status: "ok", detail: "no erase or source delete failures in the last 24 hours" };
-  return { status: "warn", detail: `${problems.join(", ")} in the last 24 hours${failures.lastAt === undefined ? "" : `; latest ${failures.lastAt}`}` };
 }
 
 export async function adminHealth(deps: AdminReadDependencies, identity: AuthenticatedIdentity): Promise<AdminHealthResponse> {
@@ -127,7 +115,7 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
   const teamRecordPart = async (): Promise<Pick<AdminHealthResponse, "teamRecordCheck">> => {
     if (probes.teamRecordFailures === undefined) return {};
     try {
-      return { teamRecordCheck: teamRecordCheck(await within(ms, () => probes.teamRecordFailures!(requireOrgId(identity.orgId)))) };
+      return { teamRecordCheck: opsFailuresCheck(await within(ms, () => probes.teamRecordFailures!(requireOrgId(identity.orgId)))) };
     } catch (error) {
       return { teamRecordCheck: failed("the team record's delete and erase failures", ms, error) };
     }

@@ -62,3 +62,16 @@ export async function readOpsFailures(table: TeamRecordTable, orgId: OrgId, nowM
   }
   return { eraseSweep: totals.erase_sweep, tombstone: totals.tombstone, ...(lastAt === undefined ? {} : { lastAt }) };
 }
+
+/**
+ * What the Health pages say about the counts (the admin API and the web admin page): any failure in the last 24 hours is a warning, because a delete is stuck or was lost (the record keeps the rows hidden
+ * meanwhile) and an admin should look at the logs (`record.erase_sweep_failed`, `record.tombstone_failed`). Counts and a time only; no person, source or error text.
+ */
+export function opsFailuresCheck(failures: OpsFailures): { status: "ok" | "warn"; detail: string } {
+  const problems = [
+    ...(failures.eraseSweep === 0 ? [] : [`${failures.eraseSweep} erase second pass${failures.eraseSweep === 1 ? "" : "es"} failed or stuck`]),
+    ...(failures.tombstone === 0 ? [] : [`${failures.tombstone} source delete${failures.tombstone === 1 ? "" : "s"} not accepted`]),
+  ];
+  if (problems.length === 0) return { status: "ok", detail: "no erase or source delete failures in the last 24 hours" };
+  return { status: "warn", detail: `${problems.join(", ")} in the last 24 hours${failures.lastAt === undefined ? "" : `; latest ${failures.lastAt}`}` };
+}
