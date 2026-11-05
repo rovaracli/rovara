@@ -10,15 +10,26 @@ import { grantRoleOf } from "./project-roles.js";
 export async function canTakeOverNow(
   table: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }, task: { orgId?: string | undefined; project: string }, developerId: string,
 ): Promise<boolean> {
-  if (task.orgId === undefined) return false;
+  return await takeOverStanding(table, task, developerId) === "yes";
+}
+
+/**
+ * `canTakeOverNow` with a third answer: "unconfirmed" is a company member with no project grant row at all, who may still hold a project role through a Slack channel (the real Take over asks the channel; this
+ * read does not), so they are left out and only counted (S2-FU-CHANNEL). A viewer grant, a missing or non-writer company role are plain "no".
+ */
+export async function takeOverStanding(
+  table: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }, task: { orgId?: string | undefined; project: string }, developerId: string,
+): Promise<"yes" | "no" | "unconfirmed"> {
+  if (task.orgId === undefined) return "no";
   const orgId = task.orgId;
   const read = async (key: { pk: string; sk: string }) => (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
   const member = await read(orgMemberKey(orgId, developerId));
   const role = member?.role;
-  if (role !== "owner" && role !== "admin" && role !== "member") return false;
-  if (role === "owner" || role === "admin") return true;
+  if (role !== "owner" && role !== "admin" && role !== "member") return "no";
+  if (role === "owner" || role === "admin") return "yes";
   const grant = grantRoleOf(await read(projectMemberKey(orgId, developerId, task.project)));
-  return grant !== undefined && projectAllows(grant, "start_tasks");
+  if (grant === undefined) return "unconfirmed";
+  return projectAllows(grant, "start_tasks") ? "yes" : "no";
 }
 
 /** Plan 3's budget check for the person who would pay from now on (`SessionTakeOverDependencies.admitPayer`): throws that budget's own refusal when they have no room. */

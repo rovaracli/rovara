@@ -322,27 +322,32 @@ export class TaskSandbox {
   }
 
   /** Removes the container. Safe to call again, and when nothing started. */
-  async dispose(): Promise<void> {
-    if (this.disposed) return;
+  async dispose(): Promise<boolean> {
+    if (this.disposed) return this.removedCleanly;
     this.disposed = true;
     // Test services (TS-RUN-4): the run goes first (the sandbox leaves the services network, the helpers, the network and the run's directory go), whatever happens to the container after.
     if (this.services !== undefined) await this.services.teardown().catch(() => undefined);
-    if (this.starting === undefined) return;
+    if (this.starting === undefined) return true;
     // A start still in flight finishes first, so the removal sees the container it creates.
     await this.starting.catch(() => undefined);
-    await this.remove();
+    this.removedCleanly = await this.remove();
+    return this.removedCleanly;
   }
 
-  /** `docker rm --force`, once more if it fails; a container that cannot be removed is logged, since it keeps the workspace mounted. */
-  private async remove(): Promise<void> {
+  /** Whether the last `dispose` found the container gone (true also when nothing was started); false when `docker rm` failed, so processes in it may still run (S4-L2). */
+  private removedCleanly = true;
+
+  /** `docker rm --force`, once more if it fails; a container that cannot be removed is logged, since it keeps the workspace mounted. True when the container is gone. */
+  private async remove(): Promise<boolean> {
     let failure = "";
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       const result = await this.docker.run(["rm", "--force", this.name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS })
         .catch((error: unknown) => ({ exitCode: -1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }));
-      if (result.exitCode === 0 || /no such container/iu.test(result.stderr)) return;
+      if (result.exitCode === 0 || /no such container/iu.test(result.stderr)) return true;
       failure = (result.stderr || result.stdout).trim().split("\n").slice(-3).join(" ").slice(0, 400) || `exit ${String(result.exitCode)}`;
     }
     (this.options.log ?? logEvent)({ event: "task-sandbox.remove.failed", container: this.name, taskId: this.options.taskId, reason: failure });
+    return false;
   }
 
   private async startContainer(): Promise<void> {

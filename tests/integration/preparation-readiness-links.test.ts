@@ -110,6 +110,22 @@ describe("S4-L2: the check for escaping links is made after the task sandbox is 
     expect(manifest.complete).toBe(false);
   });
 
+  it("I1: a sandbox that cannot be removed fails the preparation as not complete, whatever the link check would find", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agentx-readiness-stuck-sandbox-"));
+    let removeCalls = 0;
+    const docker: DockerCli = { run: async (args) => {
+      if (args[0] === "rm" && args.includes("--force")) { removeCalls += 1; return { exitCode: 1, stdout: "", stderr: "device or resource busy" }; }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    } };
+    await expect(prepareWorkspace({
+      rootPath: root, project: project(false), materializer: clone(await fixture()), taskShell: { kind: "sandbox", docker, image: IMAGE },
+    })).rejects.toThrow("could not be removed");
+    expect(removeCalls).toBeGreaterThanOrEqual(2);
+    const manifest = JSON.parse(await readFile(join(root, ".agentx/preparation-manifest.json"), "utf8")) as { complete: boolean; failure?: string };
+    expect(manifest.complete).toBe(false);
+    expect(manifest.failure).toContain("could not be removed");
+  });
+
   it("positive control: the same preparation in the sandbox, with nothing made at its removal, completes", async () => {
     const root = await mkdtemp(join(tmpdir(), "agentx-readiness-late-link-ok-"));
     const fake = sandboxWith(async () => undefined);

@@ -301,14 +301,16 @@ describe("starting and stopping a sandbox", () => {
     const retried = fakeDocker({ failRm: 1 });
     const first = new TaskSandbox({ rootPath: root, taskId: TASK, docker: retried.docker, image: IMAGE, log: (event) => events.push(event) });
     await first.exec(["true"], {});
-    await first.dispose();
+    await expect(first.dispose()).resolves.toBe(true);
     expect(retried.verbs("rm").filter((call) => call.includes(first.name))).toHaveLength(2);
     expect(events).toEqual([]);
 
     const stuck = fakeDocker({ failRm: 5 });
     const second = new TaskSandbox({ rootPath: root, taskId: TASK, docker: stuck.docker, image: IMAGE, log: (event) => events.push(event) });
     await second.exec(["true"], {});
-    await expect(second.dispose()).resolves.toBeUndefined();
+    // I1: the answer says the container is not gone (prepare refuses to call the workspace checked); a second dispose says the same.
+    await expect(second.dispose()).resolves.toBe(false);
+    await expect(second.dispose()).resolves.toBe(false);
     expect(stuck.verbs("rm").filter((call) => call.includes(second.name))).toHaveLength(2);
     expect(events).toEqual([{ event: "task-sandbox.remove.failed", container: second.name, taskId: TASK, reason: "device or resource busy" }]);
   });

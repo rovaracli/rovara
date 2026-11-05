@@ -459,7 +459,8 @@ async function prepareWorkspaceOnce(options: PrepareWorkspaceOptions): Promise<P
     // S4-L2: and made after the sandbox is gone, so a process a readiness command left running cannot make a link after the check. The test-services record is taken first and the sandbox removed
     // (both are safe to do again, as the end of this function does). A devcontainer outlives the preparation: what is read from this workspace later must not follow links either.
     await services?.finish();
-    await sandbox?.dispose();
+    // A sandbox that could not be removed may still run a readiness command's background process, so the check below would prove nothing: the preparation is not complete (the manifest says so).
+    if (await sandbox?.dispose() === false) throw new Error("the task sandbox could not be removed after the readiness commands, so the workspace was not checked for links and is not complete");
     await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, options.venvLinkPolicy);
     const readinessFailure = readiness.ready ? undefined : describeReadinessFailure(project.readiness, readiness.results);
     // Spec 051 Ruling M: before the workspace is READY, so a task never plans from an outcome this preparation replaced.

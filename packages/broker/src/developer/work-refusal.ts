@@ -8,7 +8,7 @@ import { flushAuditEvents, recordAuditEventDurably } from "../audit/flush.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { viewerCannotStartTasksMessage } from "./project-roles.js";
-import { canTakeOverNow, takerBudgetAllows, type AdmitTaker } from "./take-over-eligible.js";
+import { takeOverStanding, takerBudgetAllows, type AdmitTaker } from "./take-over-eligible.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { admitWork } from "../spend/admission.js";
 import { requireProjectSendBackRole } from "./task-access.js";
@@ -82,16 +82,22 @@ export const admitTakerOf = (deps: { documentClient: { send(command: unknown): P
  */
 export async function notifyOthersOfStop(
   table: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; admitPayer?: AdmitTaker | undefined }, task: DeveloperTaskRecord, stopId: string, now: string,
+  /** Told how many co-owners (with a Slack user) were left out because their project access could not be confirmed from stored rows (a count only; S2-FU-CHANNEL). */
+  reportSkipped?: (skippedUnconfirmed: number) => void,
 ): Promise<number> {
   const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" }, ConsistentRead: true })) as { Item?: { people?: unknown } };
   const people = response.Item?.people;
   if (!Array.isArray(people)) return 0;
   const owner = tryEffectiveTaskOwner(task)?.developerId;
   let written = 0;
+  let skippedUnconfirmed = 0;
   for (const person of people as Array<{ developerId?: unknown; slackUserId?: unknown; role?: unknown }>) {
     // Only a co-owner can Take over (a commenter has the session level `use`), and only one who can really do it now.
     if (typeof person.developerId !== "string" || person.developerId === owner || person.role !== "owner"
-      || typeof person.slackUserId !== "string" || person.slackUserId === "" || !await canTakeOverNow(table, task, person.developerId) || !await takerBudgetAllows(table.admitPayer, task, person.developerId)) continue;
+      || typeof person.slackUserId !== "string" || person.slackUserId === "") continue;
+    const standing = await takeOverStanding(table, task, person.developerId);
+    if (standing === "unconfirmed") { skippedUnconfirmed += 1; continue; }
+    if (standing !== "yes" || !await takerBudgetAllows(table.admitPayer, task, person.developerId)) continue;
     try {
       await table.documentClient.send(new PutCommand({ TableName: table.tableName, ConditionExpression: "attribute_not_exists(pk)", Item: {
         pk: `DEVTASK#${task.taskId}`, sk: `OWNER_STOP_NOTIFY#${stopId}#${person.developerId}`, entityType: "TASK_OWNER_STOPPED_NOTIFICATION", schemaVersion: 1,
@@ -101,6 +107,7 @@ export async function notifyOthersOfStop(
       if ((error instanceof Error ? error.name : "") !== "ConditionalCheckFailedException") throw error;
     }
   }
+  if (skippedUnconfirmed > 0) reportSkipped?.(skippedUnconfirmed);
   return written;
 }
 
@@ -125,7 +132,8 @@ export async function recordWorkRefused(
   // Only a loss of the owner's own place tells the others (someone else can take the task over); an archived project, a Slack outage or a lost company are nobody's to take over.
   if (notify !== undefined && (input.reason === "owner_removed" || input.reason === "no_project_access" || input.reason === "viewer")) {
     try {
-      await notifyOthersOfStop(notify, notify.task, `${input.path}#${input.occurrence}`, input.now);
+      await notifyOthersOfStop(notify, notify.task, `${input.path}#${input.occurrence}`, input.now,
+        (skipped) => log({ event: "task.work_refused_co_owners_unconfirmed", taskId: input.taskId, skipped }));
     } catch (error) {
       log({ event: "task.work_refused_notify_failed", taskId: input.taskId, error: error instanceof Error ? error.name : "unknown" });
     }

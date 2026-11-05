@@ -237,7 +237,10 @@ async function clearSlackWait(dependencies: AwsBrokerDependencies, item: Workflo
     try {
       await dependencies.documentClient.send(command);
     } catch (error) {
-      if (!isConditional(error)) console.log(JSON.stringify({ component: "broker", event: "workflow.slack_wait_clear_failed", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown" }));
+      // One EMF line, so the failures can be counted (a stale clock can end a later wait early; it heals on the next pass).
+      if (!isConditional(error)) console.log(JSON.stringify({
+        _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: process.env.AGENTX_METRICS_NAMESPACE || "AgentX", Dimensions: [[]], Metrics: [{ Name: "SlackWaitClearFailed", Unit: "Count" }] }] },
+        component: "broker", event: "workflow.slack_wait_clear_failed", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown", SlackWaitClearFailed: 1 }));
     }
   };
   if ((item as { slackWaitSince?: unknown }).slackWaitSince !== undefined) {

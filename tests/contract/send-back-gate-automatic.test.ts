@@ -392,6 +392,37 @@ describe("others who can take the task over are told once when Rovara stops a st
     expect(rows(viewer, b.taskId)).toEqual([]);
   });
 
+  it("S2-FU-CHANNEL: a co-owner whose project access cannot be confirmed from stored rows is not told, and only a count of them is logged", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    people(t, round.taskId);
+    const task = t.meta(round.taskId) as never;
+    const table = { documentClient: t.h.db as never, tableName: "state" };
+    // Omar is a company member with no grant row at all (he may hold a role through the project's channel, which stored rows cannot show).
+    const counts: number[] = [];
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#31", NOW, (skipped) => counts.push(skipped))).toBe(0);
+    expect(counts).toEqual([1]);
+    // A viewer grant is a plain no, not an unknown, and a told co-owner is not counted.
+    withGrant(t, OMAR.developerId, "viewer");
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#40", NOW, (skipped) => counts.push(skipped))).toBe(0);
+    withGrant(t, OMAR.developerId);
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#50", NOW, (skipped) => counts.push(skipped))).toBe(1);
+    expect(counts).toEqual([1]);
+    // Through a refusal, the log line carries the count and no ids.
+    const unknown = await world();
+    const other = await unknown.ciRound();
+    people(unknown, other.taskId);
+    unknown.notAMember();
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
+    try { await unknown.sweep(); } finally { spy.mockRestore(); }
+    const logged = lines.filter((line) => line.includes("task.work_refused_co_owners_unconfirmed"));
+    expect(logged).toHaveLength(1);
+    expect(JSON.parse(logged[0]!)).toMatchObject({ event: "task.work_refused_co_owners_unconfirmed", skipped: 1 });
+    expect(logged[0]).not.toContain(OMAR.developerId);
+    expect(logged[0]).not.toContain("U0OMAR0001");
+  });
+
   it("a company owner or admin who is a co-owner is told even with no grant (a maintainer of every project)", async () => {
     const t = await world();
     const round = await t.ciRound();
@@ -541,6 +572,52 @@ describe("M6: a Slack outage defers with an age cap and says so on the task", ()
     expect(remaining[0]!.slackWaitSince).toBeUndefined();
     expect(t.meta(round.taskId).workflow.accessCheckWaitSince).toBeUndefined();
     expect(t.refused()).toEqual([]);
+  });
+
+  /** A queued step with an old Slack wait left on its row and on the task (as an earlier miss left them), and Slack answering now. */
+  const withOldWait = (t: Awaited<ReturnType<typeof world>>, taskId: string) => {
+    const task = t.meta(taskId);
+    const row = t.rows(taskId)[0]!;
+    const past = new Date(Date.now() - 31 * 60_000).toISOString();
+    t.h.db.set({ ...task, workflow: { ...task.workflow, accessCheckWaitSince: { revision: task.workflow.revision, since: past } } });
+    t.h.db.set({ ...row, slackWaitSince: past });
+    t.h.channelMembers.mockImplementation(async (request) => ({ ok: true, memberOf: request.slackUserId === MAYA.slackUserId ? request.channelIds : [] }));
+    return task.workflow.revision;
+  };
+  /** The writes that ended a wait: the clock removed from a dispatch row, the note removed from a task. */
+  const waitClears = (t: Awaited<ReturnType<typeof world>>, run: () => Promise<unknown>) => {
+    const send = t.h.db.send.bind(t.h.db);
+    const seen: string[] = [];
+    t.h.db.send = async (command) => {
+      const expression = (command as unknown as { input?: { UpdateExpression?: string } }).input?.UpdateExpression;
+      if (expression === "REMOVE slackWaitSince" || expression === "REMOVE workflow.accessCheckWaitSince") seen.push(expression);
+      return send(command);
+    };
+    return run().finally(() => { t.h.db.send = send; }).then(() => seen);
+  };
+
+  it("S2-FU: a plan-grounding hold also ends an old wait when Slack answers", async () => {
+    // Grounding: the kind asks inside its own start, so the dispatch itself must end the wait.
+    const grounding = await world();
+    const round = await grounding.stepRound("PLAN");
+    const task = grounding.meta(round.taskId);
+    const running = { ...task.workflow, state: "RUNNING" as const, revision: task.workflow.revision + 1 };
+    grounding.h.db.set({ ...task, workflow: running, planGrounding: { artifactId: "plan-v1", version: 1, artifactSha256: "a".repeat(64), artifactCreatedAt: NOW, planOperationId: randomUUID(), attempt: 1 } });
+    for (const old of grounding.rows(round.taskId)) grounding.h.db.delete({ pk: String(old.pk), sk: String(old.sk) });
+    grounding.h.db.set((workflowDispatchItem("state", round.taskId, running.revision, "GROUNDING", "a".repeat(64), NOW) as { Put: { Item: Record<string, unknown> } }).Put.Item);
+    withOldWait(grounding, round.taskId);
+    expect(await waitClears(grounding, () => grounding.sweep())).toEqual(expect.arrayContaining(["REMOVE slackWaitSince", "REMOVE workflow.accessCheckWaitSince"]));
+  });
+
+  it("S2-FU: a checks round already underway also ends an old wait when Slack answers", async () => {
+    // Checks with a round admitted: the round's start asked long ago, so nothing asks again here, but the wait it left is over.
+    const checks = await world();
+    const second = await checks.stepRound("CHECKS");
+    const base = checks.meta(second.taskId);
+    const e2e = { contractDigest: "a".repeat(64), policyDigest: "b".repeat(64), bundleDigest: "c".repeat(64), executionPlanDigest: "d".repeat(64), required: false, currentRoundId: randomUUID(), currentGroupRunIds: [], resultRefs: [] };
+    checks.h.db.set({ ...base, workflow: WorkflowSnapshotSchema.parse({ ...base.workflow, e2e }) });
+    withOldWait(checks, second.taskId);
+    expect(await waitClears(checks, () => checks.sweep())).toEqual(expect.arrayContaining(["REMOVE slackWaitSince", "REMOVE workflow.accessCheckWaitSince"]));
   });
 
   it("S2-FU: a wait that cannot be cleared (a write error that is not a lost race) does not fail the dispatch", async () => {
