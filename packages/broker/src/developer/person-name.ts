@@ -6,7 +6,7 @@
 // The email's local part is deliberately not used as the placeholder: "omar.diaz" is the person's real name in most companies, so it would show a name
 // the person never chose to share, and a personal address ("ravi1987") can identify someone outside the company.
 import { createHash } from "node:crypto";
-import { containsEmailAddress, emailSafeName, isPlaceholderDisplayName, isReservedDisplayName, withoutEmailAddresses } from "@agentx/contracts";
+import { containsEmailAddress, emailSafeName, isPlaceholderDisplayName, isReservedDisplayName } from "@agentx/contracts";
 
 export { isPlaceholderDisplayName };
 
@@ -43,11 +43,4 @@ export function readableDeveloper<T extends { developerId: string; displayName: 
 export function defaultTeamName(displayName: string, developerId: string): string {
   const name = safeDisplayName(displayName, developerId);
   return isPlaceholderDisplayName(name) ? "New team" : `${name}'s team`;
-}
-
-/** A line of stored text (a timeline entry such as "Maya shared this session") without any email address in it. Text with none is returned as it is. */
-export function textWithoutEmails(text: string, developerId?: string): string {
-  if (!containsEmailAddress(text)) return text;
-  const stripped = withoutEmailAddresses(text);
-  return stripped === "" ? (developerId === undefined ? "A member" : placeholderDisplayName(developerId)) : stripped;
 }

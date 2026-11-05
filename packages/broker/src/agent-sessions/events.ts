@@ -11,6 +11,7 @@ import {
   agentSessionKey,
   agentXError,
   cleanSessionName,
+  hideEmailAddresses,
   redactText,
   sessionEventId,
   type OrgId,
@@ -22,7 +23,7 @@ import { failedIndexes, type TableInput, type TransactItem } from "../agents/tab
 import { followMerges } from "../agents/access.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
-import { safeDisplayName, textWithoutEmails } from "../developer/person-name.js";
+import { safeDisplayName } from "../developer/person-name.js";
 import { AgentSessionStore, sessionEventItem, type SessionRef, type SessionTaskRef } from "./store.js";
 
 type Item = Record<string, unknown>;
@@ -145,7 +146,7 @@ function eventOf(item: Item, orgId: OrgId, sessionId: string, nowSeconds: number
   // Release 0.4.16: an entry written while a person's name was their email reads without it.
   const event = parsed.data;
   const actor = event.actor?.kind === "member" ? { ...event.actor, name: safeDisplayName(event.actor.name, event.actor.developerId) } : event.actor;
-  return { ...event, ...(actor === undefined ? {} : { actor }), text: textWithoutEmails(event.text, event.actor?.kind === "member" ? event.actor.developerId : undefined) };
+  return { ...event, ...(actor === undefined ? {} : { actor }), text: hideEmailAddresses(event.text) };
 }
 
 /**

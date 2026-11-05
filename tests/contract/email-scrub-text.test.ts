@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { agentSessionKey, hideEmailAddresses, EMAIL_HIDDEN, mySessionsKey, sharedSessionsKey } from "../../packages/contracts/src/index.js";
-import { workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
+import { workflowPullRequestBody, workflowPullRequestStatusLines } from "../../packages/broker/src/aws/developer-tasks.js";
 import { planWhyEntries } from "../../packages/broker/src/aws/developer-tasks.js";
 import { shownText } from "../../packages/broker/src/agents/approvals-store.js";
 import { setupFailedReply, startMessage } from "../../packages/broker/src/developer/share-messages.js";
@@ -289,6 +289,18 @@ describe("the pull request Rovara writes", () => {
     const body = workflowPullRequestBody(task("Add a retry flag"), workflow(), plan, SESSION, context);
     expect(body).not.toContain(OMAR);
     expect(body).toContain(EMAIL_HIDDEN);
+  });
+
+  // S3-L6: the lines the reconcile path writes into an open pull request after a pushed fix are these, for both versions of the workflow; the accepted finding, a check label and a second-review line all reach GitHub.
+  it.each([["version 1", "1.0.0"], ["version 2", "1.1.0"]] as const)("the status lines (%s) hide an address in a check label and in a second-review line", (_name, definitionVersion) => {
+    const wf = WorkflowSnapshotSchema.parse({ ...workflow(), definitionVersion, checkPolicy: { required: [{ id: "unit", label: `Unit tests for ${OMAR}`, command: { cwd: "repo/payments", executable: "npm", args: ["test"], timeoutSeconds: 30 } }], optional: [], selectedOptionalIds: [], proposed: [] } });
+    const lines = workflowPullRequestStatusLines(wf, { ...context, secondReviewLines: [`Second review: ask ${OMAR} to check`] });
+    const text = lines.join("\n");
+    expect(text).not.toContain(OMAR);
+    expect(text).toContain(EMAIL_HIDDEN);
+    expect(text).toContain("Unit tests for");
+    // A status line with no address comes back as it was.
+    expect(workflowPullRequestStatusLines(wf, { ...context, secondReviewLines: ["Second review: nothing to add"] }).join("\n")).toContain("Second review: nothing to add");
   });
 
   it("the title hides an address", () => {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, E2EScenarioResultsSchema, E2E_DISPLAY_SCREENSHOT_MAX_BYTES, canonicalJson, redactText,
+import { E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, E2EScenarioResultsSchema, E2E_DISPLAY_SCREENSHOT_MAX_BYTES, canonicalJson, redactText, replaceEmailAddresses,
   type E2E_DISPLAY_ASSERTION_KINDS, type E2EAssertion, type E2EDisplayAgentNavigation, type E2EDisplayBaseline, type E2EDisplayScenario, type E2EScenarioResults } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES, type ModelSentenceContext } from "./owner-sentences.js";
 
@@ -20,7 +20,6 @@ import { E2E_OWNER_SENTENCES, type ModelSentenceContext } from "./owner-sentence
  * to end, and checks that a credential reached it and was withheld, so a round that fails for another reason does not pass for a proof.
  */
 
-const EMAIL = /[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/gu;
 const CONTROL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
 const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
@@ -35,7 +34,8 @@ export function displayText(value: unknown, limit: number): string {
   if (typeof value === "string") text = value;
   else if (value === undefined) text = "";
   else { try { text = canonicalJson(value); } catch { text = ""; } }
-  const clean = redactText(text.replace(CONTROL, " ")).replace(EMAIL, "[email]").replace(/\s+/gu, " ").trim();
+  // The address is found before the invisible characters are taken out: one inside an address is part of its spelling, and taking it out first would split the address.
+  const clean = redactText(replaceEmailAddresses(text, "[email]").replace(CONTROL, " ")).replace(/\s+/gu, " ").trim();
   return cut(clean, limit);
 }
 

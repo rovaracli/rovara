@@ -15,7 +15,7 @@
 import { createHmac } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  ASK_RETENTION_DAYS, AskRecordSchema, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askExpiryPk, askMentionKey, askStoresText, redactText, sessionAskKey,
+  ASK_RETENTION_DAYS, AskRecordSchema, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askExpiryPk, askMentionKey, askStoresText, redactText, replaceEmailAddresses, sessionAskKey,
   type AskAudience, type AskRecord, type OrgId, type SessionId,
 } from "@agentx/contracts";
 import { neutralizeSlackMentions } from "./slack-mentions.js";
@@ -33,7 +33,6 @@ export const ASK_MENTION_TAGS_MAX = 200;
 /** The mention items are written this many to a transaction. */
 const MENTION_BATCH = 25;
 const PERSON_TAG = /\bp_[0-9a-f]{6}\b/gu;
-const EMAIL = /[^\s@<>()[\]",;]+@[^\s@<>()[\]",;]+\.[A-Za-z]{2,}/gu;
 
 export interface AskStoreDependencies extends AskStoreTable {
   /**
@@ -90,7 +89,7 @@ export function scrubAskText(text: string, people: readonly AskPerson[], erased:
   let out = scrubNames(neutralizeSlackMentions(redactText(text)), people, (developerId) => (erased.has(developerId) ? FORMER_MEMBER_MENTION : `person ${askPersonTag(developerId)}`));
   // A member who is erased may also appear as the label an earlier turn gave them (an erased person kept only as a tag has no developer id left).
   for (const tag of [...[...erased].map(askPersonTag), ...erasedTags]) out = out.replace(new RegExp(`(?:person )?${tag}\\b`, "gu"), FORMER_MEMBER_MENTION);
-  return out.replace(EMAIL, "@member");
+  return replaceEmailAddresses(out, "@member");
 }
 
 /** The record as `AskRecordSchema` has it: the words only where the edition and audience keep them. `question` and `answer` are the already-scrubbed words. */

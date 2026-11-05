@@ -967,6 +967,13 @@ describe("no confirm link reaches a session viewer", () => {
       at(keep);
       expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).toMatchObject({ url: keep });
     }
+    // S3-L4/L5: the link is shown whole in every spelling of the at sign, while the same spelling in the title beside it is hidden.
+    for (const keep of ["https://sentry.example.com/issues?user=maya%40example.test", "https://sentry.example.com/issues?user=maya&#64;example.test", "https://sentry.example.com/u/maya@example.test"]) {
+      v.w.db.set({ ...meta, startedBy: { ...(meta["startedBy"] as object), title: "Reply to maya.chen [at] example.test", url: keep } });
+      const started = (await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy as { title: string; url?: string };
+      expect(started.url, keep).toBe(keep);
+      expect(started.title, keep).toBe("Reply to [email removed]");
+    }
     v.w.db.set({ ...meta, startedBy: { ...(meta["startedBy"] as object), title: "Reply to maya@example.test", url: "https://sentry.example.com/issues/1" } });
     expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).toMatchObject({ title: "Reply to [email removed]", url: "https://sentry.example.com/issues/1" });
     at("https://sentry.example.com/issues/1");
