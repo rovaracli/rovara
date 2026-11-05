@@ -134,8 +134,12 @@ describe("the probe program's resolver probes (TS-SEAL-5)", () => {
   }, 30_000);
 
   it("embdirect says error:NOLISTENER where nothing listens on 127.0.0.11 (so a missing resolver socket can never read as a silent, closed one), and caps reads the capability masks or a read error", () => {
-    const results = runProbe([{ label: "d", kind: "embdirect", name: "postgres", ms: 500 }, { label: "c", kind: "caps" }]);
+    const results = runProbe([{ label: "d", kind: "embdirect", name: "postgres", ms: 500 }, { label: "t", kind: "embdirecttcp", ms: 500 }, { label: "c", kind: "caps" }, { label: "v", kind: "v6listen" }]);
     expect(results.get("d")?.status).toBe("error:NOLISTENER");
+    expect(results.get("t")?.status).toBe("error:NOLISTENER");
+    // no IPv6 listener but loopback or wildcard ones, where a test machine has any (a machine without /proc/net/tcp6 has none)
+    expect(results.get("v")?.status).toBe("v6listen");
+    expect(results.get("v")?.rest).toMatch(/^bad=/u);
     const caps = results.get("c");
     if (caps?.status === "caps") expect(caps.rest).toMatch(/^eff=[0-9a-f]+ bnd=[0-9a-f]+ amb=[0-9a-f]+$/iu);
     else expect(caps?.status).toMatch(/^error:/u);
@@ -144,31 +148,39 @@ describe("the probe program's resolver probes (TS-SEAL-5)", () => {
 
 describe("the two embedded-resolver items (TS-SEAL-5)", () => {
   const rows = (text: string) => parseProbeOutput(text);
-  const sealed = "resolv file \"nameserver 172.30.5.2\"\nembedded error:EPERM\nembedded-public error:EPERM\nembedded-tcp timeout\nembedded-direct error:EPERM\ncaps caps eff=0000000000000000 bnd=0000000000000000 amb=0000000000000000\n";
-  const control = "ctl-embedded answer rcode=0 an=1\nctl-embedded-tcp open\nctl-embedded-direct answer rcode=0 an=1\n";
+  const sealed = "resolv file \"nameserver 172.30.5.2\"\nembedded error:EPERM\nembedded-public error:EPERM\nembedded-tcp timeout\nembedded-direct error:EPERM\nembedded-direct-tcp timeout\nv6 v6listen bad=\ncaps caps eff=0000000000000000 bnd=0000000000000000 amb=0000000000000000\n";
+  const control = "ctl-embedded answer rcode=0 an=1\nctl-embedded-tcp open\nctl-embedded-direct answer rcode=0 an=1\nctl-embedded-direct-tcp open\nctl-embedded-public answer rcode=0 an=0\n";
+  const rules = "-P OUTPUT ACCEPT\n-A OUTPUT -d 127.0.0.11/32 -j DROP\n";
   const evidence = (change: Partial<EmbeddedResolverEvidence> = {}, sealedText = sealed, controlText = control): EmbeddedResolverEvidence => ({
-    results: rows(sealedText), control: rows(controlText), nameservers: ["172.30.5.2"], dnsHelperIp: "172.30.5.2", resolvChanged: false, guardContainerGone: true, ...change,
+    results: rows(sealedText), control: rows(controlText), nameservers: ["172.30.5.2"], dnsHelperIp: "172.30.5.2", resolvChanged: false, guardContainerGone: true, outputRules: rules, ...change,
   });
   const byId = (input: EmbeddedResolverEvidence) => Object.fromEntries(embeddedResolverLines(input).map((line) => [line.id, line]));
+  const blocked = (input: EmbeddedResolverEvidence) => byId(input)["L3.embedded-resolver-blocked"]!;
 
-  it("pass when the guard has closed 127.0.0.11 on every path and an unguarded container still gets an answer on each", () => {
+  it("pass when the guard has closed 127.0.0.11 on every path, the rule is first in the chain, and an unguarded container still gets an answer on each", () => {
     const lines = byId(evidence());
     expect(lines["L3.embedded-resolver"]).toMatchObject({ status: "PASS" });
     expect(lines["L3.embedded-resolver-blocked"]).toMatchObject({ status: "PASS", name: "embedded-resolver-closed-in-the-sealed-sandbox" });
     expect(embeddedResolverLines(evidence()).map((line) => line.id)).toEqual(["L3.embedded-resolver", "L3.embedded-resolver-blocked"]);
   });
 
-  it("L3.embedded-resolver accepts the residual (an answer for the run's own container name) and a public name that gets an empty answer, but not an address for a public name", () => {
-    const own = byId(evidence({}, sealed.replace("embedded error:EPERM", "embedded answer rcode=0 an=1")));
-    expect(own["L3.embedded-resolver"]).toMatchObject({ status: "PASS" });
-    expect(own["L3.embedded-resolver"]!.detail).toContain("answer");
-    expect(byId(evidence({}, sealed.replace("embedded-public error:EPERM", "embedded-public answer rcode=0 an=0")))["L3.embedded-resolver"]).toMatchObject({ status: "PASS" });
-    for (const bad of ["embedded-public answer rcode=0 an=1", "embedded-public answer rcode=3 an=1", "embedded-public open", "embedded-public resolved 1.2.3.4"]) {
-      const line = byId(evidence({}, sealed.replace("embedded-public error:EPERM", bad)))["L3.embedded-resolver"]!;
-      expect(line.status, bad).toBe("FAIL");
-      expect(line.detail, bad).toContain("embedded-public=");
+  it("L3.embedded-resolver measures the accepted floor where the resolver is OPEN (the unguarded control): a public name gets no address there, and the run's own container names may be answered", () => {
+    expect(byId(evidence())["L3.embedded-resolver"]!.detail).toContain("answer");
+    for (const good of ["ctl-embedded-public answer rcode=0 an=0", "ctl-embedded-public timeout", "ctl-embedded-public answer rcode=3 an=0", "ctl-embedded-public error:EHOSTUNREACH"]) {
+      expect(byId(evidence({}, sealed, control.replace("ctl-embedded-public answer rcode=0 an=0", good)))["L3.embedded-resolver"]!.status, good).toBe("PASS");
     }
-    expect(byId(evidence({}, sealed.replace("embedded-public error:EPERM\n", "")))["L3.embedded-resolver"]!.detail).toContain("embedded-public=no-result");
+    for (const bad of ["ctl-embedded-public answer rcode=0 an=1", "ctl-embedded-public answer rcode=0 an=2", "ctl-embedded-public open", "ctl-embedded-public resolved 1.2.3.4"]) {
+      const line = byId(evidence({}, sealed, control.replace("ctl-embedded-public answer rcode=0 an=0", bad)))["L3.embedded-resolver"]!;
+      expect(line.status, bad).toBe("FAIL");
+      expect(line.detail, bad).toContain("embedded-public-in-the-unguarded-control=");
+    }
+    expect(byId(evidence({}, sealed, control.replace("ctl-embedded-public answer rcode=0 an=0\n", "")))["L3.embedded-resolver"]!.detail).toContain("embedded-public-in-the-unguarded-control=no-result");
+  });
+
+  it("L3.embedded-resolver does not take the sealed sandbox's own public-name probe as the measurement (it is only ever the guard's EPERM)", () => {
+    expect(byId(evidence({}, sealed.replace("embedded-public error:EPERM", "embedded-public answer rcode=0 an=1")))["L3.embedded-resolver"]!.status).toBe("PASS");
+    // ...but the guard item does fail on it
+    expect(blocked(evidence({}, sealed.replace("embedded-public error:EPERM", "embedded-public answer rcode=0 an=1"))).status).toBe("FAIL");
   });
 
   it("L3.embedded-resolver still needs resolv.conf to name the DNS helper alone and to be unchanged", () => {
@@ -177,33 +189,66 @@ describe("the two embedded-resolver items (TS-SEAL-5)", () => {
     expect(byId(evidence({ resolvChanged: true }))["L3.embedded-resolver"]!.detail).toContain("resolv.conf-changed");
   });
 
-  it("the guard item fails when any path still gets through: the answer on port 53, the TCP connection, the resolver's own port, a public name", () => {
+  it("the guard item fails when any path still gets through: the answer on port 53, the TCP connections, the resolver's own UDP port, a public name", () => {
     for (const [from, to, label] of [
       ["embedded error:EPERM", "embedded answer rcode=0 an=1", "embedded=answer"], ["embedded-public error:EPERM", "embedded-public answer rcode=0 an=0", "embedded-public=answer"],
       ["embedded-tcp timeout", "embedded-tcp open", "embedded-tcp=open"], ["embedded-direct error:EPERM", "embedded-direct answer rcode=0 an=1", "embedded-direct=answer"],
+      ["embedded-direct-tcp timeout", "embedded-direct-tcp open", "embedded-direct-tcp=open"],
     ] as const) {
-      const line = byId(evidence({}, sealed.replace(from, to)))["L3.embedded-resolver-blocked"]!;
+      const line = blocked(evidence({}, sealed.replace(from, to)));
       expect(line.status, label).toBe("FAIL");
       expect(line.detail, label).toContain(label);
     }
   });
 
+  it("the UDP probes must show EPERM, the rule's own refusal: a timeout is not enough (something else dropped the packet), TCP may time out or be refused", () => {
+    for (const label of ["embedded", "embedded-public", "embedded-direct"]) {
+      const line = blocked(evidence({}, sealed.replace(`${label} error:EPERM`, `${label} timeout`)));
+      expect(line.status, label).toBe("FAIL");
+      expect(line.detail, label).toContain(`${label}=timeout`);
+    }
+    expect(blocked(evidence({}, sealed.replace("embedded-tcp timeout", "embedded-tcp error:EPERM"))).status).toBe("PASS");
+    expect(blocked(evidence({}, sealed.replace("embedded-tcp timeout", "embedded-tcp refused"))).status).toBe("PASS");
+  });
+
   it("the guard item needs its positive control: with no resolver answering the unguarded container, a silent sandbox proves nothing", () => {
     for (const [change, label] of [
       ["ctl-embedded answer rcode=0 an=1\n", "ctl-embedded=no-result"], ["ctl-embedded-tcp open\n", "ctl-embedded-tcp=no-result"], ["ctl-embedded-direct answer rcode=0 an=1\n", "ctl-embedded-direct=no-result"],
+      ["ctl-embedded-direct-tcp open\n", "ctl-embedded-direct-tcp=no-result"],
     ] as const) {
-      const line = byId(evidence({}, sealed, control.replace(change, "")))["L3.embedded-resolver-blocked"]!;
+      const line = blocked(evidence({}, sealed, control.replace(change, "")));
       expect(line.status, label).toBe("FAIL");
       expect(line.detail, label).toContain(`control-failed:${label}`);
     }
-    expect(byId(evidence({}, sealed, control.replace("ctl-embedded-tcp open", "ctl-embedded-tcp timeout")))["L3.embedded-resolver-blocked"]!.detail).toContain("control-failed:ctl-embedded-tcp=timeout");
+    expect(blocked(evidence({}, sealed, control.replace("ctl-embedded-tcp open", "ctl-embedded-tcp timeout"))).detail).toContain("control-failed:ctl-embedded-tcp=timeout");
   });
 
-  it("the guard item fails when the direct probe found no resolver socket to ask (it would read as silence), when the sandbox has a capability, and when the guard container is left", () => {
-    expect(byId(evidence({}, sealed.replace("embedded-direct error:EPERM", "embedded-direct error:NOLISTENER")))["L3.embedded-resolver-blocked"]!.detail).toContain("embedded-direct-found-no-resolver-socket");
-    expect(byId(evidence({}, sealed.replace("eff=0000000000000000", "eff=0000000000001000")))["L3.embedded-resolver-blocked"]!.detail).toContain("sandbox-has-capabilities");
-    expect(byId(evidence({}, sealed.replace(/caps caps .*\n/u, "")))["L3.embedded-resolver-blocked"]!.detail).toContain("sandbox-has-capabilities:no-result");
-    expect(byId(evidence({ guardContainerGone: false }))["L3.embedded-resolver-blocked"]!.detail).toContain("guard-container-left-behind-or-unreadable");
+  it("the guard item fails when a direct probe found no resolver socket to ask (it would read as silence), when the sandbox has a capability, and when the guard container is left", () => {
+    expect(blocked(evidence({}, sealed.replace("embedded-direct error:EPERM", "embedded-direct error:NOLISTENER"))).detail).toContain("embedded-direct-found-no-resolver-socket");
+    expect(blocked(evidence({}, sealed.replace("embedded-direct-tcp timeout", "embedded-direct-tcp error:NOLISTENER"))).detail).toContain("embedded-direct-tcp-found-no-resolver-socket");
+    expect(blocked(evidence({}, sealed.replace("eff=0000000000000000", "eff=0000000000001000"))).detail).toContain("sandbox-has-capabilities");
+    expect(blocked(evidence({}, sealed.replace(/caps caps .*\n/u, ""))).detail).toContain("sandbox-has-capabilities:no-result");
+    expect(blocked(evidence({ guardContainerGone: false })).detail).toContain("guard-container-left-behind-or-unreadable");
+  });
+
+  it("the guard item reads the rule back from outside: it must be the first rule of the OUTPUT chain; another first rule, a missing rule or an unreadable list fails", () => {
+    for (const [text, why] of [
+      ["-P OUTPUT ACCEPT\n-A OUTPUT -d 10.0.0.1/32 -j ACCEPT\n-A OUTPUT -d 127.0.0.11/32 -j DROP\n", "second"], ["-P OUTPUT ACCEPT\n", "missing"], ["", "empty"],
+      ["-P OUTPUT ACCEPT\n-A OUTPUT -d 127.0.0.11/32 -j ACCEPT\n", "wrong target"], ["-P OUTPUT ACCEPT\n-A OUTPUT -d 127.0.0.11/32 -p udp -j DROP\n", "only udp"],
+    ] as const) {
+      const line = blocked(evidence({ outputRules: text }));
+      expect(line.status, why).toBe("FAIL");
+      expect(line.detail, why).toContain("rule-not-first-in-the-chain");
+    }
+    const unreadable = blocked(evidence({ outputRules: undefined }));
+    expect(unreadable.status).toBe("FAIL");
+    expect(unreadable.detail).toContain("rule-not-first-in-the-chain:unreadable");
+  });
+
+  it("the guard item fails on an IPv6 listener that is not the loopback or the wildcard, and on a v6 probe that did not run", () => {
+    expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=", "v6 v6listen bad=tcp6:0000000000000000FFFF00000B00007F:1F90"))).detail).toContain("ipv6-listener:v6listen(bad=tcp6:");
+    expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=\n", ""))).detail).toContain("ipv6-listener:no-result");
+    expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=", "v6 error:EACCES"))).status).toBe("FAIL");
   });
 });
 

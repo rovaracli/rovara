@@ -89,6 +89,7 @@ async function checksRun(options: { withDependencies: boolean; evidenceCapture?:
   vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "container");
   vi.stubEnv("AGENTX_TASK_SHELL", "");
   vi.stubEnv("AGENTX_SANDBOX_IMAGE", IMAGE);
+    vi.stubEnv("AGENTX_WORKER_IMAGE", IMAGE);
   const root = await workspace();
   const fake = options.fake ?? fakeServicesDocker({ imagePresent: true });
   const events: unknown[] = [];
@@ -288,6 +289,7 @@ describe("a coding run (the default mode; the contract allows a test environment
     vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "container");
     vi.stubEnv("AGENTX_TASK_SHELL", "");
     vi.stubEnv("AGENTX_SANDBOX_IMAGE", IMAGE);
+    vi.stubEnv("AGENTX_WORKER_IMAGE", IMAGE);
     const root = await workspace();
     const fake = fakeServicesDocker({ imagePresent: true });
     const events: unknown[] = [];
@@ -487,7 +489,7 @@ describe("a CHECKS run with a plan that has dependencies", () => {
     const raw = JSON.parse(readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url), "utf8")) as ServiceCatalog;
     const catalog = structuredClone(raw);
     for (const entry of catalog.entries) if (entry.id === "postgres@16") entry.image.digest = DIGEST;
-    return { docker: undefined as never, registry: "123456789012.dkr.ecr.us-west-2.amazonaws.com", catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: await temp("rsv-task-runs-"), catalog: () => Promise.resolve(catalog), sealedRound: SEALED_ROUND_PORTS, sleep: () => Promise.resolve(), log: () => undefined };
+    return { docker: undefined as never, registry: "123456789012.dkr.ecr.us-west-2.amazonaws.com", catalogEnv: "staging", edition: "public", probeImage: IMAGE, guardImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: await temp("rsv-task-runs-"), catalog: () => Promise.resolve(catalog), sealedRound: SEALED_ROUND_PORTS, sleep: () => Promise.resolve(), log: () => undefined };
   }
   const withDocker = (base: TestServicesConfig, fake: ReturnType<typeof fakeServicesDocker>): TestServicesConfig => ({ ...base, docker: fake.docker });
 
@@ -568,6 +570,7 @@ describe("a CHECKS run with a plan that has dependencies", () => {
     vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "container");
     vi.stubEnv("AGENTX_TASK_SHELL", "");
     vi.stubEnv("AGENTX_SANDBOX_IMAGE", IMAGE);
+    vi.stubEnv("AGENTX_WORKER_IMAGE", IMAGE);
     const root = await workspace();
     const agentSaw: Array<{ servicesNetworks: number; envFile: string | undefined }> = [];
     const adapter: PiSessionAdapter = {

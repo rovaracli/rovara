@@ -135,7 +135,7 @@ async function harness(options: Options = {}) {
     buildServiceUsageRecord: (input) => SEALED_ROUND_PORTS.buildServiceUsageRecord(input),
   };
   const config: TestServicesConfig = {
-    docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
+    docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, guardImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
     catalog: () => Promise.resolve(catalog), sealedRound: sealed, sleep: () => Promise.resolve(), log: () => undefined,
   };
   const sandbox = new TaskSandbox({ rootPath: root, taskId: OPERATION, docker: fake.docker, image: IMAGE, log: () => undefined });
@@ -432,7 +432,7 @@ describe("fail closed", () => {
 });
 
 describe("the /ping feature", () => {
-  const env = { AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/x", AGENTX_SANDBOX_IMAGE: IMAGE } as NodeJS.ProcessEnv;
+  const env = { AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/x", AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE } as NodeJS.ProcessEnv;
   /** A shipped catalog the contract accepts: pinned, with local-aws wholly pinned (digest, SBOM, scan) or not at all, and a pre-pull list as root would make it from it (or the one given). */
   const files = async (prepull: (shipped: ServiceCatalog) => object, pinned: boolean) => {
     const dir = await temp("rsv-ship-");

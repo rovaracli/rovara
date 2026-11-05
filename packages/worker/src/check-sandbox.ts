@@ -6,7 +6,7 @@
 //   - the sealed check sandbox's `docker run` arguments: attached to the run's services network ONLY (`--network rovara-svc-...` with the fixed address .4, never the default bridge, never the working-egress network, no
 //     published port, no extra network, no `--dns`), with the sandbox hardening of task sandboxes (it IS `taskSandboxRunArgs`: non-root user, no capability, no-new-privileges, pids/cpu/memory limits, the workspace as the only
 //     mount) plus two read-only mounts that the run owns: a /etc/resolv.conf that names the DNS helper at .2 alone, and a /etc/hosts with the run's helper names and addresses. This copies the E2E host
-//     (docker-application-host.ts, "Docker 25 does not forward the queries of a container that is only on internal networks"): the embedded resolver is never consulted for a name that is not in the hosts file;
+//     (docker-application-host.ts, "Docker 25 does not forward the queries of a container that is only on internal networks"): libc never consults 127.0.0.11 for a name that is not in the hosts file (the resolver itself still exists: see DOCKER'S EMBEDDED RESOLVER below);
 //   - the contents of those two files, and the path they are written to (`writeCheckSandboxFiles`);
 //   - the DNS helper's `docker run` arguments: the same container hardening as the setup run's helper (setup-network.ts `helperRunArgs`), on the services network at .2, running the SEALED mode of the name server
 //     (sealed-dns-helper.ts -> `SealedDnsHelper` in setup-dns-watch.ts): a static table, the sinkhole for every other name, no upstream, served addresses .3 and .4 only;
@@ -35,10 +35,14 @@
 //   the sandbox is on (here: the run's own helpers, the DNS helper and the sinkhole: the same names the run's /etc/hosts already gives it), and their reverse lookups. So the floor under the guard, which is what
 //   L3.embedded-resolver judges, is only that a PUBLIC or unknown name gets no address through 127.0.0.11; an answer for the run's own container names is allowed there. (With the guard in place the sealed sandbox gets
 //   no answer at all, which L3.embedded-resolver-blocked proves; the floor is what would still hold if the guard ever regressed.)
-//   WHAT THE GUARD DOES (`resolverGuardRunArgs`, run by `startCheckSandbox` between the sandbox's start and its return, so before the first command): a helper container of the worker's own image, with `--cap-drop ALL
-//   --cap-add NET_ADMIN` and nothing else, joined to the check sandbox's network namespace (`--network container:<check sandbox>`), runs `iptables-nft -I OUTPUT 1 -d 127.0.0.11/32 -j DROP` and reads the rule back with `-C`,
-//   then exits (`--rm`). The sandbox itself never has NET_ADMIN. If any step fails, the check sandbox is removed and the round fails closed (RUNTIME_UNAVAILABLE); nothing runs without the rule. A dropped packet gives
-//   the caller a timeout (TCP) or EPERM (UDP send); the sealed DNS helper at .2 is a different destination and is not touched.
+//   WHAT THE GUARD DOES (`resolverGuardRunArgs`, run by `startCheckSandbox` between the sandbox's start and its return, so before the first command): two short-lived helper containers, one after the other, each with
+//   `--cap-drop ALL --cap-add NET_ADMIN` and nothing else, joined to the check sandbox's network namespace (`--network container:<check sandbox>`). The first runs `/usr/sbin/iptables-nft -I OUTPUT 1 -d 127.0.0.11/32 -j DROP`,
+//   the second the same with `-C` (exit 0 only if the rule is there). Each is `--rm`. The sandbox itself never has NET_ADMIN. If any step fails, the check sandbox is removed and the round fails closed (RUNTIME_UNAVAILABLE);
+//   nothing runs without the rule. A dropped packet gives the caller a timeout (TCP) or EPERM (UDP send); the sealed DNS helper at .2 is a different destination and is not touched.
+//   THE GUARD'S IMAGE IS THE WORKER'S OWN, NEVER THE SANDBOX'S (`CheckSandboxInput.guardImage`, from AGENTX_WORKER_IMAGE in the worker's configuration, test-services-run.ts). The guard runs as root with NET_ADMIN and its
+//   exit code is the proof the rule is there, so it must never run an image that someone else controls: today the sandbox image IS the worker image, but a devcontainer or saved-environment sandbox would be a customer's
+//   image, whose `iptables-nft` or shell could exit 0 and leave no rule. Hence also: the binary is called by absolute path as the entrypoint (no shell, nothing looked up on a PATH), and the image must be pinned
+//   (`name@sha256:<64 hex>`, which AGENTX_WORKER_IMAGE always is in production: session.ts requires an ECR image pinned by digest; or a bare `sha256:<64 hex>` image id, which the Linux CI driver passes). A tag is refused.
 //   WHY A FILTER-TABLE DROP ON THE ADDRESS ALONE CATCHES DOCKER'S DNAT: for a packet this container sends, the kernel runs the hooks in the order raw, mangle, NAT (DNAT, `OUTPUT` chain of the nat table), filter. The nat
 //   rule only rewrites the PORT (127.0.0.11:53 becomes 127.0.0.11:<random>); the address stays 127.0.0.11. So the filter OUTPUT chain, which comes after the nat hook, sees `-d 127.0.0.11` whether the program sent to port 53 (and was
 //   rewritten) or straight to the random port. The rule therefore must NOT name a port (a `--dport 53` rule would never match a rewritten packet). It also matches TCP, UDP and anything else sent to that address.
@@ -120,6 +124,11 @@ export interface CheckSandboxInput {
   taskId: string;
   /** The worker's own image: it is the sandbox image and carries the sealed helper's program. */
   image: string;
+  /**
+   * The image the resolver guard (a root container with NET_ADMIN) runs from: the WORKER's own image, taken from the worker's configuration (AGENTX_WORKER_IMAGE), never from `image` or anything about the sandbox. Pinned
+   * (`name@sha256:...` or an image id `sha256:...`); a tag is refused. See "THE GUARD'S IMAGE" in the header.
+   */
+  guardImage: string;
   /** The workspace root, mounted at its own path as in every task sandbox. */
   rootPath: string;
   /** Folders of the workspace volume that are the worker's, not the project's (workspace-state.ts). */
@@ -155,8 +164,13 @@ export interface CheckSandboxPlan {
   sandboxRunArgs: string[];
   /** `docker run` arguments of the DNS helper in sealed mode. */
   dnsHelperRunArgs: string[];
-  /** `docker run` arguments of the resolver guard: the short-lived NET_ADMIN helper that closes Docker's embedded resolver (127.0.0.11) inside the check sandbox. `startCheckSandbox` runs it before it returns. */
-  resolverGuardArgs: string[];
+  /** The image the guard runs from (`CheckSandboxInput.guardImage`): the worker's own, whatever `image` is. */
+  guardImage: string;
+  /**
+   * `docker run` arguments of the resolver guard: two short-lived NET_ADMIN helpers that close Docker's embedded resolver (127.0.0.11) inside the check sandbox (`insert`) and read the rule back (`verify`).
+   * `startCheckSandbox` runs them, in that order, before it returns.
+   */
+  resolverGuardArgs: { insert: string[]; verify: string[] };
   /** The working sandbox's container name and its address on the services network (.3), for `detachWorkingSandbox` and `reattachWorkingSandbox`. */
   workingSandboxName: string;
   workingSandboxIp: string;
@@ -441,51 +455,66 @@ export function sealedDnsHelperRunArgs(input: { net: CheckSandboxNetwork; image:
 
 /** Docker's embedded resolver address, which every container on a user-defined network has in its own namespace. */
 export const EMBEDDED_RESOLVER_ADDRESS = "127.0.0.11";
+/** The guard's program, by absolute path, as the container's entrypoint: no shell, no PATH lookup. The `iptables` package of the worker image (environments/base/Dockerfile) provides it. */
+export const RESOLVER_GUARD_BINARY = "/usr/sbin/iptables-nft";
 /**
- * What the guard runs, in a POSIX shell (dash, in the image). One rule at the head of the filter OUTPUT chain for the address alone (no protocol, no port: Docker's nat rule has already rewritten the port when the filter
- * chain sees the packet, see the header), then the same rule is looked up with `-C` (exit 0 only if it is there); `set -eu` stops at the first failure. `-w 5` waits up to 5 s for the lock a concurrent iptables holds.
+ * The rule: the address alone (no protocol, no port: Docker's nat rule has already rewritten the port when the filter chain sees the packet, see the header), first in the filter OUTPUT chain. `-w 5` waits up to 5 s for the
+ * lock a concurrent iptables holds. `insert` puts the rule in; `verify` (`-C`) exits 0 only if that very rule is there.
  */
-export const RESOLVER_GUARD_SCRIPT = `set -eu; iptables-nft -w 5 -I OUTPUT 1 -d ${EMBEDDED_RESOLVER_ADDRESS}/32 -j DROP; iptables-nft -w 5 -C OUTPUT -d ${EMBEDDED_RESOLVER_ADDRESS}/32 -j DROP`;
+export const RESOLVER_GUARD_STEPS: Readonly<Record<"insert" | "verify", readonly string[]>> = {
+  insert: ["-w", "5", "-I", "OUTPUT", "1", "-d", `${EMBEDDED_RESOLVER_ADDRESS}/32`, "-j", "DROP"],
+  verify: ["-w", "5", "-C", "OUTPUT", "-d", `${EMBEDDED_RESOLVER_ADDRESS}/32`, "-j", "DROP"],
+};
+export type ResolverGuardStep = keyof typeof RESOLVER_GUARD_STEPS;
 const RESOLVER_GUARD_LABEL_KEYS: ReadonlySet<string> = new Set([RUN_NETWORK_LABEL, RUN_NETWORK_CREATED_LABEL, RUN_NETWORK_EXPIRES_LABEL, RUN_NETWORK_WORKSPACE_LABEL]);
+/** A pinned image: `name@sha256:<64 hex>` (what AGENTX_WORKER_IMAGE is in production) or a bare image id `sha256:<64 hex>` (the Linux CI driver). Never a tag. */
+const PINNED_IMAGE = /^(?:[a-z0-9][a-z0-9._/:-]{0,199}@sha256:[a-f0-9]{64}|sha256:[a-f0-9]{64})$/u;
 
-/** The guard container's name: the check sandbox's, plus `-guard`. */
-export function resolverGuardName(sandboxName: string): string {
+/** True when `image` is a pinned image reference (a digest or an image id). */
+export function isPinnedImage(image: string): boolean {
+  return PINNED_IMAGE.test(image);
+}
+
+/** The name of one of the guard's two containers: the check sandbox's, plus `-guard` (insert) or `-guard-check` (verify). */
+export function resolverGuardName(sandboxName: string, step: ResolverGuardStep = "insert"): string {
   if (!CONTAINER_NAME.test(sandboxName)) throw agentXError("CONFIG_INVALID", "not a plan of a sealed check sandbox");
-  return `${sandboxName}-guard`;
+  return step === "insert" ? `${sandboxName}-guard` : `${sandboxName}-guard-check`;
 }
 
 /** The part of the guard's arguments after the labels: fixed, and the only place where the NET_ADMIN capability is added anywhere in the sealed round. */
-function resolverGuardTail(sandboxName: string, image: string): string[] {
+function resolverGuardTail(sandboxName: string, image: string, step: ResolverGuardStep): string[] {
   return [
     "--network", `container:${sandboxName}`,
     "--user", "0:0", "--cap-drop", "ALL", "--cap-add", "NET_ADMIN", "--security-opt", "no-new-privileges", "--read-only",
     "--tmpfs", "/run:rw,noexec,nosuid,nodev,size=1m",
     "--pids-limit", "32", "--memory", "64m", "--memory-swap", "64m", "--cpus", "0.5",
-    "--entrypoint", "/bin/sh", image, "-c", RESOLVER_GUARD_SCRIPT,
+    "--entrypoint", RESOLVER_GUARD_BINARY, image, ...RESOLVER_GUARD_STEPS[step],
   ];
 }
 
 /**
- * The `docker run` arguments of the resolver guard: a foreground, `--rm` container of the worker's own image, in the check sandbox's network namespace (`container:<name>`), root with every capability dropped but
- * NET_ADMIN, a read-only root (only /run is writable, for iptables' lock file), no mount, no published port, all four run labels (so a sweep finds a guard that outlived its worker). The check sandbox is named by its
- * fixed name (`<network>-check`), so these arguments can be made with the plan, before the sandbox exists.
+ * The `docker run` arguments of one step of the resolver guard: a foreground, `--rm` container of the WORKER's own image (`guardImage`, pinned), in the check sandbox's network namespace (`container:<name>`), root with
+ * every capability dropped but NET_ADMIN, a read-only root (only /run is writable, for iptables' lock file), no mount, no published port, all four run labels (so a sweep finds a guard that outlived its worker). The
+ * check sandbox is named by its fixed name (`<network>-check`), so these arguments can be made with the plan, before the sandbox exists.
  */
-export function resolverGuardRunArgs(input: { net: CheckSandboxNetwork; image: string }): string[] {
+export function resolverGuardRunArgs(input: { net: CheckSandboxNetwork; guardImage: string; step: ResolverGuardStep }): string[] {
   assertNetwork(input.net);
   const sandboxName = `${input.net.name}-check`;
-  const args = ["run", "--rm", "--pull=never", "--name", resolverGuardName(sandboxName), ...input.net.labelArgs(), ...resolverGuardTail(sandboxName, input.image)];
-  const problems = resolverGuardArgProblems(args, { sandboxName, image: input.image });
+  const args = ["run", "--rm", "--pull=never", "--name", resolverGuardName(sandboxName, input.step), ...input.net.labelArgs(), ...resolverGuardTail(sandboxName, input.guardImage, input.step)];
+  const problems = resolverGuardArgProblems(args, { sandboxName, image: input.guardImage, step: input.step });
   if (problems.length > 0) throw agentXError("CONFIG_INVALID", `the resolver guard's arguments are unsound: ${problems.join("; ")}`);
   return args;
 }
 
 /**
- * What is wrong with `args` as the resolver guard's arguments of the sandbox `sandboxName` and image `image`: empty when sound. The arguments are an exact match: the fixed head, then only the run's own labels (each of
- * the four keys at most once, a plain value), then the fixed tail. Anything else (another network, a mount, a second capability, a changed command) is a problem. This is the one place that allows NET_ADMIN.
+ * What is wrong with `args` as the arguments of the resolver guard's `step` for the sandbox `sandboxName` and the guard image `image`: empty when sound. The arguments are an exact match: the fixed head, then exactly the
+ * run's own four labels (each once, a plain value), then the fixed tail. `image` itself must be pinned. Anything else (another network, a mount, a second capability, a changed command or image) is a problem. This is the
+ * one place that allows NET_ADMIN.
  */
-export function resolverGuardArgProblems(args: readonly string[], expected: { sandboxName: string; image: string }): string[] {
-  const head = ["run", "--rm", "--pull=never", "--name", `${expected.sandboxName}-guard`];
+export function resolverGuardArgProblems(args: readonly string[], expected: { sandboxName: string; image: string; step: ResolverGuardStep }): string[] {
+  const head = ["run", "--rm", "--pull=never", "--name", `${expected.sandboxName}${expected.step === "insert" ? "-guard" : "-guard-check"}`];
   const problems: string[] = [];
+  if (!PINNED_IMAGE.test(expected.image)) problems.push("does not run a pinned image (name@sha256:... or an image id)");
   if (args.length < head.length || head.some((token, index) => args[index] !== token)) problems.push("does not start with the guard's fixed head");
   let at = head.length;
   const seen = new Set<string>();
@@ -496,15 +525,22 @@ export function resolverGuardArgProblems(args: readonly string[], expected: { sa
     seen.add(key);
     at += 2;
   }
-  const tail = resolverGuardTail(expected.sandboxName, expected.image);
+  if (seen.size !== RESOLVER_GUARD_LABEL_KEYS.size) problems.push("does not carry all four run labels");
+  const tail = resolverGuardTail(expected.sandboxName, expected.image, expected.step);
   const rest = args.slice(at);
-  if (rest.length !== tail.length || tail.some((token, index) => rest[index] !== token)) problems.push("is not exactly the guard's fixed command (network, user, capability, limits, image and script)");
+  if (rest.length !== tail.length || tail.some((token, index) => rest[index] !== token)) problems.push("is not exactly the guard's fixed command (network, user, capability, limits, image and program)");
   return problems;
 }
 
 /** Best-effort removal of a container by name: the caller decides what a leftover means. */
 async function removeQuietly(docker: DockerCli, name: string): Promise<void> {
   await docker.run(["rm", "--force", name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+}
+
+/** True when a container of this name still exists (or when that cannot be told: an unreadable look counts as a leftover). */
+async function containerLeft(docker: DockerCli, name: string): Promise<boolean> {
+  const left = await docker.run(["container", "inspect", "--format", "{{.Id}}", name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+  return left === undefined || left.exitCode === 0;
 }
 
 /**
@@ -527,7 +563,8 @@ export function checkSandboxPlan(input: CheckSandboxInput): CheckSandboxPlan {
     resolvConfPath, hostsPath,
     sandboxRunArgs: checkSandboxRunArgs(input, { resolvConfPath, hostsPath }),
     dnsHelperRunArgs: sealedDnsHelperRunArgs({ net: input.net, image: input.image, helpers: input.helpers, sinkholeIp: input.sinkholeIp }),
-    resolverGuardArgs: resolverGuardRunArgs({ net: input.net, image: input.image }),
+    guardImage: input.guardImage,
+    resolverGuardArgs: { insert: resolverGuardRunArgs({ net: input.net, guardImage: input.guardImage, step: "insert" }), verify: resolverGuardRunArgs({ net: input.net, guardImage: input.guardImage, step: "verify" }) },
     rootPath: input.rootPath, image: input.image, maskedPaths: [...input.maskedPaths],
     workingSandboxName, workingSandboxIp: input.net.workingSandboxIp, mustDetachWorking: true,
   };
@@ -661,7 +698,7 @@ export async function reattachWorkingSandbox(docker: DockerCli, plan: PlanForWor
  * Starts the sealed check sandbox, and only when the working sandbox is known to be off the services network: the caller must hold the proof `detachWorkingSandbox` returned for THIS plan, and the container's networks
  * are read once more here. Returns the container id. The plan's `sandboxRunArgs` must not be run by any other path.
  */
-export async function startCheckSandbox(docker: DockerCli, plan: CheckSandboxPlan, detached: WorkingSandboxDetached): Promise<string> {
+export async function startCheckSandbox(docker: DockerCli, plan: CheckSandboxPlan, detached: WorkingSandboxDetached, options: { signal?: AbortSignal } = {}): Promise<string> {
   assertWorkingPlan(plan);
   if (!DETACH_PROOFS.has(detached) || detached.network !== plan.network.name || detached.container !== plan.workingSandboxName) {
     throw agentXError("RUNTIME_UNAVAILABLE", "the check sandbox does not start before the working sandbox is detached from the services network");
@@ -671,19 +708,31 @@ export async function startCheckSandbox(docker: DockerCli, plan: CheckSandboxPla
     resolvConfPath: plan.resolvConfPath, hostsPath: plan.hostsPath, rootPath: plan.rootPath, image: plan.image, maskedPaths: plan.maskedPaths,
   });
   if (problems.length > 0) throw agentXError("CONFIG_INVALID", `the sealed check sandbox's arguments are unsound: ${problems.join("; ")}`);
-  // The resolver guard's arguments are checked before anything starts, for the same reason: the plan is data.
-  const guardProblems = resolverGuardArgProblems(plan.resolverGuardArgs, { sandboxName: plan.sandboxName, image: plan.image });
-  if (guardProblems.length > 0) throw agentXError("CONFIG_INVALID", `the sealed check sandbox's resolver guard is unsound: ${guardProblems.join("; ")}`);
+  // The resolver guard's arguments are checked before anything starts, for the same reason: the plan is data. The guard's image is the plan's `guardImage` (the worker's own), checked on its own; it is not `plan.image`.
+  for (const step of ["insert", "verify"] as const) {
+    const guardProblems = resolverGuardArgProblems(plan.resolverGuardArgs[step], { sandboxName: plan.sandboxName, image: plan.guardImage, step });
+    if (guardProblems.length > 0) throw agentXError("CONFIG_INVALID", `the sealed check sandbox's resolver guard is unsound: ${guardProblems.join("; ")}`);
+  }
   if ((await networksOf(docker, plan.workingSandboxName)).includes(plan.network.name)) throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox is on the run's services network again");
   const started = await docker.run(plan.sandboxRunArgs, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
   if (started === undefined || started.exitCode !== 0) throw agentXError("RUNTIME_UNAVAILABLE", "the check sandbox could not be started");
-  // Docker's embedded resolver (127.0.0.11) is closed inside the sandbox BEFORE this function returns, so before any command can run in it. The sandbox's own entrypoint is `sleep infinity`; commands only ever come later,
+  // Docker's embedded resolver (127.0.0.11) is closed inside the sandbox BEFORE this function returns, so before any command can run in it. The sandbox's own entrypoint is `tini -- sleep infinity`; commands only ever come later,
   // through `docker exec`. Any failure (the helper cannot start, the rule cannot be set or read back, a timeout) removes the sandbox and fails the round: no round runs without the rule.
-  const guard = await docker.run(plan.resolverGuardArgs, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
-  if (guard === undefined || guard.exitCode !== 0) {
-    await removeQuietly(docker, resolverGuardName(plan.sandboxName));
+  let closed = options.signal?.aborted !== true;
+  for (const step of ["insert", "verify"] as const) {
+    if (!closed) break;
+    const guard = await docker.run(plan.resolverGuardArgs[step], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(options.signal === undefined ? {} : { signal: options.signal }) }).catch(() => undefined);
+    closed = guard !== undefined && guard.exitCode === 0;
+  }
+  if (!closed) {
+    const guards = [resolverGuardName(plan.sandboxName, "insert"), resolverGuardName(plan.sandboxName, "verify")];
+    for (const name of guards) await removeQuietly(docker, name);
     await removeQuietly(docker, plan.sandboxName);
-    throw agentXError("RUNTIME_UNAVAILABLE", "the check sandbox's embedded resolver could not be closed, so the sealed round did not start");
+    const leftovers: string[] = [];
+    for (const name of guards) if (await containerLeft(docker, name)) leftovers.push(name);
+    throw agentXError("RUNTIME_UNAVAILABLE", leftovers.length === 0
+      ? "the check sandbox's embedded resolver could not be closed, so the sealed round did not start"
+      : "the check sandbox's embedded resolver could not be closed, so the sealed round did not start, and a resolver guard container could not be removed");
   }
   return started.stdout.trim();
 }
@@ -714,7 +763,7 @@ async function ensureOnWorkingPhaseNetwork(docker: DockerCli, plan: PlanForWorki
  */
 export async function withDetachedWorking<T>(
   docker: DockerCli, plan: CheckSandboxPlan, round: (start: () => Promise<string>) => Promise<T>,
-  options: { returnTo?: WorkingPhaseNetwork | "none"; pauseWorking?: boolean } = {},
+  options: { returnTo?: WorkingPhaseNetwork | "none"; pauseWorking?: boolean; signal?: AbortSignal } = {},
 ): Promise<T> {
   // `returnTo` is the network the working sandbox belongs on once the round is over (its working-phase network), or "none" when it has no services network at all (a run with no working phase). With it, the working
   // sandbox is NEVER connected to this round's network, not even for a moment: the round's own network is only ever looked at. Without it (the single-network design of the first version) it is reattached to the round's
@@ -731,7 +780,7 @@ export async function withDetachedWorking<T>(
       if (frozen === undefined || frozen.exitCode !== 0) throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox could not be paused, so the sealed round did not start");
       paused = true;
     }
-    outcome = { value: await round(() => startCheckSandbox(docker, plan, detached)) };
+    outcome = { value: await round(() => startCheckSandbox(docker, plan, detached, options.signal === undefined ? {} : { signal: options.signal })) };
   } catch (error) {
     outcome = { error };
   }

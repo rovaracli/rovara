@@ -55,7 +55,7 @@ function planInput(): CheckSandboxInput {
       name: NET, slot: SLOT, subnet: addresses.subnet, dnsHelperIp: addresses.dnsHelperIp, workingSandboxIp: addresses.workingSandboxIp, checkSandboxIp: addresses.checkSandboxIp,
       labelArgs: () => runNetworkLabelArgs({ runId: RUN, workspace: "0123456789abcdef", createdAt: 1_800_000_000_000, expiresAt: 1_800_000_900_000 }),
     },
-    taskId: "t1", image: "worker:img", rootPath, maskedPaths: [], filesDir: files.directory, helpers: [{ alias: "postgres", address: runNetworkHelperIp(SLOT, 1) }], sinkholeIp: runNetworkHelperIp(SLOT, 0),
+    taskId: "t1", image: "worker:img", guardImage: `registry.example.test/agentx/worker@sha256:${"c".repeat(64)}`, rootPath, maskedPaths: [], filesDir: files.directory, helpers: [{ alias: "postgres", address: runNetworkHelperIp(SLOT, 1) }], sinkholeIp: runNetworkHelperIp(SLOT, 0),
     workingSandboxName: WORK,
   };
   return input;
@@ -150,7 +150,7 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     expect(order.indexOf("network disconnect")).toBeLessThan(order.indexOf("run"));
     // The proof is read again right before the start, and the start is the plan's own arguments, once.
     // ...and the resolver guard (TS-SEAL-5 b) is the next docker run, before the first command.
-    expect(calls.filter((call) => call[0] === "run")).toEqual([p.sandboxRunArgs, p.resolverGuardArgs]);
+    expect(calls.filter((call) => call[0] === "run")).toEqual([p.sandboxRunArgs, p.resolverGuardArgs.insert, p.resolverGuardArgs.verify]);
     expect(order.lastIndexOf("run")).toBeLessThan(order.indexOf("exec"));
     expect(order.lastIndexOf("exec")).toBeLessThan(order.indexOf("rm"));
     expect(calls.filter((call) => call[0] === "network" && call[1] === "connect")).toEqual([]);
@@ -192,7 +192,7 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     expect(round.entries.map((entry) => entry.after)).toEqual(["not_run", "not_run"]);
     expect(state.sandboxUp).toBe(false);
     expect(state.workingNetworks).not.toContain(NET);
-    expect(verbs(calls).filter((verb) => verb === "run")).toHaveLength(2);
+    expect(verbs(calls).filter((verb) => verb === "run")).toHaveLength(3);
   });
 
   it("does not run the round at all when the working sandbox cannot be proved off the network", async () => {
@@ -230,7 +230,7 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     expect(execs).toEqual([]);
     expect(reset).toBe(false);
     expect(verbs(calls)).not.toContain("exec");
-    expect(calls.filter((call) => call[0] === "run")).toEqual([p.sandboxRunArgs, p.resolverGuardArgs]);
+    expect(calls.filter((call) => call[0] === "run")).toEqual([p.sandboxRunArgs, p.resolverGuardArgs.insert]);
     expect(state.sandboxUp).toBe(false);
     expect(state.workingNetworks).toContain(WORKNET);
     expect(state.paused).toBe(false);
@@ -241,7 +241,7 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     const { docker, calls } = fakeDocker(p.sandboxName);
     const input = roundInput(docker, p);
     for (let index = 0; index < 2; index += 1) await runSealedCheckRound(input, planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
-    expect(verbs(calls).filter((verb) => verb === "run")).toHaveLength(4);
+    expect(verbs(calls).filter((verb) => verb === "run")).toHaveLength(6);
     expect(verbs(calls).filter((verb) => verb === "rm")).toHaveLength(2);
     expect(verbs(calls)).not.toContain("network connect");
   });
@@ -252,7 +252,7 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     const seen: string[] = [];
     const input = roundInput(docker, p, { freshServices: () => { seen.push(verbs(calls).join(",")); return Promise.resolve(); } });
     await runSealedCheckRound(input, planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
-    expect(seen).toEqual(["network disconnect,inspect,pause,network inspect,inspect,run,run,network inspect"]);
+    expect(seen).toEqual(["network disconnect,inspect,pause,network inspect,inspect,run,run,run,network inspect"]);
   });
 
   it("looks at the services network itself before and after the start", async () => {
@@ -289,7 +289,7 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
         await expect(withSealedCheckRound(roundInput(docker, p), () => { ran = true; return Promise.resolve(); }), `${extra.name} ${String(extraAfterStart)}`).rejects.toThrow(/does not expect/u);
         expect(ran).toBe(false);
         // Before the start nothing was run; after it the sandbox is removed. Either way the working sandbox is on its working-phase network and was never connected to the round's.
-        expect(calls.filter((call) => call[0] === "run")).toHaveLength(extraAfterStart ? 2 : 0);
+        expect(calls.filter((call) => call[0] === "run")).toHaveLength(extraAfterStart ? 3 : 0);
         expect(state.sandboxUp).toBe(false);
         expect(state.workingNetworks).toContain(WORKNET);
         expect(verbs(calls)).not.toContain("network connect");

@@ -122,7 +122,8 @@ write_test_services_environment() {
   [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 1
   [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 1
   environment=${BASH_REMATCH[1]}
-  { printf 'AGENTX_TEST_SERVICES_REGISTRY=%s\n' "$registry"; printf 'AGENTX_TEST_SERVICES_ENV=%s\n' "$environment"; } >>"$WORKER_ENV_FILE"
+  # AGENTX_WORKER_IMAGE (the worker's own image, pinned by digest): the sealed round's resolver guard, a root NET_ADMIN container, runs from this and never from the sandbox image (check-sandbox.ts, "THE GUARD'S IMAGE").
+  { printf 'AGENTX_TEST_SERVICES_REGISTRY=%s\n' "$registry"; printf 'AGENTX_TEST_SERVICES_ENV=%s\n' "$environment"; printf 'AGENTX_WORKER_IMAGE=%s\n' "$AGENTX_WORKER_IMAGE"; } >>"$WORKER_ENV_FILE"
   # Per image: the repositories that did not pre-pull (a comma list of svc/<name>); the worker does not offer them. FAIL CLOSED: a list that is not well formed or has more than 16 names is written as `all`
   # (every image counts as not pulled and the worker offers no test-services feature), never dropped, because writing nothing would offer images that are not here.
   # A worker already withheld (`all`, written by withhold_test_services_for_ipv6 or by a launch with tx off) STAYS withheld: a per-image list never replaces or follows it.

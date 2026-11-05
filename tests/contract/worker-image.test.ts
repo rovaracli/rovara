@@ -19,11 +19,12 @@ describe("the worker image", () => {
   });
 
   // TS-SEAL-5 (b): the sealed round's resolver guard runs `iptables-nft` from this image (packages/worker/src/check-sandbox.ts RESOLVER_GUARD_SCRIPT).
-  it("carries the iptables package, which provides the iptables-nft the sealed round's resolver guard runs and the /bin/sh it runs it with", () => {
+  it("carries the iptables package, which provides the iptables-nft the sealed round's resolver guard runs by absolute path", () => {
     const install = /apt-get install --yes --no-install-recommends ([^\n\\]+)/.exec(finalStage)?.[1] ?? "";
     expect(install.split(/\s+/)).toContain("iptables");
     const guard = readFileSync("packages/worker/src/check-sandbox.ts", "utf8");
-    expect(guard).toContain("iptables-nft -w 5 -I OUTPUT 1 -d ${EMBEDDED_RESOLVER_ADDRESS}/32 -j DROP");
+    expect(guard).toContain('export const RESOLVER_GUARD_BINARY = "/usr/sbin/iptables-nft";');
+    expect(guard).toContain('insert: ["-w", "5", "-I", "OUTPUT", "1", "-d", `${EMBEDDED_RESOLVER_ADDRESS}/32`, "-j", "DROP"]');
   });
 
   // R56: a project without a devcontainer runs its commands in a container of this image.

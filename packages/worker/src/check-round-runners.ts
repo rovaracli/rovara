@@ -210,6 +210,8 @@ export interface SealedCheckRoundInput {
   freshServices?: CheckRunners["freshServices"];
   /** Put the `between_checks` helpers back between two checks (`resetForNextCheck`); see `CheckRunners.resetBetweenChecks`. */
   resetBetweenChecks?: CheckRunners["resetBetweenChecks"];
+  /** The round's abort signal, passed to the resolver guard's docker calls when the check sandbox starts (check-sandbox.ts, `withDetachedWorking`'s start). */
+  signal?: AbortSignal;
 }
 
 /**
@@ -250,7 +252,7 @@ async function sealedRound<T>(input: SealedCheckRoundInput, round: (runners: Che
     } finally {
       live = false;
     }
-  }, { returnTo: input.workingPhaseNetwork ?? "none", pauseWorking: true });
+  }, { returnTo: input.workingPhaseNetwork ?? "none", pauseWorking: true, ...(input.signal === undefined ? {} : { signal: input.signal }) });
 }
 
 /**
@@ -258,5 +260,5 @@ async function sealedRound<T>(input: SealedCheckRoundInput, round: (runners: Che
  * rerun on the original code calls it again: each call is its own round with a fresh check sandbox, and `freshServices` puts the helpers back first.
  */
 export function runSealedCheckRound(input: SealedCheckRoundInput, plan: CheckPlan, options: { budgetMs: number; signal: AbortSignal; now?: () => number }): Promise<CheckRound> {
-  return withSealedCheckRound(input, (runners) => runChecks(plan, runners, options));
+  return withSealedCheckRound({ ...input, signal: input.signal ?? options.signal }, (runners) => runChecks(plan, runners, options));
 }

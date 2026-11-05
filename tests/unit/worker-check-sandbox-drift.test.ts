@@ -28,7 +28,7 @@ const net = {
   name: runNetworkName(RUN), slot: 5, subnet: addresses.subnet, dnsHelperIp: addresses.dnsHelperIp, workingSandboxIp: addresses.workingSandboxIp, checkSandboxIp: addresses.checkSandboxIp,
   labelArgs: () => runNetworkLabelArgs({ runId: RUN, workspace: "0123456789abcdef", createdAt: 1, expiresAt: 2 }),
 };
-const input = { net, taskId: "t", image: "img", rootPath: "/ws", maskedPaths: [], filesDir: "/run/x", helpers: [], sinkholeIp: "172.30.5.16" };
+const input = { net, taskId: "t", image: "img", guardImage: `sha256:${"a".repeat(64)}`, rootPath: "/ws", maskedPaths: [], filesDir: "/run/x", helpers: [], sinkholeIp: "172.30.5.16" };
 const files = { resolvConfPath: "/run/x/resolv.conf", hostsPath: "/run/x/hosts" };
 const reset = () => { drift.extra = []; drift.swapNetwork = undefined; drift.dropFlag = undefined; drift.tail = undefined; };
 

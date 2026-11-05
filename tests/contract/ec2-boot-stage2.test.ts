@@ -659,6 +659,8 @@ describe("stage 1 runs stage 2 from the worker image", () => {
       const env = workerEnv(run);
       expect(env.split("\n").filter((line) => line.startsWith("AGENTX_TEST_SERVICES_NOT_PULLED="))).toEqual(["AGENTX_TEST_SERVICES_NOT_PULLED=all"]);
       expect(env).toContain('"ipv6Drops":false,"ipv6DropsReason":"ip6tables-unusable"');
+      // The worker's own image reaches the worker by its own name (the sealed round's resolver guard runs from it, never from AGENTX_SANDBOX_IMAGE), also when test services are withheld.
+      expect(env.split("\n").filter((line) => line.startsWith("AGENTX_WORKER_IMAGE="))).toEqual([`AGENTX_WORKER_IMAGE=${IMAGE}`]);
       expect(bootFacts(run)).toMatchObject({ metadataBlocked: true, runWalls: true, ipv6Drops: false, ipv6DropsReason: "ip6tables-unusable" });
       expect(run.stderr).toContain("TEST SERVICES WITHHELD");
       // The walls that stay fatal were still put in place, and the walls unit was installed.
