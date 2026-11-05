@@ -27,6 +27,13 @@ describe("hideEmailAddresses: an at sign written as a word", () => {
     ["a plain at, end of a sentence", "You can reach omar.diaz at example.test.", `You can reach ${H}.`],
     ["a plain at, two of them", "maya.chen at example.test or omar.diaz at example.test", `${H} or ${H}`],
     ["a plain at beside a markup mark", "**maya.chen at example.test**", `**${H}**`],
+    // A zero-width character inside the spelled-out at, the blanks, the name or the domain is not seen by a reader, so it hides nothing.
+    ["a zero-width character inside the plain at", "maya.chen a\u200Bt example.test", H],
+    ["a zero-width character beside the plain at", "maya.chen \u200B at \u200D example.test", H],
+    ["a zero-width character in the name before a plain at", "maya\u200B.chen at example.test", H],
+    ["a zero-width character in the domain after a plain at", "maya.chen at exa\u200Dmple.test", H],
+    ["a zero-width character inside [at]", "maya.chen [a\u200Bt] example.test", H],
+    ["several blanks and a tab around a plain at", "maya.chen  \t at \t  example.test", H],
   ];
   it.each(hidden)("hides: %s", (_why, text, expected) => {
     expect(hideEmailAddresses(text)).toBe(expected);
@@ -60,6 +67,10 @@ describe("hideEmailAddresses: an at sign written as a word", () => {
     ["a newline between name and at", "maya.chen\nat example.test"],
     ["code with at", "if (x) { return at(example.test); }"],
     ["an ordinary sentence, no domain", "We looked at the results at the end of the week."],
+    // A name that ends like a site or a product is not a person.
+    ["a product name ending in io", "Socket.IO at socket.io"],
+    ["a name ending in net, ai, dev or app", "use asp.net at example.test, open.ai at example.test, my.dev at example.test, the.app at example.test"],
+    ["a zero-width character in a sentence with at", "look a\u200Bt example.test for details"],
   ];
   it.each(kept)("keeps: %s", (_why, text) => {
     expect(hideEmailAddresses(text)).toBe(text);
@@ -130,4 +141,63 @@ describe("every stored-text scrub uses the one rule", () => {
       for (const text of samples) expect(scrub(text), text).toBe(text);
     });
   }
+});
+
+// Review fixes (release 0.5.7): a colon after the domain is not always a git remote, and the match is linear in the text.
+describe("hideEmailAddresses: what follows the domain", () => {
+  const at = String.fromCharCode(64);
+  const hidden: Array<[string, string, string]> = [
+    ["a port", `maya${at}example.com:8080`, `${H}:8080`],
+    ["a word", `maya${at}example.com:note`, `${H}:note`],
+    ["a label before it", `Email:maya${at}example.com:pw`, `Email:${H}:pw`],
+    ["a colon and a space", `Contact maya${at}example.com: thanks`, `Contact ${H}: thanks`],
+    ["a colon at the end", `maya${at}example.com:`, `${H}:`],
+    ["a port and a path", `maya${at}example.com:8080/x`, `${H}:8080/x`],
+  ];
+  it.each(hidden)("hides an address followed by %s", (_why, text, expected) => {
+    expect(hideEmailAddresses(text)).toBe(expected);
+  });
+
+  const kept = [
+    `git clone git${at}github.com:org/repo.git`, `scp a.txt deploy${at}build.example.test:/srv/app`, `rsync -a dir/ deploy${at}build.example.test:~/dir`, `git remote add o git${at}github.com:Org-1/repo.name`,
+    `scp file.txt deploy${at}build.example.test:/srv/app`, `git${at}gitlab.example.test:group/project.git`,
+  ];
+  it.each(kept.map((text) => [text]))("leaves a remote alone: %s", (text) => {
+    expect(hideEmailAddresses(text)).toBe(text);
+  });
+});
+
+describe("hideEmailAddresses: time", () => {
+  const at = String.fromCharCode(64);
+  const LIMIT_MS = 200;
+  // Input is not capped on every path (Slack, a pull request body), so the scan must not grow with the square of a run of name characters, labels or blanks.
+  const inputs: Array<[string, string]> = [
+    ["30K letters then an at sign", `${"a".repeat(30_000)}${at}`],
+    ["30K dotted labels then an at sign", `${"a.".repeat(15_000)}${at}`],
+    ["an at sign then 30K dotted labels", `${at}${"a.".repeat(15_000)}`],
+    ["30K letters around an at sign", `${"a".repeat(15_000)}${at}${"b".repeat(15_000)}`],
+    ["30K dotted labels around an at sign", `${"a.".repeat(7_500)}${at}${"b.".repeat(7_500)}`],
+    ["many at signs", `${"a".concat(at)}`.repeat(15_000)],
+    ["many addresses on one line", `${`a${at}b.co `}`.repeat(4_000)],
+    ["30K blanks then at", `${" ".repeat(30_000)}at example.test`],
+    ["many name-and-at pairs", "maya.chen at ".repeat(2_500)],
+    ["many brackets", "[at]".repeat(10_000)],
+    ["ordinary prose with at", "we looked at the results at the end of the week. ".repeat(600)],
+    ["digits and dots after an at sign", `${at}${"1.".repeat(15_000)}`],
+  ];
+  it.each(inputs)(`takes under ${String(LIMIT_MS)} ms: %s`, (_why, text) => {
+    const started = performance.now();
+    hideEmailAddresses(text);
+    expect(performance.now() - started).toBeLessThan(LIMIT_MS);
+  });
+
+  it("still hides every address of a long line of them", () => {
+    const line = `x${at}y.co `.repeat(3);
+    expect(hideEmailAddresses(line)).toBe(`${H} `.repeat(3));
+  });
+
+  it("cuts a local part at 64 characters: the 64 before the at sign are the address", () => {
+    expect(hideEmailAddresses(`${"a".repeat(64)}${at}example.test`)).toBe(H);
+    expect(hideEmailAddresses(`${"a".repeat(70)}${at}example.test`)).toBe(`${"a".repeat(6)}${H}`);
+  });
 });

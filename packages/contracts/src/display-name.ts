@@ -61,10 +61,11 @@ export const EMAIL_HIDDEN = "[email removed]";
 
 /**
  * The strict address rule for free text (names use the wide `EMAIL_ADDRESS_SOURCE`, where a false match only removes a word; here a false match would corrupt code). A local part of
- * letters, digits and `._%+'-` (no slash, starting with a letter or digit), an at sign, and a domain of dotted labels whose LAST label is letters only. So `react@18.3.1`, `golang.org/x/tools@v0.1.0`, `@scope/pkg@1.2.3` and
- * `image@sha256:abc` are not addresses. A domain that starts with two numeric labels is a version (`pkg@1.0.0-rc.final`, `pkg@1.2.beta`), while `163.com` is a real domain, and `user@host:path` (scp, git remotes) is not an address either.
+ * letters, digits and `._%+'-` (no slash, starting with a letter or digit), an at sign, and a domain of at most 20 dotted labels whose LAST label is letters only. The local part is cut at 64 characters (the longest a real one is), which also keeps the match linear in the text. So `react@18.3.1`, `golang.org/x/tools@v0.1.0`, `@scope/pkg@1.2.3` and
+ * `image@sha256:abc` are not addresses. A domain that starts with two numeric labels is a version (`pkg@1.0.0-rc.final`, `pkg@1.2.beta`), while `163.com` is a real domain, and an scp or git remote (`user@host:/path`, `user@host:~/x`, `git@github.com:org/repo`) is not an address either. A colon and anything else after the domain is: `maya@example.com:8080`, `maya@example.com:note`.
  */
-const STRICT_ADDRESS = /[\p{L}\p{N}][\p{L}\p{N}\p{Cf}._%+'-]*@(?!\d+(?:\.\d+)+)(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+\p{L}{2,63}(?![\p{L}\p{N}]|\.[\p{L}\p{N}]|:[^\s])/gu;
+const DOMAIN_SOURCE = String.raw`(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.){1,20}\p{L}{2,63}`;
+const STRICT_ADDRESS = new RegExp(String.raw`[\p{L}\p{N}][\p{L}\p{N}\p{Cf}._%+'-]{0,63}@(?!\d+(?:\.\d+)+)${DOMAIN_SOURCE}(?![\p{L}\p{N}]|\.[\p{L}\p{N}]|:(?:[/~]|\p{L}[\p{L}\p{N}._-]*/[\p{L}\p{N}._-]))`, "gu");
 /** The login of an ssh-like URL (`ssh://git@host/path`, `git+ssh://git@host/path`) is not mail. */
 const SSH_URL_BEFORE = /(?:ssh|sftp|rsync|git|svn)(?:\+\w+)*:\/\/$/iu;
 /** An ssh-like command just before an address: the address is `user@host`, not mail. */
@@ -78,17 +79,46 @@ const ENCODED_AT_HERE = /(?:%(?:25)?40|&#0*64;|&#x0*40;|&commat;)/iuy;
 /**
  * An at sign written as a bracketed word: `[at]`, `(at)`, `{at}`, with the blanks beside it. Whoever writes this means an address, so it needs only a name before it and a domain after it (both are checked by the address rule).
  */
-const WORDED_AT = /[ \t]*(?:\[at\]|\(at\)|\{at\})[ \t]*/iu;
-const WORDED_AT_HERE = /[ \t]*(?:\[at\]|\(at\)|\{at\})[ \t]*/iuy;
+const WORDED_AT_GATE = /\[\p{Cf}*a\p{Cf}*t\p{Cf}*\]|\(\p{Cf}*a\p{Cf}*t\p{Cf}*\)|\{\p{Cf}*a\p{Cf}*t\p{Cf}*\}/iu;
+/** The forms below are matched against the text as a person reads it (`visibleAhead`): format characters left out and a run of blanks as one blank. */
+const WORDED_AT = /^ ?(?:\[at\]|\(at\)|\{at\}) ?/iu;
+const WORDED_HEAD = /^ ?[[({]at[\])}]/iu;
 /**
  * A plain " at " between a name and a domain ("maya.chen at example.test"). This is the spelling most likely to be a sentence ("look at example.test"), so it counts only when the word before it is a
- * `first.last` name (dotted, letters only, each part two letters or more, the last part not a file extension) and a domain follows that is not the start of a path or a port. Anything else with "at" is prose.
+ * `first.last` name (dotted, letters only, each part two letters or more, the last part not a file extension or a domain ending) and a domain follows that is not the start of a path or a port. Anything else with "at" is prose.
  */
-const SPACED_AT = /[ \t]+at[ \t]+(?=(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+\p{L}{2,63}(?![\p{L}\p{N}/@_-]|\.[\p{L}\p{N}]|:[^\s]))/iuy;
-const SPACED_AT_ANY = /[ \t]at[ \t]/iu;
+const SPACED_AT = new RegExp(String.raw`^ at (?=${DOMAIN_SOURCE}(?![\p{L}\p{N}/@_-]|\.[\p{L}\p{N}]|:[^\s]))`, "iu");
+const SPACED_HEAD = /^ at /iu;
+const SPACED_AT_GATE = /[ \t][ \t\p{Cf}]*a\p{Cf}*t[ \t\p{Cf}]*[ \t]/iu;
 const FIRST_LAST_TAIL = /(?<![\p{L}\p{N}._%+'-])\p{L}[\p{L}-]*\p{L}(?:\.\p{L}[\p{L}-]*\p{L})+$/u;
 /** The ends of file names and code members: `index.ts at example.test` names a file, not a person. */
-const CODE_NAME_ENDINGS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "rb", "go", "rs", "java", "kt", "cs", "cpp", "md", "mdx", "json", "yml", "yaml", "toml", "xml", "html", "css", "scss", "sh", "txt", "log", "lock", "csv", "sql", "env", "cfg", "conf", "ini", "pdf", "png", "jpg", "jpeg", "gif", "svg", "zip", "tgz", "map", "snap", "diff", "patch"]);
+const CODE_NAME_ENDINGS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "rb", "go", "rs", "java", "kt", "cs", "cpp", "md", "mdx", "json", "yml", "yaml", "toml", "xml", "html", "css", "scss", "sh", "txt", "log", "lock", "csv", "sql", "env", "cfg", "conf", "ini", "pdf", "png", "jpg", "jpeg", "gif", "svg", "zip", "tgz", "map", "snap", "diff", "patch",
+  // Domain endings: `Socket.IO at socket.io` names a product, and a name ending like that is code or a site, not a person.
+  "io", "net", "ai", "dev", "app", "com", "org", "gov", "edu", "co", "me", "xyz", "cloud", "run", "tech", "page", "site", "ws", "so", "to"]);
+
+const FORMAT_CHARACTER = /^\p{Cf}$/u;
+/**
+ * The text from `index` as a person reads it: format characters (zero-width and the like) left out and a run of spaces or tabs as one space, up to `limit` characters. `ends[k]` is where, in the text, the k-th
+ * character read stops, so a match found in the reading can be replaced in the text.
+ */
+function visibleAhead(text: string, index: number, limit: number): { visible: string; ends: number[] } {
+  let visible = "";
+  const ends: number[] = [];
+  let at = index;
+  while (at < text.length && visible.length < limit) {
+    const character = String.fromCodePoint(text.codePointAt(at)!);
+    at += character.length;
+    if (FORMAT_CHARACTER.test(character)) continue;
+    if (character === " " || character === "\t") {
+      if (visible.endsWith(" ")) ends[ends.length - 1] = at;
+      else { visible += " "; ends.push(at); }
+      continue;
+    }
+    visible += character;
+    for (let unit = 0; unit < character.length; unit += 1) ends.push(at);
+  }
+  return { visible, ends };
+}
 
 /**
  * THE rule for an email address in free text (S3-L2): the text with every address replaced by `replacement`. Free text is anything a person or a model wrote that reaches other people or is stored: a
@@ -99,7 +129,7 @@ const CODE_NAME_ENDINGS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "py",
  * found by reading each character in its compatibility form; only the address itself is replaced, and every other character stays as it was.
  */
 export function replaceEmailAddresses(text: string, replacement: string): string {
-  if (typeof text !== "string" || !(AT_SPELLINGS.test(text) || ENCODED_AT.test(text) || WORDED_AT.test(text) || SPACED_AT_ANY.test(text))) return text;
+  if (typeof text !== "string" || !(AT_SPELLINGS.test(text) || ENCODED_AT.test(text) || WORDED_AT_GATE.test(text) || SPACED_AT_GATE.test(text))) return text;
   // The text in compatibility form, with where each folded character came from, so the address (and nothing else) can be replaced in the original.
   // An at sign written out (`%40`, `&#64;`) is read as "@" here, so the same rule finds it: the address in `?email=maya%40example.test` is hidden, and a scope in `/%40scope%2Fpkg` is not an address.
   let folded = "";
@@ -116,29 +146,29 @@ export function replaceEmailAddresses(text: string, replacement: string): string
       index += written[0].length;
       continue;
     }
-    // An at sign written as a word (`[at]`) is read as "@" the same way; so is a plain " at " that the name before it and the domain after it make an address.
-    // Tried where a run of blanks starts (or where there is none): both patterns take the whole run, so trying again inside it only repeats the work, once per blank.
+    // An at sign written as a word (`[at]`) is read as "@" the same way; so is a plain " at " that the name before it and the domain after it make an address. They are tried where a run of blanks
+    // starts (or where there is none), on the text as a person reads it, so a zero-width character inside the word does not hide it.
+    const here = text[index];
     const runStart = index === 0 || (text[index - 1] !== " " && text[index - 1] !== "\t");
-    WORDED_AT_HERE.lastIndex = index;
-    const worded = runStart ? WORDED_AT_HERE.exec(text) : null;
-    if (worded !== null) {
-      folded += "@";
-      starts.push(index);
-      ends.push(index + worded[0].length);
-      index += worded[0].length;
-      continue;
-    }
-    if (runStart && (text[index] === " " || text[index] === "\t")) {
-      SPACED_AT.lastIndex = index;
-      const spaced = SPACED_AT.exec(text);
-      // Only the end of the text read so far matters (a local part is at most 64 characters), so a long text is not searched again at every " at ".
-      const name = spaced === null ? null : FIRST_LAST_TAIL.exec(folded.slice(-130));
-      if (spaced !== null && name !== null && name[0].length <= 64 && !CODE_NAME_ENDINGS.has(name[0].slice(name[0].lastIndexOf(".") + 1).toLowerCase())) {
-        folded += "@";
-        starts.push(index);
-        ends.push(index + spaced[0].length);
-        index += spaced[0].length;
-        continue;
+    if (runStart && (here === " " || here === "\t" || here === "[" || here === "(" || here === "{" || FORMAT_CHARACTER.test(here!))) {
+      const head = visibleAhead(text, index, 6).visible;
+      const wordedHead = WORDED_HEAD.test(head);
+      if (wordedHead || SPACED_HEAD.test(head)) {
+        const view = visibleAhead(text, index, 320);
+        const worded = wordedHead ? WORDED_AT.exec(view.visible) : null;
+        const spaced = worded === null && !wordedHead ? SPACED_AT.exec(view.visible) : null;
+        // Only the end of the text read so far matters (a local part is at most 64 characters), so a long text is not searched again at every " at ".
+        const name = spaced === null ? null : FIRST_LAST_TAIL.exec(folded.slice(-130));
+        const named = name !== null && name[0].length <= 64 && !CODE_NAME_ENDINGS.has(name[0].slice(name[0].lastIndexOf(".") + 1).toLowerCase());
+        const found = worded ?? (named ? spaced : null);
+        if (found !== null) {
+          const finish = view.ends[found[0].length - 1]!;
+          folded += "@";
+          starts.push(index);
+          ends.push(finish);
+          index = finish;
+          continue;
+        }
       }
     }
     const character = String.fromCodePoint(text.codePointAt(index)!);
@@ -160,7 +190,7 @@ export function replaceEmailAddresses(text: string, replacement: string): string
     const begin = starts[match.index]!;
     const finish = ends[match.index + match[0].length - 1]!;
     if (begin < from) continue;
-    const before = text.slice(Math.max(0, text.lastIndexOf("\n", begin - 1) + 1), begin);
+    const before = text.slice(Math.max(0, text.lastIndexOf("\n", begin - 1) + 1, begin - 400), begin);
     if (SSH_BEFORE.test(before) || SSH_URL_BEFORE.test(before)) continue;
     out += text.slice(from, begin) + replacement;
     from = finish;
