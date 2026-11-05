@@ -121,11 +121,11 @@ export function DesignTabView({ model, onRetry }: { model: DesignTabModel; onRet
  </section>;
 }
 
-export function DesignTab({ task, sessionKey }: { task: ReadTask; sessionKey?: readonly unknown[] | undefined }) {
+export function DesignTab({ task, sessionKey, retryShown = true }: { task: ReadTask; sessionKey?: readonly unknown[] | undefined; /** False where the page shows "Retry review" elsewhere: one button per view. */ retryShown?: boolean }) {
  const base = useMemo(() => codeLinkBaseOf(task), [task]), review = useMemo(() => readDesignReview(task.workflow?.designReview), [task]);
  if (review === undefined) return null;
  if (review === "unreadable") return <section aria-label="Design review" className="rv-design"><p role="status">This design review can't be shown by this version of the app. Reload the page; if it stays like this, the app needs an update.</p></section>;
- const model = designTabModel(review, { note: review.note, codeLinkBase: base, designWritten: (task.workflow?.artifacts ?? []).some(artifact => artifact.type === "design"), retry: readDesignActions(task.designActions)?.retry });
+ const model = designTabModel(review, { note: review.note, codeLinkBase: base, designWritten: (task.workflow?.artifacts ?? []).some(artifact => artifact.type === "design"), retry: retryShown ? readDesignActions(task.designActions)?.retry : undefined });
  return model.retry === undefined ? <DesignTabView model={model} /> : <DesignTabWithRetry model={model} taskId={task.taskId} sessionKey={sessionKey} />;
 }
 

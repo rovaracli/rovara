@@ -32,6 +32,7 @@ import { designSpendChoiceHandler, mayChooseDesignSpend, skipRefusalWords, desig
 import { designSpendCommitItems } from "../../design-review/spend-follow.js";
 import { spendEstimatesOf } from "../../design-review/spend-estimates.js";
 import { designReviewAvailableFor } from "../../design-review/switch.js";
+import { planCheckModelTriesUsed } from "../../design-review/outcome.js";
 import { freshSignInOf, readDesignDirectory, readDesignTouches, readLatestDesignText, type DesignFactsDeps } from "../../design-review/route-facts.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, isConditional, workflowDispatchItem } from "../broker-shared.js";
 import { commitDesignApproval, membershipFenceItem } from "../developer-tasks/design-decision.js";
@@ -687,8 +688,9 @@ export function designActionsFor(deps: DeveloperRouteDependencies, caller: Devel
     }
     const hint = designFirst && quickCard && await planHint(env, task, workflow).catch(() => false);
     // DR-KEY-1 (D): "Retry review" by the route's own rules: the workflow's (`designReviewRetryOffer`) and who may press it (the requester or a maintainer).
+    // Not offered when the plan check has used its model tries since the latest plan: the dispatch would refuse the retry (the same rule it applies).
     const offer = designReviewRetryOffer(workflow);
-    const retry = offer === undefined ? undefined : { allowed: offer.allowed && mayDirectWork(directory, task, caller.developerId), retriesLeft: offer.retriesLeft };
+    const retry = offer === undefined || await planCheckModelTriesUsed(deps, task) ? undefined : { allowed: offer.allowed && mayDirectWork(directory, task, caller.developerId), retriesLeft: offer.retriesLeft };
     if (!designFirst && skip === undefined && retry === undefined) return undefined;
     return { designFirst, ...(skip === undefined ? {} : { skip }), ...(hint ? { hint: true } : {}), ...(retry === undefined ? {} : { retry }) };
   };

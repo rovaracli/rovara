@@ -155,6 +155,8 @@ interface Reviewer {
   spentUsd?: number;
   /** The stored packet of its slot is gone (expired, damaged) before the result is read. */
   packetLost?: boolean;
+  /** It gave no result, with a failure code a newer worker sends and this broker does not know. */
+  futureFailure?: boolean;
 }
 
 /** The worker of one operation: fetches each reviewer's packet, asks for each slot's key, and uploads `design-review.json`. Returns what it did, for the assertions. */
@@ -179,6 +181,10 @@ async function runWorker(w: World, operationId: string, reviewers: Partial<Recor
     w.access.setKeySpent(apiKey, spec.spentUsd ?? 0.1);
     if (spec.packetLost === true) w.db.delete(`ORG#${TEST_ORG}#DESIGN_REVIEW#${operationId}`, `PACKET#R1#${entry.keySlot}#HEAD`);
     if (spec.asksTwice === true) expect((await rawGet(w.handler, `/v1/internal/model-access?slot=${entry.keySlot}`, capability)).status).toBe(403);
+    if (spec.futureFailure === true) {
+      outcomes.push({ role: entry.role, keySlot: entry.keySlot, status: "no_result", failure: "a_failure_this_broker_does_not_know", retried: false, tokensIn: 0, tokensOut: 0, costUsd: 0, startedAt: "2026-11-03T12:10:00.000Z", endedAt: "2026-11-03T12:12:00.000Z" });
+      continue;
+    }
     const comprehension = entry.role === "comprehension";
     const block = JSON.stringify({ ...(comprehension ? { paraphrase: { proposes: "Retry a timed-out payment once.", today: "A timeout throws." } } : {}), findings: spec.findings ?? [] });
     outcomes.push({
@@ -1119,6 +1125,17 @@ describe("slice C: the design review's routes", () => {
     expect(harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "PLAN" && item.workflowRevision === after.revision)).toHaveLength(1);
   });
 
+  it("DR-KEY-1 review: a round with answers and one reviewer failure code this broker does not know keeps the answers (mixed fleet)", async () => {
+    const w = await world();
+    const operationId = String(w.operations()[0]!.id);
+    await runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")] }, codebase: { futureFailure: true } });
+    const round = review(w).rounds[0];
+    expect(round, "the round is recorded, not dropped").toBeDefined();
+    expect(round!.reviewers.filter((run) => run.verified).map((run) => run.role).sort()).toEqual(["comprehension", "critic"]);
+    expect(round!.reviewers.find((run) => run.role === "codebase")).toMatchObject({ verified: false });
+    expect(round!.findings.map((finding) => finding.text)).toContain("Retries have no upper bound.");
+  });
+
   it("the Retry of a review that did not run is one tap for a project member, once", async () => {
     const w = await world({ capUsd: 5 });
     await runWorker(w, String(w.operations()[0]!.id), {}, { failure: { error: "the run failed" } });
@@ -1127,6 +1144,16 @@ describe("slice C: the design review's routes", () => {
     // DR-KEY-1 D: the task view offers Retry review to the person who may press it, by the route's own rule, with the retries left.
     const actionsOf = async (who: Developer) => ((await w.dev(who, "GET", `/v1/dev/tasks/${w.taskId}`, undefined, { "x-agentx-task-view": "2" })).body.task as { designActions?: { retry?: unknown } } | undefined)?.designActions?.retry;
     expect(await actionsOf(MAYA)).toEqual({ allowed: true, retriesLeft: 2 });
+    // Not offered once the plan check has used its model tries since the latest plan: the dispatch would refuse the retry (the same rule, CRITIC_MODEL_ATTEMPTS_MAX = 6).
+    const failedRound = w.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === w.workspaceId && item.workflowMode === "PLAN_CRITIQUE")[0]!;
+    const used = Array.from({ length: 6 }, () => randomUUID()).map((id) => ({ ...failedRound, pk: `WORKSPACE#${w.workspaceId}`, sk: `OPERATION#${id}`, id, error: "MODEL_NOT_ALLOWED: no model", createdAt: "2099-01-01T00:00:00.000Z" }));
+    for (const item of used) w.db.set(item);
+    const view = async () => w.dev(MAYA, "GET", `/v1/dev/tasks/${w.taskId}`, undefined, { "x-agentx-task-view": "2" });
+    expect((await view()).status, "the task view still reads").toBe(200);
+    expect(await actionsOf(MAYA), "every model try is used").toBeUndefined();
+    w.db.delete(used[5]!.pk, used[5]!.sk);
+    expect(await actionsOf(MAYA), "one try left").toEqual({ allowed: true, retriesLeft: 2 });
+    for (const item of used) w.db.delete(item.pk, item.sk);
     expect((await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/retry`, { requestId: randomUUID() })).status, "a viewer cannot").toBe(404);
     const done = await w.dev(MAYA, "POST", `/v1/app/tasks/${w.taskId}/design-review/retry`, { requestId: randomUUID() });
     expect(done.status, JSON.stringify(done.body)).toBe(200);

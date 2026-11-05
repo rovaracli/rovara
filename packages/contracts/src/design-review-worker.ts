@@ -72,12 +72,18 @@ const Tokens = z.number().int().min(0);
 const Usd = z.number().min(0).max(10_000);
 const Instant = z.string().datetime({ offset: true });
 
+/**
+ * A reviewer's (or the merge step's) failure, read tolerantly (DR-KEY-1 review): a worker newer than this broker may send a failure code this version does not know. It reads as the generic model failure, so the
+ * rest of the result (the other reviewers' paid answers) is never dropped for one unknown word. A failure only ever lowers what counts; it never makes a reviewer count.
+ */
+const RunFailureSchema = z.enum(DESIGN_REVIEW_RUN_FAILURES).optional().catch("model_failed");
+
 export const DesignReviewerOutcomeSchema = z.object({
   role: ReviewerRoleSchema,
   keySlot: z.string().min(1).max(32),
   /** "answered": the last answer holds a block the worker could read. "no_result": it did not (see `failure`). The broker decides for itself either way. */
   status: z.enum(["answered", "no_result"]),
-  failure: z.enum(DESIGN_REVIEW_RUN_FAILURES).optional(),
+  failure: RunFailureSchema,
   /** True when the reviewer was asked once more in the same session because its first block could not be read. */
   retried: z.boolean(),
   report: DesignReviewerReportSchema.optional(),
@@ -94,7 +100,7 @@ export type DesignReviewerOutcome = z.infer<typeof DesignReviewerOutcomeSchema>;
 
 export const DesignReviewMergeOutcomeSchema = z.object({
   status: z.enum(["answered", "skipped", "no_result"]),
-  failure: z.enum(DESIGN_REVIEW_RUN_FAILURES).optional(),
+  failure: RunFailureSchema,
   answer: z.string().max(DESIGN_REVIEW_ANSWER_MAX_BYTES * 4).optional(),
   tokensIn: Tokens,
   tokensOut: Tokens,

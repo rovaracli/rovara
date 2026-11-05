@@ -29,7 +29,7 @@ const spendItem: DecisionItem = designSpendCardItem({ taskId: TASK, subjectId: "
  gate: { kind: "ask", why: "over_cap", estimateUsd: 12.5, choices: [{ choice: "lower_tier", tier: "light", estimateUsd: 2 }, { choice: "raise_cap", newCapUsd: 13 }, { choice: "skip" }] } as never });
 const viewOf = (items: DecisionItem[]) => { const p = projectDecisionCards(items); return DecisionCardsViewSchema.parse({ cards: p.cards, total: p.cards.length, tabs: p.tabs, details: p.details, digests: p.digests, dropped: p.dropped }); };
 
-function screenSetup(session: ReturnType<typeof designTaskSession>, items: DecisionItem[] = []) {
+function screenSetup(session: ReturnType<typeof designTaskSession>, items: DecisionItem[] = [], hash = "") {
  const f = fakeHost(async request => {
   if (request.path === "/v1/app/decisions") return { status: 200, body: viewOf(items) };
   if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
@@ -39,7 +39,7 @@ function screenSetup(session: ReturnType<typeof designTaskSession>, items: Decis
   if (request.method === "POST") return { status: 202, body: { ok: true } };
   return { status: 200, body: { session } };
  });
- const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
+ const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID + hash] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
  const posts = () => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST" && !request.path.endsWith("/presence"));
  return { ...f, ...ui, posts, close() { ui.unmount();router.dispose();query.clear(); } };
@@ -119,7 +119,14 @@ it("DR-KEY-1 D: offers Retry review under a review that did not run, on the Desi
   await waitFor(() => expect(reads(), reason).toBeGreaterThan(before));
   f.close();
  }
- // The Design tab: the button sits under the not-run line.
+ // One button per view: on the task page with the Design tab open, the strip's button is the only one.
+ const page = screenSetup(designTaskSession(notRun("worker_failed"), { designActions: { designFirst: false, retry: { allowed: true, retriesLeft: 2 } } }), [], "#design");
+ await screen.findByRole("region", { name: "Design review" });
+ await screen.findByRole("region", { name: "Design review actions" });
+ expect(screen.getAllByRole("button", { name: "Retry review" })).toHaveLength(1);
+ expect(within(screen.getByRole("region", { name: "Design review actions" })).getByRole("button", { name: "Retry review" })).toBeTruthy();
+ page.close();
+ // The Design tab on its own (no strip above it, e.g. a chain's section): the button sits under the not-run line.
  const tab = workspaceSetup(designTaskSession(notRun("worker_failed"), { designActions: { designFirst: false, retry: { allowed: true, retriesLeft: 1 } } }), "#design");
  const region = await screen.findByRole("region", { name: "Design review" });
  expect(within(region).getByText("Design review did not run: the reviewers did not start or did not finish.")).toBeTruthy();
