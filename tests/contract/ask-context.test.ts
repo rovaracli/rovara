@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { ASK_LIMITS, OUTSIDER_TEXT_LABEL, WORKFLOW_BLOCK_REASONS, sessionBindingKey, type AskAudience } from "../../packages/contracts/src/index.js";
 import { ASK_AUDIENCE_POLICY, ASK_LINK_LINE, askContext, buildAskContext, type AskContextData, type AskContextReaders, type AskViewer } from "../../packages/broker/src/agent-sessions/ask-context.js";
+import { SLACK_CLIENT_NAME } from "../../packages/broker/src/developer/task-records.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
@@ -298,6 +299,22 @@ describe("loading the context of a real task", () => {
       expect(text, viewer.audience).not.toContain(SECRET);
       expect(text, viewer.audience).not.toContain("U0ERASED01");
     }
+  });
+
+  it("slack gets the full request only for a task started from Slack (the thread shows it); a web-started task shared to a thread keeps the title only, web still gets it (QA6-05, design 3.2)", async () => {
+    const t = await planWaiting();
+    const meta = () => t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown>;
+    const request = `${"Long request padding. ".repeat(20)}SLACK-TIER-REQUEST-MARKER`;
+    const slack: AskViewer = { audience: "slack", workspaceId: t.workspaceId, thread: t.thread };
+    const web: AskViewer = { audience: "web", orgId: TEST_ORG, developerId: ASKER };
+    // Started from Slack (this world's task is): the thread has the request, so the Slack tier has it.
+    t.harness.db.set({ ...meta(), client: SLACK_CLIENT_NAME, requestText: request });
+    expect((await askContext(t.deps, slack, t.taskId))?.text).toContain("SLACK-TIER-REQUEST-MARKER");
+    // Started elsewhere and shared to the thread: the thread does not show it, so the Slack tier does not get it. The web asker still does.
+    t.harness.db.set({ ...meta(), client: "test-client", requestText: request });
+    expect((await askContext(t.deps, slack, t.taskId))?.text).not.toContain("SLACK-TIER-REQUEST-MARKER");
+    expect((await askContext(t.deps, slack, t.taskId))?.text).toContain("LOADED-PLAN-MARKER");
+    expect((await askContext(t.deps, web, t.taskId))?.text).toContain("SLACK-TIER-REQUEST-MARKER");
   });
 
   it("web: 'use' and 'edit' (read live for this person on this task's session) get the context; 'view', no level, another org and a closed task get nothing", async () => {

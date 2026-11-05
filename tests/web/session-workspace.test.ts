@@ -48,6 +48,16 @@ it("says current limit against proposed limit when approving the plan would chan
  const same = setup(fixture({ cost: { ...base.cost, runLimitUsd: 2 } }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
  expect(screen.getByText(/^Run limit:/u).textContent).toBe("Run limit: $2.00");expect(screen.queryByText(/Current limit/u)).toBeNull();same.close();
 });
+it("shows no current-to-proposed limit while requirements or the design wait: approving them changes no limit (QA6-12)", async () => {
+ const base = fixture();
+ for (const reviewPhase of ["REQUIREMENTS", "DESIGN", "IMPLEMENTATION_PLAN"] as const) {
+  const task = taskFixture({ workflow: { ...workflow(), path: "FULL", reviewPhase }, runEstimate: { lowUsd: 0.5, highUsd: 1.2, runLimitUsd: 2, stopAtUsd: 2, basis: "default", samples: 0 } });
+  const f = setup(fixture({ cost: { ...base.cost, runLimitUsd: 6 }, body: { kind: "task", task } }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
+  if (reviewPhase === "IMPLEMENTATION_PLAN") expect(screen.getByText(/Current limit/u).textContent).toBe("Current limit $6.00 \u2192 proposed limit $2.00");
+  else { expect(screen.queryByText(/Current limit/u)).toBeNull();expect(screen.getByText(/^Run limit:/u).textContent).toBe("Run limit: $2.00"); }
+  f.close();
+ }
+});
 it("shows the time to a pull request beside the cost, and says when the plan check was unavailable (staging 0.4.10, bug D)", async () => {
  const task = taskFixture({ workflow: { ...workflow(), definitionVersion: "1.1.0", critique: { status: "done", critiques: [], revisions: 0 } },
   runEstimate: { lowUsd: 0.5, highUsd: 1.2, runLimitUsd: 2, stopAtUsd: 2, basis: "default", samples: 0, minutes: { low: 20, high: 45, basis: "default", samples: 0 } } });
