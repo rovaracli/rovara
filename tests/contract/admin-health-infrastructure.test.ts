@@ -305,6 +305,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/design-review/packet-store.ts", "packages/broker/src/design-review/slot-keys.ts",
       // 2026-11-04, 0.5.5 integration: task spending-stop review snapshots (admin-v11-finish) last 5 minutes, the team record's source request receipts (24 h, source-store.ts), picker listing sessions (15 min, source-options.ts) and erase sweep markers (erase.ts) are working rows of one operation each; all expire by the TTL, none is a durable record.
       "packages/broker/src/org/task-stop-enrollment.ts", "packages/broker/src/team-record/source-store.ts", "packages/broker/src/team-record/source-options.ts", "packages/broker/src/team-record/erase.ts",
+      // 0.5.7 (SRL-6): the Health page's failure counters (one item per company, kind and hour) expire two days after the last failure; each is a count, none a durable record, and only ops-failures.ts writes them.
+      "packages/broker/src/team-record/ops-failures.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
