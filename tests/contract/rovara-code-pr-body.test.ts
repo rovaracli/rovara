@@ -3,7 +3,7 @@
 // model-written line is redacted and made inert (no mention, link or cross-reference), the whole body is bounded, and a version 1 task's description is exactly as before.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { RiskAssessmentSchema, sessionBindingKey, type VerificationReport } from "../../packages/contracts/src/index.js";
+import { EMAIL_HIDDEN, RiskAssessmentSchema, sessionBindingKey, type VerificationReport } from "../../packages/contracts/src/index.js";
 import { workflowFindingFingerprint } from "../../packages/contracts/src/task-workflow.js";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { RISK_SENSITIVE_PATH_PATTERNS, assessRisk, isSensitivePath, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
@@ -952,6 +952,24 @@ describe("a pushed fix on a version 2 task", () => {
     expect(t.state.body).toContain("[email removed]");
     expect(t.state.body).not.toContain("omar.diaz");
     expect(t.state.body).not.toContain(`example.test.md`);
+    expect(t.state.body).toContain("A note from Priya, kept.");
+  });
+
+  // S3-L6: the status block the reconcile path rewrites after a pushed fix (`describeFeedbackFixes`), tested on its own and not only through `workflowPullRequestStatusLines`. A check's label is model-written
+  // and changes after the first description was written, so the rewrite is the only place the new label reaches GitHub.
+  it("S3 (L6): the description the reconcile path rewrites after a pushed fix hides an address in a check's label", async () => {
+    const at = String.fromCharCode(64);
+    const t = await fixPassed({ structuredPlan: true });
+    // The first description (written before the label changed) has the status block; the label then gains an address, and the fix is pushed.
+    expect(t.state.body).toContain("npm test");
+    const record = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot };
+    const policy = record.workflow.checkPolicy!;
+    t.harness.db.set({ ...record, workflow: { ...record.workflow, checkPolicy: { ...policy, required: policy.required.map((check) => ({ ...check, label: `npm test for omar.diaz${at}example.test` })) } } });
+    await pushFix(t);
+    expect(t.gateway.updatePullRequest).toHaveBeenCalled();
+    expect(t.state.body).toContain(`Passed: npm test for ${EMAIL_HIDDEN}`);
+    expect(t.state.body).not.toContain("omar.diaz");
+    expect(t.state.body).not.toContain("example.test");
     expect(t.state.body).toContain("A note from Priya, kept.");
   });
 

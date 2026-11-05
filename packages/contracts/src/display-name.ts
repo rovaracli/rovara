@@ -76,13 +76,30 @@ const ENCODED_AT = /%(?:25)?40|&#0*64;|&#x0*40;|&commat;/iu;
 const ENCODED_AT_HERE = /(?:%(?:25)?40|&#0*64;|&#x0*40;|&commat;)/iuy;
 
 /**
- * The text with every email address replaced by `EMAIL_HIDDEN`, for free text that reaches other people (a session card, a Slack message, a pull request, a decision card).
+ * An at sign written as a bracketed word: `[at]`, `(at)`, `{at}`, with the blanks beside it. Whoever writes this means an address, so it needs only a name before it and a domain after it (both are checked by the address rule).
+ */
+const WORDED_AT = /[ \t]*(?:\[at\]|\(at\)|\{at\})[ \t]*/iu;
+const WORDED_AT_HERE = /[ \t]*(?:\[at\]|\(at\)|\{at\})[ \t]*/iuy;
+/**
+ * A plain " at " between a name and a domain ("maya.chen at example.test"). This is the spelling most likely to be a sentence ("look at example.test"), so it counts only when the word before it is a
+ * `first.last` name (dotted, letters only, each part two letters or more, the last part not a file extension) and a domain follows that is not the start of a path or a port. Anything else with "at" is prose.
+ */
+const SPACED_AT = /[ \t]+at[ \t]+(?=(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+\p{L}{2,63}(?![\p{L}\p{N}/@_-]|\.[\p{L}\p{N}]|:[^\s]))/iuy;
+const SPACED_AT_ANY = /[ \t]at[ \t]/iu;
+const FIRST_LAST_TAIL = /(?<![\p{L}\p{N}._%+'-])\p{L}[\p{L}-]*\p{L}(?:\.\p{L}[\p{L}-]*\p{L})+$/u;
+/** The ends of file names and code members: `index.ts at example.test` names a file, not a person. */
+const CODE_NAME_ENDINGS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "rb", "go", "rs", "java", "kt", "cs", "cpp", "md", "mdx", "json", "yml", "yaml", "toml", "xml", "html", "css", "scss", "sh", "txt", "log", "lock", "csv", "sql", "env", "cfg", "conf", "ini", "pdf", "png", "jpg", "jpeg", "gif", "svg", "zip", "tgz", "map", "snap", "diff", "patch"]);
+
+/**
+ * THE rule for an email address in free text (S3-L2): the text with every address replaced by `replacement`. Free text is anything a person or a model wrote that reaches other people or is stored: a
+ * session card, a Slack message, a pull request, a decision card, a timeline entry, a stored Ask or team-record line. They all call this (`hideEmailAddresses` is it with the usual placeholder; a store
+ * that reads a different placeholder passes its own), so no text has a rule of its own. Names are the other case: a name goes through `emailSafeName` / the broker's `safeDisplayName`, never through here.
  * Unlike `withoutEmailAddresses` (which makes a name), this keeps the layout: line breaks, indentation, code fences and every other character stay as they were, so a code block still renders
  * and a text with no address comes back as the very same string. It uses the strict rule above, so code text (versions, modules, git remotes, ssh hosts) is left alone. A fullwidth spelling is
  * found by reading each character in its compatibility form; only the address itself is replaced, and every other character stays as it was.
  */
-export function hideEmailAddresses(text: string): string {
-  if (typeof text !== "string" || !(AT_SPELLINGS.test(text) || ENCODED_AT.test(text))) return text;
+export function replaceEmailAddresses(text: string, replacement: string): string {
+  if (typeof text !== "string" || !(AT_SPELLINGS.test(text) || ENCODED_AT.test(text) || WORDED_AT.test(text) || SPACED_AT_ANY.test(text))) return text;
   // The text in compatibility form, with where each folded character came from, so the address (and nothing else) can be replaced in the original.
   // An at sign written out (`%40`, `&#64;`) is read as "@" here, so the same rule finds it: the address in `?email=maya%40example.test` is hidden, and a scope in `/%40scope%2Fpkg` is not an address.
   let folded = "";
@@ -99,6 +116,31 @@ export function hideEmailAddresses(text: string): string {
       index += written[0].length;
       continue;
     }
+    // An at sign written as a word (`[at]`) is read as "@" the same way; so is a plain " at " that the name before it and the domain after it make an address.
+    // Tried where a run of blanks starts (or where there is none): both patterns take the whole run, so trying again inside it only repeats the work, once per blank.
+    const runStart = index === 0 || (text[index - 1] !== " " && text[index - 1] !== "\t");
+    WORDED_AT_HERE.lastIndex = index;
+    const worded = runStart ? WORDED_AT_HERE.exec(text) : null;
+    if (worded !== null) {
+      folded += "@";
+      starts.push(index);
+      ends.push(index + worded[0].length);
+      index += worded[0].length;
+      continue;
+    }
+    if (runStart && (text[index] === " " || text[index] === "\t")) {
+      SPACED_AT.lastIndex = index;
+      const spaced = SPACED_AT.exec(text);
+      // Only the end of the text read so far matters (a local part is at most 64 characters), so a long text is not searched again at every " at ".
+      const name = spaced === null ? null : FIRST_LAST_TAIL.exec(folded.slice(-130));
+      if (spaced !== null && name !== null && name[0].length <= 64 && !CODE_NAME_ENDINGS.has(name[0].slice(name[0].lastIndexOf(".") + 1).toLowerCase())) {
+        folded += "@";
+        starts.push(index);
+        ends.push(index + spaced[0].length);
+        index += spaced[0].length;
+        continue;
+      }
+    }
     const character = String.fromCodePoint(text.codePointAt(index)!);
     const next = index + character.length;
     // A zero-width or other format character is invisible, so it is no part of what a person reads as an address: a pull request text makes a mention inert with one after the at sign
@@ -110,6 +152,8 @@ export function hideEmailAddresses(text: string): string {
     }
     index = next;
   }
+  // No at sign after reading (a plain " at " in prose, a `[at]` that no name or domain makes an address): there is nothing to match, and the pattern below would scan every run of name characters for one.
+  if (!folded.includes("@")) return text;
   let out = "";
   let from = 0;
   for (const match of folded.matchAll(STRICT_ADDRESS)) {
@@ -118,10 +162,15 @@ export function hideEmailAddresses(text: string): string {
     if (begin < from) continue;
     const before = text.slice(Math.max(0, text.lastIndexOf("\n", begin - 1) + 1), begin);
     if (SSH_BEFORE.test(before) || SSH_URL_BEFORE.test(before)) continue;
-    out += text.slice(from, begin) + EMAIL_HIDDEN;
+    out += text.slice(from, begin) + replacement;
     from = finish;
   }
   return from === 0 && out === "" ? text : out + text.slice(from);
+}
+
+/** The text with every email address replaced by `EMAIL_HIDDEN`, for free text that reaches other people. See `replaceEmailAddresses`. */
+export function hideEmailAddresses(text: string): string {
+  return replaceEmailAddresses(text, EMAIL_HIDDEN);
 }
 
 /**

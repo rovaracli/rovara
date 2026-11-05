@@ -17,6 +17,7 @@
 import { z } from "zod";
 import { ChainRunIdSchema, GATE_DEFAULT_TIMEOUT_HOURS, agentXError, projectAllows, type ApproverRule, type OrgId } from "@agentx/contracts";
 import { orgRoleOf } from "../agents/access.js";
+import { safeDisplayName } from "../developer/person-name.js";
 import {
   createStepApproval, registerApprovalSubjectHandler, registerApproverRefusal, registerApproverRule, shownText,
   type AnyApprovalRecord, type ApprovalCaller, type ApprovalDependencies, type ApproverRefusal, type StepApprovalRecord,
@@ -153,7 +154,7 @@ export function approverWords(rules: readonly ApproverRule[], context: ApproverW
 export async function displayNameOf(deps: Deps, developerId: string): Promise<string> {
   try {
     const record = await deps.signInStore.getDeveloper(developerId) as { displayName?: unknown } | undefined;
-    const name = typeof record?.displayName === "string" ? shownText(record.displayName, NAME_MAX) : "";
+    const name = typeof record?.displayName === "string" ? shownText(safeDisplayName(record.displayName, developerId), NAME_MAX) : "";
     return name === "" ? FALLBACK_NAME : name;
   } catch {
     return FALLBACK_NAME;

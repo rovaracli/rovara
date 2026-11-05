@@ -844,6 +844,22 @@ describe("the words of a gate", () => {
     expect(text).toContain("Waiting for Carl <b>Evil</b> to approve");
   });
 
+  // S3-L3 (names): a person whose stored name is only an address reads as their placeholder, never "[email removed]"; a name with an address in it keeps the rest.
+  it.each([
+    ["only an address", `carl${String.fromCharCode(64)}example.test`, /Waiting for Member [0-9a-f]{8} to approve/u],
+    ["a name and an address", `Carl Reyes carl${String.fromCharCode(64)}example.test`, /Waiting for Carl Reyes to approve/u],
+  ])("show a person's name safely when it holds an address: %s", async (_why, displayName, expected) => {
+    const w = setupGateWorld();
+    w.db.set({ pk: `DEVELOPER#${CARL}`, sk: "META", developerId: CARL, displayName, revoked: false });
+    const chain = await w.publish(gated([{ kind: "members", developerIds: [CARL] }]));
+    const run = await w.start(chain.chainId);
+    await w.endLatest();
+    const text = w.events(run.runId).find((event) => event.type === "gate_waiting")!.text;
+    expect(text).toMatch(expected);
+    expect(text).not.toContain("[email removed]");
+    expect(text).not.toContain("example.test");
+  });
+
   it("say `a teammate` for a listed person nobody can name", async () => {
     const w = setupGateWorld();
     w.db.delete(`DEVELOPER#${VIV}`, "META");

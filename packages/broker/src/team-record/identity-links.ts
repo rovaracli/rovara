@@ -3,7 +3,7 @@
 // never an unverified one). Links live in the org's own record partition (so a company erase takes them) as two items: the forward one (author id -> person) and a reverse one under a hash of
 // the person (person -> author ids), which is how a person erase finds them and removes them.
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { recordDeveloperHash, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { recordDeveloperHash, replaceEmailAddresses, teamRecordPk, type OrgId } from "@agentx/contracts";
 import { isErasedActor } from "./erased.js";
 import { queryPrefix } from "./store.js";
 import type { TeamRecordTable } from "./types.js";
@@ -104,7 +104,7 @@ async function forgetUnmappedTrackerUsersOf(table: TeamRecordTable, orgId: OrgId
 
 /** A tool user's name as the admin page may show it: control characters out, an email address in it hidden, cut to 100 characters. The tool id stands in when nothing is left. */
 export function shownName(name: string | undefined, fallback: string): string {
-  const clean = (name ?? "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[email]").replace(/\s+/g, " ").trim();
+  const clean = replaceEmailAddresses(name ?? "", "[email]").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/g, " ").trim();
   return [...(clean === "" ? fallback : clean)].slice(0, 100).join("");
 }
 

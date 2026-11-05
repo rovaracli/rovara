@@ -6,7 +6,7 @@
 //  - fact text is cleaned (hidden characters, tags, secrets, emails and phone numbers) before it is returned;
 //  - one attempt only: a bad answer yields no facts (no retry loop), and the pipeline carries on.
 // Retention A never reaches here. Retention B keeps notes only if they carry a permalink ("notes with links").
-import { redactText } from "@agentx/contracts";
+import { redactText, replaceEmailAddresses } from "@agentx/contracts";
 import { z } from "zod";
 import type { Audience, RecordFactLike, RetentionMode, TrustClass } from "./shared-types.js";
 import { assertSafeId } from "./shared-types.js";
@@ -72,12 +72,11 @@ export const DISTILL_SYSTEM_PROMPT = [
 // eslint-disable-next-line no-control-regex
 const HIDDEN = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f\\u0080-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff\\ufff9-\\ufffb]", "g");
 const TAGS = /<\/?[A-Za-z][^>]{0,200}>/g;
-const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const PHONE = /(?<![\w])\+?\d[\d\s().-]{8,}\d(?![\w])/g;
 
 /** Hidden characters, tags, secrets and personal contact details out; whitespace collapsed. */
 export function cleanNoteText(text: string): string {
-  return redactText(text.replace(HIDDEN, "").replace(TAGS, " ").replace(EMAIL, "[email]").replace(PHONE, "[phone]")).replace(/\s+/g, " ").trim();
+  return redactText(replaceEmailAddresses(text.replace(HIDDEN, "").replace(TAGS, " "), "[email]").replace(PHONE, "[phone]")).replace(/\s+/g, " ").trim();
 }
 
 /** Makes span text safe to place between span markers: every angle bracket becomes a look-alike, so the markers cannot be forged from inside. */

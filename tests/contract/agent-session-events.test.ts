@@ -122,6 +122,19 @@ describe("reading events", () => {
     expect(SessionEventPageReaderSchema.safeParse(first).success).toBe(true);
   });
 
+  // S3-L2: a timeline entry is free text, so it is read through the one email rule (the same as every other free text), not a rule of its own.
+  it.each([
+    ["a plain address", `Shared with omar.diaz${String.fromCharCode(64)}example.test`, "Shared with [email removed]"],
+    ["an address spelled out", "Shared with omar.diaz [at] example.test", "Shared with [email removed]"],
+    ["an address that is only the entry", `omar.diaz${String.fromCharCode(64)}example.test`, "[email removed]"],
+    ["code text with an at sign", `Bumped react${String.fromCharCode(64)}18.3.1`, `Bumped react${String.fromCharCode(64)}18.3.1`],
+    ["a sentence with at", "Looked at example.test at noon", "Looked at example.test at noon"],
+  ])("reads an entry's text through the one email rule: %s", async (_why, text, expected) => {
+    const e = eventsWorld();
+    await put(e, e.event("status", "mail", at(0), { text }));
+    expect((await e.read(PRIYA)).events.map((event) => event.text)).toEqual([expected]);
+  });
+
   it("answers an empty log with no cursor, and keeps the caller's cursor when nothing is new", async () => {
     const e = eventsWorld();
     expect(await e.read(PRIYA)).toEqual({ events: [] });
