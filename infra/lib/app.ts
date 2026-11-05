@@ -177,9 +177,13 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   if (savedEnvKmsKey !== undefined && savedEnvKmsKey !== "" && (typeof savedEnvKmsKey !== "string" || explicitEdition !== "enterprise")) throw new Error("rovaraSavedEnvKmsKeyArn is a KMS key ARN and is for an Enterprise install only");
   const savedEnvScan = app.node.tryGetContext("agentxSavedEnvRegistryScan") as unknown;
   if (savedEnvScan !== undefined && savedEnvScan !== "on" && savedEnvScan !== "off") throw new Error(`unsupported agentxSavedEnvRegistryScan ${JSON.stringify(savedEnvScan)}; expected on, off, or unset`);
+  // QA6-10: the release this deploy carries, shown in the app. `-c agentxReleaseVersion=<major.minor.patch>`; unset leaves the broker without one, as before. A wrong value stops the synth.
+  const releaseVersionContext = app.node.tryGetContext("agentxReleaseVersion") as unknown;
+  if (releaseVersionContext !== undefined && releaseVersionContext !== "" && (typeof releaseVersionContext !== "string" || !/^\d{1,4}\.\d{1,4}\.\d{1,4}$/u.test(releaseVersionContext))) throw new Error("agentxReleaseVersion is a release number such as 0.5.8");
   new ControlPlaneStack(app, "AgentXControlPlane", {
     description: "AgentX authenticated control plane and durable dispatch foundation",
     naming,
+    ...(typeof releaseVersionContext === "string" && releaseVersionContext !== "" ? { releaseVersion: releaseVersionContext } : {}),
     ...(teamRecord === undefined ? {} : { teamRecord }),
     ...(typeof savedEnvKmsKey === "string" && savedEnvKmsKey !== "" || savedEnvScan === "on" ? { savedEnv: { ...(typeof savedEnvKmsKey === "string" && savedEnvKmsKey !== "" ? { kmsKeyArn: savedEnvKmsKey } : {}), ...(savedEnvScan === "on" ? { registryScan: true } : {}) } } : {}),
     ...(registryDomains === undefined ? {} : { registryDomains }),

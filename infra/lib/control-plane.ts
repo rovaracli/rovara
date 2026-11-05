@@ -105,6 +105,8 @@ export interface ControlPlaneStackProps extends StackProps {
   bundledImages?: boolean;
   /** Extra environment variables for the broker, from the install's own settings (the private MCP ranges, `privateMcpBrokerEnvironment`). Absent: none. */
   brokerEnvironment?: Readonly<Record<string, string>>;
+  /** QA6-10: the release this deploy carries (`-c agentxReleaseVersion=0.5.8`), told to the broker as AGENTX_RELEASE_VERSION (the variable the health route already reads) so the app can show it. Absent: the broker has none, and the templates are unchanged. */
+  releaseVersion?: string;
   /**
    * Team record (wire-team-record): the parameters of the record's storage, present ONLY when the install is synthesised with `agentxTeamRecord=enabled`. Absent (the default), nothing of
    * the record is created and the templates are unchanged. Named environments only (checked by `parseTeamRecordSwitch`).
@@ -260,6 +262,7 @@ export class ControlPlaneStack extends Stack {
     }
     // Only the install's private MCP settings may be added here; any other name (a reserved variable) stops synth instead of being overwritten.
     for (const [name, value] of Object.entries(checkedBrokerEnvironment(props?.brokerEnvironment))) broker.addEnvironment(name, value);
+    if (props?.releaseVersion !== undefined) broker.addEnvironment("AGENTX_RELEASE_VERSION", props.releaseVersion);
     if (naming.env !== undefined) {
       BrokerNames.of(broker).add("stateTable", state.tableName);
       BrokerNames.of(broker).add("artifactBucket", artifacts.bucketName);

@@ -66,7 +66,7 @@ const UNKNOWN_PARAMETER = "This request has a parameter that this route does not
 const REPEATED_PARAMETER = "A parameter was given more than once.";
 export const UNKNOWN_FIELD = "This request has a field that this route does not take.";
 
-const QUERY_PARAMETERS = ["fromSeq", "toSeq", "from", "to", "action", "actorId", "cursor", "limit"] as const;
+const QUERY_PARAMETERS = ["fromSeq", "toSeq", "from", "to", "action", "actorId", "cursor", "limit", "order"] as const;
 
 /** One whole number of at most 15 digits (a sequence number or a page size); anything else is a range the route cannot serve. */
 function wholeNumber(text: string): number {
@@ -97,7 +97,10 @@ export function readQueryOf(params: URLSearchParams, extra: readonly string[] = 
   const action = text("action");
   const actorId = text("actorId");
   const cursor = text("cursor");
+  const order = text("order");
+  if (order !== undefined && order !== "newest") throw configInvalid(UNKNOWN_PARAMETER);
   return {
+    ...(order === undefined ? {} : { order }),
     ...(fromSeq === undefined ? {} : { fromSeq }),
     ...(toSeq === undefined ? {} : { toSeq }),
     ...(from === undefined ? {} : { from }),
@@ -176,7 +179,10 @@ export const pageSizeOf = (query: AuditReadQuery): number => Math.min(query.limi
 
 // ---- the routes -------------------------------------------------------------------------------------------------------
 
-export async function routeAuditRequest(ledger: AuditExportClientDeps | undefined, caller: AuditOrgCaller, request: AuditRouteRequest, url: URL): Promise<AuditRouteReply> {
+/** QA6-09: the display names of the members a page names, by developer id. Undefined from the caller: no names are looked up. A failure leaves the names out (the page is still served). */
+export type AuditActorNames = (developerIds: string[]) => Promise<Record<string, string>>;
+
+export async function routeAuditRequest(ledger: AuditExportClientDeps | undefined, caller: AuditOrgCaller, request: AuditRouteRequest, url: URL, actorNames?: AuditActorNames): Promise<AuditRouteReply> {
   const matched = ORG_AUDIT_PATH.exec(url.pathname);
   if (matched === null) throw notFound();
   const rest = matched[1] ?? "";
@@ -197,7 +203,8 @@ export async function routeAuditRequest(ledger: AuditExportClientDeps | undefine
     }
     const result = await readAuditRecords(ledger, orgId, readQueryOf(url.searchParams));
     await reading(pageFacts(result), "api");
-    return { status: 200, body: result };
+    const names = actorNames === undefined ? undefined : await namesOf(actorNames, result);
+    return { status: 200, body: names === undefined ? result : { ...result, actorNames: names } };
   }
   if (request.method === "GET" && rest === "/status") {
     noParameters(url.searchParams);
@@ -219,6 +226,17 @@ export async function routeAuditRequest(ledger: AuditExportClientDeps | undefine
     return { status: 200, body: answer.body };
   }
   throw notFound();
+}
+
+/** The members a page names as actor or target, once each, and their names; undefined when there is nobody to name or the lookup failed. */
+async function namesOf(lookup: AuditActorNames, result: AuditReadResult): Promise<Record<string, string> | undefined> {
+  const ids = new Set<string>();
+  for (const { record } of result.records) {
+    if (record.actor.kind === "member") ids.add(record.actor.id);
+    if (record.target.kind === "member") ids.add(record.target.id);
+  }
+  if (ids.size === 0) return undefined;
+  try { return await lookup([...ids]); } catch { return undefined; }
 }
 
 /** A route with no query parameters of its own, besides `allowed`, refuses any other. */

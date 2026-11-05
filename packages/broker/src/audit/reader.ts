@@ -50,6 +50,8 @@ export interface AuditReadQuery {
   cursor?: string;
   /** At most AUDIT_READ_PAGE_MAX. */
   limit?: number;
+  /** QA6-09: `newest` returns the newest record first and pages back toward the oldest (the cursor then says where the page before ended going backwards). Absent: oldest first, as ever. */
+  order?: "newest";
 }
 
 export interface AuditReadRecord {
@@ -339,6 +341,7 @@ export async function readAuditRecords(deps: AuditReadDeps, orgId: string, query
   const filtered = action !== undefined || actorId !== undefined;
   // The width of the range the person asked for, before the cursor moves in: the answer to "too wide" must not change page to page.
   if (filtered && high - low + 1 > AUDIT_FILTER_SCAN_MAX) throw agentXError("AUDIT_FILTER_TOO_WIDE", AUDIT_ERROR_MESSAGES.AUDIT_FILTER_TOO_WIDE);
+  if (query.order === "newest") return newestFirst(deps, orgId, status, { low, high, limit, filtered, action, actorId, before: query.cursor === undefined ? undefined : after });
   low = Math.max(low, after + 1);
 
   const found: Item[] = [];
@@ -361,4 +364,33 @@ export async function readAuditRecords(deps: AuditReadDeps, orgId: string, query
     // Full page that stopped before the end of the range: more may follow.
     ...(found.length >= limit && last !== undefined && Number(last.seq) < high ? { nextCursor: encodeAuditCursor(Number(last.seq)) } : {}),
   };
+}
+
+
+/**
+ * QA6-09: the same range read from its newest end. A page walks down from the top of the range (or from the record before the cursor's), in chunks that are re-ordered newest first; an unfiltered page reads
+ * only what it returns. The cursor is the lowest sequence number returned, and the next page is everything below it.
+ */
+async function newestFirst(
+  deps: AuditReadDeps, orgId: string, status: AuditLedgerStatus,
+  range: { low: number; high: number; limit: number; filtered: boolean; action: string | undefined; actorId: string | undefined; before: number | undefined },
+): Promise<AuditReadResult> {
+  const { low, limit, filtered, action, actorId } = range;
+  const high = range.before === undefined ? range.high : Math.min(range.high, range.before - 1);
+  const found: Item[] = [];
+  for (let end = high; end >= low && found.length < limit; ) {
+    const start = Math.max(low, filtered ? end - SCAN_PAGE + 1 : end - (limit - found.length) + 1);
+    const chunk = (await queryLedgerItems(deps, orgId, start, end)).reverse();
+    for (const item of chunk) {
+      if (action !== undefined && item.action !== action) continue;
+      if (actorId !== undefined && (item.actor as { id?: unknown } | undefined)?.id !== actorId) continue;
+      found.push(item);
+      if (found.length >= limit) break;
+    }
+    end = start - 1;
+  }
+  const records: AuditReadRecord[] = [];
+  for (const item of found) records.push(await openRecord(deps, orgId, item));
+  const last = found.at(-1);
+  return { ...status, records, ...(found.length >= limit && last !== undefined && Number(last.seq) > low ? { nextCursor: encodeAuditCursor(Number(last.seq)) } : {}) };
 }

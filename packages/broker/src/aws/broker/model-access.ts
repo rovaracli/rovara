@@ -583,7 +583,12 @@ export async function mintChatTurnKey(
      * The route is chosen among the sources billed to the company (`chooseDiagnosisRoute`: its own, or Rovara's metered one), the key is capped at DIAGNOSIS_LIGHT_BUDGET_USD, and with no usable provider the turn is refused in fixed words. DG-3: `claimKey` is called
      * once, right before the key is minted, and answers false when this diagnosis already took its one key (a retry, an SQS redelivery: then none is minted, so one diagnosis is one turn of the company's money).
      */
-    diagnosis?: { claimKey(): Promise<boolean> };
+    diagnosis?: {
+      /** Called with the model and source the key is for (a retry records them again). */
+      claimKey(chosen?: { model: ModelIdentifier; sourceId: string }): Promise<boolean>;
+      /** QA6-14: the canonical name of a model the company's provider just refused for this diagnosis: the choice leaves it out. */
+      avoid?: string | undefined;
+    };
   } = {},
 ): Promise<{ baseUrl: string; apiKey: string; expiresAt: number | string; route?: unknown; classifierModel?: ModelIdentifier | null }> {
   const modelAccess = dependencies.modelAccess;
@@ -602,8 +607,9 @@ export async function mintChatTurnKey(
     // `classifierModel` would call a forbidden classifier with it): a turn whose configured model or classifier is forbidden is refused.
     if (routing === undefined && (body.model !== undefined && forbidden(body.model) || body.classifierModel !== undefined && forbidden(body.classifierModel))) throw agentXError("MODEL_NOT_ALLOWED", TURN_MODEL_BLOCKED);
     // A diagnosis is routed to the company's own provider or not at all (fixed words, before anything is admitted or charged).
-    const routed = options.diagnosis !== undefined ? await routeDiagnosisTurn(routing, orgId, project, body, forbidden)
-      : routing === undefined ? undefined : await routeTurn(routing, orgId, project, body, forbidden);
+    const avoid = options.diagnosis?.avoid;
+    const diagnosisRouted = options.diagnosis !== undefined ? await routeDiagnosisTurn(routing, orgId, project, body, avoid === undefined ? forbidden : (candidate) => forbidden(candidate) || canonicalModelName(candidate) === avoid, avoid !== undefined) : undefined;
+    const routed = diagnosisRouted ?? (options.diagnosis !== undefined || routing === undefined ? undefined : await routeTurn(routing, orgId, project, body, forbidden));
     const classifierModel = routed?.classifierModel;
     const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, orgId, project, requester);
     const developerId = slack === undefined ? await linkedRequester(dependencies, orgId, requester) : keyMember(slack.payer);
@@ -617,7 +623,7 @@ export async function mintChatTurnKey(
     const maxBudgetUsd = Math.min(options.diagnosis === undefined ? PER_TURN_BUDGET_USD : DIAGNOSIS_LIGHT_BUDGET_USD, admitted.maxBudgetUsd);
     const tags = slack === undefined ? undefined : routed === undefined ? mintTagsFor({ ...slack, origin: "slack" }) : { ...mintTagsFor({ ...slack, origin: "slack" }), source: routed.route.sourceId };
     // DG-3: one key per diagnosis. A repeat of this call (a retry, a redelivery) finds the claim taken and mints nothing: fail closed, never a second key and a second turn of the company's money.
-    if (options.diagnosis !== undefined && !(await options.diagnosis.claimKey())) throw agentXError("RUNTIME_UNAVAILABLE", "this diagnosis already has its model key");
+    if (options.diagnosis !== undefined && !(await options.diagnosis.claimKey(diagnosisRouted === undefined ? undefined : { model: diagnosisRouted.model, sourceId: diagnosisRouted.route.sourceId }))) throw agentXError("RUNTIME_UNAVAILABLE", "this diagnosis already has its model key");
     const minted = await mintKeyHealing(
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
       { orgId: orgId, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.turnId, maxBudgetUsd, ttlSeconds: TURN_KEY_TTL_SECONDS,
@@ -757,12 +763,16 @@ async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: st
  * would otherwise answer with the model it is configured with, which the key may not call. A diagnosis has no tools, so it has no classifier (`classifierModel: null`). No usable provider: MODEL_NOT_ALLOWED in the fixed words.
  */
 async function routeDiagnosisTurn(
-  routing: RoutingDependencies | undefined, orgId: OrgId, project: string, body: { model?: ModelIdentifier | undefined }, forbidden: (model: ModelIdentifier) => boolean,
-): Promise<{ route: ModelRoute; models: string[]; wire: InvocationModelRoute; classifierModel: null }> {
+  routing: RoutingDependencies | undefined, orgId: OrgId, project: string, body: { model?: ModelIdentifier | undefined }, forbidden: (model: ModelIdentifier) => boolean, retry = false,
+): Promise<{ model: ModelIdentifier; route: ModelRoute; models: string[]; wire: InvocationModelRoute; classifierModel: null }> {
   const chosen = routing === undefined ? undefined : await chooseDiagnosisRoute(routing, orgId, project, forbidden, [body.model]);
+  // The retry has nothing else to try: the company's provider has no other model it can serve (the first, refused one is left out). Fixed words; the first refusal is the reason the person reads.
+  if (retry && (chosen === undefined || chosen.route.api === undefined)) throw agentXError("MODEL_NOT_ALLOWED", DIAGNOSIS_NO_OTHER_MODEL_MESSAGE);
   if (chosen === undefined || chosen.route.api === undefined) throw agentXError("MODEL_NOT_ALLOWED", DIAGNOSIS_NO_PROVIDER_MESSAGE);
-  return { route: chosen.route, models: [chosen.route.alias], wire: { alias: chosen.route.alias, api: chosen.route.api, catalog: chosen.route.catalog }, classifierModel: null };
+  return { model: chosen.model, route: chosen.route, models: [chosen.route.alias], wire: { alias: chosen.route.alias, api: chosen.route.api, catalog: chosen.route.catalog }, classifierModel: null };
 }
+
+const DIAGNOSIS_NO_OTHER_MODEL_MESSAGE = "Your company's AI provider has no other model Rovara can try for this diagnosis.";
 
 /** What one Slack turn's key may spend, and how long it lasts (a turn holds a queue message for at most 15 minutes). */
 const PER_TURN_BUDGET_USD = 2;

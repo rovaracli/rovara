@@ -173,3 +173,22 @@ it("Spending can repair missing settings for a real registered project without b
  const f = fixture(), key = projectAiKey(orgId, "web");f.db.delete(key);
  const view = await f.call("GET", `${base}/projects/web/editing`);expect(view.status).toBe(200);expect(view.body.policy).toEqual({ kind: "inherit" });
 });
+
+// QA6-04: a company with no stored task-stop policy has task stops Disabled (admission reads no row as disabled); the editor says so and writes nothing, instead of failing to load.
+it("a company with no stored task-stop policy reads as not set up (Disabled) and cannot be written from the editor", async () => {
+ const f = fixture();
+ f.db.delete(f.key);
+ expect(f.db.get(f.key)).toBeUndefined();
+ const view = await f.call("GET", `${base}/editing`);
+ expect(view.status, JSON.stringify(view.body)).toBe(200);
+ expect(view.body).toMatchObject({ orgId, scopeKind: "company", revision: 0, sourceState: "not_set_up", policy: { kind: "rovara_estimate" } });
+ expect(view.body.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
+ // Nothing can be written against it: the editor offers no control, and the route still refuses a forged edit.
+ const forged = await f.call("PUT", base, { requestId: randomUUID(), expectedRevision: 0, expectedPolicyDigest: view.body.sourceDigest, policy: { kind: "limited", stopMicrousd: 1 } });
+ expect(forged.status).not.toBe(200);
+ expect(f.db.get(f.key)).toBeUndefined();
+ // A person who may not edit Spending still gets nothing.
+ f.db.set({ ...orgMemberKey(orgId, b), orgId, developerId: b, role: "member" });
+ f.db.set({ ...developerOrgKey(b), orgId, role: "member" });
+ expect((await f.call("GET", `${base}/editing`, undefined, b)).status).toBe(403);
+});

@@ -79,7 +79,14 @@ async function source(deps: Deps, caller: DeveloperCaller, project?: string) {
  return { key, row, original, sourceMissing, raw, policy, revision, sourceDigest, pending, guards };
 }
 export async function getTaskStopEditing(deps: Deps, caller: DeveloperCaller, project?: string) {
- await authority(deps, caller, project);const s = await source(deps, caller, project);await authority(deps, caller, project);
+ await authority(deps, caller, project);
+ // QA6-04: a company with no stored policy has task stops Disabled (admission reads no policy row as disabled). Say so, with nothing to edit: the policy is created by Rovara's spending setup, never by this editor,
+ // so a write against it stays refused (`source` still throws CHANGE_STALE). An absent row is the only case: a row that is there but wrong is still an error.
+ if (project === undefined && await read(deps, orgSettingsKey(caller.orgId, "TASK_STOP_POLICY")) === undefined) {
+  await authority(deps, caller, project);
+  return TaskStopEditingContextSchema.parse({ orgId: caller.orgId, scopeKind: "company", revision: 0, sourceState: "not_set_up", sourceDigest: digest([caller.orgId, null, 0, null, null]), policy: { kind: "rovara_estimate" } });
+ }
+ const s = await source(deps, caller, project);await authority(deps, caller, project);
  const provenance = project === undefined ? s.row.seedProvenance : undefined;
  if (provenance !== undefined && (typeof provenance !== "object" || provenance === null || Array.isArray(provenance))) throw invalid();
  const seed = provenance as Row | undefined;

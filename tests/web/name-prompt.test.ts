@@ -94,3 +94,13 @@ it("starts the account menu's field empty while the name is not chosen, so a pla
 for (const theme of ["light", "dark"] as const) it("has no automated accessibility violations with the question showing in " + theme, async () => {
  const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByLabelText(QUESTION);document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();
 });
+
+// QA6-10: the account menu shows the release the deploy carries, and nothing when the deploy does not say.
+it("shows the release in the account menu when the navigation carries one, and no release line when it does not", async () => {
+ const withRelease = shell({ ...navWith({ name: "Priya", nameChosen: true }), release: "0.5.8" });await screen.findByRole("heading", { name: "Home", level: 1 });
+ fireEvent.click(screen.getByRole("button", { name: "Open account menu" }));
+ const dialog = await screen.findByRole("dialog", { name: "Your account" });expect(within(dialog).getByText("Rovara 0.5.8")).toBeTruthy();withRelease.close();
+ const without = shell(navWith({ name: "Priya", nameChosen: true }));await screen.findByRole("heading", { name: "Home", level: 1 });
+ fireEvent.click(screen.getByRole("button", { name: "Open account menu" }));
+ const plain = await screen.findByRole("dialog", { name: "Your account" });expect(within(plain).queryByText(/^Rovara \d/)).toBeNull();without.close();
+});

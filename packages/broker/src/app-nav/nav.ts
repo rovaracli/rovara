@@ -16,7 +16,7 @@ export interface AppNavSources {
  sharedSessions(caller: NavCaller): Promise<NavSession[]>;
  org(caller: NavCaller): Promise<{ name: string; plan: "trial" | "team"; createdBy?: string; trialUnlockedAt?: number; trialGithubUsedAt?: number }>;
 }
-export interface AppNavDependencies { sources?: AppNavSources; now: () => number; webFeatures: string; localAgents: boolean; /** Enterprise foundations E3: the edition has no trial, so the org carries no trial state. */ hideTrial?: true }
+export interface AppNavDependencies { sources?: AppNavSources; now: () => number; webFeatures: string; localAgents: boolean; /** QA6-10: the release the deploy says it carries (AGENTX_RELEASE_VERSION); shown only when it is a plain release number. */ release?: string; /** Enterprise foundations E3: the edition has no trial, so the org carries no trial state. */ hideTrial?: true }
 interface Cached { expiresAt: number; role: OrgRole; name: string; nameChosen: boolean | undefined; value: Promise<AppNav> }
 const caches = new WeakMap<AppNavDependencies, Map<string, Cached>>();
 export function orgTrial(org: Pick<OrgRecord, "plan"> & Partial<Pick<OrgRecord, "createdBy" | "trialUnlockedAt" | "trialGithubUsedAt">>): AppNav["org"]["trial"] {
@@ -40,6 +40,7 @@ export function appNav(deps: AppNavDependencies, caller: NavCaller): Promise<App
  homeCount: home.total,
  projects: names.map(name => ({ name, agents: rosters.filter(agent => agent.project === name).map(agent => ({ agentId: agent.agentId, name: agent.name, running: live.filter(session => session.project === name && session.agentId === agent.agentId && session.running).length, needsYou: live.filter(session => session.project === name && session.agentId === agent.agentId && session.needsYou).length })) })),
  shared: { agents: sharedAgents.slice(0, 20).map(agent => ({ agentId: agent.agentId, name: agent.name })), sessions: sharedSessions.filter(session => session.endedAt === undefined).slice(0, 10).map(session => ({ sessionId: session.sessionId, title: session.title })) },
+ ...(deps.release !== undefined && /^\d{1,4}\.\d{1,4}\.\d{1,4}$/u.test(deps.release) ? { release: deps.release } : {}),
  features: { localAgents: deps.localAgents, usage: features.has("usage"), admin: features.has("admin") && (caller.orgRole === "owner" || caller.orgRole === "admin"), chains: features.has("chains"), notices: features.has("notices"), describe: features.has("describe") },
  });
  })();

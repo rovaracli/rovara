@@ -102,7 +102,7 @@ export async function getAppNavigation(deps: DeveloperRouteDependencies, caller:
    org: async () => { const org = await orgs.getOrg(caller.orgId);if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");return org; },
   };
   // PLAN8: local-agent product capabilities are not part of this web launch.
-  cached = { at: deps.now(), deps: { sources, now: deps.now, webFeatures: features, localAgents: false, ...(trialAvailable(deps.editionPolicy) ? {} : { hideTrial: true as const }) }, release: cache.release };
+  cached = { at: deps.now(), deps: { sources, now: deps.now, webFeatures: features, localAgents: false, ...(process.env.AGENTX_RELEASE_VERSION === undefined ? {} : { release: process.env.AGENTX_RELEASE_VERSION }), ...(trialAvailable(deps.editionPolicy) ? {} : { hideTrial: true as const }) }, release: cache.release };
   adapters.delete(key);adapters.set(key, cached);
   if (adapters.size > 256) { const first = adapters.keys().next().value;if (first !== undefined) adapters.delete(first); }
  }
