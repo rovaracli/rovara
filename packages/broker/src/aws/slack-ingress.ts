@@ -146,6 +146,10 @@ export interface SlackIngressDependencies {
    * throw means the reply could not be saved, and Slack retries it. Absent: such replies are not read.
    */
   recordThreadNote?: (input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string }) => Promise<{ outcome: "captured" | "duplicate" | "refused"; askOnly?: true }>;
+  /**
+   * QA6-06: claims the hourly "not linked" notice for a channel (`team/channel`); true for at most one caller per channel per hour. Absent: a mention in an unlinked channel is ignored without a word, as before.
+   */
+  claimUnlinkedChannelNotice?: (channelSubject: string, nowSeconds: number) => Promise<boolean>;
   /** A message only `user` sees in the thread (chat.postEphemeral). Absent: such acknowledgements are skipped. */
   postEphemeral?: (input: { channel: string; threadTs: string; user: string; text: string; blocks?: Array<Record<string, unknown>> }) => Promise<void>;
   /**
@@ -208,6 +212,28 @@ interface Mention {
 const TURN_WINDOW_SECONDS = 60;
 // A window's counter outlives the window by one more, so a late event still finds it.
 const TURN_COUNTER_TTL_SECONDS = 2 * TURN_WINDOW_SECONDS;
+
+/**
+ * QA6-06: said, privately and once an hour for each channel, to a person who mentions Rovara in a channel no project is linked to. It names no project, and says who can fix it and where.
+ */
+export const UNLINKED_CHANNEL_NOTICE = "This channel isn't linked to a Rovara project yet, so I can't start work here. A Rovara admin can link it: open Admin, then Projects, choose the project, and use Slack channels to link this channel. Then mention me again.";
+/** How long one "not linked" notice holds for a channel. */
+export const UNLINKED_CHANNEL_NOTICE_INTERVAL_SECONDS = 3_600;
+
+/** The conditional Update that claims a channel's hourly "not linked" notice in the Slack threads table: it succeeds for at most one caller per channel per interval (a later one gets ConditionalCheckFailedException). */
+export function unlinkedChannelNoticeClaim(channelSubject: string, nowSeconds: number): {
+  Key: { pk: string; sk: "UNLINKED_CHANNEL_NOTICE" };
+  UpdateExpression: string;
+  ConditionExpression: string;
+  ExpressionAttributeValues: { ":now": number; ":expires": number; ":cutoff": number };
+} {
+  return {
+    Key: { pk: `CHANNEL#${channelSubject}`, sk: "UNLINKED_CHANNEL_NOTICE" },
+    UpdateExpression: "SET noticedAt = :now, expiresAt = :expires",
+    ConditionExpression: "attribute_not_exists(noticedAt) OR noticedAt <= :cutoff",
+    ExpressionAttributeValues: { ":now": nowSeconds, ":expires": nowSeconds + 2 * UNLINKED_CHANNEL_NOTICE_INTERVAL_SECONDS, ":cutoff": nowSeconds - UNLINKED_CHANNEL_NOTICE_INTERVAL_SECONDS },
+  };
+}
 
 const UNVERIFIED_MEMBER_NOTICE = "I couldn't confirm that this message came from a person, so I didn't act on it. Try again, or type the request in Slack.";
 /** Gap 2: the private acknowledgements in a Slack-started task's thread. */
@@ -325,7 +351,10 @@ export function createSlackIngressHandler(dependencies: SlackIngressDependencies
       return respond(200, { ok: true });
     }
     const binding = await dependencies.getBinding(orgId, thread.teamId, thread.channelId);
-    if (!binding) return ignore(log, "channel_not_bound", { channelId: thread.channelId });
+    if (!binding) {
+      await explainUnlinkedChannel(dependencies, log, mention, Math.floor(now() / 1_000));
+      return ignore(log, "channel_not_bound", { channelId: thread.channelId });
+    }
     // Gap 2: a plain message is read only in a Slack-started task's own open thread. Every other channel
     // message is left alone before it is claimed, checked or stored.
     let shared: SharedThreadLookup | undefined;
@@ -807,7 +836,7 @@ async function chooseFromThread(dependencies: SlackIngressDependencies, log: Sla
       ? await dependencies.answerWorkflowChoice!({ thread, userId: mention.userId })
       : await dependencies.chooseWorkflowPath!({ thread, userId: mention.userId, workflowPath });
   } catch (error) {
-    log("workflow.choice_failed", { eventId, errorName: errorName(error) });
+    log("workflow.choice_failed", { eventId, errorName: errorName(error), ...refusalCode(error) });
     await post(dependencies, log, thread, startFailureNotice(error, eventId), "workflow.choice_failure_notice_failed");
     return respond(200, { ok: true });
   }
@@ -855,7 +884,7 @@ async function startFromMention(
     }
     await dependencies.startWorkflow!({ thread, userId: mention.userId, instructions: request.instructions, workflowPath: request.path, requestId: eventId });
   } catch (error) {
-    log("workflow.start_failed", { eventId, errorName: errorName(error) });
+    log("workflow.start_failed", { eventId, errorName: errorName(error), ...refusalCode(error) });
     await post(dependencies, log, thread, startFailureNotice(error, eventId), "workflow.start_failure_notice_failed");
     return respond(200, { ok: true });
   }
@@ -887,6 +916,32 @@ async function chatGptCommandFromMention(
   const reply = chatGptCommandReply(command, answer, mention.thread.threadTs);
   await ephemeral(dependencies, log, mention.thread, mention.userId, reply.text, reply.blocks);
   return respond(200, { ok: true });
+}
+
+/**
+ * QA6-06: a person's mention in a channel no project is linked to is answered once an hour (for the channel), privately, with how to link it. Only a mention is spoken to (a plain reply in a thread is not),
+ * and something posted through another app only once Slack confirms a person sent it; the hour is claimed after that check, so a bot cannot use it up. It never throws: the event is ignored whatever happens here.
+ */
+async function explainUnlinkedChannel(dependencies: SlackIngressDependencies, log: SlackIngressLog, mention: Mention, nowSeconds: number): Promise<void> {
+  const { claimUnlinkedChannelNotice, postEphemeral } = dependencies;
+  if (claimUnlinkedChannelNotice === undefined || postEphemeral === undefined || mention.kind !== "mention") return;
+  try {
+    if (mention.appPosted) {
+      if (dependencies.appPosted === undefined || !dependencies.appPosted.accept) return;
+      let member: SlackMemberCheck;
+      try {
+        member = await dependencies.appPosted.checkMember(mention.userId);
+      } catch {
+        return;
+      }
+      if (member.outcome !== "person") return;
+    }
+    if (!await claimUnlinkedChannelNotice(`${mention.thread.teamId}/${mention.thread.channelId}`, nowSeconds)) return;
+    await ephemeral(dependencies, log, mention.thread, mention.userId, UNLINKED_CHANNEL_NOTICE);
+    log("unlinked_channel.notified", { eventId: mention.eventId });
+  } catch (error) {
+    log("unlinked_channel.notice_failed", { eventId: mention.eventId, errorName: errorName(error) });
+  }
 }
 
 /** A best-effort private message: a failure is logged and never makes Slack retry the event. */
@@ -1017,6 +1072,11 @@ async function releaseQuietly(
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : "unknown";
+}
+
+/** The broker's refusal code of a start that was refused (QA6-15: the log named only the error class, so the cause could not be read). Only an upper-case code of the allow-list's shape is kept, never the broker's text. */
+function refusalCode(error: unknown): { code: string } | Record<string, never> {
+  return error instanceof SlackWorkflowStartError && /^[A-Z][A-Z_]{0,63}$/.test(error.code) ? { code: error.code } : {};
 }
 
 function ignore(log: SlackIngressLog, reason: string, fields: Record<string, string> = {}): HttpResponse {
@@ -1320,6 +1380,16 @@ function createAwsSlackIngressHandler() {
     }),
     async postEphemeral(input) {
       await chatPostEphemeral((await secrets()).botToken, input);
+    },
+    // QA6-06: one "not linked" notice an hour for each unlinked channel, held in the Slack threads table (the marker expires on its own).
+    async claimUnlinkedChannelNotice(channelSubject: string, nowSeconds: number) {
+      try {
+        await documentClient.send(new UpdateCommand({ TableName: threadsTableName, ...unlinkedChannelNoticeClaim(channelSubject, nowSeconds) }));
+        return true;
+      } catch (error) {
+        if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
+        throw error;
+      }
     },
     log(event, fields) {
       console.log(JSON.stringify({ component: "slack-ingress", event, ...fields }));

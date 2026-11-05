@@ -440,6 +440,9 @@ export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId
   return requireWriterCaller({ ...slackWorkflowCaller(userId, teamOrg), orgRole: role });
 }
 
+/** Why a Slack account is refused when it belongs to no member (never the Slack ID or any account ID). */
+export const SLACK_ACCOUNT_NOT_LINKED_MESSAGE = "this Slack account is not a member of the company this Slack workspace is connected to";
+
 /**
  * The ONE rule for who a Slack requester is in the org its team is bound to, shared by the ingress callers (slackCallerFor) and the service routes (slackServiceIdentity,
  * slackRequesterRole, model access), so they cannot disagree. A person whose own org is another org (a Slack Connect guest, a stale link) is refused; the company sign-in must still
@@ -465,6 +468,9 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
   const developerId = developerIdForSlackUser(userId);
   // The single-org resolver answers the install's org for everyone, which says nothing about this person; only a tenant-resolving install (an orgResolver) can say they are of another org.
   const resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? teamOrg : await orgResolverOf(dependencies)({ developerId });
+  // The ingress callers need a real caller identity. A Slack account that belongs to no member of any company (a person who signed in to Rovara another way and never joined with Slack) is refused
+  // with its own code, so the person hears that it is their Slack account that is not recognised, not that the channel is wrong (QA6-15).
+  if (resolved === undefined && options.allowUnlinked !== true) throw agentXError("SLACK_ACCOUNT_NOT_LINKED", SLACK_ACCOUNT_NOT_LINKED_MESSAGE);
   const orgId = resolved === undefined && options.allowUnlinked === true ? teamOrg : requireOrgId(resolved);
   if (orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   // I1 (Slack allowed by the company sign-in) first, then I2: the Slack caller carries the person's real company role, not a stand-in "member".

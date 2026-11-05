@@ -10,6 +10,8 @@ import {
   stopTaskThroughBroker,
   SLACK_TASK_THREADS_OFF_NOTICE,
   SlackWorkflowStartError,
+  UNLINKED_CHANNEL_NOTICE,
+  unlinkedChannelNoticeClaim,
   slackIngressSettings,
   validSignature,
 } from "../../packages/broker/src/aws/slack-ingress.js";
@@ -51,6 +53,8 @@ function harness(options: {
   answerChoice?: { outcome?: WorkflowChoiceOutcome };
   /** Task 21: the waiting choice is a routed card (it carries a suggestion), so it also takes `answer`. */
   suggestedChoice?: boolean;
+  /** QA6-06: the once-an-hour private "not linked" notice for an unlinked channel (the AWS wiring's claim, evaluated by the fake table). */
+  unlinkedNotice?: { claimThrows?: boolean };
 } = {}) {
   const stopCalls: Array<{ thread: unknown; userId: string }> = [];
   const workflowStarts: Array<{ thread: unknown; userId: string; instructions: string; requestId: string }> = [];
@@ -229,6 +233,18 @@ function harness(options: {
           const key = `${subject}#${windowStart}`;
           turnCounts.set(key, (turnCounts.get(key) ?? 0) - 1);
         },
+      },
+    }),
+    ...(options.unlinkedNotice === undefined ? {} : {
+      claimUnlinkedChannelNotice: async (subject: string, now: number) => {
+        if (options.unlinkedNotice?.claimThrows) throw Object.assign(new Error("DynamoDB unavailable"), { name: "InternalServerError" });
+        try {
+          await threadsTable.send(new UpdateCommand({ TableName: "threads", ...unlinkedChannelNoticeClaim(subject, now) }));
+          return true;
+        } catch (error) {
+          if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
+          throw error;
+        }
       },
     }),
     ...(options.appPosted === undefined ? {} : {
@@ -1462,5 +1478,117 @@ describe("chat.postEphemeral", () => {
     expect(strict.ephemerals).toEqual([{ channel, threadTs: "1695500000.000001", user: pratik, text: "Saved." }]);
     strict.failNext("chat.postEphemeral", "user_not_in_channel");
     await expect(chatPostEphemeral("xoxb-test", { channel, user: pratik, text: "Saved." }, strict.fetch)).rejects.toMatchObject({ slackError: "user_not_in_channel" });
+  });
+});
+
+describe("a mention in a channel no project is linked to (QA6-06)", () => {
+  const unlinked = "C0999999999";
+  const asked = (eventId: string, event: Record<string, unknown> = {}) => signedEvent(mention({ eventId, event: { channel: unlinked, ...event } }));
+
+  it("tells the person who asked, privately and in the thread, that the channel is not linked and how to link it", async () => {
+    const { handler, queue, posts, ephemerals, logs } = harness({ unlinkedNotice: {} });
+    expect((await send(handler, asked("EvUnlinked1"))).status).toBe(200);
+    expect(ephemerals).toEqual([{ channel: unlinked, threadTs: "1695500000.000001", user: pratik, text: UNLINKED_CHANNEL_NOTICE }]);
+    // Nothing public, nothing queued, and the event is still logged as ignored.
+    expect(posts).toEqual([]);
+    expect(queue).toEqual([]);
+    expect(logs).toContainEqual({ event: "unlinked_channel.notified", fields: { eventId: "EvUnlinked1" } });
+    expect(logs.at(-1)).toMatchObject({ event: "event.ignored", fields: { reason: "channel_not_bound", channelId: unlinked } });
+    // The words: it says the channel is not linked and the admin steps, and names no project.
+    expect(UNLINKED_CHANNEL_NOTICE).toMatch(/isn't linked to a Rovara project/);
+    expect(UNLINKED_CHANNEL_NOTICE).toMatch(/Admin.*Projects.*Slack channels/s);
+    expect(UNLINKED_CHANNEL_NOTICE).not.toContain("payments");
+  });
+
+  it("says it once an hour for each channel, not on every mention", async () => {
+    const { handler, ephemerals, clock } = harness({ unlinkedNotice: {} });
+    await send(handler, asked("EvUnlinked1"));
+    await send(handler, asked("EvUnlinked2"));
+    await send(handler, asked("EvUnlinked3", { user: "U0SOMEONE02" }));
+    expect(ephemerals).toHaveLength(1);
+    // Another channel has its own hour.
+    await send(handler, asked("EvUnlinked4", { channel: "C0888888888" }));
+    expect(ephemerals.map((entry) => entry.channel)).toEqual([unlinked, "C0888888888"]);
+    clock.seconds += 3_601;
+    await send(handler, signedEvent(mention({ eventId: "EvUnlinked5", event: { channel: unlinked } }), { timestamp: clock.seconds }));
+    expect(ephemerals.map((entry) => entry.channel)).toEqual([unlinked, "C0888888888", unlinked]);
+  });
+
+  it("stays quiet when no private message can be sent, the claim fails, or the channel IS linked", async () => {
+    const claimFails = harness({ unlinkedNotice: { claimThrows: true } });
+    expect((await send(claimFails.handler, asked("EvUnlinked1"))).status).toBe(200);
+    expect(claimFails.ephemerals).toEqual([]);
+    expect(claimFails.logs.at(-1)).toMatchObject({ event: "event.ignored", fields: { reason: "channel_not_bound" } });
+    const sendFails = harness({ unlinkedNotice: {}, failPost: true });
+    expect((await send(sendFails.handler, asked("EvUnlinked1"))).status).toBe(200);
+    expect(sendFails.logs.at(-1)).toMatchObject({ event: "event.ignored", fields: { reason: "channel_not_bound" } });
+    const linked = harness({ unlinkedNotice: {} });
+    await send(linked.handler, signedEvent(mention()));
+    expect(linked.ephemerals).toEqual([]);
+  });
+
+  it("answers a plain thread reply in an unlinked channel with nothing (only a mention is spoken to)", async () => {
+    const { handler, ephemerals, logs } = harness({ unlinkedNotice: {} });
+    await send(handler, asked("EvUnlinked1", { type: "message", thread_ts: "1695500000.000001", ts: "1695500100.000002" }));
+    expect(ephemerals).toEqual([]);
+    expect(logs.at(-1)).toMatchObject({ event: "event.ignored", fields: { reason: "channel_not_bound" } });
+  });
+
+  describe("posted through another app, as the QA connector did", () => {
+    const connectorApp = "A0CONNECT01";
+    const posted = (eventId: string) => ({
+      ...mention({ eventId, event: { channel: unlinked, bot_id: "B0CONNECT01", app_id: connectorApp, bot_profile: { app_id: connectorApp } } }),
+      api_app_id: "A0AGENTX001",
+    });
+
+    it("tells a person who posted through an app, after Slack confirms they are a person", async () => {
+      const { handler, ephemerals, memberChecks } = harness({ unlinkedNotice: {}, appPosted: { accept: true, members: { [pratik]: { outcome: "person" } } } });
+      await send(handler, signedEvent(posted("EvUnlinked1")));
+      expect(memberChecks).toEqual([pratik]);
+      expect(ephemerals).toEqual([{ channel: unlinked, threadTs: "1695500000.000001", user: pratik, text: UNLINKED_CHANNEL_NOTICE }]);
+    });
+
+    it("says nothing to something that is not a person, or that Slack cannot confirm, and does not use up the hour", async () => {
+      const notPerson = harness({ unlinkedNotice: {}, appPosted: { accept: true, members: { [pratik]: { outcome: "not_person" } } } });
+      await send(notPerson.handler, signedEvent(posted("EvUnlinked1")));
+      expect(notPerson.ephemerals).toEqual([]);
+      const unconfirmed = harness({ unlinkedNotice: {}, appPosted: { accept: true, checkThrows: true } });
+      await send(unconfirmed.handler, signedEvent(posted("EvUnlinked1")));
+      expect(unconfirmed.ephemerals).toEqual([]);
+      // The hour was not claimed by the bot: a person who asks next hears it.
+      const both = harness({ unlinkedNotice: {}, appPosted: { accept: true, members: { [pratik]: { outcome: "person" }, U0OTHERBOT1: { outcome: "not_person" } } } });
+      await send(both.handler, signedEvent({ ...posted("EvUnlinked1"), event: { ...posted("EvUnlinked1").event, user: "U0OTHERBOT1" } }));
+      expect(both.ephemerals).toEqual([]);
+      await send(both.handler, signedEvent(posted("EvUnlinked2")));
+      expect(both.ephemerals).toHaveLength(1);
+    });
+
+    it("says nothing when the deployment ignores app-posted messages", async () => {
+      const { handler, ephemerals, logs } = harness({ unlinkedNotice: {}, appPosted: { accept: false, members: { [pratik]: { outcome: "person" } } } });
+      await send(handler, signedEvent(posted("EvUnlinked1")));
+      expect(ephemerals).toEqual([]);
+      expect(logs.at(-1)).toMatchObject({ fields: { reason: "app_posted_disabled" } });
+    });
+  });
+});
+
+describe("a Slack start that the broker refuses (QA6-15)", () => {
+  const starting = { shared: { threads: {} }, workflowStart: {}, workflowChoice: {}, workflowSelection: {} };
+
+  it("logs the broker's refusal code (never its text), so the cause shows in the ingress log", async () => {
+    const { handler, logs } = harness({ ...starting, workflowStart: { throws: true, errorCode: "FORBIDDEN" } });
+    await send(handler, signedEvent(mention({ eventId: "EvRefused1", event: { text: `<@${bot}> quick: Add password reset` } })));
+    expect(logs).toContainEqual({ event: "workflow.start_failed", fields: { eventId: "EvRefused1", errorName: "SlackWorkflowStartError", code: "FORBIDDEN" } });
+  });
+
+  it("tells a person whose Slack account is not a member that it is their account, not the channel", async () => {
+    const { handler, posts } = harness({ ...starting, workflowStart: { throws: true, errorCode: "SLACK_ACCOUNT_NOT_LINKED" } });
+    await send(handler, signedEvent(mention({ eventId: "EvRefused2", event: { text: `<@${bot}> quick: Add password reset` } })));
+    const said = posts.at(-1)?.text ?? "";
+    expect(said).toBe(workflowStartFailureNotice("SLACK_ACCOUNT_NOT_LINKED", "EvRefused2"));
+    expect(said).toMatch(/Slack account/);
+    expect(said).not.toMatch(/channel isn't connected/);
+    // A channel refusal still blames the channel.
+    expect(workflowStartFailureNotice("FORBIDDEN", "Ev1")).toMatch(/channel isn't connected/);
   });
 });

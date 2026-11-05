@@ -578,7 +578,12 @@ The ingress Lambda and the orchestrator service write JSON log lines to CloudWat
 components `slack-ingress` and `slack-orchestrator`. They record event IDs, decisions such as
 `event.ignored` with a reason, and failures by error type. Tokens, request text, and response text
 are never written to CloudWatch Logs. `event.ignored reason="channel_not_bound"` means the channel
-has no binding, and `request.rejected reason="invalid_signature"` usually means the stored signing
+has no binding; the person who mentioned Rovara there is told, privately and in the thread, that the
+channel isn't linked and how an admin links it (once an hour for each channel; logged as
+`unlinked_channel.notified`). `workflow.start_failed` carries the broker's refusal `code`
+(for example `SLACK_ACCOUNT_NOT_LINKED`: the person's Slack account belongs to no member of the
+company, so they are told it is their account that isn't recognised, not the channel), and
+`request.rejected reason="invalid_signature"` usually means the stored signing
 secret is wrong.
 `event.ignored reason="member_check_failed"` with `slackError="missing_scope"` means the bot token
 lacks `users:read`. `reason="not_a_person"` means a bot posted the mention, `reason="own_message"`

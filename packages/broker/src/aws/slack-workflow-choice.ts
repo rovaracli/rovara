@@ -30,7 +30,7 @@ export { WORKFLOW_PATH_ANSWER_ACTION, WORKFLOW_PATH_FULL_ACTION, WORKFLOW_PATH_Q
 /** How long one answer holds the request while it starts, so a second answer at the same time starts nothing. */
 const WORKFLOW_CHOICE_START_LEASE_SECONDS = 30;
 /** Broker refusals that the same request would meet again: the choice is dropped, so the thread is free for a new one. */
-const TERMINAL_START_REFUSALS: ReadonlySet<string> = new Set(["FORBIDDEN", "CHANNEL_REQUIRED", "PROJECT_TASKS_DISABLED", "WORKSPACE_BUSY", "REMOVED_FROM_ORG"]);
+const TERMINAL_START_REFUSALS: ReadonlySet<string> = new Set(["FORBIDDEN", "SLACK_ACCOUNT_NOT_LINKED", "CHANNEL_REQUIRED", "PROJECT_TASKS_DISABLED", "WORKSPACE_BUSY", "REMOVED_FROM_ORG"]);
 
 const PATH_REPLY = /^(?:let['’]?s\s+(?:go\s+|do\s+)?)?(quick|full)(?:\s+(?:please|pls|path|mode|one))?[\s.!]*$/i;
 
@@ -131,10 +131,14 @@ export function workflowChosenNotice(userId: string, path: WorkflowPath): string
   return `<@${userId}> chose ${path === "FULL" ? "Full" : "Quick"}. ${firstStep(path)}`;
 }
 
+/** What a person hears when their Slack account belongs to no member of the company: it is their account that is not recognised, not the channel (QA6-15). */
+export const SLACK_ACCOUNT_NOT_LINKED_NOTICE = "I can't match your Slack account to a member of this company, so I can't start work for you. Ask a Rovara admin to add your Slack account (Admin, then People, then Invites), then mention me again.";
+
 /** Why a task could not start, in plain words; anything unexpected carries `reference` (the Slack event ID) for an admin. */
 export function workflowStartFailureNotice(code: string, reference: string): string {
   if (code === "WORKSPACE_LIMIT") return "You've reached your limit of open AgentX tasks. Close one of your open tasks, or merge its pull request, then try again.";
   if (code === "WORKSPACE_BUSY") return "This thread already has a task. Start a new request in the channel.";
+  if (code === "SLACK_ACCOUNT_NOT_LINKED") return SLACK_ACCOUNT_NOT_LINKED_NOTICE;
   if (code === "FORBIDDEN" || code === "CHANNEL_REQUIRED") return "This channel isn't connected to an AgentX project you can use. Ask an AgentX admin to check the channel.";
   if (code === "PROJECT_TASKS_DISABLED") return PROJECT_TASKS_DISABLED_TEXT;
   if (code === "REMOVED_FROM_ORG") return "You were removed from this organization, so I can't start this task. Ask an AgentX admin to invite you again.";

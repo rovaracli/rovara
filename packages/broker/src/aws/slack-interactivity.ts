@@ -171,7 +171,7 @@ function authorizationErrorCode(error: unknown): string | undefined {
 }
 
 /** Broker answers that say "no" about this member and this task: retrying cannot change them. */
-const DEFINITE_ACCESS_REFUSALS: ReadonlySet<string> = new Set(["FORBIDDEN", "TASK_NOT_FOUND", "TASK_ACCESS_DENIED", "PROJECT_ACCESS_DENIED", "REMOVED_FROM_ORG"]);
+const DEFINITE_ACCESS_REFUSALS: ReadonlySet<string> = new Set(["FORBIDDEN", "SLACK_ACCOUNT_NOT_LINKED", "TASK_NOT_FOUND", "TASK_ACCESS_DENIED", "PROJECT_ACCESS_DENIED", "REMOVED_FROM_ORG"]);
 
 interface HttpResponse { statusCode: number; headers: Record<string, string>; body: string }
 
