@@ -142,3 +142,32 @@ describe("`design first:` typed in the request", () => {
     expect(off.workflow).toMatchObject({ path: "QUICK" });
   });
 });
+
+// DR-FU4 L4 (owner decision 2026-11-05): a project whose stored setting cannot be read is Off, not Always or Auto. The task gets no design review unless the person asked for design first.
+describe("a project whose stored design review setting cannot be read", () => {
+  const OK = { mode: "always", tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } };
+  const playbookWith = (designReview: unknown) => ({ revision: 1, defaultProcess: { kind: "builtin" }, designReview, updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: MAYA.developerId });
+  const needsDesign = (): IntentAssessment => needed({ path: "FULL" });
+  const CORRUPT: Array<[string, unknown]> = [
+    ["a mode that is a number", { ...OK, mode: 5 }],
+    ["an unknown mode word", { ...OK, mode: "sometimes" }],
+    ["a setting that is not a map", "always"],
+    ["missing fields", { mode: "always" }],
+    ["an extra field", { ...OK, surprise: true }],
+  ];
+
+  it.each(CORRUPT)("%s: no design review, even for a task Understand says needs one (it was Always before)", async (_name, corrupt) => {
+    const result = await understoodAs(needsDesign(), { switchOn: true, playbook: playbookWith(corrupt) });
+    expect(result.workflow).not.toHaveProperty("designReview");
+    expect(result.playbookRead).toBe(true);
+  });
+
+  it("positive control: the same task in a project whose Always setting reads gets the review", async () => {
+    expect((await understoodAs(needsDesign(), { switchOn: true, playbook: playbookWith(OK) })).workflow).toMatchObject({ designReview: { decidedBy: "always" } });
+  });
+
+  it("the person asking for design first still gets one", async () => {
+    const result = await understoodAs(needsDesign(), { switchOn: true, playbook: playbookWith({ ...OK, mode: "sometimes" }), designFirst: true });
+    expect(result.workflow).toMatchObject({ designReview: { decidedBy: "person", startedBy: { actorId: MAYA.developerId } } });
+  });
+});

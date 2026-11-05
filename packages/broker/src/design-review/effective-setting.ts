@@ -18,5 +18,5 @@ export function markEffective(setting: DesignReviewSetting): EffectiveDesignRevi
 export const isEffectiveSetting = (setting: unknown): setting is EffectiveDesignReviewSetting =>
   typeof setting === "object" && setting !== null && (setting as Record<symbol, unknown>)[EFFECTIVE] === true;
 
-/** The strictest posture, used when a stored setting or lock cannot be read: never a looser one. Same cap, tier and approver as the owner's defaults; always on; no skipping. */
-export const DESIGN_REVIEW_FAIL_CLOSED_SETTING: Readonly<DesignReviewSetting> = Object.freeze({ ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "always", allowSkip: false });
+/** What a setting that cannot be trusted runs as (owner decision 2026-11-05: in the worst case the default is Off). Same cap, tier and maintainers as approver as the owner's defaults; mode Off; no skipping. */
+export const DESIGN_REVIEW_FAIL_CLOSED_SETTING: Readonly<DesignReviewSetting> = Object.freeze({ ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never", allowSkip: false, highRiskApprover: Object.freeze({ kind: "maintainers" as const }) });

@@ -13,10 +13,10 @@ import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 
 const PERSON = "b".repeat(64);
-interface World { off?: boolean; allowed?: boolean | undefined; setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
+interface World { unreadable?: boolean; off?: boolean; allowed?: boolean | undefined; setting?: DesignReviewSetting | undefined; locked?: string[] | undefined; groups?: boolean | undefined; revision?: number; process?: unknown }
 function setup(world: World = {}, canEdit = true, filter: "all" | "changed" | "locked" = "all") {
  const state = { ...world }, puts: Array<{ path: string; body: Record<string, unknown> }> = [];
- const answer = () => ({ ...(state.allowed === undefined ? {} : { designReviewAllowed: state.allowed }), playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.off === true || state.allowed === false ? {} : { designReview: state.setting ?? DESIGN_REVIEW_DEFAULT_SETTING }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }) });
+ const answer = () => ({ ...(state.allowed === undefined ? {} : { designReviewAllowed: state.allowed }), playbook: { revision: state.revision ?? 4, defaultProcess: state.process ?? { kind: "builtin" }, ...(state.off === true || state.allowed === false ? {} : { designReview: state.setting ?? DESIGN_REVIEW_DEFAULT_SETTING }) }, ...(state.locked === undefined ? {} : { designReviewLocked: state.locked }), ...(state.groups === undefined ? {} : { designReviewGroups: state.groups }), ...(state.unreadable === true ? { designReviewUnreadable: true } : {}) });
  const f = fakeHost(async request => {
   if (request.path.endsWith("/playbook") && request.method === "GET") return { status: 200, body: answer() };
   if (request.path.endsWith("/playbook") && request.method === "PUT") { const body = request.body as Record<string, unknown>;puts.push({ path: request.path, body });state.setting = body.designReview as DesignReviewSetting;state.revision = (state.revision ?? 4) + 1;return { status: 200, body: answer() }; }
@@ -179,5 +179,49 @@ it("DR-FU4: a project with no setting shows Off, and there is no text about a co
  const editor = await screen.findByRole("region", { name: "Design review settings editor" });
  expect(within(editor).getByRole<HTMLSelectElement>("combobox", { name: "When it runs" }).value).toBe("never");
  expect(screen.queryByText(/company default/u)).toBeNull();
+ f.close();
+});
+
+it("DR-FU4 L4: a saved setting that couldn't be read shows Off with the words that say so, and a maintainer can choose again", async () => {
+ const f = setup({ allowed: true, unreadable: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ const settings = await screen.findByLabelText("Design review settings");
+ expect(within(settings).getByText("Off (the saved setting couldn't be read; choose again)")).toBeTruthy();
+ expect(within(settings).queryByText("Off: no design review unless someone asks for design first")).toBeNull();
+ const editor = screen.getByRole("region", { name: "Design review settings editor" });
+ const select = within(editor).getByRole<HTMLSelectElement>("combobox", { name: "When it runs" });
+ expect(select.value).toBe("never");
+ fireEvent.change(select, { target: { value: "auto" } });
+ fireEvent.click(within(editor).getByRole("button", { name: "Save design review settings" }));
+ await waitFor(() => expect(f.puts).toHaveLength(1));
+ expect(f.puts[0]!.body.designReview).toMatchObject({ mode: "auto" });
+ f.close();
+});
+
+it("DR-FU4 L4: someone who can't edit is told who can; a readable Off keeps its plain words", async () => {
+ const viewer = setup({ allowed: true, unreadable: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } }, false);
+ expect(await screen.findByText("Off (the saved setting couldn't be read; a project maintainer can choose again)")).toBeTruthy();
+ expect(screen.queryByRole("region", { name: "Design review settings editor" })).toBeNull();
+ viewer.close();
+ const plain = setup({ allowed: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ expect(within(await screen.findByLabelText("Design review settings")).getByText("Off: no design review unless someone asks for design first")).toBeTruthy();
+ expect(screen.queryByText(/couldn't be read/u)).toBeNull();
+ plain.close();
+});
+
+it("DR-FU4 L4: a maintainer told to choose again can save Off as it stands, without changing the choice first", async () => {
+ const f = setup({ allowed: true, unreadable: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ const editor = await screen.findByRole("region", { name: "Design review settings editor" });
+ const save = within(editor).getByRole<HTMLButtonElement>("button", { name: "Save design review settings" });
+ expect(save.hasAttribute("disabled")).toBe(false);
+ fireEvent.click(save);
+ await waitFor(() => expect(f.puts).toHaveLength(1));
+ expect(f.puts[0]!.body.designReview).toMatchObject({ mode: "never" });
+ f.close();
+});
+
+it("DR-FU4 L4: with a readable setting Save stays disabled until something changes (control)", async () => {
+ const f = setup({ allowed: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ const editor = await screen.findByRole("region", { name: "Design review settings editor" });
+ expect(within(editor).getByRole<HTMLButtonElement>("button", { name: "Save design review settings" }).hasAttribute("disabled")).toBe(true);
  f.close();
 });

@@ -22,7 +22,7 @@ import { designReviewAvailableFor, designReviewEnabled } from "../design-review/
 import { checkDesignReviewWrite, effectiveDesignReviewSetting, lockedFields, readDesignReviewCompany, readDesignReviewLock, type DesignReviewCompanyRead } from "../design-review/lock.js";
 import { computeHowWeWork, type HowWeWorkDependencies } from "./effective.js";
 import { postProjectProcess } from "./process-layer.js";
-import { DESIGN_REVIEW_GROUP_EDITION, DESIGN_REVIEW_LOCKED, DESIGN_REVIEW_LOCK_UNREADABLE, readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
+import { DESIGN_REVIEW_GROUP_EDITION, DESIGN_REVIEW_LOCKED, DESIGN_REVIEW_LOCK_UNREADABLE, readProjectPlaybook, readProjectPlaybookDetail, writeProjectPlaybook } from "./project-playbook-store.js";
 import { registerPlaybookApprovals } from "./process-switch-approval.js";
 import { holdBuiltinSwitch, type SwitchAgentStore } from "./process-switch.js";
 import { requireProcessLayer } from "./project-process.js";
@@ -67,7 +67,7 @@ const MAINTAINERS_ONLY = "only a project maintainer can change how the project w
  * The playbook as a person is shown it, for GET and for the answer to PUT alike (money N7): the design review setting the project RUNS with, held to the company's lock, with the locked fields named. A lock that
  * cannot be read (or a read that fails) is never "no lock". The stored document is untouched by this; a client that saves again sends only the fields it changed.
  */
-async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, playbook: ProjectPlaybook, project: string): Promise<ProjectPlaybookResponse> {
+async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, playbook: ProjectPlaybook, project: string, unreadable = false): Promise<ProjectPlaybookResponse> {
   void project;
   // OFF reading (the safer one): where the design review stage does not exist (`dr` off) the answer is exactly what it was before the stage existed: the playbook without a design review setting, no lock list, no groups
   // flag and no company word, and nothing is read. The stored setting is kept untouched; it shows again when the stage is on.
@@ -89,13 +89,15 @@ async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, pla
   // What the project RUNS with: its own setting, or Off when it has none, held to the lock.
   const held = effectiveDesignReviewSetting(playbook, lock);
   const locked = lock.kind === "lock" ? lockedFields(lock.lock) : [];
-  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewAllowed: true, ...(locked.length === 0 ? {} : { designReviewLocked: locked }), ...groups };
+  // A stored setting that could not be read reads as Off (held is then the Off default); the flag lets the page say so ("choose again"). Only where design review is available, like the setting itself.
+  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewAllowed: true, ...(unreadable ? { designReviewUnreadable: true as const } : {}), ...(locked.length === 0 ? {} : { designReviewLocked: locked }), ...groups };
 }
 
 /** `GET /v1/app/projects/{p}/playbook`: to anyone who can see the project. */
 export async function getProjectPlaybook(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, rawProject: string): Promise<ProjectPlaybookResponse> {
   const { name } = await deps.projectFor(caller, rawProject);
-  return playbookView(deps, caller.orgId, await readProjectPlaybook(deps, caller.orgId, name, { lenient: true }), name);
+  const read = await readProjectPlaybookDetail(deps, caller.orgId, name, { lenient: true });
+  return playbookView(deps, caller.orgId, read.playbook, name, read.designReviewUnreadable);
 }
 
 /**

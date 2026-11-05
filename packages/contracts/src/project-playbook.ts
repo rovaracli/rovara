@@ -52,6 +52,8 @@ export const ProjectPlaybookResponseSchema = z.object({
   designReviewGroups: z.boolean().optional(),
   /** DR-FU4: present only where the design review stage exists in the environment (`dr` on). False: the company has not allowed design review, so the project's setting is not shown or editable; true: it is. */
   designReviewAllowed: z.boolean().optional(),
+  /** The project's saved design review setting could not be read, so the project runs with design review Off until a maintainer chooses again. Present only (as true) with `designReviewAllowed: true`; absent means readable. */
+  designReviewUnreadable: z.literal(true).optional(),
 }).strict();
 export type ProjectPlaybookResponse = z.infer<typeof ProjectPlaybookResponseSchema>;
 

@@ -41,7 +41,7 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
  const response = playbook.data, setting = designReviewSettingOf(response.playbook), locked = lockedSet(response.designReviewLocked), groups = response.designReviewGroups === true;
  const names = new Map((members.data?.members ?? []).map(member => [member.developerId, member.name]));
  const nameOf = (person: string) => names.get(person);
- const rows = designRows(setting, locked, nameOf), lines = settingLines(setting, locked), editing = draft !== undefined;
+ const rows = designRows(setting, locked, nameOf), lines = settingLines(setting, locked, response.designReviewUnreadable === true ? { canEdit } : undefined), editing = draft !== undefined;
  const shownRows = filter === "locked" ? rows.filter(row => row.values.some(value => value.mark.locked)) : filter === "changed" ? rows.filter(row => row.values.some(value => value.mark.source === "project")) : rows;
  const current = draft ?? draftOf(setting), anyLocked = locked.size > 0;
  const patch = (change: Partial<SettingDraft>) => { setSaved(false);setError(undefined);setDraft({ ...current, ...change }); };
@@ -85,7 +85,7 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
     {current.approverKind === "group" && <TextField label="Group" value={current.groupId} disabled={locked.has("highRiskApprover") || saving || !groups} {...(problems.group === undefined ? {} : { error: problems.group })} onChange={event => patch({ groupId: event.target.value })} />}
    </div>
    <div className="rv-hww-actions">
-    <Button variant="primary" busy={saving} disabled={!changed || locked.size === 4} onClick={() => { void save(); }}>Save design review settings</Button>
+    <Button variant="primary" busy={saving} disabled={!(changed || (response.designReviewUnreadable === true && result.ok)) || locked.size === 4} onClick={() => { void save(); }}>Save design review settings</Button>
     {editing && <Button disabled={saving} onClick={() => { setDraft(undefined);setError(undefined); }}>Discard</Button>}
    </div>
    {saved && <p role="status">Saved. New design reviews use these settings; running ones keep theirs.</p>}
