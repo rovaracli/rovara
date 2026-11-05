@@ -32,13 +32,15 @@ describe("the worker's test services settings", () => {
     return { status: ran.status, written: readFileSync(envFile, "utf8"), calls };
   };
 
-  it("writes exactly these names: the registry from the worker image and the environment from the launch's log group (no run directory, no catalog directory, no account)", () => {
+  it("writes exactly these names: the registry and the pinned worker image from the worker image setting and the environment from the launch's log group (no run directory, no catalog directory, no account)", () => {
     const r = run();
     expect(r.status).toBe(0);
     expect(r.written).toBe([
       "AGENTX_RUNTIME=ec2",
       "AGENTX_TEST_SERVICES_REGISTRY=944937319445.dkr.ecr.us-west-2.amazonaws.com",
       "AGENTX_TEST_SERVICES_ENV=staging",
+      // the sealed round's resolver guard runs from the worker's own image (check-sandbox.ts), by this name
+      `AGENTX_WORKER_IMAGE=${IMAGE}`,
       "",
     ].join("\n"));
     // The run directory is added by the launcher only when the tmpfs was mounted (L2); the account is not needed (H4).

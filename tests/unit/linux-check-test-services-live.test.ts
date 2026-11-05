@@ -1,14 +1,16 @@
 // Test services slice 1, T4: the live Linux checks' driver (scripts/linux-check-test-services-live.ts), run against fakes. Nothing here starts Docker. The probe program is run for real against a local server.
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { createSocket } from "node:dgram";
 import { createServer, type Server } from "node:net";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
-  BlockedError, ITEMS, LISTEN_JS, PROBE_JS, RELAY_LISTENER_JS, SSM_CHUNK_CHARS, TSL_WORKSPACE, blockedLines, formatLine, hasDefaultRoute, labelArgsFrom, loadVerifiedCatalog, manifestFilesPort, parseProbeOutput, parseUids, postgresEntry, pullList, resolvePostgres, runLiveChecks, ssmCommands, unexpected,
-  type RunLayer,
+  BlockedError, ITEMS, LISTEN_JS, embeddedResolverLines, PROBE_JS, RELAY_LISTENER_JS, SSM_CHUNK_CHARS, TSL_WORKSPACE, blockedLines, formatLine, hasDefaultRoute, labelArgsFrom, loadVerifiedCatalog, manifestFilesPort, parseProbeOutput, parseUids, postgresEntry, pullList, resolvePostgres, runLiveChecks, ssmCommands, unexpected,
+  type EmbeddedResolverEvidence, type RunLayer,
 } from "../../scripts/linux-check-test-services-live.js";
 import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf, type VerifiedCatalog } from "@agentx/contracts";
 import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
@@ -105,6 +107,197 @@ describe("the probe program, run for real against a local server", () => {
   });
 });
 
+describe("the probe program's resolver probes (TS-SEAL-5)", () => {
+  const runProbe = (tests: unknown[]) => parseProbeOutput(spawnSync(process.execPath, ["-e", PROBE_JS, JSON.stringify({ tests })], { encoding: "utf8", timeout: 20_000 }).stdout);
+
+  it("sends a DNS query to a port other than 53 when it is given one, and reads the answer's code and record count", async () => {
+    const server = createSocket("udp4");
+    const seen: number[] = [];
+    server.on("message", (message, remote) => {
+      seen.push(remote.port);
+      const reply = Buffer.alloc(12);
+      message.copy(reply, 0, 0, 2);
+      reply.writeUInt16BE(0x8180, 2);
+      reply.writeUInt16BE(1, 6);
+      server.send(reply, remote.port, remote.address);
+    });
+    await new Promise<void>((done) => server.bind(0, "127.0.0.1", done));
+    const port = server.address().port;
+    try {
+      // asynchronous, so this process's event loop can answer the probe (spawnSync would block the server)
+      const out = await new Promise<string>((done) => { execFile(process.execPath, ["-e", PROBE_JS, JSON.stringify({ tests: [{ label: "q", kind: "dnsq", server: "127.0.0.1", name: "postgres", port }] })], { timeout: 20_000 }, (_error, stdout) => { done(stdout); }); });
+      const results = parseProbeOutput(out);
+      expect(results.get("q")).toEqual({ status: "answer", rest: "rcode=0 an=1" });
+      expect(seen).toHaveLength(1);
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  }, 30_000);
+
+  it("embdirect says error:NOLISTENER where nothing listens on 127.0.0.11 (so a missing resolver socket can never read as a silent, closed one), and caps reads the capability masks or a read error", () => {
+    const results = runProbe([{ label: "d", kind: "embdirect", name: "postgres", ms: 500 }, { label: "t", kind: "embdirecttcp", ms: 500 }, { label: "c", kind: "caps" }, { label: "v", kind: "v6listen" }]);
+    expect(results.get("d")?.status).toBe("error:NOLISTENER");
+    expect(results.get("t")?.status).toBe("error:NOLISTENER");
+    // no IPv6 listener but loopback or wildcard ones, where a test machine has any (a machine without /proc/net/tcp6 has none)
+    expect(results.get("v")?.status).toBe("v6listen");
+    expect(results.get("v")?.rest).toMatch(/^bad=/u);
+    const caps = results.get("c");
+    if (caps?.status === "caps") expect(caps.rest).toMatch(/^eff=[0-9a-f]+ bnd=[0-9a-f]+ amb=[0-9a-f]+$/iu);
+    else expect(caps?.status).toMatch(/^error:/u);
+  }, 30_000);
+});
+
+describe.skipIf(!existsSync("/proc/net/tcp6") || !existsSync("/proc/net/udp6"))("the IPv6 listener probe, against real sockets of this (Linux) machine", () => {
+  const probeV6 = (): Promise<string> => new Promise((done) => {
+    execFile(process.execPath, ["-e", PROBE_JS, JSON.stringify({ tests: [{ label: "v", kind: "v6listen" }] })], { timeout: 20_000 }, (_error, stdout) => { done(parseProbeOutput(stdout).get("v")?.rest ?? "no-result"); });
+  });
+  const listenV6 = (address: string): Promise<Server> => new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, address, () => resolve(server));
+  });
+  const closeServer = (server: Server): Promise<void> => new Promise((done) => { server.close(() => done()); });
+  const hex = (port: number): string => port.toString(16).toUpperCase().padStart(4, "0");
+
+  it("flags a loopback listener and a wildcard listener (neither is exempt), and a bound IPv6 UDP socket", async (context) => {
+    let loopback: Server;
+    try { loopback = await listenV6("::1"); } catch { context.skip(); return; }
+    const wildcard = await listenV6("::");
+    const udp = createSocket("udp6");
+    try {
+      await new Promise<void>((done, fail) => { udp.once("error", fail); udp.bind(0, "::1", done); });
+      const bad = await probeV6();
+      expect(bad).toContain(`tcp6:00000000000000000000000001000000:${hex((loopback.address() as { port: number }).port)}`);
+      expect(bad).toContain(`tcp6:00000000000000000000000000000000:${hex((wildcard.address() as { port: number }).port)}`);
+      expect(bad).toContain(`udp6:00000000000000000000000001000000:${hex(udp.address().port)}`);
+    } finally {
+      udp.close();
+      await closeServer(wildcard);
+      await closeServer(loopback);
+    }
+  }, 30_000);
+
+  it("does not count the probe program's own sockets: with the listeners closed, none of this test's ports is reported", async (context) => {
+    let server: Server;
+    try { server = await listenV6("::1"); } catch { context.skip(); return; }
+    const port = (server.address() as { port: number }).port;
+    await closeServer(server);
+    expect(await probeV6()).not.toContain(`:${hex(port)}`);
+  }, 30_000);
+});
+
+describe("the two embedded-resolver items (TS-SEAL-5)", () => {
+  const rows = (text: string) => parseProbeOutput(text);
+  const sealed = "resolv file \"nameserver 172.30.5.2\"\nembedded error:EPERM\nembedded-public error:EPERM\nembedded-tcp timeout\nembedded-direct error:EPERM\nembedded-direct-tcp timeout\nv6 v6listen bad=\ncaps caps eff=0000000000000000 bnd=0000000000000000 amb=0000000000000000\n";
+  const control = "ctl-embedded answer rcode=0 an=1\nctl-embedded-tcp open\nctl-embedded-direct answer rcode=0 an=1\nctl-embedded-direct-tcp open\nctl-embedded-public answer rcode=0 an=0\n";
+  const rules = "-P OUTPUT ACCEPT\n-A OUTPUT -d 127.0.0.11/32 -j DROP\n";
+  const evidence = (change: Partial<EmbeddedResolverEvidence> = {}, sealedText = sealed, controlText = control): EmbeddedResolverEvidence => ({
+    results: rows(sealedText), control: rows(controlText), nameservers: ["172.30.5.2"], dnsHelperIp: "172.30.5.2", resolvChanged: false, guardContainerGone: true, outputRules: rules, ...change,
+  });
+  const byId = (input: EmbeddedResolverEvidence) => Object.fromEntries(embeddedResolverLines(input).map((line) => [line.id, line]));
+  const blocked = (input: EmbeddedResolverEvidence) => byId(input)["L3.embedded-resolver-blocked"]!;
+
+  it("pass when the guard has closed 127.0.0.11 on every path, the rule is first in the chain, and an unguarded container still gets an answer on each", () => {
+    const lines = byId(evidence());
+    expect(lines["L3.embedded-resolver"]).toMatchObject({ status: "PASS" });
+    expect(lines["L3.embedded-resolver-blocked"]).toMatchObject({ status: "PASS", name: "embedded-resolver-closed-in-the-sealed-sandbox" });
+    expect(embeddedResolverLines(evidence()).map((line) => line.id)).toEqual(["L3.embedded-resolver", "L3.embedded-resolver-blocked"]);
+  });
+
+  it("L3.embedded-resolver measures the accepted floor where the resolver is OPEN (the unguarded control): a public name must get an ANSWER with no address there, and the run's own container names may be answered", () => {
+    expect(byId(evidence())["L3.embedded-resolver"]!.detail).toContain("answer");
+    for (const good of ["ctl-embedded-public answer rcode=0 an=0", "ctl-embedded-public answer rcode=3 an=0", "ctl-embedded-public answer rcode=2 an=0", "ctl-embedded-public answer rcode=5 an=0"]) {
+      expect(byId(evidence({}, sealed, control.replace("ctl-embedded-public answer rcode=0 an=0", good)))["L3.embedded-resolver"]!.status, good).toBe("PASS");
+    }
+    // a timeout is not enough: the control's resolver is alive (ctl-embedded answered), so silence for a public name is what a forward that left and got nothing looks like
+    for (const bad of ["ctl-embedded-public timeout", "ctl-embedded-public error:EHOSTUNREACH", "ctl-embedded-public error:EPERM", "ctl-embedded-public answer rcode=0 an=1", "ctl-embedded-public answer rcode=0 an=2", "ctl-embedded-public open", "ctl-embedded-public resolved 1.2.3.4"]) {
+      const line = byId(evidence({}, sealed, control.replace("ctl-embedded-public answer rcode=0 an=0", bad)))["L3.embedded-resolver"]!;
+      expect(line.status, bad).toBe("FAIL");
+      expect(line.detail, bad).toContain("embedded-public-in-the-unguarded-control=");
+    }
+    expect(byId(evidence({}, sealed, control.replace("ctl-embedded-public answer rcode=0 an=0\n", "")))["L3.embedded-resolver"]!.detail).toContain("embedded-public-in-the-unguarded-control=no-result");
+    // and a control whose resolver did not answer a run name has proved nothing about the floor either
+    expect(byId(evidence({}, sealed, control.replace("ctl-embedded answer rcode=0 an=1", "ctl-embedded timeout")))["L3.embedded-resolver"]!.detail).toContain("control-resolver-not-alive:ctl-embedded=timeout");
+  });
+
+  it("L3.embedded-resolver does not take the sealed sandbox's own public-name probe as the measurement (it is only ever the guard's EPERM)", () => {
+    expect(byId(evidence({}, sealed.replace("embedded-public error:EPERM", "embedded-public answer rcode=0 an=1")))["L3.embedded-resolver"]!.status).toBe("PASS");
+    // ...but the guard item does fail on it
+    expect(blocked(evidence({}, sealed.replace("embedded-public error:EPERM", "embedded-public answer rcode=0 an=1"))).status).toBe("FAIL");
+  });
+
+  it("L3.embedded-resolver still needs resolv.conf to name the DNS helper alone and to be unchanged", () => {
+    expect(byId(evidence({ nameservers: ["172.30.5.2", "8.8.8.8"] }))["L3.embedded-resolver"]).toMatchObject({ status: "FAIL" });
+    expect(byId(evidence({ nameservers: [] }))["L3.embedded-resolver"]!.detail).toContain("resolv.conf-names:none");
+    expect(byId(evidence({ resolvChanged: true }))["L3.embedded-resolver"]!.detail).toContain("resolv.conf-changed");
+  });
+
+  it("the guard item fails when any path still gets through: the answer on port 53, the TCP connections, the resolver's own UDP port, a public name", () => {
+    for (const [from, to, label] of [
+      ["embedded error:EPERM", "embedded answer rcode=0 an=1", "embedded=answer"], ["embedded-public error:EPERM", "embedded-public answer rcode=0 an=0", "embedded-public=answer"],
+      ["embedded-tcp timeout", "embedded-tcp open", "embedded-tcp=open"], ["embedded-direct error:EPERM", "embedded-direct answer rcode=0 an=1", "embedded-direct=answer"],
+      ["embedded-direct-tcp timeout", "embedded-direct-tcp open", "embedded-direct-tcp=open"],
+    ] as const) {
+      const line = blocked(evidence({}, sealed.replace(from, to)));
+      expect(line.status, label).toBe("FAIL");
+      expect(line.detail, label).toContain(label);
+    }
+  });
+
+  it("the UDP probes must show EPERM, the rule's own refusal: a timeout is not enough (something else dropped the packet), TCP may time out or be refused", () => {
+    for (const label of ["embedded", "embedded-public", "embedded-direct"]) {
+      const line = blocked(evidence({}, sealed.replace(`${label} error:EPERM`, `${label} timeout`)));
+      expect(line.status, label).toBe("FAIL");
+      expect(line.detail, label).toContain(`${label}=timeout`);
+    }
+    expect(blocked(evidence({}, sealed.replace("embedded-tcp timeout", "embedded-tcp error:EPERM"))).status).toBe("PASS");
+    expect(blocked(evidence({}, sealed.replace("embedded-tcp timeout", "embedded-tcp refused"))).status).toBe("PASS");
+  });
+
+  it("the guard item needs its positive control: with no resolver answering the unguarded container, a silent sandbox proves nothing", () => {
+    for (const [change, label] of [
+      ["ctl-embedded answer rcode=0 an=1\n", "ctl-embedded=no-result"], ["ctl-embedded-tcp open\n", "ctl-embedded-tcp=no-result"], ["ctl-embedded-direct answer rcode=0 an=1\n", "ctl-embedded-direct=no-result"],
+      ["ctl-embedded-direct-tcp open\n", "ctl-embedded-direct-tcp=no-result"],
+    ] as const) {
+      const line = blocked(evidence({}, sealed, control.replace(change, "")));
+      expect(line.status, label).toBe("FAIL");
+      expect(line.detail, label).toContain(`control-failed:${label}`);
+    }
+    expect(blocked(evidence({}, sealed, control.replace("ctl-embedded-tcp open", "ctl-embedded-tcp timeout"))).detail).toContain("control-failed:ctl-embedded-tcp=timeout");
+  });
+
+  it("the guard item fails when a direct probe found no resolver socket to ask (it would read as silence), when the sandbox has a capability, and when the guard container is left", () => {
+    expect(blocked(evidence({}, sealed.replace("embedded-direct error:EPERM", "embedded-direct error:NOLISTENER"))).detail).toContain("embedded-direct-found-no-resolver-socket");
+    expect(blocked(evidence({}, sealed.replace("embedded-direct-tcp timeout", "embedded-direct-tcp error:NOLISTENER"))).detail).toContain("embedded-direct-tcp-found-no-resolver-socket");
+    expect(blocked(evidence({}, sealed.replace("eff=0000000000000000", "eff=0000000000001000"))).detail).toContain("sandbox-has-capabilities");
+    expect(blocked(evidence({}, sealed.replace(/caps caps .*\n/u, ""))).detail).toContain("sandbox-has-capabilities:no-result");
+    expect(blocked(evidence({ guardContainerGone: false })).detail).toContain("guard-container-left-behind-or-unreadable");
+  });
+
+  it("the guard item reads the rule back from outside: it must be the first rule of the OUTPUT chain; another first rule, a missing rule or an unreadable list fails", () => {
+    for (const [text, why] of [
+      ["-P OUTPUT ACCEPT\n-A OUTPUT -d 10.0.0.1/32 -j ACCEPT\n-A OUTPUT -d 127.0.0.11/32 -j DROP\n", "second"], ["-P OUTPUT ACCEPT\n", "missing"], ["", "empty"],
+      ["-P OUTPUT ACCEPT\n-A OUTPUT -d 127.0.0.11/32 -j ACCEPT\n", "wrong target"], ["-P OUTPUT ACCEPT\n-A OUTPUT -d 127.0.0.11/32 -p udp -j DROP\n", "only udp"],
+    ] as const) {
+      const line = blocked(evidence({ outputRules: text }));
+      expect(line.status, why).toBe("FAIL");
+      expect(line.detail, why).toContain("rule-not-first-in-the-chain");
+    }
+    const unreadable = blocked(evidence({ outputRules: undefined }));
+    expect(unreadable.status).toBe("FAIL");
+    expect(unreadable.detail).toContain("rule-not-first-in-the-chain:unreadable");
+  });
+
+  it("the guard item fails on an IPv6 listener that is not the loopback or the wildcard, and on a v6 probe that did not run", () => {
+    expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=", "v6 v6listen bad=tcp6:0000000000000000FFFF00000B00007F:1F90"))).detail).toContain("ipv6-listener:v6listen(bad=tcp6:");
+    expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=\n", ""))).detail).toContain("ipv6-listener:no-result");
+    expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=", "v6 error:EACCES"))).status).toBe("FAIL");
+    // the wildcard and the loopback are NOT exempt: the probe itself reports them (see the probe test), and any entry fails the item
+    expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=", "v6 v6listen bad=tcp6:00000000000000000000000001000000:1F90"))).status).toBe("FAIL");
+    expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=", "v6 v6listen bad=udp6:00000000000000000000000000000000:0035"))).status).toBe("FAIL");
+  });
+});
+
 // A catalog whose postgres@16 digest is the SHA-256 of a manifest we hold, signed by a test-only key made now.
 const MANIFEST = Buffer.from(JSON.stringify({ schemaVersion: 2, manifests: [] }));
 const MANIFEST_DIGEST = sha256HexOf(MANIFEST);
@@ -135,7 +328,7 @@ describe("the catalog the checks need", () => {
   });
   it("reports every live item as a FAIL with the BLOCKED reason, and none as a pass", () => {
     const lines = blockedLines("BLOCKED: no trusted catalog key");
-    expect(lines.map((line) => line.id)).toEqual(["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"]);
+    expect(lines.map((line) => line.id)).toEqual(["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.embedded-resolver-blocked", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"]);
     expect(lines.every((line) => line.status === "FAIL" && line.detail === "BLOCKED: no trusted catalog key")).toBe(true);
   });
   it("refuses a catalog that pins everything but Postgres 16", async () => {
@@ -188,7 +381,7 @@ describe("the whole run, with a launcher that fails", () => {
     const events: string[] = [];
     const { lines, redact } = await runLiveChecks({ catalog: await verified(), manifests: served, registry: REGISTRY, env: "staging", workerImage: IMAGE, workDir: await mkdtemp(join(tmpdir(), "tsl-run-")), layer: fakeLayer(events) });
     expect(lines.map((line) => line.id)).toEqual([
-      "L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live",
+      "L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.embedded-resolver-blocked", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live",
     ]);
     expect(lines.every((line) => line.status === "FAIL")).toBe(true);
     const printed = lines.map((line) => formatLine(line, redact)).join("\n");

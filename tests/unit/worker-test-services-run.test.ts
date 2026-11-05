@@ -111,7 +111,7 @@ async function harness(options: { docker?: FakeServicesDockerOptions; sealed?: P
   const logs: Array<Record<string, unknown>> = [];
   const artifacts: Array<{ name: string; mediaType: string; content: string }> = [];
   const config: TestServicesConfig = {
-    docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
+    docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, guardImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
     catalog: () => Promise.resolve(catalog), ...(options.withoutSealed === true ? {} : { sealedRound: options.realSealed === true ? SEALED_ROUND_PORTS : stubSealed(state) }), sleep: () => Promise.resolve(), log: (event) => logs.push(event),
   };
   const sandbox = new TaskSandbox({ rootPath: root, taskId: OPERATION, docker: fake.docker, image: IMAGE, log: () => undefined });
@@ -720,11 +720,33 @@ describe("no secret reaches a log, an artifact, an argument or an error", () => 
 });
 
 describe("a worker whose boot withheld test services (AGENTX_TEST_SERVICES_NOT_PULLED=all: the IPv6 wall failed, the images are on the host) refuses every plan", () => {
-  const complete = { AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara" };
+  const complete = { AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara" };
   it("has no configuration at all, so no entry point can start a run (positive control: the same environment without the note has one)", () => {
     expect(testServicesConfigFromEnvironment(complete, fakeServicesDocker({}).docker)).toBeDefined();
     expect(testServicesConfigFromEnvironment({ ...complete, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres" }, fakeServicesDocker({}).docker)).toBeDefined();
     for (const note of ["all", "svc/Upper", "svc/a,"]) expect(testServicesConfigFromEnvironment({ ...complete, AGENTX_TEST_SERVICES_NOT_PULLED: note }, fakeServicesDocker({}).docker), note).toBeUndefined();
+  });
+  it("takes the resolver guard's image from AGENTX_WORKER_IMAGE alone: pinned, never from the sandbox image, and no configuration without it (TS-SEAL-5 b)", () => {
+    const docker = fakeServicesDocker({}).docker;
+    expect(testServicesConfigFromEnvironment(complete, docker)?.guardImage).toBe(IMAGE);
+    const other = `registry.example.test/agentx/worker@sha256:${"e".repeat(64)}`;
+    expect(testServicesConfigFromEnvironment({ ...complete, AGENTX_SANDBOX_IMAGE: other }, docker)).toMatchObject({ probeImage: other, guardImage: IMAGE });
+    const { AGENTX_WORKER_IMAGE: _unused, ...withoutWorker } = complete;
+    void _unused;
+    expect(testServicesConfigFromEnvironment(withoutWorker, docker)).toBeUndefined();
+    for (const bad of ["", "worker:latest", `registry.example.test/agentx/worker@sha256:${"e".repeat(63)}`]) expect(testServicesConfigFromEnvironment({ ...complete, AGENTX_WORKER_IMAGE: bad }, docker), bad).toBeUndefined();
+  });
+  it("hands the round's abort signal to the sealed round's setup, so the resolver guard's docker calls stop with a cancelled task (TS-SEAL-5 b, low-1)", async () => {
+    const h = await harness();
+    const run = await h.start();
+    const controller = new AbortController();
+    await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: controller.signal });
+    expect(h.state.setups).toHaveLength(1);
+    const handed = h.state.setups[0]!.signal;
+    expect(handed).toBeInstanceOf(AbortSignal);
+    expect(handed?.aborted).toBe(false);
+    controller.abort();
+    expect(handed?.aborted).toBe(true);
   });
   it("the task path refuses with the fixed sentence and makes no docker call and no file, when the configuration comes from the environment", async () => {
     const h = await harness();
@@ -774,9 +796,9 @@ describe("with tx off, or a plan with no dependencies, nothing happens", () => {
     expect(await readdir(h.runParent)).toEqual([]);
   });
   it("a worker with none of the test-services variables has no configuration, so the worker-start step sweeps and removes nothing (it only looks, read-only, for its report)", async () => {
-    expect(testServicesConfigFromEnvironment({ AGENTX_SANDBOX_IMAGE: IMAGE }, fakeServicesDocker().docker)).toBeUndefined();
+    expect(testServicesConfigFromEnvironment({ AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE }, fakeServicesDocker().docker)).toBeUndefined();
     const fake = fakeServicesDocker();
-    await testServicesAtWorkerBoot({ rootPath: await temp("rsv-boot-"), environment: { AGENTX_SANDBOX_IMAGE: IMAGE }, docker: fake.docker, log: () => undefined });
+    await testServicesAtWorkerBoot({ rootPath: await temp("rsv-boot-"), environment: { AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE }, docker: fake.docker, log: () => undefined });
     expect(fake.calls.filter((call) => ["rm", "stop", "kill", "pause", "unpause", "run", "pull"].includes(String(call[0])))).toEqual([]);
     expect(fake.verbs("network").filter((call) => call[1] === "rm")).toEqual([]);
   });
@@ -792,7 +814,7 @@ describe("the worker-start sweep removes only labelled objects of this workspace
     const notFamily = `ghi789\tsome-other-network\t1\t${workspace}\t2`;
     const unlabelled = `jkl012\t\t\t\t`;
     const fake = fakeServicesDocker({ listing: [mine, otherWorkspace, notFamily, unlabelled] });
-    const config: TestServicesConfig = { docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: await temp("rsv-runs-"), catalog: () => Promise.resolve(catalog) };
+    const config: TestServicesConfig = { docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, guardImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: await temp("rsv-runs-"), catalog: () => Promise.resolve(catalog) };
     await testServicesAtWorkerBoot({ rootPath: root, config, log: () => undefined });
     // The sweep's two listings (tab-separated rows) and, after it, the worker's own self-report counts (ids only).
     const listings = fake.calls.filter((call) => (call[0] === "ps" || (call[0] === "network" && call[1] === "ls")) && !call.includes("{{.ID}}"));
@@ -880,9 +902,9 @@ describe("cancel, a pending start, teardown warnings", () => {
 
 describe("what the worker advertises", () => {
   it("lists the test-services plan feature only when the worker has a test-services configuration", () => {
-    expect(testServicesAdvertisedFeatures({ AGENTX_SANDBOX_IMAGE: IMAGE })).toEqual([]);
+    expect(testServicesAdvertisedFeatures({ AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE })).toEqual([]);
     expect(testServicesAdvertisedFeatures({
-      AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", AGENTX_TEST_SERVICES_CATALOG_DIR: "/opt/catalog",
+      AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", AGENTX_TEST_SERVICES_CATALOG_DIR: "/opt/catalog",
     })).toEqual(["task.testServices.v1"]);
   });
 });
@@ -899,7 +921,7 @@ describe("the worker trusts the catalog baked into its own image and verifies no
       const catalog = await loadBakedCatalog(new URL(`file://${join(dir, "catalog.json")}`));
       expect(catalog.entries.length).toBeGreaterThan(0);
       // The default path is the image's, beside dist/, not any directory the environment names.
-      const config = testServicesConfigFromEnvironment({ AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", AGENTX_TEST_SERVICES_CATALOG_DIR: dir }, fakeServicesDocker().docker, undefined)!;
+      const config = testServicesConfigFromEnvironment({ AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", AGENTX_TEST_SERVICES_CATALOG_DIR: dir }, fakeServicesDocker().docker, undefined)!;
       expect(config).toBeDefined();
     } finally {
       vi.unstubAllEnvs();
@@ -996,7 +1018,7 @@ describe("the worker's self-report (staging workers are not SSM-managed: CloudWa
     const root = await temp("rsv-report-");
     const logs: Array<Record<string, unknown>> = [];
     const fake = fakeServicesDocker();
-    const config: TestServicesConfig = { docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: await temp("rsv-report-runs-"), catalog: () => Promise.resolve(catalog), log: (event) => logs.push(event) };
+    const config: TestServicesConfig = { docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, guardImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: await temp("rsv-report-runs-"), catalog: () => Promise.resolve(catalog), log: (event) => logs.push(event) };
     const facts = JSON.stringify({ metadataBlocked: true, runWalls: true, ipv6Drops: true, prepull: "ok", prepulled: 1, loggedOut: true, dockerVersion: "25.0.5" });
     await testServicesAtWorkerBoot({ rootPath: root, config, environment: { AGENTX_TEST_SERVICES_BOOT_FACTS: facts }, log: (event) => logs.push(event) });
     const [line] = reports(logs);

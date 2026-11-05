@@ -41,7 +41,7 @@ import type { ArtifactSink } from "./artifacts.js";
 import type { WorkerCancellationController } from "./cancel.js";
 import type { CommandResult } from "./readiness.js";
 import {
-  checkSandboxPlan, waitForSealedDnsHelper, writeCheckSandboxFiles,
+  checkSandboxPlan, isPinnedImage, waitForSealedDnsHelper, writeCheckSandboxFiles,
   type CheckSandboxNetwork, type CheckSandboxPlan,
 } from "./check-sandbox.js";
 import type { ContainerExec } from "./devcontainer.js";
@@ -134,6 +134,8 @@ export interface SealedRoundSetup {
   files: HelperFiles;
   environment: ServiceEnvironment;
   redactor: ServiceRedactor;
+  /** The task's signal, passed down to the resolver guard's docker calls when the check sandbox starts: a cancelled task does not wait for them (check-sandbox.ts). */
+  signal?: AbortSignal;
 }
 
 /** What the usage record is built from (s1-sealed's `ServiceUsageRecordInput`). */
@@ -172,6 +174,8 @@ export interface TestServicesConfig {
   edition: CatalogEdition;
   /** The worker's own image (digest or id): the health probes and the sealed sandbox run from it. */
   probeImage: string;
+  /** The worker's own image from AGENTX_WORKER_IMAGE (pinned), for the sealed round's resolver guard: a root NET_ADMIN container that must never run a sandbox image (check-sandbox.ts, "THE GUARD'S IMAGE"). */
+  guardImage: string;
   maxMemMiB: number;
   /** A directory on the worker's tmpfs, at the same path on the host (Docker bind-mounts from it), where each run's directory is made. */
   runDirectoryParent: string;
@@ -194,6 +198,8 @@ export const TEST_SERVICES_ENV_ENVIRONMENT = "AGENTX_TEST_SERVICES_ENV";
 export const TEST_SERVICES_RUN_DIR_ENVIRONMENT = "AGENTX_TEST_SERVICES_RUN_DIR";
 export const TEST_SERVICES_EDITION_ENVIRONMENT = "AGENTX_TEST_SERVICES_EDITION";
 export const TEST_SERVICES_MAX_MEM_ENVIRONMENT = "AGENTX_TEST_SERVICES_MAX_MEM_MIB";
+/** The worker's own image, pinned by digest (boot-stage2.sh writes it into the worker's environment beside AGENTX_SANDBOX_IMAGE). The resolver guard runs from this one and from nothing a sandbox's configuration names. */
+export const WORKER_IMAGE_ENVIRONMENT = "AGENTX_WORKER_IMAGE";
 /** The catalog the worker image ships, beside `dist/` (the same relative place from `src/` and from `dist/`). It is copied into the image at build time (environments/base/Dockerfile) from the release's committed catalog. */
 export const BAKED_CATALOG_URL = new URL("../service-catalog/catalog.json", import.meta.url);
 const BAKED_CATALOG_MAX_BYTES = 512 * 1024;
@@ -225,13 +231,15 @@ export function testServicesConfigFromEnvironment(
   const catalogEnv = environment[TEST_SERVICES_ENV_ENVIRONMENT];
   const runDirectoryParent = environment[TEST_SERVICES_RUN_DIR_ENVIRONMENT];
   const probeImage = environment[TASK_SANDBOX_IMAGE_ENVIRONMENT];
-  if (!registry || !catalogEnv || !runDirectoryParent || !probeImage) return undefined;
+  const guardImage = environment[WORKER_IMAGE_ENVIRONMENT];
+  // No worker image, or one that is not pinned: no configuration, so no sealed round (it could not close the embedded resolver from a trusted image).
+  if (!registry || !catalogEnv || !runDirectoryParent || !probeImage || !guardImage || !isPinnedImage(guardImage)) return undefined;
   // Root withheld test services on this host (boot-stage2.sh writes `all`, also when the IPv6 wall failed and the images ARE here): no configuration, so no entry point can start a run, whatever the plan.
   if (notPulledRepositories(environment) === "all") return undefined;
   const edition = environment[TEST_SERVICES_EDITION_ENVIRONMENT] === "enterprise" ? "enterprise" : "public";
   const mem = Number(environment[TEST_SERVICES_MAX_MEM_ENVIRONMENT] ?? DEFAULT_MAX_MEM_MIB);
   return {
-    docker, registry, catalogEnv, edition, probeImage, runDirectoryParent, maxMemMiB: Number.isSafeInteger(mem) && mem > 0 ? mem : DEFAULT_MAX_MEM_MIB,
+    docker, registry, catalogEnv, edition, probeImage, guardImage, runDirectoryParent, maxMemMiB: Number.isSafeInteger(mem) && mem > 0 ? mem : DEFAULT_MAX_MEM_MIB,
     catalog: () => loadBakedCatalog(), ...(roundPorts === undefined ? {} : { sealedRound: roundPorts }),
   };
 }
@@ -943,7 +951,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       };
       const roundHelpers = session.helpers;
       plan = checkSandboxPlan({
-        net, taskId: input.operationId, image: config.probeImage, rootPath: root, maskedPaths: await hiddenWorkspaceDirectories(root), filesDir: roundFiles.directory,
+        net, taskId: input.operationId, image: config.probeImage, guardImage: config.guardImage, rootPath: root, maskedPaths: await hiddenWorkspaceDirectories(root), filesDir: roundFiles.directory,
         helpers: roundHelpers.flatMap((helper) => helper.aliases.map((alias) => ({ alias, address: helper.address }))), sinkholeIp: runNetworkHelperIp(slot, SINKHOLE_HELPER_INDEX),
         workingSandboxName: input.sandbox.name,
       });
@@ -957,7 +965,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
 
       // The sealed round: the working sandbox was never on this network; the check sandbox starts inside `withSealedCheckRound`.
       // The working phase's network is where the working sandbox belongs (none when the run has no working phase).
-      const setup: SealedRoundSetup = { docker, hasDevcontainer: false, workingPhaseNetwork: workSession === undefined ? null : { name: workSession.network.name, ip: workSession.network.workingSandboxIp }, plan, rootPath: root, files: roundFiles, environment, redactor: roundRedactor };
+      const setup: SealedRoundSetup = { docker, hasDevcontainer: false, workingPhaseNetwork: workSession === undefined ? null : { name: workSession.network.name, ip: workSession.network.workingSandboxIp }, plan, rootPath: root, files: roundFiles, environment, redactor: roundRedactor, signal };
       let release!: () => void;
       const closed = new Promise<void>((done) => { release = done; });
       let handOver!: (runners: CheckRunners) => void;

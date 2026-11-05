@@ -104,7 +104,7 @@ async function harness(options: { docker?: FakeServicesDockerOptions; delivery?:
   const logs: Array<Record<string, unknown>> = [];
   const artifacts: Array<{ name: string; mediaType: string; content: string }> = [];
   const config: TestServicesConfig = {
-    docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
+    docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, guardImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
     catalog: () => Promise.resolve(catalog), sealedRound: stubSealed(state), sleep: () => Promise.resolve(), log: (event) => { logs.push(event); },
   };
   const sandbox = new TaskSandbox({ rootPath: root, taskId: OPERATION, docker: fake.docker, image: IMAGE, log: () => undefined });
@@ -354,7 +354,7 @@ describe("the feature the worker lists", () => {
   const shipped = (catalogFile: string) => ({ catalog: catalogFile, prepull: new URL("../../packages/worker/service-catalog/prepull.json", import.meta.url) });
   const real = new URL("../../environments/service-catalog/catalog.json", import.meta.url);
   it("lists the fake feature only with a test-services configuration and the baked catalog's fake server", async () => {
-    const configured = { AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", [TASK_SANDBOX_IMAGE_ENVIRONMENT]: IMAGE } as NodeJS.ProcessEnv;
+    const configured = { AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", [TASK_SANDBOX_IMAGE_ENVIRONMENT]: IMAGE, AGENTX_WORKER_IMAGE: IMAGE } as NodeJS.ProcessEnv;
     expect(testServicesAdvertisedFeatures({}, shipped(real.pathname))).toEqual([]);
     expect(fakeServerBaked(shipped(real.pathname))).toBe(true);
     // 2026-11-04 (0.5.5 integration): the shipped catalog now pins local-aws@r1 (revision 2, staging pin), so the baked image also lists the emulated-AWS feature.

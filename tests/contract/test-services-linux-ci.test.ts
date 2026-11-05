@@ -385,10 +385,10 @@ describe("scripts/ci-test-services-linux.sh", () => {
     const ran = spawnSync("bash", ["-c", 'source "$1"; judge "$2" "$3" "$4"', "x", new URL("../../scripts/ci-test-services-linux.sh", import.meta.url).pathname, file, expectedVersion, egress], { encoding: "utf8" });
     return { status: ran.status, err: ran.stderr };
   };
-  const LIVE = ["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"];
+  const LIVE = ["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.embedded-resolver-blocked", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"];
   const good = (): string[] => [
     "TSL L1.walls PASS walls | ok", "TSL L1.pools PASS pools | ok", ...LIVE.map((id) => `TSL ${id} PASS name | saw`),
-    "TSL L1.internal-drops PENDING x | later", "TSL L5.live PENDING x | later", "TSL L7.live PENDING x | later", "TSL L8.live PENDING x | later", "TSL SUMMARY pass=17 fail=0 pending=4",
+    "TSL L1.internal-drops PENDING x | later", "TSL L5.live PENDING x | later", "TSL L7.live PENDING x | later", "TSL L8.live PENDING x | later", "TSL SUMMARY pass=18 fail=0 pending=4",
   ];
 
   it("makes the agentx-task network the way the worker's task sandbox does (a plain bridge), before the driver runs and after the address pools, so L2 has its working network", () => {
@@ -419,11 +419,13 @@ describe("scripts/ci-test-services-linux.sh", () => {
   });
   it("judge fails on any FAIL, any TSL ERROR or BLOCKED, an unexpected PENDING, a live item with no PASS, a missing or failing summary, and an empty output", () => {
     const cases: Array<[string, string[]]> = [
-      ["a FAIL", good().map((line) => (line.startsWith("TSL L4.template-db") ? line.replace(" PASS ", " FAIL ") : line)).filter((line) => !line.startsWith("TSL SUMMARY")).concat("TSL SUMMARY pass=16 fail=1 pending=4")],
+      ["a FAIL", good().map((line) => (line.startsWith("TSL L4.template-db") ? line.replace(" PASS ", " FAIL ") : line)).filter((line) => !line.startsWith("TSL SUMMARY")).concat("TSL SUMMARY pass=17 fail=1 pending=4")],
       ["a read-only FAIL", [...good(), "TSL L1.range FAIL range | overlaps"]],
       ["an error", ["TSL ERROR the CI driver gave no lines", ...good()]], ["blocked", ["TSL BLOCKED x", ...good()]],
       ["an unexpected pending", good().map((line) => line.replace("TSL L3.spoofing PASS", "TSL L3.spoofing PENDING"))],
       ["a missing live item", good().filter((line) => !line.startsWith("TSL L6.live"))],
+      ["the resolver guard item missing", good().filter((line) => !line.startsWith("TSL L3.embedded-resolver-blocked"))],
+      ["the resolver guard item failing", good().map((line) => line.replace("TSL L3.embedded-resolver-blocked PASS", "TSL L3.embedded-resolver-blocked FAIL"))],
       ["no summary", good().filter((line) => !line.startsWith("TSL SUMMARY"))], ["a summary with failures", [...good().slice(0, -1), "TSL SUMMARY pass=17 fail=1 pending=4"]], ["nothing", []],
     ];
     for (const [label, lines] of cases) expect(judge(`${lines.join("\n")}\n`).status, label).toBe(1);
