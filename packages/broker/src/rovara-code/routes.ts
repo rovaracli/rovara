@@ -4,7 +4,7 @@
 import { CodeIntentBodySchema, agentXError } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
-import { designFirstWebStart, markDesignFirst } from "../design-review/design-first.js";
+import { designFirstWebStart } from "../design-review/design-first.js";
 import type { ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
 import { startCodeIntent, type CodeIntentDependencies } from "./intent.js";
 import { taskResponseForClient } from "./task-view-compat.js";
@@ -43,7 +43,7 @@ export async function routeCodeIntentStart(
   // "Design first" (DR-UX-3): the ticked option or a leading `design first:`, the same ask as Slack and Linear, read only while design review is available for the company. The prefix is not part of the request.
   const first = await designFirstWebStart(deps.table, caller.orgId, { text: input.text, asked: parsed.data.designFirst === true }, env);
   const asked = first.designFirst ? { ...input, text: first.text } : input;
-  const started = await startCodeIntent(deps, caller, { requestId, project, input: asked, source: "app", ...(path === undefined ? {} : { path }) });
-  if (first.designFirst && deps.table !== undefined) await markDesignFirst(deps.table, started.task.taskId, caller.developerId);
+  // The ask goes into the start itself: the task row is created with it (no later mark that can fail or lose a race with Understand), and it is part of the request's fingerprint, so the same request id with another value is IDEMPOTENCY_CONFLICT.
+  const started = await startCodeIntent(deps, caller, { requestId, project, input: asked, source: "app", ...(path === undefined ? {} : { path }), ...(first.designFirst ? { designFirst: true as const } : {}) });
   return new StatusReply(202, taskResponseForClient(started, headers));
 }

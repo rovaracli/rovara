@@ -150,6 +150,9 @@ describe("the intake and the first card", () => {
     expect(await designFirstWebStart(table(true).table, ORG, { text: "add a retry", asked: true }, on)).toEqual({ designFirst: true, text: "add a retry" });
     expect(await designFirstWebStart(table(true).table, ORG, { text: "Design first: add a retry", asked: false }, on)).toEqual({ designFirst: true, text: "add a retry" });
     expect(await designFirstWebStart(table(true).table, ORG, { text: "add a retry", asked: false }, on)).toEqual({ designFirst: false, text: "add a retry" });
+    // What follows the prefix is trimmed, as Slack trims it; text with no prefix is exactly what was typed.
+    expect(await designFirstWebStart(table(true).table, ORG, { text: "  DESIGN-FIRST :   add a retry \n", asked: false }, on)).toEqual({ designFirst: true, text: "add a retry" });
+    expect(await designFirstWebStart(table(true).table, ORG, { text: " add a retry ", asked: true }, on)).toEqual({ designFirst: true, text: " add a retry " });
     expect(await designFirstWebStart(table(false).table, ORG, { text: "design first: add a retry", asked: false }, on)).toEqual({ designFirst: false, text: "design first: add a retry" });
     await expect(designFirstWebStart(table(false).table, ORG, { text: "add a retry", asked: true }, on)).rejects.toThrow(DESIGN_FIRST_UNAVAILABLE);
     const off = table(true);

@@ -52,6 +52,8 @@ export const CodeIntentRequestSchema = z
     offerId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional(),
     /** The answered task this start follows (Task 6's "change anyway"). Trusted input from broker code: no request body can carry it. */
     retryOf: z.string().uuid().optional(),
+    /** The person asked for a design review of this one task (the web start box's "Design first"). Trusted input from broker code, for an app intent only. */
+    designFirst: z.literal(true).optional(),
     /** A hand-off from the Mac (Task 21). Accepted by shape; refused until that task lands. */
     startAt: z.object({ repository: z.string().min(1).max(200), commit: z.string().regex(/^[a-f0-9]{40}$/), summary: z.string().min(1).max(4000) }).strict().optional(),
   })
@@ -68,6 +70,7 @@ export const CodeIntentRequestSchema = z
     }
     if (request.assignedBy !== undefined && request.source !== "linear") context.addIssue({ code: "custom", path: ["assignedBy"], message: "only a Linear intent has an assigner" });
     if (request.retryOf !== undefined && request.source !== "app") context.addIssue({ code: "custom", path: ["retryOf"], message: "only an app intent can follow an answered task" });
+    if (request.designFirst !== undefined && request.source !== "app") context.addIssue({ code: "custom", path: ["designFirst"], message: "only an app intent carries design first here" });
     if (request.offerId !== undefined && request.source !== "offer") context.addIssue({ code: "custom", path: ["offerId"], message: "only an offer has an offer id" });
   });
 export type CodeIntentRequest = z.infer<typeof CodeIntentRequestSchema>;

@@ -164,7 +164,13 @@ export interface AgentRunRequest {
  * What `startCodeIntent` adds to a run (trusted, set by broker code): the start is a coding workflow, `path` is the Quick or Full path the request chose (absent: Understand
  * chooses it on version 2), and `binding` is the Slack thread or Linear issue the session follows. A Slack thread also shares the task to the thread's channel.
  */
-export interface CodeIntentStart { path?: WorkflowPath; binding?: SessionBinding; /** The answered task a "change anyway" start follows (set by broker code only). */ retryOf?: string }
+export interface CodeIntentStart {
+  path?: WorkflowPath; binding?: SessionBinding;
+  /** The answered task a "change anyway" start follows (set by broker code only). */
+  retryOf?: string;
+  /** The person asked for a design review of this one task (the web start box's "Design first", DR-UX-3): the task row is created with `designFirst` set, in the same write. It is part of the request's fingerprint. */
+  designFirst?: true;
+}
 
 export interface AgentRunResult { taskId: string; runLimitUsd: number; stopAtUsd: number; paused: boolean }
 
@@ -230,7 +236,7 @@ const AgentRunRequestShape = z.object({
   chain: z.object({ chainRunId: z.string().min(1).max(200), stepId: z.string().min(1).max(200) }).strict().optional(),
   trigger: SessionTriggerSchema.optional(),
   runLimitUsd: z.number().finite().min(0).optional(),
-  codeIntent: z.object({ path: WorkflowPathSchema.optional(), binding: SessionBindingSchema.optional(), retryOf: z.string().uuid().optional() }).strict().optional(),
+  codeIntent: z.object({ path: WorkflowPathSchema.optional(), binding: SessionBindingSchema.optional(), retryOf: z.string().uuid().optional(), designFirst: z.literal(true).optional() }).strict().optional(),
   setupDraft: z.object({ seenTaskId: z.string().uuid().optional() }).strict().optional(),
   diagnosis: z.object({ diagnosisId: DiagnosisIdSchema, errorRef: ErrorRefSchema }).strict().optional(),
   setupAgent: z.object({ limits: SetupAgentLimitsSchema, seenTaskId: z.string().uuid().optional() }).strict().optional(),

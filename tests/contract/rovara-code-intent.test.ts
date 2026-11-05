@@ -132,6 +132,11 @@ describe("the request shapes", () => {
     expect(CodeIntentBodySchema.safeParse(body).success).toBe(true);
     expect(CodeIntentBodySchema.safeParse({ ...body, designFirst: true }).success).toBe(true);
     expect(CodeIntentBodySchema.safeParse({ ...body, designFirst: "yes" }).success).toBe(false);
+    // The intent carries it for the app only, and only as true.
+    const intent = { requestId: randomUUID(), project: "payments", input: { text: "Fix it" } };
+    expect(CodeIntentRequestSchema.safeParse({ ...intent, source: "app", designFirst: true }).success).toBe(true);
+    expect(CodeIntentRequestSchema.safeParse({ ...intent, source: "app", designFirst: false }).success).toBe(false);
+    expect(CodeIntentRequestSchema.safeParse({ ...intent, source: "slack", binding: THREAD, designFirst: true }).success).toBe(false);
     for (const extra of [{ source: "linear" }, { assignedBy: { bot: true } }, { binding: ISSUE }, { payer: { kind: "project", project: "payments" } }, { offerId: "off_1" }, { retryOf: TASK_ID_A }, { project: "payments" }]) {
       expect(CodeIntentBodySchema.safeParse({ ...body, ...extra }).success, JSON.stringify(extra)).toBe(false);
     }
@@ -616,6 +621,31 @@ describe("POST /v1/app/projects/{project}/code with Design first", () => {
     // A task started without the flag carries no mark (positive control: the mark above came from the flag).
     const plain = await t.send(MAYA, {});
     expect(t.meta(t.taskOf(plain).taskId).designFirst).toBeUndefined();
+  });
+
+  it("the ask is written with the task row itself (by the caller, with a time), and a replay with another value is an IDEMPOTENCY_CONFLICT either way", async () => {
+    const t = await setup({ v2: true });
+    await t.member(MAYA);
+    on(t.db);
+    const requestId = randomUUID();
+    const first = await t.send(MAYA, { requestId, designFirst: true });
+    expect(first.status, JSON.stringify(first.body)).toBe(202);
+    const stored = t.meta(t.taskOf(first).taskId);
+    expect(stored.designFirst).toEqual({ by: MAYA.developerId, at: expect.stringMatching(/^\d{4}-\d\d-\d\dT/u) as unknown });
+    expect(stored.designFirst).toMatchObject({ at: stored.createdAt });
+    // The same request again is the same task; the same id without the ask, or with it where the first had none, is another request.
+    const again = await t.send(MAYA, { requestId, designFirst: true });
+    expect(again.status).toBe(202);
+    expect(t.taskOf(again).taskId).toBe(t.taskOf(first).taskId);
+    const without = await t.send(MAYA, { requestId });
+    expect(without.status).toBe(409);
+    expect(errorOf(without).code).toBe("IDEMPOTENCY_CONFLICT");
+    const plainId = randomUUID();
+    expect((await t.send(MAYA, { requestId: plainId })).status).toBe(202);
+    const added = await t.send(MAYA, { requestId: plainId, designFirst: true });
+    expect(added.status).toBe(409);
+    expect(errorOf(added).code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(t.taskCount()).toBe(2);
   });
 
   it("a project set to Off still gets the review, because the person asked (the company only has to allow it)", async () => {

@@ -206,6 +206,14 @@ describe("Design first in the start box", () => {
   expect((await screen.findByRole("alert")).textContent).toMatch(/Design first/u);expect(navigate).not.toHaveBeenCalled();
   await waitFor(() => expect(screen.queryByRole("checkbox", { name: DESIGN_FIRST })).toBeNull());expect((await box() as HTMLTextAreaElement).value).toBe("Add a retry");f.close();
  });
+ it("only the broker's fixed Design first refusal gets the Design first words and a re-read; any other refusal keeps its usual words", async () => {
+  const send = vi.fn(async (): Promise<ApiResponse> => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "input.text: request is empty" } } }));
+  const f = setup(undefined, { send, get: withPlaybook(playbookAnswer(true)) });
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));
+  const reads = () => f.request.mock.calls.filter(([request]) => request.path === PLAYBOOK).length, before = reads();fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  const alert = await screen.findByRole("alert");expect(alert.textContent).toMatch(/4000/u);expect(alert.textContent).not.toMatch(/Design first/u);expect(reads()).toBe(before);
+  expect(screen.getByRole("checkbox", { name: DESIGN_FIRST })).toBeTruthy();f.close();
+ });
  it("sends no flag if the option was ticked and then stopped being offered", async () => {
   let allowed = true;const f = setup(undefined, { get: request => request.path === PLAYBOOK ? playbookAnswer(allowed) : undefined });
   fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));allowed = false;await f.query.refetchQueries({ queryKey: ["how-we-work", "payments", "design-review"] });

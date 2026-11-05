@@ -3,7 +3,7 @@
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { taskKey } from "../developer/task-records.js";
 import { parseDesignFirstPrefix } from "../rovara-code/explicit-path.js";
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, DESIGN_FIRST_UNAVAILABLE_MESSAGE, type OrgId } from "@agentx/contracts";
 import type { ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
 import { designReviewAvailableFor } from "./switch.js";
 
@@ -16,7 +16,7 @@ export async function designFirstRequestOf(deps: ProjectPlaybookReader, orgId: O
 }
 
 /** What the web start refuses with when the box's "Design first" is sent while the stage does not exist for the company. It says nothing about why. */
-export const DESIGN_FIRST_UNAVAILABLE = "Design review isn't available right now.";
+export const DESIGN_FIRST_UNAVAILABLE = DESIGN_FIRST_UNAVAILABLE_MESSAGE;
 
 /**
  * The web start box (DR-UX-3): the ticked "Design first" option (`asked`) and a leading `design first:` in the typed text mean the same thing as in Slack and Linear, and both are honoured only while the stage exists for the
@@ -31,7 +31,8 @@ export async function designFirstWebStart(deps: ProjectPlaybookReader | undefine
   }
   const typed = parseDesignFirstPrefix(input.text);
   if (typed.designFirst && typed.rest.trim() === "") throw agentXError("CONFIG_INVALID", "input.text: request is empty");
-  return { designFirst: input.asked || typed.designFirst, text: typed.rest };
+  // The text after the prefix is trimmed, as Slack trims it; text with no prefix is exactly what was typed.
+  return { designFirst: input.asked || typed.designFirst, text: typed.designFirst ? typed.rest.trim() : typed.rest };
 }
 
 export interface DesignFirstRequest { by: string; at: string }

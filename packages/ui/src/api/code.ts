@@ -1,4 +1,4 @@
-import { TaskStopStartPreviewSchema, PROCESS_START_REFUSED_MESSAGE, ProjectOverviewProjectSchema, SessionIdSchema, TaskResponseReaderSchema } from "@agentx/contracts/web";
+import { TaskStopStartPreviewSchema, PROCESS_START_REFUSED_MESSAGE, DESIGN_FIRST_UNAVAILABLE_MESSAGE, ProjectOverviewProjectSchema, SessionIdSchema, TaskResponseReaderSchema } from "@agentx/contracts/web";
 import type { AppHost } from "../host.js";
 import { createApiClient, type Reader, type SendResult } from "./client.js";
 import { withoutRequestId } from "./without-request-id.js";
@@ -30,7 +30,7 @@ const MESSAGES: Readonly<Record<string, string>> = {
  RUNTIME_UNAVAILABLE: "Rovara can't start work right now. Try again shortly.",
 };
 
-/** What the page says when the broker refuses a start that asked for Design first (it is sent only with that option, so a refused request body is that option's). */
+/** What the page says when the broker refuses a start that asked for Design first (the broker's one fixed message for it; any other refusal keeps its usual words). */
 export const DESIGN_FIRST_REFUSED = "Rovara couldn't start this with Design first. Untick it to start without a design review, or try again.";
 
 /** `POST /v1/app/projects/{project}/code`: describe the work and the project's own process runs it. */
@@ -56,7 +56,7 @@ export function createCodeApi(host: AppHost) {
    if (!text.trim() || text.length > CODE_TEXT_MAX) throw new ApiError(400, "INVALID_INPUT", "Describe the work in 4000 characters or fewer.");
    try { return await api.send("POST", "/v1/app/projects/" + encodeURIComponent(name) + "/code", { requestId, input: { text }, ...(designFirst ? { designFirst: true } : {}) }, StartedCodeReader); }
    catch (failure) {
-    if (designFirst && failure instanceof ApiError && failure.code === "CONFIG_INVALID") throw new ApiError(failure.status, failure.code, DESIGN_FIRST_REFUSED);
+    if (designFirst && failure instanceof ApiError && failure.code === "CONFIG_INVALID" && failure.message === DESIGN_FIRST_UNAVAILABLE_MESSAGE) throw new ApiError(failure.status, failure.code, DESIGN_FIRST_REFUSED);
     const message = failure instanceof ApiError ? MESSAGES[failure.code] : undefined;
     throw failure instanceof ApiError && message !== undefined ? new ApiError(failure.status, failure.code, message) : failure;
    }
