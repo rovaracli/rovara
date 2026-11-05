@@ -763,7 +763,7 @@ describe("approving the plan", () => {
     const deps = { documentClient: t.h.db, tableName: "state", actions: t.h.actions, log: () => undefined, orgId: TEST_ORG,
       checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() };
     expect(await getTaskDocumentView(deps as never, { orgId: TEST_ORG, developerId: MAYA.developerId } as never, taskId)).toMatchObject({
-      status: "Waiting for the run limit to be approved", nextStep: "Coding starts once a project maintainer or an admin approves it, or close the task in the task's Slack thread.",
+      status: "Waiting for the run limit to be approved", nextStep: "Coding starts once a project maintainer or an admin approves it, or close the task in Rovara.",
     });
   });
 

@@ -871,7 +871,7 @@ describe("native developer task workflow", () => {
       withReason("PR feedback review report was invalid, incomplete, or stale");
       expect((await page()).status, ending).toBe("Couldn't review the pull request feedback");
       withReason(WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed);
-      expect(await page(), ending).toMatchObject({ status: "Couldn't push the fix", nextStep: "Merge or update it on GitHub, or close the task in the task's Slack thread." });
+      expect(await page(), ending).toMatchObject({ status: "Couldn't push the fix", nextStep: "Merge or update it on GitHub, or close the task in Rovara." });
       withReason(WORKFLOW_BLOCK_REASONS.pullRequestChanged);
       expect((await page()).status, ending).toBe("Stopped following the pull request");
     }
@@ -5455,7 +5455,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       expect(blocked).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed,
         pullRequestUpdateFailure: { numbers: [42], cause: "HEAD_MOVED" }, pullRequests: [{ headSha: "d".repeat(40), candidateDigest: first.digest }] });
       expect(workflowMessage({ taskId, workflow: blocked })!.text).toBe(`I couldn't push the fix to <${PR_URL}|PR #42>: ${STOPPED_FOLLOWING}`);
-      expect(await page(harness, taskId)).toMatchObject({ status: "Stopped following the pull request", nextStep: "Merge or close it on GitHub, then close the task in the task's Slack thread." });
+      expect(await page(harness, taskId)).toMatchObject({ status: "Stopped following the pull request", nextStep: "Merge or close it on GitHub, then close the task in Rovara." });
       expect(dispatchRows(harness)).toEqual([]);
       // As it says: a merge of the head someone else pushed is not observed.
       gh.state.pr = "merged";

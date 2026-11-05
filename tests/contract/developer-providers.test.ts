@@ -41,7 +41,7 @@ describe("Sign in with Slack (FR-003)", () => {
     const { fake, provider } = slack();
     const authorize = await provider.authorizeUrl({ state: "s1", nonce: "n1", redirectUri: slackCallback });
     const result = await provider.complete({ code: await codeFrom(fake.approve(authorize, maya.userId)), nonce: "n1", redirectUri: slackCallback });
-    expect(result).toEqual({ ok: true, identity: { method: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", email: "maya@example.com", emailVerified: true, slackUserId: "U0MAYA001" } });
+    expect(result).toEqual({ ok: true, identity: { method: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", email: "maya@example.com", emailVerified: true, slackUserId: "U0MAYA001", slackTeamId: TEAM } });
   });
 
   it("refuses another team, naming both teams, including another team of the same Grid (SC-007)", async () => {

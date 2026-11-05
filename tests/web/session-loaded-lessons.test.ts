@@ -82,7 +82,7 @@ it("says no lesson was loaded, says nothing where the lessons route is absent, a
  none.close();
  const absent = setup(async request => rules(request) ?? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } });
  await open();
- await screen.findByText("Nothing was recorded for this task.");
+ await screen.findByText(/^Nothing was recorded for this task\./);
  await waitFor(() => { expect(absent.f.request.mock.calls.some(([request]) => lessonsPath(request))).toBe(true); });
  expect(screen.queryByText("Lessons the agent loaded")).toBeNull();
  absent.close();
