@@ -20,6 +20,7 @@ import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { DECISION_REFUSALS, type DecisionCaller } from "../../decisions/routes.js";
 import { projectDecisionCards, type DecisionItem } from "../../decisions/project.js";
 import { dynamoDecisionStore } from "../../decisions/store.js";
+import { taskOpenPath } from "../../decisions/open-path.js";
 import { designResumeCommitItems, designResumeHandler, type DesignResumePorts } from "../../design-review/wait-resume.js";
 import { secondPersonMembershipCondition } from "../../org/second-person-approval.js";
 import { designAnswersCommitItems, designAnswersHandler, type DesignAnswersPorts } from "../../design-review/answers.js";
@@ -81,12 +82,13 @@ const read = (env: Env) => (objectKey: string, maxBytes: number): Promise<string
 const nowIso = (env: Env): string => new Date(env.deps.now()).toISOString();
 
 async function sessionPathOf(env: Env, task: DeveloperTaskRecord): Promise<string> {
-  const sessions = env.deps.agentSessions;
-  if (sessions === undefined) return `/app/tasks/${task.taskId}`;
+  // A task's own session id is on its record (no read needed); a chain step's session is found through the store. Neither: the project's page (QA6-02: there is no route for a task by its id).
+  if (task.sessionId !== undefined) return taskOpenPath(task);
+  if (env.deps.agentSessions === undefined) return taskOpenPath(task);
   try {
     const session = await new AgentSessionStore({ documentClient: env.deps.documentClient, tableName: env.deps.tableName } as never).getForTask(env.caller.orgId, task);
-    return session === undefined ? `/app/tasks/${task.taskId}` : `/app/sessions/${session.sessionId}`;
-  } catch { return `/app/tasks/${task.taskId}`; }
+    return taskOpenPath({ project: task.project, ...(session === undefined ? {} : { sessionId: session.sessionId }) });
+  } catch { return taskOpenPath(task); }
 }
 
 /** What the reviewing of this task read, shared by every handler. */

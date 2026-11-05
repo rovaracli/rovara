@@ -1087,6 +1087,45 @@ describe("slice C: the design review's routes", () => {
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { decidedBy: "person_skip", skippedBy: { actorId: OMAR.developerId }, status: "not_run" } });
   });
 
+  it("QA6-02: the design card's Open the details goes to a page the app has: the task's session, else its project, never /app/tasks/<id>", async () => {
+    const w = await openBlockerCard();
+    seedPeople(w, [[MAYA, "member", "contributor"]]);
+    const openOf = async () => (await cardOf(w, MAYA, "approve_design"))!.card.actions.find((action) => action.kind === "open")!;
+    // The task's own session, read from its record (no session read needed).
+    const sessionId = (w.task() as { sessionId?: string }).sessionId;
+    expect(sessionId, "positive control: the started task has a session").toMatch(/^ses_[0-9a-z]{20}$/u);
+    expect((await openOf()).href).toBe(`/app/sessions/${sessionId}`);
+    // A task with no session: its project's page.
+    const bare: Record<string, unknown> = { ...w.task() };
+    delete bare["sessionId"];
+    w.db.set(bare);
+    expect((await openOf()).href).toBe("/app/projects/payments");
+    expect(JSON.stringify((await cardOf(w, MAYA, "approve_design"))!.card)).not.toContain(`/app/tasks/${w.taskId}`);
+  });
+
+  it("QA6-03: the task page of a design under review links to the decision card, says nothing about Slack for a web-started task, and its approval is still refused", async () => {
+    const w = await openBlockerCard();
+    seedPeople(w, [[MAYA, "member", "contributor"]]);
+    await w.orgOf(MAYA);
+    const get = async () => w.handler({
+      version: "2.0", routeKey: "ANY /review/{proxy+}", rawPath: `/review/${w.taskId}/task`, rawQueryString: "",
+      headers: { host: new URL(DEV_ISSUER).host, cookie: `__Host-agentx_review_session=${reviewCookie(w, MAYA)}` }, requestContext: { requestId: randomUUID(), http: { method: "GET" } },
+    });
+    const response = await get();
+    expect(response.statusCode).toBe(200);
+    const text = String(response.body);
+    expect(text).toContain("Approve on the decision card");
+    expect(text).toContain("Approve the design on its decision card in Rovara, or request changes here.");
+    // The header (status and next step) does not send a web-started task to Slack, and there is no People panel to be unavailable.
+    expect(text.slice(text.indexOf("<header>"), text.indexOf("</header>"))).not.toContain("Slack");
+    expect(text).not.toContain("People unavailable");
+    // The guard is unchanged: a plain approval is still refused and nothing is decided.
+    const before = w.task().workflow;
+    const refused = await pageDecision(w, MAYA, { requestId: randomUUID(), expectedRevision: before.revision, artifactDigest: designDigestOf(w), decision: "APPROVE", answers: [], includedCommentIds: [] });
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(w.task().workflow).toEqual(before);
+  });
+
   it("Design first turns the review on for a task that has none: the Full path, recorded with who asked, the planner due; the project must run design review", async () => {
     const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, cloud: true } });
     seedDesignReviewCompany(harness.db, TEST_ORG, { project: "payments" });
