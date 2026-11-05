@@ -171,7 +171,7 @@ describe("hideEmailAddresses: time", () => {
   const at = String.fromCharCode(64);
   const LIMIT_MS = 200;
   // Input is not capped on every path (Slack, a pull request body), so the scan must not grow with the square of a run of name characters, labels or blanks.
-  const inputs: Array<[string, string]> = [
+  const inputs: Array<[string, string, number?]> = [
     ["30K letters then an at sign", `${"a".repeat(30_000)}${at}`],
     ["30K dotted labels then an at sign", `${"a.".repeat(15_000)}${at}`],
     ["an at sign then 30K dotted labels", `${at}${"a.".repeat(15_000)}`],
@@ -179,16 +179,25 @@ describe("hideEmailAddresses: time", () => {
     ["30K dotted labels around an at sign", `${"a.".repeat(7_500)}${at}${"b.".repeat(7_500)}`],
     ["many at signs", `${"a".concat(at)}`.repeat(15_000)],
     ["many addresses on one line", `${`a${at}b.co `}`.repeat(4_000)],
-    ["30K blanks then at", `${" ".repeat(30_000)}at example.test`],
+    ["30K blanks then at", `${" ".repeat(30_000)}at example.test`, 50],
+    ["50K blanks then at", `${" ".repeat(50_000)}at`, 50],
+    ["50K tabs then at", `${"\t".repeat(50_000)}at`, 50],
+    ["blanks and zero-width characters alternating, then at", `${" \u200B".repeat(25_000)}at `, 50],
+    ["an at sign then 50K zero-width characters", `${at}${"\u200B".repeat(50_000)}`, 50],
+    ["a letter, an at sign and 50K zero-width characters", `a${at}${"\u200B".repeat(50_000)}`, 50],
+    ["50K zero-width characters, then at", `${"\u200B".repeat(50_000)}at example.test`, 50],
+    ["50K brackets and zero-width characters", "[\u200B".repeat(25_000), 50],
+    ["a blank, a zero-width character and at, repeated", " \u200B at ".repeat(8_000)],
+    ["a name, then blank-zero-width-at repeated, then a domain", `x${" \u200Bat\u200B ".repeat(8_000)}a.b.com`],
     ["many name-and-at pairs", "maya.chen at ".repeat(2_500)],
     ["many brackets", "[at]".repeat(10_000)],
     ["ordinary prose with at", "we looked at the results at the end of the week. ".repeat(600)],
     ["digits and dots after an at sign", `${at}${"1.".repeat(15_000)}`],
   ];
-  it.each(inputs)(`takes under ${String(LIMIT_MS)} ms: %s`, (_why, text) => {
+  it.each(inputs)(`takes under ${String(LIMIT_MS)} ms (or the case's own lower bound): %s`, (_why, text, limit = LIMIT_MS) => {
     const started = performance.now();
     hideEmailAddresses(text);
-    expect(performance.now() - started).toBeLessThan(LIMIT_MS);
+    expect(performance.now() - started).toBeLessThan(limit);
   });
 
   it("still hides every address of a long line of them", () => {

@@ -89,7 +89,8 @@ const WORDED_HEAD = /^ ?[[({]at[\])}]/iu;
  */
 const SPACED_AT = new RegExp(String.raw`^ at (?=${DOMAIN_SOURCE}(?![\p{L}\p{N}/@_-]|\.[\p{L}\p{N}]|:[^\s]))`, "iu");
 const SPACED_HEAD = /^ at /iu;
-const SPACED_AT_GATE = /[ \t][ \t\p{Cf}]*a\p{Cf}*t[ \t\p{Cf}]*[ \t]/iu;
+/** Cheap: the letters "at" (a zero-width character may sit between them) anywhere. Each "a" looks only at the format characters right after it, so the scan is linear. */
+const SPACED_AT_GATE = /a\p{Cf}*t/iu;
 const FIRST_LAST_TAIL = /(?<![\p{L}\p{N}._%+'-])\p{L}[\p{L}-]*\p{L}(?:\.\p{L}[\p{L}-]*\p{L})+$/u;
 /** The ends of file names and code members: `index.ts at example.test` names a file, not a person. */
 const CODE_NAME_ENDINGS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "rb", "go", "rs", "java", "kt", "cs", "cpp", "md", "mdx", "json", "yml", "yaml", "toml", "xml", "html", "css", "scss", "sh", "txt", "log", "lock", "csv", "sql", "env", "cfg", "conf", "ini", "pdf", "png", "jpg", "jpeg", "gif", "svg", "zip", "tgz", "map", "snap", "diff", "patch",
@@ -97,23 +98,32 @@ const CODE_NAME_ENDINGS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "py",
   "io", "net", "ai", "dev", "app", "com", "org", "gov", "edu", "co", "me", "xyz", "cloud", "run", "tech", "page", "site", "ws", "so", "to"]);
 
 const FORMAT_CHARACTER = /^\p{Cf}$/u;
+/** Whether the character is a format character; nothing below U+00AD is, which is checked first because most text is plain. */
+const isFormat = (character: string): boolean => character.charCodeAt(0) >= 0xad && FORMAT_CHARACTER.test(character);
 /**
  * The text from `index` as a person reads it: format characters (zero-width and the like) left out and a run of spaces or tabs as one space, up to `limit` characters. `ends[k]` is where, in the text, the k-th
- * character read stops, so a match found in the reading can be replaced in the text.
+ * character read stops, so a match found in the reading can be replaced in the text. It looks at no more than `scanMax` characters of the text (format characters and blanks count), however few it
+ * reads, so a long run of them is not walked again from each of its characters.
  */
-function visibleAhead(text: string, index: number, limit: number): { visible: string; ends: number[] } {
+function visibleAhead(text: string, index: number, limit: number, scanMax: number): { visible: string; ends: number[] } {
   let visible = "";
   const ends: number[] = [];
   let at = index;
-  while (at < text.length && visible.length < limit) {
+  const stop = Math.min(text.length, index + scanMax);
+  while (at < stop && visible.length < limit) {
+    const code = text.charCodeAt(at);
+    // Plain characters first (nothing below U+00AD is a format character, and none is half of a pair); the rest go through the full test.
+    if (code < 0xad) {
+      at += 1;
+      if (code === 0x20 || code === 0x09) {
+        if (visible.endsWith(" ")) ends[ends.length - 1] = at;
+        else { visible += " "; ends.push(at); }
+      } else { visible += text[at - 1]; ends.push(at); }
+      continue;
+    }
     const character = String.fromCodePoint(text.codePointAt(at)!);
     at += character.length;
     if (FORMAT_CHARACTER.test(character)) continue;
-    if (character === " " || character === "\t") {
-      if (visible.endsWith(" ")) ends[ends.length - 1] = at;
-      else { visible += " "; ends.push(at); }
-      continue;
-    }
     visible += character;
     for (let unit = 0; unit < character.length; unit += 1) ends.push(at);
   }
@@ -149,12 +159,13 @@ export function replaceEmailAddresses(text: string, replacement: string): string
     // An at sign written as a word (`[at]`) is read as "@" the same way; so is a plain " at " that the name before it and the domain after it make an address. They are tried where a run of blanks
     // starts (or where there is none), on the text as a person reads it, so a zero-width character inside the word does not hide it.
     const here = text[index];
-    const runStart = index === 0 || (text[index - 1] !== " " && text[index - 1] !== "\t");
-    if (runStart && (here === " " || here === "\t" || here === "[" || here === "(" || here === "{" || FORMAT_CHARACTER.test(here!))) {
-      const head = visibleAhead(text, index, 6).visible;
+    // A run of blanks and format characters is looked at once, from its first character: later ones would read the same run again.
+    const runStart = index === 0 || (text[index - 1] !== " " && text[index - 1] !== "\t" && !isFormat(text[index - 1]!));
+    if (runStart && (here === " " || here === "\t" || here === "[" || here === "(" || here === "{" || isFormat(here!))) {
+      const head = visibleAhead(text, index, 6, 48).visible;
       const wordedHead = WORDED_HEAD.test(head);
       if (wordedHead || SPACED_HEAD.test(head)) {
-        const view = visibleAhead(text, index, 320);
+        const view = visibleAhead(text, index, 300, 400);
         const worded = wordedHead ? WORDED_AT.exec(view.visible) : null;
         const spaced = worded === null && !wordedHead ? SPACED_AT.exec(view.visible) : null;
         // Only the end of the text read so far matters (a local part is at most 64 characters), so a long text is not searched again at every " at ".
