@@ -14,6 +14,8 @@
 #      items, and on a live item with no PASS. It needs no AWS: nothing here reads a credential.
 #
 # Inputs (environment): TSL_CI_WORKER_IMAGE (a local image tag, built by the workflow), TSL_CI_DRIVER_JS (the driver as JavaScript: `npx tsx scripts/linux-check-test-services-live.ts --js`), RUNNER_TEMP.
+# Optional: TSL_EGRESS_CAPTURE=1 (TS-SEAL egress capture, scripts/ci-egress-capture.sh, sourced below): tcpdump records the whole host while the round runs, a sealed-style container asks 127.0.0.11 for a random token name and a control container
+# asks for another, and the checker's output gets one more line, `TSL L3.egress-capture PASS|FAIL`. The judge then also requires that line to be PASS. The summary is written to $RUNNER_TEMP/egress/summary.txt; the pcap is deleted and never uploaded.
 # Optional: TSL_EXPECT_DOCKER_VERSION (an exact Docker Engine version, for example 25.0.5; TS-SEAL-6). When set, the script refuses to start unless the daemon reports exactly that server version, and the judge fails the job unless the
 # checker's L1.docker-version line passed on that very version. The workflow runs this script twice: on the runner's own Docker, then again after scripts/ci-docker25-engine.sh swapped in the pinned Docker 25.0.5 (what the workers run).
 set -uo pipefail
@@ -28,10 +30,17 @@ readonly ALLOWED_PENDING='^TSL (L1\.internal-drops|L[578]\.[a-z-]+) PENDING '
 
 log() { printf 'ci-test-services-linux: %s\n' "$*" >&2; }
 
-# judge FILE [EXPECTED_DOCKER_VERSION]: the checker's whole output. Exit 0 only when nothing failed, no unexpected item is pending, and every live item passed. With an expected version, the L1.docker-version line must also have
+# The egress capture's functions (they run nothing when sourced).
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/ci-egress-capture.sh"
+
+# judge FILE [EXPECTED_DOCKER_VERSION] [1 = the egress capture ran and must have passed]: the checker's whole output. Exit 0 only when nothing failed, no unexpected item is pending, and every live item passed. With an expected version, the L1.docker-version line must also have
 # passed on exactly that Docker Engine version (the checker prints "Docker Engine <version>" from the daemon it ran against).
 judge() {
-  local file=$1 expected=${2:-} problems=0 id
+  local file=$1 expected=${2:-} egress=${3:-} problems=0 id
+  if [[ "$egress" == 1 ]]; then
+    grep -Eq '^TSL L3\.egress-capture PASS ' "$file" || { log "FAIL: the egress capture has no PASS line (TSL L3.egress-capture)"; problems=1; }
+  fi
   if [[ -n "$expected" ]]; then
     grep -Eq "^TSL L1\\.docker-version PASS [^ ]+ \\| Docker Engine ${expected//./\\.}\$" "$file" || { log "FAIL: the checks did not pass on Docker Engine $expected (no L1.docker-version PASS line for that version)"; problems=1; }
   fi
@@ -102,7 +111,7 @@ main() {
   : "${TSL_CI_WORKER_IMAGE:?set TSL_CI_WORKER_IMAGE}" "${TSL_CI_DRIVER_JS:?set TSL_CI_DRIVER_JS}" "${RUNNER_TEMP:?set RUNNER_TEMP}"
   root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
   [[ -s "$TSL_CI_DRIVER_JS" ]] || { log "the driver program is missing"; return 2; }
-  trap cleanup_labelled EXIT
+  trap 'cleanup_labelled; eg_cleanup' EXIT
   if [[ -n "${TSL_EXPECT_DOCKER_VERSION:-}" ]]; then
     [[ "$TSL_EXPECT_DOCKER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { log "TSL_EXPECT_DOCKER_VERSION must be a full version such as 25.0.5"; return 2; }
     running=$(docker version --format '{{.Server.Version}}' 2>/dev/null) || running=""
@@ -120,6 +129,10 @@ main() {
   # agentx-task, the working sandbox's network (L2): on a worker the worker makes it, a plain bridge, when it starts its first task sandbox (packages/worker/src/task-sandbox.ts ensureNetwork). CI has no worker, so it is
   # made here with the same arguments, after the address pools are set, and stays for the checker's L2.egress-network.
   docker network inspect agentx-task >/dev/null 2>&1 || docker network create --driver bridge agentx-task >/dev/null || { log "could not create the agentx-task network"; return 1; }
+  # The capture starts before the probes and the driver, and stops after the checker: the whole round is inside it.
+  if [[ "${TSL_EGRESS_CAPTURE:-}" == 1 ]]; then
+    eg_prepare "$RUNNER_TEMP/egress" && eg_capture_start && eg_probes "$image_id" || { log "FAIL: the egress capture could not be set up"; return 1; }
+  fi
   live_out="$RUNNER_TEMP/tsl-live.out"
   log "running the live driver in the worker image ($image_id), postgres $digest"
   timeout --foreground --kill-after=30s 2400s docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,nosuid,size=64m \
@@ -132,8 +145,13 @@ main() {
   check_out="$RUNNER_TEMP/tsl-check.out"
   TSL_ENV=ci TSL_LIVE_OUT_FILE="$live_out" bash "$root/scripts/linux-check-test-services.sh" > "$check_out" 2>&1
   log "checker exit status $? (0: all pass; 3: only later-slice items pending; 1: a failure)"
+  if [[ "${TSL_EGRESS_CAPTURE:-}" == 1 ]]; then
+    eg_capture_stop
+    eg_verdict "$EG_DIR/all.txt" | tee "$EG_DIR/summary.txt" >> "$check_out" || true
+    rm -f "$EG_DIR/all.pcap"
+  fi
   cat "$check_out"
-  judge "$check_out" "${TSL_EXPECT_DOCKER_VERSION:-}"
+  judge "$check_out" "${TSL_EXPECT_DOCKER_VERSION:-}" "$([[ "${TSL_EGRESS_CAPTURE:-}" == 1 ]] && echo 1 || echo 0)"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

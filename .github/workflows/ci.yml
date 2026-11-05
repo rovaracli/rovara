@@ -92,7 +92,7 @@ jobs:
             fi
             echo "Changed paths compared with $base."
           fi
-          if grep -Eq '^(packages/worker/|packages/contracts/src/(service-catalog|test-env|test-services)|environments/(base|service-catalog)/|infra/lib/(worker|ec2|network|access)|scripts/(linux-check-test-services|ci-test-services-linux|ci-docker25-engine)|\.github/workflows/ci\.yml)' "$changed"; then
+          if grep -Eq '^(packages/worker/|packages/contracts/src/(service-catalog|test-env|test-services)|environments/(base|service-catalog)/|infra/lib/(worker|ec2|network|access)|scripts/(linux-check-test-services|ci-test-services-linux|ci-docker25-engine|ci-egress-capture)|\.github/workflows/ci\.yml)' "$changed"; then
             echo "test_services=true" >> "$GITHUB_OUTPUT"
           else
             echo "test_services=false" >> "$GITHUB_OUTPUT"
@@ -407,7 +407,10 @@ jobs:
           TSL_CI_WORKER_IMAGE: rovara-worker:ci
           TSL_CI_DRIVER_JS: ${{ runner.temp }}/tsl-live.mjs
           TSL_EXPECT_DOCKER_VERSION: "25.0.5"
-        run: sudo --preserve-env=TSL_CI_WORKER_IMAGE,TSL_CI_DRIVER_JS,TSL_EXPECT_DOCKER_VERSION,RUNNER_TEMP bash scripts/ci-test-services-linux.sh
+          # TS-SEAL egress capture (scripts/ci-egress-capture.sh): tcpdump on every interface while the round runs, a sealed query to 127.0.0.11 for a random name, a control lookup that must be seen, and a TSL L3.egress-capture line the judge requires
+          # to be PASS. Installs tcpdump if the runner lacks it. This job uploads no artifacts, so the text summary is in the step log (and in $RUNNER_TEMP/egress/summary.txt); the pcap is deleted and never uploaded.
+          TSL_EGRESS_CAPTURE: "1"
+        run: sudo --preserve-env=TSL_CI_WORKER_IMAGE,TSL_CI_DRIVER_JS,TSL_EXPECT_DOCKER_VERSION,TSL_EGRESS_CAPTURE,RUNNER_TEMP bash scripts/ci-test-services-linux.sh
 
   # Stdio MCP host redesign (T11, design section 14): the runner image on a real Linux host. It builds environments/mcp-runner/Dockerfile and runs it the way ECS runs a runner task
   # (read-only, every capability dropped, a non-root user, an init process, the bundle volume read-only for the server): the processes' uid, no_new_privs, capabilities and limits

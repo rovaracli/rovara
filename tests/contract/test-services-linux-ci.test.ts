@@ -20,6 +20,8 @@ const engineScript = read("scripts/ci-docker25-engine.sh");
 const engineCode = engineScript.split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
 // The Docker the workers run (TS-SEAL-6). 25.0.5 is the newest 25.0.x that Docker publishes as a static build, and the first release with the CVE-2024-29018 fix (GHSA-mq39-4gv4-mvpx).
 const DOCKER25 = "25.0.5";
+const egressScript = read("scripts/ci-egress-capture.sh");
+const egressCode = egressScript.split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
 
 describe("the linux-runtime job runs the test services Linux checks", () => {
   const job = jobs["linux-runtime"]!;
@@ -74,8 +76,8 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
     expect(swap.run).toBe("sudo --preserve-env=TSL_DOCKER25_WORKER_IMAGE,RUNNER_TEMP bash scripts/ci-docker25-engine.sh");
     expect(swap.env).toEqual({ TSL_DOCKER25_WORKER_IMAGE: "rovara-worker:ci" });
     // The same script, the same worker image and driver (not rebuilt), and the exact version it must run on.
-    expect(check25.run).toBe("sudo --preserve-env=TSL_CI_WORKER_IMAGE,TSL_CI_DRIVER_JS,TSL_EXPECT_DOCKER_VERSION,RUNNER_TEMP bash scripts/ci-test-services-linux.sh");
-    expect(check25.env).toEqual({ TSL_CI_WORKER_IMAGE: "rovara-worker:ci", TSL_CI_DRIVER_JS: "${{ runner.temp }}/tsl-live.mjs", TSL_EXPECT_DOCKER_VERSION: DOCKER25 });
+    expect(check25.run).toBe("sudo --preserve-env=TSL_CI_WORKER_IMAGE,TSL_CI_DRIVER_JS,TSL_EXPECT_DOCKER_VERSION,TSL_EGRESS_CAPTURE,RUNNER_TEMP bash scripts/ci-test-services-linux.sh");
+    expect(check25.env).toEqual({ TSL_CI_WORKER_IMAGE: "rovara-worker:ci", TSL_CI_DRIVER_JS: "${{ runner.temp }}/tsl-live.mjs", TSL_EXPECT_DOCKER_VERSION: DOCKER25, TSL_EGRESS_CAPTURE: "1" });
     for (const step of [swap, check25]) {
       expect(YAML.stringify(step)).not.toMatch(/continue-on-error|\|\|\s*true/u);
       expect(step.uses).toBeUndefined();
@@ -267,11 +269,11 @@ describe("scripts/ci-test-services-linux.sh", () => {
     expect(script).toContain("judge \"$check_out\"");
   });
 
-  const judge = (output: string, expectedVersion = "") => {
+  const judge = (output: string, expectedVersion = "", egress = "") => {
     const dir = mkdtempSync(join(tmpdir(), "tsl-judge-"));
     const file = join(dir, "out");
     writeFileSync(file, output);
-    const ran = spawnSync("bash", ["-c", 'source "$1"; judge "$2" "$3"', "x", new URL("../../scripts/ci-test-services-linux.sh", import.meta.url).pathname, file, expectedVersion], { encoding: "utf8" });
+    const ran = spawnSync("bash", ["-c", 'source "$1"; judge "$2" "$3" "$4"', "x", new URL("../../scripts/ci-test-services-linux.sh", import.meta.url).pathname, file, expectedVersion, egress], { encoding: "utf8" });
     return { status: ran.status, err: ran.stderr };
   };
   const LIVE = ["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"];
@@ -316,6 +318,152 @@ describe("scripts/ci-test-services-linux.sh", () => {
       ["no summary", good().filter((line) => !line.startsWith("TSL SUMMARY"))], ["a summary with failures", [...good().slice(0, -1), "TSL SUMMARY pass=17 fail=1 pending=4"]], ["nothing", []],
     ];
     for (const [label, lines] of cases) expect(judge(`${lines.join("\n")}\n`).status, label).toBe(1);
+  });
+});
+
+describe("TS-SEAL egress capture (scripts/ci-egress-capture.sh) on the Docker 25 leg", () => {
+  const job = jobs["linux-runtime"]!;
+  const check25 = job.steps.find((step) => (step.name ?? "").startsWith("Test services Linux checks on Docker 25.0.5 (rules"))!;
+  const check28 = job.steps.find((step) => (step.name ?? "").startsWith("Test services Linux checks (rules"))!;
+
+  it("is switched on for the Docker 25 check only, kept through sudo, and the job uploads nothing (the pcap is never an artifact)", () => {
+    expect(check25.env?.["TSL_EGRESS_CAPTURE"]).toBe("1");
+    expect(check25.run).toContain("TSL_EGRESS_CAPTURE");
+    expect(check28.env?.["TSL_EGRESS_CAPTURE"]).toBeUndefined();
+    expect(JSON.stringify(job)).not.toMatch(/upload-artifact/u);
+    expect(egressCode).not.toMatch(/upload|curl|aws /u);
+    expect(script).toContain('rm -f "$EG_DIR/all.pcap"');
+    // Changing the capture re-runs the checks.
+    const scope = jobs["scope"]!.steps.find((candidate) => candidate.id === "test_services")!;
+    expect(new RegExp(/grep -Eq '([^']+)'/u.exec(scope.run!)![1]!, "u").test("scripts/ci-egress-capture.sh")).toBe(true);
+  });
+
+  it("starts tcpdump before the probes and the driver, stops it after the checker, and puts the verdict in the checker's output before the judge", () => {
+    const at = (needle: string): number => scriptCode.indexOf(needle);
+    expect(at("eg_prepare")).toBeGreaterThan(at("apply_rules \"$root\" || return 1"));
+    expect(at("eg_capture_start")).toBeLessThan(at("eg_probes"));
+    expect(at("eg_probes")).toBeLessThan(at("tsl-live.mjs ci"));
+    expect(at("linux-check-test-services.sh")).toBeLessThan(at("eg_capture_stop"));
+    expect(at("eg_capture_stop")).toBeLessThan(at('eg_verdict "$EG_DIR/all.txt"'));
+    expect(at('eg_verdict "$EG_DIR/all.txt"')).toBeLessThan(at('judge "$check_out"'));
+    expect(scriptCode).toContain('>> "$check_out"');
+    expect(scriptCode).toContain("{ log \"FAIL: the egress capture could not be set up\"; return 1; }");
+    expect(scriptCode).toContain("trap 'cleanup_labelled; eg_cleanup' EXIT");
+  });
+
+  it("captures every interface with a bounded size, probes with the sealed sandbox's flags and no DNS option, and queries 127.0.0.11 directly", () => {
+    expect(egressCode).toMatch(/tcpdump -i any -nn -e -s "\$EG_SNAPLEN" -U -c "\$EG_CAPTURE_MAX_PACKETS" -w /u);
+    expect(egressCode).toContain("--internal");
+    expect(egressCode).toContain("com.docker.network.bridge.name=$EG_BRIDGE");
+    expect(egressCode).toMatch(/EG_BRIDGE=rvi\$\(/u);
+    for (const flag of ["--cap-drop ALL", "--security-opt no-new-privileges", "--read-only", "--user 1000:1000", "--pids-limit 4096"]) expect(egressCode, flag).toContain(flag);
+    expect(egressCode).not.toMatch(/--dns|--cap-add|--privileged|--network host/u);
+    expect(egressCode).toContain('["127.0.0.11"]');
+    expect(egressCode).toContain('"$EG_TOKEN-sealed.invalid"');
+    expect(egressCode).toContain('"$EG_TOKEN-control.invalid"');
+    expect(egressCode).toContain('["1.1.1.1"]');
+    // The control runs on a network that is NOT internal.
+    const open = egressCode.slice(egressCode.indexOf('docker network create --driver bridge "$EG_OPEN_NETWORK"'));
+    expect(open.split("\n")[0]).not.toContain("--internal");
+    // Both probes' networks are removed again before the driver starts and on exit.
+    expect(egressCode.match(/docker network rm "\$EG_SEALED_NETWORK" "\$EG_OPEN_NETWORK"/gu)!.length).toBeGreaterThanOrEqual(3);
+    // The embedded resolver's per-round neutraliser (the other lane) is not assumed: the check holds with or without it.
+    expect(egressScript).toContain("with or without a per-round DROP of 127.0.0.11");
+  });
+
+  describe("the verdict", () => {
+    const TOKEN = "egress0a1b2c3d4e5f";
+    const BRIDGE = "rvi0a1b2c3d";
+    const line = (iface: string, from: string, to: string, extra = "UDP, length 1"): string =>
+      `12:00:00.000001 ${iface} Out ifindex 2 aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: ${from} > ${to}: ${extra}`;
+    const GOOD = [
+      line("eth0", "10.1.0.4.40000", "1.1.1.1.53", `12345+ A? ${TOKEN}-control.invalid. (50)`),
+      line("eth0", "10.1.0.4.40001", "168.63.129.16.53", `4321+ A? registry.example.com. (40)`),
+      line(BRIDGE, "172.30.254.4.5000", "172.30.254.1.9"),
+      "12:00:00.000009 rvi0a1b2c3d In  ifindex 9 aa:bb:cc:dd:ee:ff ethertype ARP (0x0806), length 28: Request who-has 172.30.254.1 tell 172.30.254.4, length 28",
+      "12:00:00.000010 eth0 Out ifindex 2 aa:bb:cc:dd:ee:ff ethertype IPv6 (0x86dd), length 90: fe80::1 > ff02::2: ICMP6, router solicitation, length 16",
+    ];
+    const verdict = (lines: string[], extra: { probe?: string | null; packets?: string; uplinkIps?: string } = {}): { status: number | null; out: string } => {
+      const dir = mkdtempSync(join(tmpdir(), "eg-verdict-"));
+      writeFileSync(join(dir, "all.txt"), `${lines.join("\n")}\n`);
+      if (extra.probe !== null) writeFileSync(join(dir, "probe-sealed.json"), extra.probe ?? '{"embedded":"ETIMEOUT","gateway":"sent","public":"ENETUNREACH"}');
+      const ran = spawnSync("bash", ["-c", 'source "$1"; EG_DIR=$2 EG_TOKEN=$3 EG_UPLINK=eth0 EG_UPLINK_IPS="$4" EG_BRIDGE=$5 EG_PACKETS=$6; eg_verdict "$2/all.txt"', "x", new URL("../../scripts/ci-egress-capture.sh", import.meta.url).pathname, dir, TOKEN, extra.uplinkIps ?? "10.1.0.4 ", BRIDGE, extra.packets ?? "500"], { encoding: "utf8" });
+      return { status: ran.status, out: ran.stdout.trim() };
+    };
+
+    it("PASS when the control is on the uplink, the sealed token is nowhere, no container address leaves, and the bridge stays inside its /24", () => {
+      const r = verdict(GOOD);
+      expect(r.out, r.out).toMatch(/^TSL L3\.egress-capture PASS no-packet-left-the-host-for-a-non-run-address \| /u);
+      expect(r.status).toBe(0);
+    });
+
+    it("FAIL, never a pass, when the capture is blind: no control on the uplink (or on the wrong interface), nothing on the bridge, no text, no sealed probe result", () => {
+      const noControl = GOOD.filter((entry) => !entry.includes("-control"));
+      const controlElsewhere = GOOD.map((entry) => entry.replace("eth0 Out ifindex 2 aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: 10.1.0.4.40000", "docker0 Out ifindex 3 aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: 10.1.0.4.40000"));
+      const noBridge = GOOD.filter((entry) => !entry.includes(BRIDGE) || entry.includes("ARP"));
+      for (const [label, result, reason] of [
+        ["no control", verdict(noControl), /capture-blind-control-not-seen-on-the-uplink/u],
+        ["control on another interface", verdict(controlElsewhere), /capture-blind-control-not-seen-on-the-uplink/u],
+        ["nothing on the bridge", verdict(noBridge), /capture-blind-nothing-seen-on-the-rvi-bridge/u],
+        ["empty capture", verdict([]), /capture-empty/u],
+        ["no sealed probe result", verdict(GOOD, { probe: null }), /sealed-probe-gave-no-result/u],
+        ["a truncated capture", verdict(GOOD, { packets: "1000000" }), /capture-truncated/u],
+      ] as const) {
+        expect(result.out, label).toMatch(/^TSL L3\.egress-capture FAIL /u);
+        expect(result.out, label).toMatch(reason);
+        expect(result.status, label).toBe(1);
+      }
+    });
+
+    it("FAIL when the sealed token is seen on any interface, with or without a control, in any packet", () => {
+      for (const where of ["eth0", BRIDGE, "lo", "docker0"]) {
+        const r = verdict([...GOOD, line(where, "172.30.254.4.53000", "127.0.0.11.53", `99+ A? ${TOKEN}-sealed.invalid. (50)`)]);
+        expect(r.out, where).toMatch(/FAIL .*sealed-token-seen-1-times/u);
+      }
+      expect(verdict([...GOOD, line("eth0", "10.1.0.4.1", "10.1.0.2.53", `99+ A? ${TOKEN}-sealed.invalid. (50)`)]).status).toBe(1);
+    });
+
+    it("FAIL for a container address (172.16/12, 192.168/16) as the source on the uplink, except the uplink's own address", () => {
+      for (const source of ["172.17.0.2.5000", "172.30.5.4.1", "192.168.5.4.1"]) {
+        expect(verdict([...GOOD, line("eth0", source, "8.8.8.8.53")]).out, source).toMatch(/FAIL .*container-address-as-source-on-the-uplink-1-packets/u);
+      }
+      // A runner whose own address is in 172.16/12 is not a leak; the same address from a container is not told apart, which is why the uplink's addresses are listed.
+      expect(verdict([...GOOD, line("eth0", "172.31.9.9.443", "8.8.8.8.443")], { uplinkIps: "10.1.0.4 172.31.9.9 " }).status).toBe(0);
+      // The same source on another interface (the docker bridge itself) is not the uplink.
+      expect(verdict([...GOOD, line("docker0", "172.17.0.2.5000", "172.17.0.1.53")]).status).toBe(0);
+    });
+
+    it("FAIL for an IPv4 packet on the rvi bridge to a destination outside the run's /24 (8.8.8.8, the metadata address, a multicast address, another run's /24); ARP and IPv6 are ignored", () => {
+      for (const destination of ["8.8.8.8.53", "169.254.169.254.80", "224.0.0.251.5353", "172.30.253.4.80", "255.255.255.255.67"]) {
+        expect(verdict([...GOOD, line(BRIDGE, "172.30.254.4.5000", destination)]).out, destination).toMatch(/FAIL .*rvi-bridge-packets-to-outside-the-run-subnet-1/u);
+      }
+      expect(verdict([...GOOD, line(BRIDGE, "172.30.254.4.5000", "172.30.254.1.9"), "12:00:00.1 rvi0a1b2c3d In  ifindex 9 aa:bb:cc:dd:ee:ff ethertype IPv6 (0x86dd), length 90: fe80::1 > ff02::1: ICMP6"]).status).toBe(0);
+    });
+
+    it("keeps one fixed line shape (no packet text in it) so the job's judge can read it", () => {
+      const r = verdict([...GOOD, line("eth0", "172.17.0.2.5000", "8.8.8.8.53", "secret-looking payload")]);
+      expect(r.out.split("\n")).toHaveLength(1);
+      expect(r.out).not.toContain("secret-looking");
+    });
+  });
+
+  it("the job's judge requires the egress line to be PASS when the capture was on, and ignores it when it was off", () => {
+    const base = (): string[] => [
+      "TSL L1.walls PASS walls | ok", ...["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"].map((id) => `TSL ${id} PASS name | saw`),
+      "TSL L1.internal-drops PENDING x | later", "TSL L5.live PENDING x | later", "TSL L7.live PENDING x | later", "TSL L8.live PENDING x | later", "TSL SUMMARY pass=17 fail=0 pending=4",
+    ];
+    const run = (lines: string[], egress: string): number | null => {
+      const dir = mkdtempSync(join(tmpdir(), "tsl-judge-eg-"));
+      const file = join(dir, "out");
+      writeFileSync(file, `${lines.join("\n")}\n`);
+      return spawnSync("bash", ["-c", 'source "$1"; judge "$2" "" "$3"', "x", new URL("../../scripts/ci-test-services-linux.sh", import.meta.url).pathname, file, egress], { encoding: "utf8" }).status;
+    };
+    const pass = "TSL L3.egress-capture PASS no-packet-left-the-host-for-a-non-run-address | control seen";
+    expect(run([...base(), pass], "1")).toBe(0);
+    expect(run(base(), "1")).toBe(1);
+    expect(run([...base(), "TSL L3.egress-capture FAIL no-packet-left-the-host-for-a-non-run-address | capture-blind-control-not-seen-on-the-uplink"], "1")).toBe(1);
+    expect(run([...base(), "TSL L3.egress-capture PASS-ish"], "1")).toBe(1);
+    expect(run(base(), "0")).toBe(0);
   });
 });
 
