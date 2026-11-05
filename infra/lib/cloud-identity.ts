@@ -6,6 +6,7 @@
 import { Aws, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, SecretValue, Stack, aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import { Construct } from "constructs";
+import type { CustomDomain } from "./custom-domain.js";
 
 /** Where the sign-in server finishes a cloud sign-in: `${DEVELOPER_TOKEN_ISSUER}/callback/cloud` (developer/server.ts). */
 export const CLOUD_CALLBACK_PATH = "/callback/cloud";
@@ -25,6 +26,8 @@ export interface CloudIdentityProps {
   env: string;
   /** The sign-in server's issuer (`<api>/v1/auth`), which the callback hangs off. */
   signInIssuer: string;
+  /** The optional custom domain: the sign-in callback is also registered on it, and the GitHub callback shown is its. The API's own address stays registered, so both keep working. */
+  customDomain?: CustomDomain;
 }
 
 export class CloudIdentity extends Construct {
@@ -177,6 +180,11 @@ export class CloudIdentity extends Construct {
     // The client lists Google only when it exists. The Ref returns the provider's name and orders the client after it,
     // but a Ref inside the true branch is evaluated only then; an unconditional DependsOn on the conditional provider
     // would fail the email-only deploy, so there is none.
+    // 0.5.7: with a custom domain the callback is registered on both addresses (the API's own keeps working, and a rollback needs no change here).
+    if (props.customDomain !== undefined) {
+      const custom = props.customDomain;
+      (client.node.defaultChild as cognito.CfnUserPoolClient).addPropertyOverride("CallbackURLs", Fn.conditionIf(custom.enabled.logicalId, [Fn.join("", ["https://", custom.name.valueAsString, "/v1/auth", CLOUD_CALLBACK_PATH]), `${props.signInIssuer}${CLOUD_CALLBACK_PATH}`], [`${props.signInIssuer}${CLOUD_CALLBACK_PATH}`]));
+    }
     (client.node.defaultChild as cognito.CfnUserPoolClient).addPropertyOverride("SupportedIdentityProviders", Fn.conditionIf(googleEnabled.logicalId, ["COGNITO", cfnGoogle.ref], ["COGNITO"]));
 
     // Email codes are offered by managed login only, not the classic hosted UI.
@@ -208,7 +216,7 @@ export class CloudIdentity extends Construct {
     new CfnOutput(stack, "CloudIdentityIssuer", { value: this.issuer });
     new CfnOutput(stack, "CloudIdentityClientId", { value: this.clientId });
     // Register this as the GitHub OAuth app's authorization callback URL (the sign-in server finishes the flow here).
-    new CfnOutput(stack, "CloudIdentityGitHubCallbackUrl", { value: `${props.signInIssuer}${GITHUB_CALLBACK_PATH}`, description: "Authorization callback URL to register with the GitHub OAuth app" });
+    new CfnOutput(stack, "CloudIdentityGitHubCallbackUrl", { value: props.customDomain === undefined ? `${props.signInIssuer}${GITHUB_CALLBACK_PATH}` : props.customDomain.urlFor(`/v1/auth${GITHUB_CALLBACK_PATH}`), description: "Authorization callback URL to register with the GitHub OAuth app" });
     // Register this with the Google OAuth app as an authorized redirect URI.
     new CfnOutput(stack, "CloudIdentityGoogleRedirectUri", { value: `${domain.baseUrl()}/oauth2/idpresponse`, description: "Authorized redirect URI to register with the Google OAuth app" });
   }

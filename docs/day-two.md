@@ -321,6 +321,90 @@ Developers need no AWS credentials: they run `npx @preplabsai/rovara-code login 
 To hand tasks to Rovara from Claude Code, Codex or Cursor, and to share them to Slack, they follow
 [docs/mcp-install.md](mcp-install.md).
 
+## A custom domain for the control plane (Rovara Cloud)
+
+Optional, for a Rovara Cloud install deployed with the cdk engine. It puts the control plane (the web app at `/app`, sign-in at `/v1/auth`) at a name you own, for example `https://staging.rovara.dev`, in front of the same HTTP API. Off by default: with nothing set, no resource is added and no address changes.
+
+What it adds, and only this: a regional certificate for the name (validated by a DNS record that CloudFormation writes in your hosted zone), an API Gateway domain name with one mapping to the API's `$default` stage, and alias `A` and `AAAA` records for the name. It never reads or changes any other record in the zone, so a zone that also serves a website at its apex (rovara.dev serves GitHub Pages there) is not touched. The hosted zone must be in the same AWS account as the install.
+
+### Set it
+
+```sh
+agentx --env <env> signin cloud --custom-domain staging.rovara.dev --hosted-zone-id Z0123456789ABCDEFGHIJ
+agentx --env <env> upgrade --region <region>
+```
+
+The first command only records the two values, in a record of their own (`/agentx/<env>/custom-domain`), not in the environment settings or the install answers, so a 0.5.6 `agentx` can still read the environment if you ever roll back (`--no-custom-domain` deletes the record). Nothing in AWS changes until the upgrade. The upgrade applies them, access stack first: the deploy role (the CloudFormation service role in the access stack) gains grants for this name and this one zone, and nothing else, and then the control plane gets the certificate, domain name, mapping and records. Certificate validation usually takes a few minutes; the control plane stack waits for it. The upgrade then records the new address as the environment's `controlPlaneUrl` (machine callers keep using the API's own address, which the stack still reports as `ApiEndpoint`).
+
+The deploy role's new grants exist only while a name and a zone are set (statement ids `CustomDomain*` in the access stack, which takes the same two parameters):
+- `acm:RequestCertificate` on `*`, only in the install's region, only for exactly that domain name (a request that names no domain is refused), and only when the request tags the certificate `agentx:env=<env>`;
+- `acm:AddTagsToCertificate` only when the request sets that tag and the certificate already has it; `acm:DescribeCertificate`, `DeleteCertificate`, `RemoveTagsFromCertificate` and `ListTagsForCertificate` only on certificates that carry that tag. So the role can touch no other certificate in the account: it cannot tag a certificate that is not its own and then delete it. (CloudFormation tags the certificate when it creates it. If stack-level tags are ever added to the control-plane stack, they must include `agentx:env=<env>`, or the next update of the certificate is refused.)
+- `route53:ChangeResourceRecordSets` on that one hosted zone, only for the names `<name>` and `_<hash>.<name>` (the DNS validation record) and only record types A, AAAA and CNAME, so the zone's apex and every other record are out of reach;
+- `route53:GetHostedZone` and `ListResourceRecordSets` on that zone, `route53:ListHostedZones` (it takes no resource), and `route53:GetChange` on `change/*` (a change id cannot be known in advance).
+
+API Gateway domain names and mappings are already covered by the role's `apigateway:*`. The condition keys and the tag conditions have not been run against AWS yet: if the first upgrade is refused, the error names the action, and the fix is to loosen that one statement and report it.
+
+The upgrade order protects the resources: adding a domain deploys the access stack first (the grants exist before anything needs them); removing it deploys the control plane first (it deletes the certificate, the records and the validation record while the grants are still there) and the access stack last. Changing to another name in one step is refused: remove the old one, upgrade, then add the new one. Removing the domain together with a version change is refused too (the new release's templates would run under the old release's grants): remove it with an upgrade to the version the environment already runs, then upgrade to the new release.
+
+### Register the new address with the sign-in apps (by hand, before people use it)
+
+The sign-in redirect addresses are built from the name, so each provider that lists them must list the new one. The old addresses can stay listed, so sign-in through the API's own address keeps working while you move.
+
+1. **Slack, "Sign in with Slack"**: at api.slack.com/apps, open the install's Slack app, OAuth & Permissions, Redirect URLs, add `https://<name>/v1/auth/callback/slack`, save. `agentx --env <env> signin check` then tests it ("Slack redirect URL").
+2. **GitHub sign-in (OAuth app)**: GitHub allows one callback URL per OAuth app. Set it to the stack output `CloudIdentityGitHubCallbackUrl` (`https://<name>/v1/auth/callback/github`). From then on, signing in with GitHub through the API's own address is refused by GitHub; the other methods are unaffected. `agentx signin cloud` prints this URL when GitHub sign-in is on.
+3. **Google**: nothing. Google redirects to the Cognito hosted domain, which does not move. The Cognito app client's callback list is updated by the upgrade and keeps both addresses.
+4. Company sign-in with OpenID Connect or SAML, if the install uses it: add `https://<name>/v1/auth/callback/oidc` (OpenID Connect), or for SAML the assertion consumer URL `https://<name>/v1/auth/callback/saml` and the metadata URL `https://<name>/v1/auth/saml/metadata`, at the identity provider.
+
+Not moved on purpose: the Slack app's event and interactivity URLs, the GitHub App's webhook URL, the event-hook URLs (`/v1/hooks/...`, which vendors register once and which must still resolve if the domain is removed), and every address the workers and services call. These are machine calls that keep using the API's own address (workers and services reach it through the VPC endpoint and the egress allow-list, which a public name would not pass). Invite links still point at `ROVARA_WEB_ORIGIN` (default `https://rovara.dev/join`), which forwards by `web/rovara-dev-join/cell.json`; changing `cellUrl` there is a separate change to the public site, made after the checks below pass.
+
+### Check it after the upgrade
+
+1. `agentx --env <env> env use` (refreshes this computer's record), then `agentx --env <env> signin check`: the control plane offers exactly the enabled methods under the new issuer, and Slack lists the redirect URL.
+2. `curl -s https://<name>/v1/auth/.well-known/agentx-configuration`: `issuer` and the endpoints are on `https://<name>`. The same call on the API's own address answers with its own address as the issuer.
+3. Open `https://<name>/app` in a private window and sign in with each method that is on. Open a task link from Slack: it is on the new name.
+4. `agentx login https://<name>` works, and so does `agentx login <the API's own address>` (the sign-in then runs as that address).
+5. A page opened on the API's own address redirects to the same path on the new name: the web app (`/app`, `/s/...`), a task review page (`/review/...`), an approval confirmation (`/v1/app/approve/...`), the audit view, and the GitHub App's install callback (`/v1/github/install/callback`, so a connect started from an old link finishes on the domain). Only GET moves; nothing else on the API's own address is redirected. Slack event delivery and GitHub webhook deliveries still arrive (no change to check them: their addresses did not move).
+6. Browser sessions are per host (`__Host-` cookies): everyone signs in once on the new name. While a domain is set, the API's own address stays an accepted issuer: a person who signs in or logs in through it gets tokens it signs as itself, and the broker accepts them as long as the domain is set (a token lasts one hour, but new ones keep being issued at that address). Taking the domain off ends that: tokens signed for the domain stop being accepted at the next deploy. A refresh token is exchanged at whichever address the command line signed in to.
+
+`agentx --env <env> doctor` reports the GitHub webhook against the API's own address, as before.
+
+### Staging proof runbook (enable, verify, remove, verify, re-enable)
+
+Run once on staging after 0.5.7 is installed there, with a throwaway name if the real one should not be touched (a name under a zone you own, for example `cdtest.rovara.dev`). Each AWS read below is read-only; use the guarded staging wrapper for them (region us-west-2, account 944937319445). `<zone>` is the hosted zone id, `<name>` the domain, `<stack>` is `agentx-staging-control-plane`.
+
+1. **Enable.**
+   `agentx --env staging signin cloud --custom-domain <name> --hosted-zone-id <zone> --yes`, then `agentx --env staging upgrade --region us-west-2 --to 0.5.7` (the version staging already runs). Expect the access stack first, then the control plane, which waits a few minutes for the certificate.
+2. **Verify it is there.**
+   - `aws cloudformation describe-stacks --stack-name <stack> --query "Stacks[0].Outputs[?OutputKey=='PublicUrl'].OutputValue"` prints `https://<name>`.
+   - `aws acm list-certificates --region us-west-2` lists `<name>` as ISSUED; `aws acm list-tags-for-certificate --certificate-arn <arn>` shows `agentx:env=staging`.
+   - `aws route53 list-resource-record-sets --hosted-zone-id <zone> --query "ResourceRecordSets[?contains(Name, '<name>')]"` shows the A and AAAA aliases and the `_<hash>.<name>.` CNAME, and the zone's other records are as before.
+   - `aws apigatewayv2 get-domain-names --region us-west-2` lists `<name>`; `aws apigatewayv2 get-api-mappings --domain-name <name> --region us-west-2` shows one mapping to the API's `$default` stage.
+   - `curl -s https://<name>/v1/auth/.well-known/agentx-configuration` answers with `issuer` on `https://<name>`; the same call on the API's own address answers with its own issuer. Then the checks in "Check it after the upgrade".
+3. **Remove.**
+   `agentx --env staging signin cloud --no-custom-domain --yes`, then `agentx --env staging upgrade --region us-west-2 --to 0.5.7` again, at the same version. Expect the control plane first, then the access stack.
+4. **Verify nothing is left.** Each of these returns nothing for `<name>`:
+   - `aws acm list-certificates --region us-west-2 --query "CertificateSummaryList[?DomainName=='<name>']"`
+   - `aws route53 list-resource-record-sets --hosted-zone-id <zone> --query "ResourceRecordSets[?contains(Name, '<name>')]"` (no alias A or AAAA record and no `_<hash>.<name>.` validation CNAME)
+   - `aws apigatewayv2 get-domain-names --region us-west-2 --query "Items[?DomainName=='<name>']"`
+   - `aws iam get-role-policy --role-name agentx-staging-cloudformation --policy-name deploy --query "PolicyDocument.Statement[?starts_with(Sid, 'CustomDomain')]"` is empty.
+   - `PublicUrl` is the API's own address again, and `aws cloudformation describe-stack-events --stack-name <stack>` shows no `DELETE_FAILED`.
+   If a certificate or a record is left, the delete was refused: look for `AccessDenied` in the stack events (below), and delete the leftover by hand only after reading what it is (a leftover alias record makes the next enable fail with "record already exists").
+5. **Re-enable.** Repeat step 1 and the first three checks of step 2. It must succeed with no manual clean-up.
+
+**If `AccessDenied` names an action.** Read it from `aws cloudformation describe-stack-events --stack-name <stack-or-access-stack> --query "StackEvents[?contains(ResourceStatusReason, 'AccessDenied') || contains(ResourceStatusReason, 'not authorized')].[LogicalResourceId,ResourceStatusReason]"`. It names the action and the resource. Add exactly that action to the matching `CustomDomain*` statement in `packages/contracts/src/access-policies.ts` (keeping its resource and conditions), run `agentx upgrade` (the access stack deploys first), and retry. Two cases are expected to need a decision, not just an action: (a) the first enable is refused on `acm:RequestCertificate` or `acm:AddTagsToCertificate` because the certificate handler does not tag as assumed; (b) the remove leaves the certificate because the handler calls `RemoveTagsFromCertificate` before `DeleteCertificate`. Report either one rather than widening the tag condition. A failed enable rolls the control plane back; check step 4 before trying again.
+
+### Roll back
+
+The API's own address never stops working, so there is no outage to undo. To take the name off:
+
+1. `agentx --env <env> signin cloud --no-custom-domain`, then `agentx --env <env> upgrade --region <region>`. The upgrade sends empty values for the two parameters, deploys the control plane first (it deletes the certificate, the domain name, the mapping, the alias records and the validation record, using the grants still in place) and the access stack last (it drops the grants). The zone's other records are not touched. The recorded address returns to the API's own.
+2. Put the Slack and GitHub OAuth redirect addresses back to the API's own (the Slack list may keep both; GitHub holds one). People signed in on the name sign in again; tokens signed for the name stop being accepted at the next deploy.
+3. To use a different name, do step 1, then set the new one (`signin cloud --custom-domain ... --hosted-zone-id ...` and `upgrade`). Changing in one step is refused.
+4. Remove the domain at the version the environment runs now, not in the same upgrade as a new release.
+5. Do all of this before downgrading to a release older than 0.5.7: its templates do not declare the two parameters, and CloudFormation refuses a parameter its template lacks. An emergency 0.5.6 `agentx` still reads the environment (the domain is not in the settings, and `controlPlaneUrl` is just a URL), but its deploy would send no domain parameters and fail on the 0.5.7 stacks, so remove the domain first.
+
+An upgrade with operator credentials is not possible on a Rovara Cloud install (it is deployed with the cdk engine, which the operator role cannot use), so the access stack is never skipped on these upgrades.
+
 ## GitHub connection requests (Rovara Cloud)
 
 Only the Rovara operator can redeliver an `installation.created` webhook, from the GitHub App's settings (Advanced, Recent Deliveries), and only within about 3 days of the delivery: use it when an approved "ask my GitHub admin" request was not bound because GitHub or the control plane was down (the request stays waiting and a redelivery retries it).

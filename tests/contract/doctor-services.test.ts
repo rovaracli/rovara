@@ -1,4 +1,4 @@
-import { AgentXError } from "@agentx/contracts";
+import { AgentXError, environmentStackName } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { githubChecks, githubWebhookChecks } from "../../packages/cli/src/doctor/github.js";
 import { GITHUB_WEBHOOK_EVENTS, githubAppSecretName, githubWebhookUrl } from "../../packages/cli/src/init/github-app.js";
@@ -6,7 +6,7 @@ import { secretChecks } from "../../packages/cli/src/doctor/secrets.js";
 import { slackChecks, slackSigningSecret } from "../../packages/cli/src/doctor/slack.js";
 import { probeSlackUrls, SlackSignatureRefusedError } from "../../packages/cli/src/init/slack-app.js";
 import { SlackRateLimitedError } from "../../packages/cli/src/setup/channel-add.js";
-import { doctorContext, doctorServices, SECRETS, SETTINGS, SIGNING_KEY, WEBHOOK_SECRET } from "../support/doctor-fakes.js";
+import { doctorContext, doctorServices, healthyStacks, SECRETS, SETTINGS, SIGNING_KEY, WEBHOOK_SECRET } from "../support/doctor-fakes.js";
 import { fakeGitHubApi, fakeSlackApi, memoryInitSecrets, T0, TEST_BOT_TOKEN, TEST_PRIVATE_KEY, TEST_SIGNING_SECRET } from "../support/init-fakes.js";
 import { fakeSlackChannels } from "../support/setup-fakes.js";
 
@@ -293,6 +293,16 @@ describe("doctor: GitHub webhook", () => {
       ["GitHub webhook deliveries", "ok", "GitHub delivered an event to AgentX in the last 3 days"],
     ]);
     expect(text(checks)).not.toContain(WEBHOOK_SECRET);
+  });
+
+  it("with a custom domain as the control plane's address, expects the webhook on the API's own address, which the stack reports (0.5.7)", async () => {
+    const own = "https://cp.example.test/v1/github/webhooks";
+    const stackMap = healthyStacks();
+    const name = environmentStackName("staging", "control-plane");
+    stackMap[name] = { ...stackMap[name]!, outputs: { ...stackMap[name]!.outputs, GithubWebhookUrl: own } };
+    const context = doctorContext({ settings: { ...SETTINGS, controlPlaneUrl: "https://staging.rovara.dev" }, services: doctorServices({ stackMap, github: fakeGitHubApi({ installationId: 456, hookUrl: own }) }) });
+    const first = (await githubWebhookChecks(context))[0]!;
+    expect([first.status, first.detail]).toEqual(["ok", `the App sends events to ${own}`]);
   });
 
   describe("recent deliveries", () => {

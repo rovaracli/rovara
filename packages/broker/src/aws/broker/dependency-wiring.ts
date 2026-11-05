@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): builds the dependency objects handed to the agent, chain, admin, plan and developer-task routes.
 
+import { machineOrigin } from "../../developer/legacy-host-redirect.js";
 import { releaseServiceCatalogSource } from "../../test-env/shipped-catalog.js";
 import { askDependenciesFor } from "./ask-service.js";
 import { liveSteerFromEnvironment } from "../../agent-sessions/live-steer.js";
@@ -125,7 +126,7 @@ export function agentRouteDependencies(dependencies: AwsBrokerDependencies, task
       const store = new HookStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now });
       const memory = hookMemoryOf(dependencies);
       return {
-        eventHooks: { store, secrets: agents.eventHooks.secrets, providers: agents.eventHooks.providers ?? hookProviders(), origin: new URL(developer.issuer).origin, secretRotated: (hookId: string) => memory.remember(hookId, undefined), ...optional("awsAccounts", connectedAwsAccountsOf(dependencies)) },
+        eventHooks: { store, secrets: agents.eventHooks.secrets, providers: agents.eventHooks.providers ?? hookProviders(), origin: machineOrigin(developer), secretRotated: (hookId: string) => memory.remember(hookId, undefined), ...optional("awsAccounts", connectedAwsAccountsOf(dependencies)) },
         hooks: agents.hooks ?? store,
       };
     })()),

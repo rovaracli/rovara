@@ -102,7 +102,9 @@ export async function githubWebhookChecks(context: DoctorContext): Promise<Docto
   const checks: DoctorCheck[] = [];
   let settingsPage: string | undefined;
   let hookUrl: string | undefined;
-  const expectedUrl = githubWebhookUrl(settings.controlPlaneUrl);
+  // 0.5.7: the webhook is a machine address and stays on the API's own address, which the control plane stack reports as GithubWebhookUrl; settings.controlPlaneUrl may be a custom domain.
+  const controlPlane = await services.stacks.describe(settings.stacks["control-plane"]).catch(() => undefined);
+  const expectedUrl = controlPlane?.outputs.GithubWebhookUrl ?? githubWebhookUrl(settings.controlPlaneUrl);
   const jwt = githubAppJwt({ appId: app.appId, privateKey: app.privateKey, nowSeconds: Math.floor(services.now() / 1000) });
   try {
     const hook = await services.github.getHookConfig(jwt);

@@ -7,6 +7,7 @@ import { grantEditionRecordRead } from "./edition-env.js";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import { packagedFunction } from "./control-plane.js";
 import { CloudIdentity } from "./cloud-identity.js";
+import type { CustomDomain } from "./custom-domain.js";
 
 const SIGN_IN_ROUTE_KEY = "ANY /v1/auth/{proxy+}";
 const DEV_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
@@ -131,6 +132,8 @@ export interface DeveloperSignInProps {
   state: dynamodb.Table;
   /** The hosted Rovara cloud (agentxCloud context): the self-serve Cognito sign-in is created here and wired to the sign-in function and the broker. */
   cloud?: boolean;
+  /** The optional custom domain (cloud installs): its name reaches the sign-in function and the broker, which then treat it as the canonical address and the API's own as the previous one. */
+  customDomain?: CustomDomain;
 }
 
 export class DeveloperSignIn extends Construct {
@@ -182,7 +185,7 @@ export class DeveloperSignIn extends Construct {
     });
 
     // The cloud sign-in's Cognito pool calls back to this server, so the construct needs its issuer.
-    const cloud = props.cloud === true ? new CloudIdentity(this, "CloudIdentity", { env: props.env, signInIssuer: issuer }) : undefined;
+    const cloud = props.cloud === true ? new CloudIdentity(this, "CloudIdentity", { env: props.env, signInIssuer: issuer, ...(props.customDomain === undefined ? {} : { customDomain: props.customDomain }) }) : undefined;
     this.cloud = cloud;
 
     const oidcSecretName = `agentx/${props.env}/developer-oidc`;
@@ -204,6 +207,9 @@ export class DeveloperSignIn extends Construct {
       DEVELOPER_SIGNIN_SLACK_SINCE: p.slackSince.valueAsString,
       DEVELOPER_OIDC_SINCE: p.oidcSince.valueAsString,
       MCP_CONFIRM_ELICITATION: p.mcpConfirmElicitation.valueAsString,
+      // 0.5.7: the custom domain's name ("" when none). DEVELOPER_TOKEN_ISSUER above stays the API's own address; with a name the function
+      // serves that address as its own issuer too, and the custom name as the canonical one (developer-identity.ts).
+      ...(props.customDomain === undefined ? {} : { DEVELOPER_CUSTOM_DOMAIN: props.customDomain.name.valueAsString }),
       ...(cloud === undefined ? {} : {
         DEVELOPER_CLOUD_ISSUER: cloud.issuer,
         DEVELOPER_CLOUD_CLIENT_ID: cloud.clientId,
@@ -433,6 +439,8 @@ export class DeveloperSignIn extends Construct {
     const broker = props.broker;
     // The sign-in issuer is the API's address plus /v1/auth: the broker is given the API's id (in its names) and builds the URL.
     BrokerNames.of(broker).add("signInApi", props.api.ref);
+    // 0.5.7: the custom domain's name ("" when none), a packed setting; the broker then takes it as the canonical address and the API's own as the previous issuer.
+    if (props.customDomain !== undefined) BrokerSettings.of(broker).add("customDomain", props.customDomain.name.valueAsString);
     broker.addEnvironment("AGENTX_ENV", props.env);
     // The table and the function by name, in the broker's names (BrokerNames; its variables are held to Lambda's 4 KB). Lambda's Invoke takes a name.
     const brokerNames = BrokerNames.of(broker);
@@ -510,6 +518,6 @@ export class DeveloperSignIn extends Construct {
     }));
 
     // The issuer the tokens carry and the broker checks, for operators and scripts to read.
-    new CfnOutput(stack, "DeveloperSignInIssuer", { value: issuer });
+    new CfnOutput(stack, "DeveloperSignInIssuer", { value: props.customDomain === undefined ? issuer : props.customDomain.issuer() });
   }
 }

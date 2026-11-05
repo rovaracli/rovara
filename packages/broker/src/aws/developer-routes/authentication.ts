@@ -22,7 +22,7 @@ const SIGN_IN_AGAIN = "your AgentX sign-in has ended; run agentx login <url> aga
 export interface DeveloperTokenClaims { developerId: string; sessionId: string; amr: DeveloperSignInMethod; orgId: OrgId; orgRole: OrgRole }
 
 export function developerClaims(claims: Record<string, unknown> | undefined, config: DeveloperApiConfiguration): DeveloperTokenClaims {
-  if (claims === undefined || claims.iss !== config.issuer || claims.aud !== DEVELOPER_TOKEN_AUDIENCE || claims.env !== config.env) {
+  if (claims === undefined || (claims.iss !== config.issuer && (config.previousIssuer === undefined || claims.iss !== config.previousIssuer)) || claims.aud !== DEVELOPER_TOKEN_AUDIENCE || claims.env !== config.env) {
     throw agentXError("AUTH_REQUIRED", "this route needs an AgentX developer sign-in; run agentx login <url>");
   }
   if (typeof claims.sub !== "string" || !/^[a-f0-9]{64}$/.test(claims.sub) || typeof claims.sid !== "string" || claims.sid === "") {

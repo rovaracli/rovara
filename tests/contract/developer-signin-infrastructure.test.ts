@@ -800,7 +800,11 @@ describe("the decide flow's grants and pool (Plan 3, Task 21a-presence, cloud in
     expect(pool.Properties.Policies).toMatchObject({ SignInPolicy: { AllowedFirstAuthFactors: ["PASSWORD", "EMAIL_OTP"] } });
     // The callback is the sign-in server's existing `${issuer}/callback/cloud`; the decide flow adds none.
     const callbacks = JSON.stringify(client.Properties.CallbackURLs);
-    expect((client.Properties.CallbackURLs as unknown[])).toHaveLength(1);
+    // 0.5.7: one URL without the custom domain, that one and the domain's with it (tests/contract/custom-domain-infrastructure.test.ts).
+    const branches = (client.Properties.CallbackURLs as { "Fn::If": [string, unknown[], unknown[]] })["Fn::If"];
+    expect(branches[0]).toBe("CustomDomainEnabled");
+    expect(branches[2]).toHaveLength(1);
+    expect(branches[1]).toHaveLength(2);
     expect(callbacks).toContain("/v1/auth/callback/cloud");
     expect(client.Properties.SupportedIdentityProviders).toBeDefined();
   });

@@ -86,7 +86,9 @@ import { issueRealtimeToken } from "../realtime/token.js";
 
 /** `since` (epoch seconds, FR-045): when the method was last turned on. A session started before it
  * was ended by the disable in between, so it never comes back when the method is on again. */
-export interface DeveloperIdentityConfig { env: string; issuer: string; slack: { enabled: boolean; teamId?: string; since?: number }; oidc?: { displayName: string; since?: number }; cloud?: { displayName: string };
+export interface DeveloperIdentityConfig { env: string; issuer: string;
+  /** 0.5.7: with a custom domain `issuer` is its address and this is the API's own, which still answers: requests that arrive on that host are served as that issuer (its redirect URIs, its tokens' `iss`, its cookies' host). */
+  legacyIssuer?: string; slack: { enabled: boolean; teamId?: string; since?: number }; oidc?: { displayName: string; since?: number }; cloud?: { displayName: string };
   /** Sign up and sign in with GitHub; set only on a cloud install with a GitHub OAuth app (DEVELOPER_GITHUB_*). */
   github?: { displayName: string }; confirmElicitation?: boolean }
 export interface DeveloperIdentityDependencies {
@@ -239,7 +241,25 @@ const expired = () => page(400, "This sign-in link has expired", ["Run agentx lo
 const INVALID_CODE = ["invalid_grant", "the sign-in code is invalid, used or expired; run agentx login again"] as const;
 const SIGN_IN_ENDED = ["invalid_grant", "your AgentX sign-in has ended; run agentx login again"] as const;
 
+/** The sign-in server. With a `legacyIssuer` it is two servers over the same stores, told apart by the host a request came to. */
 export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependencies) {
+  const primary = createIssuerHandler(deps);
+  const legacy = deps.config.legacyIssuer;
+  if (legacy === undefined) return primary;
+  const legacyHost = new URL(legacy).host.toLowerCase();
+  const { legacyIssuer: _unused, ...rest } = deps.config;
+  void _unused;
+  const own = createIssuerHandler({ ...deps, config: { ...rest, issuer: legacy } });
+  const hostOf = (event: object): string | undefined => {
+    const headers = (event as { headers?: Record<string, string | undefined> }).headers;
+    return headers === undefined ? undefined : Object.entries(headers).find(([name]) => name.toLowerCase() === "host")?.[1]?.toLowerCase();
+  };
+  // Direct invokes (the broker's questions to this function) have no host and are the canonical server's; so is any host that is not the API's own.
+  const handler: typeof primary = async (event) => ("kind" in event || hostOf(event) !== legacyHost ? primary(event) : own(event));
+  return handler;
+}
+
+function createIssuerHandler(deps: DeveloperIdentityDependencies) {
   const { config, store } = deps;
   const endpoint = (path: string) => `${config.issuer}${path}`;
   const methodLabel = (method: DeveloperSignInMethod) =>

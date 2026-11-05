@@ -427,7 +427,7 @@ const repositoryGrants = new RepositoryGrantService(
 const lambdaClient = new LambdaClient(awsClientConfiguration);
 /** Set only in named environments with developer sign-in (infra/lib/developer-signin.ts). */
 function developerConfiguration(inviteTaskPerson?: DeveloperApiConfiguration["inviteTaskPerson"]): DeveloperApiConfiguration | undefined {
-  return createDeveloperApiConfiguration(process.env, (issuer, functionName) => ({
+  return createDeveloperApiConfiguration(process.env, (issuer, functionName, previousIssuer) => ({
     // Spec 061 slice 2: "Ask AgentX to reply to this comment" queues on the Slack service's request queue; set only where that service runs.
     ...(process.env.SLACK_REQUEST_QUEUE_URL ? { slackRequestQueue: slackRequestQueue(process.env.SLACK_REQUEST_QUEUE_URL) } : {}),
     channelMembers: channelMembersThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
@@ -450,6 +450,7 @@ function developerConfiguration(inviteTaskPerson?: DeveloperApiConfiguration["in
     // D17: kept for the Lambda's lifetime; an unknown kid refetches at most once a minute.
     verifyAccessToken: developerTokenVerifier({
       issuer,
+      ...(previousIssuer === undefined ? {} : { previousIssuer }),
       keys: developerKeysThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
       now: Date.now,
     }),

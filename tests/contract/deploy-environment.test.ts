@@ -1,3 +1,4 @@
+import { writeCustomDomain } from "../../packages/cli/src/environments/custom-domain.js";
 import { describe, expect, it } from "vitest";
 import { environmentStackName, type ReleaseManifest } from "@agentx/contracts";
 import { adoptOrphanedEditionRecord, settleEditionRecord } from "../../packages/cli/src/deploy/edition.js";
@@ -1090,6 +1091,59 @@ describe("the hosted Rovara cloud switch is stored and survives every deploy (R4
     expect(runner.calls.length).toBeGreaterThan(0);
     expect(runner.calls.every((args) => args.includes("agentxCloud=true"))).toBe(true);
     expect((await readEnvironmentSettings(store, ENV))).toMatchObject({ cloud: true, cloudSignIn: SIGN_IN });
+  });
+
+  describe("the custom domain (0.5.7)", () => {
+    const DOMAIN = { domainName: "staging.rovara.dev", hostedZoneId: "Z08286002FKUL2VBSO3MO" };
+    const installed = async () => {
+      const store = new MemoryParameterStore();
+      await deployEnvironment({ mode: "install", engine: "cdk", answers: cloudAnswers(), release: fakeRelease(), deployer: cdk(cdkRunner(), true), store, secrets: memorySecrets(), holder: HOLDER, declaredParameters: () => new Set() });
+      return { store, settings: (await readEnvironmentSettings(store, ENV))! };
+    };
+    const upgrade = async (store: MemoryParameterStore, settings: Awaited<ReturnType<typeof installed>>["settings"], deployedDomain: string | undefined, release = fakeRelease()) => {
+      const runner = cdkRunner();
+      const answers = await upgradeAnswers({ settings, stacks: deployedControlPlane(settings) });
+      await deployEnvironment({
+        mode: "upgrade", engine: settings.engine, answers, release, deployer: cdk(runner, true), store, secrets: memorySecrets({ [`agentx/${ENV}/callback-signing-key`]: "k".repeat(40) }), holder: HOLDER,
+        deployedParameters: async (stack) => (stack === stackName("control-plane") && deployedDomain !== undefined ? { CustomDomainName: deployedDomain } : undefined), declaredParameters: () => new Set(),
+      });
+      return runner.calls;
+    };
+    const order = (calls: string[][]) => calls.map((args) => args[3]);
+
+    it("adds it with the access stack first, sending the recorded name and zone to both stacks; the recorded domain is used though the answers name none", async () => {
+      const { store, settings } = await installed();
+      await writeCustomDomain(store, ENV, DOMAIN);
+      const calls = await upgrade(store, settings, undefined);
+      expect(order(calls).indexOf("AgentXAccess")).toBeLessThan(order(calls).indexOf("AgentXControlPlane"));
+      for (const construct of ["AgentXAccess", "AgentXControlPlane"]) {
+        const args = calls.find((call) => call[3] === construct)!;
+        expect(args, construct).toContain(`${stackName(construct === "AgentXAccess" ? "access" : "control-plane")}:CustomDomainName=staging.rovara.dev`);
+        expect(args, construct).toContain(`${stackName(construct === "AgentXAccess" ? "access" : "control-plane")}:CustomDomainHostedZoneId=Z08286002FKUL2VBSO3MO`);
+      }
+    });
+
+    it("removes it with the control plane first and the access stack last, sending empty values so the removal reaches both stacks", async () => {
+      const { store, settings } = await installed();
+      const calls = await upgrade(store, settings, DOMAIN.domainName);
+      expect(order(calls).indexOf("AgentXControlPlane")).toBeLessThan(order(calls).indexOf("AgentXAccess"));
+      expect(order(calls).at(-1)).toBe("AgentXAccess");
+      expect(calls.find((call) => call[3] === "AgentXAccess")!).toContain(`${stackName("access")}:CustomDomainName=`);
+      expect(calls.find((call) => call[3] === "AgentXControlPlane")!).toContain(`${stackName("control-plane")}:CustomDomainHostedZoneId=`);
+    });
+
+    it("refuses to remove it in the same run as a release change, before anything deploys, and removes it at the same version", async () => {
+      const { store, settings } = await installed();
+      const newer = { ...fakeRelease(), manifest: { ...fakeRelease().manifest, version: "9.9.9" } };
+      await expect(upgrade(store, settings, DOMAIN.domainName, newer)).rejects.toThrow(/remove it at the version the environment runs now/);
+      await expect(upgrade(store, settings, DOMAIN.domainName)).resolves.toBeDefined();
+    });
+
+    it("refuses to change it to another name in one run", async () => {
+      const { store, settings } = await installed();
+      await writeCustomDomain(store, ENV, { ...DOMAIN, domainName: "other.rovara.dev" });
+      await expect(upgrade(store, settings, DOMAIN.domainName)).rejects.toThrow(/two steps/);
+    });
   });
 
   it("refuses a deploy whose cloud flag differs from the stored one, in both directions", async () => {

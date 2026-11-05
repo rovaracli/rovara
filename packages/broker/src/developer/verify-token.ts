@@ -9,6 +9,8 @@ type VerifyKey = CryptoKey | KeyObject | Uint8Array;
 
 export interface DeveloperTokenVerifierInput {
   issuer: string;
+  /** 0.5.7: another issuer whose tokens are still accepted (the API's own address, once a custom domain is the issuer). */
+  previousIssuer?: string;
   /** The sign-in server's public keys (its JWKS `keys`). A throw means they could not be read. */
   keys: () => Promise<unknown[]>;
   now: () => number;
@@ -81,7 +83,7 @@ export function developerTokenVerifier(input: DeveloperTokenVerifierInput): (aut
     try {
       ({ payload } = await jwtVerify(token, key, {
         algorithms: ["RS256"],
-        issuer: input.issuer,
+        issuer: input.previousIssuer === undefined ? input.issuer : [input.issuer, input.previousIssuer],
         audience: DEVELOPER_TOKEN_AUDIENCE,
         clockTolerance: LEEWAY_SECONDS,
         currentDate: new Date(input.now()),

@@ -18,6 +18,12 @@ export interface PolicyScope {
    * boundary's AssumeOrgRoles statement excludes every account of that organization, not only this one; when not, it excludes this account alone.
    */
   rovaraOrganizationId?: string;
+  /**
+   * 0.5.7, hosted cloud installs with a custom domain (infra/lib/custom-domain.ts): the name and the Route 53 hosted zone that holds its DNS. The service role then
+   * (and only then) may request a certificate for that name, manage its certificates, and change records in that one zone. Absent: none of it is granted.
+   * The values may be CDK tokens (the access stack passes its parameters).
+   */
+  customDomain?: { domainName: string; hostedZoneId: string };
 }
 
 export interface PolicyStatementJson {
@@ -29,6 +35,58 @@ export interface PolicyStatementJson {
   NotResource?: string | string[];
   Condition?: Record<string, Record<string, string | string[]>>;
 }
+
+/** The tag the custom domain's certificate carries (set by the stack, infra/lib/custom-domain.ts) and the deploy role's certificate grants are limited to. */
+export const CUSTOM_DOMAIN_TAG = "agentx:env";
+// A later change of stack-level tags (CDK tags the stack's resources) makes CloudFormation call AddTagsToCertificate with tags that may lack agentx:env; the grant below refuses
+// such a call. If stack tags are ever added, include agentx:env=<env> in them, or the next update of the certificate fails with AccessDenied.
+
+/**
+ * The deploy (service) role's grants for the optional custom domain, and nothing else in Certificate Manager or Route 53:
+ *  - RequestCertificate takes no resource (the certificate does not exist yet), so it is on "*", limited to this region, to the one domain name (and it must name one:
+ *    ForAllValues is true for a request with no names, so a Null guard comes with it) and to a request that tags the certificate as this environment's;
+ *  - the certificate's life after that (describe while it validates, remove tags, delete, list tags) is limited to certificates carrying this environment's tag, and
+ *    tagging is limited to a request that sets that tag, so the role can touch no other certificate in the account;
+ *  - the records: ChangeResourceRecordSets in the one hosted zone is limited to the domain's own name and the `_<hash>.<domain>` name of the DNS validation record,
+ *    A, AAAA and CNAME only, so the zone's apex and every other record stay out of reach (route53:ChangeResourceRecordSetsNormalizedRecordNames is the lower-case name
+ *    without the trailing dot, and an underscore is not escaped); the reads CloudFormation's record handler makes (GetHostedZone, ListResourceRecordSets) are on that zone,
+ *    and ListHostedZones takes no resource;
+ *  - GetChange waits for a change to reach the name servers; it names a change id, which cannot be known in advance.
+ * Not in the permissions boundary: no role CloudFormation creates ever calls these.
+ */
+const customDomainStatements = (scope: Pick<PolicyScope, "env" | "partition" | "region" | "account" | "customDomain">): PolicyStatementJson[] => {
+  const domain = scope.customDomain;
+  if (domain === undefined) return [];
+  const certificates = `arn:${scope.partition}:acm:${scope.region}:${scope.account}:certificate/*`;
+  const zone = `arn:${scope.partition}:route53:::hostedzone/${domain.hostedZoneId}`;
+  return [
+    {
+      Sid: "CustomDomainCertificateRequest", Effect: "Allow", Action: ["acm:RequestCertificate"], Resource: "*",
+      Condition: {
+        StringEquals: { "aws:RequestedRegion": scope.region, [`aws:RequestTag/${CUSTOM_DOMAIN_TAG}`]: scope.env },
+        "ForAllValues:StringEquals": { "acm:DomainNames": [domain.domainName] },
+        Null: { "acm:DomainNames": "false" },
+      },
+    },
+    // Both tags: the request sets this environment's tag AND the certificate already has it (CloudFormation tags a certificate when it creates it), so the role cannot tag a certificate that is not its own and then delete it.
+    { Sid: "CustomDomainCertificateTag", Effect: "Allow", Action: ["acm:AddTagsToCertificate"], Resource: certificates, Condition: { StringEquals: { [`aws:RequestTag/${CUSTOM_DOMAIN_TAG}`]: scope.env, [`aws:ResourceTag/${CUSTOM_DOMAIN_TAG}`]: scope.env } } },
+    {
+      Sid: "CustomDomainCertificates", Effect: "Allow", Action: ["acm:DescribeCertificate", "acm:DeleteCertificate", "acm:RemoveTagsFromCertificate", "acm:ListTagsForCertificate"], Resource: certificates,
+      Condition: { StringEquals: { [`aws:ResourceTag/${CUSTOM_DOMAIN_TAG}`]: scope.env } },
+    },
+    {
+      Sid: "CustomDomainRecords", Effect: "Allow", Action: ["route53:ChangeResourceRecordSets"], Resource: zone,
+      Condition: {
+        "ForAllValues:StringLike": { "route53:ChangeResourceRecordSetsNormalizedRecordNames": [domain.domainName, `_*.${domain.domainName}`] },
+        "ForAllValues:StringEquals": { "route53:ChangeResourceRecordSetsRecordTypes": ["A", "AAAA", "CNAME"] },
+        Null: { "route53:ChangeResourceRecordSetsNormalizedRecordNames": "false", "route53:ChangeResourceRecordSetsRecordTypes": "false" },
+      },
+    },
+    { Sid: "CustomDomainZoneReads", Effect: "Allow", Action: ["route53:GetHostedZone", "route53:ListResourceRecordSets"], Resource: zone },
+    { Sid: "CustomDomainZoneList", Effect: "Allow", Action: ["route53:ListHostedZones"], Resource: "*" },
+    { Sid: "CustomDomainChanges", Effect: "Allow", Action: ["route53:GetChange"], Resource: `arn:${scope.partition}:route53:::change/*` },
+  ];
+};
 
 /** Only this environment's uniquely named ECS deployment-failure rule. */
 function ecsFailureRuleArn(scope: Pick<PolicyScope, "env" | "partition" | "region" | "account">): string {
@@ -470,6 +528,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
     ...appsyncEvents(scope),
     ...cloudFrontStatements(scope),
+    ...customDomainStatements(scope),
     { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: withRootRoles },
     fixedNameRoleLookupStatement(scope),
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },

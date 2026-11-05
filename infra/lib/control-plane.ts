@@ -1,4 +1,5 @@
 import { WebApp } from "./web-app.js";
+import { CustomDomain } from "./custom-domain.js";
 import { connectorSecretsPolicyStatements, connectorSecretsTrustPolicy } from "./connector-secrets-policy.js";
 import { testAccountSecretsPolicyStatements, testAccountSecretsTrustPolicy } from "./test-account-secrets-policy.js";
 import { checkedBrokerEnvironment } from "./private-mcp.js";
@@ -1296,6 +1297,8 @@ export class ControlPlaneStack extends Stack {
 
     // Spec 025 phase 25a: developer sign-in, named environments only (R3).
     let signInFunction: DeveloperSignIn["signInFunction"] | undefined;
+    // 0.5.7: an optional custom domain in front of the same API (hosted cloud installs only; both parameters empty = nothing is created, nothing changes).
+    const customDomain = props?.cloud === true && naming.env !== undefined && signInParameters !== undefined ? new CustomDomain(this, "CustomDomain", { env: naming.env, api, stage: defaultStage }) : undefined;
     if (naming.env !== undefined && signInParameters !== undefined) {
       // A bootstrap-free (legacy-synthesizer) template is the released one: the release pipeline packages zip Lambda code only, and CloudFront hosting adds a BucketDeployment and its AWS CLI layer (a file asset), so a released template has the cell serve the web files.
       // Every other named environment (deployed with the CDK engine, bootstrapped) defaults to CloudFront, as Plan 7 Task 4 specifies.
@@ -1303,9 +1306,9 @@ export class ControlPlaneStack extends Stack {
       if (configuredHosting !== undefined && configuredHosting !== "cloudfront" && configuredHosting !== "cell") throw new Error("agentxWebAssetHosting must be cloudfront or cell");
       const releasable = this.node.tryGetContext("agentxSynthesizer") === "legacy";
       if (releasable && configuredHosting === "cloudfront") throw new Error("agentxWebAssetHosting=cloudfront cannot be used with agentxSynthesizer=legacy: a bootstrap-free (released) template cannot carry the CloudFront upload's file asset; use cell");
-      const web = new WebApp(this, "WebApp", { naming, api, assetHosting: configuredHosting === "cell" || releasable ? "cell" : "cloudfront" });
+      const web = new WebApp(this, "WebApp", { naming, api, ...(customDomain === undefined ? {} : { customDomain }), assetHosting: configuredHosting === "cell" || releasable ? "cell" : "cloudfront" });
       const developerSignIn = new DeveloperSignIn(this, "DeveloperSignIn", {
-        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: [...githubInstallRoutes.map(route => ({ route, burst: 50, rate: 20 })), ...web.routes], ...(eventHookRoute === undefined ? {} : { hookRoute: eventHookRoute }),
+        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, ...(customDomain === undefined ? {} : { customDomain }), turnRecords, state, throttledRoutes: [...githubInstallRoutes.map(route => ({ route, burst: 50, rate: 20 })), ...web.routes], ...(eventHookRoute === undefined ? {} : { hookRoute: eventHookRoute }),
         ...(props?.cloud === true ? { cloud: true } : {}),
       });
       signInFunction = developerSignIn.signInFunction;
@@ -1398,7 +1401,7 @@ export class ControlPlaneStack extends Stack {
       // The key's id, in the broker's names: the broker builds the ARN from the region and the account (broker-environment.ts), to the same text.
       BrokerNames.of(broker).add("chatGptConnectionKey", chatGptConnectionKey.keyId);
       // Spec 025 phase 25c: sharing, named environments only (D14).
-      const notifier = new DeveloperTaskNotifier(this, "DeveloperTaskNotifier", { naming, controlPlaneUrl: api.attrApiEndpoint, state, artifactBucket: artifacts, slackSecret, taskPeopleChangesEnabled: signInParameters.taskPeopleChangesEnabled, notifyOperator });
+      const notifier = new DeveloperTaskNotifier(this, "DeveloperTaskNotifier", { naming, controlPlaneUrl: customDomain === undefined ? api.attrApiEndpoint : customDomain.origin(), state, artifactBucket: artifacts, slackSecret, taskPeopleChangesEnabled: signInParameters.taskPeopleChangesEnabled, notifyOperator });
       // Spec 025 A13: the admin health route reads the environment's alarms, by name, and
       // the depths of its dead-letter queues. Read-only, and on exactly these resources.
       const alarmPrefix = naming.alarmName("");

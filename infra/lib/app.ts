@@ -155,6 +155,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       naming,
       ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }),
       ...(operatorAccess === undefined ? {} : { operatorAccess }),
+      ...(agentxCloud ? { cloud: true } : {}),
       ...(explicitEdition === "enterprise" ? { bundleImageRepositories: BUNDLE_IMAGE_NAMES.map((name) => bundleImageRepository(naming.env!, name)) } : {}),
       terminationProtection: true,
       env: { region },

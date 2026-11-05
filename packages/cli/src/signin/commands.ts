@@ -1,4 +1,5 @@
 // agentx signin show|enable|disable|check (spec 025 FR-045, FR-046), under the operator role.
+import { describeCustomDomain, readCustomDomain } from "../environments/custom-domain.js";
 import { CLI_PACKAGE_NAME, agentXError } from "@agentx/contracts";
 import type { CallerIdentity } from "../environments/adopt.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
@@ -54,7 +55,7 @@ export async function runSigninShow(services: SigninServices, env: string): Prom
     if (response.ok) offered = offeredMethods(await response.json());
   } catch { /* shown as unknown */ }
   const cloud = settings.cloud === true;
-  const lines = [...describeSignIn(stored), ...(cloud ? describeCloudSignIn(settings.cloudSignIn) : []), `Slack team: ${teamId ?? "not recorded"}`, `The control plane offers: ${offered}`, `Developers sign in with: npx ${CLI_PACKAGE_NAME} login ${apiBase(settings)}`];
+  const lines = [...describeSignIn(stored), ...(cloud ? [...describeCloudSignIn(settings.cloudSignIn), `Custom domain: ${describeCustomDomain(await readCustomDomain(services.store, env))}`] : []), `Slack team: ${teamId ?? "not recorded"}`, `The control plane offers: ${offered}`, `Developers sign in with: npx ${CLI_PACKAGE_NAME} login ${apiBase(settings)}`];
   const signIn = settings.cloudSignIn;
   const cloudData = cloud ? { cloudSignIn: {
     github: signIn?.githubClientId === undefined ? null : { clientId: signIn.githubClientId },
