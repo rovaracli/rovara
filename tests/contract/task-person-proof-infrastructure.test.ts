@@ -372,18 +372,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-03 (s3-fakes-store): the named and foreign digests moved for the control plane's FixtureKey (a retained KMS key and the broker's kms:GenerateDataKey and kms:Decrypt on it). Legacy is unchanged.
     // 2026-11-03 (s3-integration, M4 and the key condition): retaken again from the values the test reports: the key has the alias alias/agentx/<env>/fixtures, the broker's grant carries kms:ViaService = s3.<region>.amazonaws.com, and the `fk` name is gone (the broker builds the alias ARN from AGENTX_ENV). Legacy did not move.
     // 2026-11-04, 0.5.5 integration (f797f3d68: s1-staging-pin-2 + s3-integration-054 + the rest): the named and foreign digests were retaken from the values the digest test itself reports (nothing hand-computed). The control plane's template gained, from the staging pin lane, the session steps' TEST_SERVICES_ENABLED value (see the named-templates snapshot), on top of the FixtureKey and its broker grant recorded above. The legacy digests did not move.
+    // 2026-11-05, 0.5.7 integration (integ/057): the named and foreign digests were retaken from the values the digest test itself reports, after ONE intended change (the legacy digests did not move; the optional custom domain adds
+    // nothing to a template that sets none): DR-FU4 part 2 removed the retired design review project list, so the DesignReviewProjects parameter and the `dp` entry of the broker's packed AGENTX_SETTINGS are gone. The named-templates
+    // snapshot (the whole staging control-plane template, which the foreign case is) shows exactly those two removals and nothing else.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "84b1dbf07e254f9c54a5a7cdd4910478a9f3b5c8e93787f63e3ce4de06fa84c6",
-        withoutRoute: "c098fee583368814fca9e4ec9f52900ccb80f63f8e5dff92f936cd8946e06714",
+        withRoute: "6096ea88ab68a7aa1baa54c15fb87ba98c2afc3abce820a02ec36ef0fc8a944b",
+        withoutRoute: "d67cbeae6be025fb7bd2ddafac35c63b6164c9b251eea5eef99be0ba565a0b48",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "e38666c5a3e18a76b21d882b697ad3c4acb1b20103a08b02ac134fd94516821f",
-        withoutRoute: "2e8c8a7a0b1c10dbb9528378e25b983a3ad6d20e7f574cb53bf048cc92cf3a02",
+        withRoute: "071122f4b25429dd6996663d87ad13e00ec20c3a9b690356294a1603c7e56ce0",
+        withoutRoute: "a9a3ff2c9f27177e7c83348b47aa622caf49ec8a89724f1c6c92969c256b5bc6",
       },
       {
         label: "legacy",
