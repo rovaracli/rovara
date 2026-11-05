@@ -572,6 +572,10 @@ its next request starts one. If the deployed model changes between turns, the th
 transcript and Rovara says which model it continues on. Closing a thread's workspace ends its
 conversation with it.
 
+## Linking your Slack account
+
+A person who signs in to Rovara another way (email code, Google or GitHub) is not recognised in Slack until they link their Slack account. In the web app, open your account menu and choose **Link your Slack account**. That runs Sign in with Slack for this install's Slack app, finished in the same browser and the same web session (the request is single use and expires in ten minutes; your last sign-in must be within ten minutes), and records a verified identity link from your Slack account to your Rovara account. Your Slack mentions then run as you, with your company role. The link is refused (and nothing changes) when the Slack workspace is not the one your company has connected, when that Slack account already belongs to another Rovara account or has joined a company of its own, or when your account already has a Slack account linked. **Unlink your Slack account** removes it; both changes are audited (`identity.linked`, `identity.unlinked`, naming the method and no Slack ID). Until a person links, their Slack mentions are answered privately with a message to link.
+
 ## Diagnostics
 
 The ingress Lambda and the orchestrator service write JSON log lines to CloudWatch Logs, with the

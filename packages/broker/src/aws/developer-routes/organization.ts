@@ -165,8 +165,10 @@ export async function unlinkAppIdentity(deps: DeveloperRouteDependencies, caller
 export async function startAppIdentityLink(deps: DeveloperRouteDependencies, caller: DeveloperCaller, provider: string): Promise<StartIdentityLinkAppResponse> {
   const method = UnlinkableSignInMethodSchema.safeParse(provider);
   if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to add back: cloud or github");
+  // Linking a Slack account is for a signed-in web user: the link is finished in the browser that holds the session (the CLI cannot).
+  if (method.data === "slack" && caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session to link your Slack account.");
   if (deps.developer.startIdentityLink === undefined) throw agentXError("NOT_FOUND", "adding a sign-in method back is not set up in this deployment");
-  const answer = await deps.developer.startIdentityLink({ kind: "start-identity-link", developerId: caller.developerId, sessionId: caller.sessionId, provider: method.data });
+  const answer = await deps.developer.startIdentityLink({ kind: "start-identity-link", developerId: caller.developerId, sessionId: caller.sessionId, provider: method.data, ...(method.data === "slack" ? { browser: true as const } : {}) });
   if (!answer.ok) {
     if (answer.error === "reauth") throw agentXError("REAUTH_REQUIRED", answer.message);
     if (answer.error === "refused") throw agentXError("CONFIG_INVALID", answer.message);

@@ -335,9 +335,12 @@ describe("unlinking a sign-in method", () => {
     const missing = await brokerCall(h, "DELETE", "/v1/app/me/identities/github", cloud.token);
     expect(missing.status).toBe(404);
     expect((missing.body.error as { message: string }).message).toContain("that sign-in method is not linked to your account");
-    const slack = await brokerCall(h, "DELETE", "/v1/app/me/identities/slack", cloud.token);
-    expect(slack.status).toBe(400);
-    expect((slack.body.error as { message: string }).message).toContain("cloud or github");
+    // Slack is a method that can be unlinked now (the web user's own link); with none linked it is simply not linked.
+    const slackNone = await brokerCall(h, "DELETE", "/v1/app/me/identities/slack", cloud.token);
+    expect(slackNone.status).toBe(404);
+    const saml = await brokerCall(h, "DELETE", "/v1/app/me/identities/saml", cloud.token);
+    expect(saml.status).toBe(400);
+    expect((saml.body.error as { message: string }).message).toContain("cloud or github");
     const notSetUp = await brokerCall(h, "DELETE", "/v1/app/me/identities/github", cloud.token, { unlinkIdentity: null });
     expect(notSetUp.status).toBe(404);
   });
@@ -368,7 +371,7 @@ describe("unlinking a sign-in method", () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [priya] });
     const sessionId = "00000000-0000-4000-8000-000000000000";
     expect(await h.handler({ kind: "unlink-identity", developerId: "nope", sessionId, provider: "github" } as never)).toEqual({ ok: false, error: "invalid_request" });
-    expect(await h.handler({ kind: "unlink-identity", developerId: cloudId, sessionId, provider: "slack" } as never)).toEqual({ ok: false, error: "invalid_request" });
+    expect(await h.handler({ kind: "unlink-identity", developerId: cloudId, sessionId, provider: "saml" } as never)).toEqual({ ok: false, error: "invalid_request" });
     expect(await h.handler({ kind: "unlink-identity", developerId: cloudId, sessionId, provider: "github", extra: 1 } as never)).toEqual({ ok: false, error: "invalid_request" });
     // A request with no session is not one: the session is what proves the sign-in is fresh.
     expect(await h.handler({ kind: "unlink-identity", developerId: cloudId, provider: "github" } as never)).toEqual({ ok: false, error: "invalid_request" });

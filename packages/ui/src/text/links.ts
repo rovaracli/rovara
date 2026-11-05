@@ -23,3 +23,9 @@ export function isGithubInstallationUrl(value: string): boolean {
  const url=new URL(safe),entries=[...url.searchParams];
  return url.origin==="https://github.com"&&/^\/apps\/[a-z0-9-]+\/installations\/new$/.test(url.pathname)&&(entries.length===0||entries.length===1&&entries[0]![0]==="state"&&/^[A-Za-z0-9_-]{1,200}$/.test(entries[0]![1]));
 }
+
+/** The sign-in server's Slack-link address (same origin, request id only): the one full-URL hand-off the web app makes in the same tab besides GitHub's. */
+export function isSlackLinkUrl(value: string, origin: string): boolean {
+ const safe = safeExternalUrl(value);if (safe === undefined || safe !== value || /[#%]/.test(value)) return false;
+ try { const url = new URL(safe), entries = [...url.searchParams];return url.origin === new URL(origin).origin && url.pathname === "/v1/auth/authorize" && entries.length === 2 && entries[0]![0] === "request" && /^[A-Za-z0-9_-]{16,80}$/.test(entries[0]![1]) && entries[1]![0] === "method" && entries[1]![1] === "slack"; } catch { return false; }
+}

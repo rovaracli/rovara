@@ -7,6 +7,8 @@ import { randomBytes } from "node:crypto";
 
 export interface ProviderIdentity {
   method: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string;
+  /** The Slack workspace the sign-in was made in (the `slack` method only), as Slack's verified ID token names it. The Slack link checks it against the company's bound team. */
+  slackTeamId?: string;
   /** The provider vouched for `email` (OIDC `email_verified`); the org a first sign-in lands in may depend on it. */
   emailVerified?: boolean;
   /** GitHub's numeric account id (the `github` method only); the one free trial per GitHub account is keyed on it. */
@@ -178,6 +180,7 @@ export function slackSignInProvider(input: {
           displayName: (typeof verified.payload.name === "string" ? cleanDisplayName(verified.payload.name) : undefined) ?? userId.data,
           ...(email === undefined ? {} : { email, emailVerified: true }),
           slackUserId: userId.data,
+          slackTeamId: teamId,
         },
       };
     },

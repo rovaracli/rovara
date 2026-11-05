@@ -180,8 +180,11 @@ export async function withFreshSignIn<T>(deps: DeveloperSessionDeps, env: string
  * made with that method end; the others go on. The server refuses the account's only sign-in method and the one it was created with,
  * in its own words, and wants a sign-in from the last ten minutes with another method (see `withFreshSignIn`).
  */
+/** The CLI changes cloud and GitHub only: the Slack link is made and removed in the web app (a signed-in browser session). */
+const CliSignInMethodSchema = UnlinkableSignInMethodSchema.exclude(["slack"]);
+
 export async function unlinkSignInMethod(deps: DeveloperSessionDeps, env: string | undefined, provider: string, freshSignIn?: FreshSignIn): Promise<{ env: string; url: string; provider: "cloud" | "github"; identities: LinkedIdentity[] }> {
-  const method = UnlinkableSignInMethodSchema.safeParse(provider);
+  const method = CliSignInMethodSchema.safeParse(provider);
   if (!method.success) throw agentXError("CONFIG_INVALID", `unknown sign-in method ${JSON.stringify(sanitizeServerText(provider))}; use cloud or github`);
   const { env: resolved, url, body } = await withFreshSignIn(deps, env, method.data, freshSignIn,
     () => developerRequest(deps, env, `/v1/app/me/identities/${method.data}`, UnlinkIdentityAppResponseSchema, { method: "DELETE", explain: true }));
@@ -200,7 +203,7 @@ export function unlinkText(result: { provider: "cloud" | "github"; identities: L
  * wants a sign-in from the last ten minutes (any method).
  */
 export async function linkSignInMethod(deps: DeveloperSessionDeps, env: string | undefined, provider: string, freshSignIn?: FreshSignIn): Promise<{ env: string; url: string; provider: "cloud" | "github"; authorizeUrl: string }> {
-  const method = UnlinkableSignInMethodSchema.safeParse(provider);
+  const method = CliSignInMethodSchema.safeParse(provider);
   if (!method.success) throw agentXError("CONFIG_INVALID", `unknown sign-in method ${JSON.stringify(sanitizeServerText(provider))}; use cloud or github`);
   const { env: resolved, url, body } = await withFreshSignIn(deps, env, undefined, freshSignIn,
     () => developerRequest(deps, env, `/v1/app/me/identities/${method.data}`, StartIdentityLinkAppResponseSchema, { method: "POST", explain: true }));
