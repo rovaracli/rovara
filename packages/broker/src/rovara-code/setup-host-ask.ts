@@ -361,11 +361,12 @@ async function recountOpenAsks(table: HostAskTable, orgId: OrgId, project: strin
 
 export function hostAskItem(ask: SetupHostAsk, input: { staffStep: boolean; /** SH30: the company already approved this host through a recipe the project's setup used. A mark on the card; it grants nothing. */ companyApproved?: boolean }): Extract<DecisionItem, { kind: "setup_host" }> {
   const subjectId = hostAskSubjectId(ask.orgId, ask.project, ask.host);
-  const base = `/app/projects/${ask.project}`;
+  // The project page, which holds "Allowed websites" (there is no `/settings` page for a project in the app).
+  const base = `/app/projects/${encodeURIComponent(ask.project)}`;
   return {
     kind: "setup_host", subjectId, project: ask.project, host: ask.host, staffStep: input.staffStep, international: isInternationalName(ask.host), ...(input.companyApproved === true ? { companyApproved: true as const } : {}), taskId: ask.taskId, ...(ask.typedBy === undefined ? {} : { typedBy: livePersonLabel(ask.typedBy) }),
     ...(ask.from === undefined ? {} : { from: ask.from }), ...(ask.journalN === undefined ? {} : { journalN: ask.journalN }),
-    title: `Allow ${ask.host}`, createdAt: ask.askedAt, openPath: `${base}/settings`, contentVersion: `${ask.host}@${ask.askedAt}${input.companyApproved === true ? "+recipe" : ""}`,
+    title: `Allow ${ask.host}`, createdAt: ask.askedAt, openPath: base, contentVersion: `${ask.host}@${ask.askedAt}${input.companyApproved === true ? "+recipe" : ""}`,
   };
 }
 

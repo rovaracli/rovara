@@ -289,7 +289,7 @@ export async function specChoiceItemsFor(deps: DeveloperTaskRouteDependencies, c
     const task = await get<DeveloperTaskRecord>(deps, taskKey(row.taskId));
     if (task === undefined || task.closedAt !== undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) continue;
     const { state, corrupt } = await dynamoSpecStore(deps).load(task.taskId);
-    const item = specChoiceItemOf({ taskId: task.taskId, project: task.project, title: task.title, state, corrupt, now: iso(deps) });
+    const item = specChoiceItemOf({ taskId: task.taskId, project: task.project, sessionId: task.sessionId, title: task.title, state, corrupt, now: iso(deps) });
     if (item !== undefined) items.push(item);
   }
   return items;

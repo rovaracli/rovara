@@ -2,10 +2,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
-import { canonicalPlanJson, createCandidateManifest, createWorkflowSnapshot, workflowFindingFingerprint, type PlanDocument } from "@agentx/contracts";
+import { WorkflowSnapshotSchema, canonicalPlanJson, createCandidateManifest, createWorkflowSnapshot, workflowFindingFingerprint, type PlanDocument } from "@agentx/contracts";
+import { designCardOnlyApplies, taskPageStage } from "../../packages/broker/src/aws/developer-tasks/task-page.js";
 import { claimAnchor } from "../../packages/broker/src/aws/plan-page/render-plan.js";
 import { createTaskWeb, type TaskDocumentEntry, type TaskDocumentKind, type TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
-import { TASK_PAGE_SCRIPT, TASK_PAGE_STYLE } from "../../packages/broker/src/aws/task-page-assets.js";
+import { TASK_PAGE_DECIDING_SCRIPT, TASK_PAGE_SCRIPT, TASK_PAGE_STYLE } from "../../packages/broker/src/aws/task-page-assets.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, registerRevision, type Developer } from "../support/developer-task-broker.js";
 import { planDocument } from "../support/plan-documents.js";
@@ -1229,6 +1230,69 @@ describe("deciding and commenting on the task page (slice 2)", () => {
     const waitingDesign = await render({ documents: [requirements, { ...design, approved: false }], waiting: { kind: "design", version: 1, artifactDigest: digest }, access: owner });
     expect(waitingDesign.body).toMatch(/id="decide-approve"[^>]*hidden>Approve design v1<\/button>/);
     expect(waitingDesign.body).toMatch(/id="decide-request-changes"[^>]*hidden>Request changes to design v1<\/button>/);
+  });
+
+  // QA6-03: a design under review is approved only on its decision card; the page must not offer a button the server refuses.
+  it("a design under review links to its decision card instead of an Approve button, and keeps Request changes", async () => {
+    const requirements = structuredDoc("requirements", 1, planDocument({ claims: [{ id: "1", text: "Retries happen." }], decisions: [] }), { approved: true });
+    const design = structuredDoc("design", 1, planDocument({ claims: [{ id: "1", text: "Retries wait." }], decisions: [] }));
+    const codingPlan = structuredDoc("coding plan", 1, planDocument({ claims: [{ id: "1", text: "Edit retry.ts." }], decisions: [] }));
+    const waitingDesign = { documents: [requirements, design], waiting: { kind: "design" as const, version: 1, artifactDigest: digest }, access: owner };
+    const carded = await render({ ...waitingDesign, designCardOnly: { href: "/app" } });
+    expect(carded.body).toContain('<a id="decide-approve-card" href="/app">Approve on the decision card</a>');
+    // The approve button is never shown: it stays hidden and the script keeps it so.
+    expect(carded.body).toMatch(/id="decide-approve" data-card-only hidden>Approve design v1<\/button>/);
+    expect(carded.body).toMatch(/id="decide-request-changes"[^>]*hidden>Request changes to design v1<\/button>/);
+    expect(TASK_PAGE_DECIDING_SCRIPT).toContain('bar.approve.hidden=bar.approve.hasAttribute("data-card-only")');
+    // Positive control: without the flag the plain button is there and no link.
+    const plainPage = await render(waitingDesign);
+    expect(plainPage.body).toMatch(/id="decide-approve"[^>]*hidden>Approve design v1<\/button>/);
+    expect(plainPage.body).not.toContain("decide-approve-card");
+    expect(plainPage.body).not.toMatch(/<button[^>]*data-card-only/);
+    // A coding plan is never carded.
+    const plan = await render({ documents: [requirements, codingPlan], waiting: { kind: "coding plan", version: 1, artifactDigest: digest }, access: owner });
+    expect(plan.body).not.toContain("decide-approve-card");
+  });
+
+  it("the card-only wording applies only to a reader who may decide, on a design under review with the stage on", async () => {
+    const base = createWorkflowSnapshot({ taskId, ownerId: "a".repeat(64), now: "2026-11-05T10:00:00.000Z" });
+    const review = { status: "done" } as never;
+    const underReview = WorkflowSnapshotSchema.parse({ ...base, stage: "PLAN_REVIEW", state: "WAITING", reviewPhase: "DESIGN" });
+    const withReview = { ...underReview, designReview: review } as typeof underReview;
+    const on = { DESIGN_REVIEW_ENABLED: "1" };
+    const applies = (over: Partial<Parameters<typeof designCardOnlyApplies>[0]> = {}) =>
+      designCardOnlyApplies({ canDecide: true, waitingKind: "design", workflow: withReview, env: on, ...over });
+    expect(applies(), "positive control").toBe(true);
+    expect(applies({ canDecide: false }), "a reader who may not decide (closed task, project work not allowed, a teammate)").toBe(false);
+    expect(applies({ env: {} }), "the stage is switched off").toBe(false);
+    expect(applies({ workflow: underReview }), "no design review on the task").toBe(false);
+    expect(applies({ workflow: { ...withReview, reviewPhase: "REQUIREMENTS" } as never }), "the requirements phase").toBe(false);
+    expect(applies({ waitingKind: "coding plan" }), "a coding plan").toBe(false);
+    expect(applies({ waitingKind: "requirements" }), "requirements").toBe(false);
+    expect(applies({ waitingKind: undefined }), "nothing waiting").toBe(false);
+    // Not applying means the page shows the ordinary Approve button and no link.
+    const requirements = structuredDoc("requirements", 1, planDocument({ claims: [{ id: "1", text: "Retries happen." }], decisions: [] }), { approved: true });
+    const design = structuredDoc("design", 1, planDocument({ claims: [{ id: "1", text: "Retries wait." }], decisions: [] }));
+    const page = await render({ documents: [requirements, design], waiting: { kind: "design", version: 1, artifactDigest: digest }, access: owner });
+    expect(page.body).toMatch(/id="decide-approve"[^>]*hidden>Approve design v1<\/button>/);
+    expect(page.body).not.toContain("decide-approve-card");
+  });
+
+  it("says 'People unavailable' only for a task that has a People list it could not read", async () => {
+    // A web-started task (or one with task people off) has no People list: no panel, so nothing is unavailable.
+    const none = await render({});
+    expect(none.body).not.toContain("People unavailable");
+    expect(none.body).not.toContain('id="task-people"');
+    // Positive control: a People list exists (its revision is known) but the read failed.
+    const failed = await render({ peopleRevision: 4 });
+    expect(failed.body).toContain("People unavailable");
+  });
+
+  it("tells a task with no Slack thread to act in Rovara, and keeps Slack for a task that has one", () => {
+    const waiting = WorkflowSnapshotSchema.parse({ ...createWorkflowSnapshot({ taskId, ownerId: "a".repeat(64), now: "2026-11-05T10:00:00.000Z" }), stage: "PLAN_REVIEW", state: "WAITING" });
+    expect(taskPageStage(waiting, false, true, undefined, undefined, undefined, false).nextStep).toBe("Approve or request changes in Rovara.");
+    expect(taskPageStage(waiting, false, true, undefined, undefined, undefined, true).nextStep).toBe("Approve or request changes in the task's Slack thread.");
+    expect(taskPageStage(waiting, false, true).nextStep).toBe("Approve or request changes in the task's Slack thread.");
   });
 
   describe("Changed after approval compares the levels the earlier document wrote", () => {

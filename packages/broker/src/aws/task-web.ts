@@ -90,6 +90,8 @@ export interface TaskDocumentView {
   pageSuggestions?: Array<PageSuggestionView & { document: "requirements" | "design" | "plan" }>;
   /** The document waiting for its owner's decision, when one is. */
   waiting?: { kind: TaskDocumentKind; version: number; artifactDigest: string };
+  /** The waiting document is a design under review: it is approved only on its decision card in the Rovara app (the server refuses an approval from this page), so the page links there instead of offering Approve. */
+  designCardOnly?: { href: string };
   /** Moves whenever a comment, reply or suggestion is written; the page's script compares it. */
   commentSeq?: number;
   /** The coding plan's optional checks, and whether each is chosen now. */
@@ -391,7 +393,11 @@ function decideBar(view: TaskDocumentView): string {
   // Without the script the count is only a note; the script turns it into the "Next decision" control, or says all are answered.
   return '<div class="decide-bar" role="region" aria-label="Decide">'
     + `<p><button type="button" id="decide-next" hidden></button><span id="decide-count" role="status">${count === 0 ? "" : `${count} to answer`}</span></p>`
-    + `<button type="button" id="decide-approve" hidden>Approve ${escapeHtml(name)}</button> <button type="button" id="decide-request-changes" hidden>Request changes to ${escapeHtml(name)}</button></div>`;
+    + (view.designCardOnly === undefined
+      ? `<button type="button" id="decide-approve" hidden>Approve ${escapeHtml(name)}</button> `
+      // The button stays (hidden, never shown: the page's script finds it) so the bar's wiring is unchanged; the link is what the owner uses.
+      : `<button type="button" id="decide-approve" data-card-only hidden>Approve ${escapeHtml(name)}</button><a id="decide-approve-card" href="${escapeHtml(view.designCardOnly.href)}">Approve on the decision card</a> `)
+    + `<button type="button" id="decide-request-changes" hidden>Request changes to ${escapeHtml(name)}</button></div>`;
 }
 
 /** What Rovara did by itself and why it asks, in the blocked step's place on the page. */
@@ -532,7 +538,8 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
     + specHoldSection(view)
     + `<section id="findings" aria-label="Review findings"><h2>Review findings</h2>${findings}</section>`
     + `<section id="pull-requests" aria-label="Pull requests"><h2>Pull requests</h2>${pullRequests}</section>`
-    + (view.people === undefined ? renderTaskPeopleUnavailable() : renderTaskPeoplePanel(view.taskId, view.people))
+    // "People unavailable" only for a task that HAS a People list this page could not read (`peopleRevision` is set from the stored list). A task with none (started on the web, or task people off) has no panel to be unavailable (QA6-03).
+    + (view.people !== undefined ? renderTaskPeoplePanel(view.taskId, view.people) : view.peopleRevision !== undefined ? renderTaskPeopleUnavailable() : "")
     + `<section id="history" aria-label="History"><h2>History</h2>${historyHtml}</section>`
     + `${decideBar(view)}</main>${decideDialog(view)}${island}<script nonce="${nonce}">${TASK_PAGE_SCRIPT}</script>`
     // The deciding and commenting script comes with the data island: only for someone who can comment or decide.

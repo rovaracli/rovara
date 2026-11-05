@@ -1156,11 +1156,11 @@ if(canDecide&&current&&DOCS[current.anchor]&&docSection&&dialog&&bar.next&&bar.a
   for(var key in draft.answers){if(has(draft.answers,key)&&!has(opened,key))delete draft.answers[key];}
   saveDraft(current.anchor);
   bar.count&&(bar.count.hidden=true);
-  bar.next.hidden=false;bar.approve.hidden=false;bar.changes.hidden=false;
+  bar.next.hidden=false;bar.approve.hidden=bar.approve.hasAttribute("data-card-only");bar.changes.hidden=false;
   updateBar();
   bar.next.addEventListener("click",function(){
     var next=decisions.filter(function(d){return !opened[d.id];})[0];
-    if(!next){bar.approve.focus();return;}
+    if(!next){(bar.approve.hidden?bar.changes:bar.approve).focus();return;}
     if(next.box){openAround(next.box);next.box.scrollIntoView({block:"center"});}
     if(next.radios[0])next.radios[0].focus();
   });

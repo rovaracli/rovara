@@ -50,6 +50,7 @@ import { pageCommentViews, type CommentViewContext, type PageCommentView } from 
 import { loadPlanSelfCheck } from "../../developer/plan-self-check.js";
 import type { PlanAnchor } from "../plan-page/render-plan.js";
 import { can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, type TaskAccess } from "../../developer/task-access.js";
+import { designReviewEnabled } from "../../design-review/switch.js";
 import { getTaskPeoplePresentation } from "../../developer/task-people.js";
 import { getTaskPeopleCapabilities as readTaskPeopleCapabilities } from "../../developer/task-people.js";
 import { isRuntimeRenewedBlock } from "../../e2e/requalify-hold.js";
@@ -93,6 +94,15 @@ async function mergeViewForWords(deps: Pick<DeveloperTaskRouteDependencies, "doc
   }
 }
 
+/**
+ * QA6-03: whether the task page replaces Approve with a link to the design's decision card: the reader may decide, the waiting document is a design, and the design is under review (the same condition as the guard in
+ * `decideTaskWorkflow`, which refuses a plain approval then). Anything else keeps the ordinary Approve button.
+ */
+export function designCardOnlyApplies(input: { canDecide: boolean; waitingKind: string | undefined; workflow: WorkflowSnapshot | undefined; env?: NodeJS.ProcessEnv }): boolean {
+  const { workflow } = input;
+  return input.canDecide && input.waitingKind === "design" && workflow?.designReview !== undefined && workflow.reviewPhase === "DESIGN" && designReviewEnabled(input.env);
+}
+
 /** Where a workflow task stands and what happens next, in the words the task page shows. */
 export function taskPageStage(
   workflow: WorkflowSnapshot | undefined, closed: boolean, owner: boolean, publication: "failed" | "retrying" | undefined = undefined, removedReason: string | undefined = undefined,
@@ -116,7 +126,8 @@ export function taskPageStage(
     return { status: "Waiting for Slack", nextStep: "Rovara could not reach Slack to check who may start work, and tries again by itself. After 30 minutes it stops and offers Retry." };
   }
   const name = workflowDocumentName(workflow);
-  const inSlack = "in the task's Slack thread";
+  // A task started on the web has no Slack thread: its choices are made in Rovara (QA6-03: the page told a web-started task to go to Slack).
+  const inSlack = hasThread ? "in the task's Slack thread" : "in Rovara";
   // After approved PR feedback the pull requests are already open: the fix is pushed to them.
   if (workflow.stage === "PULL_REQUEST" && (workflow.state === "READY" || workflow.state === "RUNNING") && workflowPullRequestUpdateDue(workflow)) {
     return { status: "Pushing the fix to the pull request", nextStep: "Review and merge it on GitHub once the fix is pushed." };
@@ -758,8 +769,14 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   const noChangeFound = workflow !== undefined && workflow.state === "BLOCKED" && task.closedAt === undefined && isNoCodeChangedReason(workflow.blockReason) ? noChangeFindingsFrom(workflow.noChangeFindings) : undefined;
   const noChangeView = workflow !== undefined && workflow.state === "BLOCKED" && task.closedAt === undefined && isNoCodeChangedReason(workflow.blockReason)
     ? { ...(noChangeFound === undefined ? {} : { findings: noChangeFound }) } : undefined;
+  const deciding = await pageDecidingView(deps, { task, caller, comments, suggestions: shownSuggestions, citations, claimIds });
+  const permissions = pageAccess(access, await projectWorkAllowed(deps, task, caller));
+  // QA6-03: while a design is under review its approval is only on its decision card; the page points to the card instead of offering a button the server refuses.
+  const designCardOnly = designCardOnlyApplies({ canDecide: permissions?.canDecide === true, waitingKind: deciding.waiting?.kind, workflow });
+  const stage = taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task), noChangeHasThread(task.share));
+  const stageWords = designCardOnly ? { status: stage.status, nextStep: "Approve the design on its decision card in Rovara, or request changes here." } : stage;
   return {
-    taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task), noChangeHasThread(task.share)),
+    taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...stageWords,
     ...(e2eResults === undefined ? {} : { e2eResults }),
     path: workflow?.path ?? "QUICK", revision: workflow?.revision ?? 0, stage: taskPageStep(workflow, task.closedAt !== undefined), role: owner ? "owner" : "reader",
     documents, ...(unverified.length === 0 ? {} : { unverified }), checks, checksRan: results.length > 0, ...(checksNote === undefined ? {} : { checksNote }), findings,
@@ -771,9 +788,10 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     ...(specHold === undefined ? {} : { specHold }),
     ...(autofixLines.length === 0 ? {} : { autofix: { lines: autofixLines } }),
     ...(noChangeView === undefined ? {} : { noChange: noChangeView }),
-    history, access: pageAccess(access, await projectWorkAllowed(deps, task, caller)), ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
+    history, access: permissions, ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
     canTakeOwnership: capabilities.canTakeOwnership, comments, suggestions: shownSuggestions, askAvailable: await commentAnswersAvailable(deps, task),
-    ...await pageDecidingView(deps, { task, caller, comments, suggestions: shownSuggestions, citations, claimIds }),
+    ...deciding,
+    ...(designCardOnly ? { designCardOnly: { href: "/app" } } : {}),
   };
 }
 

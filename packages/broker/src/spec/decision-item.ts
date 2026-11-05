@@ -3,13 +3,14 @@
 // controller.
 import { specGate, type SpecState } from "./state.js";
 import type { DecisionItem } from "../decisions/project.js";
+import { taskOpenPath } from "../decisions/open-path.js";
 
 /** The item for a task whose spec is on hold and has something for the owner to choose; nothing otherwise. */
-export function specChoiceItemOf(input: { taskId: string; project: string; title: string; state: SpecState | undefined; corrupt?: boolean | undefined; now: string }): DecisionItem | undefined {
+export function specChoiceItemOf(input: { taskId: string; project: string; sessionId?: string | undefined; title: string; state: SpecState | undefined; corrupt?: boolean | undefined; now: string }): DecisionItem | undefined {
   const gate = specGate(input.state, input.corrupt === true, input.now);
   if (gate.action !== "hold" || gate.ownerActions.length === 0) return undefined;
   return {
     kind: "spec_choice", subjectId: input.taskId, taskId: input.taskId, project: input.project, title: input.title, createdAt: input.state?.updatedAt ?? input.now,
-    openPath: `/app/tasks/${input.taskId}`, contentVersion: `${String(input.state?.revision ?? 0)}`, message: gate.message,
+    openPath: taskOpenPath(input), contentVersion: `${String(input.state?.revision ?? 0)}`, message: gate.message,
   };
 }
