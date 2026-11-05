@@ -509,11 +509,11 @@ describe("TS-SEAL egress capture (scripts/ci-egress-capture.sh) on the Docker 25
       line6(BRIDGE, "fe80::4", "ff02::1:ff00:1"),
     ];
     const OK_PROBE = '{"embedded":"ETIMEOUT","gateway":"sent","public":"ENETUNREACH"}';
-    const verdict = (lines: string[], extra: { probe?: string | null; packets?: string; uplinkIps?: string; alive?: string } = {}): { status: number | null; out: string; lines: string[] } => {
+    const verdict = (lines: string[], extra: { probe?: string | null; packets?: string; uplinkIps?: string; alive?: string; ifindex?: string } = {}): { status: number | null; out: string; lines: string[] } => {
       const dir = mkdtempSync(join(tmpdir(), "eg-verdict-"));
       writeFileSync(join(dir, "all.txt"), `${lines.join("\n")}\n`);
       if (extra.probe !== null) writeFileSync(join(dir, "probe-sealed.json"), extra.probe ?? OK_PROBE);
-      const ran = spawnSync("bash", ["-c", 'source "$1"; EG_DIR=$2 EG_TOKEN=$3 EG_UPLINK=eth0 EG_UPLINK_IPS="$4" EG_BRIDGE=$5 EG_PACKETS=$6 EG_TCPDUMP_ALIVE=$7; eg_verdict "$2/all.txt"', "x", new URL("../../scripts/ci-egress-capture.sh", import.meta.url).pathname, dir, TOKEN, extra.uplinkIps ?? "10.1.0.4 ", BRIDGE, extra.packets ?? "500", extra.alive ?? "1"], { encoding: "utf8" });
+      const ran = spawnSync("bash", ["-c", 'source "$1"; EG_DIR=$2 EG_TOKEN=$3 EG_UPLINK=eth0 EG_UPLINK_IPS="$4" EG_BRIDGE=$5 EG_PACKETS=$6 EG_TCPDUMP_ALIVE=$7 EG_BRIDGE_IFINDEX=$8; eg_verdict "$2/all.txt"', "x", new URL("../../scripts/ci-egress-capture.sh", import.meta.url).pathname, dir, TOKEN, extra.uplinkIps ?? "10.1.0.4 ", BRIDGE, extra.packets ?? "500", extra.alive ?? "1", extra.ifindex ?? "9"], { encoding: "utf8" });
       return { status: ran.status, out: ran.stdout.trim(), lines: ran.stdout.trim().split("\n") };
     };
 
@@ -538,6 +538,34 @@ describe("TS-SEAL egress capture (scripts/ci-egress-capture.sh) on the Docker 25
       // A line that only mentions the address elsewhere (say as a destination) does not count either.
       const asDestination = GOOD.filter((entry) => !entry.includes(BRIDGE) || entry.includes("IPv6")).concat(line(BRIDGE, "172.30.254.1.9", "172.30.254.4.5000", "UDP, length 1", "Out"));
       expect(verdict(asDestination).out).toMatch(/FAIL .*capture-blind-nothing-seen-on-the-rvi-bridge/u);
+    });
+
+    it("matches the probe bridge by its ifindex when it was deleted before the render and prints as '?' (CI run 42104894037), and never counts any other '?' line", () => {
+      // The real shape: the bridge is gone when tcpdump -r runs, so its lines carry "?" and only the ifindex says which interface they were.
+      const probeLines = (index: string): string[] => [
+        `12:00:00.000001 ? In ifindex ${index} aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: 172.30.254.4.5000 > 172.30.254.1.9: UDP, length 1`,
+        `12:00:00.000009 ? B ifindex ${index} aa:bb:cc:dd:ee:ff ethertype ARP (0x0806), length 28: Request who-has 172.30.254.1 tell 172.30.254.4, length 28`,
+      ];
+      const withoutBridge = GOOD.filter((entry) => !entry.includes(BRIDGE) || entry.includes("IPv6"));
+      expect(withoutBridge.some((entry) => entry.includes("172.30.254.4"))).toBe(false);
+      const ok = verdict([...withoutBridge, ...probeLines("9")], { ifindex: "9" });
+      expect(ok.out, ok.out).toMatch(/^TSL L3\.egress-capture PASS /u);
+      // Another "?" interface, or no recorded ifindex, is blind.
+      expect(verdict([...withoutBridge, ...probeLines("11")], { ifindex: "9" }).out).toMatch(/FAIL .*capture-blind-nothing-seen-on-the-rvi-bridge/u);
+      expect(verdict([...withoutBridge, ...probeLines("9")], { ifindex: "" }).out).toMatch(/FAIL .*capture-blind-nothing-seen-on-the-rvi-bridge/u);
+      // The bridge rules apply to the matched "?" lines: a packet to outside the /24 is a leak.
+      const leak = verdict([...GOOD, "12:00:00.000010 ? Out ifindex 9 aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: 172.30.254.4.5000 > 8.8.8.8.53: UDP, length 1"], { ifindex: "9" });
+      expect(leak.out).toMatch(/FAIL .*rvi-bridge-packets-to-outside-the-run-subnet-1/u);
+      // Non-link-local IPv6 on any deleted interface fails (it could have been a run bridge).
+      expect(verdict([...GOOD, line6("?", "2001:db8::4", "2001:4860:4860::8888")], { ifindex: "9" }).out).toMatch(/FAIL .*rvi-bridge-non-link-local-ipv6-1-packets/u);
+      // The blind evidence names the ifindex of each "?" interface and the probe bridge's own.
+      const blind = verdict([...withoutBridge, ...probeLines("14")], { ifindex: "9" });
+      expect(blind.out).toMatch(/egress-evidence: lines-per-interface: \?\(ifindex 14\) 2/u);
+      expect(blind.out).toMatch(/egress-evidence: probe-bridge: rvi0a1b2c3d ifindex 9/u);
+    });
+
+    it("reads the probe bridge's ifindex when it makes the bridge", () => {
+      expect(egressScript).toMatch(/EG_BRIDGE_IFINDEX=\$\(cat "\/sys\/class\/net\/\$EG_BRIDGE\/ifindex"/u);
     });
 
     it("a blind bridge prints what each interface carried, so the next failure can be diagnosed", () => {
