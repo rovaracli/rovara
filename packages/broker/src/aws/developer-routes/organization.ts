@@ -143,7 +143,9 @@ export async function setMyName(deps: DeveloperRouteDependencies, caller: Develo
  */
 export async function unlinkAppIdentity(deps: DeveloperRouteDependencies, caller: DeveloperCaller, provider: string): Promise<{ identities: LinkedIdentity[] }> {
   const method = UnlinkableSignInMethodSchema.safeParse(provider);
-  if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to remove: cloud or github");
+  if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to remove: cloud or github (a Slack link is removed in the web app)");
+  // The Slack link is changed in the web app only (a live browser session), as it is made there.
+  if (method.data === "slack" && caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session to unlink your Slack account.");
   if (deps.developer.unlinkIdentity === undefined) throw agentXError("NOT_FOUND", "removing a sign-in method is not set up in this deployment");
   const answer = await deps.developer.unlinkIdentity({ kind: "unlink-identity", developerId: caller.developerId, sessionId: caller.sessionId, provider: method.data });
   if (!answer.ok) {
@@ -164,7 +166,7 @@ export async function unlinkAppIdentity(deps: DeveloperRouteDependencies, caller
  */
 export async function startAppIdentityLink(deps: DeveloperRouteDependencies, caller: DeveloperCaller, provider: string): Promise<StartIdentityLinkAppResponse> {
   const method = UnlinkableSignInMethodSchema.safeParse(provider);
-  if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to add back: cloud or github");
+  if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to add back: cloud or github (a Slack account is linked in the web app)");
   // Linking a Slack account is for a signed-in web user: the link is finished in the browser that holds the session (the CLI cannot).
   if (method.data === "slack" && caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session to link your Slack account.");
   if (deps.developer.startIdentityLink === undefined) throw agentXError("NOT_FOUND", "adding a sign-in method back is not set up in this deployment");

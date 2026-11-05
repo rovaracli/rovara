@@ -197,6 +197,8 @@ export const REAUTH_SAME_METHOD = "you are signed in with the method you are rem
 export const RELINK_NOT_REMOVED = "that sign-in was not removed from your account, so it cannot be added back here";
 export const RELINK_OWN_ACCOUNT = "that sign-in has since started its own account, so it cannot be added back to this one";
 export const RELINK_ALREADY = "that sign-in is already part of your account";
+/** The account record's marker of its one Slack link (the identity key), written in the link's own transaction and removed by the unlink. */
+export const SLACK_LINKED_ATTRIBUTE = "slackLinkedIdentity";
 /** Refusals of linking a Slack account to a web account, in the person's words. */
 export const SLACK_LINK_TAKEN = "that Slack account already belongs to another Rovara account, so it can't be linked to this one";
 export const SLACK_LINK_HAS_ONE = "a Slack account is already linked to your account; remove it first to link another";
@@ -744,9 +746,11 @@ export class DeveloperSignInStore {
             } },
             { Update: {
               // Project AI commits pin method marks, not each identity mark. Every unlink must set #method atomically; review that fence if this changes.
-              TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #identity = :at, #unlinked = :at, #method = :at",
+              TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META },
+              // The Slack link's one-per-account marker goes with the link.
+              UpdateExpression: `SET #identity = :at, #unlinked = :at, #method = :at${link.provider === "slack" ? " REMOVE #slackLinked" : ""}`,
               ConditionExpression: "attribute_exists(pk)",
-              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider) },
+              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider), ...(link.provider === "slack" ? { "#slackLinked": SLACK_LINKED_ATTRIBUTE } : {}) },
               ExpressionAttributeValues: { ":at": at },
             } },
             // An identity merged in by rule 1b is keyed to the developer that was merged away. Unlinked, it starts that developer again
@@ -810,10 +814,12 @@ export class DeveloperSignInStore {
       await this.input.documentClient.send(new TransactWriteCommand({
         TransactItems: [
           { Update: {
-            TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #ended = :at REMOVE #unlinked",
-            ConditionExpression: "attribute_exists(pk)",
-            ExpressionAttributeNames: { "#ended": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey) },
-            ExpressionAttributeValues: { ":at": at },
+            TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META },
+            // A Slack link comes back with its one-per-account marker, and only while the account has no other Slack link.
+            UpdateExpression: `SET #ended = :at${input.provider === "slack" ? ", #slackLinked = :identityKey" : ""} REMOVE #unlinked`,
+            ConditionExpression: input.provider === "slack" ? "attribute_exists(pk) AND attribute_not_exists(#slackLinked)" : "attribute_exists(pk)",
+            ExpressionAttributeNames: { "#ended": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), ...(input.provider === "slack" ? { "#slackLinked": SLACK_LINKED_ATTRIBUTE } : {}) },
+            ExpressionAttributeValues: { ":at": at, ...(input.provider === "slack" ? { ":identityKey": identityKey } : {}) },
           } },
           { Put: {
             TableName, Item: { ...signInIdentityKey(identityKey), ...body },
@@ -878,8 +884,10 @@ export class DeveloperSignInStore {
     try {
       await this.input.documentClient.send(new TransactWriteCommand({
         TransactItems: [
-          // The account is still there, not revoked and not merged away.
-          { ConditionCheck: { TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedInto) AND (attribute_not_exists(revoked) OR revoked = :no)", ExpressionAttributeValues: { ":no": false } } },
+          // The account is still there, not revoked and not merged away, and holds no Slack link yet: the marker is what makes two simultaneous links end with one.
+          { Update: { TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #slackLinked = :identityKey",
+            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedInto) AND (attribute_not_exists(revoked) OR revoked = :no) AND attribute_not_exists(#slackLinked)",
+            ExpressionAttributeNames: { "#slackLinked": SLACK_LINKED_ATTRIBUTE }, ExpressionAttributeValues: { ":no": false, ":identityKey": identityKey } } },
           ...items,
           ...this.pendingFor(event),
         ],
@@ -889,7 +897,10 @@ export class DeveloperSignInStore {
       // Someone linked or moved it between the read and the write: say what the link now shows.
       const now = await this.getIdentityLink(identityKey);
       if (now !== undefined && isActiveLink(now, identityKey) && now.developerId === developerId) return { ok: true, created: false };
-      return { ok: false, reason: now !== undefined && now.developerId !== identityKey ? "taken" : "changed" };
+      if (now !== undefined && now.developerId !== identityKey) return { ok: false, reason: "taken" };
+      // The account's marker is there: another Slack link won the race.
+      if (typeof (await this.get<Record<string, unknown>>(`DEVELOPER#${developerId}`))?.[SLACK_LINKED_ATTRIBUTE] === "string") return { ok: false, reason: "has_one" };
+      return { ok: false, reason: "changed" };
     }
     await this.flush(event);
     return { ok: true, created: true };

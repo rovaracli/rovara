@@ -3,10 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrgId } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
-import { startAppIdentityLink } from "../../packages/broker/src/aws/developer-routes/organization.js";
+import { startAppIdentityLink, unlinkAppIdentity } from "../../packages/broker/src/aws/developer-routes/organization.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { slackCallerFor } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
-import { SLACK_LINK_HAS_ONE, SLACK_LINK_TAKEN, developerIdentityKey, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
+import { SLACK_LINKED_ATTRIBUTE, SLACK_LINK_HAS_ONE, SLACK_LINK_TAKEN, developerIdentityKey, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
 import { membershipOrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { T0, TEAM, httpEvent, identityHarness, type FakeSlackUser } from "../support/developer-fakes.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -338,5 +338,81 @@ describe("the web app's routes for the link", () => {
     expect(calls).toEqual([]);
     await startAppIdentityLink(deps(calls), caller(false) as never, "cloud");
     expect(calls).toEqual([{ kind: "start-identity-link", developerId: "a".repeat(64), sessionId: "00000000-0000-4000-8000-000000000001", provider: "cloud" }]);
+  });
+});
+
+describe("the callback's remaining guards", () => {
+  const cookieOf = (sessionId: string) => ({ cookie: `${SESSION_COOKIE}=${sessionId}` });
+
+  it("refuses a code made under another request's nonce, and links nothing", async () => {
+    const w = await world();
+    const startedA = await start(w.h, w.account, w.session.sessionId) as { ok: true; authorizeUrl: string };
+    const startedB = await start(w.h, w.account, w.session.sessionId) as { ok: true; authorizeUrl: string };
+    const toSlack = async (authorizeUrl: string) => { const url = new URL(authorizeUrl); return (await w.h.http(httpEvent("GET", url.pathname + url.search))).headers.location!; };
+    const slackA = await toSlack(startedA.authorizeUrl);
+    const slackB = await toSlack(startedB.authorizeUrl);
+    // Slack answers request A's authorization (A's nonce is in the ID token) but the callback names request B's state.
+    const callback = w.h.slack.approve(slackA, OWNER_SLACK).replace(/state=[^&]*/, `state=${new URL(slackB).searchParams.get("state")!}`);
+    expect(outcomeOf(await w.h.http(httpEvent("GET", callback, undefined, cookieOf(w.session.sessionId))))).toBe("refused");
+    expect(w.h.db.get(signInIdentityKey(slackKey(OWNER_SLACK)))).toBeUndefined();
+    expect(w.audit.recordedBy("identity.linked").filter((event) => event.actor.id === w.account)).toEqual([]);
+  });
+
+  it("refuses when the account belongs to no company, so there is no bound team to match", async () => {
+    const w = await world();
+    w.h.state.delete(`DEVELOPER_ORG#${w.account}`, "ORG");
+    expect(outcomeOf(await link(w))).toBe("wrong_team");
+    expect(w.h.db.get(signInIdentityKey(slackKey(OWNER_SLACK)))).toBeUndefined();
+  });
+
+  it("two simultaneous links of two Slack accounts leave one link on the account, and the loser is told so", async () => {
+    const w = await world();
+    const a = await start(w.h, w.account, w.session.sessionId) as { ok: true; authorizeUrl: string };
+    const b = await start(w.h, w.account, w.session.sessionId) as { ok: true; authorizeUrl: string };
+    const outcomes = (await Promise.all([
+      finish(w.h, a.authorizeUrl, OWNER_SLACK, { sessionId: w.session.sessionId }),
+      finish(w.h, b.authorizeUrl, OTHER_SLACK, { sessionId: w.session.sessionId }),
+    ])).map(outcomeOf).sort();
+    expect(outcomes).toEqual(["has_one", "linked"]);
+    expect((await w.h.deps.store.slackUserIdsOf(w.account))).toHaveLength(1);
+  });
+
+  it("the write itself refuses a second Slack link when both passed the earlier check (the marker in the transaction)", async () => {
+    const w = await world();
+    const input = (userId: string) => ({ developerId: w.account, identityKey: slackKey(userId), subject: userId, issuer: SLACK_ISSUER, by: { method: "cloud" as const }, belongsToCompany: false });
+    const results = await Promise.all([w.h.deps.store.linkSlackIdentity(input(OWNER_SLACK)), w.h.deps.store.linkSlackIdentity(input(OTHER_SLACK))]);
+    expect(results.map((result) => (result.ok ? "linked" : result.reason)).sort()).toEqual(["has_one", "linked"]);
+    expect(await w.h.deps.store.slackUserIdsOf(w.account)).toHaveLength(1);
+    // The loser wrote nothing at all.
+    const winner = results[0].ok ? OWNER_SLACK : OTHER_SLACK, loser = winner === OWNER_SLACK ? OTHER_SLACK : OWNER_SLACK;
+    expect(w.h.db.get(signInIdentityKey(slackKey(loser)))).toBeUndefined();
+    expect(w.h.db.get(developerIdentityKey(w.account, slackKey(loser)))).toBeUndefined();
+  });
+
+  it("keeps the one-link marker with the link: set by the link, gone after the unlink, back with a re-link", async () => {
+    const w = await world();
+    const marker = () => w.h.db.get(`DEVELOPER#${w.account}`, "META")?.[SLACK_LINKED_ATTRIBUTE];
+    expect(marker()).toBeUndefined();
+    expect(outcomeOf(await link(w))).toBe("linked");
+    expect(marker()).toBe(slackKey(OWNER_SLACK));
+    h_tick(w.h, 1000);
+    expect(await w.h.handler({ kind: "unlink-identity", developerId: w.account, sessionId: w.session.sessionId, provider: "slack" } as never)).toEqual({ ok: true });
+    expect(marker()).toBeUndefined();
+    h_tick(w.h, 1000);
+    expect(outcomeOf(await link(w))).toBe("linked");
+    expect(marker()).toBe(slackKey(OWNER_SLACK));
+    // A different Slack account cannot be linked while this one is.
+    const second = await start(w.h, w.account, w.session.sessionId);
+    expect(second).toEqual({ ok: false, error: "refused", message: SLACK_LINK_HAS_ONE });
+  });
+
+  it("the app route removes a Slack link for a live browser session only", async () => {
+    const calls: unknown[] = [];
+    const deps = { developer: { unlinkIdentity: async (request: unknown) => { calls.push(request); return { ok: true as const }; } }, signInTableName: "signin", documentClient: { send: async () => ({}) }, tableName: "state" } as never;
+    const caller = { developerId: "a".repeat(64), sessionId: "00000000-0000-4000-8000-000000000001" };
+    await expect(unlinkAppIdentity(deps, caller as never, "slack")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(calls).toEqual([]);
+    await unlinkAppIdentity(deps, { ...caller, browserSession: true } as never, "slack").catch(() => undefined);
+    expect(calls).toEqual([{ kind: "unlink-identity", developerId: "a".repeat(64), sessionId: "00000000-0000-4000-8000-000000000001", provider: "slack" }]);
   });
 });

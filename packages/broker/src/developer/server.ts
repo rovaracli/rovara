@@ -8,7 +8,7 @@ import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // (channel members, channel names for R10, 25d's email lookup and bot token check, and 25e's
 // admin-ended sessions and channel by name).
 // Nothing here logs or echoes a secret, a code, a token or a caught error's message.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   AGENTX_CLI_CLIENT_ID,
   ChannelClassRequestSchema,
@@ -211,6 +211,8 @@ const jsonResult = (statusCode: number, body: unknown): HttpResult => ({ statusC
 /** Public, cacheable documents (discovery, keys): no pragma, which belongs only beside no-store. */
 const publicJson = (body: unknown): HttpResult =>
   ({ statusCode: 200, headers: { "content-type": "application/json", "cache-control": "public, max-age=300" }, body: JSON.stringify(body) });
+/** Equal text, compared in constant time. */
+const sameText = (left: string, right: string): boolean => left.length === right.length && timingSafeEqual(Buffer.from(left), Buffer.from(right));
 const redirect = (location: string): HttpResult => ({ statusCode: 302, headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" }, body: "" });
 const oauthError = (status: number, error: string, description: string) => jsonResult(status, { error, error_description: description });
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
@@ -883,7 +885,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     const developerId = request.linkDeveloperId!;
     const back = (outcome: string) => redirect(`${new URL(config.issuer).origin}/app?slack_link=${outcome}`);
     const held = (headers.cookie ?? "").split(";").map((part) => part.trim()).find((part) => part.startsWith("__Host-agentx_review_session="))?.slice("__Host-agentx_review_session=".length);
-    if (request.linkSessionId === undefined || request.linkBrowser !== true || held === undefined || held !== request.linkSessionId) {
+    if (request.linkSessionId === undefined || request.linkBrowser !== true || held === undefined || !sameText(held, request.linkSessionId)) {
       deps.log({ event: "signin.slack_link_wrong_browser", developerId });
       return back("wrong_browser");
     }

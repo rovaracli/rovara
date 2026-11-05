@@ -335,9 +335,10 @@ describe("unlinking a sign-in method", () => {
     const missing = await brokerCall(h, "DELETE", "/v1/app/me/identities/github", cloud.token);
     expect(missing.status).toBe(404);
     expect((missing.body.error as { message: string }).message).toContain("that sign-in method is not linked to your account");
-    // Slack is a method that can be unlinked now (the web user's own link); with none linked it is simply not linked.
+    // Slack is changed in the web app only: a token is refused before the sign-in function is asked.
     const slackNone = await brokerCall(h, "DELETE", "/v1/app/me/identities/slack", cloud.token);
-    expect(slackNone.status).toBe(404);
+    expect(slackNone.status).toBe(403);
+    expect((slackNone.body.error as { message: string }).message).toContain("live browser session");
     const saml = await brokerCall(h, "DELETE", "/v1/app/me/identities/saml", cloud.token);
     expect(saml.status).toBe(400);
     expect((saml.body.error as { message: string }).message).toContain("cloud or github");
