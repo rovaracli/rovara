@@ -176,7 +176,9 @@ describe("the deploy role's grants for the custom domain (access stack)", () => 
     // The certificate: this region, this one name (and it must name one), tagged as this environment's.
     expect(bySid.CustomDomainCertificateRequest).toMatchObject({ Action: ["acm:RequestCertificate"], Resource: "*", Condition: {
       StringEquals: { "aws:RequestedRegion": "us-west-2", "aws:RequestTag/agentx:env": "staging" }, "ForAllValues:StringEquals": { "acm:DomainNames": [DOMAIN] }, Null: { "acm:DomainNames": "false" } } });
-    expect(bySid.CustomDomainCertificateTag).toMatchObject({ Action: ["acm:AddTagsToCertificate"], Condition: { StringEquals: { "aws:RequestTag/agentx:env": "staging" } } });
+    // Tagging needs the tag on the request AND on the certificate, so the role cannot tag a certificate that is not its own and then delete it.
+    expect(bySid.CustomDomainCertificateTag).toMatchObject({ Action: ["acm:AddTagsToCertificate"], Condition: { StringEquals: { "aws:RequestTag/agentx:env": "staging", "aws:ResourceTag/agentx:env": "staging" } } });
+    for (const sid of ["CustomDomainCertificateTag", "CustomDomainCertificates"]) expect(JSON.stringify(bySid[sid]!.Condition), sid).toContain("aws:ResourceTag/agentx:env");
     expect(bySid.CustomDomainCertificates).toMatchObject({ Resource: "arn:aws:acm:us-west-2:944937319445:certificate/*", Condition: { StringEquals: { "aws:ResourceTag/agentx:env": "staging" } } });
     expect([bySid.CustomDomainCertificates!.Action].flat().sort()).toEqual(["acm:DeleteCertificate", "acm:DescribeCertificate", "acm:ListTagsForCertificate", "acm:RemoveTagsFromCertificate"]);
     // The records: the domain's own name and its `_<hash>.<domain>` validation name, A, AAAA and CNAME, in that one zone. The apex is not among the names.
@@ -254,6 +256,14 @@ describe("adding, removing and re-adding the domain never leaves a resource with
     for (const [from, to, deployed, wanted] of [["off", "on", "", DOMAIN], ["on", "off", DOMAIN, undefined], ["off", "on", "", DOMAIN], ["on", "off", DOMAIN, undefined]] as const) {
       expect(run(customDomainDeployOrder(["access", "control-plane"], { deployed, wanted }), from, to), `${from} -> ${to}`).toEqual([]);
     }
+  });
+
+  it("refuses to remove the domain in the same run as a version change, and removes it at the same version", () => {
+    expect(() => customDomainDeployOrder(["access", "control-plane"], { deployed: DOMAIN, wanted: undefined, versionChange: true })).toThrow(/remove it at the version the environment runs now/);
+    expect(customDomainDeployOrder(["access", "control-plane"], { deployed: DOMAIN, wanted: undefined, versionChange: false })).toEqual(["control-plane", "access"]);
+    // Adding or keeping it may come with a version change: the usual order.
+    expect(customDomainDeployOrder(["access", "control-plane"], { deployed: "", wanted: DOMAIN, versionChange: true })).toEqual(["access", "control-plane"]);
+    expect(customDomainDeployOrder(["access", "control-plane"], { deployed: DOMAIN, wanted: DOMAIN, versionChange: true })).toEqual(["access", "control-plane"]);
   });
 
   it("refuses to change the domain to another name in one step, and keeps the usual order when nothing changes", () => {

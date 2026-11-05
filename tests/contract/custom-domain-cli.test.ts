@@ -9,7 +9,7 @@ import { EnvironmentSettingsSchema, readEnvironmentSettings, settingsParameterNa
 import { readInstallAnswers, writeInstallAnswers } from "../../packages/cli/src/init/install-state.js";
 import { runSigninCloud, type CloudSignInFlags } from "../../packages/cli/src/signin/cloud.js";
 import type { SigninServices } from "../../packages/cli/src/signin/commands.js";
-import { EnvironmentSettingsSchema as Settings056 } from "../support/settings-schema-056.js";
+import { CloudSignInAnswersSchema as CloudSignIn056, EnvironmentSettingsSchema as Settings056 } from "../support/settings-schema-056.js";
 import { stagingSettings } from "../support/environment-fixtures.js";
 import { SIGN_IN_PARAMETERS, fakeCloudFormation } from "../support/fake-cloudformation.js";
 import { HOLDER, T0, fakeSlackApi, memoryInitSecrets, sampleAnswers, scriptedPrompter } from "../support/init-fakes.js";
@@ -104,7 +104,7 @@ describe("a 0.5.6 command still reads what 0.5.7 wrote (emergency rollback)", ()
 
   it("the current settings and cloud sign-in schemas have exactly the 0.5.6 keys, so nothing 0.5.7 adds can be seen by a strict 0.5.6 schema", () => {
     expect(Object.keys(EnvironmentSettingsSchema.shape).sort()).toEqual(Object.keys(Settings056.shape).sort());
-    expect(Object.keys(CloudSignInAnswersSchema.shape).sort()).toEqual(["domainPrefix", "emailFrom", "emailSourceArn", "githubClientId", "githubClientSecretArn", "googleClientId", "googleClientSecretArn"]);
+    expect(Object.keys(CloudSignInAnswersSchema.shape).sort()).toEqual(Object.keys(CloudSignIn056.shape).sort());
     expect(CloudSignInAnswersSchema.safeParse({ customDomainName: DOMAIN, customDomainHostedZoneId: ZONE }).success).toBe(false);
   });
 });

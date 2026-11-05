@@ -174,14 +174,17 @@ export function publicAddress(apiEndpoint: string, publicUrl: string | undefined
  * Where the access stack goes in an upgrade. Its grants for the custom domain must outlive the resources they let CloudFormation create and delete, so:
  *  - adding a domain: access first (the usual order), then the control plane creates the certificate and records under the new grants;
  *  - removing it: the control plane first (it deletes the certificate, the records and the validation record under the grants still there), then access drops them;
+ *  - removing it together with a version change: refused (the new release's templates would run under the old release's grants; remove it at the same version, then upgrade);
  *  - changing it to another name: refused. Remove the old one first, upgrade, then add the new one, so the grants are never for one name while the resources are another's.
  * `deployed` is the control-plane stack's CustomDomainName now; `wanted` the recorded domain.
  */
-export function customDomainDeployOrder(order: DeployPart[], domain: { deployed: string | undefined; wanted: string | undefined }): DeployPart[] {
+export function customDomainDeployOrder(order: DeployPart[], domain: { deployed: string | undefined; wanted: string | undefined; versionChange?: boolean }): DeployPart[] {
   const deployed = domain.deployed ?? "";
   const wanted = domain.wanted ?? "";
   if (deployed === "" || deployed === wanted) return order;
   if (wanted !== "") throw agentXError("CONFIG_INVALID", `the control plane has the custom domain ${deployed}, and ${wanted} is recorded; change it in two steps: agentx signin cloud --no-custom-domain, agentx upgrade, then agentx signin cloud --custom-domain ${wanted} --hosted-zone-id <id>, agentx upgrade`);
+  // The new release's templates would run under the old release's grants: remove at the same version, then upgrade.
+  if (domain.versionChange === true) throw agentXError("CONFIG_INVALID", `the custom domain ${deployed} is being removed, and the release changes too; remove it at the version the environment runs now (agentx upgrade to the same version), then upgrade to the new release`);
   return [...order.filter((part) => part !== "access"), ...order.filter((part) => part === "access")];
 }
 
@@ -249,8 +252,9 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
   // the parts this guard checks are exactly the parts that deploy.
   // 0.5.7: the custom domain is its own record (environments/custom-domain.ts); a deploy that was handed none uses the recorded one, so no deploy removes the domain by leaving it out.
   const customDomain = answers.cloud === true ? answers.customDomain ?? await readCustomDomain(store, env) : undefined;
+  const priorVersion = answers.cloud === true ? (await readEnvironmentSettings(store, env))?.version : undefined;
   const deployedDomain = answers.cloud === true && mode === "upgrade" && input.deployedParameters !== undefined ? (await input.deployedParameters(environmentStackName(env, "control-plane")))?.CustomDomainName : undefined;
-  const fullOrder = customDomainDeployOrder(mode === "install" ? installOrder(answers.identity.mode) : upgradeOrder(answers.identity.mode), { deployed: deployedDomain, wanted: customDomain?.domainName });
+  const fullOrder = customDomainDeployOrder(mode === "install" ? installOrder(answers.identity.mode) : upgradeOrder(answers.identity.mode), { deployed: deployedDomain, wanted: customDomain?.domainName, versionChange: priorVersion !== undefined && priorVersion !== release.manifest.version });
   const deploySet = new Set(input.parts ?? fullOrder);
   if (mode === "upgrade" && input.deployedParameters === undefined && [...deploySet].some((part) => OPERATOR_PARAMETERS[part].length > 0)) {
     throw agentXError("CONFIG_INVALID", "an upgrade must read the deployed stacks' parameters to keep what the operator set; this is an AgentX bug, so report it");

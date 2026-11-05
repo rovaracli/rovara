@@ -38,6 +38,8 @@ export interface PolicyStatementJson {
 
 /** The tag the custom domain's certificate carries (set by the stack, infra/lib/custom-domain.ts) and the deploy role's certificate grants are limited to. */
 export const CUSTOM_DOMAIN_TAG = "agentx:env";
+// A later change of stack-level tags (CDK tags the stack's resources) makes CloudFormation call AddTagsToCertificate with tags that may lack agentx:env; the grant below refuses
+// such a call. If stack tags are ever added, include agentx:env=<env> in them, or the next update of the certificate fails with AccessDenied.
 
 /**
  * The deploy (service) role's grants for the optional custom domain, and nothing else in Certificate Manager or Route 53:
@@ -66,7 +68,8 @@ const customDomainStatements = (scope: Pick<PolicyScope, "env" | "partition" | "
         Null: { "acm:DomainNames": "false" },
       },
     },
-    { Sid: "CustomDomainCertificateTag", Effect: "Allow", Action: ["acm:AddTagsToCertificate"], Resource: certificates, Condition: { StringEquals: { [`aws:RequestTag/${CUSTOM_DOMAIN_TAG}`]: scope.env } } },
+    // Both tags: the request sets this environment's tag AND the certificate already has it (CloudFormation tags a certificate when it creates it), so the role cannot tag a certificate that is not its own and then delete it.
+    { Sid: "CustomDomainCertificateTag", Effect: "Allow", Action: ["acm:AddTagsToCertificate"], Resource: certificates, Condition: { StringEquals: { [`aws:RequestTag/${CUSTOM_DOMAIN_TAG}`]: scope.env, [`aws:ResourceTag/${CUSTOM_DOMAIN_TAG}`]: scope.env } } },
     {
       Sid: "CustomDomainCertificates", Effect: "Allow", Action: ["acm:DescribeCertificate", "acm:DeleteCertificate", "acm:RemoveTagsFromCertificate", "acm:ListTagsForCertificate"], Resource: certificates,
       Condition: { StringEquals: { [`aws:ResourceTag/${CUSTOM_DOMAIN_TAG}`]: scope.env } },
