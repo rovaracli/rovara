@@ -5,7 +5,7 @@
 //   4. no counter of money is kept by Rovara: an admitted diagnosis writes the person, the project, the open place and the request, nothing else.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, ErrorRefSchema, diagnosisKey, diagnosisOpenKey, errorRefKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, ErrorRefSchema, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey, type OrgId } from "../../packages/contracts/src/index.js";
 import { startLightDiagnosis } from "../../packages/broker/src/diagnosis/light.js";
 import { admitDiagnosis, claimDiagnosisKey, claimDiagnosisRetry, eraseDiagnosisPerson, readDiagnosisRequest } from "../../packages/broker/src/diagnosis/store.js";
 import { ARJUN, ORG_A, PRIYA, diagnosisWorld, type DiagnosisWorld } from "../support/diagnosis-world.js";
@@ -58,9 +58,15 @@ describe("QA6-14 the one retry after the provider refused the first model", () =
     // No first key yet: nothing to retry.
     await expect(claimDiagnosisRetry(w.diagnosis, ORG_A, status.diagnosisId)).resolves.toBeUndefined();
     await expect(claimDiagnosisKey(w.diagnosis, ORG_A, status.diagnosisId, chosen)).resolves.toBe(true);
+    const project = w.w.db.get(diagnosisKey(ORG_A, status.diagnosisId, "REQUEST"))!["project"] as string;
+    const counter = () => w.w.db.get(diagnosisRateKey(ORG_A, "light_project", project))?.["count"];
+    expect(counter()).toBe(1);
     await expect(claimDiagnosisRetry(w.diagnosis, ORG_A, status.diagnosisId)).resolves.toEqual({ rejected: chosen });
+    // F4: the retry key is counted in the project's daily light count, once.
+    expect(counter()).toBe(2);
     // A second retry, a repeat, or two at once: refused. The first claim stays refused too.
     await expect(claimDiagnosisRetry(w.diagnosis, ORG_A, status.diagnosisId)).resolves.toBeUndefined();
+    expect(counter()).toBe(2);
     await expect(claimDiagnosisKey(w.diagnosis, ORG_A, status.diagnosisId, chosen)).resolves.toBe(false);
   });
 

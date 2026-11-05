@@ -234,26 +234,36 @@ export interface ChosenModel { model: ModelIdentifier; sourceId: string }
 const modelItem = (model: ModelIdentifier): { provider: string; modelId: string } => ({ provider: model.provider, modelId: model.modelId });
 
 /**
- * QA6-14: the one retry. The company's AI provider refused the model the first key was for (an account that has not enabled it), the chat service says so and asks for a second key. Given once per diagnosis, only after a
- * first key was taken, and only to a request still waiting; it answers the model the first key was for (so the retry can leave it out and the refusal can be taught), or undefined when no retry is allowed. The retry
- * key is capped like the first (DIAGNOSIS_LIGHT_BUDGET_USD), and the refused call spent nothing, so a diagnosis is still at most one answered turn of the company's money.
+ * QA6-14: the one retry. The company's AI provider refused the model the first key was for, the chat service says so and asks for a second key. Given once per diagnosis, only after a first key was taken, and
+ * only to a request still waiting; it answers the model the first key was for (so the retry leaves it out), or undefined when no retry is allowed. The retry key is capped like the first
+ * (DIAGNOSIS_LIGHT_BUDGET_USD) and is COUNTED: the claim also takes a place in the project's daily light count, in the same transaction (not refused when the count is full: the diagnosis was already admitted). The
+ * company's money for one diagnosis is therefore at most two keys, each capped at DIAGNOSIS_LIGHT_BUDGET_USD; the refused first call normally spends nothing, but the broker cannot check that.
  */
 export async function claimDiagnosisRetry(deps: DiagnosisStoreDependencies, orgId: OrgId, diagnosisId: string): Promise<{ rejected?: ChosenModel } | undefined> {
-  try {
-    const result = await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "REQUEST"), UpdateExpression: "SET retryClaimedAt = :now", ReturnValues: "ALL_OLD",
-      ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #state = :queued AND attribute_exists(keyClaimedAt) AND attribute_not_exists(retryClaimedAt)", ExpressionAttributeNames: { "#state": "state" },
-      ExpressionAttributeValues: { ":now": new Date(deps.now()).toISOString(), ":org": orgId, ":queued": "queued" },
-    })) as { Attributes?: Item };
-    const model = result.Attributes?.["keyModel"] as { provider?: unknown; modelId?: unknown } | undefined, source = result.Attributes?.["keySource"];
-    return typeof model?.provider === "string" && typeof model.modelId === "string" && typeof source === "string" ? { rejected: { model: { provider: model.provider, modelId: model.modelId }, sourceId: source } } : {};
-  } catch (error) {
-    if ((error as { name?: string }).name === "ConditionalCheckFailedException") {
+  const key = diagnosisKey(orgId, diagnosisId, "REQUEST");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const item = await getItem(deps, key);
+    if (item === undefined || item["orgId"] !== orgId || item["state"] !== "queued" || item["keyClaimedAt"] === undefined || item["retryClaimedAt"] !== undefined || typeof item["project"] !== "string") return undefined;
+    const step = await rateStep(deps, diagnosisRateKey(orgId, "light_project", item["project"]), orgId, Number.MAX_SAFE_INTEGER, DAY_MS);
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        { Update: {
+          TableName: deps.tableName, Key: key, UpdateExpression: "SET retryClaimedAt = :now",
+          ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #state = :queued AND attribute_exists(keyClaimedAt) AND attribute_not_exists(retryClaimedAt)", ExpressionAttributeNames: { "#state": "state" },
+          ExpressionAttributeValues: { ":now": new Date(deps.now()).toISOString(), ":org": orgId, ":queued": "queued" },
+        } },
+        step.item,
+      ] as never }));
+    } catch (error) {
+      if (!isCancelled(error)) throw error;
+      // Either the retry was taken (or the request ended) at the same moment, which the next read shows, or only the counter moved: read again.
       deps.log?.({ event: "diagnosis.retry_refused", orgId });
-      return undefined;
+      continue;
     }
-    throw error;
+    const model = item["keyModel"] as { provider?: unknown; modelId?: unknown } | undefined, source = item["keySource"];
+    return typeof model?.provider === "string" && typeof model.modelId === "string" && typeof source === "string" ? { rejected: { model: { provider: model.provider, modelId: model.modelId }, sourceId: source } } : {};
   }
+  return undefined;
 }
 
 /** Remembers the model the retry key is for (a retry that fails is taught too). Best effort: the key is already minted. */

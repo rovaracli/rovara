@@ -88,6 +88,8 @@ describe("agentx upgrade: prepareDeployment and the catalog flavor, driven end t
     expect(calls.findIndex((call) => call.endsWith(`${CATALOG_FLAVOR_TOOL} staging`))).toBeGreaterThan(calls.indexOf("npm ci") - 1);
     expect(calls.findIndex((call) => call.endsWith(`${CATALOG_FLAVOR_TOOL} staging`))).toBeLessThan(calls.indexOf("npm run build"));
     expect(seen).toEqual([{ at: "build", flavor: "staging", key: true }, { at: "synth", flavor: "staging", key: true }]);
+    // QA6-10: the synth carries the release being deployed.
+    expect(calls.find((call) => call.includes(" synth "))).toContain("-c agentxReleaseVersion=1.2.3");
     // The deploy uses the compiled output; until cleanup the tree is still the staging one.
     expect(await flavorOf(root)).toBe("staging");
     await prepared.cleanup();

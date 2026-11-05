@@ -3,7 +3,7 @@ import { fixtureProject } from "../support/project-ai-source.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { AgentXError, errorStatus, orgSettingsKey, orgMemberKey, developerOrgKey, orgMetaKey, projectAiKey, orgProjectCatalogKey, projectMetaKey } from "@agentx/contracts";
+import { AgentXError, errorStatus, orgScoped, orgSettingsKey, orgMemberKey, developerOrgKey, orgMetaKey, projectAiKey, orgProjectCatalogKey, projectMetaKey } from "@agentx/contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -191,4 +191,14 @@ it("a company with no stored task-stop policy reads as not set up (Disabled) and
  f.db.set({ ...orgMemberKey(orgId, b), orgId, developerId: b, role: "member" });
  f.db.set({ ...developerOrgKey(b), orgId, role: "member" });
  expect((await f.call("GET", `${base}/editing`, undefined, b)).status).toBe(403);
+});
+
+// F3: a company that WAS seeded but whose policy row is gone is refused by admission as invalid; the editor must not call it Disabled.
+for (const sk of ["V1#bootstrap", "V1#upgrade"]) it(`a company with a ${sk.slice(3)} seed receipt and no policy row is invalid, not Disabled`, async () => {
+ const f = fixture();
+ f.db.delete(f.key);
+ f.db.set({ pk: orgScoped(orgId, "TASK_STOP_SEED"), sk, entityType: "TASK_STOP_SEED", orgId, version: 1, source: sk === "V1#bootstrap" ? "bootstrap" : "upgrade", outcome: "created", policyRevision: 1 });
+ const view = await f.call("GET", `${base}/editing`);
+ expect(view.status).toBe(400);
+ expect(view.body).toMatchObject({ code: "CONFIG_INVALID" });
 });

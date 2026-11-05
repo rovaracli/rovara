@@ -774,6 +774,7 @@ export async function prepareDeployment(input: {
       const cloud = {
         ...(input.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
         ...(edition === undefined ? {} : { edition }), ...(input.newInstall === true ? { newInstall: true } : {}),
+        releaseVersion: release.manifest.version,
       };
       declaredParameters = await synthDeclaredParameters({ runner, source, env: input.env, region, identityMode: input.identityMode, ...cloud });
       cdkOutputsDir = await mkdtemp(join(tmpdir(), "agentx-cdk-outputs-"));

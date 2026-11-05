@@ -32,10 +32,11 @@ function cutAnswer(answer: string): string {
 
 /**
  * QA6-14: what a failed turn shows about why, as a fixed reason. The runtime's own failure sentence (`safeError`: one fixed sentence chosen from the HTTP status alone, never the provider's text) is matched
- * whole at its end; nothing of the text is kept. A refused key (401/403) or an unknown model (404) is the provider refusing the model; a credit or rate limit and an outage are told apart.
+ * whole at its end; nothing of the text is kept. A key the provider does not accept (401) is the connection's, not a model's, so it is not retried; a key refused for this call (403) or an unknown model (404) is the provider refusing the model; a credit or rate limit and an outage are told apart.
  */
 export function diagnosisFailureReason(error: unknown): DiagnosisFailureReason | undefined {
   const text = error instanceof Error ? error.message : "";
+  if (/request failed; the API key was refused; check that it is valid and has not expired$/u.test(text)) return "key_invalid";
   if (/request failed; (?:check the API key and its permissions|check the model ID and that the key's organization can use it|check model availability and the provider allowlist)$/u.test(text)) return "model_rejected";
   if (/request failed; (?:check the key's credit balance and spending limit|rate limited(?:;| or out of credits;)[^\n]{0,80})$/u.test(text)) return "limit_reached";
   if (/request failed; (?:upstream unavailable; check provider status before retrying|the provider is overloaded; wait before retrying)$/u.test(text)) return "provider_unavailable";

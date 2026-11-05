@@ -77,7 +77,7 @@ describe("who pays for a light diagnosis", () => {
     }
   });
 
-  it("QA6-14: after the provider refused the first model, one retry key is given that leaves that model out; the refused Rovara-catalog model is taught as unusable; a second retry or a retry with no first key is refused", async () => {
+  it("QA6-14: after the provider refused the first model, one retry key is given that leaves that model out for this diagnosis only (nothing is written to the install-wide usable-models record); a second retry or a retry with no first key is refused", async () => {
     const w = diagnosisWorld({ edition: "public" });
     const status = await startLightDiagnosis(w.diagnosis, w.caller(PRIYA), { requestId: randomUUID(), errorRef: w.ref() });
     const t = service(w, "public");
@@ -100,14 +100,14 @@ describe("who pays for a light diagnosis", () => {
       expect(mint).toHaveBeenCalledTimes(1);
       const options = mint.mock.calls[0]![6] as { diagnosis: { avoid?: string } };
       expect(options.diagnosis.avoid).toBe(canonicalModelName(haiku));
-      expect(markUnusable).toHaveBeenCalledTimes(1);
-      expect(markUnusable).toHaveBeenCalledWith(haiku);
+      // F2: the refusal is this diagnosis's alone: the install-wide record is never touched from here.
+      expect(markUnusable).not.toHaveBeenCalled();
       // The retry is once: another is refused, and no plain key is given again either.
       mint.mockClear();
       await expect(ask({ retryAfterRefusal: true })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
       await expect(ask()).rejects.toThrow("already claimed");
       expect(mint).toHaveBeenCalledTimes(1);
-      expect(markUnusable).toHaveBeenCalledTimes(1);
+      expect(markUnusable).not.toHaveBeenCalled();
     } finally {
       mint.mockReset();
       mint.mockImplementation((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); });

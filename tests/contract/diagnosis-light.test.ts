@@ -233,7 +233,7 @@ describe("the turn, the answer and what a person reads", () => {
   });
 
   it("QA6-14: a failed diagnosis says why in fixed words when the service names a reason, and keeps the generic words when it names none or an unknown one", async () => {
-    for (const reason of ["model_rejected", "limit_reached", "provider_unavailable"] as const) {
+    for (const reason of ["model_rejected", "key_invalid", "limit_reached", "provider_unavailable"] as const) {
       const w = diagnosisWorld();
       const first = await start(w, PRIYA);
       await expect(completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: first.diagnosisId, outcome: "FAILED", reason })).resolves.toEqual({ outcome: "FAILED" });
@@ -241,6 +241,7 @@ describe("the turn, the answer and what a person reads", () => {
       expect(read).toMatchObject({ state: "failed", failure: DIAGNOSIS_FAILURE_WORDS[reason] });
       expect(DIAGNOSIS_FAILURE_WORDS[reason].length).toBeLessThanOrEqual(200);
       expect(DIAGNOSIS_FAILURE_WORDS[reason]).not.toContain("Couldn't diagnose this now");
+      if (reason === "key_invalid") expect(DIAGNOSIS_FAILURE_WORDS[reason]).toContain("Admin, Connections");
       // A repeat of the outcome keeps the first reason.
       await completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: first.diagnosisId, outcome: "FAILED", reason: "limit_reached" });
       expect(await diagnosisStatusFor(w.diagnosis, w.caller(PRIYA), first.diagnosisId)).toMatchObject({ failure: DIAGNOSIS_FAILURE_WORDS[reason] });

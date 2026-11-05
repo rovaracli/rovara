@@ -444,7 +444,9 @@ function safeError(provider: KeyedModelProvider, aborted: boolean, status?: numb
   if (chatgpt && (status === 401 || status === 403)) return "ChatGPT request failed; the ChatGPT connection was refused, so connect ChatGPT again";
   if (chatgpt && status === 429) return "ChatGPT request failed; your ChatGPT plan's usage limit may be reached, see https://chatgpt.com/settings/usage";
   if (chatgpt && (status === 400 || status === 404)) return "ChatGPT request failed; your ChatGPT plan may not allow this model";
-  const detail = status === 401 || status === 403 ? "check the API key and its permissions"
+  // 401 is a key the provider does not accept (invalid, expired, not yet live); 403 is a key that may not use this model or call. Told apart so a person can be sent to the right place (QA6-14).
+  const detail = status === 401 ? "the API key was refused; check that it is valid and has not expired"
+    : status === 403 ? "check the API key and its permissions"
     : status === 402 ? "check the key's credit balance and spending limit"
     : status === 404 ? (provider === "openrouter" ? "check model availability and the provider allowlist" : "check the model ID and that the key's organization can use it")
     : status === 429 ? (provider === "openrouter" ? "rate limited; wait before retrying" : "rate limited or out of credits; check the key's usage limits before retrying")

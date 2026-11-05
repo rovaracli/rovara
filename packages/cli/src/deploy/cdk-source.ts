@@ -79,7 +79,7 @@ type StackEntry = { declared: ReadonlySet<string> } | { problem: string };
  * stack the deploy targets, is refused when it is asked for, so a part this run does not deploy
  * (identity with your own OIDC provider) never fails it.
  */
-export async function synthDeclaredParameters(input: { runner: CommandRunner; source: string; env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean }): Promise<(part: DeployPart) => ReadonlySet<string>> {
+export async function synthDeclaredParameters(input: { runner: CommandRunner; source: string; env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean; releaseVersion?: string }): Promise<(part: DeployPart) => ReadonlySet<string>> {
   const { source } = input;
   const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-synth-"));
   const entries = new Map<DeployPart, StackEntry>();

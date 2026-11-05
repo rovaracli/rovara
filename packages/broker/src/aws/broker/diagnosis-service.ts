@@ -77,12 +77,12 @@ export async function handleDiagnosisServiceRoute(
   if (retryAfterRefusal !== true) {
     return json(await mintChatTurnKey(dependencies, waiting.orgId, waiting.project, requester, { turnId, model, classifierModel }, undefined, { diagnosis: { claimKey: (chosen) => claimDiagnosisKey(diagnosis, waiting.orgId, waiting.diagnosisId, chosen) } }), request.requestId);
   }
-  // QA6-14: the company's AI provider refused the model the first key was for. One retry per diagnosis, only after a first key: the refused model is left out of the choice, and (when it is one of Rovara's own
-  // catalog, whose account this is) taught as unusable, so the next default choice for any task leaves it out for a while too. Nothing in the request names the model: the broker kept it from the first key.
+  // QA6-14: the service says the company's AI provider refused the model the first key was for (the broker trusts the slack-service role for that; it cannot see the call). One retry per diagnosis, only after a first
+  // key: the refused model is left out of THIS diagnosis's choice and nothing else. It is never written to the install-wide usable-models record: that learning belongs to the worker's learner, which reads a distinct
+  // "not available for this account" signal, and a refusal seen here (an expired or not-yet-live key, say) must not drop a working model for every company. Nothing in the request names the model: the broker kept it from the first key.
   const retry = await claimDiagnosisRetry(diagnosis, waiting.orgId, waiting.diagnosisId);
   if (retry === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "this diagnosis already had its retry");
   const { rejected } = retry;
-  if (rejected?.sourceId === "rovara") await dependencies.usableModels?.markUnusable(rejected.model).catch(() => undefined);
   return json(await mintChatTurnKey(dependencies, waiting.orgId, waiting.project, requester, { turnId, model, classifierModel }, undefined, {
     diagnosis: { claimKey: async (chosen) => { if (chosen !== undefined) await recordRetryModel(diagnosis, waiting.orgId, waiting.diagnosisId, chosen); return true; }, ...(rejected === undefined ? {} : { avoid: canonicalModelName(rejected.model) }) },
   }), request.requestId);

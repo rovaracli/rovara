@@ -102,6 +102,7 @@ describe("QA6-14: a model the provider refuses", () => {
   it("a 404 from the provider is the same refusal; a limit or an outage is told apart and not retried; anything else has no reason", async () => {
     const cases: Array<[string, string | undefined, number]> = [
       ["Model source request failed; check the model ID and that the key's organization can use it", "model_rejected", 2],
+      ["Model source request failed; the API key was refused; check that it is valid and has not expired", "key_invalid", 1],
       ["Model source request failed; check the key's credit balance and spending limit", "limit_reached", 1],
       ["Model source request failed; rate limited; wait before retrying", "limit_reached", 1],
       ["Model source request failed; upstream unavailable; check provider status before retrying", "provider_unavailable", 1],

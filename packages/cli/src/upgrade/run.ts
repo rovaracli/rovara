@@ -53,7 +53,7 @@ export interface UpgradeDependencies {
   sourceRelease(input: { source: string; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }): Promise<LoadedRelease>;
   notes(version: string): Promise<ReleaseNotes | undefined>;
   prepare(input: { settings: EnvironmentSettings; release: LoadedRelease; source?: string; reservedConcurrency?: false }): Promise<PreparedDeployment>;
-  cdkDiff(request: DeployRequest, settings: EnvironmentSettings, source: string, reservedConcurrency?: false): Promise<string>;
+  cdkDiff(request: DeployRequest, settings: EnvironmentSettings, source: string, reservedConcurrency?: false, releaseVersion?: string): Promise<string>;
   ask: Ask;
   isInteractive(): boolean;
   /** The clients that point the GitHub App's webhook at the control plane: Secrets Manager (read and write) and GitHub. */
@@ -327,7 +327,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
         }
       }
       const deployer = settings.engine === "templates" ? prepared.deployer : cdkReviewedDeployer(prepared.deployer, async (request) => {
-        const risks = cdkDiffRisks(await deps.cdkDiff(request, settings, options.source ?? "", options.reservedConcurrency));
+        const risks = cdkDiffRisks(await deps.cdkDiff(request, settings, options.source ?? "", options.reservedConcurrency, release.manifest.version));
         if (risks.iam) deps.write(`${request.stackName} changes IAM; the changes are in the diff above.`);
         const refusal = await guardData({ stackName: request.stackName, data: risks.data, allowReplace, yes: options.yes, ask: deps.ask });
         if (refusal !== undefined) throw agentXError("CONFIG_INVALID", refusal);

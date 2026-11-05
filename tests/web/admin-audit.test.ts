@@ -136,3 +136,15 @@ it("asks for the newest records first and shows member names, with a plain label
   expect(screen.getByRole("status", { name: "Audit records shown on this page" }).textContent).toContain("Sequence 1 through 3.");
  } finally { f.close(); } })();
 });
+
+// F1: one bad name must never fail the page: it is dropped for that person and the records show.
+it("shows the records when the server sends a name that is too long or not text: that one name falls back to the plain label", async () => {
+ const hex = (c: string) => c.repeat(64);
+ const rows = [2, 1].map(seq => ({ ...row, record: { ...row.record, seq, actor: { kind: "member", id: seq === 2 ? hex("a") : hex("c") }, target: { kind: "member", id: hex("b") } } }));
+ const f = mount({ path: "/app/admin/audit", respond: async r => ({ status: 200, body: r.path === "/v1/app/me" ? { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId, name: "Acme", plan: "team" }, identities: [] } : r.path.includes("/audit/records") ? { ...ledgerStatus, records: rows, actorNames: { [hex("a")]: "\u{1F600}".repeat(150), [hex("b")]: 42, [hex("c")]: "Maya Cole" } } : r.path.includes("/audit/status") ? { ...ledgerStatus, limits: limits } : r.path === "/v1/app/nav" ? AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { ...features } }) : {} }) });
+ return (async () => { try {
+  await screen.findByText("Maya Cole");
+  expect(screen.getAllByText("Unnamed member").length).toBeGreaterThan(0);
+  expect(screen.queryByRole("alert")).toBeNull();
+ } finally { f.close(); } })();
+});

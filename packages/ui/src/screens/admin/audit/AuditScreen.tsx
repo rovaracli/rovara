@@ -17,13 +17,15 @@ const text = z.string().max(200);
 const statusFields = { headSeq: number, sealedThroughSeq: number, latestTimestamp: z.string().max(40).optional(), epochsWithoutTimestamp: z.array(text).max(20), lockMode: z.enum(["COMPLIANCE", "GOVERNANCE"]).optional() };
 const statusSchema = z.object({ ...statusFields, limits: z.literal(AUDIT_LIMITS_COPY) }).refine(value => value.sealedThroughSeq <= value.headSeq);
 function recordsSchema(orgId: string, cursor: string) {
- return z.object({ ...statusFields, records: z.array(z.object({ record: z.object({ orgId: z.literal(orgId), seq: number.refine(value => value > 0), action: z.string().max(100), occurredAt: z.string().max(40), recordedAt: z.string().max(40), actor: z.object({ kind: text, id: text }), target: z.object({ kind: text, id: text }), proof: z.object({ kind: text, method: text.optional(), via: text.optional(), authTime: z.string().max(40).optional() }).optional() }) })).max(50), actorNames: z.record(z.string().regex(/^[a-f0-9]{64}$/), z.string().max(100)).optional(), nextCursor: z.string().max(2048).regex(/^[A-Za-z0-9_-]+$/).optional() }).refine(value => value.sealedThroughSeq <= value.headSeq && (value.nextCursor === undefined || value.nextCursor !== cursor));
+ return z.object({ ...statusFields, records: z.array(z.object({ record: z.object({ orgId: z.literal(orgId), seq: number.refine(value => value > 0), action: z.string().max(100), occurredAt: z.string().max(40), recordedAt: z.string().max(40), actor: z.object({ kind: text, id: text }), target: z.object({ kind: text, id: text }), proof: z.object({ kind: text, method: text.optional(), via: text.optional(), authTime: z.string().max(40).optional() }).optional() }) })).max(50), actorNames: z.record(z.string(), z.unknown()).optional(), nextCursor: z.string().max(2048).regex(/^[A-Za-z0-9_-]+$/).optional() }).refine(value => value.sealedThroughSeq <= value.headSeq && (value.nextCursor === undefined || value.nextCursor !== cursor));
 }
 // QA6-09: a member is shown by the name the server gave for them, else a plain label: the record's own id is an opaque hash that tells a reader nothing. Anything that is not a member keeps its kind and id.
 const PERSON_ID = /^[a-f0-9]{64}$/;
-function who(side: { kind: string; id: string }, names: Record<string, string> | undefined): string {
+// A name that is not a short string is one name that is not shown (the plain label stands); it never fails the page.
+function who(side: { kind: string; id: string }, names: Record<string, unknown> | undefined): string {
  if (side.kind !== "member" || !PERSON_ID.test(side.id)) return `${side.kind}: ${side.id}`;
- return names?.[side.id] ?? "Unnamed member";
+ const name = names?.[side.id];
+ return typeof name === "string" && name.trim() !== "" && name.length <= 200 ? name : "Unnamed member";
 }
 function utc(value: string): string | undefined {
  if (!value) return undefined;

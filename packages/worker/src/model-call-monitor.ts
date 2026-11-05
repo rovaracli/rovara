@@ -73,6 +73,7 @@ const PI_RETRY_CANCELLED = "Retry cancelled";
  */
 const TRANSPORT_DETAILS: ReadonlyMap<string, { classify: number; report?: number; chatgpt?: true }> = new Map([
   ["check the API key and its permissions", { classify: 401 }],
+  ["the API key was refused; check that it is valid and has not expired", { classify: 401, report: 401 }],
   ["check the key's credit balance and spending limit", { classify: 402, report: 402 }],
   ["check model availability and the provider allowlist", { classify: 404, report: 404 }],
   ["check the model ID and that the key's organization can use it", { classify: 404, report: 404 }],

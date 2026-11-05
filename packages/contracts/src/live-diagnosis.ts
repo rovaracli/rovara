@@ -60,7 +60,7 @@ export const DiagnosisModelAccessRequestSchema = DiagnosisRefSchema.extend({
 }).strict();
 
 /** QA6-14: why a light diagnosis ended without an answer, as a fixed word the chat service picks from the kind of failure it saw (never the failure's text). Absent: no reason known. */
-export const DIAGNOSIS_FAILURE_REASONS = ["model_rejected", "limit_reached", "provider_unavailable"] as const;
+export const DIAGNOSIS_FAILURE_REASONS = ["model_rejected", "key_invalid", "limit_reached", "provider_unavailable"] as const;
 export const DiagnosisFailureReasonSchema = z.enum(DIAGNOSIS_FAILURE_REASONS);
 export type DiagnosisFailureReason = z.infer<typeof DiagnosisFailureReasonSchema>;
 
@@ -138,6 +138,7 @@ export const DIAGNOSIS_NO_PROVIDER_MESSAGE = "Diagnosis uses your company's AI p
 /** QA6-14: what a person reads when a light diagnosis could not run, by reason. Fixed words that say what to check next; at most 200 characters (the status's `failure`). */
 export const DIAGNOSIS_FAILURE_WORDS: Record<DiagnosisFailureReason, string> = {
   model_rejected: "Your AI provider refused the models Rovara tried. Ask an admin to enable a Claude model in your provider account, then try again.",
+  key_invalid: "Your AI provider did not accept the connection's key. Check the connection in Admin, Connections, then try again.",
   limit_reached: "Your AI provider's limit or credit ran out while diagnosing. Check it in Admin, AI sources, then try again.",
   provider_unavailable: "Your AI provider didn't answer. Try again in a few minutes.",
 };

@@ -191,7 +191,7 @@ function redactSecrets(text: string, parameters: Record<string, string>): string
 
 /** The app and context every cdk command runs with (deploy, diff, and cdk-source.ts's synth), so
  * the synth that reads the declared parameters synthesizes exactly what the deploy deploys. */
-export function cdkAppArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean }): string[] {
+export function cdkAppArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean; releaseVersion?: string }): string[] {
   const args = ["--app", "node infra/dist/bin/agentx.js", "-c", `agentxEnv=${input.env}`, "-c", `agentxRegion=${input.region}`];
   if (input.identityMode === "oidc") args.push("-c", "agentxIdentity=oidc");
   // R45: the hosted-cloud switch is synth-time only, so it comes from the stored settings on every command.
@@ -201,11 +201,13 @@ export function cdkAppArguments(input: { env: string; region: string; identityMo
   if (input.newInstall === true) args.push("-c", `${NEW_INSTALL_CONTEXT_KEY}=true`);
   // `agentx upgrade --no-reserved-concurrency`: for an account whose Lambda concurrency limit is too low to reserve any. Unset keeps the default (reserved).
   if (input.reservedConcurrency === false) args.push("-c", "agentxReservedConcurrency=false");
+  // QA6-10: the release this deploy carries, so the broker can tell the app which release it runs. Only a plain x.y.z is passed (a prerelease or a source build has none): the synth, and so the template, is unchanged otherwise.
+  if (input.releaseVersion !== undefined && /^\d{1,4}\.\d{1,4}\.\d{1,4}$/u.test(input.releaseVersion)) args.push("-c", `agentxReleaseVersion=${input.releaseVersion}`);
   return args;
 }
 
 /** The cdk command's arguments for one stack (deploy or diff); a deploy passes each parameter by physical stack name. */
-function cdkArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean }, request: DeployRequest, command: "deploy" | "diff"): string[] {
+function cdkArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean; releaseVersion?: string }, request: DeployRequest, command: "deploy" | "diff"): string[] {
   // --no-install: only the CDK CLI `npm ci` installed from the release's own lockfile, never one npx
   // would otherwise download on the fly.
   const args = ["--no-install", "cdk", command, CDK_CONSTRUCT_IDS[request.part], "--exclusively", ...cdkAppArguments(input)];
@@ -223,7 +225,7 @@ function cdkArguments(input: { env: string; region: string; identityMode: "cogni
  * through a Ref or GetAtt, nor a Conditions or Mappings change that adds or removes a conditional
  * resource; the live check (Task 20) looks at this. cdk prints the diff on stderr; the
  * text returned has every secret redacted. */
-export async function cdkDiff(input: { runner: CommandRunner; source: string; env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean; request: DeployRequest }): Promise<string> {
+export async function cdkDiff(input: { runner: CommandRunner; source: string; env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean; releaseVersion?: string; request: DeployRequest }): Promise<string> {
   // --no-notices: a notice naming a guarded resource type would otherwise read as an unclear line.
   const args = [...cdkArguments(input, input.request, "diff"), "--method=template", "--no-notices"];
   const redact = (text: string) => redactSecrets(text, input.request.parameters);
@@ -243,6 +245,8 @@ export function cdkDeployer(input: {
   /** Enterprise foundations E2: the install's edition (the explicit request or the recorded one), passed to the synth as `-c rovaraEdition`. */
   edition?: Edition;
   newInstall?: boolean;
+  /** QA6-10: the release being deployed (`release.manifest.version`), passed to the synth as `-c agentxReleaseVersion` when it is a plain x.y.z. */
+  releaseVersion?: string;
   outputsDir: string;
   outputs: (stackName: string) => Promise<StackOutputs | undefined>;
 }): StackDeployer {

@@ -1,7 +1,7 @@
 // QA6-09: the Audit page's member names. Display names only (never an email), only for this org's people, "A former member" for an erased person, and a failure leaves a person unnamed.
 import { describe, expect, it } from "vitest";
 import { orgMemberKey } from "@agentx/contracts";
-import { FORMER_MEMBER, auditActorNamesFor, auditActorNamesOf } from "../../packages/broker/src/audit/actor-names.js";
+import { FORMER_MEMBER, auditActorNamesFor, cutName, auditActorNamesOf } from "../../packages/broker/src/audit/actor-names.js";
 import type { AttributionReader } from "../../packages/broker/src/attribution/resolve.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -39,5 +39,38 @@ describe("auditActorNamesOf: the install's tables", () => {
     db.set({ pk: `DEVELOPER#${outsider!}`, sk: "META", developerId: outsider!, displayName: "Not Ours" });
     const names = await auditActorNamesOf({ documentClient: db, stateTable: "state", signInTable: "signin", teamRecordTable: undefined, orgId: ORG })([priya!, outsider!]);
     expect(names).toEqual({ [priya!]: "Priya Shah" });
+  });
+});
+
+describe("F1 and F5: long names and many lookups", () => {
+  it("a name is cut to 80 characters and 100 UTF-16 units, never through an emoji, so the page's own limit always holds", () => {
+    const emoji = "\u{1F600}".repeat(200);
+    const cut = cutName(emoji);
+    expect(cut.length).toBeLessThanOrEqual(100);
+    expect(Array.from(cut)).toHaveLength(50);
+    expect(cut.endsWith("\ud83d")).toBe(false);
+    expect(cutName("a".repeat(300))).toHaveLength(80);
+    expect(cutName("Priya Shah")).toBe("Priya Shah");
+  });
+
+  it("an emoji name comes back within the limit through the resolver", async () => {
+    const reader: AttributionReader = { memberName: async () => "\u{1F600}".repeat(80), isErased: async () => false };
+    const names = await auditActorNamesFor(reader, ORG)(["1".repeat(64)]);
+    expect(names["1".repeat(64)]!.length).toBeLessThanOrEqual(100);
+  });
+
+  it("asks about each person once and at most 16 at a time", async () => {
+    let running = 0, most = 0;
+    const seen: string[] = [];
+    const reader: AttributionReader = {
+      isErased: async () => false,
+      memberName: async (_org, id) => { seen.push(id); running += 1; most = Math.max(most, running); await new Promise((resolve) => setTimeout(resolve, 2)); running -= 1; return "Name"; },
+    };
+    const ids = Array.from({ length: 60 }, (_, index) => index.toString(16).padStart(2, "0").repeat(32));
+    const names = await auditActorNamesFor(reader, ORG)([...ids, ...ids]);
+    expect(Object.keys(names)).toHaveLength(60);
+    expect(seen).toHaveLength(60);
+    expect(most).toBeLessThanOrEqual(16);
+    expect(most).toBeGreaterThan(1);
   });
 });
