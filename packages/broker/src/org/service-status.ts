@@ -1,7 +1,8 @@
 import { takeRateAt } from "../developer/page-comments.js";
 import { requireLiveCompanyAdmin, type CompanyAuthorityDependencies, type CompanyViewer } from "./company-authority.js";
 import { z } from "zod";
-import { connectorHealthErrorRef, e2eRuntimeExpiryNotice, OrgIdSchema, agentXError, orgScoped, type ErrorRef } from "@agentx/contracts";
+import { connectorHealthErrorRef, e2eRuntimeExpiryNotice, OrgIdSchema, agentXError, orgScoped, type ErrorRef, type OrgId } from "@agentx/contracts";
+import { opsFailuresCheck, type OpsFailures } from "../team-record/ops-failures.js";
 type RuntimeKind = "web" | "api";
 export interface ServiceObservation {
  kind: RuntimeKind; state: "ready" | "parked" | "unavailable" | "unknown";
@@ -42,7 +43,11 @@ export function projectRuntimeStatus(input: { rows: readonly unknown[]; malforme
 }
 
 export interface StoredRuntimeEvidence { rows: readonly unknown[]; malformedKinds: readonly string[] }
-export interface ServiceStatusDependencies extends CompanyAuthorityDependencies { now(): number; runtimeStatus?: () => Promise<StoredRuntimeEvidence> }
+export interface ServiceStatusDependencies extends CompanyAuthorityDependencies {
+ now(): number; runtimeStatus?: () => Promise<StoredRuntimeEvidence>;
+ /** SRL-6: the company's erase and source-delete failures of the last 24 hours. Absent where the team record is off, and the answer then has no such row. */
+ teamRecordFailures?: (orgId: OrgId) => Promise<OpsFailures>;
+}
 const evidenceSchema = z.object({ rows: z.array(z.unknown()).max(2), malformedKinds: z.array(z.enum(["web", "api"])).max(2) }).strict();
 /** Browser reads only: rate rows are the sole state mutation, never runtime renewal. */
 export async function readOrgServiceStatus(deps: ServiceStatusDependencies, caller: CompanyViewer, request: { expectedOrgId: unknown }) {
@@ -62,8 +67,14 @@ export async function readOrgServiceStatus(deps: ServiceStatusDependencies, call
    const parsed = evidenceSchema.safeParse(raw);if (!parsed.success || Buffer.byteLength(JSON.stringify(raw), "utf8") > 16384) reason = "invalid_evidence";else evidence = parsed.data;
   } catch { reason = "unavailable"; } finally { clearTimeout(timer); }
  }
+ // SRL-6: counts only; a read that fails or is slow is "unknown", never a healthy claim and never a failure of the page.
+ let teamRecord: { status: "ok" | "warn" | "unknown"; detail: string } | undefined;
+ if (deps.teamRecordFailures !== undefined) {
+  try { teamRecord = opsFailuresCheck(await Promise.race([deps.teamRecordFailures(caller.orgId), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Stored read deadline")), 5000); })])); }
+  catch { teamRecord = { status: "unknown", detail: "could not read the delete and erase failures" }; } finally { clearTimeout(timer); }
+ }
  await requireLiveCompanyAdmin(deps, caller);const now = deps.now();
  const checkedAt = new Date(now).toISOString();
  const checks: ServiceObservation[] = withServiceErrorRefs(evidence === undefined ? (["web", "api"] as const).map(kind => ({ kind, state: "unknown", observation: "unknown", reason })) : projectRuntimeStatus(evidence, now), checkedAt);
- return { orgId: caller.orgId, source: "stored_runtime_qualification" as const, checkedAt, configured: deps.runtimeStatus !== undefined, checks };
+ return { orgId: caller.orgId, source: "stored_runtime_qualification" as const, checkedAt, configured: deps.runtimeStatus !== undefined, checks, ...(teamRecord === undefined ? {} : { teamRecord }) };
 }

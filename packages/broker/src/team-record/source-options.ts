@@ -14,12 +14,12 @@
 // taken before the tool is asked and never given back, so a failing read cannot repeat past it); the tool's own cursor is checked before anything is spent. Every failure is a fixed code: Slack down or unreadable, an app
 // that cannot be read, no reader wired, all 503 `RUNTIME_UNAVAILABLE` (the screen then offers the typed field); a bot without the listing scopes is 503 `SLACK_SCOPE_MISSING`. No text from Slack or a tool
 // is ever in an error; names appear only in the options, cut to 200 characters, and the screen shows them as plain text.
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, SourceOptionsQuerySchema, SourceOptionsViewSchema, agentXError, teamRecordPk, type OrgId, type SourceOption, type SourcePickerKind } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, errorName } from "../agents/table-writes.js";
 import { SOURCE_OPTIONS_SK_PREFIX } from "./source-store.js";
-import type { RecordQueryDependencies } from "./query.js";
+import { personRateKey, pickerPersonHash, type RecordQueryDependencies } from "./query.js";
 import type { RecordRouteReply, RecordRouteRequest } from "./routes.js";
 import { clearingElsewhere, gate, type SourceWriteContext } from "./source-write.js";
 import { classifySlack, validTrackerCursor } from "./source-places.js";
@@ -47,7 +47,7 @@ export const LINKED_IDS_MAX = 5;
 /** Private page reads a company may make a minute: its own bucket (`users.conversations` is a different Slack method from `conversations.list`), and no more than the public one. */
 export const PRIVATE_LIST_PER_MINUTE = 12;
 /** What a private session keeps of the person who opened it: a hash of the company and the developer id (never the id), so another editor's cursor cannot spend this person's pages. Other kinds' sessions keep no person. */
-const personOf = (orgId: OrgId, developerId: string): string => createHash("sha256").update(`source-options|${orgId}|${developerId}`).digest("hex");
+const personOf = pickerPersonHash;
 const sourceOfKind = (kind: SourcePickerKind): "slack" | "linear" | "jira" => (kind === "slack-private" ? "slack" : kind);
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "The list can't be read right now.");
 const scopeMissing = (): RecordRouteReply => ({ status: 503, body: { code: "SLACK_SCOPE_MISSING", message: "Rovara can't list channels. Ask an admin to reinstall the Slack app." } });
@@ -75,7 +75,7 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
   // The server's own count of pages read in this session (a later page adds one, and is refused at the bound), or, for a first page, the person's rate.
   let pages = 1;
   if (session !== undefined) pages = await takePage(deps, orgId, project, kind, session, kind === "slack-private" ? personOf(orgId, request.caller.developerId) : undefined);
-  else await ration(deps, orgId, `person:${request.caller.developerId}`, "source-options", LISTINGS_PER_PERSON_PER_MINUTE);
+  else await ration(deps, orgId, personRateKey(request.caller.developerId), "source-options", LISTINGS_PER_PERSON_PER_MINUTE);
 
   // A page counts only once it was read: a read that fails or is refused (Slack down, the company's budget) gives its page back.
   let found: Found | RecordRouteReply;

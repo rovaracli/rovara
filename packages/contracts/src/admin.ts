@@ -231,6 +231,8 @@ export const AdminHealthResponseSchema = z.object({
   deadLetterQueuesCheck: AdminHealthCheckSchema.optional(),
   slack: AdminHealthCheckSchema,
   github: AdminHealthCheckSchema,
+  /** SRL-6: erase second passes that failed and source deletes no durable path accepted, last 24 hours. Optional: absent where the team record is off, and from an older control plane's answer. */
+  teamRecordCheck: AdminHealthCheckSchema.optional(),
   workerModes: z.array(z.object({
     mode: z.string(),
     configured: z.boolean(),

@@ -1008,8 +1008,13 @@ export function developerTaskActions(dependencies: AwsBrokerDependencies): Devel
 
 /** Stored qualification status only; no probe or qualification service is exposed. */
 export function serviceStatusRouteDependencies(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "serviceStatus"> {
- const runtimeCatalogId = dependencies.e2eFeatureRuntimeCatalogId;if (runtimeCatalogId === undefined) return {};
- return { serviceStatus: { runtimeStatus: () => readServiceStatusEvidence({ runtimeCatalogId, read: key => getItem<Record<string, unknown>>(dependencies, key) }) } };
+ const runtimeCatalogId = dependencies.e2eFeatureRuntimeCatalogId, teamRecord = dependencies.teamRecord;
+ if (runtimeCatalogId === undefined && teamRecord === undefined) return {};
+ return { serviceStatus: {
+  ...(runtimeCatalogId === undefined ? {} : { runtimeStatus: () => readServiceStatusEvidence({ runtimeCatalogId, read: key => getItem<Record<string, unknown>>(dependencies, key) }) }),
+  // SRL-6: the Team record's erase and delete failures, where the record is on.
+  ...(teamRecord === undefined ? {} : { teamRecordFailures: (orgId: OrgId) => teamRecord.opsFailures(orgId) }),
+ } };
 }
 
 /**

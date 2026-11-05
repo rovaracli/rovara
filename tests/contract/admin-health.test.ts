@@ -106,6 +106,23 @@ describe("GET /v1/admin/health, each check's other answers", () => {
     expect(slow).toMatchObject({ deadLetterQueues: [], deadLetterQueuesCheck: { status: "unknown", detail: "did not answer within 0.02 seconds" } });
   });
 
+  it("shows the team record's erase and source-delete failures of the last 24 hours, for the caller's own company only (SRL-6)", async () => {
+    // no probe (the record is off): no such check at all, so nothing new shows on an install without the record
+    expect(await health({})).not.toHaveProperty("teamRecordCheck");
+    const asked: string[] = [];
+    const answer = (counts: { eraseSweep: number; tombstone: number; lastAt?: string }) => ({ teamRecordFailures: async (orgId: string) => { asked.push(orgId); return counts; } });
+    expect((await health(answer({ eraseSweep: 0, tombstone: 0 }))).teamRecordCheck).toEqual({ status: "ok", detail: "no erase or source delete failures in the last 24 hours" });
+    expect((await health(answer({ eraseSweep: 1, tombstone: 0, lastAt: "2026-11-05T10:00:00.000Z" }))).teamRecordCheck).toEqual({ status: "warn", detail: "1 erase second pass failed or stuck in the last 24 hours; latest 2026-11-05T10:00:00.000Z" });
+    expect((await health(answer({ eraseSweep: 2, tombstone: 3 }))).teamRecordCheck).toEqual({ status: "warn", detail: "2 erase second passes failed or stuck, 3 source deletes not accepted in the last 24 hours" });
+    // the probe is asked for the caller's company, never another
+    expect(asked).toEqual([TEST_ORG, TEST_ORG, TEST_ORG]);
+    const failing = await health({ teamRecordFailures: async () => { throw Object.assign(new Error("secret detail"), { name: "AccessDenied" }); } });
+    expect(failing.teamRecordCheck).toEqual({ status: "unknown", detail: "could not read the team record's delete and erase failures (AccessDenied)" });
+    expect(JSON.stringify(failing)).not.toContain("secret detail");
+    const slow = await health({ teamRecordFailures: () => new Promise<never>(() => undefined), timeoutMs: 20 });
+    expect(slow.teamRecordCheck).toEqual({ status: "unknown", detail: "did not answer within 0.02 seconds" });
+  });
+
   it("counts open workspaces by status and leaves closed ones out", async () => {
     const harness = await createAdminReadBroker();
     for (const ts of ["1695500000.000501", "1695500000.000502", "1695500000.000503"]) await ensureWorkspace(harness.handler, `${SLACK_TEAM}/${SLACK_CHANNEL}/${ts}`, "U0PRIYA001");

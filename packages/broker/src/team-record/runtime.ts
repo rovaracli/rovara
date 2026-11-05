@@ -62,6 +62,7 @@ import { chooseVectorBucketForNewWorkspace, type VectorIndex } from "./vectors.j
 import type { S3VectorsIndex } from "./s3-vectors-index.js";
 import type { DistillModel } from "./distill.js";
 import type { PurgeDependencies } from "./purge.js";
+import { readOpsFailures, recordOpsFailure, type OpsFailures } from "./ops-failures.js";
 import type { RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
 
 type DocClient = TeamRecordTable["documentClient"];
@@ -191,6 +192,8 @@ export interface TeamRecordRuntime {
     workspace(orgId: OrgId): Promise<void>;
   };
   jobs: { run(job: "hourly" | "nightly"): Promise<TeamRecordJobSummary> };
+  /** SRL-6: the company's erase and delete failures of the last 24 hours (counts and a time), for the admin Health data. Throws when the table cannot be read. */
+  opsFailures(orgId: OrgId): Promise<OpsFailures>;
 }
 
 const DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0";
@@ -520,7 +523,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       if (org.success && await markSourceFailing(table, org.data, source, scope) === "busy") log("record.health_busy", {});
     },
   };
-  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits, sourceHealth });
+  // SRL-6: a source delete that no durable path accepted is counted for the company's Health page (an id that is not an org id is not counted).
+  const failures = { async tombstoneLost(workspaceId: string): Promise<void> { const org = OrgIdSchema.safeParse(workspaceId); if (org.success) await recordOpsFailure(table, org.data, "tombstone", now()); } };
+  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits, sourceHealth, failures });
   // A comment names only its ticket: the ticket must already be recorded under the same place (Linear), and takes its restriction from how it was recorded (Jira). Read from the record, not from the tracker.
   const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog, priorEdits, parents: createRecordParentLookup(table) });
   const hook = createHookRecordTap({ recorder });
@@ -1030,5 +1035,5 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     orgOfSlackTeam: (teamId) => new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId),
     developerOfSlackUser: async (slackUserId) => (input.developerOfSlackUser === undefined ? undefined : await input.developerOfSlackUser(slackUserId)),
   });
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
 }

@@ -1,9 +1,10 @@
 // Spec 025 A13: the health answer. Every probe has a time limit and answers `unknown` with a reason
 // when it is not set up or fails, so the route itself never fails for a probe. Details carry
 // counts, names, codes and error classes only.
-import { ADMIN_API_VERSION, DEVELOPER_API_VERSION, MISSING_ALARM_STATE, type AdminHealthCheck, type AdminHealthResponse, type SlackAuthCheckResponse } from "@agentx/contracts";
+import { ADMIN_API_VERSION, DEVELOPER_API_VERSION, MISSING_ALARM_STATE, type AdminHealthCheck, type OrgId, type AdminHealthResponse, type SlackAuthCheckResponse } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import { requireOrgId } from "../org/resolve.js";
+import { opsFailuresCheck } from "../team-record/ops-failures.js";
 import { adminProjects, projectWorkspaceRows, readFailures, type AdminReadDependencies } from "./admin-reads.js";
 
 /** Function-valued fields, not methods, so a probe can be called on its own (no `this`). */
@@ -13,6 +14,8 @@ export interface AdminHealthProbes {
   queueDepths?: () => Promise<Array<{ name: string; depth: number | null }>>;
   slackAuthCheck?: () => Promise<SlackAuthCheckResponse>;
   githubInstallations?: () => Promise<number>;
+  /** SRL-6: the company's erase and source-delete failures of the last 24 hours. Absent where the team record is off, and the answer then has no such check. */
+  teamRecordFailures?: (orgId: OrgId) => Promise<{ eraseSweep: number; tombstone: number; lastAt?: string }>;
   timeoutMs?: number;
 }
 
@@ -109,6 +112,14 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
       return failed("the GitHub App", ms, error);
     }
   };
+  const teamRecordPart = async (): Promise<Pick<AdminHealthResponse, "teamRecordCheck">> => {
+    if (probes.teamRecordFailures === undefined) return {};
+    try {
+      return { teamRecordCheck: opsFailuresCheck(await within(ms, () => probes.teamRecordFailures!(requireOrgId(identity.orgId)))) };
+    } catch (error) {
+      return { teamRecordCheck: failed("the team record's delete and erase failures", ms, error) };
+    }
+  };
   const statePart = async (): Promise<Pick<AdminHealthResponse, "workerModes" | "workspaces" | "workspacesTruncated">> => {
     const projects = await adminProjects(deps, identity);
     const modes = new Set(projects.map((project) => project.latest.runtimeBinding.deploymentMode));
@@ -125,9 +136,9 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
     };
   };
 
-  const [alarms, deadLetterQueues, slack, github, state] = await Promise.all([alarmsPart(), queuesPart(), slackPart(), githubPart(), statePart()]);
+  const [alarms, deadLetterQueues, slack, github, state, teamRecord] = await Promise.all([alarmsPart(), queuesPart(), slackPart(), githubPart(), statePart(), teamRecordPart()]);
   return {
     version: { developerApi: DEVELOPER_API_VERSION, adminApi: ADMIN_API_VERSION, ...(probes.release === undefined ? {} : { release: probes.release }) },
-    ...alarms, ...deadLetterQueues, slack, github, ...state,
+    ...alarms, ...deadLetterQueues, slack, github, ...state, ...teamRecord,
   };
 }

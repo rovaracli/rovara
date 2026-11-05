@@ -27,3 +27,14 @@ it("B35 disabling company scope hides prior service evidence immediately", async
  const view = renderUi(h(MemoryRouter, { children: h(AppHostProvider, { host: f.host, children: h(ServiceStatusContent, { orgId, kind: "web", enabled: true }) }) }));await screen.findByText("ready");
  view.rerender(h(MemoryRouter, { children: h(AppHostProvider, { host: f.host, children: h(ServiceStatusContent, { orgId, kind: "web", enabled: false }) }) }));expect(screen.queryByRole("table")).toBeNull();expect(screen.queryByText("ready")).toBeNull();
 });
+it("SRL-6 the list shows one Team record deletes row when the answer has it, and none when it does not", async () => {
+ const { ServiceStatusContent } = await import("../../packages/ui/src/screens/admin/health/ServiceStatusScreen.js");
+ const show = async (body: unknown) => { const f = fakeHost(async () => ({ status: 200, body })), view = renderUi(h(MemoryRouter, { children: h(AppHostProvider, { host: f.host, children: h(ServiceStatusContent, { orgId, enabled: true }) }) })); await screen.findByText(/Stored status refreshed/);return view; };
+ const view = await show({ ...evidence, teamRecord: { status: "warn", detail: "1 erase second pass failed or stuck in the last 24 hours" } });
+ expect(screen.getByText(/Team record deletes: warn · 1 erase second pass failed or stuck/)).toBeTruthy();
+ expect(screen.getAllByRole("listitem")).toHaveLength(3);
+ view.unmount();
+ await show(evidence);
+ expect(screen.queryByText(/Team record deletes/)).toBeNull();
+ expect(screen.getAllByRole("listitem")).toHaveLength(2);
+});

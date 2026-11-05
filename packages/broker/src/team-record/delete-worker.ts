@@ -15,6 +15,7 @@ import { changeScopePrincipals, replaceScopeAudience, tombstoneRows, type WorkBu
 import { DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { bySource, byScope, childScopes, deleteItem, listScopeWork, putScopeWork, scopePage, type PlaceCursor, type ScopeWork } from "./store.js";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
+import { recordOpsFailure } from "./ops-failures.js";
 
 /** A request older than this many seconds is a backlog (design: hot rows are deleted within 1 hour). */
 export const DELETE_BACKLOG_SECONDS = 3_600;
@@ -69,6 +70,8 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     summary.erasureSweeps = { ran: 0, final: 0 };
     summary.sweepFailed = 1;
     deps.log?.("record.erase_sweep_failed", { count: 1 });
+    // SRL-6: counted for the company's Health page (best effort, no text).
+    await recordOpsFailure(deps.table, orgId, "erase_sweep", now());
   }
   const work = await listScopeWork(deps.table, orgId, budget.maxRequests);
   const work0 = { table: deps.table, now };

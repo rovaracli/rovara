@@ -118,6 +118,8 @@ export interface CodeHostTapDependencies extends GateDependencies {
   priorEdits?: PriorEditsPort;
   /** A repository deleted or transferred marks its source row's health `failing` (after the place is tombstoned). Absent: the row is left as it is (tests). */
   sourceHealth?: { markFailing(input: { workspaceId: string; source: SourceSystem; scope: string }): Promise<void> };
+  /** SRL-6: told when a delete at the source was accepted by no durable path, so the company's Health page can show it. A port that throws never changes the answer. */
+  failures?: { tombstoneLost(workspaceId: string): Promise<void> };
 }
 
 export interface TapResult {
@@ -170,6 +172,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
         result.failed += 1;
         result.removalFailed = true;
         log("record.tombstone_failed", { host: event.repo.host });
+        try { await deps.failures?.tombstoneLost(event.repo.workspaceId); } catch { /* the count is best effort */ }
       }
       // The place is gone at its source: its source row (if any) reads as failing. Never fails the delivery.
       if (event.type === "repository" && deps.sourceHealth !== undefined) {

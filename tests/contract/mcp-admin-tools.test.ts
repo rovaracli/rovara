@@ -116,6 +116,21 @@ describe("the admin read tools (FR-030)", () => {
     expect(olderResult.structuredContent).not.toHaveProperty("dead_letter_queues_check");
   });
 
+  it("shows the team record's delete check when the control plane sends one (SRL-6), and nothing when it does not", async () => {
+    const health = {
+      version: { developerApi: "1.2", adminApi: "1.0" }, alarms: [], alarmsCheck: { status: "ok" as const }, deadLetterQueues: [],
+      teamRecordCheck: { status: "warn" as const, detail: "1 erase second pass failed in the last 24 hours" },
+      slack: { status: "ok" as const }, github: { status: "ok" as const }, workerModes: [], workspaces: {}, workspacesTruncated: false,
+    };
+    const result = await (await connect({ health: async () => health })).callTool({ name: "agentx_admin_health", arguments: {} });
+    expect(result.structuredContent).toMatchObject({ team_record_check: { status: "warn", detail: "1 erase second pass failed in the last 24 hours" } });
+    expect(JSON.stringify(result.content)).toContain("Team record deletes: warn");
+    const { teamRecordCheck: _gone, ...without } = health; void _gone;
+    const plain = await (await connect({ health: async () => without })).callTool({ name: "agentx_admin_health", arguments: {} });
+    expect(plain.structuredContent).not.toHaveProperty("team_record_check");
+    expect(JSON.stringify(plain.content)).not.toContain("Team record deletes");
+  });
+
   it("names missing alarms in the text beside firing ones, never only \"none firing\" (issue 206)", async () => {
     const health = {
       version: { developerApi: "1.2", adminApi: "1.0" },

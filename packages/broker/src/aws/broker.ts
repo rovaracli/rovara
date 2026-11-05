@@ -680,6 +680,7 @@ export const handler = createAwsBrokerHandler({
       deadLetterQueues: process.env.HEALTH_DEAD_LETTER_QUEUES,
       slackAuthCheck: developer?.slackAuthCheck,
       github: githubCredentials,
+      ...(teamRecord === undefined ? {} : { teamRecordFailures: (orgId) => teamRecord.opsFailures(orgId) }),
       log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
     }),
   },
