@@ -786,7 +786,8 @@ class Parser {
       this.expect("(");
       const path = this.path();
       this.expect(")");
-      const exists = (item?.[path] ?? (/[.[]/u.test(path) ? this.pathValue(item, path) : undefined)) !== undefined;
+      // A stored NULL exists (as in DynamoDB); only an absent attribute does not.
+      const exists = item?.[path] !== undefined || (/[.[]/u.test(path) && this.pathValue(item, path) !== undefined);
       return token === "attribute_exists" ? exists : !exists;
     }
     if (token === "begins_with") {

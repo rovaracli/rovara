@@ -3,6 +3,7 @@
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   DEFAULT_PROJECT_PLAYBOOK,
+  DESIGN_REVIEW_DEFAULT_SETTING,
   DESIGN_REVIEW_MODES,
   DesignReviewSettingSchema,
   PLAYBOOK_STALE_MESSAGE,
@@ -109,7 +110,7 @@ function lenientPlaybook(item: Record<string, unknown> | undefined, revision: nu
 
 function playbookOf(item: Record<string, unknown> | undefined, orgId: OrgId, project: string): ProjectPlaybookDetail | undefined {
   if (item === undefined) return { playbook: DEFAULT_PROJECT_PLAYBOOK, designReviewUnreadable: false };
-  // A document written before the design review stage has no `designReview`: it reads as the owner's defaults (`designReviewSettingOf`), never as an error.
+  // A document written before the design review stage has no `designReview`: it has no setting, which reads as Off (DR-FU4), never as an error.
   const parsed = ProjectPlaybookSchema.safeParse({ revision: item["revision"], defaultProcess: item["defaultProcess"] });
   if (!parsed.success) return undefined;
   // A setting that is there but cannot be read does not make the whole process unavailable (the process is unaffected), and it reads as Off, never as anything looser, until a maintainer saves it again.
@@ -172,17 +173,18 @@ export function designReviewAuditFacts(setting: DesignReviewSetting): { mode: De
 
 /**
  * The condition on the playbook Put. A Put's condition is checked against the item that is stored NOW, never against the new one, so it cannot validate the new value (the strict schema does that, above, before any write).
- * What it can do, and does: tie the write to what this writer READ. The revision (every writer bumps it) refuses a write on a stale revision; the stored `designReview` is pinned too, exactly as read, so a raw write that
- * changed the setting without bumping the revision, or between our read and our commit, makes this write `PLAYBOOK_STALE` instead of being silently replaced (checklist 4: conditions on what you read).
- * It pins the VALUE READ, whatever it is, and never "a valid value": an item whose setting is corrupt is pinned as that same corrupt value, so a maintainer choosing again replaces it (a condition that demanded a valid
- * stored mode would lock the item forever). No item yet: it must still not exist.
+ * What it does: tie the write to what this writer READ. The revision (every writer bumps it) refuses a write on a stale revision, which covers every race between our own writers. Beside it, whether a `designReview`
+ * attribute exists is pinned as the read found it (none: it must still be none; some: it must still be there), so a raw write that ADDED or REMOVED the setting without bumping the revision is refused.
+ * The VALUE is deliberately not pinned. A value read through the DocumentClient need not round-trip (a number with more precision than a double, one beyond 2^53 that comes back as a BigInt, NULL, a set): pinned, it
+ * would never equal what is stored, and a maintainer choosing again could never save over it, the very item this is meant to repair. A writer that changes a value in place without bumping the revision is not covered
+ * here; the only writer is this module (tests/contract/design-review-setting-single-writer.test.ts fails on any other). No item yet: it must still not exist.
  */
 function conditionOf(item: Record<string, unknown> | undefined, revision: number): { ConditionExpression: string; ExpressionAttributeNames?: Record<string, string>; ExpressionAttributeValues?: Record<string, unknown> } {
   if (item === undefined) return { ConditionExpression: "attribute_not_exists(pk)" };
-  const stored = item["designReview"];
-  return stored === undefined
-    ? { ConditionExpression: "#revision = :expected AND attribute_not_exists(#designReview)", ExpressionAttributeNames: { "#revision": "revision", "#designReview": "designReview" }, ExpressionAttributeValues: { ":expected": revision } }
-    : { ConditionExpression: "#revision = :expected AND #designReview = :storedDesignReview", ExpressionAttributeNames: { "#revision": "revision", "#designReview": "designReview" }, ExpressionAttributeValues: { ":expected": revision, ":storedDesignReview": stored } };
+  return {
+    ConditionExpression: `#revision = :expected AND ${item["designReview"] === undefined ? "attribute_not_exists" : "attribute_exists"}(#designReview)`,
+    ExpressionAttributeNames: { "#revision": "revision", "#designReview": "designReview" }, ExpressionAttributeValues: { ":expected": revision },
+  };
 }
 
 const conditionFailed = (error: unknown): boolean => error instanceof Error && (error.name === "ConditionalCheckFailedException"
@@ -202,7 +204,8 @@ export async function writeProjectPlaybook(
   const { orgId, project } = input;
   // ONE read: what the writer decides from (the playbook, the setting) and what it pins in the condition below are the same item, so nothing can change between the two.
   const item = await readItem(deps, orgId, project);
-  const current = detailOfItem(item, orgId, project, { lenient: true }).playbook;
+  const detail = detailOfItem(item, orgId, project, { lenient: true });
+  const current = detail.playbook;
   if (input.expectedRevision !== current.revision) throw agentXError("PLAYBOOK_STALE", PLAYBOOK_STALE_MESSAGE);
   // Every setting this write carries is checked with the same strict schema the readers use, before anything else: a value that would read back as unreadable is never stored. Only field names are said, never values.
   let carried: DesignReviewSetting | undefined;
@@ -239,7 +242,9 @@ export async function writeProjectPlaybook(
   const at = new Date(deps.now()).toISOString();
   const auditDeps: AuditDeps = deps.audit === undefined ? {} : { audit: deps.audit };
   // `playbook.design_review_changed` only when the setting really changed. A project with no setting is Off (DR-FU4), so saving any setting over none is a change (the mode it will run with is now its own).
-  const designChanged = canonicalJson(current.designReview ?? null) !== canonicalJson(applied.designReview ?? null);
+  // A save that carries no setting over a stored one that could not be read drops it (the project keeps reading as Off): that is a change too, and the event says Off explicitly (`designReviewSettingOf` would say auto).
+  const droppedUnreadable = detail.designReviewUnreadable && carried === undefined;
+  const designChanged = droppedUnreadable || canonicalJson(current.designReview ?? null) !== canonicalJson(applied.designReview ?? null);
   const events = await tryAuditEvents(auditDeps, () => [
     ...(input.skipProcessEvent === true ? [] : [auditPlaybookDefaultProcessChanged({
       orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(project, String(applied.revision)),
@@ -247,7 +252,7 @@ export async function writeProjectPlaybook(
     })]),
     ...(!designChanged ? [] : [auditPlaybookDesignReviewChanged({
       orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(project, "design_review", String(applied.revision)),
-      projectName: project, revision: applied.revision, ...designReviewAuditFacts(designReviewSettingOf(applied)),
+      projectName: project, revision: applied.revision, ...designReviewAuditFacts(droppedUnreadable ? { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } : designReviewSettingOf(applied)),
     })]),
   ]);
   try {

@@ -207,3 +207,21 @@ it("DR-FU4 L4: someone who can't edit is told who can; a readable Off keeps its 
  expect(screen.queryByText(/couldn't be read/u)).toBeNull();
  plain.close();
 });
+
+it("DR-FU4 L4: a maintainer told to choose again can save Off as it stands, without changing the choice first", async () => {
+ const f = setup({ allowed: true, unreadable: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ const editor = await screen.findByRole("region", { name: "Design review settings editor" });
+ const save = within(editor).getByRole<HTMLButtonElement>("button", { name: "Save design review settings" });
+ expect(save.hasAttribute("disabled")).toBe(false);
+ fireEvent.click(save);
+ await waitFor(() => expect(f.puts).toHaveLength(1));
+ expect(f.puts[0]!.body.designReview).toMatchObject({ mode: "never" });
+ f.close();
+});
+
+it("DR-FU4 L4: with a readable setting Save stays disabled until something changes (control)", async () => {
+ const f = setup({ allowed: true, setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" } });
+ const editor = await screen.findByRole("region", { name: "Design review settings editor" });
+ expect(within(editor).getByRole<HTMLButtonElement>("button", { name: "Save design review settings" }).hasAttribute("disabled")).toBe(true);
+ f.close();
+});

@@ -15,12 +15,16 @@ const WRITES = /\b(?:PutCommand|UpdateCommand|BatchWriteCommand|TransactWriteCom
 /** An expression that sets or removes the `designReview` attribute, wherever it is. */
 const EXPRESSION_ON_SETTING = /UpdateExpression\s*:\s*(["'`])(?:(?!\1).)*\bdesignReview\b/u;
 
+const EXPRESSION_NAME_OF_SETTING = /["']#\w+["']\s*:\s*["']designReview["']/u;
+
 /** The reasons a file (path and text) breaks the one-writer rule. Pure, so the bypass cases below can prove it. */
 function singleWriterProblems(file: string, text: string): string[] {
   if (file === THE_WRITER) return [];
   const problems: string[] = [];
   if (NAMES_THE_ITEM.test(text) && WRITES.test(text)) problems.push("writes an item it names as the project playbook");
   if (EXPRESSION_ON_SETTING.test(text)) problems.push("updates a designReview attribute by expression");
+  // An expression attribute NAME that is the setting's own, in a file that writes a playbook item. (`workflow.designReview` on a task record is a path, not a name value, and is not matched.)
+  if (NAMES_THE_ITEM.test(text) && WRITES.test(text) && EXPRESSION_NAME_OF_SETTING.test(text)) problems.push("names the designReview attribute in an expression of a file that writes a playbook item");
   return problems;
 }
 
@@ -41,7 +45,7 @@ describe("only the playbook store writes a project's design review setting", () 
     expect(files).toContain(THE_WRITER);
     const text = readFileSync(path.join(ROOT, THE_WRITER), "utf8");
     // Positive control: under any other name, the store's own text breaks the rule (it names the item and writes it).
-    expect(singleWriterProblems("packages/broker/src/elsewhere.ts", text)).toEqual(["writes an item it names as the project playbook"]);
+    expect(singleWriterProblems("packages/broker/src/elsewhere.ts", text)).toEqual(["writes an item it names as the project playbook", "names the designReview attribute in an expression of a file that writes a playbook item"]);
     expect(singleWriterProblems(THE_WRITER, text)).toEqual([]);
   });
 
@@ -55,8 +59,14 @@ describe("only the playbook store writes a project's design review setting", () 
     ["a transaction Put by entity type", 'TransactItems: [{ Put: { TableName: t, Item: { pk, sk: "META", entityType: "PROJECT_PLAYBOOK", designReview: x } } }]'],
     ["an Update by key", "new UpdateCommand({ Key: projectPlaybookKey(org, p), UpdateExpression: \"SET designReview = :d\" })"],
     ["an update expression on the attribute alone", 'const expression = { UpdateExpression: "SET #x.designReview = :d" };'],
+    ["an expression attribute name for the setting beside the playbook key", 'new UpdateCommand({ Key: projectPlaybookKey(org, p), ExpressionAttributeNames: { "#d": "designReview" } });'],
   ])("the scan catches %s", (_name, text) => {
     expect(singleWriterProblems("packages/broker/src/somewhere/new-writer.ts", text).length).toBeGreaterThan(0);
+  });
+
+  it("does not flag a task record's workflow.designReview, nor the attribute name where no playbook item is named", () => {
+    expect(singleWriterProblems("packages/broker/src/t.ts", 'new UpdateCommand({ Key: taskKey, UpdateExpression: "SET #w = :w", ExpressionAttributeNames: { "#w": "workflow" }, ConditionExpression: "attribute_exists(workflow.designReview)" })')).toEqual([]);
+    expect(singleWriterProblems("packages/broker/src/u.ts", 'const names = { "#d": "designReview" }; new UpdateCommand({ Key: taskKey, UpdateExpression: "SET workflow.#d = :v" })')).toEqual([]);
   });
 
   it("and lets through reading the item and a ConditionCheck on it", () => {

@@ -85,7 +85,7 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
     {current.approverKind === "group" && <TextField label="Group" value={current.groupId} disabled={locked.has("highRiskApprover") || saving || !groups} {...(problems.group === undefined ? {} : { error: problems.group })} onChange={event => patch({ groupId: event.target.value })} />}
    </div>
    <div className="rv-hww-actions">
-    <Button variant="primary" busy={saving} disabled={!changed || locked.size === 4} onClick={() => { void save(); }}>Save design review settings</Button>
+    <Button variant="primary" busy={saving} disabled={!(changed || (response.designReviewUnreadable === true && result.ok)) || locked.size === 4} onClick={() => { void save(); }}>Save design review settings</Button>
     {editing && <Button disabled={saving} onClick={() => { setDraft(undefined);setError(undefined); }}>Discard</Button>}
    </div>
    {saved && <p role="status">Saved. New design reviews use these settings; running ones keep theirs.</p>}

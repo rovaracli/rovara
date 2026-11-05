@@ -14,7 +14,7 @@ export type DesignDecidedBy = "auto" | "always" | "person" | "person_skip" | "ne
 export type DesignModeInput = {
   /**
    * The setting the task runs with: `readEffectiveDesignReview(...).setting`, the project's value held to the company's lock. The type is branded, so a raw playbook setting does not compile, and at run
-   * time one that got here anyway is read as the strictest posture (always, no skipping), never as itself.
+   * time one that got here anyway is read as Off with no skipping (and logged), never as itself.
    */
   setting: EffectiveDesignReviewSetting;
   /** What Understand returned. Undefined until it has returned. */
@@ -71,6 +71,7 @@ export function resolveDesignMode(input: DesignModeInput): DesignModeDecision {
   const assessment = input.assessment;
   if (assessment === undefined) return { decided: false, why: "not_returned" };
   if (assessment.kind !== "ready") return { decided: false, why: assessment.kind };
+  if (!isEffectiveSetting(input.setting)) console.log(JSON.stringify({ component: "broker", event: "design_review.setting_not_effective" }));
   const setting = isEffectiveSetting(input.setting) ? input.setting : DESIGN_REVIEW_FAIL_CLOSED_SETTING;
   const design = assessment.design;
   const reasons: readonly DesignReason[] = design?.reasons ?? [];

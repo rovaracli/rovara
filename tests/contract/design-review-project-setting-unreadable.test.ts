@@ -226,25 +226,60 @@ describe("writes: a setting is validated before it is stored, and a write rests 
     } } });
   };
 
-  it("a raw write that changed the setting without bumping the revision, between the read and the commit, refuses the write (it is not silently replaced)", async () => {
-    const w = world();
-    putRaw(w, SETTING);
-    const raw = { ...SETTING, mode: "never", allowSkip: false };
-    // Positive control: with no race the same write goes through.
-    await write(playbookDeps(w), { ...SETTING, capUsdPerTask: 30 });
-    putRaw(w, SETTING);
-    expect(await failure(write(racing(w, () => putRaw(w, raw)), { ...SETTING, capUsdPerTask: 30 }))).toMatchObject({ code: "PLAYBOOK_STALE" });
-    expect(stored(w)).toMatchObject({ revision: 2, designReview: raw });
-  });
-
-  it("a raw write that ADDED a setting to an item that had none, or swapped one corrupt value for another, refuses the write too", async () => {
+  it("a raw write that ADDED a setting to an item that had none, between the read and the commit and without bumping the revision, refuses the write", async () => {
     const w = world();
     putRaw(w, undefined);
-    expect(await failure(write(racing(w, () => putRaw(w, SETTING)), SETTING))).toMatchObject({ code: "PLAYBOOK_STALE" });
-    expect(stored(w)).toMatchObject({ designReview: SETTING });
-    putRaw(w, { ...OK, mode: "sometimes" });
-    expect(await failure(write(racing(w, () => putRaw(w, { ...OK, mode: "other" })), SETTING))).toMatchObject({ code: "PLAYBOOK_STALE" });
-    expect(stored(w)).toMatchObject({ designReview: { mode: "other" } });
+    // Positive control: with no race the same write goes through.
+    await write(playbookDeps(w), SETTING);
+    expect(stored(w)).toMatchObject({ revision: 3, designReview: SETTING });
+    const raced = world();
+    putRaw(raced, undefined);
+    expect(await failure(write(racing(raced, () => putRaw(raced, { ...SETTING, mode: "never" })), SETTING))).toMatchObject({ code: "PLAYBOOK_STALE" });
+    expect(stored(raced)).toMatchObject({ revision: 2, designReview: { mode: "never" } });
+  });
+
+  it("a raw write that REMOVED the setting, or bumped the revision, in the same window refuses the write too", async () => {
+    const removed = world();
+    putRaw(removed, SETTING);
+    expect(await failure(write(racing(removed, () => putRaw(removed, undefined)), { ...SETTING, capUsdPerTask: 30 }))).toMatchObject({ code: "PLAYBOOK_STALE" });
+    expect(stored(removed)).not.toHaveProperty("designReview");
+    const bumped = world();
+    putRaw(bumped, SETTING);
+    expect(await failure(write(racing(bumped, () => putRaw(bumped, { ...SETTING, mode: "never" }, 3)), { ...SETTING, capUsdPerTask: 30 }))).toMatchObject({ code: "PLAYBOOK_STALE" });
+    expect(stored(bumped)).toMatchObject({ revision: 3, designReview: { mode: "never" } });
+  });
+
+  it("a stored value that reads fine but does not round-trip (the DocumentClient gave back a different number than is stored) can still be saved over: the value is not pinned", async () => {
+    const w = world();
+    putRaw(w, { ...SETTING, capUsdPerTask: 25.5 });
+    // The read returns the setting with a cap of 25 (a lossy read, as a number with more precision than a double would be); what is stored differs from what the writer saw.
+    const lossy = playbookDeps(w, { documentClient: { send: async (command: unknown) => {
+      const reply = await w.db.send(command as never) as { Item?: Record<string, unknown> };
+      if ((command as { constructor: { name: string } }).constructor.name === "GetCommand" && reply.Item?.["pk"] === KEY.pk && reply.Item["designReview"] !== undefined) return { Item: { ...reply.Item, designReview: { ...SETTING } } };
+      return reply;
+    } } });
+    expect((await readProjectPlaybook(lossy, ORG_A, "web")).designReview).toEqual(SETTING);
+    await write(lossy, { ...SETTING, capUsdPerTask: 30 });
+    expect(stored(w)).toMatchObject({ revision: 3, designReview: { capUsdPerTask: 30 } });
+  });
+
+  it("a process-only save over an unreadable setting records the change, as Off (not as the owner's default Auto); over a readable one it records none", async () => {
+    const w = world();
+    putRaw(w, { ...OK, mode: SECRET });
+    await write(playbookDeps(w), undefined);
+    const events = w.audit.recordedBy("playbook.design_review_changed");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ actor: { kind: "member", id: MAX }, facts: { revision: 3, mode: "never", tier: "standard", allowSkip: true, capCents: 1000, approverKind: "maintainers", approverCount: 0 } });
+    expect(JSON.stringify(events[0])).not.toContain(SECRET);
+    // Positive controls: a readable setting carried over unchanged, and no setting at all, record no design review event.
+    const same = world();
+    putRaw(same, SETTING);
+    await write(playbookDeps(same), undefined);
+    const none = world();
+    putRaw(none, undefined);
+    await write(playbookDeps(none), undefined);
+    expect(same.audit.recordedBy("playbook.design_review_changed")).toEqual([]);
+    expect(none.audit.recordedBy("playbook.design_review_changed")).toEqual([]);
   });
 
   it("a corrupt stored setting is NOT locked in: a maintainer choosing again replaces it, and so does saving the process alone (which leaves it Off)", async () => {

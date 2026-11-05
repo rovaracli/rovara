@@ -1,6 +1,6 @@
 // Design review stage, DR2 (designs-2026-10-30/design-review-stage.md 3.1): Understand's design check and the deterministic ON/OFF resolution. Pure code: no model decides the mode.
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DESIGN_REASONS, DESIGN_REVIEW_DEFAULT_SETTING, INTENT_BLOCK_INFO_STRING, readIntentBlock,
   type DesignReason, type DesignReviewSetting, type IntentAssessment,
@@ -252,13 +252,20 @@ describe("Understand eval cases (fixtures: 5 needs design, 5 does not)", () => {
 });
 
 describe("fix round (M3): mode resolution takes only a setting held to the company's lock", () => {
-  it("a raw playbook setting does not compile, and at run time is read as the strictest posture, never as itself", () => {
-    const raw = { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" as const, allowSkip: true };
+  it("a raw playbook setting does not compile, and at run time is read as Off with no skipping (and logged), never as itself", () => {
+    const raw = { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "always" as const, allowSkip: true };
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     // @ts-expect-error a raw DesignReviewSetting is not an EffectiveDesignReviewSetting
     const result = resolveDesignMode({ setting: raw, assessment: notNeeded });
-    expect(result).toMatchObject({ decided: true, on: true, decidedBy: "always", skip: { allowed: false, because: "skip_off" } });
-    // The same values, held to a lock, are the effective setting and are honoured.
-    expect(resolveDesignMode({ setting: markEffective(raw), assessment: notNeeded })).toMatchObject({ on: false, decidedBy: "never" });
-    expect(DESIGN_REVIEW_FAIL_CLOSED_SETTING.mode).toBe("always");
+    const lines = log.mock.calls.map(([line]) => String(line));
+    log.mockRestore();
+    expect(result).toMatchObject({ decided: true, on: false, decidedBy: "never", skip: { allowed: false, because: "skip_off" } });
+    expect(lines).toEqual([JSON.stringify({ component: "broker", event: "design_review.setting_not_effective" })]);
+    // The same values, held to a lock, are the effective setting and are honoured (positive control: no log line).
+    const quiet = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect(resolveDesignMode({ setting: markEffective(raw), assessment: notNeeded })).toMatchObject({ on: true, decidedBy: "always" });
+    expect(quiet).not.toHaveBeenCalled();
+    quiet.mockRestore();
+    expect(DESIGN_REVIEW_FAIL_CLOSED_SETTING).toMatchObject({ mode: "never", allowSkip: false, highRiskApprover: { kind: "maintainers" } });
   });
 });
