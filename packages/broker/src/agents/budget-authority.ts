@@ -50,6 +50,13 @@ export function archiveActorChecks(tableName: string, orgId: OrgId, by: string,
   return unarchiveActorChecks(tableName, orgId, by, request, options);
 }
 
+/** The condition that makes a project grant a maintainer's: the stored shape every grant writer uses, and what `grantRoleOf` reads as `manage_agents`. One place, for the actor and the destination. */
+function maintainerGrantCheck(tableName: string, key: { pk: string; sk: string }): TransactItem {
+  return { ConditionCheck: { TableName: tableName, Key: key, ConditionExpression: "#grantRole = :grantRole AND #projectRole = :projectRole",
+    ExpressionAttributeNames: { "#grantRole": "role", "#projectRole": "projectRole" }, ExpressionAttributeValues: { ":grantRole": "developer", ":projectRole": "maintainer" } } };
+}
+const isMaintainerGrant = (grant: Record<string, unknown> | undefined) => grant?.["role"] === "developer" && grant["projectRole"] === "maintainer";
+
 /**
  * The grant that gave a person who is not an org owner or admin their manage access to a project's agent or chain (S1-M2). The org-role checks above pin
  * who the person is in the company; a project maintainer's access to the project's things is the grant row, so a write that rests on it pins that row as well,
@@ -57,17 +64,31 @@ export function archiveActorChecks(tableName: string, orgId: OrgId, by: string,
  * actor losses). An org owner or admin holds every project with no grant, and a member's own agent or chain rests on the org role alone, so neither adds a check.
  * A person whose grant does not read as a maintainer's is refused here too: the route would not have let them in.
  * Only the direct write carries this; an approved request brings the deciding actor's checks (withOverride).
+ *
+ * `subjects` are the things whose project the actor's access rests on: the thing as it is (its project's grant), and, for an owner change into a project, the new
+ * owner too (the actor must be a maintainer of the project they move it to). A project named twice is pinned once, since a transaction may name an item once.
+ *
+ * Two deliberate choices. (1) The grant is read under `actor.developerId` only, while `roleOf` also looks under a merged-away id's survivor. A signed-in caller is never a
+ * merged-away id (a merge ends its sessions), so the two agree; if they ever did not, the route would let the person in and this would refuse them: it fails closed.
+ * (2) Only `role` and `projectRole` are pinned, not `grantId`: a revoke followed by a regrant at the same role leaves the person a maintainer at the commit, which is the
+ * authority the route checked.
  */
 export async function actorGrantChecks(
   read: (key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined>,
-  tableName: string, orgId: OrgId, actor: BudgetActor, subject: { owner?: AgentOwner },
+  tableName: string, orgId: OrgId, actor: BudgetActor, subjects: ReadonlyArray<{ owner?: AgentOwner }>,
 ): Promise<TransactItem[]> {
-  if (actor.role === "owner" || actor.role === "admin" || subject.owner === undefined || subject.owner.kind !== "project") return [];
+  if (actor.role === "owner" || actor.role === "admin") return [];
+  const projects = new Set<string>();
+  for (const { owner } of subjects) if (owner !== undefined && owner.kind === "project") projects.add(owner.project);
+  if (projects.size === 0) return [];
   if (actor.role !== "member") throw budgetActorRefused();
-  const key = projectMemberKey(orgId, actor.developerId, subject.owner.project), grant = await read(key);
-  if (grant?.["role"] !== "developer" || grant["projectRole"] !== "maintainer") throw budgetActorRefused();
-  return [{ ConditionCheck: { TableName: tableName, Key: key, ConditionExpression: "#grantRole = :grantRole AND #projectRole = :projectRole",
-    ExpressionAttributeNames: { "#grantRole": "role", "#projectRole": "projectRole" }, ExpressionAttributeValues: { ":grantRole": "developer", ":projectRole": "maintainer" } } }];
+  const checks: TransactItem[] = [];
+  for (const project of projects) {
+    const key = projectMemberKey(orgId, actor.developerId, project);
+    if (!isMaintainerGrant(await read(key))) throw budgetActorRefused();
+    checks.push(maintainerGrantCheck(tableName, key));
+  }
+  return checks;
 }
 
 /** What a person named as an owner or accountable maintainer must still be when the write commits. */
@@ -104,10 +125,9 @@ export async function destinationChecks(
     if (need === "admin" && !admin) throw destinationRefused();
     for (const check of budgetActorChecks(tableName, orgId, { developerId, role }).slice(0, 2)) add(check);
     if (typeof need === "object" && !admin) {
-      const key = projectMemberKey(orgId, developerId, need.maintainerOf), grant = await read(key);
-      if (grant?.["role"] !== "developer" || grant["projectRole"] !== "maintainer") throw destinationRefused();
-      add({ ConditionCheck: { TableName: tableName, Key: key, ConditionExpression: "#grantRole = :grantRole AND #projectRole = :projectRole",
-        ExpressionAttributeNames: { "#grantRole": "role", "#projectRole": "projectRole" }, ExpressionAttributeValues: { ":grantRole": "developer", ":projectRole": "maintainer" } } });
+      const key = projectMemberKey(orgId, developerId, need.maintainerOf);
+      if (!isMaintainerGrant(await read(key))) throw destinationRefused();
+      add(maintainerGrantCheck(tableName, key));
     }
   }
   return found;

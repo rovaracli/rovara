@@ -739,7 +739,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const orgChecks = status === "active" ? unarchiveActorChecks(this.input.tableName, orgId, by, request, options) : archiveActorChecks(this.input.tableName, orgId, by, request, options);
     const agent = await this.require(orgId, agentId);
     // A person who manages a project's agent through a maintainer grant is held to that grant too (S1-M2). An archive that changes nothing writes nothing, so it needs none.
-    const actorChecks = [...orgChecks, ...(options.actor === undefined || options.overrideCap !== undefined || (agent.status === status && status !== "active") ? [] : await actorGrantChecks((key) => this.read(key), this.input.tableName, orgId, options.actor, agent))];
+    const actorChecks = [...orgChecks, ...(options.actor === undefined || options.overrideCap !== undefined || (agent.status === status && status !== "active") ? [] : await actorGrantChecks((key) => this.read(key), this.input.tableName, orgId, options.actor, [agent]))];
     const sourceGuard = (a: Aliases) => `${budgetGuard(agent)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${agent.maxPerRunUsd === undefined ? `attribute_not_exists(${a.name("maxPerRunUsd")})` : `${a.name("maxPerRunUsd")} = ${a.value(agent.maxPerRunUsd)}`}`}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`;
     if (agent.status === status) {
       // An archive of something already archived changes nothing, so it writes nothing (L6): the arguments were checked above, and there is no share to take out.
@@ -817,7 +817,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       key = agentKey(orgId, agentId, "META");
     }
     // A person who manages a project's agent through a maintainer grant is held to that grant too (S1-M2).
-    const actorChecks = [...orgChecks, ...(actor === undefined || options.overrideCap !== undefined || isBuiltinAgentId(agentId) ? [] : await actorGrantChecks((grantKey) => this.read(grantKey), this.input.tableName, orgId, actor, current as AgentRecord))];
+    const actorChecks = [...orgChecks, ...(actor === undefined || options.overrideCap !== undefined || isBuiltinAgentId(agentId) ? [] : await actorGrantChecks((grantKey) => this.read(grantKey), this.input.tableName, orgId, actor, [current as AgentRecord]))];
     let taskStopMetadata: { stopKind: "inherit" | "limited"; revision: number } | undefined;
     if (budget.maxPerRunUsd !== undefined && current.stopKind !== undefined) {
       if (!Number.isSafeInteger(current.revision) || current.revision === undefined || current.revision < 1 || current.revision >= Number.MAX_SAFE_INTEGER
@@ -878,8 +878,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const managedOwner = (subject: BudgetSubject) => ({ owner: subject.owner, accountable: subject.accountable });
     if (options.manageSnapshot !== undefined && !sameJsonContent(managedOwner(agent), managedOwner(options.manageSnapshot))) throw budgetActorRefused();
     requireNoOwnerMoveOnProcess(agent, options);
-    // The grant that gave the person manage access to the agent as it is now (S1-M2); the new owner is the destination's concern.
-    const actorChecks = [...orgChecks, ...(actor === undefined ? [] : await actorGrantChecks((key) => this.read(key), this.input.tableName, orgId, actor, agent))];
+    // The grant that gave the person manage access to the agent as it is now, and, when it moves into a project, the grant that makes them a maintainer there (S1-M2); the new accountable person is the destination's concern.
+    const actorChecks = [...orgChecks, ...(actor === undefined ? [] : await actorGrantChecks((key) => this.read(key), this.input.tableName, orgId, actor, [agent, { owner }]))];
     const updatedAt = this.iso();
     const { accountable: _before, ...rest } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped when the new owner has none
     const moved: AgentRecord = { ...rest, owner, ...(accountable === undefined ? {} : { accountable }), updatedAt };
@@ -971,7 +971,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     requireNoOwnerMoveOnProcess(agent, options);
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     // The grant that gave the person manage access to the agent (S1-M2).
-    const actorChecks = [...orgChecks, ...(actor === undefined ? [] : await actorGrantChecks((key) => this.read(key), this.input.tableName, orgId, actor, agent))];
+    const actorChecks = [...orgChecks, ...(actor === undefined ? [] : await actorGrantChecks((key) => this.read(key), this.input.tableName, orgId, actor, [agent]))];
     const totals = await this.totalsFor(orgId, agent, withBudgetFields(agent, { accountable }), options.ownerCap);
     const guard = budgetGuard(agent);
     const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(agent.accountable === undefined ? {} : { from: agent.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }), ...overrideDetail(options) });

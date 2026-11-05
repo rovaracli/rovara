@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentKey, chainKey, developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey } from "@agentx/contracts";
+import { agentKey, chainKey, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@agentx/contracts";
 import { ADA, BEN, CARL, DEB, TRIAGE, ORG_B, person, setup, type World } from "../support/spend-world.js";
 import { seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { fixtureActor } from "../support/money-authority.js";
@@ -455,13 +455,13 @@ function grantWrites(kind: Kind): Array<{ name: string; archived?: true; call: [
   ];
 }
 const GRANT_ACTOR_LOSSES = ["grant_removed", "grant_demoted"] as const;
-/** The transactions sent while `run` runs that carry a condition on `who`'s grant on payments. */
+/** How many times, across the transactions sent while `run` runs, `who`'s grant on payments appears as a condition item. DynamoDB rejects a transaction that names an item twice, so 1 means pinned once. */
 async function grantChecksSeen(t: World, who: Developer, run: () => Promise<unknown>): Promise<number> {
   const send = t.db.send.bind(t.db);
   const grant = projectMemberKey(TEST_ORG, who.developerId, "payments");
   let seen = 0;
   t.db.send = async command => {
-    if (command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.ConditionCheck?.Key?.pk === grant.pk && item.ConditionCheck.Key.sk === grant.sk)) seen += 1;
+    if (command instanceof TransactWriteCommand) seen += (command.input.TransactItems ?? []).filter(item => item.ConditionCheck?.Key?.pk === grant.pk && item.ConditionCheck.Key.sk === grant.sk).length;
     return send(command);
   };
   try { await run(); } finally { t.db.send = send; }
@@ -546,6 +546,111 @@ for (const kind of ["agent", "chain"] as const) {
       const seen = await grantChecksSeen(f.t, FAY, async () => { reply = await f.t.api(FAY, "PUT", f.path + "/accountable", { accountable: { developerId: FAY.developerId } }); });
       expect(reply!.status, JSON.stringify(reply!.body)).toBe(200);
       expect(seen).toBe(1);
+    });
+  });
+}
+
+// ---- S1-M2 (I1): moving a thing into a project holds the actor to a maintainer grant on THAT project too
+
+/** Makes `billing` a second project of the org, and Fay (and, if asked, Eve) a maintainer of it. */
+function addBilling(t: World, maintainers: Developer[]) {
+  const revision = t.db.get(projectRevisionKey(TEST_ORG, "payments", 1));
+  expect(revision, "the world registers payments at revision 1").toBeDefined();
+  t.db.set({ ...revision!, ...projectRevisionKey(TEST_ORG, "billing", 1), name: "billing", definition: { ...(revision!["definition"] as Record<string, unknown>), name: "billing" } });
+  t.db.set({ ...orgProjectCatalogKey(TEST_ORG, "billing"), entityType: "PROJECT_CATALOG", name: "billing", latestRevision: 1 });
+  for (const who of maintainers) t.db.set({ ...projectMemberKey(TEST_ORG, who.developerId, "billing"), entityType: "MEMBERSHIP", ownerKey: who.developerId, projectName: "billing", grantId: randomUUID(), role: "developer", projectRole: "maintainer" });
+}
+const intoBilling = { owner: { kind: "project", project: "billing" }, accountable: { developerId: DEB.developerId } };
+
+for (const kind of ["agent", "chain"] as const) {
+  describe(`S1-M2 (I1): a ${kind} moved into another project pins the actor's grant on the destination`, () => {
+    for (const loss of GRANT_ACTOR_LOSSES) {
+      it(`a cross-project move (payments to billing) is refused when the actor's billing grant is ${loss.replace("grant_", "")} between the route and the commit, and nothing is written`, async () => {
+        const f = await fixture(kind);
+        addBilling(f.t, [FAY]);
+        const before = f.state();
+        const race = f.raceOnce(() => {
+          if (loss === "grant_removed") f.t.db.delete(projectMemberKey(TEST_ORG, FAY.developerId, "billing"));
+          else f.t.db.set({ ...f.t.db.get(projectMemberKey(TEST_ORG, FAY.developerId, "billing")), projectRole: "contributor" });
+        });
+        const reply = await f.t.api(FAY, "PUT", f.path + "/owner", intoBilling);
+        expect(race.raced).toBe(true);
+        expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+        expect(f.state()).toEqual(before);
+        expect(f.t.db.get(f.key)?.owner).toEqual({ kind: "project", project: "payments" });
+      });
+
+      it(`a member's own ${kind} moved into a project is refused when the actor's grant there is ${loss.replace("grant_", "")} between the route and the commit, and nothing is written`, async () => {
+        const t = await setup({ decide: true });
+        await addMember(t, EVE, "member");
+        addBilling(t, [EVE]);
+        let id: string;
+        if (kind === "agent") id = await t.agentOf(TRIAGE, { by: EVE });
+        else {
+          const created = await t.api(EVE, "POST", "/v1/app/chains", { name: `Mine ${randomUUID().slice(0, 8)}` });
+          expect(created.status, JSON.stringify(created.body)).toBe(201);
+          id = (created.body.chain as { chainId: string }).chainId;
+        }
+        const key = kind === "agent" ? agentKey(TEST_ORG, id, "META") : chainKey(TEST_ORG, id, "META");
+        const own = () => ({ rows: t.db.find(row => row.pk === key.pk), receipts: t.db.find(row => row.entityType === "AGENT_REQUEST").length });
+        const before = own();
+        const send = t.db.send.bind(t.db);
+        let raced = false;
+        t.db.send = async command => {
+          if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk)) {
+            raced = true;
+            if (loss === "grant_removed") t.db.delete(projectMemberKey(TEST_ORG, EVE.developerId, "billing"));
+            else t.db.set({ ...t.db.get(projectMemberKey(TEST_ORG, EVE.developerId, "billing")), projectRole: "contributor" });
+          }
+          return send(command);
+        };
+        const reply = await t.api(EVE, "PUT", pathOf(kind, id) + "/owner", intoBilling);
+        expect(raced).toBe(true);
+        expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+        expect(own()).toEqual(before);
+        expect(t.db.get(key)?.owner).toEqual({ kind: "member", developerId: EVE.developerId });
+      });
+    }
+
+    it("a maintainer of both projects moves it across, and the commit pins exactly the source and the destination grants (positive control)", async () => {
+      const f = await fixture(kind);
+      addBilling(f.t, [FAY]);
+      const send = f.t.db.send.bind(f.t.db);
+      const pinned: string[] = [];
+      f.t.db.send = async command => {
+        if (command instanceof TransactWriteCommand) {
+          const items = (command.input.TransactItems ?? []).filter(item => String(item.ConditionCheck?.Key?.["pk"]).includes(FAY.developerId) && String(item.ConditionCheck?.Key?.["sk"]).includes("PROJECT"));
+          // Item occurrences, not transactions: a transaction that named one grant twice would be rejected by DynamoDB, so each key is counted here.
+          pinned.push(...items.map(item => `${String(item.ConditionCheck?.Key?.["pk"])}|${String(item.ConditionCheck?.Key?.["sk"])}`));
+        }
+        return send(command);
+      };
+      const reply = await f.t.api(FAY, "PUT", f.path + "/owner", intoBilling);
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      expect(f.t.db.get(f.key)?.owner).toEqual({ kind: "project", project: "billing" });
+      const expected = ["payments", "billing"].map(project => { const k = projectMemberKey(TEST_ORG, FAY.developerId, project); return `${k.pk}|${k.sk}`; });
+      expect(pinned.sort()).toEqual(expected.sort());
+    });
+
+    it("an actor who maintains only the source project is refused the move at the route, and nothing is written", async () => {
+      const f = await fixture(kind);
+      addBilling(f.t, []);
+      const before = f.state();
+      const reply = await f.t.api(FAY, "PUT", f.path + "/owner", intoBilling);
+      expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+      expect(f.state()).toEqual(before);
+    });
+
+    it("the store refuses the move for an actor with no destination grant even when the route's check is skipped, and an admin needs none", async () => {
+      const f = await fixture(kind);
+      addBilling(f.t, []);
+      const before = f.state();
+      const fay = fixtureActor(f.t.db, TEST_ORG, FAY.developerId);
+      await expect(f.store.setOwner(TEST_ORG, f.id as never, { kind: "project", project: "billing" }, FAY.developerId, { developerId: DEB.developerId }, undefined, { actor: fay })).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(f.state()).toEqual(before);
+      const deb = fixtureActor(f.t.db, TEST_ORG, DEB.developerId);
+      await f.store.setOwner(TEST_ORG, f.id, { kind: "project", project: "billing" }, DEB.developerId, { developerId: DEB.developerId }, undefined, { actor: deb });
+      expect(f.t.db.get(f.key)?.owner).toEqual({ kind: "project", project: "billing" });
     });
   });
 }
