@@ -229,7 +229,8 @@ else
   # Only the core N.N.N is compared. A "-" or "+" suffix (-rc1, +dfsg1, -ce) is cut off first; anything else around the numbers (an epoch such as 1:25.0.5, a second dot in a suffix) is not a version we can judge, so it fails closed.
   core=${version%%[-+]*}
   major=${core%%.*}
-  if [[ ! "$core" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then fails="docker-$version-version-not-parseable"
+  if [[ ! "$core" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]]; then fails="docker-$version-version-not-parseable"
+  elif [[ ( "$core" == 25.0.5 || "$core" == 23.0.11 ) && "$version" == "$core"-* ]]; then fails="docker-$version-is-a-pre-release-of-the-fixed-release"
   elif [[ "$core" == 26.0.0 && "$version" == 26.0.0-* ]]; then
     # A 26.0.0 release candidate: only -rcN with N (decimal) of 3 or more is fixed. Any other pre-release suffix is refused.
     if [[ "$version" =~ ^26\.0\.0-rc([0-9]+)$ ]] && (( 10#${BASH_REMATCH[1]} >= 3 )); then :; else fails="docker-$version-is-a-26.0.0-pre-release-before-rc3"; fi

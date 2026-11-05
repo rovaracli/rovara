@@ -12,7 +12,7 @@ name: CI
 on:
   workflow_dispatch:
     inputs:
-      # The test services Linux checks (the last four steps of linux-runtime: the checks on the runner's Docker, then again on Docker 25.0.5) add 16 to 24 minutes. auto: the scope job decides from the changed paths since the previous release tag (or cloud/next
+      # The test services Linux checks (the last four steps of linux-runtime: the checks on the runner's Docker, then again on Docker 25.0.5) add 18 to 27 minutes. auto: the scope job decides from the changed paths since the previous release tag (or cloud/next
       # when there is no tag), as it does for a pull request. always: run them whatever changed.
       test_services:
         description: "Test services Linux checks: auto (only when the change touches what they read) or always"
@@ -66,7 +66,7 @@ jobs:
         run: |
           git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
           node scripts/ci-docs-only.ts "$RUNNER_TEMP/changed.txt"
-      # The test services Linux checks (the last steps of linux-runtime) build the worker image and start real run networks: 10 to 15 minutes. This ci.yml is started by hand only, so the changed paths are
+      # The test services Linux checks (the last steps of linux-runtime) build the worker image and start real run networks: 10 to 15 minutes (18 to 27 with the Docker 25 repeat and the egress capture). This ci.yml is started by hand only, so the changed paths are
       # compared with the previous release tag (the nearest tag before this commit; origin/cloud/next when there is none), and on a pull request with its base. Run them when the change touches what they read: the
       # worker, the test services contracts and catalog, boot.sh and boot-stage2.sh, the infra that decides the worker's network, or these checks themselves. The input test_services=always forces them. When no
       # base can be found they run (never a silent skip).
@@ -246,8 +246,9 @@ jobs:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04-arm
-    # 100 (was 75, +25): the two Docker 25 steps may use up to 10 and 45 minutes (their own limits; the expected cost is 6 to 9). The steps before them are unchanged and kept their 75.
-    timeout-minutes: 100
+    # 190 = 60 for every step before the test services (the old limit of 75 less the 15 minutes the two old test-services steps were assumed to need) + the four test-services step caps (20 + 45 + 10 + 45 = 120) + 10 of slack.
+    # The caps are ceilings for a hang; the expected added time of the Docker 25 repeat and the egress capture is 8 to 12 minutes.
+    timeout-minutes: 190
     permissions:
       contents: read
       packages: read
@@ -373,9 +374,10 @@ jobs:
         run: npx vitest run --config vitest.native-p0.config.ts tests/e2e/m1-4-journeys.test.ts
       # Test services Linux checks (TS-L1 to TS-L8): what needs root and a real Docker host and cannot be run on a staging worker (no SSM there). They run LAST in this job because they rewrite
       # /etc/docker/daemon.json and restart Docker, as a worker's boot does. The worker image is the one that ships (environments/base/Dockerfile, FROM lines pointed at the pulled copy of the pinned digest).
-      # Skipped when the change touches none of the files they read (scope job, test_services) unless the manual input test_services is always. Estimated 10 to 15 minutes (image build 6 to 9, checks 4 to 6); not measured.
+      # Skipped when the change touches none of the files they read (scope job, test_services) unless the manual input test_services is always. Estimated 10 to 15 minutes for these two (image build 6 to 9, checks 4 to 6); the Docker 25 repeat and the egress capture after them add 8 to 12; none of it measured. Step caps: 20 and 45 here, 10 and 45 below.
       - name: Test services Linux checks (build the worker image and the driver)
         if: needs.scope.outputs.test_services != 'false'
+        timeout-minutes: 20
         run: |
           node scripts/ci-images.ts verify node-build
           node scripts/ci-images.ts dockerfile environments/base/Dockerfile "$RUNNER_TEMP/worker.Dockerfile"
@@ -385,6 +387,7 @@ jobs:
       # digest it got there. The rules are boot-stage2.sh's own functions (sourced). Any FAIL, any unexpected PENDING and any live item without a PASS fails the job.
       - name: Test services Linux checks (rules, live driver, host checks)
         if: needs.scope.outputs.test_services != 'false'
+        timeout-minutes: 45
         env:
           TSL_CI_WORKER_IMAGE: rovara-worker:ci
           TSL_CI_DRIVER_JS: ${{ runner.temp }}/tsl-live.mjs
@@ -392,8 +395,8 @@ jobs:
       # TS-SEAL-6: the same checks again on the Docker the workers run. Staging workers are Amazon Linux 2023 with Docker 25 (25.0.18 on 2026-11-04); this runner's Docker is 28.x, and the two differ in how they treat internal networks,
       # DNS and iptables. The smallest thing that proves L1 and L3 on Docker 25 is the same script on the same job, not a second copy of the suite: no new checkout, install, build or image build. The first step swaps the engine for the
       # pinned static Docker 25.0.5 (checksum verified; the newest 25.0.x Docker publishes as a static build, and the first with the CVE-2024-29018 fix) and carries the worker image over with save and load. The second runs the script again
-      # with TSL_EXPECT_DOCKER_VERSION=25.0.5: it refuses to start on any other daemon, and the job fails unless the checker passed L1.docker-version on exactly Docker Engine 25.0.5. Estimated 6 to 9 minutes (download and swap 1 to 2,
-      # image carry-over 1, checks 4 to 6); not measured. Same gate as the steps above. These come last in the job: they replace the runner's Docker.
+      # with TSL_EXPECT_DOCKER_VERSION=25.0.5: it refuses to start on any other daemon, and the job fails unless the checker passed L1.docker-version on exactly Docker Engine 25.0.5. Estimated 8 to 12 minutes with the egress capture (download and swap 1 to 2,
+      # image carry-over 1, checks 4 to 6, capture and probes 1 to 2); not measured. Same gate as the steps above. These come last in the job: they replace the runner's Docker.
       - name: Test services Linux checks on Docker 25.0.5 (swap the engine)
         if: needs.scope.outputs.test_services != 'false'
         timeout-minutes: 10

@@ -85,7 +85,12 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
     // Bounded: the swap may take 10 minutes and the second check 45, and the job's limit leaves room for both on top of the 75 it had.
     expect(swap["timeout-minutes"]).toBe(10);
     expect(check25["timeout-minutes"]).toBe(45);
-    expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(75 + 10 + 45 - 30);
+    expect(build["timeout-minutes"]).toBe(20);
+    expect(check["timeout-minutes"]).toBe(45);
+    // The job's limit is 60 for the steps before the test services plus the four caps plus 10 of slack.
+    const caps = [build, check, swap, check25].map((step) => step["timeout-minutes"]!).reduce((a, b) => a + b, 0);
+    expect(caps).toBe(120);
+    expect(job["timeout-minutes"]).toBe(60 + caps + 10);
     // Cheap: one job, one image build, one checkout. The Docker 25 steps add no other job, no build and no checkout.
     expect(job.steps.filter((step) => (step.run ?? "").includes("docker build"))).toHaveLength(2);
     expect(Object.keys(jobs).filter((name) => name.includes("docker25") || name.includes("docker-25"))).toEqual([]);
@@ -185,6 +190,110 @@ describe("scripts/ci-docker25-engine.sh", () => {
     const stage2 = read("packages/worker/ec2/boot-stage2.sh");
     const firewall = read("packages/worker/ec2/boot.sh");
     expect(stage2 + firewall).not.toMatch(/iptables -F DOCKER-USER|iptables --flush DOCKER-USER/u);
+  });
+
+  describe("the clean-up of the old engine's kernel state, run for real against a stub iptables that keeps its state in a file", () => {
+    const rules = (...entries: string[]): string[] => entries;
+    // What Docker 28 leaves behind, plus the boot firewall's walls (DOCKER-USER and INPUT), as `iptables -S` would list them.
+    const DOCKER28 = {
+      filter: {
+        INPUT: rules("-i rvb+ -j DROP", "-i rvi+ -j DROP"),
+        FORWARD: rules("-j DOCKER-USER", "-j DOCKER-FORWARD"),
+        "DOCKER-USER": rules("-d 169.254.169.254/32 -j DROP", "-i rvi+ ! -o rvi+ -j DROP", "-i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP"),
+        "DOCKER-FORWARD": rules("-j DOCKER-CT", "-j DOCKER-ISOLATION-STAGE-1", "-j DOCKER-BRIDGE", "-j DOCKER-INTERNAL", "-i docker0 -j ACCEPT"),
+        "DOCKER-CT": rules("-o docker0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"),
+        "DOCKER-BRIDGE": rules("-o docker0 -j DOCKER"),
+        "DOCKER-INTERNAL": rules(),
+        DOCKER: rules("! -i docker0 -o docker0 -j DROP"),
+        "DOCKER-ISOLATION-STAGE-1": rules("-i docker0 ! -o docker0 -j DOCKER-ISOLATION-STAGE-2", "-j RETURN"),
+        "DOCKER-ISOLATION-STAGE-2": rules("-o docker0 -j DROP", "-j RETURN"),
+      },
+      nat: {
+        PREROUTING: rules("-m addrtype --dst-type LOCAL -j DOCKER"),
+        OUTPUT: rules("! -d 127.0.0.0/8 -m addrtype --dst-type LOCAL -j DOCKER"),
+        POSTROUTING: rules("-s 172.17.0.0/16 ! -o docker0 -j MASQUERADE"),
+        DOCKER: rules("-i docker0 -j RETURN"),
+      },
+    };
+    const BUILTIN = new Set(["INPUT", "FORWARD", "OUTPUT", "PREROUTING", "POSTROUTING"]);
+    // A small iptables: -S, -D, -F, -X with the kernel's refusals (a chain that is not empty or is still jumped to cannot be deleted).
+    const STUB = `#!${process.execPath}
+const fs = require("node:fs");
+const [state, log] = [process.env.STUB_STATE, process.env.STUB_LOG];
+const tables = JSON.parse(fs.readFileSync(state, "utf8"));
+let args = process.argv.slice(2);
+fs.appendFileSync(log, "iptables " + args.join(" ") + "\\n");
+let table = "filter";
+if (args[0] === "-t") { table = args[1]; args = args.slice(2); }
+const chains = tables[table] || (tables[table] = {});
+const save = () => fs.writeFileSync(state, JSON.stringify(tables));
+const fail = (m) => { process.stderr.write(m + "\\n"); process.exit(1); };
+if (args[0] === "-S") {
+  for (const [c, rs] of Object.entries(chains)) { console.log(${JSON.stringify("")} + (["INPUT","FORWARD","OUTPUT","PREROUTING","POSTROUTING"].includes(c) ? "-P " + c + " ACCEPT" : "-N " + c)); }
+  for (const [c, rs] of Object.entries(chains)) for (const r of rs) console.log("-A " + c + " " + r);
+} else if (args[0] === "-D") {
+  const [c, ...rest] = args.slice(1); const rs = chains[c]; const i = rs ? rs.indexOf(rest.join(" ")) : -1;
+  if (i < 0) fail("Bad rule (does a matching rule exist in that chain?)"); rs.splice(i, 1); save();
+} else if (args[0] === "-F") {
+  if (!chains[args[1]]) fail("No chain/target/match by that name"); chains[args[1]] = []; save();
+} else if (args[0] === "-X") {
+  const c = args[1]; if (!chains[c]) fail("No chain/target/match by that name");
+  if (chains[c].length) fail("Directory not empty");
+  for (const rs of Object.values(chains)) if (rs.some((r) => r.endsWith(" -j " + c) || r === "-j " + c)) fail("Too many links");
+  delete chains[c]; save();
+} else fail("unsupported: " + args.join(" "));
+`;
+    const run = (twice = false) => {
+      const dir = mkdtempSync(join(tmpdir(), "docker25-clean-"));
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      const state = join(dir, "state.json");
+      const log = join(dir, "calls.log");
+      writeFileSync(state, JSON.stringify(DOCKER28));
+      writeFileSync(join(bin, "iptables"), STUB, { mode: 0o755 });
+      writeFileSync(join(bin, "ip"), `#!/bin/bash\necho "ip $*" >> "${log}"\n`, { mode: 0o755 });
+      const call = twice ? "remove_docker_leftovers; remove_docker_leftovers" : "remove_docker_leftovers";
+      const ran = spawnSync("/bin/bash", ["-c", `source "$1"; set +e; ${call}; echo done`, "x", new URL("../../scripts/ci-docker25-engine.sh", import.meta.url).pathname], { encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, STUB_STATE: state, STUB_LOG: log } });
+      const after = JSON.parse(readFileSync(state, "utf8")) as typeof DOCKER28;
+      return { ran, after, calls: readFileSync(log, "utf8") };
+    };
+
+    it("removes every Docker 28 chain and every jump to it, the docker0 MASQUERADE and the docker0 link, and keeps DOCKER-USER and the INPUT walls as they were", () => {
+      const { ran, after, calls } = run();
+      expect(ran.stdout.trim(), ran.stderr).toBe("done");
+      // The walls are untouched.
+      expect(after.filter["DOCKER-USER"]).toEqual(DOCKER28.filter["DOCKER-USER"]);
+      expect(after.filter["INPUT"]).toEqual(DOCKER28.filter["INPUT"]);
+      // The jump into DOCKER-USER stays; the jump to Docker 28's chain is gone.
+      expect(after.filter["FORWARD"]).toEqual(["-j DOCKER-USER"]);
+      // No Docker 28 chain is left, in either table.
+      expect(Object.keys(after.filter).sort()).toEqual(["DOCKER-USER", "FORWARD", "INPUT"]);
+      expect(Object.keys(after.nat).sort()).toEqual(["OUTPUT", "POSTROUTING", "PREROUTING"]);
+      expect(after.nat["PREROUTING"]).toEqual([]);
+      expect(after.nat["OUTPUT"]).toEqual([]);
+      expect(after.nat["POSTROUTING"]).toEqual([]);
+      expect(calls).toContain("ip link delete docker0");
+      // DOCKER-USER and INPUT were never flushed or deleted.
+      expect(calls).not.toMatch(/-[FX] (DOCKER-USER|INPUT)\b/u);
+    });
+
+    it("is harmless to run again on the cleaned state (chains that are not there are tolerated)", () => {
+      const { ran, after } = run(true);
+      expect(ran.stdout.trim(), ran.stderr).toBe("done");
+      expect(after.filter["DOCKER-USER"]).toEqual(DOCKER28.filter["DOCKER-USER"]);
+    });
+
+    it("positive control: the stub refuses to delete a chain that is still jumped to or not empty (so deleting in the wrong order would have shown)", () => {
+      const dir = mkdtempSync(join(tmpdir(), "docker25-stub-"));
+      const state = join(dir, "state.json");
+      const log = join(dir, "log");
+      writeFileSync(state, JSON.stringify(DOCKER28));
+      writeFileSync(join(dir, "iptables"), STUB, { mode: 0o755 });
+      const env = { PATH: "/usr/bin:/bin", STUB_STATE: state, STUB_LOG: log };
+      expect(spawnSync(join(dir, "iptables"), ["-X", "DOCKER-FORWARD"], { env, encoding: "utf8" }).status).not.toBe(0);
+      expect(spawnSync(join(dir, "iptables"), ["-t", "nat", "-X", "DOCKER"], { env, encoding: "utf8" }).status).not.toBe(0);
+      expect(BUILTIN.has("INPUT")).toBe(true);
+    });
   });
 
   describe("the checksum path, run for real with stubbed curl, sha256sum, tar and docker", () => {
@@ -352,21 +461,31 @@ describe("TS-SEAL egress capture (scripts/ci-egress-capture.sh) on the Docker 25
   });
 
   it("captures every interface with a bounded size, probes with the sealed sandbox's flags and no DNS option, and queries 127.0.0.11 directly", () => {
-    expect(egressCode).toMatch(/tcpdump -i any -nn -e -s "\$EG_SNAPLEN" -U -c "\$EG_CAPTURE_MAX_PACKETS" -w /u);
+    // As root (tcpdump would drop to its own user before opening a file in a root-owned directory), for the capture and for the render.
+    expect(egressCode).toMatch(/tcpdump -Z root -i any -nn -e -s "\$EG_SNAPLEN" -U -c "\$EG_CAPTURE_MAX_PACKETS" -w /u);
+    expect(egressCode).toContain('tcpdump -Z root -nn -e -r "$EG_DIR/all.pcap"');
+    expect(egressCode).toContain('chmod 0755 "$EG_DIR"');
+    expect(egressCode).toContain("DEBIAN_FRONTEND=noninteractive apt-get install");
     expect(egressCode).toContain("--internal");
     expect(egressCode).toContain("com.docker.network.bridge.name=$EG_BRIDGE");
     expect(egressCode).toMatch(/EG_BRIDGE=rvi\$\(/u);
     for (const flag of ["--cap-drop ALL", "--security-opt no-new-privileges", "--read-only", "--user 1000:1000", "--pids-limit 4096"]) expect(egressCode, flag).toContain(flag);
     expect(egressCode).not.toMatch(/--dns|--cap-add|--privileged|--network host/u);
     expect(egressCode).toContain('["127.0.0.11"]');
-    expect(egressCode).toContain('"$EG_TOKEN-sealed.invalid"');
-    expect(egressCode).toContain('"$EG_TOKEN-control.invalid"');
-    expect(egressCode).toContain('["1.1.1.1"]');
+    expect(egressCode).toContain('"$EG_TOKEN-sealed.example"');
+    expect(egressCode).toContain('name + "-control.example", null');
+    expect(egressCode).toContain('name + "-direct.example", ["1.1.1.1"]');
+    // The probe containers are named and removed on exit; the pcap is deleted on exit.
+    expect(egressCode).toContain('--name "$EG_SEALED_CONTAINER"');
+    expect(egressCode).toContain('--name "$EG_OPEN_CONTAINER"');
+    expect(egressCode).toMatch(/eg_cleanup\(\) \{[\s\S]*?docker rm -f "\$EG_SEALED_CONTAINER" "\$EG_OPEN_CONTAINER"[\s\S]*?rm -f "\$EG_DIR\/all\.pcap"/u);
     // The control runs on a network that is NOT internal.
     const open = egressCode.slice(egressCode.indexOf('docker network create --driver bridge "$EG_OPEN_NETWORK"'));
     expect(open.split("\n")[0]).not.toContain("--internal");
     // Both probes' networks are removed again before the driver starts and on exit.
     expect(egressCode.match(/docker network rm "\$EG_SEALED_NETWORK" "\$EG_OPEN_NETWORK"/gu)!.length).toBeGreaterThanOrEqual(3);
+    // Re-sourcing the library (which declares readonly constants) is harmless.
+    expect(spawnSync("bash", ["-c", 'source "$1"; source "$1"; echo twice', "x", new URL("../../scripts/ci-egress-capture.sh", import.meta.url).pathname], { encoding: "utf8" }).stdout.trim()).toBe("twice");
     // The embedded resolver's per-round neutraliser (the other lane) is not assumed: the check holds with or without it.
     expect(egressScript).toContain("with or without a per-round DROP of 127.0.0.11");
   });
@@ -374,76 +493,141 @@ describe("TS-SEAL egress capture (scripts/ci-egress-capture.sh) on the Docker 25
   describe("the verdict", () => {
     const TOKEN = "egress0a1b2c3d4e5f";
     const BRIDGE = "rvi0a1b2c3d";
-    const line = (iface: string, from: string, to: string, extra = "UDP, length 1"): string =>
-      `12:00:00.000001 ${iface} Out ifindex 2 aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: ${from} > ${to}: ${extra}`;
+    const line = (iface: string, from: string, to: string, extra = "UDP, length 1", direction = "Out"): string =>
+      `12:00:00.000001 ${iface} ${direction} ifindex 2 aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: ${from} > ${to}: ${extra}`;
+    const line6 = (iface: string, from: string, to: string, direction = "Out"): string =>
+      `12:00:00.000002 ${iface} ${direction} ifindex 9 aa:bb:cc:dd:ee:ff ethertype IPv6 (0x86dd), length 90: ${from} > ${to}: ICMP6, neighbor solicitation`;
     const GOOD = [
-      line("eth0", "10.1.0.4.40000", "1.1.1.1.53", `12345+ A? ${TOKEN}-control.invalid. (50)`),
+      line("eth0", "10.1.0.4.40000", "168.63.129.16.53", `12345+ A? ${TOKEN}-control.example. (50)`),
+      line("eth0", "10.1.0.4.40002", "1.1.1.1.53", `12346+ A? ${TOKEN}-direct.example. (50)`),
       line("eth0", "10.1.0.4.40001", "168.63.129.16.53", `4321+ A? registry.example.com. (40)`),
-      line(BRIDGE, "172.30.254.4.5000", "172.30.254.1.9"),
+      line(BRIDGE, "172.30.254.4.5000", "172.30.254.1.9", "UDP, length 1", "In"),
       "12:00:00.000009 rvi0a1b2c3d In  ifindex 9 aa:bb:cc:dd:ee:ff ethertype ARP (0x0806), length 28: Request who-has 172.30.254.1 tell 172.30.254.4, length 28",
-      "12:00:00.000010 eth0 Out ifindex 2 aa:bb:cc:dd:ee:ff ethertype IPv6 (0x86dd), length 90: fe80::1 > ff02::2: ICMP6, router solicitation, length 16",
+      line6("eth0", "fe80::1", "ff02::2"),
+      line6(BRIDGE, "fe80::4", "ff02::1:ff00:1"),
     ];
-    const verdict = (lines: string[], extra: { probe?: string | null; packets?: string; uplinkIps?: string } = {}): { status: number | null; out: string } => {
+    const OK_PROBE = '{"embedded":"ETIMEOUT","gateway":"sent","public":"ENETUNREACH"}';
+    const verdict = (lines: string[], extra: { probe?: string | null; packets?: string; uplinkIps?: string; alive?: string } = {}): { status: number | null; out: string; lines: string[] } => {
       const dir = mkdtempSync(join(tmpdir(), "eg-verdict-"));
       writeFileSync(join(dir, "all.txt"), `${lines.join("\n")}\n`);
-      if (extra.probe !== null) writeFileSync(join(dir, "probe-sealed.json"), extra.probe ?? '{"embedded":"ETIMEOUT","gateway":"sent","public":"ENETUNREACH"}');
-      const ran = spawnSync("bash", ["-c", 'source "$1"; EG_DIR=$2 EG_TOKEN=$3 EG_UPLINK=eth0 EG_UPLINK_IPS="$4" EG_BRIDGE=$5 EG_PACKETS=$6; eg_verdict "$2/all.txt"', "x", new URL("../../scripts/ci-egress-capture.sh", import.meta.url).pathname, dir, TOKEN, extra.uplinkIps ?? "10.1.0.4 ", BRIDGE, extra.packets ?? "500"], { encoding: "utf8" });
-      return { status: ran.status, out: ran.stdout.trim() };
+      if (extra.probe !== null) writeFileSync(join(dir, "probe-sealed.json"), extra.probe ?? OK_PROBE);
+      const ran = spawnSync("bash", ["-c", 'source "$1"; EG_DIR=$2 EG_TOKEN=$3 EG_UPLINK=eth0 EG_UPLINK_IPS="$4" EG_BRIDGE=$5 EG_PACKETS=$6 EG_TCPDUMP_ALIVE=$7; eg_verdict "$2/all.txt"', "x", new URL("../../scripts/ci-egress-capture.sh", import.meta.url).pathname, dir, TOKEN, extra.uplinkIps ?? "10.1.0.4 ", BRIDGE, extra.packets ?? "500", extra.alive ?? "1"], { encoding: "utf8" });
+      return { status: ran.status, out: ran.stdout.trim(), lines: ran.stdout.trim().split("\n") };
     };
 
-    it("PASS when the control is on the uplink, the sealed token is nowhere, no container address leaves, and the bridge stays inside its /24", () => {
+    it("PASS when both control lookups are on the uplink, the sealed token is nowhere, no container address leaves, and the bridge stays inside its /24", () => {
       const r = verdict(GOOD);
-      expect(r.out, r.out).toMatch(/^TSL L3\.egress-capture PASS no-packet-left-the-host-for-a-non-run-address \| /u);
+      expect(r.out, r.out).toMatch(/^TSL L3\.egress-capture PASS no-sealed-token-or-container-source-leak-seen \| /u);
+      expect(r.lines).toHaveLength(1);
       expect(r.status).toBe(0);
     });
 
-    it("FAIL, never a pass, when the capture is blind: no control on the uplink (or on the wrong interface), nothing on the bridge, no text, no sealed probe result", () => {
-      const noControl = GOOD.filter((entry) => !entry.includes("-control"));
+    it("the PASS name says what was checked and does not claim that nothing at all left the host", () => {
+      expect(verdict(GOOD).out).not.toMatch(/no-packet-left-the-host/u);
+      expect(egressScript).toMatch(/masquerade/iu);
+      expect(egressScript).toMatch(/internal network has no masquerade/iu);
+    });
+
+    it("FAIL, never a pass, when the capture is blind or incomplete", () => {
+      const noSystem = GOOD.filter((entry) => !entry.includes("-control"));
+      const noDirect = GOOD.filter((entry) => !entry.includes("-direct"));
+      const onlyDirectOnUplink = GOOD.map((entry) => entry.replace(`${TOKEN}-control`, `${TOKEN}-other`));
       const controlElsewhere = GOOD.map((entry) => entry.replace("eth0 Out ifindex 2 aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: 10.1.0.4.40000", "docker0 Out ifindex 3 aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: 10.1.0.4.40000"));
-      const noBridge = GOOD.filter((entry) => !entry.includes(BRIDGE) || entry.includes("ARP"));
+      const noBridge = GOOD.filter((entry) => !entry.includes(BRIDGE) || entry.includes("ARP") || entry.includes("IPv6"));
       for (const [label, result, reason] of [
-        ["no control", verdict(noControl), /capture-blind-control-not-seen-on-the-uplink/u],
-        ["control on another interface", verdict(controlElsewhere), /capture-blind-control-not-seen-on-the-uplink/u],
+        ["no system lookup", verdict(noSystem), /capture-blind-system-lookup-not-seen-on-the-uplink/u],
+        ["only the direct query", verdict(onlyDirectOnUplink), /capture-blind-system-lookup-not-seen-on-the-uplink/u],
+        ["no direct query", verdict(noDirect), /capture-blind-direct-query-not-seen-on-the-uplink/u],
+        ["control on another interface", verdict(controlElsewhere), /capture-blind-system-lookup-not-seen-on-the-uplink/u],
         ["nothing on the bridge", verdict(noBridge), /capture-blind-nothing-seen-on-the-rvi-bridge/u],
         ["empty capture", verdict([]), /capture-empty/u],
         ["no sealed probe result", verdict(GOOD, { probe: null }), /sealed-probe-gave-no-result/u],
         ["a truncated capture", verdict(GOOD, { packets: "1000000" }), /capture-truncated/u],
+        ["tcpdump gone before the end", verdict(GOOD, { alive: "0" }), /tcpdump-was-not-running-at-the-end/u],
+        ["no packet count", verdict(GOOD, { packets: "" }), /capture-packet-count-unreadable/u],
+        ["a packet count that is not a number", verdict(GOOD, { packets: "lots" }), /capture-packet-count-unreadable/u],
       ] as const) {
-        expect(result.out, label).toMatch(/^TSL L3\.egress-capture FAIL /u);
+        expect(result.lines[0], label).toMatch(/^TSL L3\.egress-capture FAIL /u);
         expect(result.out, label).toMatch(reason);
         expect(result.status, label).toBe(1);
       }
     });
 
-    it("FAIL when the sealed token is seen on any interface, with or without a control, in any packet", () => {
-      for (const where of ["eth0", BRIDGE, "lo", "docker0"]) {
-        const r = verdict([...GOOD, line(where, "172.30.254.4.53000", "127.0.0.11.53", `99+ A? ${TOKEN}-sealed.invalid. (50)`)]);
-        expect(r.out, where).toMatch(/FAIL .*sealed-token-seen-1-times/u);
+    it("the sealed probe must prove the query was sent and got no answer", () => {
+      const probe = (embedded: string, gateway = '"sent"', publicAddress = '"ENETUNREACH"'): string => `{"embedded":${embedded},"gateway":${gateway},"public":${publicAddress}}`;
+      for (const answer of ['"ETIMEOUT"', '"ESERVFAIL"', '"ENOTFOUND"', '"ENODATA"', '"EREFUSED"']) expect(verdict(GOOD, { probe: probe(answer) }).status, answer).toBe(0);
+      for (const [label, text, reason] of [
+        ["ECONNREFUSED", probe('"ECONNREFUSED"'), /sealed-probe-embedded-query-not-sent-or-answered/u],
+        ["ENETUNREACH on the embedded query", probe('"ENETUNREACH"'), /sealed-probe-embedded-query-not-sent-or-answered/u],
+        ["an address came back", probe("1"), /sealed-probe-embedded-query-not-sent-or-answered/u],
+        ["no embedded key", '{"gateway":"sent","public":"ENETUNREACH"}', /sealed-probe-embedded-query-not-sent-or-answered/u],
+        ["the gateway packet was not sent", probe('"ETIMEOUT"', '"EPERM"'), /sealed-probe-gateway-packet-not-sent/u],
+        ["8.8.8.8 had a route", probe('"ETIMEOUT"', '"sent"', '"sent"'), /sealed-probe-public-address-had-a-route/u],
+      ] as const) {
+        const r = verdict(GOOD, { probe: text });
+        expect(r.lines[0], label).toMatch(/^TSL L3\.egress-capture FAIL /u);
+        expect(r.out, label).toMatch(reason);
       }
-      expect(verdict([...GOOD, line("eth0", "10.1.0.4.1", "10.1.0.2.53", `99+ A? ${TOKEN}-sealed.invalid. (50)`)]).status).toBe(1);
     });
 
-    it("FAIL for a container address (172.16/12, 192.168/16) as the source on the uplink, except the uplink's own address", () => {
+    it("FAIL when the sealed token is seen on any interface, in any case, with the lines printed as evidence", () => {
+      for (const where of ["eth0", BRIDGE, "lo", "docker0"]) {
+        const r = verdict([...GOOD, line(where, "172.30.254.4.53000", "127.0.0.11.53", `99+ A? ${TOKEN}-sealed.example. (50)`)]);
+        expect(r.out, where).toMatch(/FAIL .*sealed-token-seen-1-times/u);
+        expect(r.out, where).toContain("egress-evidence: sealed-token-line:");
+      }
+      expect(verdict([...GOOD, line("eth0", "10.1.0.4.1", "10.1.0.2.53", `99+ A? ${TOKEN.toUpperCase()}-SEALED.EXAMPLE. (50)`)]).status).toBe(1);
+    });
+
+    it("FAIL for a container address as the source of an OUTGOING packet on the uplink, except the uplink's own address; incoming packets are not counted", () => {
       for (const source of ["172.17.0.2.5000", "172.30.5.4.1", "192.168.5.4.1"]) {
         expect(verdict([...GOOD, line("eth0", source, "8.8.8.8.53")]).out, source).toMatch(/FAIL .*container-address-as-source-on-the-uplink-1-packets/u);
       }
-      // A runner whose own address is in 172.16/12 is not a leak; the same address from a container is not told apart, which is why the uplink's addresses are listed.
+      expect(verdict([...GOOD, line("eth0", "172.17.0.2.5000", "8.8.8.8.53")]).out).toContain("egress-evidence: uplink-container-source: eth0 Out 172.17.0.2 8.8.8.8");
       expect(verdict([...GOOD, line("eth0", "172.31.9.9.443", "8.8.8.8.443")], { uplinkIps: "10.1.0.4 172.31.9.9 " }).status).toBe(0);
-      // The same source on another interface (the docker bridge itself) is not the uplink.
       expect(verdict([...GOOD, line("docker0", "172.17.0.2.5000", "172.17.0.1.53")]).status).toBe(0);
+      expect(verdict([...GOOD, line("eth0", "172.20.0.9.443", "10.1.0.4.443", "UDP", "In")]).status).toBe(0);
     });
 
-    it("FAIL for an IPv4 packet on the rvi bridge to a destination outside the run's /24 (8.8.8.8, the metadata address, a multicast address, another run's /24); ARP and IPv6 are ignored", () => {
-      for (const destination of ["8.8.8.8.53", "169.254.169.254.80", "224.0.0.251.5353", "172.30.253.4.80", "255.255.255.255.67"]) {
+    it("reads every direction tcpdump prints (In, Out, B, M, P) and exempts multicast, broadcast and 0.0.0.0 on the bridge", () => {
+      for (const direction of ["In", "Out", "B", "M", "P"]) {
+        const lines = [GOOD[0]!, GOOD[1]!, line(BRIDGE, "172.30.254.4.5000", "172.30.254.1.9", "UDP, length 1", direction)];
+        expect(verdict(lines).status, `bridge packet, direction ${direction}`).toBe(0);
+        // A packet to the outside is seen whatever the direction field says.
+        expect(verdict([...GOOD, line(BRIDGE, "172.30.254.4.5000", "8.8.8.8.53", "UDP, length 1", direction)]).out, direction).toMatch(/FAIL .*rvi-bridge-packets-to-outside-the-run-subnet-1/u);
+      }
+      for (const destination of ["224.0.0.251.5353", "239.255.255.250.1900", "255.255.255.255.67", "0.0.0.0.68"]) {
+        expect(verdict([...GOOD, line(BRIDGE, "172.30.254.4.5000", destination, "UDP, length 1", "M")]).status, destination).toBe(0);
+      }
+    });
+
+    it("FAIL for an IPv4 packet on the rvi bridge to a destination outside the run's /24 (8.8.8.8, the metadata address, another run's /24); ARP is ignored; the evidence is bounded", () => {
+      for (const destination of ["8.8.8.8.53", "169.254.169.254.80", "172.30.253.4.80", "10.0.0.1.80"]) {
         expect(verdict([...GOOD, line(BRIDGE, "172.30.254.4.5000", destination)]).out, destination).toMatch(/FAIL .*rvi-bridge-packets-to-outside-the-run-subnet-1/u);
       }
-      expect(verdict([...GOOD, line(BRIDGE, "172.30.254.4.5000", "172.30.254.1.9"), "12:00:00.1 rvi0a1b2c3d In  ifindex 9 aa:bb:cc:dd:ee:ff ethertype IPv6 (0x86dd), length 90: fe80::1 > ff02::1: ICMP6"]).status).toBe(0);
+      const many = verdict([...GOOD, ...Array.from({ length: 100 }, (_, index) => line(BRIDGE, "172.30.254.4.5000", `8.8.8.${index}.53`))]);
+      expect(many.out).toMatch(/rvi-bridge-packets-to-outside-the-run-subnet-100/u);
+      expect(many.lines.filter((entry) => entry.startsWith("egress-evidence: rvi-outside-subnet:"))).toHaveLength(40);
     });
 
-    it("keeps one fixed line shape (no packet text in it) so the job's judge can read it", () => {
+    it("FAIL for non-link-local IPv6 on ANY rvi bridge (not only the probe's); link-local, ff02 and :: are fine", () => {
+      for (const bridge of [BRIDGE, "rvi99999999"]) {
+        const r = verdict([...GOOD, line6(bridge, "fe80::4", "2001:4860:4860::8888")]);
+        expect(r.out, bridge).toMatch(/FAIL .*rvi-bridge-non-link-local-ipv6-1-packets/u);
+        expect(r.out, bridge).toContain("egress-evidence: rvi-ipv6:");
+        expect(verdict([...GOOD, line6(bridge, "2001:db8::4", "ff02::1")]).out, bridge).toMatch(/non-link-local-ipv6-1/u);
+      }
+      expect(verdict([...GOOD, line6("rvi99999999", "::", "ff02::16"), line6("rvi99999999", "febf::1", "fe80::2")]).status).toBe(0);
+      // IPv6 on the uplink is not this check's business.
+      expect(verdict([...GOOD, line6("eth0", "2600:1f13::4", "2606:4700::1111")]).status).toBe(0);
+    });
+
+    it("on FAIL prints the evidence (lines starting egress-evidence:, never a payload), on PASS prints none", () => {
       const r = verdict([...GOOD, line("eth0", "172.17.0.2.5000", "8.8.8.8.53", "secret-looking payload")]);
-      expect(r.out.split("\n")).toHaveLength(1);
+      expect(r.lines[0]).toMatch(/^TSL /u);
+      expect(r.lines.slice(1).every((entry) => entry.startsWith("egress-evidence: "))).toBe(true);
       expect(r.out).not.toContain("secret-looking");
+      expect(verdict(GOOD).lines).toHaveLength(1);
     });
   });
 
@@ -458,10 +642,10 @@ describe("TS-SEAL egress capture (scripts/ci-egress-capture.sh) on the Docker 25
       writeFileSync(file, `${lines.join("\n")}\n`);
       return spawnSync("bash", ["-c", 'source "$1"; judge "$2" "" "$3"', "x", new URL("../../scripts/ci-test-services-linux.sh", import.meta.url).pathname, file, egress], { encoding: "utf8" }).status;
     };
-    const pass = "TSL L3.egress-capture PASS no-packet-left-the-host-for-a-non-run-address | control seen";
+    const pass = "TSL L3.egress-capture PASS no-sealed-token-or-container-source-leak-seen | control seen";
     expect(run([...base(), pass], "1")).toBe(0);
     expect(run(base(), "1")).toBe(1);
-    expect(run([...base(), "TSL L3.egress-capture FAIL no-packet-left-the-host-for-a-non-run-address | capture-blind-control-not-seen-on-the-uplink"], "1")).toBe(1);
+    expect(run([...base(), "TSL L3.egress-capture FAIL no-sealed-token-or-container-source-leak-seen | capture-blind-system-lookup-not-seen-on-the-uplink"], "1")).toBe(1);
     expect(run([...base(), "TSL L3.egress-capture PASS-ish"], "1")).toBe(1);
     expect(run(base(), "0")).toBe(0);
   });

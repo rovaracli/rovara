@@ -144,7 +144,10 @@ describe("scripts/linux-check-test-services.sh", () => {
     // The advisory's 26.x cut-off is 26.0.0-rc3: the earlier release candidates are still vulnerable.
     for (const version of ["26.0.0-rc1", "26.0.0-rc2"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ FAIL .*pre-release-before-rc3/u);
     // Only the core N.N.N is compared: suffix digits are never glued into the patch number, and a version that cannot be read fails closed.
-    for (const version of ["1:25.0.5", "25.0.5.1", "25.0", "v25.0.5", "25.0.x"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ FAIL .*version-not-parseable/u);
+    for (const version of ["1:25.0.5", "25.0.5.1", "25.0", "v25.0.5", "25.0.x", "25.0.99999", "99999.0.0"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ FAIL .*version-not-parseable/u);
+    // A "-" suffix on exactly the fixed release is a pre-release of it, not the fix; a "+" build suffix is.
+    for (const version of ["25.0.5-rc1", "25.0.5-ce", "23.0.11-rc1"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ FAIL .*pre-release-of-the-fixed-release/u);
+    expect(run({ dockerVersion: "23.0.11+dfsg1" }).byId("L1.docker-version")).toMatch(/ PASS /u);
     expect(run({ dockerVersion: "24.0.9-ce" }).byId("L1.docker-version")).toMatch(/ FAIL .*has-no-fix/u);
     expect(run({ dockerVersion: "26.0.0-rc.3" }).byId("L1.docker-version")).toMatch(/ FAIL .*pre-release-before-rc3/u);
     // The cut-off and its source are written next to the gate, and the superseded 25.0.4 is gone from it.
