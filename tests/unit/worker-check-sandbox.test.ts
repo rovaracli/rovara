@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CHECK_SANDBOX_HOSTNAME, RESERVED_RUN_ALIASES, SEALED_DNS_HELPER_ENTRY, SEALED_DNS_STATE_FILE, SINKHOLE_ALIAS,
+  EMBEDDED_RESOLVER_ADDRESS, RESOLVER_GUARD_SCRIPT, resolverGuardArgProblems, resolverGuardName, resolverGuardRunArgs,
   checkSandboxArgProblems, checkSandboxHostsFile, detachWorkingSandbox, reattachWorkingSandbox, startCheckSandbox, withDetachedWorking, checkSandboxNames, checkSandboxPlan, checkSandboxResolvConf, checkSandboxRunArgs, parseSealedDnsRecord, readSealedDnsRecord, sealedDnsHelperRunArgs, waitForSealedDnsHelper, writeCheckSandboxFiles,
   type CheckSandboxInput, type CheckSandboxNetwork,
 } from "../../packages/worker/src/check-sandbox.js";
@@ -517,7 +518,7 @@ describe("the working sandbox is detached for the round (review H1)", () => {
     const proof = await detachWorkingSandbox(docker, plan);
     calls.length = 0;
     expect(await startCheckSandbox(docker, plan, proof)).toBe("container-id");
-    expect(calls).toEqual([["inspect", "--format", "{{json .NetworkSettings.Networks}}", WORK], plan.sandboxRunArgs]);
+    expect(calls).toEqual([["inspect", "--format", "{{json .NetworkSettings.Networks}}", WORK], plan.sandboxRunArgs, plan.resolverGuardArgs]);
   });
 
   it("refuses to start the check sandbox without the proof: nothing was detached, a made-up proof, or another plan's proof", async () => {
@@ -607,7 +608,7 @@ describe("smaller review items", () => {
 });
 
 /** A docker with a little state: the working sandbox's networks, whether the check sandbox exists, and every call in order. */
-function statefulDocker(state: { networks: string[]; sandboxExists?: boolean; rmFails?: boolean; connectFails?: boolean; startFails?: boolean }) {
+function statefulDocker(state: { networks: string[]; sandboxExists?: boolean; rmFails?: boolean; connectFails?: boolean; startFails?: boolean; guardExit?: number; guardRejects?: boolean }) {
   const calls: string[][] = [];
   const docker: DockerCli = {
     run: (args) => {
@@ -621,6 +622,7 @@ function statefulDocker(state: { networks: string[]; sandboxExists?: boolean; rm
         return done();
       }
       if (args[0] === "inspect") return done(0, JSON.stringify(Object.fromEntries(state.networks.map((name) => [name, {}]))));
+      if (args[0] === "run" && args.includes("NET_ADMIN")) return state.guardRejects === true ? Promise.reject(new Error("docker went away")) : done(state.guardExit ?? 0);
       if (args[0] === "run") { if (state.startFails === true) return done(125); state.sandboxExists = true; return done(0, "id\n"); }
       if (args[0] === "rm") { if (state.rmFails !== true) state.sandboxExists = false; return done(state.rmFails === true ? 1 : 0); }
       if (args[0] === "container" && args[1] === "inspect") return done(state.sandboxExists === true ? 0 : 1, state.sandboxExists === true ? "id\n" : "");
@@ -646,7 +648,7 @@ describe("one round through withDetachedWorking (review lows 1 and 2)", () => {
       return "round-result";
     });
     expect(result).toBe("round-result");
-    expect(seenInRound).toEqual(["network disconnect", "inspect", "inspect", "run"]);
+    expect(seenInRound).toEqual(["network disconnect", "inspect", "inspect", "run", "run"]);
     const order = calls.map(kind);
     expect(order.indexOf("rm")).toBeGreaterThan(order.indexOf("run"));
     expect(order.indexOf("network connect")).toBeGreaterThan(order.indexOf("rm"));
@@ -743,7 +745,7 @@ describe("startCheckSandbox checks the plan's arguments again (review low 2)", (
   it("starts a sound plan", async () => {
     const { result, calls } = await startWith(plan);
     expect(result).toBe("started");
-    expect(calls.map(kind)).toEqual(["inspect", "run"]);
+    expect(calls.map(kind)).toEqual(["inspect", "run", "run"]);
   });
 
   it("refuses a hand-built plan with --privileged, a published port, another network, another image or another workspace, and runs nothing", async () => {
@@ -812,5 +814,172 @@ describe("the run files and the workspace are checked harder (review low 3)", ()
     dirs.push(base);
     expect(() => checkSandboxPlan(layout({ rootPath: join(base, "no", "such", "ws"), maskedPaths: [], filesDir: join(base, "files", "deep", "dir") }))).not.toThrow();
     expect(() => checkSandboxPlan(layout({ rootPath: join(base, "no", "such", "ws"), maskedPaths: [], filesDir: join(base, "no", "such", "ws", "x") }))).toThrow(/inside the workspace/u);
+  });
+});
+
+// TS-SEAL-5 (b): Docker's embedded resolver (127.0.0.11) is closed inside the check sandbox before any command runs, by a short-lived NET_ADMIN helper that joins the sandbox's network namespace.
+describe("the resolver guard's arguments (TS-SEAL-5 b)", () => {
+  const plan = checkSandboxPlan(input());
+  const NET = runNetworkName(RUN);
+  const guard = plan.resolverGuardArgs;
+  const expected = { sandboxName: plan.sandboxName, image: plan.image };
+
+  it("is a foreground --rm helper of the worker's own image that joins the check sandbox's network namespace by name", () => {
+    expect(guard).toEqual(resolverGuardRunArgs({ net: network(), image: "worker:img" }));
+    expect(guard.slice(0, 5)).toEqual(["run", "--rm", "--pull=never", "--name", `${NET}-check-guard`]);
+    expect(resolverGuardName(`${NET}-check`)).toBe(`${NET}-check-guard`);
+    expect(guard).not.toContain("--detach");
+    expect(valuesOf(guard, "--network")).toEqual([`container:${NET}-check`]);
+    expect(guard).toContain("worker:img");
+    expect(guard.slice(-5)).toEqual(["--entrypoint", "/bin/sh", "worker:img", "-c", RESOLVER_GUARD_SCRIPT]);
+    expect(valuesOf(guard, "--entrypoint")).toEqual(["/bin/sh"]);
+  });
+
+  it("holds NET_ADMIN and nothing else: every capability dropped first, root, no privileges to gain, a read-only root, no mount, no port, no other network", () => {
+    expect(valuesOf(guard, "--cap-add")).toEqual(["NET_ADMIN"]);
+    expect(valuesOf(guard, "--cap-drop")).toEqual(["ALL"]);
+    expect(guard.indexOf("--cap-drop")).toBeLessThan(guard.indexOf("--cap-add"));
+    expect(valuesOf(guard, "--user")).toEqual(["0:0"]);
+    expect(valuesOf(guard, "--security-opt")).toEqual(["no-new-privileges"]);
+    expect(guard).toContain("--read-only");
+    expect(valuesOf(guard, "--tmpfs")).toEqual(["/run:rw,noexec,nosuid,nodev,size=1m"]);
+    for (const forbidden of ["--privileged", "--volume", "-v", "--mount", "--publish", "-p", "--ip", "--dns", "--pid", "--env", "--device", "--sysctl", "--detach"]) expect(guard, forbidden).not.toContain(forbidden);
+    expect(valuesOf(guard, "--pids-limit")).toEqual(["32"]);
+    expect(valuesOf(guard, "--memory")).toEqual(["64m"]);
+    expect(valuesOf(guard, "--memory-swap")).toEqual(["64m"]);
+    expect(valuesOf(guard, "--cpus")).toEqual(["0.5"]);
+  });
+
+  it("carries the four run-network labels, so a sweep removes a guard that outlived its worker", () => {
+    const labels = valuesOf(guard, "--label");
+    expect(labels).toEqual(valuesOf(network().labelArgs(), "--label"));
+    for (const key of [RUN_NETWORK_LABEL, RUN_NETWORK_CREATED_LABEL, RUN_NETWORK_EXPIRES_LABEL, RUN_NETWORK_WORKSPACE_LABEL]) expect(labels.some((label) => label.startsWith(`${key}=`)), key).toBe(true);
+  });
+
+  it("runs one rule for the ADDRESS alone, in the filter OUTPUT chain, first, for every protocol, and reads it back (a port in the rule would never match Docker's rewritten packets)", () => {
+    expect(EMBEDDED_RESOLVER_ADDRESS).toBe("127.0.0.11");
+    expect(RESOLVER_GUARD_SCRIPT).toBe("set -eu; iptables-nft -w 5 -I OUTPUT 1 -d 127.0.0.11/32 -j DROP; iptables-nft -w 5 -C OUTPUT -d 127.0.0.11/32 -j DROP");
+    expect(RESOLVER_GUARD_SCRIPT).not.toMatch(/--dport|--sport|\s-p\s|-t nat|REJECT|-j ACCEPT/u);
+    expect(RESOLVER_GUARD_SCRIPT).not.toMatch(/\|\||&\s*$/u);
+    expect(guard.at(-1)).toBe(RESOLVER_GUARD_SCRIPT);
+  });
+
+  it("is in the plan, and the check sandbox itself never gets a capability or the network of the guard", () => {
+    expect(plan.resolverGuardArgs).toEqual(guard);
+    expect(plan.sandboxRunArgs).not.toContain("--cap-add");
+    expect(plan.sandboxRunArgs).not.toContain("NET_ADMIN");
+    expect(valuesOf(plan.sandboxRunArgs, "--cap-drop")).toEqual(["ALL"]);
+    // adding NET_ADMIN to the sandbox is a problem of its own
+    const paths = { ...FILES, rootPath: ROOT, image: "worker:img", maskedPaths: ["/workspace/project/.agentx-state"] };
+    const sandbox = checkSandboxRunArgs(input(), FILES);
+    const entry2 = sandbox.indexOf("--entrypoint");
+    expect(checkSandboxArgProblems([...sandbox.slice(0, entry2), "--cap-add", "NET_ADMIN", ...sandbox.slice(entry2)], network(), paths).join(" ")).toMatch(/--cap-add, which adds a capability/u);
+  });
+
+  it("is judged as sound, and every change to it is a problem: another network, a second capability, privileged, a mount, another command or image, a foreign or repeated label", () => {
+    expect(resolverGuardArgProblems(guard, expected)).toEqual([]);
+    const before = (flag: string) => guard.indexOf(flag);
+    const swap = (from: string, to: string) => guard.map((arg) => (arg === from ? to : arg));
+    const bad: Array<[string, string[]]> = [
+      ["the default bridge", swap(`container:${NET}-check`, "bridge")],
+      ["another sandbox's namespace", swap(`container:${NET}-check`, "container:other-sandbox")],
+      ["the host network", swap(`container:${NET}-check`, "host")],
+      ["a second capability", [...guard.slice(0, before("--cap-add") + 2), "--cap-add", "NET_RAW", ...guard.slice(before("--cap-add") + 2)]],
+      ["SYS_ADMIN instead", swap("NET_ADMIN", "SYS_ADMIN")],
+      ["privileged", [...guard.slice(0, 5), "--privileged", ...guard.slice(5)]],
+      ["a mount", [...guard.slice(0, before("--network")), "--volume", "/:/host", ...guard.slice(before("--network"))]],
+      ["a published port", [...guard.slice(0, before("--network")), "-p", "80:80", ...guard.slice(before("--network"))]],
+      ["another script", [...guard.slice(0, -1), "iptables-nft -F"]],
+      ["a second script", [...guard, "id"]],
+      ["another image", swap("worker:img", "other:img")],
+      ["not root", swap("0:0", "1000:1000")],
+      ["a writable root", guard.filter((arg) => arg !== "--read-only")],
+      ["a foreign label", [...guard.slice(0, 5), "--label", "evil=1", ...guard.slice(5)]],
+      ["a label twice", [...guard.slice(0, 5), "--label", `${RUN_NETWORK_LABEL}=a`, "--label", `${RUN_NETWORK_LABEL}=b`, ...guard.slice(5)]],
+      ["a label with a space", [...guard.slice(0, 5), "--label", `${RUN_NETWORK_LABEL}=a b`, ...guard.slice(5)]],
+      ["another name", swap(`${NET}-check-guard`, "other-guard")],
+      ["not a run command", guard.slice(1)],
+      ["nothing", []],
+    ];
+    for (const [name, args] of bad) expect(resolverGuardArgProblems(args, expected), name).not.toEqual([]);
+    expect(resolverGuardArgProblems(guard, { ...expected, image: "other:img" })).not.toEqual([]);
+    expect(resolverGuardArgProblems(guard, { ...expected, sandboxName: "other-check" })).not.toEqual([]);
+  });
+
+  it("refuses a name that is not a plain container name, and a network that is not a run's", () => {
+    for (const bad of ["--privileged", "", "a b", "x".repeat(200)]) expect(() => resolverGuardName(bad), bad).toThrow(config("CONFIG_INVALID"));
+    expect(() => resolverGuardRunArgs({ net: network({ name: "bridge" }), image: "worker:img" })).toThrow(config("CONFIG_INVALID"));
+  });
+});
+
+describe("the resolver guard runs before the check sandbox is handed back, and the round fails closed without it (TS-SEAL-5 b)", () => {
+  const plan = checkSandboxPlan(input());
+  const NET = runNetworkName(RUN);
+
+  async function start(state: Parameters<typeof statefulDocker>[0], edited: typeof plan = plan) {
+    const fake = statefulDocker(state);
+    const proof = await detachWorkingSandbox(fake.docker, edited);
+    fake.calls.length = 0;
+    const result = await startCheckSandbox(fake.docker, edited, proof).then((id) => id, (error: unknown) => error);
+    return { result, calls: fake.calls, state };
+  }
+
+  it("starts the sandbox, then runs the guard, then returns: the guard is the second docker run, and nothing else runs between", async () => {
+    const { result, calls } = await start({ networks: [NET, "agentx-task"] });
+    expect(result).toBe("id");
+    expect(calls.map(kind)).toEqual(["inspect", "run", "run"]);
+    expect(calls[1]).toEqual(plan.sandboxRunArgs);
+    expect(calls[2]).toEqual(plan.resolverGuardArgs);
+  });
+
+  it("fails closed when the guard exits non-zero (iptables missing, no NET_ADMIN, the rule not there on read-back): the sandbox and the guard are removed and the id is never returned", async () => {
+    const { result, calls, state } = await start({ networks: [NET, "agentx-task"], guardExit: 1 });
+    expect(String(result)).toMatch(/embedded resolver could not be closed, so the sealed round did not start/u);
+    expect(result).toEqual(expect.objectContaining({ code: "RUNTIME_UNAVAILABLE" }));
+    expect(calls.filter((call) => call[0] === "rm")).toEqual([["rm", "--force", `${NET}-check-guard`], ["rm", "--force", `${NET}-check`]]);
+    expect(state.sandboxExists).toBe(false);
+  });
+
+  it("fails closed when docker itself fails the guard's call (a timeout or a lost connection)", async () => {
+    const { result, calls, state } = await start({ networks: [NET, "agentx-task"], guardRejects: true });
+    expect(String(result)).toMatch(/could not be closed/u);
+    expect(calls.filter((call) => call[0] === "rm")).toHaveLength(2);
+    expect(state.sandboxExists).toBe(false);
+  });
+
+  it("does not run the guard when the sandbox did not start", async () => {
+    const { result, calls } = await start({ networks: [NET, "agentx-task"], startFails: true });
+    expect(String(result)).toMatch(/could not be started/u);
+    expect(calls.filter((call) => call.includes("NET_ADMIN"))).toEqual([]);
+  });
+
+  it("refuses a plan whose guard arguments were edited, before anything starts (NET_ADMIN in the wrong place, another network, a different command)", async () => {
+    const edits: Array<[string, typeof plan]> = [
+      ["another capability", { ...plan, resolverGuardArgs: plan.resolverGuardArgs.map((arg) => (arg === "NET_ADMIN" ? "SYS_ADMIN" : arg)) }],
+      ["the host network", { ...plan, resolverGuardArgs: plan.resolverGuardArgs.map((arg) => (arg.startsWith("container:") ? "host" : arg)) }],
+      ["no guard", { ...plan, resolverGuardArgs: [] }],
+      ["a different command", { ...plan, resolverGuardArgs: [...plan.resolverGuardArgs.slice(0, -1), "true"] }],
+    ];
+    for (const [name, edited] of edits) {
+      const { result, calls } = await start({ networks: [NET, "agentx-task"] }, edited);
+      expect(String(result), name).toMatch(/resolver guard is unsound/u);
+      expect(calls.map(kind), name).not.toContain("run");
+    }
+  });
+
+  it("through withDetachedWorking: a guard failure stops the round before its first command, removes the sandbox and puts the working sandbox back", async () => {
+    const { docker, calls, state } = statefulDocker({ networks: [NET, "agentx-task"], guardExit: 125 });
+    let ranCommand = false;
+    await expect(withDetachedWorking(docker, plan, async (begin) => { await begin(); ranCommand = true; })).rejects.toThrow(/could not be closed/u);
+    expect(ranCommand).toBe(false);
+    expect(state.sandboxExists).toBe(false);
+    expect(state.networks).toContain(NET);
+    expect(calls.map(kind)).not.toContain("exec");
+  });
+
+  it("every round runs its own guard: two rounds, two guards", async () => {
+    const { docker, calls } = statefulDocker({ networks: [NET, "agentx-task"] });
+    for (let round = 0; round < 2; round += 1) await withDetachedWorking(docker, plan, async (begin) => { await begin(); });
+    expect(calls.filter((call) => call.includes("NET_ADMIN"))).toHaveLength(2);
   });
 });

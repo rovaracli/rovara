@@ -58,7 +58,9 @@ const verdict = (id: string, name: string, problems: readonly string[], detail: 
 export type ProbeTest =
   | { label: string; kind: "conn"; host: string; port: number; ms?: number }
   | { label: string; kind: "lookup"; name: string; ms?: number }
-  | { label: string; kind: "dnsq"; server: string; name: string; ms?: number }
+  | { label: string; kind: "dnsq"; server: string; name: string; ms?: number; port?: number }
+  | { label: string; kind: "embdirect"; name: string; ms?: number }
+  | { label: string; kind: "caps" }
   | { label: string; kind: "routes" }
   | { label: string; kind: "addrs" }
   | { label: string; kind: "file"; path: string }
@@ -72,13 +74,15 @@ const out=(l,s,x)=>l+' '+s+(x===undefined?'':' '+x);
 const enc=(name,id)=>{const b=[Buffer.from([id>>8,id&255,1,0,0,1,0,0,0,0,0,0])];for(const p of name.split('.')){b.push(Buffer.from([p.length]),Buffer.from(p));}b.push(Buffer.from([0,0,1,0,1]));return Buffer.concat(b);};
 const conn=(t)=>new Promise(res=>{let done=false;const s=net.connect({host:t.host,port:t.port});const end=(v)=>{if(done)return;done=true;clearTimeout(timer);s.destroy();res(v);};const timer=setTimeout(()=>end(out(t.label,'timeout')),t.ms||3000);s.on('connect',()=>end(out(t.label,'open')));s.on('error',(e)=>end(out(t.label,e.code==='ECONNREFUSED'?'refused':'error:'+(e.code||'unknown'))));});
 const lookup=(t)=>new Promise(res=>{const timer=setTimeout(()=>res(out(t.label,'timeout')),t.ms||5000);dns.lookup(t.name,{family:4},(e,a)=>{clearTimeout(timer);res(e?out(t.label,'error:'+(e.code||'unknown')):out(t.label,'resolved',a));});});
-const dnsq=(t)=>new Promise(res=>{const s=dgram.createSocket('udp4');let done=false;const end=(v)=>{if(done)return;done=true;clearTimeout(timer);try{s.close();}catch(e){}res(v);};const timer=setTimeout(()=>end(out(t.label,'timeout')),t.ms||3000);s.on('message',(m)=>end(out(t.label,'answer','rcode='+(m.readUInt16BE(2)&15)+' an='+m.readUInt16BE(6))));s.on('error',(e)=>end(out(t.label,'error:'+(e.code||'unknown'))));s.send(enc(t.name,4242),53,t.server,(e)=>{if(e)end(out(t.label,'error:'+(e.code||'unknown')));});});
+const dnsq=(t)=>new Promise(res=>{const s=dgram.createSocket('udp4');let done=false;const end=(v)=>{if(done)return;done=true;clearTimeout(timer);try{s.close();}catch(e){}res(v);};const timer=setTimeout(()=>end(out(t.label,'timeout')),t.ms||3000);s.on('message',(m)=>end(out(t.label,'answer','rcode='+(m.readUInt16BE(2)&15)+' an='+m.readUInt16BE(6))));s.on('error',(e)=>end(out(t.label,'error:'+(e.code||'unknown'))));s.send(enc(t.name,4242),t.port||53,t.server,(e)=>{if(e)end(out(t.label,'error:'+(e.code||'unknown')));});});
+const embdirect=(t)=>{let port=0;try{for(const l of fs.readFileSync('/proc/net/udp','utf8').split('\n').slice(1)){const f=l.trim().split(/\s+/);if(f[1]&&f[1].toUpperCase().startsWith('0B00007F:')){port=parseInt(f[1].split(':')[1],16);break;}}}catch(e){}if(!port)return Promise.resolve(out(t.label,'error:NOLISTENER'));return dnsq({label:t.label,name:t.name,server:'127.0.0.11',port:port,ms:t.ms});};
+const caps=(t)=>{try{const m=fs.readFileSync('/proc/self/status','utf8');const g=(k)=>((new RegExp('^'+k+':\\s*([0-9a-fA-F]+)','m').exec(m)||[])[1]||'?');return Promise.resolve(out(t.label,'caps','eff='+g('CapEff')+' bnd='+g('CapBnd')+' amb='+g('CapAmb')));}catch(e){return Promise.resolve(out(t.label,'error:'+(e.code||'unknown')));}};
 const routes=(t)=>{let v4='',v6='';try{v4=fs.readFileSync('/proc/net/route','utf8').split('\n').slice(1).filter(Boolean).map(l=>l.split(/\s+/).slice(0,4).join(':')).join(',');}catch(e){}try{v6=fs.readFileSync('/proc/net/ipv6_route','utf8').split('\n').filter(l=>l&&!/ lo$/.test(l)).length+'';}catch(e){}return Promise.resolve(out(t.label,'routes','v4='+v4+' v6routes='+v6));};
 const addrs=(t)=>{const g=[];const a=[];for(const [n,l] of Object.entries(os.networkInterfaces())){for(const i of l||[]){if(i.family==='IPv6'){if(!/^fe80|^::1$/.test(i.address))g.push(n+':'+i.address);}else if(i.family==='IPv4'&&!i.internal)a.push(n+':'+i.address);}}return Promise.resolve(out(t.label,'addrs','v4='+a.join(',')+' v6global='+g.join(',')));};
 const file=(t)=>{try{return Promise.resolve(out(t.label,'file',JSON.stringify(fs.readFileSync(t.path,'utf8')).slice(0,1500)));}catch(e){return Promise.resolve(out(t.label,'error:'+(e.code||'unknown')));}};
 const write=(t)=>{try{fs.appendFileSync(t.path,'# tsl\n');return Promise.resolve(out(t.label,'written'));}catch(e){return Promise.resolve(out(t.label,'denied',e.code||'unknown'));}};
 const send=(t)=>new Promise(res=>{const s=dgram.createSocket('udp4');s.on('error',(e)=>{try{s.close();}catch(x){}res(out(t.label,'error:'+(e.code||'unknown')));});s.bind(0,()=>{try{s.setBroadcast(true);}catch(e){}s.send(Buffer.from('tsl'),t.port,t.host,(e)=>{try{s.close();}catch(x){}res(e?out(t.label,'error:'+(e.code||'unknown')):out(t.label,'sent'));});});});
-const kinds={conn,lookup,dnsq,routes,addrs,file,write,send};
+const kinds={conn,lookup,dnsq,embdirect,caps,routes,addrs,file,write,send};
 Promise.all(cfg.tests.map((t)=>kinds[t.kind](t).catch((e)=>out(t.label,'error:'+String(e&&e.code||e))))).then((l)=>{console.log(l.join('\n'));process.exit(0);});
 setTimeout(()=>process.exit(0),30000);`;
 
@@ -95,7 +99,7 @@ export interface ProbeResult { status: string; rest: string }
 export function parseProbeOutput(text: string): Map<string, ProbeResult> {
   const results = new Map<string, ProbeResult>();
   for (const line of text.split("\n")) {
-    const match = /^([A-Za-z0-9._-]{1,48}) (open|refused|timeout|answer|resolved|routes|addrs|file|written|denied|sent|error:[A-Za-z0-9_-]{1,30})(?: (.*))?$/u.exec(line.trim());
+    const match = /^([A-Za-z0-9._-]{1,48}) (open|refused|timeout|answer|resolved|routes|addrs|caps|file|written|denied|sent|error:[A-Za-z0-9_-]{1,30})(?: (.*))?$/u.exec(line.trim());
     if (match?.[1] === undefined || match[2] === undefined || results.has(match[1])) continue;
     results.set(match[1], { status: match[2], rest: match[3] ?? "" });
   }
@@ -439,6 +443,55 @@ async function containerState(context: Context, container: string): Promise<stri
   return `state=${clean(state.stdout) || `unknown(${clean(state.stderr).slice(0, 60)})`} log=${clean(`${logs.stdout} ${logs.stderr}`).slice(0, 200)}`;
 }
 
+// ---- TS-L3: the two embedded-resolver items (TS-SEAL-5)
+
+/** What the two embedded-resolver items judge: the sealed sandbox's probe results, the unguarded control's, and three facts read around the round. */
+export interface EmbeddedResolverEvidence {
+  /** The probes run in the sealed sandbox: resolv, embedded, embedded-public, embedded-tcp, embedded-direct, caps. */
+  results: ReadonlyMap<string, ProbeResult>;
+  /** The probes run in a container of the same network that the guard never touched: ctl-embedded, ctl-embedded-tcp, ctl-embedded-direct. */
+  control: ReadonlyMap<string, ProbeResult>;
+  /** The `nameserver` lines of the sandbox's resolv.conf. */
+  nameservers: ReadonlyArray<string | undefined>;
+  dnsHelperIp: string;
+  /** True when resolv.conf is not what it was before the sandbox tried to write it. */
+  resolvChanged: boolean;
+  /** True when no container named like the guard is left (it runs with --rm). */
+  guardContainerGone: boolean;
+}
+
+/** "No address": a timeout, a refusal, a send that failed, or an answer with no records. */
+function noAddress(result: ProbeResult | undefined): boolean {
+  return result !== undefined && ((NOT_THROUGH as readonly string[]).includes(result.status) || (result.status === "answer" && /\ban=0\b/u.test(result.rest)));
+}
+
+/**
+ * L3.embedded-resolver, the accepted residual (TS-SEAL-5 a): Docker's embedded resolver exists in the sandbox and may answer the names of the run's own containers (not judged). Whatever it does, a PUBLIC name must get no
+ * address through it (CVE-2024-29018: no forwarding out of an internal network). It is the floor under the guard. And L3.embedded-resolver-blocked, the guard (TS-SEAL-5 b): from the sealed sandbox a lookup of 127.0.0.11 gets
+ * nothing on every path (port 53 over UDP and over TCP, which Docker's nat rule rewrites to the resolver's random port, and that random port itself, which no rewrite is in the path of), while a container of the same network
+ * that the guard never touched gets an answer on each (the positive control: a silent sandbox is the guard's doing, not a resolver that is absent or unreachable by these probes). The sandbox has no capability
+ * (NET_ADMIN is only the guard container's) and the guard container is gone.
+ */
+export function embeddedResolverLines(input: EmbeddedResolverEvidence): LiveLine[] {
+  const { results, control } = input;
+  const shown = (label: string): string => `${results.get(label)?.status ?? "no-result"}(${results.get(label)?.rest ?? ""})`;
+  return [
+    verdict("L3.embedded-resolver", "docker-embedded-resolver-and-dnat", [
+      ...(input.nameservers.length === 1 && input.nameservers[0] === input.dnsHelperIp ? [] : [`resolv.conf-names:${input.nameservers.join(",") || "none"}`]),
+      ...(noAddress(results.get("embedded-public")) ? [] : [`embedded-public=${shown("embedded-public")}`]),
+      ...(input.resolvChanged ? ["resolv.conf-changed"] : []),
+    ], `the sandbox's resolv.conf names ${input.dnsHelperIp} alone and a public name gets no address through 127.0.0.11 (an answer for the run's own container names is the accepted residual, TS-SEAL-5; it was ${results.get("embedded")?.status ?? "no-result"} here)`),
+    verdict("L3.embedded-resolver-blocked", "embedded-resolver-closed-in-the-sealed-sandbox", [
+      ...unexpected(results, ["embedded", "embedded-public", "embedded-tcp", "embedded-direct"], NOT_THROUGH),
+      ...(results.get("embedded-direct")?.status === "error:NOLISTENER" ? ["embedded-direct-found-no-resolver-socket"] : []),
+      ...unexpected(control, ["ctl-embedded", "ctl-embedded-direct"], ["answer"]).map((p) => `control-failed:${p}`),
+      ...unexpected(control, ["ctl-embedded-tcp"], ["open"]).map((p) => `control-failed:${p}`),
+      ...(/^eff=0+ bnd=0+ amb=0+$/u.test(results.get("caps")?.rest ?? "") ? [] : [`sandbox-has-capabilities:${shown("caps")}`]),
+      ...(input.guardContainerGone ? [] : ["guard-container-left-behind-or-unreadable"]),
+    ], "a lookup of 127.0.0.11 from the sealed sandbox (port 53 over UDP and TCP, and the resolver's own port) gets nothing, while a container on the same network that is not guarded gets an answer on each; the sandbox has no capability and the guard container is gone"),
+  ];
+}
+
 async function checkL3(context: Context): Promise<LiveLine[]> {
   const { layer, input } = context;
   const lab = await startLab(context, "l3");
@@ -472,6 +525,11 @@ async function checkL3(context: Context): Promise<LiveLine[]> {
   }
   const lines: LiveLine[] = [];
   const neighbour = await startNode(context, lab, `${lab.net.name}-nbr`, layer.runNetwork.runNetworkHelperIp(lab.slot, 20));
+  // The positive control of the resolver guard (TS-SEAL-5 b): a container on the same network that the guard never touched. Docker's embedded resolver answers it on all three paths, so a silent sealed sandbox is the
+  // guard's doing and not a resolver that is absent, not listening or not reachable by these probes.
+  const embeddedControl = await probe(context, neighbour, [
+    { label: "ctl-embedded", kind: "dnsq", server: "127.0.0.11", name: "postgres" }, { label: "ctl-embedded-tcp", kind: "conn", host: "127.0.0.11", port: 53, ms: 3000 }, { label: "ctl-embedded-direct", kind: "embdirect", name: "postgres" },
+  ]);
   // the relay is real before the detach: a neighbour reaches the listener in the working sandbox at .3
   const relayBefore = await probe(context, neighbour, [conn("relay-before", lab.net.workingSandboxIp, 7777, 5000)]);
   const round = await layer.check.withDetachedWorking(context.docker, plan, async (start) => {
@@ -481,6 +539,9 @@ async function checkL3(context: Context): Promise<LiveLine[]> {
     const check = plan.sandboxName;
     const tests: ProbeTest[] = [
       { label: "resolv", kind: "file", path: "/etc/resolv.conf" }, { label: "embedded", kind: "dnsq", server: "127.0.0.11", name: "postgres" }, { label: "embedded-public", kind: "dnsq", server: "127.0.0.11", name: "registry.npmjs.org" },
+      // TS-SEAL-5 (b): the guard closed 127.0.0.11 before the first command. Port 53 is rewritten by Docker's nat rule to the resolver's random port; "embedded-direct" goes straight to that random port (read from /proc/net/udp), so
+      // the nat rewrite is not in its path at all, and "embedded-tcp" is the TCP side of port 53. All four must get nothing. "caps" proves the sandbox itself has no capability (NET_ADMIN is only ever the guard's).
+      { label: "embedded-tcp", kind: "conn", host: "127.0.0.11", port: 53, ms: 3000 }, { label: "embedded-direct", kind: "embdirect", name: "postgres" }, { label: "caps", kind: "caps" },
       { label: "known", kind: "lookup", name: "postgres" }, { label: "unknown", kind: "lookup", name: `tsl-${randomBytes(4).toString("hex")}.example.invalid` },
       conn("relay", lab.net.workingSandboxIp, 7777), conn("helper", lab.helper.address, PROBE_PORT, 5000), conn("other-helper", other.helper.address, PROBE_PORT), conn("other-sandbox", other.net.workingSandboxIp, PROBE_PORT),
       { label: "routes", kind: "routes" }, { label: "addrs", kind: "addrs" }, { label: "write-resolv", kind: "write", path: "/etc/resolv.conf" }, { label: "write-hosts", kind: "write", path: "/etc/hosts" },
@@ -505,13 +566,11 @@ async function checkL3(context: Context): Promise<LiveLine[]> {
     ...(round.dnsRecord.unknown.some((row) => row.name.startsWith("tsl-")) ? [] : ["unknown-name-not-recorded"]),
     ...(dnsAfter === "" ? [] : [`dns-helper:${dnsAfter}`]),
   ], `a run name resolves to ${lab.helper.address}, an unknown name resolves to the sinkhole ${sinkholeIp} and is recorded, an IP literal on the internet fails`));
-  lines.push(verdict("L3.embedded-resolver", "docker-embedded-resolver-and-dnat", [
-    ...(nameservers.length === 1 && nameservers[0] === lab.net.dnsHelperIp ? [] : [`resolv.conf-names:${nameservers.join(",") || "none"}`]),
-    ...unexpected(results, ["embedded"], SILENT).map((p) => `${p}${results.get("embedded")?.rest ? `(${results.get("embedded")!.rest})` : ""}`),
-    // Whatever the run's own names do, the embedded resolver must never hand out an address for a public name (CVE-2024-29018: no forwarding out of an internal network).
-    ...(results.get("embedded-public")?.status === "timeout" || /\ban=0\b/u.test(results.get("embedded-public")?.rest ?? "") ? [] : [`embedded-public=${results.get("embedded-public")?.status ?? "no-result"}(${results.get("embedded-public")?.rest ?? ""})`]),
-    ...(round.afterWrite.get("resolv")?.rest === resolvFile ? [] : ["resolv.conf-changed"]),
-  ], `the sandbox's resolv.conf names ${lab.net.dnsHelperIp} alone and a query to 127.0.0.11 gets no answer`));
+  const guardLeft = await sh(context, ["ps", "--all", "--quiet", "--filter", `name=^${plan.sandboxName}-guard$`]);
+  lines.push(...embeddedResolverLines({
+    results, control: embeddedControl, nameservers, dnsHelperIp: lab.net.dnsHelperIp, resolvChanged: round.afterWrite.get("resolv")?.rest !== resolvFile,
+    guardContainerGone: guardLeft.exitCode === 0 && guardLeft.stdout.trim() === "",
+  }));
   const attachedNames = round.networks.split(/\s+/u).filter(Boolean);
   lines.push(verdict("L3.working-relay", "working-sandbox-relay-is-gone", [
     ...unexpected(results, ["relay"], NOT_THROUGH), ...(attachedNames.includes(workingName) ? ["working-sandbox-still-on-the-network"] : []),
@@ -538,7 +597,7 @@ async function checkL3(context: Context): Promise<LiveLine[]> {
 }
 
 const L3_IDS: ReadonlyArray<readonly [string, string]> = [
-  ["L3.live", "sealed-sandbox-reaches-only-the-run"], ["L3.embedded-resolver", "docker-embedded-resolver-and-dnat"], ["L3.working-relay", "working-sandbox-relay-is-gone"], ["L3.ipv6", "no-ipv6-in-or-out"],
+  ["L3.live", "sealed-sandbox-reaches-only-the-run"], ["L3.embedded-resolver", "docker-embedded-resolver-and-dnat"], ["L3.embedded-resolver-blocked", "embedded-resolver-closed-in-the-sealed-sandbox"], ["L3.working-relay", "working-sandbox-relay-is-gone"], ["L3.ipv6", "no-ipv6-in-or-out"],
   ["L3.no-route", "no-default-route-8888-metadata-gateway"], ["L3.other-run", "another-run-unreachable"], ["L3.multicast", "multicast-and-broadcast-stay-on-the-bridge"],
   ["L3.run-files", "run-files-not-writable-through-workspace"], ["L3.spoofing", "helper-ignores-spoofed-and-neighbour-sources"],
 ];

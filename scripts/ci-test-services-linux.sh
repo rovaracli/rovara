@@ -21,7 +21,7 @@ readonly REGISTRY_PINNED='public.ecr.aws/docker/library/registry:2@sha256:a3d8aa
 readonly LOCAL_REGISTRY=localhost:5000
 readonly TSL_WORKSPACE_KEY=7e57c4ec7e57c4ec
 # The items the live driver must PASS (scripts/linux-check-test-services-live.ts), and the only items that may stay PENDING (later slices: L5 test-account proxy, L7, L8, and the internal-drops part that needs an idle host's run network).
-readonly LIVE_IDS="L1.live L1.live-other-run L2.live L3.live L3.embedded-resolver L3.working-relay L3.ipv6 L3.no-route L3.other-run L3.multicast L3.run-files L3.spoofing L4.live L4.template-db L6.live"
+readonly LIVE_IDS="L1.live L1.live-other-run L2.live L3.live L3.embedded-resolver L3.embedded-resolver-blocked L3.working-relay L3.ipv6 L3.no-route L3.other-run L3.multicast L3.run-files L3.spoofing L4.live L4.template-db L6.live"
 readonly ALLOWED_PENDING='^TSL (L1\.internal-drops|L[578]\.[a-z-]+) PENDING '
 
 log() { printf 'ci-test-services-linux: %s\n' "$*" >&2; }

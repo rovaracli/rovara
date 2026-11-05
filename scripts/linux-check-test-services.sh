@@ -305,7 +305,8 @@ live_line L3.live sealed-sandbox-reaches-only-the-run "a sealed sandbox on the s
 fails=""
 nat_rules=$(iptables -t nat -S 2>/dev/null || true)
 printf '%s\n' "$nat_rules" | grep -q -e '-[io] rvi' -e '172\.30\.' && fails="host-nat-table-names-an-rvi-bridge-or-172.30"
-live_line L3.embedded-resolver docker-embedded-resolver-and-dnat "the sandbox's resolv.conf names the DNS helper alone and a query to 127.0.0.11 gets no answer; the host's nat table holds no rule for an rvi bridge" "$fails"
+live_line L3.embedded-resolver docker-embedded-resolver-and-dnat "the sandbox's resolv.conf names the DNS helper alone and a public name gets no address through 127.0.0.11 (an answer for the run's own container names is the accepted residual, TS-SEAL-5); the host's nat table holds no rule for an rvi bridge" "$fails"
+live_line L3.embedded-resolver-blocked embedded-resolver-closed-in-the-sealed-sandbox "TS-SEAL-5: the round's resolver guard closed 127.0.0.11 before any command: a lookup from the sealed sandbox (port 53 over UDP and TCP, and the resolver's own port) gets nothing, while a container on the same network that is not guarded gets an answer"
 live_line L3.working-relay working-sandbox-relay-is-gone "with a listener started in the working sandbox BEFORE the detach, a connection from .4 to .3 fails and the network lists only .2, the helpers and .4"
 fails=""
 if command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; then

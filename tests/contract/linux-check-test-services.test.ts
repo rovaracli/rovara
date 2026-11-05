@@ -111,8 +111,8 @@ describe("scripts/linux-check-test-services.sh", () => {
     for (const id of ["L1.live-other-run", "L1.internal-drops"]) expect(r.byId(id), id).toMatch(/^TSL \S+ PENDING /u);
     expect(r.byId("L1.live-other-run")).toContain("another-runs-helper-unreachable");
     // 10 earlier pending parts plus the eight TS-L3 reviewer-list probes (TS16 review round, ee09d8994); the T4 round added L4.template-db.
-    for (const id of ["L3.embedded-resolver", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing"]) expect(r.byId(id), id).toMatch(/^TSL \S+ PENDING /u);
-    expect(r.lines.at(-1)).toMatch(/^TSL SUMMARY pass=11 fail=0 pending=19$/u);
+    for (const id of ["L3.embedded-resolver", "L3.embedded-resolver-blocked", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing"]) expect(r.byId(id), id).toMatch(/^TSL \S+ PENDING /u);
+    expect(r.lines.at(-1)).toMatch(/^TSL SUMMARY pass=11 fail=0 pending=20$/u);
     expect(r.status).toBe(3);
   });
 
@@ -217,7 +217,7 @@ describe("scripts/linux-check-test-services.sh", () => {
 });
 
 describe("scripts/linux-check-test-services.sh, live parts", () => {
-  const LIVE_IDS = ["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"];
+  const LIVE_IDS = ["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.embedded-resolver-blocked", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"];
   const driverLines = (status: (id: string) => string = () => "PASS", ids: string[] = LIVE_IDS) => `${ids.map((id) => `TSL ${id} ${status(id)} name-of-${id} | what the driver saw`).join("\n")}\n`;
   const delivered: string[] = [];
   afterAll(() => { for (const dir of delivered) rmSync(dir, { recursive: true, force: true }); });
