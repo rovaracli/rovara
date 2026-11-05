@@ -14,6 +14,7 @@ import type { NightlyHeadReader } from "../../test-env/nightly-usable.js";
 import type { EvidencePort } from "./evidence-port.js";
 import type { BoundChannel } from "../../developer/share.js";
 import type { ModelAccess } from "../../model-proxy/access.js";
+import type { AdmitTaker } from "../../developer/take-over-eligible.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import type { SpecPullRequestFacts } from "../../spec/refresh.js";
 import type { SpecPublishOutcome } from "../../spec/hooks.js";
@@ -40,6 +41,8 @@ export interface DeveloperTaskRouteDependencies {
   modelAccess?: ModelAccess;
   /** A cloud install (its sign-in is configured): its orgs are subject to the trial lock and the machine-time allowance (ruling R42). */
   cloud?: boolean;
+  /** S2: the budget check of a real Take over, for telling the others when a step is stopped (`ownerStopTarget`). Set where these dependencies hold no `modelAccess` (the queued dispatch); else made from `modelAccess`. */
+  admitTaker?: AdmitTaker;
   /** C: absent is write-disabled; an existing PEOPLE sidecar remains authoritative either way. */
   taskPeopleConfiguration?: { peopleChangesEnabled: boolean };
   /** Spec 059: absent is the safe default; production factories intentionally leave graph starts disabled. */

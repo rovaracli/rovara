@@ -389,9 +389,10 @@ export class TaskSandbox {
         try {
           await rename(temporary, held.entry(".gitignore"));
         } catch (error) {
-          // A directory at the name (rename cannot replace it with a file): it goes, and the rename is made again.
+          // A directory at the name (rename cannot replace it with a file): it is moved aside under a name of its own in the same held folder (S4-N3), and the rename is made again. It is never
+          // deleted by path, because a recursive delete would walk a folder a task may still be changing; the moved folder stays inside the ignored user site, where the task can write anyway.
           if ((error as { code?: unknown }).code !== "EISDIR" && (error as { code?: unknown }).code !== "ENOTEMPTY" && (error as { code?: unknown }).code !== "EEXIST") throw error;
-          await rm(held.entry(".gitignore"), { recursive: true, force: true });
+          await rename(held.entry(".gitignore"), held.entry(`.gitignore.${randomUUID()}.old`));
           await rename(temporary, held.entry(".gitignore"));
         }
       } finally {

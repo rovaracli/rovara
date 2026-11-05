@@ -332,9 +332,10 @@ No single test lists every broker read.
 | `feedback-review.ts` | (No header comment.) Exports `getWorkflowFeedbackReview`, `FEEDBACK_CHANGED_SINCE_CARD`, `submitWorkflowFeedbackDecision`. |
 | `health-notice.ts` | Setup and test health SH28 (owner decision 7): "Setup needs repair" does not pause a task start. |
 | `learning-events.ts` | Learning v2 wiring (WA-2): what the task actions tell the learning lane. |
+| `owner-stop.ts` | S2 (send-back gate completeness): the one place a step Rovara is about to start on its own (a fix round, a custom sequence's next coding step, a PR-feedback critic) is refused because the task's owner may no longer ha... |
 | `publication-context.ts` | (No header comment.) Exports `e2ePublicationContext`. |
 | `publication.ts` | (No header comment.) Exports `currentWorkflowPublicationAuthorityForTask`, `currentWorkflowPublicationModeForTask`, `startTaskWorkflowPublicationFromSystem`. |
-| `pull-request-body.ts` | (No header comment.) Exports `workflowPullRequestBody`, `workflowPullRequestStatusLines`, `proofContextOfTask`. |
+| `pull-request-body.ts` | (No header comment.) Exports `workflowPullRequestBody`, `fitPullRequestBody`, `pullRequestTitle`. |
 | `redirect-carry.ts` | Stop & redirect, the Retry that keeps the instruction (LR-2). |
 | `redirect-frame.ts` | Stop & redirect: the two small things a restart and a Retry that keeps the instruction both need, apart from the restarts so the retry paths can use them without a cycle (LR-2). |
 | `redirect-restart.ts` | Stop & redirect, phase 2: the task module's side of the restart (agent-sessions/redirect-continue.ts decides WHETHER to restart; these start the run). |

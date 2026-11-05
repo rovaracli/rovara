@@ -401,13 +401,22 @@ describe("the Python user site's .gitignore is rewritten on every start (C67)", 
     expect(await readFile(join(root, ".agentx-python", ".gitignore"), "utf8")).toBe("*\n");
   });
 
-  it("replaces a directory a task left at its name, and leaves no temporary file behind (L1)", async () => {
+  it("replaces a directory a task left at its name by moving it aside, never walking into it, and leaves no temporary file behind (L1, N3)", async () => {
     const root = await workspace();
     await mkdir(join(root, ".agentx-python", ".gitignore"), { recursive: true });
     await writeFile(join(root, ".agentx-python", ".gitignore", "inner"), "x");
     await start(root);
     expect(await readFile(join(root, ".agentx-python", ".gitignore"), "utf8")).toBe("*\n");
-    expect(await readdir(join(root, ".agentx-python"))).toEqual([".gitignore"]);
+    const entries = (await readdir(join(root, ".agentx-python"))).sort();
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toBe(".gitignore");
+    const aside = entries[1]!;
+    expect(aside).toMatch(/^\.gitignore\.[0-9a-f-]{36}\.old$/u);
+    // The folder was moved whole: what was in it was not deleted by a walk of it.
+    expect(await readFile(join(root, ".agentx-python", aside, "inner"), "utf8")).toBe("x");
+    // A later start has a plain file at the name and adds nothing.
+    await start(root);
+    expect(await readdir(join(root, ".agentx-python"))).toHaveLength(2);
   });
 
   it("replaces a link a task left at its name, without writing through it", async () => {

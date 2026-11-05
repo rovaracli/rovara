@@ -57,7 +57,7 @@ import { taskStartAgentAuthorityChecks } from "../../org/task-start-agent-author
 import { taskStartProjectAuthorityChecks } from "../../org/task-start-project-authority.js";
 import { usdToWholeMicrodollars } from "../../org/budget-amount.js";
 import { requireProjectSendBackRole } from "../../developer/task-access.js";
-import { ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
+import { ownerStopTarget, ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
 import { stopIfOwnerRefused } from "./owner-stop.js";
 
 export async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
@@ -290,7 +290,7 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
     const refusal = await ownerWorkRefusal(deps, task);
     if (refusal !== undefined) {
       await recordWorkRefused(deps.learningAudit, (entry) => log(deps, entry), { orgId: String(task.orgId), taskId: task.taskId, path: "spend_resume", reason: refusal.reason, occurrence: `spend_resume#${input.spendRequestId}`, now: iso(deps) },
-        { documentClient: deps.documentClient, tableName: deps.tableName, task });
+        ownerStopTarget(deps, task));
       return "STALE";
     }
   }
