@@ -139,14 +139,18 @@ describe("scripts/linux-check-test-services.sh", () => {
   });
 
   it("L3: Docker must have the CVE-2024-29018 fix (GHSA-mq39-4gv4-mvpx: 26.0.0 or later, 25.0.5 or later, 23.0.11 or later; 24.x has none)", () => {
-    for (const version of ["26.0.0", "27.3.1", "28.0.4", "25.0.5", "25.0.8", "25.0.18", "23.0.11", "26.0.0-rc3"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ PASS /u);
-    for (const version of ["25.0.4", "25.0.3", "23.0.10", "20.10.25"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ FAIL .*older-than/u);
+    for (const version of ["26.0.0", "27.3.1", "28.0.4", "25.0.5", "25.0.8", "25.0.18", "23.0.11", "26.0.0-rc3", "26.0.0-rc10", "25.0.5+dfsg", "25.0.18+dfsg1", "26.0.0+dfsg1"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ PASS /u);
+    for (const version of ["25.0.4", "25.0.3", "23.0.10", "20.10.25", "25.0.4-rc1", "25.0.4+dfsg1", "23.0.10+dfsg1"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ FAIL .*older-than/u);
     // The advisory's 26.x cut-off is 26.0.0-rc3: the earlier release candidates are still vulnerable.
     for (const version of ["26.0.0-rc1", "26.0.0-rc2"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ FAIL .*pre-release-before-rc3/u);
+    // Only the core N.N.N is compared: suffix digits are never glued into the patch number, and a version that cannot be read fails closed.
+    for (const version of ["1:25.0.5", "25.0.5.1", "25.0", "v25.0.5", "25.0.x"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ FAIL .*version-not-parseable/u);
+    expect(run({ dockerVersion: "24.0.9-ce" }).byId("L1.docker-version")).toMatch(/ FAIL .*has-no-fix/u);
+    expect(run({ dockerVersion: "26.0.0-rc.3" }).byId("L1.docker-version")).toMatch(/ FAIL .*pre-release-before-rc3/u);
     // The cut-off and its source are written next to the gate, and the superseded 25.0.4 is gone from it.
     expect(scriptText).toContain("GHSA-mq39-4gv4-mvpx");
-    expect(scriptText).toMatch(/version_at_least "\$version" 25\.0\.5/u);
-    expect(scriptText).not.toMatch(/version_at_least "\$version" 25\.0\.4/u);
+    expect(scriptText).toMatch(/version_at_least "\$core" 25\.0\.5/u);
+    expect(scriptText).not.toMatch(/version_at_least "\$core" 25\.0\.4/u);
     // 24.x has no fixed release at all, and says so (even 24.0.9, which is newer than 23.0.11).
     for (const version of ["24.0.9", "24.0.0"]) expect(run({ dockerVersion: version }).byId("L1.docker-version"), version).toMatch(/ FAIL .*has-no-fix/u);
     expect(run({ dockerVersion: "" }).byId("L1.docker-version")).toMatch(/ FAIL .*unreadable/u);

@@ -178,8 +178,8 @@ DAEMON_JSON=/etc/docker/daemon.json
 # bash CIDR helpers: cidr_overlaps A B is true when the two ranges share an address
 to_int() { local IFS=.; set -- $1; echo $(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 )); }
 cidr_overlaps() { local ai ap bi bp p mask; ai=$(to_int "${1%/*}"); ap=${1#*/}; bi=$(to_int "${2%/*}"); bp=${2#*/}; p=$(( ap < bp ? ap : bp )); mask=$(( (0xffffffff << (32 - p)) & 0xffffffff )); [[ $(( ai & mask )) -eq $(( bi & mask )) ]]; }
-# version_at_least A B: dotted version A >= B (numeric parts only)
-version_at_least() { local IFS=.; local -a a=($1) b=($2); local i; for i in 0 1 2; do local x=${a[i]:-0} y=${b[i]:-0}; x=${x//[!0-9]/}; y=${y//[!0-9]/}; if (( ${x:-0} > ${y:-0} )); then return 0; fi; if (( ${x:-0} < ${y:-0} )); then return 1; fi; done; return 0; }
+# version_at_least A B: dotted version A >= B. Both must already be validated cores of the form N.N.N (the caller strips a "-" or "+" suffix and refuses anything else); parts are decimal, never octal.
+version_at_least() { local IFS=.; local -a a=($1) b=($2); local i; for i in 0 1 2; do if (( 10#${a[i]:-0} > 10#${b[i]:-0} )); then return 0; fi; if (( 10#${a[i]:-0} < 10#${b[i]:-0} )); then return 1; fi; done; return 0; }
 
 # BEGIN LIVE CALL
 # ---- the live driver, when the operator delivered it: it runs first (it makes and removes its own run networks), so the read-only parts below see the host as it is when it is done.
@@ -226,10 +226,15 @@ version=""
 if have_docker; then version=$(dk version --format '{{.Server.Version}}' 2>/dev/null || true); fi
 if [[ -z "$version" ]]; then fails="docker-version-unreadable"
 else
-  major=${version%%.*}
-  if [[ "$major" == 24 ]]; then fails="docker-$version-has-no-fix-for-CVE-2024-29018"
-  elif [[ "$version" =~ ^26\.0\.0- && ! "$version" =~ ^26\.0\.0-rc([3-9]|[1-9][0-9])$ ]]; then fails="docker-$version-is-a-26.0.0-pre-release-before-rc3"
-  elif ! { version_at_least "$version" 26.0.0 || { [[ "$major" == 25 ]] && version_at_least "$version" 25.0.5; } || { [[ "$major" == 23 ]] && version_at_least "$version" 23.0.11; }; }; then fails="docker-$version-older-than-the-CVE-2024-29018-fix"; fi
+  # Only the core N.N.N is compared. A "-" or "+" suffix (-rc1, +dfsg1, -ce) is cut off first; anything else around the numbers (an epoch such as 1:25.0.5, a second dot in a suffix) is not a version we can judge, so it fails closed.
+  core=${version%%[-+]*}
+  major=${core%%.*}
+  if [[ ! "$core" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then fails="docker-$version-version-not-parseable"
+  elif [[ "$core" == 26.0.0 && "$version" == 26.0.0-* ]]; then
+    # A 26.0.0 release candidate: only -rcN with N (decimal) of 3 or more is fixed. Any other pre-release suffix is refused.
+    if [[ "$version" =~ ^26\.0\.0-rc([0-9]+)$ ]] && (( 10#${BASH_REMATCH[1]} >= 3 )); then :; else fails="docker-$version-is-a-26.0.0-pre-release-before-rc3"; fi
+  elif [[ "$major" == 24 ]]; then fails="docker-$version-has-no-fix-for-CVE-2024-29018"
+  elif ! { version_at_least "$core" 26.0.0 || { [[ "$major" == 25 ]] && version_at_least "$core" 25.0.5; } || { [[ "$major" == 23 ]] && version_at_least "$core" 23.0.11; }; }; then fails="docker-$version-older-than-the-CVE-2024-29018-fix"; fi
 fi
 verdict L1.docker-version docker-has-the-CVE-2024-29018-fix "$fails" "Docker Engine ${version:-?}"
 

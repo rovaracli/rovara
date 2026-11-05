@@ -246,7 +246,8 @@ jobs:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 75
+    # 100 (was 75, +25): the two Docker 25 steps may use up to 10 and 45 minutes (their own limits; the expected cost is 6 to 9). The steps before them are unchanged and kept their 75.
+    timeout-minutes: 100
     permissions:
       contents: read
       packages: read
@@ -395,11 +396,13 @@ jobs:
       # image carry-over 1, checks 4 to 6); not measured. Same gate as the steps above. These come last in the job: they replace the runner's Docker.
       - name: Test services Linux checks on Docker 25.0.5 (swap the engine)
         if: needs.scope.outputs.test_services != 'false'
+        timeout-minutes: 10
         env:
           TSL_DOCKER25_WORKER_IMAGE: rovara-worker:ci
         run: sudo --preserve-env=TSL_DOCKER25_WORKER_IMAGE,RUNNER_TEMP bash scripts/ci-docker25-engine.sh
       - name: Test services Linux checks on Docker 25.0.5 (rules, live driver, host checks)
         if: needs.scope.outputs.test_services != 'false'
+        timeout-minutes: 45
         env:
           TSL_CI_WORKER_IMAGE: rovara-worker:ci
           TSL_CI_DRIVER_JS: ${{ runner.temp }}/tsl-live.mjs

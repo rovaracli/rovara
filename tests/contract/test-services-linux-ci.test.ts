@@ -8,8 +8,8 @@ import { describe, expect, it } from "vitest";
 import YAML from "yaml";
 import { ciPostgresEntry } from "../../scripts/linux-check-test-services-live.js";
 
-interface Step { name?: string; run?: string; uses?: string; if?: string; id?: string; env?: Record<string, string> }
-interface Job { needs?: string | string[]; if?: string; outputs?: Record<string, string>; steps: Step[]; permissions?: Record<string, string> }
+interface Step { "timeout-minutes"?: number; name?: string; run?: string; uses?: string; if?: string; id?: string; env?: Record<string, string> }
+interface Job { "timeout-minutes"?: number; needs?: string | string[]; if?: string; outputs?: Record<string, string>; steps: Step[]; permissions?: Record<string, string> }
 const read = (path: string): string => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
 const workflowText = read(".github/workflows/ci.yml");
 const jobs = (YAML.parse(workflowText) as { jobs: Record<string, Job> }).jobs;
@@ -80,6 +80,10 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
       expect(YAML.stringify(step)).not.toMatch(/continue-on-error|\|\|\s*true/u);
       expect(step.uses).toBeUndefined();
     }
+    // Bounded: the swap may take 10 minutes and the second check 45, and the job's limit leaves room for both on top of the 75 it had.
+    expect(swap["timeout-minutes"]).toBe(10);
+    expect(check25["timeout-minutes"]).toBe(45);
+    expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(75 + 10 + 45 - 30);
     // Cheap: one job, one image build, one checkout. The Docker 25 steps add no other job, no build and no checkout.
     expect(job.steps.filter((step) => (step.run ?? "").includes("docker build"))).toHaveLength(2);
     expect(Object.keys(jobs).filter((name) => name.includes("docker25") || name.includes("docker-25"))).toEqual([]);
@@ -137,7 +141,7 @@ describe("scripts/ci-docker25-engine.sh", () => {
   it("is valid bash that only runs when executed, and needs root", () => {
     expect(spawnSync("bash", ["-n"], { input: engineScript, encoding: "utf8" }).status).toBe(0);
     expect(engineScript).toContain('if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi');
-    expect(engineCode).toContain("[[ $EUID -eq 0 ]]");
+    expect(engineCode).toContain("[[ $(id -u) -eq 0 ]]");
     expect(engineCode).not.toMatch(/(?:^|[\s;|(])aws\s+[a-z]|\bssm\b|AWS_/mu);
   });
 
@@ -157,11 +161,80 @@ describe("scripts/ci-docker25-engine.sh", () => {
     expect(engineCode).toContain('[[ "$server" == "$DOCKER25_VERSION" ]]');
     expect(engineCode).toContain('[[ "$client" == "$DOCKER25_VERSION" ]]');
     expect(engineCode).toContain("{{.DockerRootDir}}");
-    expect(engineCode).toContain('[[ "$(docker image inspect --format \'{{.Id}}\' "$image")" == "$id" ]]');
+    // The image is compared by tag and layers, not by id (a runner on the containerd image store gives another id).
+    expect(engineCode).toContain('[[ "$after_layers" == "$before_layers" ]]');
+    expect(engineCode).not.toMatch(/== "\$id" \]\]/u);
     // The image is saved on the old engine before the swap and loaded after it; the old engine's data root is never opened by Docker 25.
     expect(engineCode.indexOf("docker save")).toBeLessThan(engineCode.indexOf("systemctl stop docker.service"));
     expect(engineCode.indexOf("systemctl stop docker.service")).toBeLessThan(engineCode.indexOf("docker load"));
     expect(engineScript).toContain("readonly DOCKER25_DATA_ROOT=/var/lib/docker25");
+  });
+
+  it("frees the old engine's disk after the save, removes its iptables chains, jumps and docker0 before the new engine starts, and keeps DOCKER-USER", () => {
+    expect(engineCode.indexOf("docker save")).toBeLessThan(engineCode.indexOf("docker system prune -af"));
+    expect(engineCode.indexOf("docker system prune -af")).toBeLessThan(engineCode.indexOf("systemctl stop docker.service"));
+    expect(engineCode.indexOf("systemctl stop docker.service")).toBeLessThan(engineCode.indexOf("remove_docker_leftovers\n"));
+    expect(engineCode.indexOf("remove_docker_leftovers\n")).toBeLessThan(engineCode.indexOf("systemctl restart docker.socket"));
+    for (const chain of ["DOCKER-FORWARD", "DOCKER-CT", "DOCKER-BRIDGE", "DOCKER-INTERNAL", "DOCKER-ISOLATION-STAGE-1", "DOCKER-ISOLATION-STAGE-2"]) expect(engineCode, chain).toContain(chain);
+    expect(engineCode).toContain("ip link delete docker0");
+    expect(engineCode).not.toMatch(/DOCKER-USER/u);
+    for (const state of ["iptables -S;", "iptables -t nat -S;", "ip link;", "df -h /;"]) expect(engineCode, state).toContain(state);
+    // The rules step the second run applies never flushes DOCKER-USER: check-then-insert only.
+    const stage2 = read("packages/worker/ec2/boot-stage2.sh");
+    const firewall = read("packages/worker/ec2/boot.sh");
+    expect(stage2 + firewall).not.toMatch(/iptables -F DOCKER-USER|iptables --flush DOCKER-USER/u);
+  });
+
+  describe("the checksum path, run for real with stubbed curl, sha256sum, tar and docker", () => {
+    const run = (checksumOk: boolean) => {
+      const dir = mkdtempSync(join(tmpdir(), "docker25-engine-"));
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      const stub = (name: string, body: string): void => { writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 }); };
+      const log = join(dir, "calls.log");
+      stub("id", "echo 0");
+      stub("sleep", "exit 0");
+      stub("curl", `echo "curl $*" >> "${log}"; while [ $# -gt 0 ]; do [ "$1" = -o ] && { printf 'not really docker' > "$2"; }; shift; done; exit 0`);
+      stub("sha256sum", `echo "sha256sum $* <$(cat)>" >> "${log}"; exit ${checksumOk ? 0 : 1}`);
+      stub("tar", `echo "tar $*" >> "${log}"; exit 1`);
+      stub("docker", [
+        `echo "docker $*" >> "${log}"`,
+        `case "$*" in`,
+        `  "image inspect --format {{.Id}} rovara-worker:ci") echo sha256:${"a".repeat(64)} ;;`,
+        `  "image inspect --format {{json .RepoTags}} rovara-worker:ci") echo '["rovara-worker:ci"]' ;;`,
+        `  "image inspect --format {{json .RootFS.Layers}} rovara-worker:ci") echo '["sha256:${"b".repeat(64)}"]' ;;`,
+        `  save*) touch "$3" ;;`,
+        `  version*) echo 28.0.4 ;;`,
+        `esac`, `exit 0`,
+      ].join("\n"));
+      // The unpack directory is pointed into the throwaway directory, so nothing on this machine is touched even if the path went further.
+      const text = engineScript.replace("readonly DOCKER25_DIR=/opt/docker-25.0.5", `readonly DOCKER25_DIR=${join(dir, "opt-docker")}`);
+      expect(text).not.toBe(engineScript);
+      const file = join(dir, "engine.sh");
+      writeFileSync(file, text);
+      const ran = spawnSync("/bin/bash", [file], { encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, RUNNER_TEMP: dir, TSL_DOCKER25_WORKER_IMAGE: "rovara-worker:ci" } });
+      let calls = "";
+      try { calls = readFileSync(log, "utf8"); } catch { /* no call was made */ }
+      return { status: ran.status, stderr: ran.stderr, calls };
+    };
+
+    it("a download that does not match the pinned checksum exits non-zero and tar never runs", () => {
+      const r = run(false);
+      expect(r.status, r.stderr).not.toBe(0);
+      expect(r.stderr).toContain("does not match the pinned SHA-256");
+      expect(r.calls).toMatch(/sha256sum -c - <[a-f0-9]{64} {2}.*docker\.tgz>/u);
+      expect(r.calls).toContain("curl ");
+      expect(r.calls).not.toMatch(/^tar /mu);
+      // Nothing was stopped or swapped before the check.
+      expect(r.calls).not.toMatch(/systemctl/u);
+    });
+
+    it("positive control: a matching checksum does reach tar (so the test would see it)", () => {
+      const r = run(true);
+      expect(r.calls).toMatch(/^tar -xzf /mu);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain("could not unpack");
+    });
   });
 });
 
