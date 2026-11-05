@@ -82,8 +82,11 @@ export function trackerOfCodeIntent(request: Pick<CodeIntentRequest, "source" | 
   return item === undefined ? undefined : { tracker: item.tracker, id: item.id };
 }
 
-/** `POST /v1/app/projects/{project}/code`: the person's request, and nothing that names a source, a payer or a binding. */
-export const CodeIntentBodySchema = z.object({ requestId: RequestIdSchema, input: RunInputSchema, path: WorkflowPathSchema.optional() }).strict();
+/**
+ * `POST /v1/app/projects/{project}/code`: the person's request, and nothing that names a source, a payer or a binding. `designFirst` is the start box's "Design first" option: the person asks for the design to be reviewed
+ * before code on this one task (the same ask as a leading `design first:`). The broker honours it only while design review is available for the company, and refuses it otherwise.
+ */
+export const CodeIntentBodySchema = z.object({ requestId: RequestIdSchema, input: RunInputSchema, path: WorkflowPathSchema.optional(), designFirst: z.boolean().optional() }).strict();
 export type CodeIntentBody = z.infer<typeof CodeIntentBodySchema>;
 
 /** What starting work answers. A deployment where agents are not set up has no sessions, so it answers the task alone (only the broker's own Slack start can then be here). */

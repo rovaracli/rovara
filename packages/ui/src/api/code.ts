@@ -30,6 +30,9 @@ const MESSAGES: Readonly<Record<string, string>> = {
  RUNTIME_UNAVAILABLE: "Rovara can't start work right now. Try again shortly.",
 };
 
+/** What the page says when the broker refuses a start that asked for Design first (it is sent only with that option, so a refused request body is that option's). */
+export const DESIGN_FIRST_REFUSED = "Rovara couldn't start this with Design first. Untick it to start without a design review, or try again.";
+
 /** `POST /v1/app/projects/{project}/code`: describe the work and the project's own process runs it. */
 export function createCodeApi(host: AppHost) {
  const api = createApiClient(host);
@@ -48,11 +51,12 @@ export function createCodeApi(host: AppHost) {
    finally { clearTimeout(timer);if (cancel !== undefined) signal?.removeEventListener("abort", cancel); }
   },
   /** One request id per attempt at the same text: pass the same `requestId` to retry it. */
-  async startCode(project: string, text: string, requestId: string = crypto.randomUUID()): Promise<SendResult<StartedCode>> {
+  async startCode(project: string, text: string, requestId: string = crypto.randomUUID(), designFirst = false): Promise<SendResult<StartedCode>> {
    const name = ProjectOverviewProjectSchema.shape.name.parse(project);
    if (!text.trim() || text.length > CODE_TEXT_MAX) throw new ApiError(400, "INVALID_INPUT", "Describe the work in 4000 characters or fewer.");
-   try { return await api.send("POST", "/v1/app/projects/" + encodeURIComponent(name) + "/code", { requestId, input: { text } }, StartedCodeReader); }
+   try { return await api.send("POST", "/v1/app/projects/" + encodeURIComponent(name) + "/code", { requestId, input: { text }, ...(designFirst ? { designFirst: true } : {}) }, StartedCodeReader); }
    catch (failure) {
+    if (designFirst && failure instanceof ApiError && failure.code === "CONFIG_INVALID") throw new ApiError(failure.status, failure.code, DESIGN_FIRST_REFUSED);
     const message = failure instanceof ApiError ? MESSAGES[failure.code] : undefined;
     throw failure instanceof ApiError && message !== undefined ? new ApiError(failure.status, failure.code, message) : failure;
    }

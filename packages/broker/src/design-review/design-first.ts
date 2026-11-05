@@ -3,7 +3,7 @@
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { taskKey } from "../developer/task-records.js";
 import { parseDesignFirstPrefix } from "../rovara-code/explicit-path.js";
-import type { OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@agentx/contracts";
 import type { ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
 import { designReviewAvailableFor } from "./switch.js";
 
@@ -13,6 +13,25 @@ import { designReviewAvailableFor } from "./switch.js";
  */
 export async function designFirstRequestOf(deps: ProjectPlaybookReader, orgId: OrgId, text: string, env: NodeJS.ProcessEnv = process.env): Promise<{ designFirst: boolean; rest: string }> {
   return (await designReviewAvailableFor(deps, orgId, env)) ? parseDesignFirstPrefix(text) : { designFirst: false, rest: text };
+}
+
+/** What the web start refuses with when the box's "Design first" is sent while the stage does not exist for the company. It says nothing about why. */
+export const DESIGN_FIRST_UNAVAILABLE = "Design review isn't available right now.";
+
+/**
+ * The web start box (DR-UX-3): the ticked "Design first" option (`asked`) and a leading `design first:` in the typed text mean the same thing as in Slack and Linear, and both are honoured only while the stage exists for the
+ * company (`dr` on and the company allows it; the project's own mode is not asked, a project set to Off can still ask for one task). The ticked option with the stage unavailable is REFUSED (`CONFIG_INVALID`, no reason given),
+ * never dropped, so a stale page cannot believe a review was asked for. A typed prefix with the stage unavailable is left in the text, as it is for Slack. `deps` absent means the stage cannot be read: unavailable.
+ */
+export async function designFirstWebStart(deps: ProjectPlaybookReader | undefined, orgId: OrgId, input: { text: string; asked: boolean }, env: NodeJS.ProcessEnv = process.env): Promise<{ designFirst: boolean; text: string }> {
+  const available = deps !== undefined && await designReviewAvailableFor(deps, orgId, env);
+  if (!available) {
+    if (input.asked) throw agentXError("CONFIG_INVALID", DESIGN_FIRST_UNAVAILABLE);
+    return { designFirst: false, text: input.text };
+  }
+  const typed = parseDesignFirstPrefix(input.text);
+  if (typed.designFirst && typed.rest.trim() === "") throw agentXError("CONFIG_INVALID", "input.text: request is empty");
+  return { designFirst: input.asked || typed.designFirst, text: typed.rest };
 }
 
 export interface DesignFirstRequest { by: string; at: string }

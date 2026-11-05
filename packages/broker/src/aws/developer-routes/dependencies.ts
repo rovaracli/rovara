@@ -252,6 +252,7 @@ export function codeIntentDependenciesOf(deps: DeveloperRouteDependencies, calle
     projectProcess: (orgId, project) => projectProcessOf({ documentClient: deps.documentClient, tableName: deps.tableName, store: deps.agents?.store }, orgId, project),
     origin: new URL(deps.developer.issuer).origin,
     visibleProject: async (who, rawName) => (await projectRoleForRoute(deps, who, rawName)).name,
+    table: { documentClient: deps.documentClient, tableName: deps.tableName },
     // A follow-up may follow only a task of the caller's own org, whose session they can see, that ended Answered (read now, never trusted from the request).
     retryable: async (who, taskId) => {
       const sessions = sessionDependenciesOf(deps);
