@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSlackRecordTap, slackRetention, withChannelInfoCache, type SlackChannelInfo, type SlackRecordTapDependencies } from "../../packages/broker/src/team-record/sources/slack.js";
+import { createSlackRecordTap, SLACK_TAP_EVENT_TYPES, slackRetention, withChannelInfoCache, type SlackChannelInfo, type SlackRecordTapDependencies } from "../../packages/broker/src/team-record/sources/slack.js";
 import { world, WS } from "../support/team-record-ingest-fakes.js";
 
 const TEAM = "T0TEAM00001";
@@ -221,6 +221,15 @@ describe("Slack tap: edits, deletes and membership", () => {
     ]);
   });
 
+  it("tombstones a private place on group_deleted exactly as on channel_deleted (cause source_deleted)", async () => {
+    const { w, tap } = setup("enterprise");
+    w.mode.on = false;
+    expect(await tap({ type: "event_callback", team_id: TEAM, event: { type: "group_deleted", channel: PRIV } })).toEqual({ outcome: "scope_removed" });
+    expect(w.sink.tombstones).toMatchObject([{ system: TEAM, scope: `slack:${TEAM}/${PRIV}`, cause: "source_deleted" }]);
+    expect(await tap({ type: "event_callback", team_id: TEAM, event: { type: "group_deleted", channel: "not-a-channel" } })).toEqual({ outcome: "ignored", reason: "malformed" });
+    expect(w.sink.tombstones).toHaveLength(1);
+  });
+
   it("refreshes a private channel's members on join and leave, and leaves a public channel alone", async () => {
     const { w, tap } = setup("enterprise");
     await tap({ type: "event_callback", team_id: TEAM, event: { type: "member_joined_channel", channel: PRIV, channel_type: "G", user: "U0CAROL0001", event_ts: TS } });
@@ -351,6 +360,20 @@ describe("Slack tap: the work done per message", () => {
     await spy({ type: "event_callback", team_id: TEAM, event: { type: "member_joined_channel", channel: PRIV, channel_type: "G", user: "U0CAROL0001" } });
     expect(invalidated).toEqual([`${TEAM}/${PRIV}`]);
     void tap;
+  });
+});
+
+// Final review 3, C1: the install's event subscriptions must cover every event the tap acts on (tests/contract/init-slack-app.test.ts compares the manifest with this list).
+describe("Slack tap: the event types it handles are the list the manifest subscribes to", () => {
+  it("every listed type is handled (none is answered 'unsupported_event'), and a type outside the list still is", async () => {
+    const { tap } = setup("enterprise");
+    for (const type of SLACK_TAP_EVENT_TYPES) {
+      const outcome = await tap({ type: "event_callback", team_id: TEAM, event: { type, channel: PRIV, old_channel_id: PRIV, user: "U0BOB000001", tokens: { bot: ["U0ROVARABOT"] }, event_ts: TS } });
+      expect(outcome, type).not.toEqual({ outcome: "ignored", reason: "unsupported_event" });
+    }
+    expect(await tap({ type: "event_callback", team_id: TEAM, event: { type: "channel_rename", channel: PRIV } })).toEqual({ outcome: "ignored", reason: "unsupported_event" });
+    expect(SLACK_TAP_EVENT_TYPES).toContain("member_joined_channel");
+    expect(SLACK_TAP_EVENT_TYPES).toContain("member_left_channel");
   });
 });
 

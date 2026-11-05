@@ -125,7 +125,7 @@ export interface FakeSlackUser { userId: string; teamId?: string; name: string; 
 /** Slack's OpenID Connect and Web API, as far as the sign-in uses them. */
 /** `channelInfo`: what conversations.info answers per channel ID (no `isPrivate` leaves is_private out); any other ID is channel_not_found.
  * conversations.list lists the same channels in one page, each with is_private (false when `isPrivate` is left out). */
-export function fakeSlack(options: { users: FakeSlackUser[]; channels?: Record<string, string[]>; channelInfo?: Record<string, { name: string; isPrivate?: boolean; /** Extra fields of Slack's channel object (is_im, is_ext_shared, ...); `name` may be dropped for a DM. */ raw?: Record<string, unknown> }>; scopes?: string[]; now?: () => number }) {
+export function fakeSlack(options: { users: FakeSlackUser[]; channels?: Record<string, string[]>; channelInfo?: Record<string, { name: string; isPrivate?: boolean; /** Extra fields of Slack's channel object (is_im, is_ext_shared, ...); `name` may be dropped for a DM. */ raw?: Record<string, unknown> }>; scopes?: string[]; /** `users.conversations`: the private channels each Slack user is in (and the bot too), by user id; any other user is user_not_found. */ userChannels?: Record<string, Array<Record<string, unknown>>>; now?: () => number }) {
   const issuedAt = () => Math.floor((options.now ?? Date.now)() / 1000);
   const signer = signingKey();
   const codes = new Map<string, { user: FakeSlackUser; nonce: string; redirectUri: string; teamId: string; idToken?: string }>();
@@ -179,6 +179,11 @@ export function fakeSlack(options: { users: FakeSlackUser[]; channels?: Record<s
     }
     if (url.pathname === "/api/conversations.list") {
       const channels = Object.entries(options.channelInfo ?? {}).map(([id, info]) => ({ id, name: info.name, is_private: info.isPrivate === true, ...(info.raw ?? {}) }));
+      return Response.json({ ok: true, channels, response_metadata: { next_cursor: "" } });
+    }
+    if (url.pathname === "/api/users.conversations") {
+      const channels = options.userChannels?.[url.searchParams.get("user") ?? ""];
+      if (channels === undefined) return Response.json({ ok: false, error: "user_not_found" });
       return Response.json({ ok: true, channels, response_metadata: { next_cursor: "" } });
     }
     if (url.pathname === "/api/conversations.info") {
@@ -399,6 +404,8 @@ export function identityHarness(options: {
   github?: { users: FakeGithubUser[] };
   slackUsers?: FakeSlackUser[]; oidcUsers?: FakeOidcUser[]; channels?: Record<string, string[]>;
   channelInfo?: Record<string, { name: string; isPrivate?: boolean; raw?: Record<string, unknown> }>;
+  /** What `users.conversations` answers per Slack user id (see `fakeSlack`). */
+  userChannels?: Record<string, Array<Record<string, unknown>>>;
   slackCredentials?: { clientId?: string; clientSecret?: string };
   /** The State table, where orgs and membership live; a fresh one when absent. */
   state?: FakeDynamoDb;
@@ -427,7 +434,7 @@ export function identityHarness(options: {
   const state = options.state ?? new FakeDynamoDb();
   const db = options.sharedTable === true ? state : new FakeDynamoDb();
   const orgs = new OrgStore({ documentClient: state, tableName: "state", now });
-  const slack = fakeSlack({ users: options.slackUsers ?? [], now, ...(options.channels ? { channels: options.channels } : {}), ...(options.channelInfo ? { channelInfo: options.channelInfo } : {}) });
+  const slack = fakeSlack({ users: options.slackUsers ?? [], now, ...(options.channels ? { channels: options.channels } : {}), ...(options.channelInfo ? { channelInfo: options.channelInfo } : {}), ...(options.userChannels ? { userChannels: options.userChannels } : {}) });
   const oidc = fakeOidc({ users: options.oidcUsers ?? [], now });
   const github = fakeGithub({ users: options.github?.users ?? [] });
   const fetch = routeFetch(slack.handler, oidc.handler, github.handler);

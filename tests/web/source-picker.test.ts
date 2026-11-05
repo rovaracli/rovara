@@ -39,7 +39,7 @@ describe("the Slack channel picker", () => {
     expect(f.optionReads).toEqual(["?kind=slack"]);
     expect(within(form).getAllByRole("radio")).toHaveLength(SLACK.length);
     expect(within(form).queryByLabelText("Slack channel")).toBeNull(); // the typed field is not there while the list is
-    expect(within(form).getByRole("button", { name: "Enter an ID instead" })).toBeTruthy();
+    expect(within(form).getByRole("button", { name: "Enter an ID or link instead" })).toBeTruthy();
   });
 
   it("shows a name with its hidden control characters spelled out", async () => {
@@ -263,14 +263,14 @@ describe("falling back to the typed place", () => {
     const { f, form } = await open({ options: () => list("slack", SLACK) });
     pick("What to add", "slack");
     fireEvent.click(await within(form).findByRole("radio", { name: /general/u }));
-    fireEvent.click(within(form).getByRole("button", { name: "Enter an ID instead" }));
+    fireEvent.click(within(form).getByRole("button", { name: "Enter an ID or link instead" }));
     const typed = within(form).getByLabelText<HTMLInputElement>("Slack channel");
     expect(typed.value).toBe(""); // what was picked is not carried over
     expect(within(form).queryAllByRole("radio")).toHaveLength(0);
     fireEvent.click(within(form).getByRole("button", { name: "Pick from the list instead" }));
     expect(within(form).getAllByRole("radio")).toHaveLength(SLACK.length);
     expect(f.optionReads).toHaveLength(1); // the same read, not another
-    fireEvent.click(within(form).getByRole("button", { name: "Enter an ID instead" }));
+    fireEvent.click(within(form).getByRole("button", { name: "Enter an ID or link instead" }));
     fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: " slack:T1/C7 " } });
     pick("How long Rovara keeps it", "A", form);
     fireEvent.click(within(form).getByRole("button", { name: "Add source" }));

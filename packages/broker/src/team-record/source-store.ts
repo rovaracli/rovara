@@ -1,14 +1,15 @@
-// What the source write route (`source-write.ts`) keeps in the TeamRecord table besides the source rows themselves. All three kinds hold no text of anyone's:
+// What the source write route (`source-write.ts`) keeps in the TeamRecord table besides the source rows themselves, and the Slack add prompts. None of these kinds holds text of anyone's:
 //   SRCSCOPE#<system>#<hash>   in the WORKSPACE partition: the claim that one project holds a place. A source row and its claim are written in one transaction, so two projects can never
 //                              both hold one place (the claim's condition is "absent, or this project's");
 //   SRCREQ#<hash>              in the PROJECT partition: the outcome of one write request, so a repeat of it answers the same and writes nothing (a day).
 //   SRCREV#<system>#<hash>     in the PROJECT partition: the highest revision a removed source row reached and when it was removed, so a row added for the place again counts on from there
 //                              and a write made against the old row can never fit the new one (hash and number only; no expiry).
+//   SLKADD#<uuid>              in the WORKSPACE partition: one "learn from this channel" prompt (`slack-add.ts`): the Slack team, the channel, a hash of the person and a 15-minute expiry. No Slack user id, no text.
 // Owner decision 2026-11-04 (no second person for any source change) removed the waiting-change item (`SRCCHG#`): no such row was ever written outside this lane's branch (the Team record switch is off
 // everywhere), so there is nothing to migrate, scrub or sweep. Project archive and company close remove the three kinds above (`erase.ts`): the claim of a source row is dropped with the row
 // (`dropScopeClaim`), the others are in the project's partition.
 import { createHash } from "node:crypto";
-import { DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, recordSourceKey, teamRecordPk, teamRecordSourceHash, type OrgId, type SourceConfig } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, type Item } from "../agents/table-writes.js";
 import { sourceConfigFromItem } from "./store.js";
@@ -19,6 +20,8 @@ export const SOURCE_REQUEST_SK_PREFIX = "SRCREQ#";
 export const SOURCE_REVISION_SK_PREFIX = "SRCREV#";
 /** The pickers' listing sessions (`source-options.ts`): in the WORKSPACE partition, a page count with a short expiry; no person and no text. Company close removes them, and a project archive removes that project's (`erase.ts`, found by the `project` field). */
 export const SOURCE_OPTIONS_SK_PREFIX = "SRCOPT#";
+/** The prompts of "learn from this channel" (`slack-add.ts`): in the WORKSPACE partition, the team, the channel, a hash of the person and a 15-minute expiry; no Slack user id and no text. Company close removes them. */
+export const SLACK_ADD_SK_PREFIX = "SLKADD#";
 /** How long a request item answers a repeat. */
 export const SOURCE_REQUEST_TTL_SECONDS = 86_400;
 
@@ -134,4 +137,43 @@ export function requestPut(table: TeamRecordTable, orgId: OrgId, project: string
       ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
     },
   };
+}
+
+// ---- the "learn from this channel" prompts (`slack-add.ts`)
+
+const slackAddKey = (orgId: OrgId, token: string) => ({ pk: teamRecordPk(orgId), sk: `${SLACK_ADD_SK_PREFIX}${token}` });
+
+/** Writes a prompt (never over another). `expiresAtSeconds` is the table's expiry attribute; the reader checks it too, because a table's own expiry runs late. */
+export async function putSlackAddPrompt(table: TeamRecordTable, orgId: OrgId, token: string, prompt: { team: string; channel: string; person: string; createdAt: string; expiresAtSeconds: number }): Promise<void> {
+  await table.documentClient.send(new PutCommand({
+    TableName: table.tableName,
+    Item: { ...slackAddKey(orgId, token), entityType: "TEAM_RECORD_SLACK_ADD", team: prompt.team, channel: prompt.channel, person: prompt.person, createdAt: prompt.createdAt, [INDEX_EXPIRY_ATTRIBUTE]: prompt.expiresAtSeconds },
+    ConditionExpression: NOT_EXISTS,
+  }));
+}
+
+/** The prompt, or undefined when there is none under this company. */
+export async function readSlackAddPrompt(table: TeamRecordTable, orgId: OrgId, token: string): Promise<{ team?: unknown; channel?: unknown; person?: unknown; startedBy?: unknown; startedProject?: unknown; doneOutcome?: unknown; expiresAtSeconds: number } | undefined> {
+  const item = await getItem(table, slackAddKey(orgId, token));
+  return item === undefined ? undefined : { team: item.team, channel: item.channel, person: item.person, startedBy: item.startedBy, startedProject: item.startedProject, doneOutcome: item.doneOutcome, expiresAtSeconds: Number(item[INDEX_EXPIRY_ATTRIBUTE]) };
+}
+
+/** Remembers that a press began on the prompt, and for which project (the first one wins). A later press FOR THE SAME PROJECT that finds the place already saved knows the first one was this prompt's own. Best effort. */
+export async function markSlackAddStarted(table: TeamRecordTable, orgId: OrgId, token: string, interactionId: string, project: string): Promise<void> {
+  try {
+    await table.documentClient.send(new UpdateCommand({
+      TableName: table.tableName, Key: slackAddKey(orgId, token), UpdateExpression: "SET startedBy = :interaction, startedProject = :project",
+      ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(startedBy)", ExpressionAttributeValues: { ":interaction": interactionId, ":project": project },
+    }));
+  } catch { /* a press that began earlier already left its mark, or the item is gone */ }
+}
+
+/** Stores the outcome on the prompt (`added`, the one outcome that is kept: a refusal leaves the prompt open to try again). A failure is swallowed: the route's request item and its place claim still make a later press the same save. */
+export async function markSlackAddUsed(table: TeamRecordTable, orgId: OrgId, token: string): Promise<void> {
+  try {
+    await table.documentClient.send(new UpdateCommand({
+      TableName: table.tableName, Key: slackAddKey(orgId, token), UpdateExpression: "SET doneOutcome = :added",
+      ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(doneOutcome)", ExpressionAttributeValues: { ":added": "added" },
+    }));
+  } catch { /* see above */ }
 }

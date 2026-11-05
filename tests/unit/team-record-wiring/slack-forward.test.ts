@@ -115,7 +115,7 @@ describe("removals go to the durable queue as ids only, before any Slack lookup"
     }
     expect(removalPayload(deleted)).toMatchObject({ event: { subtype: "message_deleted", deleted_ts: "1761818400.000100" } });
     expect(removalPayload(tombstone)).toMatchObject({ event: { subtype: "message_changed", message: { ts: "1761818400.000100", subtype: "tombstone" } } });
-    for (const type of ["channel_deleted", "channel_shared", "channel_id_changed", "app_uninstalled", "tokens_revoked"]) expect(removalPayload({ type: "event_callback", team_id: "T0123456789", event: { type, channel: "C0123456789" } }), type).toBeDefined();
+    for (const type of ["channel_deleted", "group_deleted", "channel_shared", "channel_id_changed", "app_uninstalled", "tokens_revoked"]) expect(removalPayload({ type: "event_callback", team_id: "T0123456789", event: { type, channel: "C0123456789" } }), type).toBeDefined();
     expect(removalPayload(message())).toBeUndefined();
     expect(removalPayload({ ...message("message_changed"), event: { type: "message", subtype: "message_changed", message: { ts: "1761818400.000100", text: "edited" } } })).toBeUndefined();
   });

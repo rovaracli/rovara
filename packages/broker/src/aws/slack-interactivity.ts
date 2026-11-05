@@ -67,6 +67,7 @@ import {
   type WorkflowPath,
 } from "./slack-workflow-choice.js";
 import { detailsActionHandler, dynamoTurnDetailsReader } from "./slack-details.js";
+import { LEARN_ADD_ACTION, isHandedOffLearnPress, learnAddHandler, runHandedOffLearnPress, type HandedOffLearnPress } from "../team-record/slack-add.js";
 import {
   CHATGPT_OPEN_ACTION, CHATGPT_PASTE_ACTION, CHATGPT_PASTE_SUBMISSION, chatGptPasteModal, chatGptSubmission, isHandedOffChatGptFinish, runHandedOffChatGptFinish,
   type HandedOffChatGptFinish,
@@ -107,6 +108,8 @@ export interface SlackBlockAction {
   responseUrl: string;
   /** For opening a modal, such as the Details view (spec 014 phase 14d). */
   triggerId: string;
+  /** What the message's menus hold at the press (payload.state.values): set only for the Team record's Add button (task 12), so every other button's action is exactly as it was. */
+  stateValues?: Record<string, unknown>;
   /** Slack's stable timestamp for this specific action, used to keep retry request IDs stable. */
   actionTs?: string;
 }
@@ -583,6 +586,7 @@ function parseBlockActions(payload: Record<string, unknown>, requestStartedAt: n
   if (!isSlackResponseUrl(payload.response_url)) return { reason: "malformed_action" };
   const thread = { teamId: teamId.data, channelId: channelId.data, threadTs: threadTs.data };
   const entries = Array.isArray(payload.actions) ? payload.actions.map(asRecord) : [];
+  const stateValues = asRecord(asRecord(payload.state).values);
   return {
     actions: entries.flatMap((entry) => typeof entry.action_id === "string" && typeof entry.value === "string" ? [{
       actionId: entry.action_id,
@@ -598,6 +602,7 @@ function parseBlockActions(payload: Record<string, unknown>, requestStartedAt: n
       messageText: typeof message.text === "string" ? message.text : "",
       responseUrl: payload.response_url as string,
       triggerId: typeof payload.trigger_id === "string" ? payload.trigger_id : "",
+      ...(entry.action_id === LEARN_ADD_ACTION && Object.keys(stateValues).length > 0 ? { stateValues } : {}),
       actionTs: typeof entry.action_ts === "string" ? entry.action_ts : messageTs.data,
     }] : []),
   };
@@ -920,6 +925,13 @@ export function createAwsSlackInteractivityHandler() {
     postEphemeral: async (input) => chatPostEphemeral((await secrets()).botToken, input),
     log,
   }, event);
+  // Team record (task 12): the Add button of the private "learn from this channel" prompt, only where the record's switch is on. The press is acknowledged at once; the work (it reads Slack, then saves) runs in an asynchronous
+  // invoke of this Lambda, which answers through the press's response_url.
+  const recordOn = process.env.TEAM_RECORD_ENABLED === "1" && brokerFunctionName !== undefined;
+  const recordHandlers = !recordOn ? [] : [learnAddHandler({ handOff: (event) => handOffToSelf(lambda, event), respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text) })];
+  const learnPress = (event: HandedOffLearnPress) => runHandedOffLearnPress({
+    invokeBroker: (brokerEvent) => invokeBroker(brokerEvent, HANDED_OFF_START_TIMEOUT_MS), respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text), respondReplace: (responseUrl, message) => respondReplace(responseUrl, message),
+  }, event);
   const interactivity = createSlackInteractivityHandler({
     secrets,
     log,
@@ -930,7 +942,7 @@ export function createAwsSlackInteractivityHandler() {
     ...(workflow === undefined ? {} : { workflow }),
     // The module's own respondEphemeral, for a button no handler knows.
     respondEphemeral,
-    handlers: [...(brokerFunctionName === undefined ? [] : [decisionPressHandler({ invokeBroker, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text), unknownButtonText: UNKNOWN_BUTTON_TEXT })]), chatGptActionHandler({ openView, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text) }), confirmationActionHandler({
+    handlers: [...recordHandlers, ...(brokerFunctionName === undefined ? [] : [decisionPressHandler({ invokeBroker, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text), unknownButtonText: UNKNOWN_BUTTON_TEXT })]), chatGptActionHandler({ openView, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text) }), confirmationActionHandler({
       async loadConfirmation(subject) {
         const response = await documentClient.send(new GetCommand({ TableName: threadsTableName, Key: confirmationKey(subject), ConsistentRead: true }));
         return pendingConfirmationFromItem(response.Item);
@@ -976,14 +988,17 @@ export function createAwsSlackInteractivityHandler() {
       log,
     })],
   });
-  return async (event: HttpApiV2Event | HandedOffWorkflowStart | HandedOffChatGptFinish): Promise<HttpResponse> => {
+  return async (event: HttpApiV2Event | HandedOffWorkflowStart | HandedOffChatGptFinish | HandedOffLearnPress): Promise<HttpResponse> => {
+    // The handed-off press is dispatched only where the record's switch is on (as its button is): with it off a direct invoke of this shape is an event of an unknown shape, exactly as before the feature.
+    if (recordOn && isHandedOffLearnPress(event)) return respond(200, { outcome: await learnPress(event) });
     if (isHandedOffWorkflowStart(event)) {
       const outcome = await chosenStart(event);
       log("workflow.handed_off_start", { outcome });
       return respond(200, { outcome });
     }
     if (isHandedOffChatGptFinish(event)) return respond(200, { outcome: await chatgptFinish(event) });
-    return interactivity(event);
+    // With the switch off a press-shaped event lands here, as any other unknown shape did before the feature existed.
+    return interactivity(event as HttpApiV2Event);
   };
 }
 
@@ -991,7 +1006,7 @@ export function createAwsSlackInteractivityHandler() {
 const HANDED_OFF_START_TIMEOUT_MS = 7_000;
 
 /** This Lambda's own name, as Lambda sets it; a Quick or Full start is handed to an asynchronous invoke of it. */
-async function handOffToSelf(lambda: LambdaClient, event: HandedOffWorkflowStart | HandedOffChatGptFinish): Promise<void> {
+async function handOffToSelf(lambda: LambdaClient, event: HandedOffWorkflowStart | HandedOffChatGptFinish | HandedOffLearnPress): Promise<void> {
   const functionName = process.env.AWS_LAMBDA_FUNCTION_NAME;
   if (functionName === undefined) throw new Error("AWS_LAMBDA_FUNCTION_NAME is not set");
   const response = await lambda.send(new InvokeCommand({ FunctionName: functionName, InvocationType: "Event", Payload: Buffer.from(JSON.stringify(event)) }));

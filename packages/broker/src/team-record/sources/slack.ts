@@ -98,6 +98,12 @@ export function slackRetention(edition: Edition, configured: Retention, notesOpt
   return configured === "B" && notesOptIn ? "B" : "A";
 }
 
+/**
+ * The Slack event types the tap acts on, other than messages. The install's event subscriptions (`SLACK_BOT_EVENTS` in the CLI's Slack app manifest) must list every one: a join without leaves locks a private channel's access to events that never remove anyone
+ * (final review 3, C1), so the two member events are subscribed together. Conversions to or from private are `message` subtypes in Slack's Events API (they arrive through `message.channels` and `message.groups`); the tap also accepts them as top-level types, which Slack does not send.
+ */
+export const SLACK_TAP_EVENT_TYPES: readonly string[] = ["member_joined_channel", "member_left_channel", "channel_deleted", "group_deleted", "channel_id_changed", "channel_shared", "app_uninstalled", "tokens_revoked"];
+
 export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload: unknown) => Promise<SlackTapOutcome> {
   const log: TapLog = deps.log ?? (() => undefined);
   const ignored = (reason: SlackIgnoreReason): SlackTapOutcome => ({ outcome: "ignored", reason });
@@ -124,7 +130,9 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     const active = bound.unbound !== true;
 
     switch (event.type) {
-      case "channel_deleted": {
+      // Slack's legacy model sends `group_deleted` (scope groups:read) for a deleted private channel: the same removal as `channel_deleted`.
+      case "channel_deleted":
+      case "group_deleted": {
         const channelId = event.channel;
         if (typeof channelId !== "string" || !CHANNEL.test(channelId)) return ignored("malformed");
         await deps.sink.tombstone({ workspaceId: bound.workspaceId, system: teamId, scope: slackScope(teamId, channelId), cause: "source_deleted" });

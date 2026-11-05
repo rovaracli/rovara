@@ -192,7 +192,9 @@ describe("team record audit events and the worker feature", () => {
     const changed = { ...base, eventId: auditEventId("record.source_changed", "c1"), action: "record.source_changed" };
     expect(AuditEventInputSchema.safeParse({ ...changed, facts: { source: "github", fromRetention: "C", toRetention: "D", enabled: true, widened: "retention_raise" } }).success).toBe(true);
     expect(AuditEventInputSchema.safeParse({ ...changed, facts: { source: "github", changeId: "chg_1" } }).success).toBe(false);
-    expect(AUDIT_FACT_KEYS["record.source_added"]).toStrictEqual(["source", "retention", "restricted", "widened"]);
+    // `via` (task 12): `slack` when the source was added from a Slack interaction; absent for the web.
+    expect(AUDIT_FACT_KEYS["record.source_added"]).toStrictEqual(["source", "retention", "restricted", "widened", "via"]);
+    expect(AuditEventInputSchema.safeParse({ ...added, facts: { source: "slack", retention: "C", restricted: false, via: "slack" } }).success).toBe(true);
     expect(AUDIT_FACT_KEYS["record.source_changed"]).toStrictEqual(["source", "fromRetention", "toRetention", "enabled", "widened"]);
     expect(SOURCE_WIDENED_WORDS).toStrictEqual(["retention_raise", "private_channel", "dm", "mpim"]);
   });

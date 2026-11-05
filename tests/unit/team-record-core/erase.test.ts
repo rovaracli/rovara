@@ -167,6 +167,9 @@ describe("erase a project and a workspace", () => {
     await addSource(w, { orgId: ORG_B, source: "github", scope: GITHUB_SCOPE });
     await w.sink.put(githubDraft({ workspaceId: ORG_B, sourceRef: { system: "github.com", id: "b-1", version: "1" }, links: [] }));
     w.db.set({ ...learningModeLockKey(ORG_A), entityType: "X", mode: "off" });
+    // A "learn from this channel" prompt (task 12) sits in the company's own partition: a company close removes it, and another company's stays.
+    w.db.set({ pk: teamRecordPk(ORG_A), sk: "SLKADD#11111111-1111-4111-8111-111111111111", entityType: "TEAM_RECORD_SLACK_ADD", team: "T0AAAAAAA", channel: "C0PUBLIC1", person: "h".repeat(64), indexExpiresAt: 9_999_999_999 });
+    w.db.set({ pk: teamRecordPk(ORG_B), sk: "SLKADD#22222222-2222-4222-8222-222222222222", entityType: "TEAM_RECORD_SLACK_ADD", team: "T0BBBBBBB", channel: "C0PUBLIC1", person: "h".repeat(64), indexExpiresAt: 9_999_999_999 });
     await w.sink.tombstone({ workspaceId: ORG_A, system: "github.com", sourceIds: ["c-1"], cause: "source_deleted" }); // leaves DELQ and DELETED# items
     const d = deleteDeps(w);
     const result = await eraseWorkspace(d.deps, ORG_A, ["web", "api"], "close-1");
@@ -175,6 +178,7 @@ describe("erase a project and a workspace", () => {
     expect(left.length).toBeGreaterThan(0);
     expect(left.every((item) => String(item.sk).startsWith("LAKEDEL#"))).toBe(true);
     expect(w.db.find((item) => String(item.pk).includes(ORG_B)).length).toBeGreaterThan(0);
+    expect(w.db.find((item) => item.entityType === "TEAM_RECORD_SLACK_ADD").map((item) => item.pk)).toEqual([teamRecordPk(ORG_B)]);
     const queue = await tableLakeDeleteQueue(w.table).listPending(ORG_A, 50);
     expect(queue.map((entry) => entry.target.kind)).toEqual(expect.arrayContaining(["project"]));
     expect(d.audit.filter((entry) => entry.action === "record.erased")).toHaveLength(1);

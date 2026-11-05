@@ -56,8 +56,8 @@ const widenedFact = (widened: readonly SourceWidenedWord[] | undefined) => {
   return words.length === 0 ? {} : { widened: words.join(",") };
 };
 
-export function auditRecordSourceAdded(input: SourceEventBase & { retention: string; restricted: boolean; widened?: readonly SourceWidenedWord[] }): AuditEventInput {
-  return { ...sourceBase("record.source_added", input), facts: { source: sourceWord(input.source), retention: input.retention, restricted: input.restricted, ...widenedFact(input.widened) } };
+export function auditRecordSourceAdded(input: SourceEventBase & { retention: string; restricted: boolean; widened?: readonly SourceWidenedWord[]; via?: "slack" }): AuditEventInput {
+  return { ...sourceBase("record.source_added", input), facts: { source: sourceWord(input.source), retention: input.retention, restricted: input.restricted, ...widenedFact(input.widened), ...(input.via === undefined ? {} : { via: input.via }) } };
 }
 export function auditRecordSourceChanged(input: SourceEventBase & { fromRetention: string; toRetention: string; enabled: boolean; widened?: readonly SourceWidenedWord[] }): AuditEventInput {
   return { ...sourceBase("record.source_changed", input), facts: { source: sourceWord(input.source), fromRetention: input.fromRetention, toRetention: input.toRetention, enabled: input.enabled, ...widenedFact(input.widened) } };

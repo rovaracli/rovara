@@ -24,6 +24,7 @@ import type {
   ChannelClassResponse,
   ChannelListRequest,
   ChannelListResponse,
+  MemberChannelsRequest,
   ChannelInfoRequest,
   ChannelInfoResponse,
   ChannelMembersRequest,
@@ -106,6 +107,8 @@ export interface DeveloperApiConfiguration {
   channelClass?: (request: ChannelClassRequest) => Promise<ChannelClassResponse>;
   /** Team record source pickers: a page of the channels the Slack bot can see, read fresh by DeveloperIdentity. Optional: without it the Slack picker is unavailable and the editor types the place. */
   channelList?: (request: ChannelListRequest) => Promise<ChannelListResponse>;
+  /** Team record source pickers, "your private channels": the private channels the bot and one Slack user are both in, read fresh by DeveloperIdentity. Optional: without it that group is unavailable. */
+  memberChannels?: (request: MemberChannelsRequest) => Promise<ChannelListResponse>;
   /** How long one request waits for channel names in all; the rest stay unnamed. Default 5 seconds. */
   channelInfoDeadlineMs?: number;
   /** Spec 025 A12: FR-012's email lookup, for an admin's Slack link. */

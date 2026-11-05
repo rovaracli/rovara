@@ -5,6 +5,8 @@ import { registerTaskEndHandler } from "../../agents/task-end.js";
 import { recordListenerOf, recordTaskEndHandler, registerRovaraRecordListener } from "../../lessons/record-events.js";
 import { registerHumanSendBackListener, sendBackToRecord, } from "../../lessons/send-back-events.js";
 import { TEAM_RECORD_SLACK_SOURCE, type SlackForwardEvent } from "../../team-record/slack-forward.js";
+import { isTeamRecordSlackAddEvent, type SlackAddEvent, type SlackAddPorts } from "../../team-record/slack-add.js";
+import { slackChannelOf } from "../developer-routes/team-record-source-write.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type RemovalFallback, type RemovalFallbackEvent } from "../../team-record/ops-queue.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { auditPending, type AuditDeps } from "../../audit/outbox.js";
@@ -29,6 +31,30 @@ export function isTeamRecordJobEvent(event: unknown): event is { source: typeof 
 export function isTeamRecordSlackEvent(event: unknown): event is SlackForwardEvent {
   return event !== null && typeof event === "object" && !("requestContext" in event)
     && (event as { source?: unknown }).source === TEAM_RECORD_SLACK_SOURCE && typeof (event as { payload?: unknown }).payload === "object" && (event as { payload?: unknown }).payload !== null;
+}
+
+export { isTeamRecordSlackAddEvent };
+
+/**
+ * Start from inside Slack (task 12): the ingress asked, for a verified Slack user, to show or to use the private "Add to project" prompt (`team-record/slack-add.ts`). The Slack reads it needs (what a channel is, whether a person
+ * is in it) are DeveloperIdentity's, built here from the broker's own dependencies; an install without one cannot answer that read and the service fails closed. Answers `skipped` and does nothing where the record is off.
+ */
+export async function answerSlackAdd(dependencies: HasTeamRecord & { developer?: AwsBrokerDependencies["developer"]; audit?: AwsBrokerDependencies["audit"] }, event: SlackAddEvent): Promise<{ skipped: true; reason: "off" } | Record<string, unknown>> {
+  const runtime = dependencies.teamRecord;
+  if (runtime === undefined) return { skipped: true, reason: "off" };
+  const developer = dependencies.developer;
+  const ports: SlackAddPorts = {
+    ...(developer?.slackTeamId === undefined ? {} : { teamId: developer.slackTeamId }),
+    ...(developer?.channelClass === undefined ? {} : { channel: slackChannelOf(developer.channelClass) }),
+    ...(developer?.channelMembers === undefined ? {} : {
+      isMember: async (userId: string, channelId: string) => {
+        const answer = await developer.channelMembers({ kind: "channel-members", slackUserId: userId, channelIds: [channelId] });
+        return answer.ok ? answer.memberOf.includes(channelId) : undefined;
+      },
+    }),
+    ...(dependencies.audit === undefined ? {} : { audit: { audit: dependencies.audit } }),
+  };
+  return event.step === "ask" ? await runtime.slackAdd.ask(ports, event) : { ...await runtime.slackAdd.press(ports, event) };
 }
 
 export type TeamRecordJobAnswer = { skipped: true; reason: "off" } | { skipped?: undefined; job: string; summary: TeamRecordJobSummary };

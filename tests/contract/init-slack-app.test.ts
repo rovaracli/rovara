@@ -4,9 +4,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createSlackIngressHandler } from "../../packages/broker/src/aws/slack-ingress.js";
 import { createSlackInteractivityHandler } from "../../packages/broker/src/aws/slack-interactivity.js";
 import {
-  botNameOf, missingScopes, probeSlackUrls, readSlackTeamIdFromSecret, SIGN_IN_BOT_SCOPES, SLACK_BOT_SCOPES, signSlackRequest, slackAppManifest, slackAppStep, slackBotDisplayName, slackBotScopes, slackCreateAppUrl,
+  botNameOf, missingScopes, probeSlackUrls, readSlackTeamIdFromSecret, SIGN_IN_BOT_SCOPES, SLACK_BOT_EVENTS, SLACK_BOT_SCOPES, signSlackRequest, slackAppManifest, slackAppStep, slackBotDisplayName, slackBotScopes, slackCreateAppUrl,
   slackSecretName, slackSecretWithBot, SlackTeamIdError, slackSecretWithSignIn, slackSignInCallbackUrl, slackValuesFields, SLACK_VALUES_TITLE, slackWebApi, verifySlackUrls,
 } from "../../packages/cli/src/init/slack-app.js";
+import { SLACK_TAP_EVENT_TYPES } from "../../packages/broker/src/team-record/sources/slack.js";
 import { emptyProgress } from "../../packages/cli/src/init/install-state.js";
 import {
   allStackOutputs, fakeSlackApi, initContext, memoryInitSecrets, progressHandle, scriptedDeployer, scriptedPrompter, slackIngressFetch, T0, TEST_BOT_TOKEN, TEST_SIGNING_SECRET, type TestInitContext,
@@ -66,13 +67,26 @@ describe("Slack app manifest", () => {
         },
       },
       settings: {
-        event_subscriptions: { request_url: EVENTS, bot_events: ["app_mention", "message.channels", "message.groups"] },
+        event_subscriptions: { request_url: EVENTS, bot_events: [...SLACK_BOT_EVENTS] },
         interactivity: { is_enabled: true, request_url: INTERACTIONS },
         org_deploy_enabled: false,
         socket_mode_enabled: false,
         token_rotation_enabled: false,
       },
     });
+  });
+
+  it("subscribes to exactly the bot events the Team record tap handles, the member events as a pair, and needs no scope the app does not already request", () => {
+    expect([...SLACK_BOT_EVENTS]).toEqual([
+      "app_mention", "message.channels", "message.groups",
+      "member_joined_channel", "member_left_channel", "channel_deleted", "group_deleted", "channel_id_changed", "channel_shared", "app_uninstalled", "tokens_revoked",
+    ]);
+    // Final review 3, C1: joins without leaves lock a private channel's access to events that never remove anyone. Both or neither.
+    expect(SLACK_BOT_EVENTS.includes("member_joined_channel")).toBe(SLACK_BOT_EVENTS.includes("member_left_channel"));
+    // Every real Slack event type the tap handles is subscribed (conversions arrive as message subtypes, through message.channels and message.groups).
+    for (const type of SLACK_TAP_EVENT_TYPES) expect(SLACK_BOT_EVENTS, type).toContain(type);
+    // Slack's docs: member_left_channel and channel_shared need channels:read / groups:read; channel_deleted needs channels:read and group_deleted needs groups:read; message subtypes need channels:history / groups:history; the rest need no scope.
+    for (const scope of ["channels:read", "groups:read", "channels:history", "groups:history"]) expect(SLACK_BOT_SCOPES).toContain(scope);
   });
 
   it("adds only explicitly selected invitation scopes while preserving the default installation scopes", () => {

@@ -1,5 +1,8 @@
 // What an editor may pick instead of typing an id (source-row lane, task 10): `GET /v1/app/projects/{p}/record/sources/options?kind=slack|linear|jira&cursor=`.
 //   Slack   the channels the bot sees in the workspace this company bound (read fresh through DeveloperIdentity, which holds the bot token; public channels only: private channels and direct messages are added by typing their id);
+//   Slack, "your private channels" (kind `slack-private`, task 11): the private channels that BOTH the bot and the editor are in. Slack is asked with the editor's OWN linked Slack user id (`users.conversations`; with the bot token it returns
+//           only the private channels the bot shares with that user), read by the server from the sign-in store, never from the request; each linked id on the bound team is asked in turn and the answers merged (the cursor is
+//           `<which id>.<Slack's cursor>`). An editor with no linked Slack account gets `notLinked` and Slack is not asked. The list is never stored beyond the page session below and goes only to the person it is about.
 //   Linear  the teams of the company's connected app; Jira  the projects of the company's connections (the same live readers the write route checks a typed place against).
 // WHO. The same people as the write route (`gate`): an owner, an admin or a maintainer of this project, on a live browser session. Everyone else is refused before anything is read.
 // ORG. Only the caller's session org: the Slack workspace is listed only when it is bound to THAT company (another company gets an empty list and Slack is never asked), and the connected apps are
@@ -11,7 +14,7 @@
 // taken before the tool is asked and never given back, so a failing read cannot repeat past it); the tool's own cursor is checked before anything is spent. Every failure is a fixed code: Slack down or unreadable, an app
 // that cannot be read, no reader wired, all 503 `RUNTIME_UNAVAILABLE` (the screen then offers the typed field); a bot without the listing scopes is 503 `SLACK_SCOPE_MISSING`. No text from Slack or a tool
 // is ever in an error; names appear only in the options, cut to 200 characters, and the screen shows them as plain text.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, SourceOptionsQuerySchema, SourceOptionsViewSchema, agentXError, teamRecordPk, type OrgId, type SourceOption, type SourcePickerKind } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, errorName } from "../agents/table-writes.js";
@@ -36,10 +39,20 @@ export const LISTINGS_PER_PERSON_PER_MINUTE = 60;
 const CURSOR = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(.*)$/su;
 const OPTIONS_MAX = 200;
 const SLACK_CURSOR = /^[A-Za-z0-9+/=_%.-]{1,300}$/u;
+/** The private list's cursor: which of the editor's linked ids (a number below 100), a dot, and Slack's own cursor (may be empty: the start of the next id). */
+const PRIVATE_CURSOR = /^([0-9]{1,2})\.([A-Za-z0-9+/=_%.-]{0,300})$/u;
+const SLACK_USER_ID = /^[UW][A-Z0-9]{2,31}$/u;
+/** Most linked Slack ids of one person asked in one listing (a person has one or two in practice). */
+export const LINKED_IDS_MAX = 5;
+/** Private page reads a company may make a minute: its own bucket (`users.conversations` is a different Slack method from `conversations.list`), and no more than the public one. */
+export const PRIVATE_LIST_PER_MINUTE = 12;
+/** What a private session keeps of the person who opened it: a hash of the company and the developer id (never the id), so another editor's cursor cannot spend this person's pages. Other kinds' sessions keep no person. */
+const personOf = (orgId: OrgId, developerId: string): string => createHash("sha256").update(`source-options|${orgId}|${developerId}`).digest("hex");
+const sourceOfKind = (kind: SourcePickerKind): "slack" | "linear" | "jira" => (kind === "slack-private" ? "slack" : kind);
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "The list can't be read right now.");
 const scopeMissing = (): RecordRouteReply => ({ status: 503, body: { code: "SLACK_SCOPE_MISSING", message: "Rovara can't list channels. Ask an admin to reinstall the Slack app." } });
 
-interface Found { options: Array<Omit<SourceOption, "state"> & { connect?: true }>; next?: string }
+interface Found { options: Array<Omit<SourceOption, "state"> & { connect?: true }>; next?: string; notLinked?: true }
 const invalidRequest = () => agentXError("CONFIG_INVALID", "The request is not valid.");
 
 export async function sourceOptions(deps: RecordQueryDependencies, request: RecordRouteRequest, project: string): Promise<RecordRouteReply> {
@@ -57,10 +70,11 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
   const orgId = request.caller.orgId;
   // The tool's own cursor is checked before anything is spent or asked: a made-up one costs no page and no rate.
   if (kind === "slack" ? inner !== undefined && !SLACK_CURSOR.test(inner) : !validTrackerCursor(inner)) throw invalidRequest();
+  // `validTrackerCursor` is the same `<n>.<cursor>` shape the private list uses.
 
   // The server's own count of pages read in this session (a later page adds one, and is refused at the bound), or, for a first page, the person's rate.
   let pages = 1;
-  if (session !== undefined) pages = await takePage(deps, orgId, project, kind, session);
+  if (session !== undefined) pages = await takePage(deps, orgId, project, kind, session, kind === "slack-private" ? personOf(orgId, request.caller.developerId) : undefined);
   else await ration(deps, orgId, `person:${request.caller.developerId}`, "source-options", LISTINGS_PER_PERSON_PER_MINUTE);
 
   // A page counts only once it was read: a read that fails or is refused (Slack down, the company's budget) gives its page back.
@@ -68,6 +82,8 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
   try {
     if (kind === "slack") {
       found = await slackOptions(deps, ctx, orgId, inner);
+    } else if (kind === "slack-private") {
+      found = await privateOptions(deps, ctx, orgId, request.caller.developerId, inner);
     } else {
       // Every page is rationed per company BEFORE the tool is asked, and a failed read does not give the minute back, so failures cannot repeat past it.
       await ration(deps, orgId, "org", `source-options-${kind}`, TRACKER_LIST_PER_MINUTE);
@@ -83,18 +99,18 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
   let next: string | undefined;
   let truncated = false;
   if (found.next !== undefined) {
-    if (session === undefined) { session = await openSession(deps, orgId, project, kind); pages = 1; }
+    if (session === undefined) { session = await openSession(deps, orgId, project, kind, kind === "slack-private" ? personOf(orgId, request.caller.developerId) : undefined); pages = 1; }
     if (pages >= OPTION_PAGES_MAX) truncated = true; else next = `${session}.${found.next}`;
   }
   const scopes = found.options.map((option) => option.scope);
-  const states = await statesOf(deps, orgId, project, kind, scopes);
+  const states = await statesOf(deps, orgId, project, sourceOfKind(kind), scopes);
   const clearing = await clearingElsewhere(deps, orgId, project, scopes);
   const options: SourceOption[] = found.options.map((option) => {
     const { connect, ...rest } = option;
     const held = states.get(option.scope);
     return { ...rest, state: held === "added" ? "added" : connect === true ? "slack_connect" : held === "taken" ? "taken" : clearing.has(option.scope) ? "clearing" : "available" };
   });
-  return { status: 200, body: SourceOptionsViewSchema.parse({ kind, options, ...(next === undefined ? {} : { next }), ...(truncated ? { truncated: true as const } : {}) }) };
+  return { status: 200, body: SourceOptionsViewSchema.parse({ kind, options, ...(next === undefined ? {} : { next }), ...(truncated ? { truncated: true as const } : {}), ...(found.notLinked === true ? { notLinked: true as const } : {}) }) };
 }
 
 /** The channels of the workspace this company bound. Another company, or one that never bound a workspace, gets an empty list and Slack is never asked. */
@@ -122,8 +138,45 @@ async function slackOptions(deps: RecordQueryDependencies, ctx: SourceWriteConte
   return { options, ...(answer.next !== undefined && SLACK_CURSOR.test(answer.next) ? { next: answer.next } : {}) };
 }
 
+/**
+ * "Your private channels": the private channels the bot and THIS editor are both in. The editor's Slack ids are the sign-in store's links for the caller (`request.caller.developerId`, from the session); the request names none.
+ * Another company, or one that never bound the workspace, gets an empty list and nothing is asked. No linked id: `notLinked`, nothing asked. Each page is one id's page of Slack's list; when an id's list ends the cursor moves
+ * on to the next id (`<which id>.<Slack's cursor>`).
+ */
+async function privateOptions(deps: RecordQueryDependencies, ctx: SourceWriteContext, orgId: OrgId, developerId: string, cursor: string | undefined): Promise<Found | RecordRouteReply> {
+  const sources = deps.sources!;
+  const teamId = ctx.slackTeamId;
+  if (teamId === undefined || ctx.slackMemberChannels === undefined || sources.slackTeamBound === undefined || sources.slackUserIdsOf === undefined) throw unavailable();
+  let mine: boolean;
+  try { mine = await sources.slackTeamBound(orgId, teamId); } catch { throw unavailable(); }
+  if (!mine) return { options: [] };
+  let ids: string[];
+  try { ids = [...new Set(await sources.slackUserIdsOf(developerId))].filter((id) => SLACK_USER_ID.test(id)).sort().slice(0, LINKED_IDS_MAX); } catch { throw unavailable(); }
+  if (ids.length === 0) return { options: [], notLinked: true };
+  const at = PRIVATE_CURSOR.exec(cursor ?? "0.");
+  if (at === null) throw invalidRequest();
+  const index = Number(at[1]), slackCursor = at[2] === "" ? undefined : at[2]!;
+  if (index >= ids.length) return { options: [] };
+  if (slackCursor !== undefined && !SLACK_CURSOR.test(slackCursor)) throw invalidRequest();
+  await ration(deps, orgId, "org", "source-options-slack-private", PRIVATE_LIST_PER_MINUTE);
+  let answer: Awaited<ReturnType<NonNullable<SourceWriteContext["slackMemberChannels"]>>>;
+  try { answer = await ctx.slackMemberChannels({ teamId, userId: ids[index]!, ...(slackCursor === undefined ? {} : { cursor: slackCursor }) }); } catch { throw unavailable(); }
+  if (!answer.ok) { if (answer.error === "missing_scope") return scopeMissing(); throw unavailable(); }
+  const options: Found["options"] = [];
+  for (const channel of answer.channels) {
+    if (options.length >= OPTIONS_MAX) break;
+    // Private channels only: nothing else is asked for, and a channel of another kind in a reply is dropped here too.
+    if (channel.kind !== "private") continue;
+    const name = channel.name.slice(0, 200);
+    if (name === "" || !/^[CG][A-Z0-9]{2,31}$/u.test(channel.id)) continue;
+    options.push({ scope: `slack:${teamId}/${channel.id}`, name, joined: true, ...(classifySlack({ kind: channel.kind, extShared: channel.extShared }) === "slack_connect" ? { connect: true as const } : {}) });
+  }
+  const next = answer.next !== undefined && SLACK_CURSOR.test(answer.next) ? `${String(index)}.${answer.next}` : index + 1 < ids.length ? `${String(index + 1)}.` : undefined;
+  return { options, ...(next === undefined ? {} : { next }) };
+}
+
 /** The places of the caller company's connected apps of this kind. A place two connections both list is shown once in a page. */
-async function trackerOptions(deps: RecordQueryDependencies, orgId: OrgId, kind: Exclude<SourcePickerKind, "slack">, cursor: string | undefined): Promise<Found> {
+async function trackerOptions(deps: RecordQueryDependencies, orgId: OrgId, kind: "linear" | "jira", cursor: string | undefined): Promise<Found> {
   const read = deps.sources!.trackerOptions;
   if (read === undefined) throw unavailable();
   let page: Awaited<ReturnType<typeof read>>;
@@ -170,12 +223,12 @@ const sessionKey = (orgId: OrgId, session: string) => ({ pk: teamRecordPk(orgId)
 const nowSeconds = (deps: RecordQueryDependencies): number => Math.floor((deps.now ?? Date.now)() / 1000);
 
 /** The session of a listing that has more pages: this company's partition, this project and kind, the pages read so far (one). Holds no person and no text. */
-async function openSession(deps: RecordQueryDependencies, orgId: OrgId, project: string, kind: SourcePickerKind): Promise<string> {
+async function openSession(deps: RecordQueryDependencies, orgId: OrgId, project: string, kind: SourcePickerKind, person?: string): Promise<string> {
   const session = randomUUID();
   try {
     await deps.table.documentClient.send(new PutCommand({
       TableName: deps.table.tableName,
-      Item: { ...sessionKey(orgId, session), entityType: "TEAM_RECORD_SOURCE_OPTIONS", kind, project, pages: 1, [INDEX_EXPIRY_ATTRIBUTE]: nowSeconds(deps) + OPTION_SESSION_SECONDS },
+      Item: { ...sessionKey(orgId, session), entityType: "TEAM_RECORD_SOURCE_OPTIONS", kind, project, ...(person === undefined ? {} : { person }), pages: 1, [INDEX_EXPIRY_ATTRIBUTE]: nowSeconds(deps) + OPTION_SESSION_SECONDS },
       ConditionExpression: NOT_EXISTS,
     }));
   } catch { throw unavailable(); }
@@ -183,14 +236,14 @@ async function openSession(deps: RecordQueryDependencies, orgId: OrgId, project:
 }
 
 /** One more page of the session, or a refusal: the session must exist in THIS company's partition, be unexpired, belong to this project and kind, and have read fewer than 10 pages. Returns the count now. */
-async function takePage(deps: RecordQueryDependencies, orgId: OrgId, project: string, kind: SourcePickerKind, session: string): Promise<number> {
+async function takePage(deps: RecordQueryDependencies, orgId: OrgId, project: string, kind: SourcePickerKind, session: string, person?: string): Promise<number> {
   const aliases = new Aliases();
   const [pages, kindName, projectName, expires] = [aliases.name("pages"), aliases.name("kind"), aliases.name("project"), aliases.name(INDEX_EXPIRY_ATTRIBUTE)];
   try {
     const result = await deps.table.documentClient.send(new UpdateCommand({
       TableName: deps.table.tableName, Key: sessionKey(orgId, session),
       UpdateExpression: `ADD ${pages} ${aliases.value(1)}`,
-      ConditionExpression: `attribute_exists(pk) AND ${kindName} = ${aliases.value(kind)} AND ${projectName} = ${aliases.value(project)} AND ${pages} < ${aliases.value(OPTION_PAGES_MAX)} AND ${expires} > ${aliases.value(nowSeconds(deps))}`,
+      ConditionExpression: `attribute_exists(pk) AND ${kindName} = ${aliases.value(kind)} AND ${projectName} = ${aliases.value(project)} AND ${pages} < ${aliases.value(OPTION_PAGES_MAX)}${person === undefined ? "" : ` AND ${aliases.name("person")} = ${aliases.value(person)}`} AND ${expires} > ${aliases.value(nowSeconds(deps))}`,
       ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values, ReturnValues: "ALL_NEW",
     })) as { Attributes?: { pages?: unknown } };
     const count = result.Attributes?.pages;

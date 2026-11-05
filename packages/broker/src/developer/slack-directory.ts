@@ -48,6 +48,12 @@ export interface SlackDirectory {
    * `missing_scope`; every other failure is unavailable. Private channels, direct messages and group messages are never asked for or listed (a private channel's name would reach people who are not in it): they are added by typing the id.
    */
   channelList(teamId: string, options?: { cursor?: string | undefined }): Promise<ChannelListResponse>;
+  /**
+   * Team record pickers, "your private channels" (task 11): one page (at most 200) of the PRIVATE channels that both the bot and the Slack user `userId` are in (`users.conversations` with `user`; with a bot token Slack
+   * filters to the conversations the bot shares with that user). The caller chooses `userId` from the signed-in editor's own linked Slack ids, never from a request. Only for this install's own team. A user who is not in the
+   * workspace has no channels here (an empty list); a bot without `groups:read` is `missing_scope`; every other failure is unavailable. Only private channels pass.
+   */
+  memberChannels(teamId: string, userId: string, options?: { cursor?: string | undefined }): Promise<ChannelListResponse>;
   /** A13: whether the bot token works, with the team Slack says it belongs to. Never the token. */
   authTest(): Promise<SlackAuthCheckResponse>;
   /** E12 (Q8): a public channel of the team by its exact name, or none. A private channel is never found by name. */
@@ -462,7 +468,7 @@ export function slackDirectory(input: {
       if (reply === undefined) return { ok: false, error: "slack_unavailable" };
       const channel = reply.body.channel as Record<string, unknown> | undefined;
       if (reply.body.ok !== true || channel === undefined || channel === null || typeof channel !== "object") {
-        if (reply.body.error === "channel_not_found") return { ok: true };
+        if (reply.body.error === "channel_not_found" || reply.body.error === "not_in_channel") return { ok: true };
         refused("conversations.info", reply);
         return { ok: false, error: "slack_unavailable" };
       }
@@ -493,6 +499,32 @@ export function slackDirectory(input: {
         if (typeof channel.name !== "string" || channel.name === "") continue;
         // `joined`: only when Slack says plainly the bot is in the channel (`is_member`); otherwise the picker tells the editor to invite Rovara.
         channels.push({ id: channel.id, name: channel.name.slice(0, 120), kind, extShared: channel.is_ext_shared === true || channel.is_pending_ext_shared === true, joined: channel.is_member === true });
+      }
+      const next = (reply.body.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
+      return { ok: true, channels, ...(typeof next === "string" && /^[A-Za-z0-9+/=_%.-]{1,300}$/.test(next) ? { next } : {}) };
+    },
+    async memberChannels(teamId, userId, options = {}) {
+      if (input.teamId === undefined || input.teamId !== teamId || !SlackUserIdSchema.safeParse(userId).success) return { ok: false, error: "slack_unavailable" };
+      const reply = await get("users.conversations", {
+        user: userId, types: "private_channel", exclude_archived: "true", limit: String(CHANNEL_LIST_PAGE),
+        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+      });
+      if (reply === undefined) return { ok: false, error: "slack_unavailable" };
+      if (reply.body.ok !== true || !Array.isArray(reply.body.channels)) {
+        // A user Slack does not know in this workspace (for instance a sign-in from another workspace) has no private channels here.
+        if (reply.body.error === "user_not_found") return { ok: true, channels: [] };
+        refused("users.conversations", reply);
+        return { ok: false, error: reply.body.error === "missing_scope" ? "missing_scope" : "slack_unavailable" };
+      }
+      const channels: Array<{ id: string; name: string; kind: "private"; extShared: boolean; joined: true }> = [];
+      for (const entry of reply.body.channels as unknown[]) {
+        if (channels.length >= CHANNEL_LIST_PAGE) break;
+        if (typeof entry !== "object" || entry === null) continue;
+        const channel = entry as Record<string, unknown>;
+        // Fail closed: only a channel Slack plainly states is private is listed (a public channel, a direct message or a group message never is); an entry without an id or a name is left out.
+        if (typeof channel.id !== "string" || !/^[CG][A-Z0-9]{2,31}$/.test(channel.id) || slackKindOf(channel) !== "private") continue;
+        if (typeof channel.name !== "string" || channel.name === "") continue;
+        channels.push({ id: channel.id, name: channel.name.slice(0, 120), kind: "private", extShared: channel.is_ext_shared === true || channel.is_pending_ext_shared === true, joined: true });
       }
       const next = (reply.body.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
       return { ok: true, channels, ...(typeof next === "string" && /^[A-Za-z0-9+/=_%.-]{1,300}$/.test(next) ? { next } : {}) };

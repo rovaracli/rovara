@@ -4,7 +4,7 @@
 // privacy order as a source delete (`purgeItems`): the lake first, a row only after its vector.
 import { markUnstoredChange } from "./prior-edits.js";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { dropScopeClaim, SOURCE_OPTIONS_SK_PREFIX, SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX, SOURCE_SCOPE_SK_PREFIX } from "./source-store.js";
+import { dropScopeClaim, SLACK_ADD_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX, SOURCE_SCOPE_SK_PREFIX } from "./source-store.js";
 import { LESSON_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, recordDeveloperHash, teamRecordPk, type OrgId } from "@agentx/contracts";
 import type { Item } from "../agents/table-writes.js";
 import { auditRecordErased } from "./audit.js";
@@ -333,7 +333,7 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE", SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
 /** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX] as const;
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SLACK_ADD_SK_PREFIX] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts
