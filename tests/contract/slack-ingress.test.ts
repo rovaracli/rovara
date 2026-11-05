@@ -11,12 +11,15 @@ import {
   SLACK_TASK_THREADS_OFF_NOTICE,
   SlackWorkflowStartError,
   UNLINKED_CHANNEL_NOTICE,
+  createUnlinkedChannelNoticeStore,
   unlinkedChannelNoticeClaim,
   slackIngressSettings,
   validSignature,
 } from "../../packages/broker/src/aws/slack-ingress.js";
 import type { SlackMemberCheck } from "../../packages/broker/src/aws/slack-members.js";
-import { WORKFLOW_CHOICE_WAITING_NOTICE, WorkflowChoiceWaitingError, workflowChoiceRefusal, workflowStartedNotice, workflowStartFailureNotice, type WorkflowChoiceOutcome } from "../../packages/broker/src/aws/slack-workflow-choice.js";
+import { DEFINITE_ACCESS_REFUSALS } from "../../packages/broker/src/aws/slack-interactivity.js";
+import { slackRefusalMessage } from "../../packages/broker/src/aws/slack-refusals.js";
+import { SLACK_ACCOUNT_NOT_LINKED_NOTICE, TERMINAL_START_REFUSALS, WORKFLOW_CHOICE_WAITING_NOTICE, WorkflowChoiceWaitingError, workflowChoiceRefusal, workflowStartedNotice, workflowStartFailureNotice, type WorkflowChoiceOutcome } from "../../packages/broker/src/aws/slack-workflow-choice.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { chatPostEphemeral } from "../../packages/broker/src/aws/slack-web.js";
 import { StrictSlackWeb } from "../support/strict-slack.js";
@@ -54,7 +57,7 @@ function harness(options: {
   /** Task 21: the waiting choice is a routed card (it carries a suggestion), so it also takes `answer`. */
   suggestedChoice?: boolean;
   /** QA6-06: the once-an-hour private "not linked" notice for an unlinked channel (the AWS wiring's claim, evaluated by the fake table). */
-  unlinkedNotice?: { claimThrows?: boolean };
+  unlinkedNotice?: { claimThrows?: boolean; releaseThrows?: boolean };
 } = {}) {
   const stopCalls: Array<{ thread: unknown; userId: string }> = [];
   const workflowStarts: Array<{ thread: unknown; userId: string; instructions: string; requestId: string }> = [];
@@ -75,6 +78,8 @@ function harness(options: {
   // The hourly claim is the one the AWS wiring sends (F13), evaluated by the fake table.
   const threadsTable = new FakeDynamoDb();
   const strict = new StrictSlackWeb();
+  const unlinkedStore = createUnlinkedChannelNoticeStore({ documentClient: threadsTable as never, tableName: "threads" });
+  const releases: string[] = [];
   const noticedAt = (subject: string) => sharedNoticeKeyItem(threadsTable, subject)?.noticedAt;
   let countFailures = options.failCount ?? 0;
   let decrementFailures = options.failDecrement ?? 0;
@@ -238,13 +243,12 @@ function harness(options: {
     ...(options.unlinkedNotice === undefined ? {} : {
       claimUnlinkedChannelNotice: async (subject: string, now: number) => {
         if (options.unlinkedNotice?.claimThrows) throw Object.assign(new Error("DynamoDB unavailable"), { name: "InternalServerError" });
-        try {
-          await threadsTable.send(new UpdateCommand({ TableName: "threads", ...unlinkedChannelNoticeClaim(subject, now) }));
-          return true;
-        } catch (error) {
-          if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
-          throw error;
-        }
+        return unlinkedStore.claim(subject, now);
+      },
+      releaseUnlinkedChannelNotice: async (subject: string, now: number) => {
+        if (options.unlinkedNotice?.releaseThrows) throw new Error("DynamoDB unavailable");
+        releases.push(subject);
+        return unlinkedStore.release(subject, now);
       },
     }),
     ...(options.appPosted === undefined ? {} : {
@@ -258,7 +262,7 @@ function harness(options: {
       },
     }),
   });
-  return { handler, queue, posts, pending, logs, memberChecks, clock, turnWindows, turnReleases, stopCalls, workflowStarts, workflowChoices, workflowSelections, pendingLookups, feedbackNotes, threadNotes, ephemerals, noticedAt,
+  return { handler, queue, posts, pending, logs, memberChecks, clock, turnWindows, turnReleases, stopCalls, workflowStarts, workflowChoices, workflowSelections, pendingLookups, feedbackNotes, threadNotes, ephemerals, noticedAt, releases, threadsTable,
     routed, answers, claimedEvents: () => [...claimed] };
 }
 
@@ -1581,14 +1585,95 @@ describe("a Slack start that the broker refuses (QA6-15)", () => {
     expect(logs).toContainEqual({ event: "workflow.start_failed", fields: { eventId: "EvRefused1", errorName: "SlackWorkflowStartError", code: "FORBIDDEN" } });
   });
 
-  it("tells a person whose Slack account is not a member that it is their account, not the channel", async () => {
-    const { handler, posts } = harness({ ...starting, workflowStart: { throws: true, errorCode: "SLACK_ACCOUNT_NOT_LINKED" } });
+  it("tells a person whose Slack account is not a member, privately, that it is their account and not the channel", async () => {
+    const { handler, posts, ephemerals } = harness({ ...starting, workflowStart: { throws: true, errorCode: "SLACK_ACCOUNT_NOT_LINKED" } });
     await send(handler, signedEvent(mention({ eventId: "EvRefused2", event: { text: `<@${bot}> quick: Add password reset` } })));
-    const said = posts.at(-1)?.text ?? "";
-    expect(said).toBe(workflowStartFailureNotice("SLACK_ACCOUNT_NOT_LINKED", "EvRefused2"));
-    expect(said).toMatch(/Slack account/);
-    expect(said).not.toMatch(/channel isn't connected/);
-    // A channel refusal still blames the channel.
+    const said = ephemerals.at(-1);
+    expect(said).toMatchObject({ channel, threadTs: "1695500000.000001", user: pratik, text: workflowStartFailureNotice("SLACK_ACCOUNT_NOT_LINKED", "EvRefused2") });
+    expect(said?.text).toMatch(/Link your Slack account/);
+    expect(said?.text).not.toMatch(/channel isn't connected/);
+    // Nothing public: the thread does not hear about one person's account.
+    expect(posts).toEqual([]);
+    // A channel refusal still blames the channel, in the thread.
     expect(workflowStartFailureNotice("FORBIDDEN", "Ev1")).toMatch(/channel isn't connected/);
+  });
+
+  it("tells a person who answers Quick or Full in a waiting thread privately too, and says nothing publicly when no private message can be sent", async () => {
+    const waiting = harness({ ...starting, pendingChoice: { "1695500000.000001": pratik }, workflowSelection: { throws: true, errorCode: "SLACK_ACCOUNT_NOT_LINKED" } });
+    await send(waiting.handler, signedEvent(mention({ eventId: "EvRefused3", event: { type: "message", thread_ts: "1695500000.000001", ts: "1695500100.000002", text: "quick" } })));
+    expect(waiting.ephemerals.map((entry) => entry.user)).toEqual([pratik]);
+    expect(waiting.posts).toEqual([]);
+    const noPrivateWay = harness({ ...starting, failPost: true, workflowStart: { throws: true, errorCode: "SLACK_ACCOUNT_NOT_LINKED" } });
+    await send(noPrivateWay.handler, signedEvent(mention({ eventId: "EvRefused4", event: { text: `<@${bot}> quick: Add password reset` } })));
+    expect(noPrivateWay.posts).toEqual([]);
+  });
+});
+
+describe("the unlinked-channel notice's hour (QA6-06 follow-up)", () => {
+  const unlinked = "C0999999999";
+  const asked = (eventId: string) => signedEvent(mention({ eventId, event: { channel: unlinked } }));
+
+  it("gives the hour back when the private message could not be sent, so the next mention is told", async () => {
+    const { handler, ephemerals, releases, logs, threadsTable } = harness({ unlinkedNotice: {}, failPost: true });
+    expect((await send(handler, asked("EvHour1"))).status).toBe(200);
+    expect(releases).toEqual([`${team}/${unlinked}`]);
+    expect(logs).toContainEqual({ event: "ephemeral.failed", fields: { errorName: "Error" } });
+    expect(logs.some((entry) => entry.event === "unlinked_channel.notified")).toBe(false);
+    expect(threadsTable.get(`CHANNEL#${team}/${unlinked}`, "UNLINKED_CHANNEL_NOTICE")).toBeUndefined();
+    // Sending works again: the same channel is told on the very next mention, not an hour later.
+    const healthy = harness({ unlinkedNotice: {} });
+    await send(healthy.handler, asked("EvHour2"));
+    expect(healthy.ephemerals).toHaveLength(1);
+    expect(ephemerals).toEqual([]);
+  });
+
+  it("keeps the event ignored when giving the hour back fails too", async () => {
+    const { handler, logs } = harness({ unlinkedNotice: { releaseThrows: true }, failPost: true });
+    expect((await send(handler, asked("EvHour3"))).status).toBe(200);
+    expect(logs).toContainEqual({ event: "unlinked_channel.release_failed", fields: { eventId: "EvHour3", errorName: "Error" } });
+    expect(logs.at(-1)).toMatchObject({ event: "event.ignored", fields: { reason: "channel_not_bound" } });
+  });
+
+  it("holds the hour in a record keyed by team and channel only, with no person's ID", async () => {
+    const { handler, threadsTable } = harness({ unlinkedNotice: {} });
+    await send(handler, asked("EvHour4"));
+    const items = threadsTable.find((item) => String(item.sk) === "UNLINKED_CHANNEL_NOTICE");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ pk: `CHANNEL#${team}/${unlinked}`, sk: "UNLINKED_CHANNEL_NOTICE" });
+    expect(JSON.stringify(items)).not.toContain(pratik);
+    expect(JSON.stringify(unlinkedChannelNoticeClaim(`${team}/${unlinked}`, nowSeconds))).not.toContain(pratik);
+  });
+
+  describe("the AWS claim and release", () => {
+    const sent: unknown[] = [];
+    const client = (failWith?: { name: string }) => ({ send: async (command: unknown) => { sent.push(command); if (failWith !== undefined) throw Object.assign(new Error("x"), failWith); return {}; } });
+
+    it("answers false for a hour already held (ConditionalCheckFailedException), true for a new one, and passes any other failure on", async () => {
+      expect(await createUnlinkedChannelNoticeStore({ documentClient: client() as never, tableName: "threads" }).claim("T/C", nowSeconds)).toBe(true);
+      expect(await createUnlinkedChannelNoticeStore({ documentClient: client({ name: "ConditionalCheckFailedException" }) as never, tableName: "threads" }).claim("T/C", nowSeconds)).toBe(false);
+      await expect(createUnlinkedChannelNoticeStore({ documentClient: client({ name: "ProvisionedThroughputExceededException" }) as never, tableName: "threads" }).claim("T/C", nowSeconds)).rejects.toMatchObject({ name: "ProvisionedThroughputExceededException" });
+    });
+
+    it("removes only its own marker: a marker a later claim replaced stays (the release's condition fails quietly)", async () => {
+      await expect(createUnlinkedChannelNoticeStore({ documentClient: client({ name: "ConditionalCheckFailedException" }) as never, tableName: "threads" }).release("T/C", nowSeconds)).resolves.toBeUndefined();
+      await expect(createUnlinkedChannelNoticeStore({ documentClient: client({ name: "InternalServerError" }) as never, tableName: "threads" }).release("T/C", nowSeconds)).rejects.toMatchObject({ name: "InternalServerError" });
+      // Against the real condition: the marker of another time is not deleted, the one written at that time is.
+      const table = new FakeDynamoDb();
+      const store = createUnlinkedChannelNoticeStore({ documentClient: table as never, tableName: "threads" });
+      expect(await store.claim("T/C", nowSeconds)).toBe(true);
+      await store.release("T/C", nowSeconds + 5);
+      expect(table.get("CHANNEL#T/C", "UNLINKED_CHANNEL_NOTICE")).toBeDefined();
+      await store.release("T/C", nowSeconds);
+      expect(table.get("CHANNEL#T/C", "UNLINKED_CHANNEL_NOTICE")).toBeUndefined();
+    });
+  });
+});
+
+describe("the new refusal code is handled everywhere a Slack refusal is", () => {
+  it("is a terminal start refusal, a definite access refusal, and has its own words for a press", () => {
+    expect(TERMINAL_START_REFUSALS.has("SLACK_ACCOUNT_NOT_LINKED")).toBe(true);
+    expect(DEFINITE_ACCESS_REFUSALS.has("SLACK_ACCOUNT_NOT_LINKED")).toBe(true);
+    expect(slackRefusalMessage("SLACK_ACCOUNT_NOT_LINKED", "out of date")).toBe(SLACK_ACCOUNT_NOT_LINKED_NOTICE);
+    expect(slackRefusalMessage("SLACK_ACCOUNT_NOT_LINKED", "out of date")).not.toBe("out of date");
   });
 });
