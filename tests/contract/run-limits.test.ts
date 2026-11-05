@@ -537,7 +537,7 @@ describe("approving the plan", () => {
     const pageView = (t: Awaited<ReturnType<typeof world>>, taskId: string) => {
       const deps = { documentClient: t.h.db, tableName: "state", actions: t.h.actions, log: () => undefined, orgId: TEST_ORG, ...(t.access === undefined ? {} : { modelAccess: t.access }),
         checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() };
-      return getTaskDocumentView(deps as never, { orgId: TEST_ORG, developerId: MAYA.developerId } as never, taskId);
+      return getTaskDocumentView(deps, { orgId: TEST_ORG, developerId: MAYA.developerId } as never, taskId);
     };
     const decideShowing = (t: Awaited<ReturnType<typeof world>>, taskId: string, plan: { digest: string; revision: number }, acknowledgedRunLimitUsd: number) =>
       t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: plan.digest, acknowledgedRunLimitUsd });
