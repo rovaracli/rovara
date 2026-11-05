@@ -39,7 +39,7 @@ function comment(n: number, extra: Partial<PageCommentView> = {}): PageCommentVi
   };
 }
 
-interface PageOptions { applicationRetry?: { canRetry: boolean }; reviseOffer?: { canRevise: boolean }; specHold?: NonNullable<TaskDocumentView["specHold"]>; version?: number; body?: PlanDocument; comments?: PageCommentView[]; access?: typeof owner | typeof commenter; waiting?: boolean; optionalChecks?: TaskDocumentView["optionalChecks"]; askAvailable?: boolean }
+interface PageOptions { applicationRetry?: { canRetry: boolean }; reviseOffer?: { canRevise: boolean }; specHold?: NonNullable<TaskDocumentView["specHold"]>; version?: number; body?: PlanDocument; comments?: PageCommentView[]; access?: typeof owner | typeof commenter; waiting?: boolean; optionalChecks?: TaskDocumentView["optionalChecks"]; runLimit?: TaskDocumentView["runLimit"]; askAvailable?: boolean }
 async function pageHtml(options: PageOptions = {}): Promise<string> {
   const version = options.version ?? 2;
   const documents = [doc(1, plan(), false), ...(version > 2 ? [doc(2, plan(), false)] : []), doc(version, options.body ?? plan())];
@@ -50,6 +50,7 @@ async function pageHtml(options: PageOptions = {}): Promise<string> {
     pageSuggestions: [],
     ...(options.waiting === false ? {} : { waiting: { kind: "coding plan", version, artifactDigest: digest } }),
     optionalChecks: options.optionalChecks ?? [{ id: "lint", label: "Lint", selected: false }],
+    ...(options.runLimit === undefined ? {} : { runLimit: options.runLimit }),
     ...(options.askAvailable === undefined ? {} : { askAvailable: options.askAvailable }),
     ...(options.applicationRetry === undefined ? {} : { applicationRetry: options.applicationRetry }),
     ...(options.reviseOffer === undefined ? {} : { reviseOffer: options.reviseOffer }),
@@ -912,6 +913,71 @@ describe("the deciding and commenting script", () => {
     });
     expect(page.byId("decide-status").textContent).toBe("Sent. AgentX is on the next step.");
     expect(page.reloads).toHaveLength(1);
+  });
+
+  // QA6-12: the approval's confirmation says "current limit -> proposed limit" and the person authorizes the new limit before it is sent.
+  describe("the run limit in the approval's confirmation", () => {
+    const ok = { respond: (entry: Sent) => entry.url.endsWith("/decision") ? { status: 200, body: { revision: 8 } } : { status: 200, body: {} } };
+
+    it("shows the current and the proposed limit, asks for an explicit tick when it raises the limit, and sends the proposed limit with the approval", async () => {
+      const page = boot(await pageHtml({ runLimit: { currentUsd: 6, proposedUsd: 20 } }), ok);
+      page.byId("decide-approve").click();
+      expect(page.byId("decide-runlimit").hidden).toBe(false);
+      expect(page.byId("decide-runlimit-text").textContent).toContain("Current limit $6.00 → proposed limit $20.00");
+      expect(page.byId("decide-runlimit-text").textContent).toContain("raises the most this task can spend");
+      expect(page.byId("decide-runlimit-ack-row").hidden).toBe(false);
+      expect(page.byId("decide-runlimit-ack-label").textContent).toBe("I authorize this task to spend up to $20.00");
+      expect(page.byId("decide-runlimit-ack").checked).toBe(false);
+      // Not ticked: nothing is sent, and the person is told why.
+      page.byId("decide-submit").click();
+      await page.settle();
+      expect(posts(page, "/decision")).toHaveLength(0);
+      expect(page.byId("decide-error").hidden).toBe(false);
+      expect(page.byId("decide-error").textContent).toBe("Tick the box to authorize the new limit, or Cancel.");
+      // Ticked: the approval carries the limit the person was shown.
+      page.byId("decide-runlimit-ack").click();
+      page.byId("decide-submit").click();
+      await page.settle();
+      expect(posts(page, "/decision")).toHaveLength(1);
+      expect(posts(page, "/decision")[0]!.body.acknowledgedRunLimitUsd).toBe(20);
+    });
+
+    it("asks for the tick when the task has no limit yet, and not when approving keeps the same limit", async () => {
+      const none = boot(await pageHtml({ runLimit: { proposedUsd: 6 } }), ok);
+      none.byId("decide-approve").click();
+      expect(none.byId("decide-runlimit-text").textContent).toContain("Current limit: none set → proposed limit $6.00");
+      expect(none.byId("decide-runlimit-ack-row").hidden).toBe(false);
+      const same = boot(await pageHtml({ runLimit: { currentUsd: 20, proposedUsd: 20 } }), ok);
+      same.byId("decide-approve").click();
+      expect(same.byId("decide-runlimit-ack-row").hidden).toBe(true);
+      expect(same.byId("decide-runlimit-text").textContent).toContain("sets the most this task can spend");
+      same.byId("decide-submit").click();
+      await same.settle();
+      expect(posts(same, "/decision")[0]!.body.acknowledgedRunLimitUsd).toBe(20);
+    });
+
+    it("says nothing of a limit, and sends none, when the page has none (requirements, design, no model proxy) or the person asks for changes", async () => {
+      const without = boot(await pageHtml(), ok);
+      without.byId("decide-approve").click();
+      expect(without.byId("decide-runlimit").hidden).toBe(true);
+      without.byId("decide-submit").click();
+      await without.settle();
+      expect(posts(without, "/decision")[0]!.body.acknowledgedRunLimitUsd).toBeUndefined();
+      const changes = boot(await pageHtml({ runLimit: { currentUsd: 6, proposedUsd: 20 } }), ok);
+      changes.byId("decide-request-changes").click();
+      expect(changes.byId("decide-runlimit").hidden).toBe(true);
+      changes.byId("decide-note").type_("Please change this.");
+      changes.byId("decide-submit").click();
+      await changes.settle();
+      expect(posts(changes, "/decision")[0]!.body).toMatchObject({ decision: "REQUEST_CHANGES" });
+      expect(posts(changes, "/decision")[0]!.body.acknowledgedRunLimitUsd).toBeUndefined();
+    });
+
+    it("puts the limit into the page's data as numbers, only for a waiting coding plan", async () => {
+      const html = await pageHtml({ runLimit: { currentUsd: 6, proposedUsd: 20 } });
+      const data = JSON.parse(/<script type="application\/json" id="agentx-page-data">([\s\S]*?)<\/script>/.exec(html)![1]!) as { current: { runLimit?: unknown } };
+      expect(data.current.runLimit).toEqual({ currentUsd: 6, proposedUsd: 20 });
+    });
   });
 
   it("a whitespace note is left out, and focus returns to the pressed button on close", async () => {

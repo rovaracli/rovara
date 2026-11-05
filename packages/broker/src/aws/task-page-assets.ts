@@ -236,6 +236,14 @@ export const TASK_PAGE_DECIDING_COPY = {
   recommendedClose: ")",
   commentsToSend: "Comments to send",
   noteApprove: "Note for AgentX (optional)",
+  limitTitle: "Run limit",
+  limitCurrentNone: "Current limit: none set",
+  limitCurrent: "Current limit ",
+  limitArrow: " \u2192 proposed limit ",
+  limitRaises: "Approving this plan raises the most this task can spend from the current limit to the proposed limit. Coding starts once the limit is accepted; if your role cannot accept that amount, a maintainer or admin is asked instead.",
+  limitSets: "Approving this plan sets the most this task can spend to the proposed limit.",
+  limitAck: "I authorize this task to spend up to ",
+  limitNeedsAck: "Tick the box to authorize the new limit, or Cancel.",
   noteChanges: "What should change?",
   submitCoding: "Approve and start coding",
   submitOther: "Approve and continue",
@@ -1192,6 +1200,8 @@ function setUpDialog(){
   actions.appendChild(document.createTextNode(" "));
   actions.appendChild(showIt);
 }
+function dollars(value){return "$"+Number(value).toFixed(2);}
+var limitNeedsAck=false;
 function commentsTitle(){el("decide-comments-title").textContent=COPY.commentsToSend+" ("+tickedIds().length+")";}
 function openDialog(kind,button){
   dialogKind=kind;returnTo=button;requestId=null;lastSent=null;
@@ -1251,6 +1261,18 @@ function openDialog(kind,button){
     li.appendChild(checkLabel);checks.appendChild(li);
   }
   section("decide-checks",approve&&optional.length>0);
+  /* QA6-12: the run limit this approval sets, shown before the person approves; raising it takes their explicit tick. */
+  var limit=approve&&current.anchor==="coding-plan"&&current.runLimit&&typeof current.runLimit.proposedUsd==="number"?current.runLimit:null;
+  limitNeedsAck=false;
+  section("decide-runlimit",limit!==null);
+  if(limit!==null){
+    var proposed=limit.proposedUsd,now=typeof limit.currentUsd==="number"?limit.currentUsd:null;
+    limitNeedsAck=now===null||proposed>now;
+    el("decide-runlimit-text").textContent=(now===null?COPY.limitCurrentNone:COPY.limitCurrent+dollars(now))+COPY.limitArrow+dollars(proposed)+". "+(limitNeedsAck?COPY.limitRaises:COPY.limitSets);
+    el("decide-runlimit-ack").checked=false;
+    el("decide-runlimit-ack-row").hidden=!limitNeedsAck;
+    el("decide-runlimit-ack-label").textContent=COPY.limitAck+dollars(proposed);
+  }
   el("decide-note-label").textContent=approve?COPY.noteApprove:COPY.noteChanges;
   el("decide-note").value=saved.note;
   el("decide-submit").textContent=approve?(current.anchor==="coding-plan"?COPY.submitCoding:COPY.submitOther):COPY.send;
@@ -1274,6 +1296,8 @@ function submit(){
   var note=el("decide-note").value.replace(/^\s+|\s+$/g,"");
   var included=tickedIds();
   if(!approve&&included.length===0&&note===""){fail(COPY.needOne,false);return;}
+  var showing=approve&&current.anchor==="coding-plan"&&current.runLimit&&typeof current.runLimit.proposedUsd==="number"?current.runLimit.proposedUsd:null;
+  if(showing!==null&&limitNeedsAck&&!el("decide-runlimit-ack").checked){fail(COPY.limitNeedsAck,false);return;}
   var body={
     expectedRevision:revision,artifactDigest:str(current.artifactDigest),decision:dialogKind,
     answers:decisions.map(function(d){return {decisionId:d.id,optionId:answers[d.id],opened:opened[d.id]===true};}),
@@ -1285,6 +1309,7 @@ function submit(){
     for(var i=0;i<boxes.length;i++)if(boxes[i].checked)chosen.push(boxes[i].value);
     body.selectedOptionalCheckIds=chosen;
   }
+  if(showing!==null)body.acknowledgedRunLimitUsd=showing;
   if(note!=="")body.note=note.slice(0,500);
   /* The same request again (a retry) keeps its ID, so the broker treats it as a replay. */
   var same=JSON.stringify(body);

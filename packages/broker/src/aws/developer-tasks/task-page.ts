@@ -71,7 +71,8 @@ import { readDecisionDetail } from "../../developer/owner-answers.js";
 import type { MergeView } from "@agentx/contracts";
 import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
-import { OWNER_LABEL, TASK_PAGE_DOCUMENTS, get, log, ownerLabel, removedReasonOf } from "./common.js";
+import { OWNER_LABEL, TASK_PAGE_DOCUMENTS, estimateDependencies, get, log, ownerLabel, removedReasonOf } from "./common.js";
+import { planRunLimit } from "../../spend/estimate.js";
 import { taskView, workspaceReads } from "./task-view.js";
 import { DESIGN_CARD_ONLY_MESSAGE, decideTaskWorkflow } from "./decide.js";
 import { retryTaskWorkflow } from "./workflow-retry.js";
@@ -466,6 +467,7 @@ export async function decideOnPage(deps: DeveloperTaskRouteDependencies, caller:
       ...(input.selectedOptionalCheckIds === undefined ? {} : { selectedOptionalCheckIds: input.selectedOptionalCheckIds }),
       // The work breakdown's digest binds the approval to the exact ordered plan the owner saw; decideTaskWorkflow checks it, as for Slack and MCP.
       ...(input.workBreakdownDigest === undefined ? {} : { workBreakdownDigest: input.workBreakdownDigest }),
+      ...(input.acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd: input.acknowledgedRunLimitUsd }),
     }, { via: "PAGE", ...(input.note === undefined ? {} : { note: input.note }) });
   } catch (error) {
     throw pageBreakdownRefusal(error);
@@ -867,7 +869,7 @@ async function commentAnswersAvailable(deps: DeveloperTaskRouteDependencies, tas
 async function pageDecidingView(
   deps: DeveloperTaskRouteDependencies,
   input: { task: DeveloperTaskRecord; caller: DeveloperCaller; comments: readonly TaskComment[]; suggestions: readonly TaskSuggestion[]; citations: ReadonlyMap<string, ReadonlyMap<string, string>>; claimIds: ReadonlyMap<string, ReadonlySet<string>> },
-): Promise<Pick<TaskDocumentView, "pageComments" | "pageSuggestions" | "waiting" | "commentSeq" | "optionalChecks">> {
+): Promise<Pick<TaskDocumentView, "pageComments" | "pageSuggestions" | "waiting" | "commentSeq" | "optionalChecks" | "runLimit">> {
   const { task, caller } = input;
   const workflow = task.workflow;
   const stepDocument = currentStepDocument(workflow);
@@ -882,7 +884,17 @@ async function pageDecidingView(
     log(deps, { event: "developer.task_page_comment_counter_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
   }
   const policy = workflow?.checkPolicy;
+  // QA6-12: what approving the coding plan sets the run limit to, beside what the task has now. Only where the approval sets one (the same condition as `decideTaskWorkflow`); a limit that can't be worked out is left out.
+  let runLimit: TaskDocumentView["runLimit"];
+  if (kind === "coding plan" && deps.modelAccess !== undefined) {
+    try {
+      runLimit = { ...(task.budgetUsd === undefined ? {} : { currentUsd: task.budgetUsd }), proposedUsd: await planRunLimit(estimateDependencies(deps), task) };
+    } catch (error) {
+      log(deps, { event: "developer.task_page_run_limit_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
+    }
+  }
   return {
+    ...(runLimit === undefined ? {} : { runLimit }),
     pageComments: pageCommentViews(input.comments, { readerId: caller.developerId, now: deps.now(), artifacts: workflow?.artifacts ?? [], citations: input.citations, claimIds: input.claimIds }),
     pageSuggestions: input.suggestions.map((suggestion) => ({
       document: suggestion.document, decisionId: suggestion.decisionId, optionId: suggestion.optionId, name: suggestion.name, you: suggestion.developerId === caller.developerId,

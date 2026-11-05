@@ -737,6 +737,11 @@ export const WorkflowDecisionRequestSchema = z.object({
   includedCommentIds: z.array(z.string().uuid()).max(WORKFLOW_DECISION_COMMENTS_MAX).optional(),
   /** Rovara Code v2: with REJECT, on a plan that says no change is needed: end the task Answered ("Close as answered"). */
   closeAsAnswered: z.literal(true).optional(),
+  /**
+   * QA6-12: approving a coding plan sets the task's run limit to the plan's proposed limit. The task page shows "current limit, proposed limit" and sends the proposed one here, as the
+   * amount the person agreed to spend up to; the broker refuses the approval if it would set another one. Absent (Slack, tools): the approval is as it was.
+   */
+  acknowledgedRunLimitUsd: z.number().positive().max(100_000).optional(),
 }).strict().refine((request) => request.artifactDigest !== undefined, { message: "a workflow decision must name the current artifact digest", path: ["artifactDigest"] })
   .superRefine((request, context) => {
     if (request.selectedOptionalCheckIds !== undefined && new Set(request.selectedOptionalCheckIds).size !== request.selectedOptionalCheckIds.length) {

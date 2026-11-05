@@ -94,6 +94,8 @@ export interface TaskDocumentView {
   commentSeq?: number;
   /** The coding plan's optional checks, and whether each is chosen now. */
   optionalChecks?: Array<{ id: string; label: string; selected: boolean }>;
+  /** QA6-12: while a coding plan waits, the run limit the task has now (absent: none set) and the limit approving the plan sets. */
+  runLimit?: { currentUsd?: number; proposedUsd: number };
   /** Current approved work-item progress; readers see only the graph's public titles and states. */
   workflowDependenciesProgress?: WorkItemProgressV1[];
   /** Whether AgentX can answer comments on this task (started in Slack, and the Slack service is set up). */
@@ -368,6 +370,9 @@ function pageData(view: TaskDocumentView, csrf: string): Record<string, unknown>
     openCommentIds: (view.pageComments ?? []).filter((comment) => comment.author.kind === "person" && !comment.deleted && !comment.sent
       && comment.document === planKind && comment.version <= waiting.version).map((comment) => comment.id),
     optionalChecks: waiting.kind === "coding plan" ? (view.optionalChecks ?? []).map((check) => ({ id: check.id, label: redactText(check.label), selected: check.selected })) : [],
+    // QA6-12: the confirmation says what the limit is now and what approving sets it to (numbers only).
+    ...(waiting.kind === "coding plan" && view.runLimit !== undefined && Number.isFinite(view.runLimit.proposedUsd)
+      ? { runLimit: { proposedUsd: view.runLimit.proposedUsd, ...(view.runLimit.currentUsd !== undefined && Number.isFinite(view.runLimit.currentUsd) ? { currentUsd: view.runLimit.currentUsd } : {}) } } : {}),
   };
   return {
     taskId: view.taskId, csrf, revision: view.revision ?? 0, role: access.role, canDecide: access.canDecide, canComment: access.canComment,
@@ -462,6 +467,9 @@ function decideDialog(view: TaskDocumentView): string {
     + section("decide-unanswered", "Not answered yet, so AgentX's answer is used")
     + section("decide-comments", "Comments to send", '<p id="decide-cap" class="muted" hidden>You can send up to 25 comments at a time; the rest stay open for the next version.</p>')
     + section("decide-checks", "Optional checks")
+    // QA6-12: what approving a coding plan does to the run limit, and (when it raises it) the person's explicit say-so. The script fills the words.
+    + '<section id="decide-runlimit" hidden><h3 id="decide-runlimit-title">Run limit</h3><p id="decide-runlimit-text"></p>'
+    + '<label id="decide-runlimit-ack-row"><input type="checkbox" id="decide-runlimit-ack"> <span id="decide-runlimit-ack-label"></span></label></section>'
     + '<label for="decide-note" id="decide-note-label">Note for AgentX (optional)</label><textarea id="decide-note" maxlength="500"></textarea>'
     + '<p id="decide-error" class="error" role="alert" hidden></p><p id="decide-status" role="status" aria-live="polite"></p>'
     + '<p class="dialog-actions"><button type="button" id="decide-submit">Approve and continue</button> <button type="button" id="decide-cancel">Cancel</button></p></dialog>';

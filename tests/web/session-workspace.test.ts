@@ -39,6 +39,15 @@ it("offers review only to the owner while the plan is waiting", async () => {
 it("shows the real plan estimate and its run limit without claiming checks passed", async () => {
  const f = setup(fixture(), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });expect(screen.getByText("$0.50")).toBeTruthy();expect(screen.getByText("$1.20")).toBeTruthy();expect(screen.getByText("$2.00")).toBeTruthy();expect(screen.queryByText("Passed")).toBeNull();f.close();
 });
+it("says current limit against proposed limit when approving the plan would change the run limit (QA6-12)", async () => {
+ const base = fixture();
+ const f = setup(fixture({ cost: { ...base.cost, runLimitUsd: 6 } }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
+ expect(screen.getByText(/Current limit/u).textContent).toBe("Current limit $6.00 \u2192 proposed limit $2.00");
+ expect(screen.queryByText(/^Run limit:/u)).toBeNull();f.close();
+ // Nothing to compare when the limit is the same: the plain line stays.
+ const same = setup(fixture({ cost: { ...base.cost, runLimitUsd: 2 } }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
+ expect(screen.getByText(/^Run limit:/u).textContent).toBe("Run limit: $2.00");expect(screen.queryByText(/Current limit/u)).toBeNull();same.close();
+});
 it("shows the time to a pull request beside the cost, and says when the plan check was unavailable (staging 0.4.10, bug D)", async () => {
  const task = taskFixture({ workflow: { ...workflow(), definitionVersion: "1.1.0", critique: { status: "done", critiques: [], revisions: 0 } },
   runEstimate: { lowUsd: 0.5, highUsd: 1.2, runLimitUsd: 2, stopAtUsd: 2, basis: "default", samples: 0, minutes: { low: 20, high: 45, basis: "default", samples: 0 } } });

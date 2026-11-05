@@ -30,7 +30,7 @@ import {
   runLimitBlockText,
 } from "@agentx/contracts";
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
-import { acceptRunLimit } from "../../spend/estimate.js";
+import { acceptRunLimit, planRunLimit } from "../../spend/estimate.js";
 import { cleanUsd } from "../../spend/top-ups.js";
 import { aiToolTurn, developerTaskIdentity, effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { planDocumentKindName } from "../broker-shared.js";
@@ -429,6 +429,13 @@ export async function decideTaskWorkflow(
   // Plan 3, Task 34: approving the coding plan accepts its run limit (what the plan under review carried, or works out now) when the approver's tier allows it.
   // Else the request is made first (a repeat of it is the same request) and the workflow blocks here with the decision recorded: its Retry coding, after the
   // limit is raised, starts what the approval would have started.
+  // QA6-12: an approval that names the limit it was shown (the task page does) is refused, before anything is asked or written, when the plan's limit is another one now.
+  if (request.acknowledgedRunLimitUsd !== undefined && request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined) {
+    const setting = await planRunLimit(estimateDependencies(deps), task);
+    if (setting !== request.acknowledgedRunLimitUsd) {
+      throw Object.assign(agentXError("CONFIG_INVALID", runLimitChangedMessage(request.acknowledgedRunLimitUsd, setting)), { pageReason: "changed" });
+    }
+  }
   const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId) : undefined;
   // The corrected plan's approval ends the E2E correction fence, whether coding starts now or waits for the run limit.
   const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
@@ -536,6 +543,10 @@ export async function decideTaskWorkflow(
   }
   return { task: view };
 }
+
+/** QA6-12: said when the plan's run limit is not the one the person was shown (the estimate was redone, or the project's limits changed, since the page loaded). */
+const runLimitChangedMessage = (shownUsd: number, nowUsd: number): string =>
+  `This plan's run limit is now $${String(nowUsd)}, not the $${String(shownUsd)} you were shown. Refresh the page, check the limit, and approve again.`;
 
 /** Plan 3, Task 34: what approving the coding plan did with its run limit. `baselineUsd` is what planning spent, where the run limit's window starts. */
 type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: number } | { accepted: false; message: string };
