@@ -779,7 +779,8 @@ class Parser {
       this.expect(",");
       const type = this.operand(item ?? {});
       this.expect(")");
-      return dynamoType(item?.[path] ?? (/[.[]/u.test(path) ? this.pathValue(item, path) : undefined)) === type;
+      // `??` would turn a stored NULL into "absent" and report no type for it.
+      return dynamoType(item?.[path] !== undefined ? item[path] : (/[.[]/u.test(path) ? this.pathValue(item, path) : undefined)) === type;
     }
     if (token === "attribute_not_exists" || token === "attribute_exists") {
       this.next();
