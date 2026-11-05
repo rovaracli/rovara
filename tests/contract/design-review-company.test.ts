@@ -126,6 +126,22 @@ describe("the card's route", () => {
   });
 });
 
+describe("DR-UI-2: a refused change is logged", () => {
+  it("logs one line with the action and the error code, and no person id", async () => {
+    const { t } = await bench({ maya: "admin" });
+    dr();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((line: unknown) => { logs.push(String(line)); });
+    t.ageSignIn(OMAR, 11);
+    const old = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0, allowed: true });
+    expect(old.status).toBe(403);
+    const refused = logs.map((line) => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; } }).filter((entry) => entry?.event === "developer.design_review_company_refused");
+    expect(refused).toEqual([{ component: "broker", event: "developer.design_review_company_refused", orgId: ORG, action: "allow", code: "REAUTH_REQUIRED" }]);
+    expect(JSON.stringify(refused)).not.toContain(OMAR.developerId);
+    vi.restoreAllMocks();
+  });
+});
+
 describe("allowing design review is a loosening", () => {
   it("with another admin it opens a request that changes nothing; the one who asked cannot confirm it; a different admin confirms it within 10 minutes of signing in; all of it audited", async () => {
     const { t, audit } = await bench({ maya: "admin" });

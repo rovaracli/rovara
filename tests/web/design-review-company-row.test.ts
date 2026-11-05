@@ -123,6 +123,28 @@ describe("allowing design review", () => {
   expect(section.getByRole("switch", { name: "Allow design review in this company" }).getAttribute("aria-checked")).toBe("false");
  });
 
+ it("DR-UI-2: the answer to the allow switch shows right under the switch, not at the end of the card; a refusal there offers a sign-in", async () => {
+  const f = mount({ post: () => refuse(403, "REAUTH_REQUIRED", "Sign in again to allow design review.") });
+  const section = await card();
+  const toggle = await section.findByRole("switch", { name: "Allow design review in this company" });
+  fireEvent.click(toggle);
+  const alert = await section.findByRole("alert");
+  expect(alert.textContent).toContain("Sign in again to allow design review.");
+  // Placed after the switch and before the rules: the person sees it where they pressed.
+  const rules = section.getByRole("heading", { name: "Rules every project must follow" });
+  expect(toggle.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(alert.compareDocumentPosition(rules) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(within(alert).getByRole("button", { name: "Sign in again" }));
+  expect(f.host.signIn).toHaveBeenCalledTimes(1);
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+ });
+
+ it("DR-UI-2: says that the company's only owner and admin can allow it alone", async () => {
+  mount();
+  const section = await card();
+  expect(await section.findByText(/unless you are the company's only owner and only admin: then you can allow it alone/u)).toBeTruthy();
+ });
+
  it("not allowing applies at once", async () => {
   const f = mount({ state: { ...OFF, revision: 3, allowed: true } });
   const section = await card();
@@ -203,6 +225,9 @@ describe("the default and the rules", () => {
   await section.findByText("Saved. New design reviews use these settings; running ones keep theirs.");
   expect(f.posts()).toHaveLength(1);
   expect(f.posts()[0]!.body).toEqual({ action: "save", expectedRevision: 4, lock: { tierAtLeast: "standard", allowSkip: false, capCeilingUsd: 8 } });
+  // The rules' answer stays at the end of the card, by its button, not under the allow switch.
+  const saved = section.getByText("Saved. New design reviews use these settings; running ones keep theirs.");
+  expect(section.getByRole("button", { name: "Save rules" }).compareDocumentPosition(saved) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
  });
 
  it("refuses a cost ceiling outside the range before sending anything", async () => {

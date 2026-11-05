@@ -8,7 +8,7 @@
 //             { action: "approve", changeId }                              a different admin approves the waiting request, signed in within the last 10 minutes (REAUTH_REQUIRED otherwise);
 //             { action: "cancel", changeId }                               withdraws the waiting request (its proposer, or any admin).
 // A loosening and an approval need a sign-in within the last 10 minutes, like the other company safeguards. The rules and the transaction are design-review/company.ts. Answers are fixed words, booleans, numbers and ids.
-import { featureEnabled, agentXError, DesignReviewCompanyBodySchema, DESIGN_REVIEW_COMPANY_PATH, type DesignReviewCompanyState, type OrgId } from "@agentx/contracts";
+import { featureEnabled, agentXError, DesignReviewCompanyBodySchema, DESIGN_REVIEW_COMPANY_PATH, type DesignReviewCompanyBody, type DesignReviewCompanyState, type OrgId } from "@agentx/contracts";
 import { secondPersonTier0Authority } from "../../lessons/tier0-authority.js";
 import { readCompanyAdminActorConditions } from "../../org/second-person-evidence.js";
 import { sameId } from "../../lessons/types.js";
@@ -88,9 +88,20 @@ export async function routeDesignReviewCompany(deps: DeveloperRouteDependencies,
     // Field names only: the values are the person's.
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
-  const company = companyDepsOf(deps);
   const orgId: OrgId = caller.orgId;
   const body = parsed.data;
+  try {
+    return await changeDesignReviewCompany(deps, caller, orgId, body);
+  } catch (error) {
+    // One line per refused change, so a press that did nothing can be found in the logs: the action and the error code only (no person ids, no values).
+    const code = (error as { code?: unknown }).code;
+    logDeveloperEvent({ event: "developer.design_review_company_refused", orgId, action: body.action, code: typeof code === "string" ? code : "UNKNOWN" });
+    throw error;
+  }
+}
+
+async function changeDesignReviewCompany(deps: DeveloperRouteDependencies, caller: DeveloperCaller, orgId: OrgId, body: DesignReviewCompanyBody): Promise<StatusReply> {
+  const company = companyDepsOf(deps);
   if (body.action === "save") {
     const result = await saveDesignReviewCompany(company, {
       orgId, by: caller.developerId, expectedRevision: body.expectedRevision, lock: body.lock,
