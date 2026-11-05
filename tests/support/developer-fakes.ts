@@ -373,13 +373,13 @@ export function fakeGithub(options: { users: FakeGithubUser[] }) {
   };
 }
 
-export function httpEvent(method: "GET" | "POST", pathAndQuery: string, body?: Record<string, string>): HttpApiV2Event {
+export function httpEvent(method: "GET" | "POST", pathAndQuery: string, body?: Record<string, string>, headers: Record<string, string> = {}): HttpApiV2Event {
   const url = new URL(pathAndQuery, API);
   return {
     version: "2.0",
     rawPath: url.pathname,
     rawQueryString: url.search.slice(1),
-    headers: body === undefined ? {} : { "content-type": "application/x-www-form-urlencoded" },
+    headers: { ...(body === undefined ? {} : { "content-type": "application/x-www-form-urlencoded" }), ...headers },
     ...(body === undefined ? {} : { body: Buffer.from(new URLSearchParams(body).toString()).toString("base64"), isBase64Encoded: true }),
     requestContext: { requestId: "req-1", http: { method } },
   };
@@ -428,6 +428,8 @@ export function identityHarness(options: {
   saml?: boolean;
   /** Enterprise foundations I1: the Audit Ledger's outbox, attached to the State table fake. */
   audit?: AuditCapture;
+  /** The sign-in store audits the identity links it makes and removes, as the Lambda's does (`audit` alone leaves it unaudited, as before). */
+  storeAudit?: boolean;
 } = {}) {
   let clock = T0;
   const now = () => clock;
@@ -457,7 +459,7 @@ export function identityHarness(options: {
     ...(cloudProvider === undefined ? {} : { cloud: cloudProvider }),
     ...(githubProvider === undefined ? {} : { github: githubProvider }),
   };
-  const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now });
+  const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now, ...(options.storeAudit === true && options.audit !== undefined ? { audit: options.audit.audit } : {}) });
   const ssoStores = options.sso !== true ? undefined : ssoStoresFor({ documentClient: state, tableName: "state", policy: options.editionPolicy });
   const samlProvider = options.saml !== true || ssoStores === undefined || options.singleOrg === false ? undefined : samlSignInProvider({
     sp: samlServiceProviderAddresses(ISSUER), orgId: TEST_ORG, load: (orgId) => ssoStores.saml.config.get(orgId), replay: ssoStores.saml.replay, stash: ssoStores.saml.stash, now,

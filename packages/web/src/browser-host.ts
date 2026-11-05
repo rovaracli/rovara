@@ -1,7 +1,7 @@
 import { AppMeResponseReaderSchema, RealtimeTokenResponseReaderSchema, SessionIdSchema } from "@agentx/contracts/web";
 import type { ApiRequest, ApiResponse, AppHost, RealtimeSocket } from "@agentx/ui";
 import { ApiError, createApiClient, SIGN_IN_REPEAT_GUARD_MS } from "@agentx/ui";
-import { safeExternalUrl, isGithubInstallationUrl } from "../../ui/src/text/links.js";
+import { safeExternalUrl, isGithubInstallationUrl, isSlackLinkUrl } from "../../ui/src/text/links.js";
 export interface BrowserWindow {
  // Lane A: optional on hosts without clipboard support; never falls back to storage.
  navigator?: Pick<Navigator, "clipboard">;
@@ -56,7 +56,7 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
    return { onOpen: listener => { socket.addEventListener("open", listener);return () => socket.removeEventListener("open", listener); }, onMessage: listener => { const receive = (event: MessageEvent<unknown>) => listener(event.data);socket.addEventListener("message", receive);return () => socket.removeEventListener("message", receive); }, onClose: listener => { socket.addEventListener("close", listener);return () => socket.removeEventListener("close", listener); }, onError: listener => { socket.addEventListener("error", listener);return () => socket.removeEventListener("error", listener); }, send: data => socket.send(data), close: () => socket.close() };
   },
   openExternal(url) { const safe = safeExternalUrl(url);if (safe !== undefined) win.open(safe, "_blank", "noopener,noreferrer"); },
-  navigate(url) { if (isGithubInstallationUrl(url)) { win.location.assign(url);return; }const safe = returnPath(url);if (safe !== url) throw new Error("Invalid app destination.");win.location.assign(safe); },
+  navigate(url) { if (isGithubInstallationUrl(url) || isSlackLinkUrl(url, win.location.origin)) { win.location.assign(url);return; }const safe = returnPath(url);if (safe !== url) throw new Error("Invalid app destination.");win.location.assign(safe); },
   saveFile(name, data) { const url = win.URL.createObjectURL(data), link = win.document.createElement("a");try { link.href = url;link.download = name;win.document.body.appendChild(link);link.click(); } finally { link.remove();win.URL.revokeObjectURL(url); } },
   signIn(path, options) {
    const destination = returnPath(path), key = "rovara.sign-in." + destination;

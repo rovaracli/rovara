@@ -22,7 +22,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  if (family === "projects" && /^projects\/[^/]+\/(archive|restore|slack-channel)$/.test(relative)) return false;
  // RULING Q9: identity linking/unlinking stays in the CLI fresh-session flow; a browser may read /me. Release 0.4.16: and set its own display name (PUT /me/name, which
  // authenticateWebRequest guards with the cookie, the Origin and the CSRF token like every browser write).
- if (family === "me") return (read && relative === "me") || (method === "PUT" && relative === "me/name");
+ // The one exception (owner, 2026-11-05): a signed-in web user links their own Slack account, and removes that link (never another method).
+ if (family === "me") return (read && relative === "me") || (method === "PUT" && relative === "me/name") || ((method === "POST" || method === "DELETE") && relative === "me/identities/slack");
  if (family === "approvals" || family === "devices") return read && !relative.endsWith("/decide");
  if (family === "spend-requests") return relative === "spend-requests" && (read || method === "POST");
  return true;

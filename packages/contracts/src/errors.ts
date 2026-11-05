@@ -52,6 +52,8 @@ export const AgentXErrorCodeSchema = z.enum([
   "SUCCESSOR_INVALID",
   "MEMBER_ALREADY_REMOVED",
   "SLACK_TEAM_NOT_BOUND",
+  // A Slack account that belongs to no member of the company the workspace is connected to (QA6-15): the person is refused, not the channel.
+  "SLACK_ACCOUNT_NOT_LINKED",
   "MODEL_PROXY_UNAVAILABLE",
   "BUDGET_EXCEEDED",
   "ORG_BUDGET_EXCEEDED",
@@ -156,7 +158,7 @@ export function errorStatus(code: AgentXErrorCode): number {
   if (code === "TASK_STOP_CONFIG_MISSING" || code === "TASK_STOP_CONFIG_INVALID" || code === "TASK_STOP_APPROVAL_ABOVE_CEILING") return 409;
   if (code === "AUTH_REQUIRED") return 401;
   // The sign-in is valid but too old, or the wrong kind, for this change: 403, so a client does not treat it as a sign-in that ended.
-  if (code === "CSRF_STALE" || code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED" || code === "SESSION_LEVEL_REQUIRED" || code === "LOCAL_AGENT_NOT_ALLOWED" || code === "PROCESS_SELF_CONFIRM") return 403;
+  if (code === "CSRF_STALE" || code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "SLACK_ACCOUNT_NOT_LINKED" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED" || code === "SESSION_LEVEL_REQUIRED" || code === "LOCAL_AGENT_NOT_ALLOWED" || code === "PROCESS_SELF_CONFIRM") return 403;
   if (code === "NOT_FOUND" || code === "PROJECT_NOT_FOUND" || code === "TASK_NOT_FOUND" || code === "LEARNING_OFF" || code === "LEARNING_LOCKED") return 404;
   if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED" || code === "PROJECT_BUDGET_EXCEEDED" || code === "AGENT_BUDGET_EXCEEDED" || code === "TEST_ALLOWANCE_USED" || code === "CHAIN_BUDGET_EXCEEDED") return 402;
   if (code === "CONFIG_INVALID" || code === "PROCESS_UNAVAILABLE" || code === "AUDIT_RANGE_INVALID" || code === "AUDIT_REASON_REQUIRED" || code === "AUDIT_FILTER_TOO_WIDE") return 400;

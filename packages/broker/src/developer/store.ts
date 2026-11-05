@@ -38,6 +38,8 @@ export interface AuthRequestRecord { id: string; clientRedirectUri: string; clie
    * it is for. Its completion links the identity back and stores nothing else: no session, no code.
    */
   linkDeveloperId?: string; linkSessionId?: string; linkMethod?: DeveloperSignInMethod;
+  /** The Slack link, started from the web app: its callback must come from a browser that holds the session `linkSessionId` (its session cookie), or nothing is linked. */
+  linkBrowser?: true;
   /** Plan 2, Task 8b: the CLI's fresh sign-in (for changing sign-in methods); the provider is asked to have the person sign in again where it can. */
   fresh?: boolean }
 /** How a join ended (Plan 2, Task 5). Only "joined" used the invite. */
@@ -143,6 +145,8 @@ interface RefreshRecord { sessionId: string; expiresAt: number; usedAt?: string;
 interface CancellationReason { Code?: string }
 
 export const META = "META";
+/** A relink refused by its own rules (CONFIG_INVALID) or by a race on its transaction. */
+const conditionFailedOrRefused = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === "CONFIG_INVALID" || conditionFailed(error);
 /** How many sign-in records a list reads at once (`getDevelopers`). */
 const RECORD_READS_AT_ONCE = 16;
 
@@ -193,6 +197,12 @@ export const REAUTH_SAME_METHOD = "you are signed in with the method you are rem
 export const RELINK_NOT_REMOVED = "that sign-in was not removed from your account, so it cannot be added back here";
 export const RELINK_OWN_ACCOUNT = "that sign-in has since started its own account, so it cannot be added back to this one";
 export const RELINK_ALREADY = "that sign-in is already part of your account";
+/** The account record's marker of its one Slack link (the identity key), written in the link's own transaction and removed by the unlink. */
+export const SLACK_LINKED_ATTRIBUTE = "slackLinkedIdentity";
+/** Refusals of linking a Slack account to a web account, in the person's words. */
+export const SLACK_LINK_TAKEN = "that Slack account already belongs to another Rovara account, so it can't be linked to this one";
+export const SLACK_LINK_HAS_ONE = "a Slack account is already linked to your account; remove it first to link another";
+export const SLACK_LINK_CHANGED = "your sign-in methods changed while this ran; check them and try again";
 /** The name a person chose, as `SetMyNameBodySchema` allows it, or undefined. */
 const safeChosenName = (name: string): string | undefined => {
   const parsed = SetMyNameBodySchema.safeParse({ name });
@@ -736,9 +746,11 @@ export class DeveloperSignInStore {
             } },
             { Update: {
               // Project AI commits pin method marks, not each identity mark. Every unlink must set #method atomically; review that fence if this changes.
-              TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #identity = :at, #unlinked = :at, #method = :at",
+              TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META },
+              // The Slack link's one-per-account marker goes with the link.
+              UpdateExpression: `SET #identity = :at, #unlinked = :at, #method = :at${link.provider === "slack" ? " REMOVE #slackLinked" : ""}`,
               ConditionExpression: "attribute_exists(pk)",
-              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider) },
+              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider), ...(link.provider === "slack" ? { "#slackLinked": SLACK_LINKED_ATTRIBUTE } : {}) },
               ExpressionAttributeValues: { ":at": at },
             } },
             // An identity merged in by rule 1b is keyed to the developer that was merged away. Unlinked, it starts that developer again
@@ -802,10 +814,12 @@ export class DeveloperSignInStore {
       await this.input.documentClient.send(new TransactWriteCommand({
         TransactItems: [
           { Update: {
-            TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #ended = :at REMOVE #unlinked",
-            ConditionExpression: "attribute_exists(pk)",
-            ExpressionAttributeNames: { "#ended": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey) },
-            ExpressionAttributeValues: { ":at": at },
+            TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META },
+            // A Slack link comes back with its one-per-account marker, and only while the account has no other Slack link.
+            UpdateExpression: `SET #ended = :at${input.provider === "slack" ? ", #slackLinked = :identityKey" : ""} REMOVE #unlinked`,
+            ConditionExpression: input.provider === "slack" ? "attribute_exists(pk) AND attribute_not_exists(#slackLinked)" : "attribute_exists(pk)",
+            ExpressionAttributeNames: { "#ended": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), ...(input.provider === "slack" ? { "#slackLinked": SLACK_LINKED_ATTRIBUTE } : {}) },
+            ExpressionAttributeValues: { ":at": at, ...(input.provider === "slack" ? { ":identityKey": identityKey } : {}) },
           } },
           { Put: {
             TableName, Item: { ...signInIdentityKey(identityKey), ...body },
@@ -823,6 +837,73 @@ export class DeveloperSignInStore {
     }
     await this.flush(event);
     return { developerId };
+  }
+
+
+  /**
+   * Links a Slack account (verified by Sign in with Slack, by the caller) to the web account `developerId`: a verified identity link of this
+   * table, the same items sign-in and the duplicate merge write, in one transaction with the audit item. The Slack account's own
+   * developer, if it ever signed in, is merged into the account (so no session of it outlives the link). Never merges two accounts that
+   * each hold a company: `belongsToCompany` says whether the Slack account's own developer already does. Refuses (as an outcome, nothing written):
+   * `taken` (the identity is linked to another account, was unlinked from another, or its own developer holds a company or was merged
+   * elsewhere), `has_one` (the account already has an active Slack link), `changed` (it moved while this ran). The same account may link
+   * the identity again after unlinking it (the tombstone is relinked, as for any removed method).
+   */
+  async linkSlackIdentity(input: { developerId: string; identityKey: string; subject: string; issuer: string; email?: string; by: { method: DeveloperSignInMethod }; belongsToCompany: boolean }): Promise<{ ok: true; created: boolean } | { ok: false; reason: "taken" | "has_one" | "changed" }> {
+    const { developerId, identityKey } = input;
+    if (identityKey === developerId) return { ok: false, reason: "taken" };
+    const [current, duplicate, account, held] = await Promise.all([this.getIdentityLink(identityKey), this.getDeveloper(identityKey), this.getDeveloper(developerId), this.activeIdentityItems(developerId)]);
+    if (account === undefined || account.revoked || account.mergedInto !== undefined) return { ok: false, reason: "changed" };
+    if (current !== undefined && isActiveLink(current, identityKey) && current.developerId === developerId) return { ok: true, created: false };
+    if (held.some((link) => link.provider === "slack")) return { ok: false, reason: "has_one" };
+    if (current !== undefined && !isActiveLink(current, identityKey)) {
+      // Removed from an account earlier: only that account takes it back (relink); it never moves to another.
+      try {
+        await this.relinkIdentity({ identityKey, developerId, provider: "slack", issuer: input.issuer, subject: input.subject, ...(input.email === undefined ? {} : { email: input.email }), by: input.by });
+      } catch (error) {
+        if (!conditionFailedOrRefused(error)) throw error;
+        return { ok: false, reason: "taken" };
+      }
+      return { ok: true, created: true };
+    }
+    // Linked to another account, or its own developer holds a company or was merged elsewhere: not this account's to take.
+    if (current !== undefined && current.developerId !== identityKey) return { ok: false, reason: "taken" };
+    if (input.belongsToCompany || duplicate?.revoked === true || (duplicate?.mergedInto !== undefined && duplicate.mergedInto !== developerId)) return { ok: false, reason: "taken" };
+    const at = this.iso();
+    const TableName = this.input.tableName;
+    const event = await this.identityEvent("linked", { identityKey, developerId, provider: "slack", at });
+    const items: SignInTransactItem[] = duplicate !== undefined
+      ? this.mergeItems({ duplicate, duplicateIdentityKey: identityKey, survivorId: developerId, at, ...(current === undefined ? {} : { link: current }), ...(input.email === undefined ? {} : { email: input.email }) })
+      : (() => {
+        const body = { entityType: "IDENTITY_LINK", developerId, provider: "slack" as const, issuer: input.issuer, subject: input.subject, ...(input.email === undefined ? {} : { email: input.email }), linkedAt: at, lastSignInAt: at };
+        return [
+          { Put: { TableName, Item: { ...signInIdentityKey(identityKey), ...body }, ConditionExpression: "attribute_not_exists(pk)" } },
+          { Put: { TableName, Item: { ...developerIdentityKey(developerId, identityKey), ...body } } },
+        ];
+      })();
+    try {
+      await this.input.documentClient.send(new TransactWriteCommand({
+        TransactItems: [
+          // The account is still there, not revoked and not merged away, and holds no Slack link yet: the marker is what makes two simultaneous links end with one.
+          { Update: { TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #slackLinked = :identityKey",
+            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedInto) AND (attribute_not_exists(revoked) OR revoked = :no) AND attribute_not_exists(#slackLinked)",
+            ExpressionAttributeNames: { "#slackLinked": SLACK_LINKED_ATTRIBUTE }, ExpressionAttributeValues: { ":no": false, ":identityKey": identityKey } } },
+          ...items,
+          ...this.pendingFor(event),
+        ],
+      }));
+    } catch (error) {
+      if (!conditionFailed(error)) throw error;
+      // Someone linked or moved it between the read and the write: say what the link now shows.
+      const now = await this.getIdentityLink(identityKey);
+      if (now !== undefined && isActiveLink(now, identityKey) && now.developerId === developerId) return { ok: true, created: false };
+      if (now !== undefined && now.developerId !== identityKey) return { ok: false, reason: "taken" };
+      // The account's marker is there: another Slack link won the race.
+      if (typeof (await this.get<Record<string, unknown>>(`DEVELOPER#${developerId}`))?.[SLACK_LINKED_ATTRIBUTE] === "string") return { ok: false, reason: "has_one" };
+      return { ok: false, reason: "changed" };
+    }
+    await this.flush(event);
+    return { ok: true, created: true };
   }
 
   /** Records a sign-in on the identity's link, on both items. Nothing happens for an identity with no active link. */

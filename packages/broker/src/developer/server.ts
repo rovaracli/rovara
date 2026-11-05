@@ -8,7 +8,7 @@ import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // (channel members, channel names for R10, 25d's email lookup and bot token check, and 25e's
 // admin-ended sessions and channel by name).
 // Nothing here logs or echoes a secret, a code, a token or a caught error's message.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   AGENTX_CLI_CLIENT_ID,
   ChannelClassRequestSchema,
@@ -74,7 +74,7 @@ import {
 } from "./join-page.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderIdentity, type ProviderResult, type SamlSignInProvider, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
-import { endedByAdmin, endedByUnlink, isFreshSignIn, samlSessionEnded, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
+import { SLACK_LINK_HAS_ONE, endedByAdmin, endedByUnlink, isFreshSignIn, samlSessionEnded, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
 import { sendDecideSignInAddedNotice, sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "./edition-methods.js";
 import { companySignInRefusalEvent, decideCompanySignIn, type CompanySignIn, type SsoStores } from "./sso-sign-in.js";
@@ -103,7 +103,7 @@ export interface DeveloperIdentityDependencies {
   saml?: SamlSignInProvider;
   directory: SlackDirectory;
   /** The org store: a sign-in puts the developer in an org, and the tokens carry it. */
-  orgs: ResolveOrgOnSignInDependencies["orgs"] & Pick<OrgStore, "developerForVerifiedEmail" | "describeInviteByHash" | "describeInvite" | "getOrg" | "setRole">;
+  orgs: ResolveOrgOnSignInDependencies["orgs"] & Pick<OrgStore, "developerForVerifiedEmail" | "describeInviteByHash" | "describeInvite" | "getOrg" | "setRole" | "orgForDeveloper" | "orgForSlackTeam">;
   /** The install's single org (ruling R3), which a Slack or company sign-in joins as a member. */
   singleOrgId?: OrgId;
   /** Told when a sign-in created or joined an org, so the model proxy can be told its budgets (see ResolveOrgOnSignInDependencies.onOrgJoined). */
@@ -211,6 +211,8 @@ const jsonResult = (statusCode: number, body: unknown): HttpResult => ({ statusC
 /** Public, cacheable documents (discovery, keys): no pragma, which belongs only beside no-store. */
 const publicJson = (body: unknown): HttpResult =>
   ({ statusCode: 200, headers: { "content-type": "application/json", "cache-control": "public, max-age=300" }, body: JSON.stringify(body) });
+/** Equal text, compared in constant time. */
+const sameText = (left: string, right: string): boolean => left.length === right.length && timingSafeEqual(Buffer.from(left), Buffer.from(right));
 const redirect = (location: string): HttpResult => ({ statusCode: 302, headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" }, body: "" });
 const oauthError = (status: number, error: string, description: string) => jsonResult(status, { error, error_description: description });
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
@@ -635,7 +637,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
         return page(500, "Confirmation failed", ["Something went wrong on the Rovara server. Open the approval again from Rovara."]);
       }
     }
-    if (request.linkDeveloperId !== undefined) return linkCallback(method, request, query.get("code"));
+    if (request.linkDeveloperId !== undefined) return request.linkMethod === "slack" ? slackLinkCallback(request, query.get("code"), headers) : linkCallback(method, request, query.get("code"));
     if (request.browserReturnTo !== undefined) {
       const verifier = (headers.cookie ?? "").split(";").map(part => part.trim()).find(part => part.startsWith(`${REVIEW_PKCE_COOKIE}=`))?.slice(REVIEW_PKCE_COOKIE.length + 1);
       if (!BROWSER_RETURN_TO.test(request.browserReturnTo) || verifier === undefined || !pkceChallengeMatches(verifier, request.codeChallenge)) {
@@ -868,6 +870,63 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       deps.log({ event: "signin.link_authorize_failed", method, error: errorName(error) });
       return page(503, "Sign-in is unavailable", ["Nothing was added. Try again in a moment."]);
     }
+  }
+
+  /**
+   * The end of the Slack link, started by a signed-in web user (owner decision, 2026-11-05). Four things must hold, and the answer is always a redirect back to the web app with a short outcome code
+   * (`slack_link`), never a page that carries a name, an ID or a reason from Slack:
+   *  - the callback comes from the browser that holds the web session that started it (its session cookie is the request's `linkSessionId`), so a link started by someone else cannot be finished by this person's Slack sign-in;
+   *  - the state was issued for this request, is spent here, and the ID token's nonce matches (the provider checks it);
+   *  - the Slack workspace is the company's bound team, and the account's session is still a fresh one;
+   *  - the Slack account is not already someone else's (linked to another account, or its own developer holds a company): nothing is merged then.
+   * The link itself is the sign-in table's identity link (`linkSlackIdentity`); no email lookup takes part, only the Slack user who signed in at Slack just now.
+   */
+  async function slackLinkCallback(request: AuthRequestRecord, code: string | null, headers: Record<string, string | undefined>): Promise<HttpResult> {
+    const developerId = request.linkDeveloperId!;
+    const back = (outcome: string) => redirect(`${new URL(config.issuer).origin}/app?slack_link=${outcome}`);
+    const held = (headers.cookie ?? "").split(";").map((part) => part.trim()).find((part) => part.startsWith("__Host-agentx_review_session="))?.slice("__Host-agentx_review_session=".length);
+    if (request.linkSessionId === undefined || request.linkBrowser !== true || held === undefined || !sameText(held, request.linkSessionId)) {
+      deps.log({ event: "signin.slack_link_wrong_browser", developerId });
+      return back("wrong_browser");
+    }
+    if (code === null) return back("cancelled");
+    let result: ProviderResult;
+    try {
+      result = await provider("slack").complete({ code, nonce: request.nonce, redirectUri: endpoint("/callback/slack") });
+    } catch (error) {
+      deps.log({ event: "signin.slack_link_error", error: errorName(error) });
+      return back("error");
+    }
+    if (!result.ok) {
+      deps.log({ event: "signin.slack_link_refused", wrongAccount: result.wrongAccount === true });
+      return back(result.wrongAccount === true ? "wrong_team" : "refused");
+    }
+    const identity = result.identity;
+    let session: SessionRecord;
+    try {
+      session = await store.freshSessionFor({ developerId, sessionId: request.linkSessionId });
+    } catch (error) {
+      if (!isCode(error, "REAUTH_REQUIRED")) throw error;
+      return back("reauth");
+    }
+    // The Slack workspace the person signed in to must be the one this account's company has bound.
+    const own = await deps.orgs.orgForDeveloper(developerId);
+    const bound = identity.slackTeamId === undefined ? undefined : await deps.orgs.orgForSlackTeam(identity.slackTeamId);
+    if (own === undefined || bound === undefined || bound !== own.orgId) {
+      deps.log({ event: "signin.slack_link_wrong_team", developerId });
+      return back("wrong_team");
+    }
+    const identityKey = ownerKeyForSubject(identity.issuer, identity.subject);
+    const outcome = await store.linkSlackIdentity({
+      developerId, identityKey, subject: identity.subject, issuer: identity.issuer, ...(identity.email === undefined ? {} : { email: identity.email }),
+      by: { method: session.amr }, belongsToCompany: await deps.orgs.orgForDeveloper(identityKey) !== undefined,
+    });
+    if (!outcome.ok) {
+      deps.log({ event: "signin.slack_link_refused_link", developerId, reason: outcome.reason });
+      return back(outcome.reason === "taken" ? "taken" : outcome.reason === "has_one" ? "has_one" : "error");
+    }
+    deps.log({ event: "signin.slack_linked", developerId });
+    return back("linked");
   }
 
   /**
@@ -1255,9 +1314,15 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       return { ok: false, error: "reauth", message: refusalWords(error) };
     }
     if (!enabledMethods(deps).includes(method)) return { ok: false, error: "refused", message: "that sign-in method is not available here" };
+    // The Slack link is made only from the web app: the callback has to prove the browser holds the session that started it.
+    if (method === "slack") {
+      if (parsed.data.browser !== true) return { ok: false, error: "refused", message: "link your Slack account from the Rovara web app" };
+      if ((await store.slackUserIdsOf(developerId)).length > 0) return { ok: false, error: "refused", message: SLACK_LINK_HAS_ONE };
+    }
     const request = await store.createAuthRequest({
       clientRedirectUri: endpoint("/link/done"), clientState: randomBytes(24).toString("base64url"), codeChallenge: randomBytes(32).toString("base64url"),
       nonce: randomBytes(32).toString("base64url"), linkDeveloperId: developerId, linkSessionId: sessionId, linkMethod: method,
+      ...(method === "slack" ? { linkBrowser: true as const } : {}),
     });
     if (await store.chooseMethod(request.id, method) === undefined) return { ok: false, error: "unavailable" };
     deps.log({ event: "signin.identity_link_started", developerId, provider: method });

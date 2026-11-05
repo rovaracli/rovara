@@ -610,9 +610,13 @@ describe("adding a removed sign-in method back", () => {
 
   it("the route refuses a method that cannot be added, answers not set up without the function, and reports an unfinished invoke as unavailable", async () => {
     const { h, github } = await removedCloud();
+    const saml = await brokerCall(h, "POST", "/v1/app/me/identities/saml", github.token);
+    expect(saml.status).toBe(400);
+    expect(errorOf(saml).message).toContain("cloud or github");
+    // Slack is linked from the web app only: a token (the CLI) is refused before the sign-in function is asked.
     const slack = await brokerCall(h, "POST", "/v1/app/me/identities/slack", github.token);
-    expect(slack.status).toBe(400);
-    expect(errorOf(slack).message).toContain("cloud or github");
+    expect(slack.status).toBe(403);
+    expect(errorOf(slack).message).toContain("live browser session");
     expect((await startLink(h, github.token, "cloud", { startIdentityLink: null })).status).toBe(404);
     expect((await startLink(h, github.token, "cloud", { startIdentityLink: async () => ({ ok: false, error: "unavailable" }) })).status).toBe(503);
     const refused = await startLink(h, github.token, "cloud", { startIdentityLink: async () => ({ ok: false, error: "refused", message: "that sign-in method is not available here" }) });
@@ -626,12 +630,14 @@ describe("adding a removed sign-in method back", () => {
     const sessionId = String(cloud.claims.sid);
     const bad = [
       { kind: "start-identity-link", developerId: "nope", sessionId, provider: "cloud" },
-      { kind: "start-identity-link", developerId: cloudId, sessionId, provider: "slack" },
+      { kind: "start-identity-link", developerId: cloudId, sessionId, provider: "saml" },
       { kind: "start-identity-link", developerId: cloudId, provider: "cloud" },
       { kind: "start-identity-link", developerId: cloudId, sessionId: "not-a-session", provider: "cloud" },
       { kind: "start-identity-link", developerId: cloudId, sessionId, provider: "cloud", extra: 1 },
     ];
     for (const request of bad) expect(await h.handler(request as never)).toEqual({ ok: false, error: "invalid_request" });
+    // Slack is linked from the web app only.
+    expect(await h.handler({ kind: "start-identity-link", developerId: cloudId, sessionId, provider: "slack" })).toEqual({ ok: false, error: "refused", message: "link your Slack account from the Rovara web app" });
     // GitHub sign-in is not set up in this environment.
     expect(await h.handler({ kind: "start-identity-link", developerId: cloudId, sessionId, provider: "github" })).toEqual({ ok: false, error: "refused", message: "that sign-in method is not available here" });
     expect(authRequests(h).filter((item) => item.linkDeveloperId !== undefined)).toEqual([]);

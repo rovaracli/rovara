@@ -433,8 +433,11 @@ export const EndDeveloperSessionsRequestSchema = z.object({ kind: z.literal("end
 export type EndDeveloperSessionsRequest = z.infer<typeof EndDeveloperSessionsRequestSchema>;
 export type EndDeveloperSessionsResponse = { ok: true } | { ok: false; error: "not_found" | "invalid_request" | "unavailable" };
 
-/** The sign-in methods a person may unlink from their account (Plan 2, Task 8): the two that cloud installs link by verified email. */
-export const UnlinkableSignInMethodSchema = z.enum(["cloud", "github"]);
+/**
+ * The sign-in methods a person may unlink from their account (Plan 2, Task 8): the two that cloud installs link by verified email, and Slack, which a signed-in web user links
+ * to their own account by signing in with Slack (owner decision, 2026-11-05).
+ */
+export const UnlinkableSignInMethodSchema = z.enum(["cloud", "github", "slack"]);
 export type UnlinkableSignInMethod = z.infer<typeof UnlinkableSignInMethodSchema>;
 /** The id of a sign-in session (a UUID), which the broker names from the verified token. */
 const SessionIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
@@ -455,7 +458,11 @@ export type UnlinkIdentityResponse = { ok: true } | { ok: false; error: "refused
  * Plan 2, Task 8b: starts adding a sign-in method the person removed earlier back to their own account. It is made under a fresh session
  * of the caller, which must be fresh again when the person finishes at the provider. The result is the sign-in link to open.
  */
-export const StartIdentityLinkRequestSchema = z.object({ kind: z.literal("start-identity-link"), developerId: z.string().regex(/^[a-f0-9]{64}$/), sessionId: SessionIdSchema, provider: UnlinkableSignInMethodSchema }).strict();
+export const StartIdentityLinkRequestSchema = z.object({
+  kind: z.literal("start-identity-link"), developerId: z.string().regex(/^[a-f0-9]{64}$/), sessionId: SessionIdSchema, provider: UnlinkableSignInMethodSchema,
+  /** The web app started it, from a live browser session: the link then has to be finished in the browser that holds that session. The Slack link is made only this way. */
+  browser: z.literal(true).optional(),
+}).strict();
 export type StartIdentityLinkRequest = z.infer<typeof StartIdentityLinkRequestSchema>;
 export type StartIdentityLinkResponse = { ok: true; authorizeUrl: string } | { ok: false; error: "refused" | "reauth"; message: string } | { ok: false; error: "invalid_request" | "unavailable" };
 

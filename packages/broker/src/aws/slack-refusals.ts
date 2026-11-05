@@ -2,6 +2,7 @@ import { FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED } from "./dev
 import { FEEDBACK_CHANGED_SINCE_CARD } from "./developer-tasks/feedback-review.js";
 import { PROJECT_RECORD_NEEDS_ADMIN } from "./broker-shared.js";
 import { WORKFLOW_ACTIONABLE_REFUSALS } from "../developer/workflow-actions.js";
+import { SLACK_ACCOUNT_NOT_LINKED_NOTICE } from "./slack-workflow-choice.js";
 
 /**
  * Refusals that are not about a press being out of date, by their exact text (never a prefix), in the words the presser
@@ -80,6 +81,7 @@ export function slackRefusalMessage(code: string, outOfDate: string, reason = ""
     case "TASK_BUSY": return "AgentX is still working on the previous step. Try again when it posts.";
     case "FORBIDDEN": return "Only the task owner can do that.";
     case "REMOVED_FROM_ORG": return SLACK_REMOVED_FROM_ORG;
+    case "SLACK_ACCOUNT_NOT_LINKED": return SLACK_ACCOUNT_NOT_LINKED_NOTICE;
     case "PROJECT_ARCHIVED": return SLACK_PROJECT_ARCHIVED;
     case "TASK_NOT_FOUND": return "This task can't be changed from Slack. Continue it where it was started, or start a new request.";
     default: return undefined;

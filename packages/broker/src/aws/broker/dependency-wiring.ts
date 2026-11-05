@@ -440,6 +440,9 @@ export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId
   return requireWriterCaller({ ...slackWorkflowCaller(userId, teamOrg), orgRole: role });
 }
 
+/** Why a Slack account is refused when it belongs to no member (never the Slack ID or any account ID). */
+export const SLACK_ACCOUNT_NOT_LINKED_MESSAGE = "this Slack account is not a member of the company this Slack workspace is connected to";
+
 /**
  * The ONE rule for who a Slack requester is in the org its team is bound to, shared by the ingress callers (slackCallerFor) and the service routes (slackServiceIdentity,
  * slackRequesterRole, model access), so they cannot disagree. A person whose own org is another org (a Slack Connect guest, a stale link) is refused; the company sign-in must still
@@ -464,14 +467,25 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
 export async function slackRequesterStanding(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean; allowReadOnly?: boolean } = {}): Promise<{ role: OrgRole; ids: string[]; standing: RequesterStanding }> {
   const developerId = developerIdForSlackUser(userId);
   // The single-org resolver answers the install's org for everyone, which says nothing about this person; only a tenant-resolving install (an orgResolver) can say they are of another org.
-  const resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? teamOrg : await orgResolverOf(dependencies)({ developerId });
+  const live = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName: dependencies.developer?.signInTableName };
+  let resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? teamOrg : await orgResolverOf(dependencies)({ developerId });
+  // A Slack account the person LINKED to their web account (the sign-in table's identity link, made by Sign in with Slack) has no company of its own: it is the account it was linked to. Followed only
+  // to the account the link names (the one walk below), so an unlinked Slack account is still nobody's.
+  let walked: Awaited<ReturnType<typeof personWalk>> | undefined;
+  if (resolved === undefined && dependencies.orgResolver !== undefined) {
+    walked = await personWalk(live, developerId);
+    const survivor = walked.ids.at(-1)!;
+    if (survivor !== developerId) resolved = await dependencies.orgResolver({ developerId: survivor });
+  }
+  // The ingress callers need a real caller identity. A Slack account that belongs to no member of any company (a person who signed in to Rovara another way and never linked their Slack account) is refused
+  // with its own code, so the person hears that it is their Slack account that is not recognised, not that the channel is wrong (QA6-15).
+  if (resolved === undefined && options.allowUnlinked !== true) throw agentXError("SLACK_ACCOUNT_NOT_LINKED", SLACK_ACCOUNT_NOT_LINKED_MESSAGE);
   const orgId = resolved === undefined && options.allowUnlinked === true ? teamOrg : requireOrgId(resolved);
   if (orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   // I1 (Slack allowed by the company sign-in) first, then I2: the Slack caller carries the person's real company role, not a stand-in "member".
   await requireSlackAllowedByEdition(dependencies, userId, orgId);
-  const live = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName: dependencies.developer?.signInTableName };
   // One walk, used for every check below and by the caller's grant read.
-  const { ids, unlinkedFrom: former } = await personWalk(live, developerId);
+  const { ids, unlinkedFrom: former } = walked ?? await personWalk(live, developerId);
   // The person the id was finally merged into must belong to the team's org too, not only the Slack-derived id.
   const survivor = ids.at(-1)!;
   if (survivor !== developerId && dependencies.orgResolver !== undefined) {
