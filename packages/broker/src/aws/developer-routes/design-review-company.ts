@@ -8,7 +8,7 @@
 //             { action: "approve", changeId }                              a different admin approves the waiting request, signed in within the last 10 minutes (REAUTH_REQUIRED otherwise);
 //             { action: "cancel", changeId }                               withdraws the waiting request (its proposer, or any admin).
 // A loosening and an approval need a sign-in within the last 10 minutes, like the other company safeguards. The rules and the transaction are design-review/company.ts. Answers are fixed words, booleans, numbers and ids.
-import { featureEnabled, agentXError, DesignReviewCompanyBodySchema, DESIGN_REVIEW_COMPANY_PATH, type DesignReviewCompanyState, type OrgId } from "@agentx/contracts";
+import { featureEnabled, agentXError, DesignReviewCompanyBodySchema, DESIGN_REVIEW_COMPANY_PATH, type DesignReviewCompanyBody, type DesignReviewCompanyState, type OrgId } from "@agentx/contracts";
 import { secondPersonTier0Authority } from "../../lessons/tier0-authority.js";
 import { readCompanyAdminActorConditions } from "../../org/second-person-evidence.js";
 import { sameId } from "../../lessons/types.js";
@@ -88,37 +88,51 @@ export async function routeDesignReviewCompany(deps: DeveloperRouteDependencies,
     // Field names only: the values are the person's.
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
+  return changeDesignReviewCompany(deps, caller, caller.orgId, parsed.data);
+}
+
+/**
+ * One line per refused change, so a press that changed nothing can be found in the logs: the action and the refusal's fixed reason word only (no person ids, no values).
+ * Logged only where the rules refuse (a refusal, or a sign-in that is too old), never for a fault after a change applied.
+ */
+function logRefused(orgId: OrgId, action: DesignReviewCompanyBody["action"], reason: string): void {
+  logDeveloperEvent({ event: "developer.design_review_company_refused", orgId, action, reason });
+}
+
+async function changeDesignReviewCompany(deps: DeveloperRouteDependencies, caller: DeveloperCaller, orgId: OrgId, body: DesignReviewCompanyBody): Promise<StatusReply> {
   const company = companyDepsOf(deps);
-  const orgId: OrgId = caller.orgId;
-  const body = parsed.data;
+  const refused = (result: PolicyRefusal): Error => { logRefused(orgId, body.action, result.code); return refusal(result); };
+  const freshSignIn = async (): Promise<void> => {
+    try { await requireFreshSignIn(deps, caller); } catch (error) { if ((error as { code?: unknown }).code === "REAUTH_REQUIRED") logRefused(orgId, body.action, "reauth_required"); throw error; }
+  };
   if (body.action === "save") {
     const result = await saveDesignReviewCompany(company, {
       orgId, by: caller.developerId, expectedRevision: body.expectedRevision, lock: body.lock,
       // A lock change that loosens anything is a loosening: it needs a sign-in within the last 10 minutes, like allowing.
-      onLoosening: async () => { await requireFreshSignIn(deps, caller); },
+      onLoosening: freshSignIn,
     });
-    if (!result.ok) throw refusal(result);
+    if (!result.ok) throw refused(result);
     logDeveloperEvent({ event: "developer.design_review_company_saved", orgId, status: result.status });
     if (result.status === "needs_approval") return new StatusReply(202, { status: "needs_approval", changeId: result.changeId, ...(await stateOf(deps, caller)) });
     return new StatusReply(200, { status: "applied", ...(await stateOf(deps, caller)) });
   }
   if (body.action === "allow") {
-    if (body.allowed) await requireFreshSignIn(deps, caller);
+    if (body.allowed) await freshSignIn();
     const result = await requestDesignReviewAllowed(company, { orgId, by: caller.developerId, allowed: body.allowed, expectedRevision: body.expectedRevision });
-    if (!result.ok) throw refusal(result);
+    if (!result.ok) throw refused(result);
     logDeveloperEvent({ event: "developer.design_review_allowed_set", orgId, status: result.status });
     if (result.status === "needs_approval") return new StatusReply(202, { status: "needs_approval", changeId: result.changeId, ...(await stateOf(deps, caller)) });
     return new StatusReply(200, { status: "applied", ...(await stateOf(deps, caller)) });
   }
   if (body.action === "cancel") {
     const result = await cancelDesignReviewChange(company, { orgId, by: caller.developerId, changeId: body.changeId });
-    if (!result.ok) throw refusal(result);
+    if (!result.ok) throw refused(result);
     logDeveloperEvent({ event: "developer.design_review_request_withdrawn", orgId });
     return new StatusReply(200, { status: "applied", ...(await stateOf(deps, caller)) });
   }
-  await requireFreshSignIn(deps, caller);
+  await freshSignIn();
   const result = await approveDesignReviewChange(company, { orgId, changeId: body.changeId, approverId: caller.developerId });
-  if (!result.ok) throw refusal(result);
+  if (!result.ok) throw refused(result);
   logDeveloperEvent({ event: "developer.design_review_allowed_approved", orgId });
   return new StatusReply(200, { status: "applied", ...(await stateOf(deps, caller)) });
 }

@@ -121,6 +121,43 @@ describe("the card's route", () => {
   });
 });
 
+describe("DR-UI-2: a refused change is logged", () => {
+  const refusedLines = (logs: string[]) => logs.map((line) => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; } }).filter((entry) => entry?.event === "developer.design_review_company_refused");
+
+  it("logs one line with the action and the refusal's fixed reason, and no person id: a sign-in too old, then a second person required", async () => {
+    const { t } = await bench({ maya: "admin" });
+    dr();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((line: unknown) => { logs.push(String(line)); });
+    try {
+      t.ageSignIn(OMAR, 11);
+      expect((await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0, allowed: true })).status).toBe(403);
+      t.ageSignIn(OMAR, 5);
+      const asked = await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0, allowed: true });
+      expect(asked.status).toBe(202);
+      // The one who asked cannot confirm their own request.
+      expect((await t.web(OMAR, "POST", PATH, { action: "approve", changeId: (asked.body as { changeId: string }).changeId })).status).toBe(403);
+      const refused = refusedLines(logs);
+      expect(refused).toEqual([
+        { component: "broker", event: "developer.design_review_company_refused", orgId: ORG, action: "allow", reason: "reauth_required" },
+        { component: "broker", event: "developer.design_review_company_refused", orgId: ORG, action: "approve", reason: "second_person_required" },
+      ]);
+      expect(JSON.stringify(refused)).not.toContain(OMAR.developerId);
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it("logs nothing for a change that applied", async () => {
+    const { t } = await bench({ maya: "admin" });
+    dr();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((line: unknown) => { logs.push(String(line)); });
+    try {
+      expect((await t.web(OMAR, "POST", PATH, { action: "allow", expectedRevision: 0, allowed: false })).status).toBe(200);
+      expect(refusedLines(logs)).toEqual([]);
+    } finally { vi.restoreAllMocks(); }
+  });
+});
+
 describe("allowing design review is a loosening", () => {
   it("with another admin it opens a request that changes nothing; the one who asked cannot confirm it; a different admin confirms it within 10 minutes of signing in; all of it audited", async () => {
     const { t, audit } = await bench({ maya: "admin" });
