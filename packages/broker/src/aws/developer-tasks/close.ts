@@ -396,7 +396,7 @@ const GROUNDING_STOP_WAIT_MS = 12_000;
 const GROUNDING_STOP_POLL_MS = 400;
 
 /** What Close answers while an earlier stop that did not reach the task is still being confirmed: the workspace stays held, as the reconciler holds it, until the worker is shown to have stopped. */
-export const CLOSE_STOP_NOT_CONFIRMED = "The earlier stop did not reach this task, and Rovara has not yet confirmed that its worker has stopped, so the workspace stays held (closing now could discard work the old run is still writing). Rovara checks within about 10 minutes and frees it; then close the task again.";
+export const CLOSE_STOP_NOT_CONFIRMED = "The earlier stop did not reach this task, and Rovara has not yet confirmed that its worker has stopped, so the workspace stays held (closing now could discard work the old run is still writing). Rovara frees it once it confirms the worker has stopped; then close the task again.";
 
 /** The session states that mean no worker runs the workspace's task any more (the reconciler's `compute: gone`, as far as the control plane can tell without asking the worker). */
 const COMPUTE_GONE_STATES: ReadonlySet<string> = new Set(["STOPPED", "FAILED", "DELETING", "DELETED"]);

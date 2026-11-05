@@ -49,6 +49,8 @@ export { FAILED_CANCEL_GRACE_MS, FAILED_CANCEL_RELEASED_MESSAGE } from "./failed
 
 type Client = { send(command: unknown): Promise<unknown> };
 
+/** 058-stop-close: the least time after a failed cancel before the owner's Close lets an idle ping free the hold (a worker POST times out after 10 s). */
+export const CLOSE_REQUESTED_FLOOR_MS = 60_000;
 /** Owner decision, 2026-10-01: a cancel normally finishes in seconds. */
 export const STUCK_CANCEL_MS = 30 * 60_000;
 /** How long a re-queued cancel gets before the task is ended as interrupted, if its worker answers idle. */
@@ -61,7 +63,11 @@ export type StuckCancelCompute = "alive" | "gone" | "unknown";
 /** Issue 202: a live worker's answer to this run's ping: idle (Healthy) or busy (HealthyBusy). */
 export type StuckCancelWorker = "idle" | "busy";
 /** `worker` only for alive compute whose ping answered this run. */
-export interface StuckCancelCandidate { workspaceId: string; compute: StuckCancelCompute; worker?: StuckCancelWorker }
+export interface StuckCancelCandidate {
+  workspaceId: string; compute: StuckCancelCompute; worker?: StuckCancelWorker;
+  /** When this run's ping was started (epoch ms; the ping ran at or after it). The owner's-Close fast path only trusts an idle answer taken after the cancel failed. */
+  pingedAt?: number;
+}
 
 export type StuckCancelRetry =
   | { outcome: "REQUEUED"; cancelOperationId: string }
@@ -120,7 +126,7 @@ export async function sweepStuckCancels(
 
 async function settle(
   dependencies: StuckCancelDependencies,
-  { workspaceId, compute, worker }: StuckCancelCandidate,
+  { workspaceId, compute, worker, pingedAt }: StuckCancelCandidate,
   at: Date,
   result: StuckCancelSweepResult,
   log: (entry: Record<string, unknown>) => void,
@@ -145,9 +151,12 @@ async function settle(
     } else if (worker === "idle") {
       // A retried one keeps #200's retry limit (30 minutes from when its retried cancel failed),
       // longer than the 10 minutes a first failed cancel waits.
-      // 058-stop-close: the owner asked to close the task (`closeRequestedAt`): the worker's idle answer is the evidence, and the grace that guards a task POST still in flight has passed with it
-      // (the close's own request came after the stop). Only an idle answer frees it; a busy or unknown worker keeps the hold, as ever.
-      if (typeof operation.closeRequestedAt !== "string" && !(waited > (retried ? STUCK_CANCEL_RETRY_MS : FAILED_CANCEL_GRACE_MS))) return;
+      // 058-stop-close: the owner asked to close the task (`closeRequestedAt`). The worker's idle answer is the evidence, so the grace is skipped, but only for an answer that cannot predate the failure:
+      // this run's ping must have started after the cancel failed, and a floor (longer than a worker POST's 10 s timeout) must have passed, so a task POST still in flight when the cancel failed has
+      // landed and shows as busy. A busy or unknown worker keeps the hold, as ever.
+      const asked = typeof operation.closeRequestedAt === "string";
+      if (asked && !(pingedAt !== undefined && pingedAt > failedAt && waited > CLOSE_REQUESTED_FLOOR_MS) && !(waited > (retried ? STUCK_CANCEL_RETRY_MS : FAILED_CANCEL_GRACE_MS))) return;
+      if (!asked && !(waited > (retried ? STUCK_CANCEL_RETRY_MS : FAILED_CANCEL_GRACE_MS))) return;
       reason = "worker-idle";
     } else {
       // Busy: never freed on time alone. Unknown (the ping failed): the ping-failure rule replaces

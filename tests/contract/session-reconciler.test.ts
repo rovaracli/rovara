@@ -507,7 +507,7 @@ describe("reconciler: stuck cancels (issue 195)", () => {
     expect(at).toEqual(NOW);
     expect([...candidates].sort((a, b) => a.workspaceId.localeCompare(b.workspaceId))).toEqual([
       // Issue 202: a live worker's own answer to this run's ping comes with it.
-      { workspaceId: aliveWorkspace, compute: "alive", worker: "idle" },
+      { workspaceId: aliveWorkspace, compute: "alive", worker: "idle", pingedAt: NOW.getTime() },
       { workspaceId: lostWorkspace, compute: "gone" },
       { workspaceId: stopped, compute: "gone" },
       { workspaceId: failed, compute: "gone" },
@@ -551,8 +551,8 @@ describe("reconciler: stuck cancels (issue 195)", () => {
     });
     await reconcile();
     const candidates = new Map([...sweep.mock.calls[0]![0]].map((candidate) => [candidate.workspaceId, candidate]));
-    expect(candidates.get(workers[0]!)).toEqual({ workspaceId: workers[0], compute: "alive", worker: "idle" });
-    expect(candidates.get(workers[1]!)).toEqual({ workspaceId: workers[1], compute: "alive", worker: "busy" });
+    expect(candidates.get(workers[0]!)).toEqual({ workspaceId: workers[0], compute: "alive", worker: "idle", pingedAt: NOW.getTime() });
+    expect(candidates.get(workers[1]!)).toEqual({ workspaceId: workers[1], compute: "alive", worker: "busy", pingedAt: NOW.getTime() });
     expect(candidates.get(workers[2]!)).toEqual({ workspaceId: workers[2], compute: "alive" });
     expect(candidates.get(workers[3]!)).toEqual({ workspaceId: workers[3], compute: "alive" });
   });
