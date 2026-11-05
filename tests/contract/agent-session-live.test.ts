@@ -244,6 +244,8 @@ describe("the actions a tile offers are the caller's own", () => {
     expect(await of(MAX)).toEqual(expect.arrayContaining(["watch", "comment", "steer", "stop", "take_over", "share"]));
     expect(await of(MAX)).not.toContain("retry");
     expect(await of(PRIYA)).toEqual(expect.arrayContaining(["stop", "handoff"]));
+    // QA6-11: the owner already owns it, so Take over is for others only.
+    expect(await of(PRIYA)).not.toContain("take_over");
   });
 
   it("offers retry on a session that failed", async () => {

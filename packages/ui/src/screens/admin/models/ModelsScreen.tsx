@@ -16,7 +16,7 @@ function ServingCatalog() {
  const read = useAdminRead("serving-models", "/v1/app/models", servingSchema);
  return <><h2>Models returned for this company</h2><ReadSection read={read} label="Permitted model routes">{data => data.models.length === 0 ? <p>No models returned. Provider setup or company rules may block new work. Ask an admin to verify access.</p> : <><DataTable caption="Model routes, unverified provider access" rows={data.models} rowKey={m => `${m.provider}:${m.modelId}`} columns={[
  { key: "model", title: "Model", render: m => <VisibleText text={m.modelId} /> }, { key: "provider", title: "Provider", render: m => <VisibleText text={m.provider === "bedrock" ? "Amazon Bedrock" : m.provider} /> },
- { key: "sources", title: "Sources", render: m => m.sources.map(source => source === "rovara" ? "Rovara" : source === "personal-chatgpt" ? "Personal ChatGPT" : "Company source").join(", ") },
+ { key: "sources", title: "Model source", render: m => m.sources.map(source => source === "rovara" ? "Rovara" : source === "personal-chatgpt" ? "Personal ChatGPT" : "Company source").join(", ") },
  { key: "access", title: "Verification", render: () => "Returned by picker · access unverified" },
  ]} /><p>Fresh provider checks, capabilities and price versions are unavailable in this list. These entries do not prove verified per-model access.</p></>}</ReadSection></>;
 }
@@ -25,7 +25,7 @@ export function ModelsScreen() {
  const location = useLocation(), tab = location.pathname.endsWith("/available") ? "available" : location.pathname.endsWith("/steps") ? "steps" : "sources";
  const read = useAdminRead("sources", "/v1/app/org/model-sources", modelSourcesSnapshot.extend({orgId:z.literal(context.orgId).optional(),developerId:z.literal(context.developerId).optional(),revision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional()}));
  return <section><PageHeader focusOnMount title={tab === "sources" ? "AI models" : tab === "available" ? "Available models" : "Code step models"} description="Company source configuration does not verify access to a model." />
- <nav aria-label="AI models"><NavLink to="/app/admin/models/sources">Sources</NavLink>{" · "}<NavLink to="/app/admin/models/available">Available models</NavLink>{" · "}<NavLink to="/app/admin/models/steps">Code step models</NavLink></nav>
+ <nav aria-label="AI models"><NavLink to="/app/admin/models/sources">Model sources</NavLink>{" · "}<NavLink to="/app/admin/models/available">Available models</NavLink>{" · "}<NavLink to="/app/admin/models/steps">Code step models</NavLink></nav>
  <ReadSection read={read} label="Model sources">{data => <>
  {tab === "sources" && <>
  <h2>Company providers</h2><p>Credential change time and last verification time: unavailable in this view.</p>

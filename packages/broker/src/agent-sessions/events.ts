@@ -7,6 +7,7 @@
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   SESSION_EVENTS_PAGE_MAX,
+  SESSION_EVENT_TEXT_MAX,
   SessionEventSchema,
   agentSessionKey,
   agentXError,
@@ -23,7 +24,8 @@ import { failedIndexes, type TableInput, type TransactItem } from "../agents/tab
 import { followMerges } from "../agents/access.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
-import { safeDisplayName } from "../developer/person-name.js";
+import { isPlaceholderDisplayName, safeDisplayName } from "../developer/person-name.js";
+import { chosenOwnerNames } from "./owner-names.js";
 import { AgentSessionStore, sessionEventItem, type SessionRef, type SessionTaskRef } from "./store.js";
 
 type Item = Record<string, unknown>;
@@ -202,5 +204,21 @@ export async function readSessionEvents(deps: SessionEventsDependencies, caller:
   }
 
   const next = lastSk !== undefined ? lastSk.slice(SK_PREFIX.length) : query.after;
-  return { events: [...events.values()], ...(next === undefined ? {} : { next }) };
+  return { events: await withChosenActorNames(deps, [...events.values()]), ...(next === undefined ? {} : { next }) };
+}
+
+/**
+ * QA6-11: an event keeps the name its person had when it was written, which for work begun before they chose a name is the "Member xxxxxxxx" placeholder, while the header already shows the
+ * name chosen now. A member actor is shown by the chosen name (read by the actor's id, as the owner's is), and the same placeholder in the event's words reads the same. A person who chose none
+ * reads as stored, and so does every event if the read fails.
+ */
+async function withChosenActorNames(deps: SessionEventsDependencies, events: SessionEvent[]): Promise<SessionEvent[]> {
+  const stored = events.flatMap((event) => (event.actor?.kind === "member" && isPlaceholderDisplayName(event.actor.name) ? [event.actor.developerId] : []));
+  const chosen = await chosenOwnerNames(deps, stored);
+  if (chosen.size === 0) return events;
+  return events.map((event) => {
+    const actor = event.actor;
+    const name = actor?.kind === "member" && isPlaceholderDisplayName(actor.name) ? chosen.get(actor.developerId) : undefined;
+    return actor?.kind !== "member" || name === undefined ? event : { ...event, actor: { ...actor, name }, text: [...event.text.split(actor.name).join(name)].slice(0, SESSION_EVENT_TEXT_MAX).join("") };
+  });
 }
