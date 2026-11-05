@@ -960,6 +960,8 @@ async function runTask(
     }
   });
   try {
+    // 058-stop-close: a Stop that came while this run was still preparing (before it registered above) is applied now, before any prompt: the catch below ends the run cancelled.
+    if (dependencies.cancellationController?.isCancelled(invocation.operationId)) throw new WorkerOperationCancelledError(invocation.operationId);
     // Learning v2: the approved lessons the broker chose for this stage, re-checked against the base commit and framed as labelled, inert advice (learned-run.ts). Absent, or for an older broker's
     // invocation, there is nothing: the stage runs as it would without memory. The report says which lessons reached the prompt; a failure to send it loses only a counter.
     const learned = await prepareLearnedContext({ raw: invocation.payload.learnedContext, mode: payloadMode, repositories: candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase) });

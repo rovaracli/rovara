@@ -37,6 +37,9 @@ import { ownerIndexRowOf, syncIndex } from "./task-index.js";
 import { actionableWorkspace, busy, busyOrClosing } from "./task-window.js";
 import { outcomeDepsOf, settleTaskOutcomes } from "../../rovara-code/outcome-hooks.js";
 import { requireProjectSendBackRole } from "../../developer/task-access.js";
+import { releaseFailedCancelWorkspace } from "../failed-cancel-release.js";
+import { wakeAgentRun } from "../agent-run-wakeup.js";
+import { blockStoppedWorkflowRun, type StoppedRunOperation } from "../workflow-cancel-reconcile.js";
 
 /**
  * R22. A repeated requestId returns the same operation, except once the task is closed: the closed
@@ -391,6 +394,25 @@ async function closeNeverStarted(deps: DeveloperTaskRouteDependencies, task: Dev
 const GROUNDING_STOP_WAIT_MS = 12_000;
 const GROUNDING_STOP_POLL_MS = 400;
 
+/**
+ * 058-stop-close (QA6-13): a task whose stop did not reach it ended INTERRUPTED but still holds its workspace, "as the worker may still run it" (issue 202); the reconciler frees it only on
+ * evidence the worker is idle, ten minutes or more later, and Close answered "still working" until then. Close is the owner's decision to end the task, so it frees that hold (only that: a
+ * running operation is never released) and goes on to its own check, which a worker runs on the workspace and which refuses the close on any unpublished work. If that check cannot run, the
+ * close fails and deletes nothing. Answers the workspace as it is afterwards.
+ */
+async function releaseHeldInterruptedOperation(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workspace: Awaited<ReturnType<DeveloperTaskActions["workspace"]>>) {
+  if (workspace.activeOperationId === undefined || workspace.activeOperationId === null) return workspace;
+  const held = await get<{ id?: string; kind?: string; status?: string; fence?: number; workspaceReleasedAt?: string } & Record<string, unknown>>(deps, { pk: `WORKSPACE#${task.workspaceId}`, sk: `OPERATION#${workspace.activeOperationId}` });
+  if (held === undefined || held.kind !== "task" || held.status !== "INTERRUPTED" || typeof held.fence !== "number" || held.workspaceReleasedAt !== undefined) return workspace;
+  const released = await releaseFailedCancelWorkspace(deps.documentClient, deps.tableName, { workspaceId: task.workspaceId, operationId: workspace.activeOperationId }, held, "close-requested", new Date());
+  if (released) {
+    log(deps, { event: "developer.task_close_released_hold", taskId: task.taskId, operationId: workspace.activeOperationId });
+    await wakeAgentRun(deps.documentClient, deps.tableName, task.workspaceId, workspace.activeOperationId);
+    await blockStoppedWorkflowRun(deps.documentClient, deps.tableName, { ...(held as object), id: workspace.activeOperationId, workspaceId: task.workspaceId } as unknown as StoppedRunOperation, "INTERRUPTED");
+  }
+  return deps.actions.workspace(task.workspaceId);
+}
+
 export async function closeTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<DeveloperCloseResponse> {
   const request = parse(DeveloperTaskCloseRequestSchema, value, deps, "close");
   let access = await authorizeTaskActor(deps, caller, taskId, "close");
@@ -430,6 +452,7 @@ export async function closeTask(deps: DeveloperTaskRouteDependencies, caller: De
           workspace = await deps.actions.workspace(task.workspaceId);
         }
       }
+      workspace = await releaseHeldInterruptedOperation(deps, task, workspace);
       let started: Awaited<ReturnType<DeveloperTaskActions["startClose"]>>;
       try {
         // startClose answers a close in flight, and a repeated requestId, with the existing close

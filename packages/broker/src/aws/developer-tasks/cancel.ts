@@ -53,6 +53,9 @@ const PLAN_STAGES: ReadonlySet<string> = new Set(["UNDERSTAND", "PLAN", "PLAN_CR
 /** What a Stop answers for a task blocked after the plan stages: it neither closes nor releases anything. */
 export const BLOCKED_NOT_RUNNING = "This task is blocked, not running. To end it, use Close task (it checks for unpublished work first).";
 
+/** What a Stop answers when an earlier stop did not reach the task (it ended INTERRUPTED and still holds its workspace until Rovara confirms the worker stopped): it is not "nothing was running". */
+export const STOP_NOT_CONFIRMED = "The earlier stop did not reach this task. Rovara is confirming that its worker has stopped and will free the workspace; to end the task now, use Close task (it checks for unpublished work first).";
+
 /** What a Stop answers for a plan that waits for approval after code was written (a re-plan): it neither closes nor releases anything. */
 export const WAITING_NOT_RUNNING = "This task is waiting for a decision, not running, and it may hold unpublished code. To end it, use Close task (it checks for unpublished work first).";
 
@@ -72,6 +75,12 @@ async function mayHoldCode(deps: DeveloperTaskRouteDependencies, task: Developer
     || (workflow.verificationRetries?.length ?? 0) > 0 || (workflow.pullRequests?.length ?? 0) > 0 || workflow.feedbackReview !== undefined || workflow.program !== undefined) return true;
   if (workflow.decisions.some((decision) => SENT_BACK_FROM_CODE_REASONS.includes(decision.reason ?? ""))) return true;
   return (await deps.actions.operations(task.workspaceId)).some((operation) => operation.kind === "publish" || (operation.kind === "task" && (operation.workflowMode === undefined || !PLANNING_MODES.has(operation.workflowMode))));
+}
+
+/** Whether the workspace is still held by an operation that ended INTERRUPTED (its stop failed): the hold only an owner's Close, or the reconciler's evidence, frees. */
+async function holdsInterruptedOperation(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workspace: { activeOperationId?: string | null | undefined }): Promise<boolean> {
+  if (workspace.activeOperationId === undefined || workspace.activeOperationId === null) return false;
+  return (await deps.actions.operations(task.workspaceId)).some((operation) => operation.id === workspace.activeOperationId && operation.kind === "task" && operation.status === "INTERRUPTED");
 }
 
 /** What a retry from a session tells the coder: the person's own words are not asked for. */
@@ -249,6 +258,8 @@ async function cancelTaskWithOutcome(deps: DeveloperTaskRouteDependencies, calle
         log(deps, { event: "agent_run.cancel_failed", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
       }
     }
+    // 058-stop-close: an earlier stop that did not reach the task left it INTERRUPTED and holding its workspace; this stop found nothing to stop, but "nothing was running" would be untrue.
+    if (nothingRunning && message === undefined && await holdsInterruptedOperation(deps, task, workspace)) message = STOP_NOT_CONFIRMED;
   }
   // A plan stopped at review is a finished task like a rejected one: its slot and workspace go back now.
   if (planReviewEnded) await releaseFinishedTaskQuietly(deps, task.taskId);

@@ -2,7 +2,7 @@ import { Suspense, lazy } from "react";
 import { errorRefKey, type ErrorRef } from "@agentx/contracts/web";
 import { Button } from "../../design/Button.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
-import type { ReadSession } from "./SessionHeader.js";
+import { isClosedTask, type ReadSession } from "./SessionHeader.js";
 import { ChainSections } from "./ChainSections.js";
 import { UnderstandQuestions } from "./UnderstandQuestions.js";
 import { NoChangeSection } from "./NoChangeSection.js";
@@ -17,7 +17,8 @@ const STAGE_WORDS: Record<string, string> = { UNDERSTAND: "Understand", PLAN: "P
 const stepWords: Record<string, string> = { pending: "Not started", running: "Working", waiting: "Waiting", done: "Finished", failed: "Failed" };
 export function PipelineTab({ session, task, onComment }: { session: ReadSession; task?: ReadTask | undefined; onComment?: CommentOnPart | undefined }) {
  if (session.body.kind === "chain") return <ChainSections session={session} />;
- return <section aria-label="Work progress">{task?.workflow && <><ol className="rv-pipeline" aria-label="Task stages">{STAGES.map(stage => <li key={stage} {...(STAGE_WORDS[task.workflow!.stage] === stage ? { "aria-current": "step" as const } : {})}>{stage}</li>)}</ol><p className="rv-muted">{workflowStateWords(task.workflow.state)}</p></>}
+ const closed = isClosedTask(session);
+ return <section aria-label="Work progress">{task?.workflow && <><ol className="rv-pipeline" aria-label="Task stages">{STAGES.map(stage => <li key={stage} {...(!closed && STAGE_WORDS[task.workflow!.stage] === stage ? { "aria-current": "step" as const } : {})}>{stage}</li>)}</ol><p className="rv-muted">{closed ? "Closed" : workflowStateWords(task.workflow.state)}</p></>}
  {task && <ModelFallbackNotes task={task} />}
  {task && <NoChangeSection task={task} />}
  {task?.workflow && <LoadedKnowledgePanel taskId={task.taskId} />}

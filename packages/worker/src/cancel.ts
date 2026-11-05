@@ -32,6 +32,8 @@ interface ActiveOperation {
 export class WorkerCancellationController {
   private readonly active = new Map<string, ActiveOperation>();
   private readonly cancelled = new Set<string>();
+  /** Operations a cancel named before they registered (058-stop-close): the stop is applied the moment each registers. */
+  private readonly cancelOnRegister = new Set<string>();
 
   register(operationId: string, session?: AbortablePiSession): () => void {
     if (this.active.has(operationId)) throw agentXError("WORKSPACE_BUSY", "operation is already registered");
@@ -41,7 +43,28 @@ export class WorkerCancellationController {
       liveSteers: [],
     };
     this.active.set(operationId, operation);
+    // A stop that came while this operation was still preparing: marked, and the run's own abort runs now, so the run ends on its first check instead of going on.
+    if (this.cancelOnRegister.delete(operationId)) {
+      this.cancelled.add(operationId);
+      queueMicrotask(() => { void this.cancel(operationId).catch(() => undefined); });
+    }
     return () => this.active.delete(operationId);
+  }
+
+  /** Whether the operation is registered (running) here now. */
+  isRegistered(operationId: string): boolean {
+    return this.active.has(operationId);
+  }
+
+  /**
+   * A cancel for an operation the worker has taken but that has not registered yet (it is still checking out or starting its session): the stop is remembered, marked cancelled at once, and
+   * applied when the operation registers. False when it is registered already (the ordinary cancel applies).
+   */
+  cancelWhenRegistered(operationId: string): boolean {
+    if (this.active.has(operationId)) return false;
+    this.cancelled.add(operationId);
+    this.cancelOnRegister.add(operationId);
+    return true;
   }
 
   spawnTracked(
