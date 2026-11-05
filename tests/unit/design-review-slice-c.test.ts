@@ -7,7 +7,7 @@ import { designClassificationNoteOf } from "../../packages/broker/src/design-rev
 import { spendEstimatesOf } from "../../packages/broker/src/design-review/spend-estimates.js";
 import { readDesignTouches } from "../../packages/broker/src/design-review/route-facts.js";
 import { parseDesignFirstPrefix } from "../../packages/broker/src/rovara-code/explicit-path.js";
-import { designFirstRequestOf } from "../../packages/broker/src/design-review/design-first.js";
+import { designFirstRequestOf, designFirstWebStart, DESIGN_FIRST_UNAVAILABLE } from "../../packages/broker/src/design-review/design-first.js";
 import { parseWorkflowStartRequest } from "../../packages/broker/src/aws/slack-workflow-choice.js";
 import { dynamoDecisionStore } from "../../packages/broker/src/decisions/store.js";
 import { routeDecisionCards, type DecisionRouteDependencies } from "../../packages/broker/src/decisions/routes.js";
@@ -142,6 +142,25 @@ describe("the intake and the first card", () => {
     const off = company(true);
     expect(await designFirstRequestOf(off.table, ORG, "Design first: add a retry", { ...on, DESIGN_REVIEW_ENABLED: "0" })).toEqual({ designFirst: false, rest: "Design first: add a retry" });
     expect(off.sent).toHaveLength(0);
+  });
+
+  it("the web start box: the ticked option and the typed prefix are read only while the stage exists; the ticked option is refused otherwise, with nothing read at all when `dr` is off", async () => {
+    const table = (allowed: boolean) => { const sent: unknown[] = []; return { sent, table: { tableName: "state", documentClient: { send: async (command: unknown) => { sent.push(command); return { Item: { revision: 1, lock: {}, policy: { allowed } } }; } } } }; };
+    const on = { DESIGN_REVIEW_ENABLED: "1" };
+    expect(await designFirstWebStart(table(true).table, ORG, { text: "add a retry", asked: true }, on)).toEqual({ designFirst: true, text: "add a retry" });
+    expect(await designFirstWebStart(table(true).table, ORG, { text: "Design first: add a retry", asked: false }, on)).toEqual({ designFirst: true, text: "add a retry" });
+    expect(await designFirstWebStart(table(true).table, ORG, { text: "add a retry", asked: false }, on)).toEqual({ designFirst: false, text: "add a retry" });
+    // What follows the prefix is trimmed, as Slack trims it; text with no prefix is exactly what was typed.
+    expect(await designFirstWebStart(table(true).table, ORG, { text: "  DESIGN-FIRST :   add a retry \n", asked: false }, on)).toEqual({ designFirst: true, text: "add a retry" });
+    expect(await designFirstWebStart(table(true).table, ORG, { text: " add a retry ", asked: true }, on)).toEqual({ designFirst: true, text: " add a retry " });
+    expect(await designFirstWebStart(table(false).table, ORG, { text: "design first: add a retry", asked: false }, on)).toEqual({ designFirst: false, text: "design first: add a retry" });
+    await expect(designFirstWebStart(table(false).table, ORG, { text: "add a retry", asked: true }, on)).rejects.toThrow(DESIGN_FIRST_UNAVAILABLE);
+    const off = table(true);
+    await expect(designFirstWebStart(off.table, ORG, { text: "add a retry", asked: true }, { DESIGN_REVIEW_ENABLED: "0" })).rejects.toThrow(DESIGN_FIRST_UNAVAILABLE);
+    expect(off.sent).toHaveLength(0);
+    await expect(designFirstWebStart(undefined, ORG, { text: "add a retry", asked: true }, on)).rejects.toThrow(DESIGN_FIRST_UNAVAILABLE);
+    const unreadable = { tableName: "state", documentClient: { send: async () => { throw new Error("down"); } } };
+    await expect(designFirstWebStart(unreadable, ORG, { text: "add a retry", asked: true }, on)).rejects.toThrow(DESIGN_FIRST_UNAVAILABLE);
   });
 
   it("ON-2: the model's note on the classification line is made inert for Slack and Linear threads: no @channel, no link, no mention, no tag", () => {

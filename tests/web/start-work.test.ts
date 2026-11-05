@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -19,6 +19,8 @@ import { projectFixture } from "./support/project-fixture.js";
 import { taskFixture, sessionFixture } from "./support/session-fixture.js";
 import { LAYER, howWeWorkView } from "./support/how-we-work-view.js";
 import { liveFixture } from "./support/live-fixture.js";
+// jsdom has no ResizeObserver, which the checkbox inside a form measures with.
+globalThis.ResizeObserver ??= class { observe(): void { /* none */ } unobserve(): void { /* none */ } disconnect(): void { /* none */ } };
 const id = "ses_bbbbbbbbbbbbbbbbbbbb", CODE = "/v1/app/projects/payments/code";
 const started = () => ({ status: 202, body: { task: taskFixture({ sessionId: id }), sessionId: id, sessionUrl: "https://cell.example/s/" + id } });
 // Match json-reply.ts, including gateway overwrite of a route's own requestId.
@@ -154,4 +156,70 @@ for (const result of [{ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", 
 it("a pending preview never disables Start", async () => {
  const f = setup(undefined, { preview: async () => new Promise<ApiResponse>(() => undefined) });
  try { fireEvent.change(await box(), { target: { value: "Fix it" } });expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start" }).disabled).toBe(false);fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1)); } finally { f.close(); }
+});
+
+// DR-UX-3: the start box's "Design first" option. It is offered only where the playbook answer says design review exists for the company (`designReviewAllowed: true`, which means `dr` is on and the company allows it).
+const PLAYBOOK = "/v1/app/projects/payments/playbook", DESIGN_FIRST = "Review the design before building (Design first)";
+const playbookAnswer = (allowed: boolean | undefined, mode: "never" | "auto" | "always" = "auto") => ({ status: 200, body: { ...(allowed === undefined ? {} : { designReviewAllowed: allowed }), playbook: { revision: 2, defaultProcess: { kind: "builtin" }, ...(allowed === true ? { designReview: { mode, tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } } : {}) } } });
+const withPlaybook = (answer: ApiResponse | undefined) => (request: ApiRequest): ApiResponse | undefined => request.path === PLAYBOOK ? answer : undefined;
+describe("Design first in the start box", () => {
+ it("is offered, with an accessible name, where design review is available for the company, whatever the project's own mode (Off included)", async () => {
+  for (const mode of ["never", "auto", "always"] as const) {
+   const f = setup(undefined, { get: withPlaybook(playbookAnswer(true, mode)) });
+   const option = await screen.findByRole("checkbox", { name: DESIGN_FIRST });expect(option.getAttribute("aria-checked")).toBe("false");
+   f.close();
+  }
+ });
+ it("is not there where the company has not allowed it, where the stage is off (no company word), or where the setting cannot be read", async () => {
+  for (const answer of [playbookAnswer(false), playbookAnswer(undefined), { status: 500, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "x" } } }, { status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } }] as ApiResponse[]) {
+   const f = setup(undefined, { get: withPlaybook(answer) });
+   await box();await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.path === PLAYBOOK)).toBe(true));
+   expect(screen.queryByRole("checkbox", { name: DESIGN_FIRST })).toBeNull();expect(screen.queryByText(/design first/iu)).toBeNull();
+   f.close();
+  }
+ });
+ it("is not there for a viewer, who has no start box", async () => {
+  const f = setup(projectFixture({ you: { role: "viewer", canStartWork: false, canEditSettings: false, canViewSpend: false } }), { get: withPlaybook(playbookAnswer(true)) });await screen.findByRole("heading", { name: "payments" });
+  expect(screen.queryByRole("checkbox", { name: DESIGN_FIRST })).toBeNull();f.close();
+ });
+ it("sends the flag only when ticked, and an unticked start has exactly the old body", async () => {
+  const f = setup(undefined, { get: withPlaybook(playbookAnswer(true)) }), navigate = vi.spyOn(f.host, "navigate");
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));
+  expect(posts(f)[0]).toMatchObject({ path: CODE, body: { input: { text: "Add a retry" }, designFirst: true } });f.close();
+  const plain = setup(undefined, { get: withPlaybook(playbookAnswer(true)) });
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });await screen.findByRole("checkbox", { name: DESIGN_FIRST });fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(posts(plain)).toHaveLength(1));expect(Object.keys(posts(plain)[0]!.body as object).sort()).toEqual(["input", "requestId"]);plain.close();
+ });
+ it("a retry of the same text with the option changed is a new request (a lost answer never turns into a different start)", async () => {
+  let attempt = 0;const send = vi.fn(async (): Promise<ApiResponse> => (attempt++ === 0 ? { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "x" } } } : started()));
+  const f = setup(undefined, { send, get: withPlaybook(playbookAnswer(true)) });
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));await screen.findByRole("alert");
+  fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+  const [first, second] = send.mock.calls.map(call => (call as unknown as [ApiRequest])[0].body as { requestId: string; designFirst?: boolean });
+  expect(first!.designFirst).toBeUndefined();expect(second!.designFirst).toBe(true);expect(second!.requestId).not.toBe(first!.requestId);f.close();
+ });
+ it("when the broker refuses it (the company stopped allowing it while the page was open) the page says so plainly, keeps the text and reads the setting again", async () => {
+  let allowed = true;const send = vi.fn(async (): Promise<ApiResponse> => { allowed = false;return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Design review isn't available right now." } } }; });
+  const f = setup(undefined, { send, get: request => request.path === PLAYBOOK ? playbookAnswer(allowed) : undefined }), navigate = vi.spyOn(f.host, "navigate");
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  expect((await screen.findByRole("alert")).textContent).toMatch(/Design first/u);expect(navigate).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.queryByRole("checkbox", { name: DESIGN_FIRST })).toBeNull());expect((await box() as HTMLTextAreaElement).value).toBe("Add a retry");f.close();
+ });
+ it("only the broker's fixed Design first refusal gets the Design first words and a re-read; any other refusal keeps its usual words", async () => {
+  const send = vi.fn(async (): Promise<ApiResponse> => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "input.text: request is empty" } } }));
+  const f = setup(undefined, { send, get: withPlaybook(playbookAnswer(true)) });
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));
+  const reads = () => f.request.mock.calls.filter(([request]) => request.path === PLAYBOOK).length, before = reads();fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  const alert = await screen.findByRole("alert");expect(alert.textContent).toMatch(/4000/u);expect(alert.textContent).not.toMatch(/Design first/u);expect(reads()).toBe(before);
+  expect(screen.getByRole("checkbox", { name: DESIGN_FIRST })).toBeTruthy();f.close();
+ });
+ it("sends no flag if the option was ticked and then stopped being offered", async () => {
+  let allowed = true;const f = setup(undefined, { get: request => request.path === PLAYBOOK ? playbookAnswer(allowed) : undefined });
+  fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));allowed = false;await f.query.refetchQueries({ queryKey: ["how-we-work", "payments", "design-review"] });
+  await waitFor(() => expect(screen.queryByRole("checkbox", { name: DESIGN_FIRST })).toBeNull());
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(posts(f)).toHaveLength(1));expect(Object.keys(posts(f)[0]!.body as object).sort()).toEqual(["input", "requestId"]);f.close();
+ });
+ for (const theme of ["light", "dark"] as const) it("has no accessibility violations with the option shown in " + theme, async () => { const f = setup(undefined, { theme, get: withPlaybook(playbookAnswer(true)) });await screen.findByRole("checkbox", { name: DESIGN_FIRST });await expectNoAxeViolations(f.container);f.close(); });
 });

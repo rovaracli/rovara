@@ -4,6 +4,8 @@
 import { CodeIntentBodySchema, agentXError } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
+import { designFirstWebStart } from "../design-review/design-first.js";
+import type { ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
 import { startCodeIntent, type CodeIntentDependencies } from "./intent.js";
 import { taskResponseForClient } from "./task-view-compat.js";
 
@@ -13,6 +15,8 @@ export const CODE_INTENT_PATH = /^\/v1\/app\/projects\/([^/]+)\/code$/;
 export interface CodeIntentRouteDependencies extends CodeIntentDependencies {
   /** The name of a project the caller can see in their org, or the same `PROJECT_NOT_FOUND` for no access, no such project and another org's project. */
   visibleProject(caller: DeveloperCaller, rawName: string): Promise<string>;
+  /** The table, for "Design first" (DR-UX-3): the company's design review rules are read from it and the task is marked in it. Absent: Design first is unavailable (fail closed). */
+  table?: ProjectPlaybookReader | undefined;
 }
 
 /**
@@ -25,6 +29,7 @@ export async function routeCodeIntentStart(
   rawProject: string,
   body: unknown,
   headers: Readonly<Record<string, string | undefined>>,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<StatusReply> {
   if (deps.starter === undefined) throw agentXError("NOT_FOUND", "starting work is not set up in this deployment");
   const project = await deps.visibleProject(caller, rawProject);
@@ -35,6 +40,10 @@ export async function routeCodeIntentStart(
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
   const { requestId, input, path } = parsed.data;
-  const started = await startCodeIntent(deps, caller, { requestId, project, input, source: "app", ...(path === undefined ? {} : { path }) });
+  // "Design first" (DR-UX-3): the ticked option or a leading `design first:`, the same ask as Slack and Linear, read only while design review is available for the company. The prefix is not part of the request.
+  const first = await designFirstWebStart(deps.table, caller.orgId, { text: input.text, asked: parsed.data.designFirst === true }, env);
+  const asked = first.designFirst ? { ...input, text: first.text } : input;
+  // The ask goes into the start itself: the task row is created with it (no later mark that can fail or lose a race with Understand), and it is part of the request's fingerprint, so the same request id with another value is IDEMPOTENCY_CONFLICT.
+  const started = await startCodeIntent(deps, caller, { requestId, project, input: asked, source: "app", ...(path === undefined ? {} : { path }), ...(first.designFirst ? { designFirst: true as const } : {}) });
   return new StatusReply(202, taskResponseForClient(started, headers));
 }

@@ -84,6 +84,7 @@ export async function startCodeIntent(deps: CodeIntentDependencies, caller: Deve
     ...(request.path === undefined ? {} : { path: request.path }),
     ...(request.binding === undefined ? {} : { binding: request.binding }),
     ...(request.retryOf === undefined ? {} : { retryOf: request.retryOf }),
+    ...(request.designFirst === true ? { designFirst: true as const } : {}),
   };
   if (deps.starter === undefined) return startWithoutAgents(deps, caller, request);
   // The project's way of working decides which agent runs. A pointer that no longer holds stops the start (`PROCESS_UNAVAILABLE`); it never runs the built-in instead.
@@ -112,6 +113,8 @@ export async function startCodeIntent(deps: CodeIntentDependencies, caller: Deve
 async function startWithoutAgents(deps: CodeIntentDependencies, caller: DeveloperCaller, request: CodeIntentRequest): Promise<CodeIntentResult<DeveloperTaskView>> {
   if (!PLAIN_SOURCES.has(request.source)) throw agentXError("RUNTIME_UNAVAILABLE", "starting work from here isn't set up in this deployment");
   if (request.input.context !== undefined && request.input.context.length > 0) throw agentXError("CONFIG_INVALID", "agents are not set up in this deployment");
+  // The plain start has no way to record the ask with the task, so it is refused rather than dropped.
+  if (request.designFirst === true) throw agentXError("RUNTIME_UNAVAILABLE", "starting work with a design review isn't set up in this deployment");
   const answer = await deps.startPlainTask(caller, {
     requestId: request.requestId, project: request.project, instructions: request.input.text, client: request.source, workflow: true,
     ...(request.path === undefined ? {} : { workflowPath: request.path }),

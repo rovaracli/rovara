@@ -527,6 +527,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.
     ...(asWorkflow ? { requestText: storedRequestText(requestText) } : {}),
     ...(run?.codeIntent?.retryOf === undefined ? {} : { retryOfTaskId: run.codeIntent.retryOf }),
+    // DR-UX-3: the person asked for a design review of this task (the web start box). Written with the task, so Understand always sees it; the same shape the Slack and Linear mark has.
+    ...(run?.codeIntent?.designFirst === true ? { designFirst: { by: caller.developerId, at: receivedAt } } : {}),
     // NH-1: a nightly test run is a task of its own purpose, with what it was started to run.
     ...(run?.nightlyRun === undefined ? {} : { purpose: "nightly_run" as const, nightlyRun: run.nightlyRun }),
     ...(settingUpDraft && run?.nightlyRun === undefined ? run?.diagnosis !== undefined ? { purpose: "diagnosis" as const, diagnosis: run.diagnosis } : run?.setupAgent !== undefined ? { purpose: "setup_agent" as const, setupAgentLimits: run.setupAgent.limits } : { purpose: "setup_draft" as const } : {}),

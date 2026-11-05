@@ -32,3 +32,18 @@ test("an enrolled company shows the real spending-stop preview before starting w
  const calls = await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string }>;
  expect(calls.filter(call => call.method === "POST" && call.path.endsWith("/start-preview"))).toHaveLength(1);expect(calls.filter(call => call.method === "POST" && call.path.endsWith("/code"))).toHaveLength(1);
 });
+
+test("Design first in the start box is offered only where design review is available, and starting with it sends the flag", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "project" } });
+ let allowed = false;
+ await page.route("**/v1/web/projects/payments/playbook", route => route.fulfill({ json: allowed
+  ? { designReviewAllowed: true, playbook: { revision: 2, defaultProcess: { kind: "builtin" }, designReview: { mode: "never", tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } } }
+  : { designReviewAllowed: false, playbook: { revision: 2, defaultProcess: { kind: "builtin" } } } }));
+ await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);await mockRealtime(page);await page.setViewportSize({ width: 360, height: 800 });
+ const option = page.getByRole("checkbox", { name: "Review the design before building (Design first)" });
+ await page.goto("/app/projects/payments");await expect(page.getByRole("textbox", { name: "What do you need?" })).toBeVisible();await expect(option).toHaveCount(0);
+ allowed = true;await page.reload();await expect(option).toBeVisible();await checkA11y(page, { theme: "dark" });
+ await page.getByRole("textbox", { name: "What do you need?" }).fill("Add a retry to refunds");await option.check();await expect(option).toBeChecked();await page.getByRole("button", { name: "Start", exact: true }).click();await expect(page).toHaveURL(/\/s\/ses_bbbbbbbbbbbbbbbbbbbb$/u);
+ const sent = await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string; body?: unknown }>;
+ const starts = sent.filter(item => item.method === "POST" && item.path.endsWith("/code"));expect(starts).toHaveLength(1);expect(starts[0]?.body).toMatchObject({ input: { text: "Add a retry to refunds" }, designFirst: true });
+});

@@ -2,7 +2,7 @@
 // Plan 9 and Task 25), through the same start every task uses, so the project role, the company's rules, the budget and the planning limit are the ones that already exist. A
 // version 2 task starts at UNDERSTAND/READY; a version 1 task starts as it always did. The broker is built with `agents: {}` as the deployed handler is.
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -20,6 +20,8 @@ import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer }
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, loadSlackBroker } from "../support/slack-broker.js";
+import { seedDesignReviewCompany } from "../support/design-review-company.js";
+import { designFirstRequestOf } from "../../packages/broker/src/design-review/design-first.js";
 
 const ARJUN: Developer = { developerId: "a1".repeat(32), name: "Arjun Rao", provider: "oidc", sessionId: "s-arjun" };
 const KIT: Developer = { developerId: "4".repeat(64), name: "Kit Alvarez", provider: "oidc", sessionId: "s-kit" };
@@ -128,6 +130,13 @@ describe("the request shapes", () => {
   it("the route body has the request id, the input and the path, and no key that names a source, a payer or a binding", () => {
     const body = { requestId: randomUUID(), input: { text: "Fix it" } };
     expect(CodeIntentBodySchema.safeParse(body).success).toBe(true);
+    expect(CodeIntentBodySchema.safeParse({ ...body, designFirst: true }).success).toBe(true);
+    expect(CodeIntentBodySchema.safeParse({ ...body, designFirst: "yes" }).success).toBe(false);
+    // The intent carries it for the app only, and only as true.
+    const intent = { requestId: randomUUID(), project: "payments", input: { text: "Fix it" } };
+    expect(CodeIntentRequestSchema.safeParse({ ...intent, source: "app", designFirst: true }).success).toBe(true);
+    expect(CodeIntentRequestSchema.safeParse({ ...intent, source: "app", designFirst: false }).success).toBe(false);
+    expect(CodeIntentRequestSchema.safeParse({ ...intent, source: "slack", binding: THREAD, designFirst: true }).success).toBe(false);
     for (const extra of [{ source: "linear" }, { assignedBy: { bot: true } }, { binding: ISSUE }, { payer: { kind: "project", project: "payments" } }, { offerId: "off_1" }, { retryOf: TASK_ID_A }, { project: "payments" }]) {
       expect(CodeIntentBodySchema.safeParse({ ...body, ...extra }).success, JSON.stringify(extra)).toBe(false);
     }
@@ -594,3 +603,140 @@ describe("the Slack start goes through startCodeIntent", () => {
   });
 });
 
+
+// DR-UX-3: "Design first" on the web start box, the same person-decided flag as the Slack and Linear `design first:` prefix. It is offered only while `dr` is on AND the company allows design review.
+describe("POST /v1/app/projects/{project}/code with Design first", () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+  const on = (db: { set(item: Record<string, unknown>): void }, allowed = true) => { vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); seedDesignReviewCompany(db, TEST_ORG, { allowed }); };
+
+  it("the checkbox's flag marks the task as the person's own ask (decidedBy person, by the caller) and leaves the request text alone", async () => {
+    const t = await setup({ v2: true });
+    await t.member(MAYA);
+    on(t.db);
+    const reply = await t.send(MAYA, { designFirst: true });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const stored = t.meta(t.taskOf(reply).taskId);
+    expect(stored.designFirst).toMatchObject({ by: MAYA.developerId });
+    expect(JSON.stringify(stored)).toContain("Fix the retry bug");
+    // A task started without the flag carries no mark (positive control: the mark above came from the flag).
+    const plain = await t.send(MAYA, {});
+    expect(t.meta(t.taskOf(plain).taskId).designFirst).toBeUndefined();
+  });
+
+  it("the ask is written with the task row itself (by the caller, with a time), and a replay with another value is an IDEMPOTENCY_CONFLICT either way", async () => {
+    const t = await setup({ v2: true });
+    await t.member(MAYA);
+    on(t.db);
+    const requestId = randomUUID();
+    const first = await t.send(MAYA, { requestId, designFirst: true });
+    expect(first.status, JSON.stringify(first.body)).toBe(202);
+    const stored = t.meta(t.taskOf(first).taskId);
+    expect(stored.designFirst).toEqual({ by: MAYA.developerId, at: expect.stringMatching(/^\d{4}-\d\d-\d\dT/u) as unknown });
+    expect(stored.designFirst).toMatchObject({ at: stored.createdAt });
+    // The same request again is the same task; the same id without the ask, or with it where the first had none, is another request.
+    const again = await t.send(MAYA, { requestId, designFirst: true });
+    expect(again.status).toBe(202);
+    expect(t.taskOf(again).taskId).toBe(t.taskOf(first).taskId);
+    const without = await t.send(MAYA, { requestId });
+    expect(without.status).toBe(409);
+    expect(errorOf(without).code).toBe("IDEMPOTENCY_CONFLICT");
+    const plainId = randomUUID();
+    expect((await t.send(MAYA, { requestId: plainId })).status).toBe(202);
+    const added = await t.send(MAYA, { requestId: plainId, designFirst: true });
+    expect(added.status).toBe(409);
+    expect(errorOf(added).code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(t.taskCount()).toBe(2);
+  });
+
+  it("a project set to Off still gets the review, because the person asked (the company only has to allow it)", async () => {
+    const t = await setup({ v2: true });
+    await t.member(MAYA);
+    on(t.db);
+    seedDesignReviewCompany(t.db, TEST_ORG, { allowed: true, project: { name: "payments", mode: "never" } });
+    const reply = await t.send(MAYA, { designFirst: true });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    expect(t.meta(t.taskOf(reply).taskId).designFirst).toMatchObject({ by: MAYA.developerId });
+  });
+
+  it("is refused, and starts nothing, when the company has not allowed design review", async () => {
+    const t = await setup({ v2: true });
+    await t.member(MAYA);
+    on(t.db, false);
+    const reply = await t.send(MAYA, { designFirst: true });
+    expect(reply.status).toBe(400);
+    expect(errorOf(reply).code).toBe("CONFIG_INVALID");
+    expect(JSON.stringify(reply.body)).not.toMatch(/admin|allow|setting|lock/iu);
+    expect(t.taskCount()).toBe(0);
+    expect(t.sessions()).toHaveLength(0);
+  });
+
+  it("is refused, and starts nothing, when `dr` is off, and when the company has no policy at all", async () => {
+    const off = await setup({ v2: true });
+    await off.member(MAYA);
+    vi.stubEnv("DESIGN_REVIEW_ENABLED", "0");
+    seedDesignReviewCompany(off.db, TEST_ORG, { allowed: true });
+    expect((await off.send(MAYA, { designFirst: true })).status).toBe(400);
+    expect(off.taskCount()).toBe(0);
+    const bare = await setup({ v2: true });
+    await bare.member(MAYA);
+    vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
+    expect((await bare.send(MAYA, { designFirst: true })).status).toBe(400);
+    expect(bare.taskCount()).toBe(0);
+  });
+
+  it("a person who cannot start work on the project gets the usual refusal, not a task, with the flag on", async () => {
+    const t = await setup({ v2: true });
+    await t.member(MAYA, "viewer");
+    on(t.db);
+    const reply = await t.send(MAYA, { designFirst: true });
+    expect(reply.status).toBeGreaterThanOrEqual(400);
+    expect(t.taskCount()).toBe(0);
+  });
+
+  it("reads a leading `design first:` in the typed text the way Slack and Linear do: stripped from the stored request, the task marked", async () => {
+    const t = await setup({ v2: true });
+    await t.member(MAYA);
+    on(t.db);
+    const reply = await t.send(MAYA, { input: { text: "  Design First :  Fix the retry bug" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const stored = t.meta(t.taskOf(reply).taskId);
+    expect(stored.designFirst).toMatchObject({ by: MAYA.developerId });
+    const text = JSON.stringify(stored);
+    expect(text).toContain("Fix the retry bug");
+    expect(text).not.toMatch(/design first\s*:/iu);
+  });
+
+  it("leaves the prefix in the text, and marks nothing, while design review is not available (as Slack does)", async () => {
+    const t = await setup({ v2: true });
+    await t.member(MAYA);
+    on(t.db, false);
+    const reply = await t.send(MAYA, { input: { text: "design first: Fix the retry bug" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const stored = t.meta(t.taskOf(reply).taskId);
+    expect(stored.designFirst).toBeUndefined();
+    expect(JSON.stringify(stored)).toMatch(/design first: Fix the retry bug/iu);
+  });
+
+  it("a prefix with nothing after it is an empty request, refused like any other", async () => {
+    const t = await setup({ v2: true });
+    await t.member(MAYA);
+    on(t.db);
+    const reply = await t.send(MAYA, { input: { text: "design first:   " } });
+    expect(reply.status).toBe(400);
+    expect(t.taskCount()).toBe(0);
+  });
+
+  it("parity: the web route and the Slack and Linear reader strip the same text for the same input", async () => {
+    for (const text of ["design first: add a retry", "Design-First : add a retry", "DESIGN_FIRST:add a retry", "quick: design first: add a retry", "please design first: add a retry", "design first add a retry", "design firstly: add a retry"]) {
+      const t = await setup({ v2: true });
+      await t.member(MAYA);
+      on(t.db);
+      const shared = await designFirstRequestOf({ documentClient: t.db, tableName: "state" }, TEST_ORG, text);
+      const reply = await t.send(MAYA, { input: { text } });
+      expect(reply.status, text).toBe(202);
+      const stored = t.meta(t.taskOf(reply).taskId);
+      expect(stored.designFirst !== undefined, text).toBe(shared.designFirst);
+      expect(JSON.stringify(stored), text).toContain(shared.rest.trim());
+    }
+  });
+});
