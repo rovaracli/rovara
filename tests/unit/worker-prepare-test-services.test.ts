@@ -53,7 +53,7 @@ async function harness(options: { docker?: FakeServicesDockerOptions; testChecks
   for (const entry of catalog.entries) if (entry.id === "postgres@16") entry.image.digest = DIGEST;
   const runParent = await temp("rsv-prep-runs-");
   const config: TestServicesConfig = {
-    docker: fake.docker, registry: "123456789012.dkr.ecr.us-west-2.amazonaws.com", catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
+    docker: fake.docker, registry: "123456789012.dkr.ecr.us-west-2.amazonaws.com", catalogEnv: "staging", edition: "public", probeImage: IMAGE, guardImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
     catalog: () => Promise.resolve(catalog), sealedRound: SEALED_ROUND_PORTS, sleep: () => Promise.resolve(), log: () => undefined,
   };
   const records: TestServicesUsageRecord[] = [];
