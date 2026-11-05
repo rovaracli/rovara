@@ -230,7 +230,7 @@ async function workerBench(options: { docker?: FakeServicesDockerOptions; aws?: 
   const runParent = await temp("tsa-runs-");
   const artifacts: Array<{ name: string; mediaType: string; content: string }> = [];
   const config: TestServicesConfig = {
-    docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
+    docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, guardImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: runParent,
     catalog: () => Promise.resolve(pinnedCatalog()), sealedRound: SEALED_ROUND_PORTS, sleep: () => Promise.resolve(), log: () => undefined,
   };
   const sandbox = new TaskSandbox({ rootPath: root, taskId: OPERATION, docker, image: IMAGE, log: () => undefined });
