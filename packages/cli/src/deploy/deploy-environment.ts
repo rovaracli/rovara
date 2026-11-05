@@ -9,7 +9,7 @@ import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
 import { assertAuditLockNotLowered, CLOUD_NEEDS_CDK_MESSAGE } from "./answer-schemas.js";
 import { assertModelsServedByProxy } from "./proxy-models.js";
-import { installOrder, OPERATOR_PARAMETERS, SECRET_PARAMETERS, stackParameters, upgradeOrder, type DeployPart, type InstallAnswers, type StackOutputs } from "./parameters.js";
+import { installOrder, isRetiredParameter, OPERATOR_PARAMETERS, SECRET_PARAMETERS, stackParameters, upgradeOrder, type DeployPart, type InstallAnswers, type StackOutputs } from "./parameters.js";
 import type { LoadedRelease } from "./release.js";
 import { callbackSigningKey, type SecretValueStore } from "./signing-key.js";
 import { readStoredDeveloperSignIn, SIGN_IN_PARAMETER_NAMES } from "../signin/settings.js";
@@ -139,7 +139,8 @@ export function keptOperatorParameters(input: {
     if (Object.hasOwn(input.computed, name)) continue;
     const value = input.deployed?.[name];
     if (value === undefined) continue;
-    if (input.declared !== undefined && !input.declared.has(name)) {
+    // A retired parameter is always dropped, even when the release's parameters are unknown (`declared` undefined): no template declares it any more, so CloudFormation would refuse it.
+    if (isRetiredParameter(input.part, name) || (input.declared !== undefined && !input.declared.has(name))) {
       dropped.push({ parameter: name, value });
       continue;
     }

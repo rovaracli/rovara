@@ -129,12 +129,12 @@ describe("the intake and the first card", () => {
     expect(parseWorkflowStartRequest("design first: chat: hello").kind).toBe("start");
   });
 
-  it("`design first:` is read only while `dr` is on AND the company allows design review; `dp` decides nothing, and with `dr` off nothing is read at all", async () => {
+  it("`design first:` is read only while `dr` is on AND the company allows design review, and with `dr` off nothing is read at all", async () => {
     const company = (allowed: boolean) => {
       const sent: unknown[] = [];
       return { sent, table: { tableName: "state", documentClient: { send: async (command: unknown) => { sent.push(command); return { Item: { revision: 1, lock: {}, policy: { allowed } } }; } } } };
     };
-    const on = { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "other" };
+    const on = { DESIGN_REVIEW_ENABLED: "1" };
     const allowed = company(true);
     expect(await designFirstRequestOf(allowed.table, ORG, "Design first: add a retry", on)).toEqual({ designFirst: true, rest: "add a retry" });
     const refused = company(false);

@@ -46,14 +46,14 @@ describe("A1: a Slack-started task", () => {
   };
 
   it("with the stage OFF (dr off, or the company not allowing it) keeps the prefix in the request and records no marker", async () => {
-    for (const [index, env] of [{ DESIGN_REVIEW_ENABLED: "0", DESIGN_REVIEW_PROJECTS: "payments" }, { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "payments" }, {}].entries()) {
+    for (const [index, env] of [{ DESIGN_REVIEW_ENABLED: "0" }, { DESIGN_REVIEW_ENABLED: "1" }, {}].entries()) {
       const task = await start(env, `1695500000.0001${String(index)}0`);
       expect(task["designFirst"], JSON.stringify(env)).toBeUndefined();
       expect(JSON.stringify(task), JSON.stringify(env)).toContain("design first: Add a retry to payments");
     }
   });
 
-  it("positive control: with dr on and the company allowing design review the prefix is read, stripped and recorded for the person who typed it (dp is ignored)", async () => {
+  it("positive control: with dr on and the company allowing design review the prefix is read, stripped and recorded for the person who typed it", async () => {
     const task = await start({ DESIGN_REVIEW_ENABLED: "1" }, "1695500000.000199", true);
     expect(typeof (task["designFirst"] as { by?: unknown } | undefined)?.by).toBe("string");
     expect(JSON.stringify(task)).not.toContain("design first:");
@@ -76,7 +76,7 @@ describe("A1: a Linear or Jira ticket", () => {
       intentDependenciesFor: () => ({}) as never,
     };
     const intake = intakePortsOf(wiring);
-    for (const env of [{ DESIGN_REVIEW_ENABLED: "0", DESIGN_REVIEW_PROJECTS: "web" }, { DESIGN_REVIEW_ENABLED: "1", DESIGN_REVIEW_PROJECTS: "web" }]) {
+    for (const env of [{ DESIGN_REVIEW_ENABLED: "0" }, { DESIGN_REVIEW_ENABLED: "1" }]) {
       for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
       await intake.start(ORG_A, ARJUN, request("web"));
       expect(w.db.get(`DEVTASK#${taskId}`, "META")).not.toHaveProperty("designFirst");

@@ -8,7 +8,7 @@ import { CLOUD_NEEDS_CDK_MESSAGE, bootStage2ImagesProblem } from "../deploy/answ
 import { progressLine, type Ask, type PreparedDeployment } from "../deploy/commands.js";
 import { deployEnvironment, keptOperatorParameters, templateParameterNames } from "../deploy/deploy-environment.js";
 import type { DeployRequest } from "../deploy/deployer.js";
-import { upgradeOrder, type DeployPart } from "../deploy/parameters.js";
+import { RETIRED_PARAMETER_NOTES, upgradeOrder, type DeployPart } from "../deploy/parameters.js";
 import type { LoadedRelease } from "../deploy/release.js";
 import { reportText, type DoctorReport } from "../doctor/checks.js";
 import type { CallerIdentity, StackDescription, StackReader } from "../environments/adopt.js";
@@ -102,15 +102,16 @@ export async function accessChanged(input: { cloudFormation: { send(command: unk
  * F10: keptOperatorParameters owns that test; this only names each one by its config key.
  * `declared` is what the deploy itself filters by: the cdk engine's synth (issue 152), or the
  * release's templates. */
-export async function droppedConfigKeys(input: { declared: (part: DeployPart) => ReadonlySet<string> | undefined; env: string; parts: DeployPart[]; stacks: StackReader }): Promise<Array<{ key: string; value: string }>> {
-  const dropped: Array<{ key: string; value: string }> = [];
+export async function droppedConfigKeys(input: { declared: (part: DeployPart) => ReadonlySet<string> | undefined; env: string; parts: DeployPart[]; stacks: StackReader }): Promise<Array<{ key: string; value: string; instead?: string }>> {
+  const dropped: Array<{ key: string; value: string; instead?: string }> = [];
   for (const part of input.parts) {
     const deployed = (await input.stacks.describe(environmentStackName(input.env, part)))?.parameters;
     if (deployed === undefined) continue;
     const found = keptOperatorParameters({ part, computed: {}, deployed, declared: input.declared(part) }).dropped;
     for (const { parameter, value } of found) {
-      const key = CONFIG_KEYS.find((entry) => entry.target.kind === "stack-parameter" && entry.target.part === part && entry.target.parameter === parameter)?.key ?? parameter;
-      dropped.push({ key, value });
+      const retired = RETIRED_PARAMETER_NOTES[parameter];
+      const key = CONFIG_KEYS.find((entry) => entry.target.kind === "stack-parameter" && entry.target.part === part && entry.target.parameter === parameter)?.key ?? retired?.key ?? parameter;
+      dropped.push({ key, value, ...(retired === undefined ? {} : { instead: retired.instead }) });
     }
   }
   return dropped;
@@ -142,7 +143,7 @@ async function exportUpgrade(input: { options: UpgradeOptions; deps: UpgradeDepe
   const includeAccess = await accessChanged({ cloudFormation: deps.cloudFormation, stackName: accessStack, release, region: settings.region, env });
   const parts = order.filter((part) => part !== "access" || includeAccess);
   for (const entry of await droppedConfigKeys({ declared: (part) => templateParameterNames(release, part, env), env, parts, stacks })) {
-    deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; nothing replaces it`);
+    deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; ${entry.instead === undefined ? "nothing replaces it" : `instead, ${entry.instead}`}`);
   }
   const outputs: Partial<Record<DeployPart, Record<string, string>>> = {};
   const deployed: Partial<Record<DeployPart, Record<string, string>>> = {};
@@ -313,7 +314,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
       const declaredBy = prepared.declaredParameters;
       const declared = (part: DeployPart) => (declaredBy === undefined ? templateParameterNames(release, part, env) : declaredBy(part));
       for (const entry of await droppedConfigKeys({ declared, env, parts, stacks: deps.stacks })) {
-        deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; nothing replaces it`);
+        deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; ${entry.instead === undefined ? "nothing replaces it" : `instead, ${entry.instead}`}`);
       }
 
       // N3: the restore point is written (and read back) before the first image or stack changes; if it cannot be, nothing has been.

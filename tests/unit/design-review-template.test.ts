@@ -2,7 +2,6 @@
 import { describe, expect, it } from "vitest";
 import { designTemplateInstructions, designTemplateRetryPrompt, readDesignTemplate } from "../../packages/broker/src/design-review/template.js";
 import { designReviewEnabled } from "../../packages/broker/src/design-review/switch.js";
-import { legacyDesignReviewProjects } from "../../packages/broker/src/design-review/dp-migration.js";
 import { designTextOf } from "../../packages/broker/src/design-review/resolve-run.js";
 
 const SECTIONS = ["§1 Problem and goal", "§2 Current system", "§3 Proposed design", "§4 Alternatives", "§5 Risks", "§6 Areas touched", "§7 Assumptions", "§8 Sources"];
@@ -37,15 +36,9 @@ describe("the design template reader", () => {
   });
 });
 
-describe("the switch: `dr`, and the old project list `dp` that only the one-time move still reads", () => {
+describe("the switch: `dr`", () => {
   it("the stage exists only when `dr` is exactly 1", () => {
     expect(designReviewEnabled({ DESIGN_REVIEW_ENABLED: "1" })).toBe(true);
     for (const dr of [undefined, "", "0", "true", " 1", "01", "yes"]) expect(designReviewEnabled(dr === undefined ? {} : { DESIGN_REVIEW_ENABLED: dr }), String(dr)).toBe(false);
-  });
-  it("reads a list with any malformed name as empty (fail closed)", () => {
-    expect(legacyDesignReviewProjects({ DESIGN_REVIEW_PROJECTS: "billing:payments" })).toEqual(["billing", "payments"]);
-    expect(legacyDesignReviewProjects({ DESIGN_REVIEW_PROJECTS: "billing:BAD" })).toEqual([]);
-    expect(legacyDesignReviewProjects({ DESIGN_REVIEW_PROJECTS: "a".repeat(70) })).toEqual([]);
-    expect(legacyDesignReviewProjects({})).toEqual([]);
   });
 });
