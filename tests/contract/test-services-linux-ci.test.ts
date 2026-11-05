@@ -524,6 +524,33 @@ describe("TS-SEAL egress capture (scripts/ci-egress-capture.sh) on the Docker 25
       expect(r.status).toBe(0);
     });
 
+    it("sees the bridge from the probe's ARP alone (CI run 42090076679: the gateway packet was queued behind ARP), but never from anything that is not the probe", () => {
+      const arpOnly = GOOD.filter((entry) => !(entry.includes(BRIDGE) && entry.includes("ethertype IPv4")));
+      const r = verdict(arpOnly);
+      expect(r.out, r.out).toMatch(/^TSL L3\.egress-capture PASS /u);
+      const ipv4Only = GOOD.filter((entry) => !(entry.includes(BRIDGE) && entry.includes("ARP")));
+      expect(verdict(ipv4Only).out).toMatch(/^TSL L3\.egress-capture PASS /u);
+      // Another address on the bridge (not the probe's .4), or the probe's address on another interface, is still blind.
+      const otherAddress = GOOD.map((entry) => (entry.includes(BRIDGE) ? entry.replaceAll("172.30.254.4", "172.30.254.9") : entry));
+      expect(verdict(otherAddress).out).toMatch(/FAIL .*capture-blind-nothing-seen-on-the-rvi-bridge/u);
+      const otherInterface = GOOD.map((entry) => (entry.includes("172.30.254.4") ? entry.replace(BRIDGE, "veth1234567") : entry));
+      expect(verdict(otherInterface).out).toMatch(/FAIL .*capture-blind-nothing-seen-on-the-rvi-bridge/u);
+      // A line that only mentions the address elsewhere (say as a destination) does not count either.
+      const asDestination = GOOD.filter((entry) => !entry.includes(BRIDGE) || entry.includes("IPv6")).concat(line(BRIDGE, "172.30.254.1.9", "172.30.254.4.5000", "UDP, length 1", "Out"));
+      expect(verdict(asDestination).out).toMatch(/FAIL .*capture-blind-nothing-seen-on-the-rvi-bridge/u);
+    });
+
+    it("a blind bridge prints what each interface carried, so the next failure can be diagnosed", () => {
+      const r = verdict(GOOD.filter((entry) => !entry.includes(BRIDGE) || entry.includes("IPv6")).concat(line("veth1234567", "172.30.254.4.5000", "172.30.254.1.9")));
+      expect(r.out).toMatch(/FAIL .*capture-blind-nothing-seen-on-the-rvi-bridge/u);
+      expect(r.out).toMatch(/egress-evidence: lines-per-interface: eth0 \d+/u);
+      expect(r.out).toMatch(/egress-evidence: rvi-or-veth-line: .*veth1234567/u);
+    });
+
+    it("the sealed probe waits for ARP before it moves on, and sends to the gateway twice", () => {
+      expect(egressScript).toMatch(/send\("gateway", gateway, 9, \(\) => later\(1500, \(\) => send\("gateway2", gateway, 9/u);
+    });
+
     it("the PASS name says what was checked and does not claim that nothing at all left the host", () => {
       expect(verdict(GOOD).out).not.toMatch(/no-packet-left-the-host/u);
       expect(egressScript).toMatch(/masquerade/iu);
@@ -535,7 +562,7 @@ describe("TS-SEAL egress capture (scripts/ci-egress-capture.sh) on the Docker 25
       const noDirect = GOOD.filter((entry) => !entry.includes("-direct"));
       const onlyDirectOnUplink = GOOD.map((entry) => entry.replace(`${TOKEN}-control`, `${TOKEN}-other`));
       const controlElsewhere = GOOD.map((entry) => entry.replace("eth0 Out ifindex 2 aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: 10.1.0.4.40000", "docker0 Out ifindex 3 aa:bb:cc:dd:ee:ff ethertype IPv4 (0x0800), length 90: 10.1.0.4.40000"));
-      const noBridge = GOOD.filter((entry) => !entry.includes(BRIDGE) || entry.includes("ARP") || entry.includes("IPv6"));
+      const noBridge = GOOD.filter((entry) => !entry.includes(BRIDGE) || entry.includes("IPv6"));
       for (const [label, result, reason] of [
         ["no system lookup", verdict(noSystem), /capture-blind-system-lookup-not-seen-on-the-uplink/u],
         ["only the direct query", verdict(onlyDirectOnUplink), /capture-blind-system-lookup-not-seen-on-the-uplink/u],

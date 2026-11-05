@@ -39,7 +39,8 @@ const out = {};
 const done = () => console.log(JSON.stringify(out));
 const ask = (label, qname, servers, next) => { const r = new dns.Resolver({ timeout: 2000, tries: 1 }); if (servers) r.setServers(servers); r.resolve4(qname, (e, a) => { out[label] = e ? e.code : (a || []).length; next(); }); };
 const send = (label, host, port, next) => { const s = dgram.createSocket("udp4"); s.on("error", (e) => { out[label] = e.code; try { s.close(); } catch {} next(); }); s.send("x", port, host, (e) => { out[label] = e ? e.code : "sent"; try { s.close(); } catch {} next(); }); };
-if (mode === "sealed") ask("embedded", name, ["127.0.0.11"], () => send("gateway", gateway, 9, () => send("public", "8.8.8.8", 53, done)));
+const later = (ms, next) => setTimeout(next, ms);
+if (mode === "sealed") ask("embedded", name, ["127.0.0.11"], () => send("gateway", gateway, 9, () => later(1500, () => send("gateway2", gateway, 9, () => later(500, () => send("public", "8.8.8.8", 53, done))))));
 else ask("system", name + "-control.example", null, () => ask("direct", name + "-direct.example", ["1.1.1.1"], done));
 JS
 
@@ -137,8 +138,15 @@ eg_verdict() {
   awk -v up="$EG_UPLINK" -v own=" ${EG_UPLINK_IPS} " '$1 == up && $2 == "Out" && ($3 ~ /^172\.(1[6-9]|2[0-9]|3[01])\./ || $3 ~ /^192\.168\./) && index(own, " " $3 " ") == 0 { print "uplink-container-source: " $0 }' "$flows" > "$flows.lan"
   lan_src=$(wc -l < "$flows.lan" | tr -d ' ')
   [[ "$lan_src" -eq 0 ]] || { fails="$fails container-address-as-source-on-the-uplink-${lan_src}-packets"; head -n "$EG_EVIDENCE_LINES" "$flows.lan" >> "$ev"; }
-  bridge_n=$(awk -v b="$EG_BRIDGE" '$1 == b { n++ } END { print n + 0 }' "$flows")
-  [[ "$bridge_n" -ge 1 ]] || fails="$fails capture-blind-nothing-seen-on-the-rvi-bridge"
+  # The bridge is seen when the sealed probe's own address (.4) shows on it: its IPv4 packet to the gateway, or its ARP for the gateway. A first packet to the gateway waits for ARP, so on a
+  # short-lived container the ARP may be all there is (CI run 42090076679: zero IPv4 lines on the bridge). Anything else on the bridge does not count: it must be the probe.
+  bridge_n=$(awk -v b="$EG_BRIDGE" -v a="$EG_SEALED_SUBNET_PREFIX.4" '$2 == b && ((/ ethertype ARP / && index($0, " tell " a ",") > 0) || (/ ethertype IPv4 / && index($0, ": " a ".") > 0)) { n++ } END { print n + 0 }' "$txt")
+  if [[ "$bridge_n" -lt 1 ]]; then
+    fails="$fails capture-blind-nothing-seen-on-the-rvi-bridge"
+    # So the next blind run can be diagnosed: lines per interface, and what the rvi interfaces carried (headers only; the snap length keeps payloads out).
+    awk '{ c[$2]++ } END { for (i in c) print "lines-per-interface: " i " " c[i] }' "$txt" | sort | head -n 12 >> "$ev"
+    awk '$2 ~ /^(rvi|veth)/' "$txt" | head -n 10 | cut -c1-200 | sed 's/^/rvi-or-veth-line: /' >> "$ev"
+  fi
   # Destinations outside the probe bridge's /24. Multicast (224/4), broadcast and 0.0.0.0 are the segment's own and are not counted.
   awk -v b="$EG_BRIDGE" -v p="$EG_SEALED_SUBNET_PREFIX." '$1 == b && index($4, p) != 1 && $4 !~ /^(22[4-9]|23[0-9])\./ && $4 != "255.255.255.255" && $4 != "0.0.0.0" { print "rvi-outside-subnet: " $0 }' "$flows" > "$flows.out"
   bridge_out=$(wc -l < "$flows.out" | tr -d ' ')
