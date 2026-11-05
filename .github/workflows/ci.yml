@@ -246,9 +246,9 @@ jobs:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04-arm
-    # 190 = 60 for every step before the test services (the old limit of 75 less the 15 minutes the two old test-services steps were assumed to need) + the four test-services step caps (20 + 45 + 10 + 45 = 120) + 10 of slack.
-    # The caps are ceilings for a hang; the expected added time of the Docker 25 repeat and the egress capture is 8 to 12 minutes.
-    timeout-minutes: 190
+    # 120 (was 75): the test-services steps now run twice (the runner's Docker, then Docker 25.0.5 with the egress capture), expected 18 to 27 minutes in all.
+    # Each of those steps has its own cap (20, 45, 10, 45) so a hang fails at its step; the job limit is kept well under the sum of the caps on purpose (CI budget).
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: read

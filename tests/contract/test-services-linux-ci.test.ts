@@ -87,10 +87,10 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
     expect(check25["timeout-minutes"]).toBe(45);
     expect(build["timeout-minutes"]).toBe(20);
     expect(check["timeout-minutes"]).toBe(45);
-    // The job's limit is 60 for the steps before the test services plus the four caps plus 10 of slack.
+    // Each step has its own cap, so a hang fails at its step; the job limit stays at 120 (CI budget), not the sum of the caps.
     const caps = [build, check, swap, check25].map((step) => step["timeout-minutes"]!).reduce((a, b) => a + b, 0);
     expect(caps).toBe(120);
-    expect(job["timeout-minutes"]).toBe(60 + caps + 10);
+    expect(job["timeout-minutes"]).toBe(120);
     // Cheap: one job, one image build, one checkout. The Docker 25 steps add no other job, no build and no checkout.
     expect(job.steps.filter((step) => (step.run ?? "").includes("docker build"))).toHaveLength(2);
     expect(Object.keys(jobs).filter((name) => name.includes("docker25") || name.includes("docker-25"))).toEqual([]);
