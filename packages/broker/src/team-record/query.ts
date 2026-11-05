@@ -109,6 +109,14 @@ export interface QueryOptions {
   rateLimit?: number;
 }
 
+/**
+ * The rate items that name a person (register SRL-9): `RATE#<what>|person:<developerId>#<window>` for the four record reads and the source picker. A task's key, a project's shared key and the company's own
+ * counters hold no person. Person erase removes these (`erase.ts`, config step); add a `what` here when a new read is rationed per person.
+ */
+export const PERSON_RATE_KINDS = ["search", "facts", "past_work", "stats", "source-options"] as const;
+export const personRateKey = (developerId: string): string => `person:${developerId}`;
+export const personRatePrefix = (what: (typeof PERSON_RATE_KINDS)[number], developerId: string): string => `RATE#${what}|${personRateKey(developerId)}#`;
+
 export const orgOfAudience = (audience: ReadAudience): OrgId => (audience.kind === "shared" ? audience.orgId : audience.caller.orgId);
 
 async function guard(deps: RecordQueryDependencies, audience: ReadAudience, project: string, options: QueryOptions, what: string): Promise<"ok" | "off"> {
@@ -116,7 +124,7 @@ async function guard(deps: RecordQueryDependencies, audience: ReadAudience, proj
   // Off (or an unreadable mode) answers nothing: the record is not offered while learning is off.
   if ((await deps.modes.effectiveMode(orgOfAudience(audience), project)) === "off") return "off";
   if (deps.limiter !== undefined) {
-    const key = options.rateKey ?? (audience.kind === "caller" ? `person:${audience.caller.developerId}` : `shared:${project}`);
+    const key = options.rateKey ?? (audience.kind === "caller" ? personRateKey(audience.caller.developerId) : `shared:${project}`);
     const limit = options.rateLimit ?? (audience.kind === "caller" ? RECORD_QUERIES_PER_PERSON_PER_HOUR : RECORD_QUERIES_PER_TASK_PER_HOUR);
     const allowed = await deps.limiter.take(`${orgOfAudience(audience)}|${what}|${key}`, limit, 3_600).then((value) => value, () => false);
     if (!allowed) throw agentXError("TOO_MANY_REQUESTS", "Too many record searches this hour. Try again later.");

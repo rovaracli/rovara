@@ -49,6 +49,8 @@ export const ADMIN_READ_TOOLS: readonly ToolDefinition[] = [
       dead_letter_queues: z.array(z.object({ name: z.string(), depth: z.number().nullable() })),
       // Ruling R18: the queues' own check; absent from an older control plane's answer.
       dead_letter_queues_check: z.object({ status: z.string(), detail: z.string().optional() }).optional(),
+      // 057 SRL-6: erase and source-delete failures of the last 24 hours; absent where the team record is off.
+      team_record_check: z.object({ status: z.string(), detail: z.string().optional() }).optional(),
       slack: z.object({ status: z.string(), detail: z.string().optional() }), github: z.object({ status: z.string(), detail: z.string().optional() }),
       worker_modes: z.array(z.object({ mode: z.string(), configured: z.boolean(), latest_dispatch_failure: z.object({ at: z.string(), operation_id: z.string(), error: z.string() }).optional() })),
       workspaces: z.record(z.string(), z.number()), workspaces_truncated: z.boolean(),
@@ -63,11 +65,12 @@ export const ADMIN_READ_TOOLS: readonly ToolDefinition[] = [
           version: given({ developer_api: health.version.developerApi, admin_api: health.version.adminApi, release: health.version.release }),
           alarms: health.alarms, alarms_check: health.alarmsCheck, dead_letter_queues: health.deadLetterQueues,
           ...(health.deadLetterQueuesCheck === undefined ? {} : { dead_letter_queues_check: health.deadLetterQueuesCheck }),
+          ...(health.teamRecordCheck === undefined ? {} : { team_record_check: health.teamRecordCheck }),
           slack: health.slack, github: health.github,
           worker_modes: health.workerModes.map((mode) => given({ mode: mode.mode, configured: mode.configured, latest_dispatch_failure: mode.latestDispatchFailure === undefined ? undefined : { at: mode.latestDispatchFailure.at, operation_id: mode.latestDispatchFailure.operationId, error: mode.latestDispatchFailure.error } })),
           workspaces: health.workspaces, workspaces_truncated: health.workspacesTruncated,
         },
-        text: `AgentX API ${health.version.developerApi}, admin API ${health.version.adminApi}. Alarms: ${firing.length === 0 ? "none firing" : `in ALARM: ${firing.join(", ")}`}${missing.length === 0 ? "" : `; missing: ${missing.join(", ")}`}. Dead-letter queues: ${health.deadLetterQueuesCheck?.status ?? "not reported by this AgentX"}. Slack: ${health.slack.status}. GitHub App: ${health.github.status}. Open workspaces: ${Object.entries(health.workspaces).map(([status, count]) => `${status} ${count}`).join(", ") || "none"}.`,
+        text: `AgentX API ${health.version.developerApi}, admin API ${health.version.adminApi}. Alarms: ${firing.length === 0 ? "none firing" : `in ALARM: ${firing.join(", ")}`}${missing.length === 0 ? "" : `; missing: ${missing.join(", ")}`}. Dead-letter queues: ${health.deadLetterQueuesCheck?.status ?? "not reported by this AgentX"}. ${health.teamRecordCheck === undefined ? "" : `Team record deletes: ${health.teamRecordCheck.status}. `}Slack: ${health.slack.status}. GitHub App: ${health.github.status}. Open workspaces: ${Object.entries(health.workspaces).map(([status, count]) => `${status} ${count}`).join(", ") || "none"}.`,
       };
     },
   },

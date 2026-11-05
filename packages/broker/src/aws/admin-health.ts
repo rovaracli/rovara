@@ -1,7 +1,7 @@
 // Spec 025 A13: the health answer. Every probe has a time limit and answers `unknown` with a reason
 // when it is not set up or fails, so the route itself never fails for a probe. Details carry
 // counts, names, codes and error classes only.
-import { ADMIN_API_VERSION, DEVELOPER_API_VERSION, MISSING_ALARM_STATE, type AdminHealthCheck, type AdminHealthResponse, type SlackAuthCheckResponse } from "@agentx/contracts";
+import { ADMIN_API_VERSION, DEVELOPER_API_VERSION, MISSING_ALARM_STATE, type AdminHealthCheck, type OrgId, type AdminHealthResponse, type SlackAuthCheckResponse } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import { requireOrgId } from "../org/resolve.js";
 import { adminProjects, projectWorkspaceRows, readFailures, type AdminReadDependencies } from "./admin-reads.js";
@@ -13,6 +13,8 @@ export interface AdminHealthProbes {
   queueDepths?: () => Promise<Array<{ name: string; depth: number | null }>>;
   slackAuthCheck?: () => Promise<SlackAuthCheckResponse>;
   githubInstallations?: () => Promise<number>;
+  /** SRL-6: the company's erase and source-delete failures of the last 24 hours. Absent where the team record is off, and the answer then has no such check. */
+  teamRecordFailures?: (orgId: OrgId) => Promise<{ eraseSweep: number; tombstone: number; lastAt?: string }>;
   timeoutMs?: number;
 }
 
@@ -52,6 +54,19 @@ function queuesCheck(depths: ReadonlyArray<{ depth: number | null }>): AdminHeal
   if (holding > 0) return { status: "warn", detail: `${queueCount(holding)} ${holding === 1 ? "holds" : "hold"} messages${unread === 0 ? "" : `; ${unread} could not be read`}` };
   if (unread > 0) return { status: "unknown", detail: `${unread} of ${queueCount(depths.length)} could not be read` };
   return { status: "ok", detail: `${queueCount(depths.length)}, all empty` };
+}
+
+/**
+ * SRL-6: erase second passes that failed and source deletes no durable path accepted, in the last 24 hours. Any is a warning: a delete is stuck or was lost (the record keeps the rows hidden meanwhile), and an admin
+ * should look at the logs (`record.erase_sweep_failed`, `record.tombstone_failed`). Counts only; the detail names no person, source or error text.
+ */
+function teamRecordCheck(failures: { eraseSweep: number; tombstone: number; lastAt?: string }): AdminHealthCheck {
+  const problems = [
+    ...(failures.eraseSweep === 0 ? [] : [`${failures.eraseSweep} erase second pass${failures.eraseSweep === 1 ? "" : "es"} failed`]),
+    ...(failures.tombstone === 0 ? [] : [`${failures.tombstone} source delete${failures.tombstone === 1 ? "" : "s"} not accepted`]),
+  ];
+  if (problems.length === 0) return { status: "ok", detail: "no erase or source delete failures in the last 24 hours" };
+  return { status: "warn", detail: `${problems.join(", ")} in the last 24 hours${failures.lastAt === undefined ? "" : `; latest ${failures.lastAt}`}` };
 }
 
 export async function adminHealth(deps: AdminReadDependencies, identity: AuthenticatedIdentity): Promise<AdminHealthResponse> {
@@ -109,6 +124,14 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
       return failed("the GitHub App", ms, error);
     }
   };
+  const teamRecordPart = async (): Promise<Pick<AdminHealthResponse, "teamRecordCheck">> => {
+    if (probes.teamRecordFailures === undefined) return {};
+    try {
+      return { teamRecordCheck: teamRecordCheck(await within(ms, () => probes.teamRecordFailures!(requireOrgId(identity.orgId)))) };
+    } catch (error) {
+      return { teamRecordCheck: failed("the team record's delete and erase failures", ms, error) };
+    }
+  };
   const statePart = async (): Promise<Pick<AdminHealthResponse, "workerModes" | "workspaces" | "workspacesTruncated">> => {
     const projects = await adminProjects(deps, identity);
     const modes = new Set(projects.map((project) => project.latest.runtimeBinding.deploymentMode));
@@ -125,9 +148,9 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
     };
   };
 
-  const [alarms, deadLetterQueues, slack, github, state] = await Promise.all([alarmsPart(), queuesPart(), slackPart(), githubPart(), statePart()]);
+  const [alarms, deadLetterQueues, slack, github, state, teamRecord] = await Promise.all([alarmsPart(), queuesPart(), slackPart(), githubPart(), statePart(), teamRecordPart()]);
   return {
     version: { developerApi: DEVELOPER_API_VERSION, adminApi: ADMIN_API_VERSION, ...(probes.release === undefined ? {} : { release: probes.release }) },
-    ...alarms, ...deadLetterQueues, slack, github, ...state,
+    ...alarms, ...deadLetterQueues, slack, github, ...state, ...teamRecord,
   };
 }

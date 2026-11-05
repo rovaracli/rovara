@@ -20,6 +20,8 @@ export interface HealthProbeInput {
   deadLetterQueues?: string | undefined;
   slackAuthCheck?: (() => Promise<SlackAuthCheckResponse>) | undefined;
   github: { installationCount(): Promise<number> };
+  /** SRL-6: the team record's failure counters; absent where the record is off. */
+  teamRecordFailures?: AdminHealthProbes["teamRecordFailures"] | undefined;
   log: (entry: Record<string, unknown>) => void;
 }
 
@@ -93,5 +95,6 @@ export function healthProbes(input: HealthProbeInput): AdminHealthProbes {
     } : {}),
     ...(input.slackAuthCheck === undefined ? {} : { slackAuthCheck: input.slackAuthCheck }),
     githubInstallations: () => input.github.installationCount(),
+    ...(input.teamRecordFailures === undefined ? {} : { teamRecordFailures: input.teamRecordFailures }),
   };
 }

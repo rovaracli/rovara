@@ -19,7 +19,7 @@ import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, SourceOptionsQuerySchema, SourceOptionsViewSchema, agentXError, teamRecordPk, type OrgId, type SourceOption, type SourcePickerKind } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, errorName } from "../agents/table-writes.js";
 import { SOURCE_OPTIONS_SK_PREFIX } from "./source-store.js";
-import type { RecordQueryDependencies } from "./query.js";
+import { personRateKey, type RecordQueryDependencies } from "./query.js";
 import type { RecordRouteReply, RecordRouteRequest } from "./routes.js";
 import { clearingElsewhere, gate, type SourceWriteContext } from "./source-write.js";
 import { classifySlack, validTrackerCursor } from "./source-places.js";
@@ -75,7 +75,7 @@ export async function sourceOptions(deps: RecordQueryDependencies, request: Reco
   // The server's own count of pages read in this session (a later page adds one, and is refused at the bound), or, for a first page, the person's rate.
   let pages = 1;
   if (session !== undefined) pages = await takePage(deps, orgId, project, kind, session, kind === "slack-private" ? personOf(orgId, request.caller.developerId) : undefined);
-  else await ration(deps, orgId, `person:${request.caller.developerId}`, "source-options", LISTINGS_PER_PERSON_PER_MINUTE);
+  else await ration(deps, orgId, personRateKey(request.caller.developerId), "source-options", LISTINGS_PER_PERSON_PER_MINUTE);
 
   // A page counts only once it was read: a read that fails or is refused (Slack down, the company's budget) gives its page back.
   let found: Found | RecordRouteReply;

@@ -12,6 +12,8 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { addPurge, emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
 import { markAccessErased, placeOfUnit, removePersonFromUnit, unitsOfPerson } from "./access.js";
 import { identitySystem, markPersonErased } from "./erased.js";
+import { OPS_FAILURE_SK_PREFIX } from "./ops-failures.js";
+import { PERSON_RATE_KINDS, personRatePrefix } from "./query.js";
 import { changeScopePrincipals } from "./scope-work.js";
 import { REQUIRED_ERASE_STEPS, type EraseStep } from "./person-fields.js";
 import { eraseAskPerson } from "../agent-sessions/ask-erase.js";
@@ -222,6 +224,8 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     }
     // The company's own tier-0 floor and proposals live in the workspace's project-less partition.
     if (context.who.developerId !== undefined) await scrubTier0Developer(context.deps.table, context.orgId, undefined, context.who.developerId);
+    // SRL-9: the rate items that carry the developer id in their sort key (record searches, the source picker). They expire within hours, but an erase still covers them. The prefix includes the closing `#`.
+    if (context.who.developerId !== undefined) await eraseRateItems(context.deps.table, context.orgId, context.who.developerId);
     return known;
   },
   // Lessons: those that rest on the person are HARD-deleted whatever their code citations say, the person is scrubbed from the rest (authorship, approvals), and the id leaves every
@@ -275,6 +279,14 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     return scrubFixtureDevelopers({ documentClient: context.deps.table.documentClient, tableName: context.deps.table.tableName, ...(context.deps.now === undefined ? {} : { now: context.deps.now }) }, context.orgId, context.who.developerId, (context.deps.now ?? Date.now)() + (context.budget.maxMs ?? SCRUB_MS_PER_RUN));
   },
 };
+
+/** Removes the person's rate items (`RATE#<what>|person:<id>#<window>`). A few items per kind at most (each window expires within hours), so one bounded query per kind. */
+async function eraseRateItems(table: PurgeDependencies["table"], orgId: OrgId, developerId: string): Promise<void> {
+  for (const what of PERSON_RATE_KINDS) {
+    const { items } = await queryPrefix(table, orgId, undefined, personRatePrefix(what, developerId), 500);
+    for (const item of items) if (typeof item.pk === "string" && typeof item.sk === "string") await deleteItem(table, { pk: item.pk, sk: item.sk });
+  }
+}
 
 /** The most passes of the Ask erasure in one erase run (each pass handles up to 200 Asks and 200 mentions). */
 const ASK_ERASE_PASSES_PER_RUN = 25;
@@ -332,8 +344,8 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 /** Everything that lives in a project's partition besides rows, derivation links, facts and source settings: the learning lane's lessons, skills, manifests, snapshots and settings, and the source write route's request items. */
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE", SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
-/** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SLACK_ADD_SK_PREFIX] as const;
+/** The workspace's own items: the delete queue, rate counters, failure counters (`OPSFAIL#`), deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SLACK_ADD_SK_PREFIX, OPS_FAILURE_SK_PREFIX] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts
