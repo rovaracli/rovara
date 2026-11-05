@@ -681,7 +681,9 @@ describe("teardown on every exit path (TS-RUN-4)", () => {
     h.fake.docker.run = () => Promise.reject(new Error("the daemon is gone"));
     await expect(run.dispose()).resolves.toBeUndefined();
     await expect(run.dispose()).resolves.toBeUndefined();
-    await expect(h.sandbox.dispose()).resolves.toBeUndefined();
+    // S4-L2 (0.5.7): the sandbox's dispose says whether the container is gone; with every docker call failing it is not, and it still never throws (and says the same on a second call).
+    await expect(h.sandbox.dispose()).resolves.toBe(false);
+    await expect(h.sandbox.dispose()).resolves.toBe(false);
     expect(await readdir(h.runParent)).toEqual([]);
   });
 });
