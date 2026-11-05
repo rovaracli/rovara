@@ -47,7 +47,7 @@ import { evaluateWorkflowE2EApplicationSelectionNow, type ApplicationSelectionNo
 import { reconcileWorkflowTrackingTask } from "./terminal-and-github-events.js";
 import { loadApplicationEvidenceInputs, settleBaselineRound } from "./workflow-e2e-verification.js";
 import { attachInlineEvidence, loadWorkflowCandidateSourceExport, startPlanEvidenceJobs } from "./workflow-items.js";
-import { ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
+import { ownerStopTarget, ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
 
 /**
  * Ruling AL, dispatch half: derives the approved application selection again from the approved setup and the runtime rows READY right now, and refuses
@@ -878,7 +878,7 @@ export async function runGroundingStep(dependencies: AwsBrokerDependencies, rout
     if (refusal !== undefined) {
       await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
         orgId: String(task.orgId), taskId: task.taskId, path: "queued_dispatch", reason: refusal.reason, occurrence: `grounding#${hold.artifactSha256}`, now: new Date().toISOString() },
-        { documentClient: dependencies.documentClient, tableName: dependencies.tableName, task });
+        ownerStopTarget(dependencies, task));
       return await finishThenWait(dependencies, item, task.taskId, "start-failed");
     }
     const entry = { id: hold.artifactId, type: "plan" as const, version: hold.version, sha256: hold.artifactSha256, producer: "agentx-worker-untrusted" as const,

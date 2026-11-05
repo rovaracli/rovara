@@ -2,7 +2,7 @@
 // task's owner may no longer have work started for them. The refusal is written on the task (one conditional write: a plain reason, nothing run or paid for) and audited with fixed words.
 import { WorkflowTransitionError, stopWorkflowStepNotRun, type WorkflowSnapshot } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
-import { ownerWorkRefusal, recordWorkRefused, type WorkRefusalPath } from "../../developer/work-refusal.js";
+import { ownerStopTarget, ownerWorkRefusal, recordWorkRefused, type WorkRefusalPath } from "../../developer/work-refusal.js";
 import { isConditional } from "../broker-shared.js";
 import { iso, log } from "./common.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
@@ -18,7 +18,7 @@ export async function stopIfOwnerRefused(deps: DeveloperTaskRouteDependencies, t
   const at = iso(deps);
   // Audited before the write, so a race that someone else wins still leaves the refusal on record (nothing ran from this path either way).
   await recordWorkRefused(deps.learningAudit, (entry) => log(deps, entry), { orgId: String(task.orgId), taskId: task.taskId, path, reason: refusal.reason, occurrence: `${path}#${String(workflow.revision)}`, now: at },
-    { documentClient: deps.documentClient, tableName: deps.tableName, task });
+    ownerStopTarget(deps, task));
   let blocked: WorkflowSnapshot;
   try {
     blocked = stopWorkflowStepNotRun(workflow, refusal.message, at);

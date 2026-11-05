@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { ProjectDefinition } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { prepareWorkspace, type RepositoryMaterializer } from "../../packages/worker/src/prepare.js";
+import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
 const run = promisify(execFile);
 
@@ -80,5 +81,57 @@ describe("VL-1: workspace preparation checks for escaping links after the readin
         return { exitCode: 1, stdout: "", stderr: "" };
       },
     })).rejects.toThrow("workspace path escapes its root");
+  });
+});
+
+describe("S4-L2: the check for escaping links is made after the task sandbox is gone", () => {
+  // A fake Docker whose commands all succeed. A background process of a readiness command can still make a link until its container is removed, so the fake does that at the removal.
+  const sandboxWith = (onRemove: () => Promise<void>): { docker: DockerCli; removed: () => number } => {
+    let removed = 0;
+    return {
+      removed: () => removed,
+      docker: { run: async (args) => {
+        if (args[0] === "rm" && args.includes("--force")) { removed += 1; await onRemove(); }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      } },
+    };
+  };
+  const IMAGE = "worker-image:test";
+
+  it("refuses a link a background process made until the sandbox was removed, and leaves the workspace not complete", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agentx-readiness-late-link-"));
+    const outside = await mkdtemp(join(tmpdir(), "agentx-readiness-late-link-outside-"));
+    const fake = sandboxWith(async () => { await symlink(outside, join(root, "repo/app/late-escape")); });
+    await expect(prepareWorkspace({
+      rootPath: root, project: project(false), materializer: clone(await fixture()), taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE },
+    })).rejects.toThrow("workspace path escapes its root");
+    expect(fake.removed()).toBeGreaterThan(0);
+    const manifest = JSON.parse(await readFile(join(root, ".agentx/preparation-manifest.json"), "utf8")) as { complete: boolean };
+    expect(manifest.complete).toBe(false);
+  });
+
+  it("I1: a sandbox that cannot be removed fails the preparation as not complete, whatever the link check would find", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agentx-readiness-stuck-sandbox-"));
+    let removeCalls = 0;
+    const docker: DockerCli = { run: async (args) => {
+      if (args[0] === "rm" && args.includes("--force")) { removeCalls += 1; return { exitCode: 1, stdout: "", stderr: "device or resource busy" }; }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    } };
+    await expect(prepareWorkspace({
+      rootPath: root, project: project(false), materializer: clone(await fixture()), taskShell: { kind: "sandbox", docker, image: IMAGE },
+    })).rejects.toThrow("could not be removed");
+    expect(removeCalls).toBeGreaterThanOrEqual(2);
+    const manifest = JSON.parse(await readFile(join(root, ".agentx/preparation-manifest.json"), "utf8")) as { complete: boolean; failure?: string };
+    expect(manifest.complete).toBe(false);
+    expect(manifest.failure).toContain("could not be removed");
+  });
+
+  it("positive control: the same preparation in the sandbox, with nothing made at its removal, completes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agentx-readiness-late-link-ok-"));
+    const fake = sandboxWith(async () => undefined);
+    await expect(prepareWorkspace({
+      rootPath: root, project: project(false), materializer: clone(await fixture()), taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE },
+    })).resolves.toMatchObject({ complete: true });
+    expect(fake.removed()).toBeGreaterThan(0);
   });
 });

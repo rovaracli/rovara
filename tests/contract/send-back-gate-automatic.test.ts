@@ -16,6 +16,7 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { seedReview } from "../support/rovara-code-feedback.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { pullRequestDetails } from "../support/p5-world.js";
+import { agentXError } from "@agentx/contracts";
 import { notifyOthersOfStop } from "../../packages/broker/src/developer/work-refusal.js";
 import { taskPageStage } from "../../packages/broker/src/aws/developer-tasks/task-page.js";
 
@@ -391,6 +392,37 @@ describe("others who can take the task over are told once when Rovara stops a st
     expect(rows(viewer, b.taskId)).toEqual([]);
   });
 
+  it("S2-FU-CHANNEL: a co-owner whose project access cannot be confirmed from stored rows is not told, and only a count of them is logged", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    people(t, round.taskId);
+    const task = t.meta(round.taskId) as never;
+    const table = { documentClient: t.h.db as never, tableName: "state" };
+    // Omar is a company member with no grant row at all (he may hold a role through the project's channel, which stored rows cannot show).
+    const counts: number[] = [];
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#31", NOW, (skipped) => counts.push(skipped))).toBe(0);
+    expect(counts).toEqual([1]);
+    // A viewer grant is a plain no, not an unknown, and a told co-owner is not counted.
+    withGrant(t, OMAR.developerId, "viewer");
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#40", NOW, (skipped) => counts.push(skipped))).toBe(0);
+    withGrant(t, OMAR.developerId);
+    expect(await notifyOthersOfStop(table, task, "ci_fix_round#50", NOW, (skipped) => counts.push(skipped))).toBe(1);
+    expect(counts).toEqual([1]);
+    // Through a refusal, the log line carries the count and no ids.
+    const unknown = await world();
+    const other = await unknown.ciRound();
+    people(unknown, other.taskId);
+    unknown.notAMember();
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
+    try { await unknown.sweep(); } finally { spy.mockRestore(); }
+    const logged = lines.filter((line) => line.includes("task.work_refused_co_owners_unconfirmed"));
+    expect(logged).toHaveLength(1);
+    expect(JSON.parse(logged[0]!)).toMatchObject({ event: "task.work_refused_co_owners_unconfirmed", skipped: 1 });
+    expect(logged[0]).not.toContain(OMAR.developerId);
+    expect(logged[0]).not.toContain("U0OMAR0001");
+  });
+
   it("a company owner or admin who is a co-owner is told even with no grant (a maintainer of every project)", async () => {
     const t = await world();
     const round = await t.ciRound();
@@ -424,6 +456,45 @@ describe("others who can take the task over are told once when Rovara stops a st
     await t.sweep();
     expect(rows(t, round.taskId).map((row) => row.targetDeveloperId)).toContain(OMAR.developerId);
     expect(JSON.stringify(rows(t, round.taskId))).not.toContain("Maya");
+  });
+
+  it("S2-FU: a co-owner whose own budget has no room is not told (the real Take over would refuse them); an outage of the budget check does not hide the notice", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    people(t, round.taskId);
+    withGrant(t, OMAR.developerId);
+    const task = t.meta(round.taskId) as never;
+    const table = { documentClient: t.h.db as never, tableName: "state" };
+    const noRoom = vi.fn(async () => { throw agentXError("BUDGET_EXCEEDED", "Your monthly AI budget is used up."); });
+    expect(await notifyOthersOfStop({ ...table, admitPayer: noRoom }, task, "ci_fix_round#31", NOW)).toBe(0);
+    // The check ran for the person who would pay from now on, with the task's own path and agent.
+    expect(noRoom).toHaveBeenCalledWith(expect.objectContaining({ orgId: TEST_ORG, project: "payments", payer: { kind: "member", developerId: OMAR.developerId }, agentId: "rovara-code", path: "TASK" }));
+    expect(rows(t, round.taskId)).toEqual([]);
+    // Positive controls: room, or a proxy that cannot answer (a retry would work), still tells them.
+    expect(await notifyOthersOfStop({ ...table, admitPayer: vi.fn(async () => undefined) }, task, "ci_fix_round#31", NOW)).toBe(1);
+    const down = vi.fn(async () => { throw agentXError("MODEL_PROXY_UNAVAILABLE", "model proxy is unreachable"); });
+    expect(await notifyOthersOfStop({ ...table, admitPayer: down }, task, "ci_fix_round#40", NOW)).toBe(1);
+  });
+
+  it("S2-FU: through a real stop, the broker's own budget check decides who is told", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    people(t, round.taskId);
+    withGrant(t, OMAR.developerId);
+    t.access.setMemberSpent(TEST_ORG, OMAR.developerId, 1_000_000);
+    t.notAMember();
+    await t.sweep();
+    expect(t.refused().length).toBeGreaterThan(0);
+    expect(rows(t, round.taskId)).toEqual([]);
+    // Control: the same stop with room tells them.
+    const open = await world();
+    const second = await open.ciRound();
+    people(open, second.taskId);
+    withGrant(open, OMAR.developerId);
+    open.access.setMemberSpent(TEST_ORG, OMAR.developerId, 0);
+    open.notAMember();
+    await open.sweep();
+    expect(rows(open, second.taskId).map((row) => row.targetDeveloperId)).toEqual([OMAR.developerId]);
   });
 
   it("a task with nobody else on it notifies nobody", async () => {
@@ -475,6 +546,103 @@ describe("M6: a Slack outage defers with an age cap and says so on the task", ()
     expect(t.rows(round.taskId).every((remaining) => remaining.slackWaitSince === undefined)).toBe(true);
     expect(t.refused()).toEqual([]);
     expect(String(t.meta(round.taskId).workflow.blockReason ?? "")).not.toContain("Rovara didn't start");
+  });
+
+  it("S2-FU: a step that asks inside its own start (a CI fix round) also ends the wait once Slack answers, even when the start then fails and the row stays", async () => {
+    const t = await world();
+    const round = await t.ciRound();
+    t.h.channelMembers.mockImplementation(async () => ({ ok: false } as never));
+    await t.sweep();
+    expect(t.meta(round.taskId).workflow.accessCheckWaitSince).toBeDefined();
+    const row = t.rows(round.taskId)[0]!;
+    expect(row.slackWaitSince).toBeDefined();
+    const past = new Date(Date.now() - 31 * 60_000).toISOString();
+    t.h.db.set({ ...row, slackWaitSince: past, nextAttemptAt: past, dispatchDueSk: `${past}#${String(row.sk)}` });
+    t.h.channelMembers.mockImplementation(async (request) => ({ ok: true, memberOf: request.slackUserId === MAYA.slackUserId ? request.channelIds : [] }));
+    // The access check passes inside the start; the start then fails for another reason (the workspace cannot be read), so the row is still there afterwards.
+    const send = t.h.db.send.bind(t.h.db);
+    t.h.db.send = async (command) => {
+      if ((command as unknown as { input?: { Key?: { pk?: string } } }).input?.Key?.pk === `WORKSPACE#${round.workspaceId}`) throw Object.assign(new Error("throttled"), { name: "ProvisionedThroughputExceededException" });
+      return send(command);
+    };
+    await t.sweep();
+    t.h.db.send = send;
+    const remaining = t.rows(round.taskId);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.slackWaitSince).toBeUndefined();
+    expect(t.meta(round.taskId).workflow.accessCheckWaitSince).toBeUndefined();
+    expect(t.refused()).toEqual([]);
+  });
+
+  /** A queued step with an old Slack wait left on its row and on the task (as an earlier miss left them), and Slack answering now. */
+  const withOldWait = (t: Awaited<ReturnType<typeof world>>, taskId: string) => {
+    const task = t.meta(taskId);
+    const row = t.rows(taskId)[0]!;
+    const past = new Date(Date.now() - 31 * 60_000).toISOString();
+    t.h.db.set({ ...task, workflow: { ...task.workflow, accessCheckWaitSince: { revision: task.workflow.revision, since: past } } });
+    t.h.db.set({ ...row, slackWaitSince: past });
+    t.h.channelMembers.mockImplementation(async (request) => ({ ok: true, memberOf: request.slackUserId === MAYA.slackUserId ? request.channelIds : [] }));
+    return task.workflow.revision;
+  };
+  /** The writes that ended a wait: the clock removed from a dispatch row, the note removed from a task. */
+  const waitClears = (t: Awaited<ReturnType<typeof world>>, run: () => Promise<unknown>) => {
+    const send = t.h.db.send.bind(t.h.db);
+    const seen: string[] = [];
+    t.h.db.send = async (command) => {
+      const expression = (command as unknown as { input?: { UpdateExpression?: string } }).input?.UpdateExpression;
+      if (expression === "REMOVE slackWaitSince" || expression === "REMOVE workflow.accessCheckWaitSince") seen.push(expression);
+      return send(command);
+    };
+    return run().finally(() => { t.h.db.send = send; }).then(() => seen);
+  };
+
+  it("S2-FU: a plan-grounding hold also ends an old wait when Slack answers", async () => {
+    // Grounding: the kind asks inside its own start, so the dispatch itself must end the wait.
+    const grounding = await world();
+    const round = await grounding.stepRound("PLAN");
+    const task = grounding.meta(round.taskId);
+    const running = { ...task.workflow, state: "RUNNING" as const, revision: task.workflow.revision + 1 };
+    grounding.h.db.set({ ...task, workflow: running, planGrounding: { artifactId: "plan-v1", version: 1, artifactSha256: "a".repeat(64), artifactCreatedAt: NOW, planOperationId: randomUUID(), attempt: 1 } });
+    for (const old of grounding.rows(round.taskId)) grounding.h.db.delete({ pk: String(old.pk), sk: String(old.sk) });
+    grounding.h.db.set((workflowDispatchItem("state", round.taskId, running.revision, "GROUNDING", "a".repeat(64), NOW) as { Put: { Item: Record<string, unknown> } }).Put.Item);
+    withOldWait(grounding, round.taskId);
+    expect(await waitClears(grounding, () => grounding.sweep())).toEqual(expect.arrayContaining(["REMOVE slackWaitSince", "REMOVE workflow.accessCheckWaitSince"]));
+  });
+
+  it("S2-FU: a checks round already underway also ends an old wait when Slack answers", async () => {
+    // Checks with a round admitted: the round's start asked long ago, so nothing asks again here, but the wait it left is over.
+    const checks = await world();
+    const second = await checks.stepRound("CHECKS");
+    const base = checks.meta(second.taskId);
+    const e2e = { contractDigest: "a".repeat(64), policyDigest: "b".repeat(64), bundleDigest: "c".repeat(64), executionPlanDigest: "d".repeat(64), required: false, currentRoundId: randomUUID(), currentGroupRunIds: [], resultRefs: [] };
+    checks.h.db.set({ ...base, workflow: WorkflowSnapshotSchema.parse({ ...base.workflow, e2e }) });
+    withOldWait(checks, second.taskId);
+    expect(await waitClears(checks, () => checks.sweep())).toEqual(expect.arrayContaining(["REMOVE slackWaitSince", "REMOVE workflow.accessCheckWaitSince"]));
+  });
+
+  it("S2-FU: a wait that cannot be cleared (a write error that is not a lost race) does not fail the dispatch", async () => {
+    const t = await world();
+    const round = await t.stepRound("PLAN");
+    t.h.channelMembers.mockImplementation(async () => ({ ok: false } as never));
+    await t.sweep();
+    expect(t.rows(round.taskId)[0]!.slackWaitSince).toBeDefined();
+    const row = t.rows(round.taskId)[0]!;
+    const past = new Date(Date.now() - 60_000).toISOString();
+    t.h.db.set({ ...row, nextAttemptAt: past, dispatchDueSk: `${past}#${String(row.sk)}` });
+    t.h.channelMembers.mockImplementation(async (request) => ({ ok: true, memberOf: request.slackUserId === MAYA.slackUserId ? request.channelIds : [] }));
+    const send = t.h.db.send.bind(t.h.db);
+    let failed = 0;
+    t.h.db.send = async (command) => {
+      const input = (command as unknown as { input?: { UpdateExpression?: string } }).input;
+      if (input?.UpdateExpression?.startsWith("REMOVE ")) { failed += 1; throw Object.assign(new Error("throttled"), { name: "ProvisionedThroughputExceededException" }); }
+      return send(command);
+    };
+    await t.sweep();
+    t.h.db.send = send;
+    expect(failed).toBeGreaterThan(0);
+    // The step ran as if the clear had worked: the PLAN row is gone and a planning run was started.
+    expect(t.rows(round.taskId)).toEqual([]);
+    expect(t.byMode(round.workspaceId, "PLAN").length).toBeGreaterThan(0);
   });
 
   it("after 30 minutes of it the step is blocked with a plain, retryable reason, the row goes, and it is audited", async () => {

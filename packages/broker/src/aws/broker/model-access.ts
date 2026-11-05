@@ -65,7 +65,7 @@ import { taskAccessFence } from "../../developer/task-people.js";
 import { taskRecipeKey } from "../../developer/task-records.js";
 import { designReviewSlotOf, isSlotRefusal, resolveSlotAsk } from "./design-review-slot-access.js";
 import { plannerRunRoomUsd } from "../../design-review/resolve-budget.js";
-import { ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
+import { ownerStopTarget, ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
 
 /**
  * Task 21's write gate runtime, built from Task 19's own pieces: what an approved write needs to be classified, re-granted and sent, long after the step's request
@@ -84,7 +84,7 @@ async function requireOwnerMayRunAgentStep(dependencies: AwsBrokerDependencies, 
   if (refusal === undefined) return;
   await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
     orgId: task.orgId, taskId: task.taskId, path: "agent_step", reason: refusal.reason, occurrence: "agent_step", now: new Date().toISOString() },
-    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, task });
+    ownerStopTarget(dependencies, task));
   throw agentXError("PROJECT_ACCESS_DENIED", refusal.message);
 }
 

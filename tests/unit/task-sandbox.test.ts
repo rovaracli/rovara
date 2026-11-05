@@ -301,14 +301,16 @@ describe("starting and stopping a sandbox", () => {
     const retried = fakeDocker({ failRm: 1 });
     const first = new TaskSandbox({ rootPath: root, taskId: TASK, docker: retried.docker, image: IMAGE, log: (event) => events.push(event) });
     await first.exec(["true"], {});
-    await first.dispose();
+    await expect(first.dispose()).resolves.toBe(true);
     expect(retried.verbs("rm").filter((call) => call.includes(first.name))).toHaveLength(2);
     expect(events).toEqual([]);
 
     const stuck = fakeDocker({ failRm: 5 });
     const second = new TaskSandbox({ rootPath: root, taskId: TASK, docker: stuck.docker, image: IMAGE, log: (event) => events.push(event) });
     await second.exec(["true"], {});
-    await expect(second.dispose()).resolves.toBeUndefined();
+    // I1: the answer says the container is not gone (prepare refuses to call the workspace checked); a second dispose says the same.
+    await expect(second.dispose()).resolves.toBe(false);
+    await expect(second.dispose()).resolves.toBe(false);
     expect(stuck.verbs("rm").filter((call) => call.includes(second.name))).toHaveLength(2);
     expect(events).toEqual([{ event: "task-sandbox.remove.failed", container: second.name, taskId: TASK, reason: "device or resource busy" }]);
   });
@@ -401,13 +403,22 @@ describe("the Python user site's .gitignore is rewritten on every start (C67)", 
     expect(await readFile(join(root, ".agentx-python", ".gitignore"), "utf8")).toBe("*\n");
   });
 
-  it("replaces a directory a task left at its name, and leaves no temporary file behind (L1)", async () => {
+  it("replaces a directory a task left at its name by moving it aside, never walking into it, and leaves no temporary file behind (L1, N3)", async () => {
     const root = await workspace();
     await mkdir(join(root, ".agentx-python", ".gitignore"), { recursive: true });
     await writeFile(join(root, ".agentx-python", ".gitignore", "inner"), "x");
     await start(root);
     expect(await readFile(join(root, ".agentx-python", ".gitignore"), "utf8")).toBe("*\n");
-    expect(await readdir(join(root, ".agentx-python"))).toEqual([".gitignore"]);
+    const entries = (await readdir(join(root, ".agentx-python"))).sort();
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toBe(".gitignore");
+    const aside = entries[1]!;
+    expect(aside).toMatch(/^\.gitignore\.[0-9a-f-]{36}\.old$/u);
+    // The folder was moved whole: what was in it was not deleted by a walk of it.
+    expect(await readFile(join(root, ".agentx-python", aside, "inner"), "utf8")).toBe("x");
+    // A later start has a plain file at the name and adds nothing.
+    await start(root);
+    expect(await readdir(join(root, ".agentx-python"))).toHaveLength(2);
   });
 
   it("replaces a link a task left at its name, without writing through it", async () => {

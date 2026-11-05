@@ -16,7 +16,7 @@ import { driveAgentRun } from "../../agents/run-engine.js";
 import { END_LEASE_MS, type TaskEndOutcome } from "../../agents/task-end.js";
 import { effectiveTaskOwner, taskKey, taskAgentRunKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { requireCreatorStillMember } from "../../developer/creator-member.js";
-import { SLACK_WAIT_CAP_MS, STEP_NOT_RUN_SLACK, ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
+import { SLACK_WAIT_CAP_MS, STEP_NOT_RUN_SLACK, admitTakerOf, ownerStopTarget, ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
 import { stopIfOwnerRefused } from "../developer-tasks/owner-stop.js";
 import { operationEndDispatchItem, type WorkflowDispatchRecord, isConditional } from "../broker-shared.js";
 import { recycleDriftedWorker, requalifyHoldActive } from "../../e2e/requalify-hold.js";
@@ -228,18 +228,27 @@ async function deferForSlack(dependencies: AwsBrokerDependencies, item: Workflow
   return "DISPATCHED";
 }
 
-/** The access check answered: ends an earlier Slack wait (the clock on the row, the note on the workflow at its revision). Best effort; a lost race changes nothing. */
+/**
+ * The access check answered: ends an earlier Slack wait (the clock on the row, the note on the workflow at its revision). Best effort: a lost race changes nothing, and any other write error is logged
+ * with a fixed event and ignored (a stale note is shown for a while longer; it must not fail or retry a dispatch whose access check passed).
+ */
 async function clearSlackWait(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord, workflow: WorkflowSnapshot): Promise<void> {
-  if ((item as { slackWaitSince?: unknown }).slackWaitSince !== undefined) {
+  const attempt = async (command: UpdateCommand): Promise<void> => {
     try {
-      await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk }, UpdateExpression: "REMOVE slackWaitSince", ConditionExpression: "attribute_exists(pk)" }));
-    } catch (error) { if (!isConditional(error)) throw error; }
+      await dependencies.documentClient.send(command);
+    } catch (error) {
+      // One EMF line, so the failures can be counted (a stale clock can end a later wait early; it heals on the next pass).
+      if (!isConditional(error)) console.log(JSON.stringify({
+        _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: process.env.AGENTX_METRICS_NAMESPACE || "AgentX", Dimensions: [[]], Metrics: [{ Name: "SlackWaitClearFailed", Unit: "Count" }] }] },
+        component: "broker", event: "workflow.slack_wait_clear_failed", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown", SlackWaitClearFailed: 1 }));
+    }
+  };
+  if ((item as { slackWaitSince?: unknown }).slackWaitSince !== undefined) {
+    await attempt(new UpdateCommand({ TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk }, UpdateExpression: "REMOVE slackWaitSince", ConditionExpression: "attribute_exists(pk)" }));
   }
   if (workflow.accessCheckWaitSince !== undefined) {
-    try {
-      await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: taskKey(item.taskId), UpdateExpression: "REMOVE workflow.accessCheckWaitSince",
-        ConditionExpression: "workflow.revision = :revision AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":revision": workflow.revision } }));
-    } catch (error) { if (!isConditional(error)) throw error; }
+    await attempt(new UpdateCommand({ TableName: dependencies.tableName, Key: taskKey(item.taskId), UpdateExpression: "REMOVE workflow.accessCheckWaitSince",
+      ConditionExpression: "workflow.revision = :revision AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":revision": workflow.revision } }));
   }
 }
 
@@ -304,7 +313,7 @@ async function stopForGoneOwner(dependencies: AwsBrokerDependencies, task: Devel
     const system = isSystemOwnerId(effectiveTaskOwner(task).developerId);
     await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
       orgId: task.orgId, taskId: task.taskId, path: "queued_dispatch", reason: system ? "project_inactive" : "owner_removed", occurrence: "queued_dispatch", now: new Date().toISOString() },
-      { documentClient: dependencies.documentClient, tableName: dependencies.tableName, task });
+      ownerStopTarget(dependencies, task));
   }
   return true;
 }
@@ -383,6 +392,8 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       // Plan 6 Task 17: the commit the pull request's base branch is at now, which is the commit a merge of the base takes.
       currentBaseCommit: currentBaseCommitOf(dependencies),
     }, caller, undefined, null));
+    // S2: these dependencies hold no model proxy (a start through them is not budget-checked here), but the others told when a step is stopped are checked against their own budget, as a real Take over would.
+    if (dependencies.modelAccess !== undefined) routeDependencies.admitTaker = admitTakerOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, cloud: dependencies.cloud === true });
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
     // S2 (any path): every other queued step runs as the task's owner, so it meets the send-back's project access rule and the archive check now. A step the owner may not have started is not
     // started: the task blocks where it stands with a plain reason, the row goes (nothing retries it), and the refusal is audited. IMPLEMENT asks the same inside its own start (its path names the round).
@@ -392,6 +403,11 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
     if (asked && await stopIfOwnerRefused(routeDependencies, task, workflow, "queued_dispatch")) { await remove(); return "STALE"; }
     // The access check answered (Slack included): an earlier Slack wait is over, on the row and on the task, so a later short outage starts its own 30 minutes and the page stops saying "Waiting for Slack".
     if (asked) await clearSlackWait(dependencies, item, workflow);
+    // The kinds that ask inside their own start (or not at all, once a round is underway) end the wait the same way, but only when there is one to end: a read of the same access answers it (an answer, a refusal
+    // included, is the end of the wait; the start still makes its own check and acts on it). A read that fails leaves the wait as it is.
+    else if ((item as { slackWaitSince?: unknown }).slackWaitSince !== undefined || workflow.accessCheckWaitSince !== undefined) {
+      if (await ownerWorkRefusal(routeDependencies, task).then(() => true, () => false)) await clearSlackWait(dependencies, item, workflow);
+    }
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.
     let outcome: "STARTED" | "DUPLICATE" | "STALE" | "WAITING";
     if (item.kind === "CHECKS") {
@@ -610,7 +626,7 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
     if (refusal !== undefined) {
       await recordWorkRefused(dependencies.audit, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })), {
         orgId: String(task.orgId), taskId: task.taskId, path: "autofix", reason: refusal.reason, occurrence: `autofix#${String(item.workflowRevision)}`, now: new Date().toISOString() },
-        { documentClient: dependencies.documentClient, tableName: dependencies.tableName, task });
+        ownerStopTarget(dependencies, task));
       await recordAutofixGiveUpAsk(store, task, Date.now());
       await remove();
       return "STALE";

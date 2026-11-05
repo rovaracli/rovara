@@ -8,7 +8,9 @@ import { flushAuditEvents, recordAuditEventDurably } from "../audit/flush.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { viewerCannotStartTasksMessage } from "./project-roles.js";
-import { canTakeOverNow } from "./take-over-eligible.js";
+import { takeOverStanding, takerBudgetAllows, type AdmitTaker } from "./take-over-eligible.js";
+import type { ModelAccess } from "../model-proxy/access.js";
+import { admitWork } from "../spend/admission.js";
 import { requireProjectSendBackRole } from "./task-access.js";
 import { effectiveTaskOwner, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "./task-records.js";
 
@@ -54,22 +56,48 @@ export async function ownerWorkRefusal(deps: Pick<DeveloperTaskRouteDependencies
 }
 
 /**
+ * Where the notice to the others is written from (`recordWorkRefused`'s `notify`): the table, the task, and the budget check of a real Take over when the caller has the model proxy (a caller without it
+ * checks no budget). `source` is the broker's dependencies (whose `modelAccess` holds the proxy under `access`) or a route's (which holds the proxy itself).
+ */
+export function ownerStopTarget(
+  source: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; admitTaker?: AdmitTaker | undefined; modelAccess?: ModelAccess | { access: ModelAccess } | undefined; cloud?: boolean | undefined },
+  task: DeveloperTaskRecord,
+): { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; task: DeveloperTaskRecord; admitPayer?: AdmitTaker } {
+  const target = { documentClient: source.documentClient, tableName: source.tableName, task };
+  if (source.admitTaker !== undefined) return { ...target, admitPayer: source.admitTaker };
+  const access = source.modelAccess === undefined ? undefined : "access" in source.modelAccess ? source.modelAccess.access : source.modelAccess;
+  if (access === undefined) return target;
+  return { ...target, admitPayer: admitTakerOf({ documentClient: source.documentClient, tableName: source.tableName, access, cloud: source.cloud === true }) };
+}
+
+/** `admitWork` for a taker, as `SessionTakeOverDependencies.admitPayer` runs it in the broker's wiring (the same trial, machine-time and budget checks). */
+export const admitTakerOf = (deps: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; access: ModelAccess; cloud: boolean }): AdmitTaker => async (input) => {
+  await admitWork({ ...deps, now: () => Date.now() }, input);
+};
+
+/**
  * Tells the others on the task who could take it over, once per stop and per person (S2 owner decision): a pending row each for the co-owners (People role `owner`) of the task's PEOPLE list, other than the
- * effective owner, who have a Slack user and can really take the task over now (`canTakeOverNow`). A conditional put, so the same stop recorded again (a retried refusal) adds nothing. The notifier reads the row and sends one direct message; it names nobody.
+ * effective owner, who have a Slack user and can really take the task over now (`canTakeOverNow`, and the taker's own budget when `admitPayer` is given: `takerBudgetAllows`). A conditional put, so the same stop recorded again (a retried refusal) adds nothing. The notifier reads the row and sends one direct message; it names nobody.
  * Returns how many rows were written.
  */
 export async function notifyOthersOfStop(
-  table: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }, task: DeveloperTaskRecord, stopId: string, now: string,
+  table: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; admitPayer?: AdmitTaker | undefined }, task: DeveloperTaskRecord, stopId: string, now: string,
+  /** Told how many co-owners (with a Slack user) were left out because their project access could not be confirmed from stored rows (a count only; S2-FU-CHANNEL). */
+  reportSkipped?: (skippedUnconfirmed: number) => void,
 ): Promise<number> {
   const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" }, ConsistentRead: true })) as { Item?: { people?: unknown } };
   const people = response.Item?.people;
   if (!Array.isArray(people)) return 0;
   const owner = tryEffectiveTaskOwner(task)?.developerId;
   let written = 0;
+  let skippedUnconfirmed = 0;
   for (const person of people as Array<{ developerId?: unknown; slackUserId?: unknown; role?: unknown }>) {
     // Only a co-owner can Take over (a commenter has the session level `use`), and only one who can really do it now.
     if (typeof person.developerId !== "string" || person.developerId === owner || person.role !== "owner"
-      || typeof person.slackUserId !== "string" || person.slackUserId === "" || !await canTakeOverNow(table, task, person.developerId)) continue;
+      || typeof person.slackUserId !== "string" || person.slackUserId === "") continue;
+    const standing = await takeOverStanding(table, task, person.developerId);
+    if (standing === "unconfirmed") { skippedUnconfirmed += 1; continue; }
+    if (standing !== "yes" || !await takerBudgetAllows(table.admitPayer, task, person.developerId)) continue;
     try {
       await table.documentClient.send(new PutCommand({ TableName: table.tableName, ConditionExpression: "attribute_not_exists(pk)", Item: {
         pk: `DEVTASK#${task.taskId}`, sk: `OWNER_STOP_NOTIFY#${stopId}#${person.developerId}`, entityType: "TASK_OWNER_STOPPED_NOTIFICATION", schemaVersion: 1,
@@ -79,6 +107,7 @@ export async function notifyOthersOfStop(
       if ((error instanceof Error ? error.name : "") !== "ConditionalCheckFailedException") throw error;
     }
   }
+  if (skippedUnconfirmed > 0) reportSkipped?.(skippedUnconfirmed);
   return written;
 }
 
@@ -89,7 +118,7 @@ export async function notifyOthersOfStop(
 export async function recordWorkRefused(
   audit: AuditRuntime | undefined, log: (entry: Record<string, unknown>) => void,
   input: { orgId: string; taskId: string; path: WorkRefusalPath; reason: WorkRefusalReason; occurrence: string; now: string },
-  notify?: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; task: DeveloperTaskRecord },
+  notify?: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; task: DeveloperTaskRecord; admitPayer?: AdmitTaker | undefined },
 ): Promise<void> {
   if (audit !== undefined) {
     try {
@@ -103,7 +132,8 @@ export async function recordWorkRefused(
   // Only a loss of the owner's own place tells the others (someone else can take the task over); an archived project, a Slack outage or a lost company are nobody's to take over.
   if (notify !== undefined && (input.reason === "owner_removed" || input.reason === "no_project_access" || input.reason === "viewer")) {
     try {
-      await notifyOthersOfStop(notify, notify.task, `${input.path}#${input.occurrence}`, input.now);
+      await notifyOthersOfStop(notify, notify.task, `${input.path}#${input.occurrence}`, input.now,
+        (skipped) => log({ event: "task.work_refused_co_owners_unconfirmed", taskId: input.taskId, skipped }));
     } catch (error) {
       log({ event: "task.work_refused_notify_failed", taskId: input.taskId, error: error instanceof Error ? error.name : "unknown" });
     }
