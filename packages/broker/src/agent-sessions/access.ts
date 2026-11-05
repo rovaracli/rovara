@@ -407,8 +407,10 @@ const BLOCKED_STATUSES: readonly SessionStatus[] = ["needs_person", "paused"];
  * What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, takes over and shares, and retries a session that failed or was
  * cancelled, or whose workflow is blocked (`state` is the session's summary now). Handing off is the owner's.
  */
-export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined; closable?: true | undefined }): SessionAction[] {
+export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined; closable?: true | undefined; /** The task was closed by its owner: nothing can be steered, stopped, retried, taken over, handed off or closed again (it can still be watched, commented on and, at edit level, shared). */ closed?: true | undefined }): SessionAction[] {
   if (access.level === "none") return [];
+  // Share stays for an edit-level person: a closed task is still a record worth showing someone, and sharing it starts no work (the share route has its own checks).
+  if (state.closed === true) return !access.owner && access.projectRole === "viewer" ? ["watch"] : ["watch", "comment", ...(atLeast(access.level, "edit") ? ["share" as const] : [])];
   if (!access.owner && access.projectRole === "viewer") return ["watch"];
   const actions: SessionAction[] = ["watch", "comment"];
   if (atLeast(access.level, "use")) actions.push("steer");

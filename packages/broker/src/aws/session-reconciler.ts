@@ -162,11 +162,14 @@ export function createReconcilerHandler(dependencies: ReconcilerDependencies) {
 
     // Issue 202: each live worker's answer to this run's ping, for the stuck-cancel sweep.
     const workers = new Map<string, StuckCancelWorker>();
+    // When each ping was started: the sweep trusts an idle answer for an owner's Close only if it was taken after the cancel failed (058-stop-close).
+    const pingedAt = new Map<string, number>();
     for (const session of sessions.values()) {
       switch (session.state) {
         case "READY": {
+          const startedAt = (dependencies.now?.() ?? new Date()).getTime();
           const worker = await reconcileReady(dependencies, session, instanceById, report, log, now, qualifiedAmi);
-          if (worker !== undefined) workers.set(session.workspaceId, worker);
+          if (worker !== undefined) { workers.set(session.workspaceId, worker); pingedAt.set(session.workspaceId, startedAt); }
           break;
         }
         case "PROVISIONING":
@@ -184,7 +187,7 @@ export function createReconcilerHandler(dependencies: ReconcilerDependencies) {
     // and in its own try, so a failure here never stops the repairs that follow. Compute is judged
     // from this run's snapshot: a worker the repairs above just stopped still counts as alive, so
     // its one retry may be spent on it. The next run sees it gone and ends the task.
-    const stuckCancelMetrics = await reconcileStuckCancels(dependencies, sessions, instanceById, workers, now, report, log);
+    const stuckCancelMetrics = await reconcileStuckCancels(dependencies, sessions, instanceById, workers, pingedAt, now, report, log);
 
     // Volumes no session claims.
     for (const volume of await dependencies.volumes()) {
@@ -314,6 +317,7 @@ async function reconcileStuckCancels(
   sessions: Map<string, WorkspaceSession>,
   instances: Map<string, InstanceView>,
   workers: Map<string, StuckCancelWorker>,
+  pingedAt: Map<string, number>,
   now: number,
   report: ReconcilerReport,
   log: (entry: Record<string, unknown>) => void,
@@ -324,7 +328,8 @@ async function reconcileStuckCancels(
   const candidates = [...sessions.values()].map((session): StuckCancelCandidate => {
     const compute = computeOf(session, instances);
     const worker = compute === "alive" ? workers.get(session.workspaceId) : undefined;
-    return { workspaceId: session.workspaceId, compute, ...(worker === undefined ? {} : { worker }) };
+    const pinged = pingedAt.get(session.workspaceId);
+    return { workspaceId: session.workspaceId, compute, ...(worker === undefined ? {} : { worker }), ...(worker === undefined || pinged === undefined ? {} : { pingedAt: pinged }) };
   });
   let sweepFailed = 0;
   try {

@@ -105,8 +105,12 @@ async function taskOf(deps: SessionReadDependencies, session: AgentSessionRecord
 function statusOfTask(view: DeveloperTaskView): SessionStatus {
   switch (view.status) {
     case "SUCCEEDED":
-    case "CLOSED":
       return "succeeded";
+    // Closed: finished only when the work was merged or answered; any other closed task was closed before its work finished (QA6-07).
+    case "CLOSED":
+      // A plain task (no workflow) is finished only when its agent run completed; a closed one whose run did not read as closed, never as finished (as the computed summary reads it).
+      return view.workflow === undefined ? (view.run?.state === "COMPLETE" ? "succeeded" : "cancelled")
+        : view.workflow.stage !== "MERGED" && view.workflow.outcome !== "ANSWERED" ? "cancelled" : "succeeded";
     case "FAILED":
     case "INTERRUPTED":
       return "failed";
@@ -275,7 +279,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
     followers: session.followerCount,
     viewingNow: await viewingNow(deps, session, deps.now()),
-    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status, workflowBlocked, closable: closableSession(session) }), ...(canMakeAgent ? ["make_agent" as const] : [])],
+    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status, workflowBlocked, closable: closableSession(session), ...(task?.closedAt === undefined ? {} : { closed: true as const }) }), ...(canMakeAgent ? ["make_agent" as const] : [])],
       // Merge's rule (pressMerge): the effective owner, a maintainer of the project (granted or inherited) or an org admin. A reader at `view` who is one of the last two still presses it (C59).
       ...(session.subject.kind === "task" && levelOf(access) === "view" && (access.projectRole === "maintainer" || access.orgAdmin) ? { mayMerge: true as const } : {}),
       ...(live === undefined ? {} : { live }) },

@@ -11,7 +11,7 @@ import { runTaskInvocation } from "./run-task.js";
 import { publishWorkspace } from "./publish.js";
 import { maintainPullRequest } from "./maintain-pull-request.js";
 import { WorkerCancellationController } from "./cancel.js";
-import { inspectWorkspaceForClose } from "./close-workspace.js";
+import { closeInvocationResult } from "./close-workspace.js";
 import { advertisedInvocationFeatures, anotherOperationActive, createWorkerServerState, startWorkerServer } from "./server.js";
 import { consoleWorkerLog, logWorkerStarted } from "./worker-log.js";
 import { invokeAuthenticationFromEnvironment } from "./invoke-auth.js";
@@ -219,7 +219,7 @@ const state = createWorkerServerState(
         return executeWorkerCancelInvocation(invocation, cancellationController, journal);
       }
       if (invocation.kind === "close") {
-        return inspectWorkspaceForClose(rootPath);
+        return closeInvocationResult(rootPath, () => anotherOperationActive(state, invocation.operationId));
       }
       throw new Error(`worker operation ${invocation.kind} is not implemented in this delivery slice`);
     },

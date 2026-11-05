@@ -626,3 +626,52 @@ describe("where the retry is wired", () => {
     expect(stuckCancelRetrier({ BROKER_FUNCTION_NAME: "agentx-staging-broker" }, state)).toBeUndefined();
   });
 });
+
+
+describe("a failed stop's hold when the owner asked to close the task (058-stop-close)", () => {
+  const interrupted = (db: FakeDynamoDb, minutes: number, fields: Record<string, unknown> = {}) => seedTask(db, "INTERRUPTED", minutes, { error: "NOT_FOUND: active operation not found", ...fields });
+
+  it("is freed on an idle answer taken after the cancel failed, without the ten-minute wait", async () => {
+    const { db, sweep } = setup();
+    const task = interrupted(db, 2, { closeRequestedAt: minutesAgo(1) });
+    expect((await sweep([{ workspaceId: task.workspaceId, compute: "alive", worker: "idle", pingedAt: NOW.getTime() }])).interrupted).toEqual([task.operationId]);
+    expect(task.operation()).toMatchObject({ workspaceReleaseReason: "worker-idle" });
+    expect(task.meta()).toMatchObject({ status: "READY" });
+  });
+
+  it("is NOT freed by an idle answer taken before the cancel failed (the same run's ping can predate the failure)", async () => {
+    const { db, sweep } = setup();
+    const task = interrupted(db, 2, { closeRequestedAt: minutesAgo(1) });
+    const before = NOW.getTime() - 3 * 60_000;
+    expect((await sweep([{ workspaceId: task.workspaceId, compute: "alive", worker: "idle", pingedAt: before }])).interrupted).toEqual([]);
+    expect(task.meta()).toMatchObject({ status: "BUSY", activeOperationId: task.operationId });
+    // And one with no ping time at all is not trusted either.
+    const none = interrupted(db, 2, { closeRequestedAt: minutesAgo(1) });
+    await sweep([{ workspaceId: none.workspaceId, compute: "alive", worker: "idle" }]);
+    expect(none.meta()).toMatchObject({ status: "BUSY" });
+  });
+
+  it("is NOT freed in the first minute after the cancel failed, so a worker POST still in flight can land and show as busy", async () => {
+    const { db, sweep } = setup();
+    const task = interrupted(db, 0.5, { closeRequestedAt: minutesAgo(0.2) });
+    await sweep([{ workspaceId: task.workspaceId, compute: "alive", worker: "idle", pingedAt: NOW.getTime() }]);
+    expect(task.meta()).toMatchObject({ status: "BUSY", activeOperationId: task.operationId });
+  });
+
+  it("is kept while the worker answers busy, however long the owner has asked", async () => {
+    const { db, sweep } = setup();
+    const task = interrupted(db, 60, { closeRequestedAt: minutesAgo(50) });
+    await sweep([{ workspaceId: task.workspaceId, compute: "alive", worker: "busy" }]);
+    expect(task.meta()).toMatchObject({ status: "BUSY", activeOperationId: task.operationId });
+  });
+
+  it("is kept when the worker did not answer (unknown), and without the owner's request still waits its grace", async () => {
+    const { db, sweep } = setup();
+    const unknown = interrupted(db, 2, { closeRequestedAt: minutesAgo(1) });
+    await sweep([{ workspaceId: unknown.workspaceId, compute: "alive" }]);
+    expect(unknown.meta()).toMatchObject({ status: "BUSY" });
+    const plain = interrupted(db, 1);
+    await sweep([{ workspaceId: plain.workspaceId, compute: "alive", worker: "idle" }]);
+    expect(plain.meta()).toMatchObject({ status: "BUSY" });
+  });
+});

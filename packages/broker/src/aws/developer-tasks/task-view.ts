@@ -365,7 +365,8 @@ export async function taskView(
     ...(secondReview === undefined ? {} : { secondReview }),
     ...(reviewRound === undefined ? {} : { reviewRound }),
     ...(tracked.length === 0 ? {} : { mergeTracking: tracked.map(publicTrackingItem) }),
-    ...(merge === undefined ? {} : { merge }),
+    // A closed task offers no Merge: its pull requests are listed as they stand, but "Ready to merge" would contradict the task being closed (QA6-07).
+    ...(merge === undefined || task.closedAt !== undefined ? {} : { merge }),
     ...(earlyRiskSignal === undefined ? {} : { earlyRiskSignal }),
     ...(e2ePresentation === undefined ? {} : { e2ePresentation }),
     ...(derived.failure === undefined ? {} : { failure: derived.failure }),

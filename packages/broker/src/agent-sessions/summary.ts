@@ -342,7 +342,8 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   // A question that needed no code change succeeded (its step reads "Answered"); a plan that was rejected or a task that was closed did not.
   else if (workflow?.stage === "CLOSED" && workflow.outcome === "ANSWERED") ended = { status: "succeeded", at };
   else if (workflow?.stage === "CLOSED") ended = { status: "cancelled", at };
-  else if (task.closedAt !== undefined) ended = { status: closedStatus, at };
+  // A task the owner closed before its work was merged or answered did not finish and did not fail: it was closed, however its last step ended (QA6-07). A plain task (no workflow) keeps the end of its last run (the projector's existing rule: failed after a failed run, cancelled with no run).
+  else if (task.closedAt !== undefined) ended = { status: workflow === undefined ? closedStatus : "cancelled", at };
   if (ended !== undefined) {
     const step = workflow === undefined ? undefined : stepText(taskPageStep(workflow, task.closedAt !== undefined));
     return { ended, summary: assemble({ status: ended.status, step, ...costs }, now) };

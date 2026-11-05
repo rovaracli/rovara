@@ -27,7 +27,8 @@ import { creatorCheckOf, githubScopeOf } from "./scope-helpers.js";
 import { changeRequestRef, hostOfRepository, pullRequestDetailsOf, requireGithubHost } from "./repository-hosts.js";
 import { taskOperationParts } from "./task-operations.js";
 import type { DesignReviewDispatch } from "../../design-review/round-ports.js";
-import { latestChecksItem } from "./terminal-result.js";
+import { latestChecksItem, recordTerminalResult } from "./terminal-result.js";
+import { withdrawParkedDelivery } from "../parked-stop.js";
 import { attributedBody, requesterOf } from "./thread-workspaces.js";
 import { requireSlackRequesterMayWork } from "./workspace-preparation.js";
 import { newTaskStopWindowReference, requireTaskStopWindowContext, withAdmittedTaskSource } from "../../org/task-stop-window.js";
@@ -798,6 +799,11 @@ export async function cancelRunningTask(
   const result = await requestCancellation(dependencies, workspace, targetOperationId, requester, extra);
   // A duplicate here means the task finished before the cancel was recorded.
   if (result.duplicate) return { outcome: "NOTHING_RUNNING", workspaceId: workspace.id, finishedStatus: result.operation.status };
+  // 058-stop-close: a step that was only dispatching, its delivery parked until the compute is ready, never reached a worker. Its delivery is withdrawn and the cancel is ended here, as a
+  // worker's success would end it (the step cancelled, the workspace free, the workflow step blocked), instead of sending a cancel that has nothing to find.
+  if ((target.status === "ACCEPTED" || target.status === "DISPATCHING") && await withdrawParkedDelivery(dependencies.documentClient, dependencies.tableName, workspace.id, targetOperationId)) {
+    await recordTerminalResult(dependencies, await requireOperation(dependencies, workspace.id, result.operation.id), { status: "SUCCEEDED", result: { status: "CANCELLED", remainingProcesses: 0, withdrawnBeforeStart: true } });
+  }
   return { outcome: "CANCEL_REQUESTED", workspaceId: workspace.id, targetOperationId, cancelOperationId: result.operation.id };
 }
 

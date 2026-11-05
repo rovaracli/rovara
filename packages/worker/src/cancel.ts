@@ -29,9 +29,14 @@ interface ActiveOperation {
   liveSteers: LiveSteerTaken[];
 }
 
+/** How long a stop remembered for an operation that has not registered is kept (an operation that is still starting registers within minutes). */
+export const PENDING_CANCEL_TTL_MS = 60 * 60_000;
+
 export class WorkerCancellationController {
   private readonly active = new Map<string, ActiveOperation>();
   private readonly cancelled = new Set<string>();
+  /** Operations a cancel named before they registered (058-stop-close): the stop is applied the moment each registers. */
+  private readonly cancelOnRegister = new Map<string, number>();
 
   register(operationId: string, session?: AbortablePiSession): () => void {
     if (this.active.has(operationId)) throw agentXError("WORKSPACE_BUSY", "operation is already registered");
@@ -41,7 +46,39 @@ export class WorkerCancellationController {
       liveSteers: [],
     };
     this.active.set(operationId, operation);
+    // A stop that came while this operation was still preparing: marked, and the run's own abort runs now, so the run ends on its first check instead of going on.
+    if (this.cancelOnRegister.delete(operationId)) {
+      this.cancelled.add(operationId);
+      queueMicrotask(() => { void this.cancel(operationId).catch(() => undefined); });
+    }
     return () => this.active.delete(operationId);
+  }
+
+  /** Whether the operation is registered (running) here now. */
+  isRegistered(operationId: string): boolean {
+    return this.active.has(operationId);
+  }
+
+  /**
+   * A cancel for an operation the worker has taken but that has not registered yet (it is still checking out or starting its session): the stop is remembered, marked cancelled at once, and
+   * applied when the operation registers. False when it is registered already (the ordinary cancel applies).
+   */
+  cancelWhenRegistered(operationId: string, now: number = Date.now()): boolean {
+    if (this.active.has(operationId)) return false;
+    // Bounded: an operation that never registers (a publish, a close, a checkout that failed) leaves its entry only for the TTL.
+    for (const [entry, expiresAt] of this.cancelOnRegister) {
+      if (expiresAt <= now) { this.cancelOnRegister.delete(entry); this.cancelled.delete(entry); }
+    }
+    this.cancelled.add(operationId);
+    this.cancelOnRegister.set(operationId, now + PENDING_CANCEL_TTL_MS);
+    return true;
+  }
+
+  /** The operation has ended: a stop remembered for it is no longer needed. Never touches a registered (running) operation. */
+  forget(operationId: string): void {
+    if (this.active.has(operationId)) return;
+    this.cancelOnRegister.delete(operationId);
+    this.cancelled.delete(operationId);
   }
 
   spawnTracked(
