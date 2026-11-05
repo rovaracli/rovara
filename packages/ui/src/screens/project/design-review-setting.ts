@@ -19,6 +19,9 @@ export const MODE_WORDS: Readonly<Record<DesignReviewSetting["mode"], string>> =
 export const TIER_LABELS: Readonly<Record<DesignReviewTier, string>> = {
   light: "Light: one reviewer", standard: "Standard: three reviewers and a merge step", thorough: "Thorough: up to five reviewers and a merge step",
 };
+/** What the mode line says when the saved setting could not be read (it runs as Off). A maintainer is told what to do; anyone else is told who can. */
+export const MODE_UNREADABLE_WORDS = "Off (the saved setting couldn't be read; choose again)";
+export const MODE_UNREADABLE_WORDS_VIEWER = "Off (the saved setting couldn't be read; a project maintainer can choose again)";
 export const MODE_OPTIONS = (["never", "auto", "always"] as const).map(value => ({ value, label: MODE_WORDS[value] }));
 export const TIER_OPTIONS = DESIGN_REVIEW_TIERS.map(value => ({ value, label: TIER_LABELS[value] }));
 
@@ -98,9 +101,11 @@ export function designRows(setting: DesignReviewSetting, locked: ReadonlySet<Set
 
 export interface SettingLine { field: SettingField; label: string; text: string; mark: Mark }
 /** Mode, skipping and the cost limit, in words, each with its mark. */
-export function settingLines(setting: DesignReviewSetting, locked: ReadonlySet<SettingField>): SettingLine[] {
+export function settingLines(setting: DesignReviewSetting, locked: ReadonlySet<SettingField>, unreadable?: { canEdit: boolean }): SettingLine[] {
+  // An unreadable saved setting runs as Off (the broker sends Off with `designReviewUnreadable`); the line says so instead of the plain Off words.
+  const modeText = unreadable === undefined ? MODE_WORDS[setting.mode] : unreadable.canEdit ? MODE_UNREADABLE_WORDS : MODE_UNREADABLE_WORDS_VIEWER;
   return [
-    { field: "mode", label: "When it runs", text: MODE_WORDS[setting.mode], mark: markOf("mode", setting, locked) },
+    { field: "mode", label: "When it runs", text: modeText, mark: markOf("mode", setting, locked) },
     { field: "allowSkip", label: "Skipping", text: setting.allowSkip ? "Allowed. On a high-risk design only the design approver may skip." : "Not allowed.", mark: markOf("allowSkip", setting, locked) },
     { field: "capUsdPerTask", label: "Cost limit per task", text: `$${setting.capUsdPerTask.toFixed(2)}. Above it, a person decides.`, mark: markOf("capUsdPerTask", setting, locked) },
   ];

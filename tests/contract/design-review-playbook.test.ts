@@ -6,7 +6,7 @@ import {
 } from "../../packages/contracts/src/index.js";
 import { getProjectPlaybook, putProjectPlaybook, type ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { readProjectPlaybook, readProjectPlaybookState, writeProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
-import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, DESIGN_REVIEW_LOCK_SK, readDesignReviewCompany, DESIGN_REVIEW_LOCK_GROUP_EDITION, applyLock, checkDesignReviewLockWrite, effectiveDesignReviewSetting, lockViolations, type DesignReviewLock } from "../../packages/broker/src/design-review/lock.js";
+import { DESIGN_REVIEW_LOCK_SK, readDesignReviewCompany, DESIGN_REVIEW_LOCK_GROUP_EDITION, applyLock, checkDesignReviewLockWrite, effectiveDesignReviewSetting, lockViolations, type DesignReviewLock } from "../../packages/broker/src/design-review/lock.js";
 import { isEffectiveSetting } from "../../packages/broker/src/design-review/effective-setting.js";
 import { readEffectiveDesignReview } from "../../packages/broker/src/design-review/setting.js";
 import { MAX, MIA, OLA, ORG_A, PRIYA } from "../support/agent-session-world.js";
@@ -58,13 +58,14 @@ describe("an old playbook", () => {
     expect(bare.allowed).toBe(false);
   });
 
-  it("keeps working when the stored setting cannot be read: the process stays available and the setting reads as the strictest, never a looser one", async () => {
+  it("keeps working when the stored setting cannot be read: the process stays available and the setting reads as Off (owner decision 2026-11-05), never Always or Auto", async () => {
     const w = world();
     w.db.set({ ...projectPlaybookKey(ORG_A, "web"), entityType: "PROJECT_PLAYBOOK", orgId: ORG_A, revision: 2, defaultProcess: { kind: "builtin" }, designReview: { mode: "sometimes" } });
     const read = await readProjectPlaybook(playbookDeps(w), ORG_A, "web");
     expect(read.defaultProcess).toEqual({ kind: "builtin" });
-    expect(read.designReview).toEqual(DESIGN_REVIEW_FAIL_CLOSED_SETTING);
-    expect(read.designReview).toMatchObject({ mode: "always", allowSkip: false });
+    // No setting (Off): the unreadable value is not turned into a stricter or looser one. The flag and the log are pinned in design-review-project-setting-unreadable.test.ts.
+    expect(read.designReview).toBeUndefined();
+    expect((await readEffectiveDesignReview(playbookDeps(w), ORG_A, "web")).setting).toEqual({ ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never" });
   });
 });
 
@@ -276,10 +277,10 @@ describe("fix round: the setting survives an unreadable process (M2)", () => {
     expect(await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web")).toMatchObject({ playbook: { designReview: STRICT } });
   });
 
-  it("and the strictest posture when the setting does not parse either; no setting stays none", async () => {
+  it("and no setting (Off) when the setting does not parse either; no setting stays none", async () => {
     const w = world();
     item(w, { defaultProcess: { kind: "from_the_future" }, designReview: { mode: "sometimes" } });
-    expect((await readProjectPlaybook(playbookDeps(w), ORG_A, "web", { lenient: true })).designReview).toEqual(DESIGN_REVIEW_FAIL_CLOSED_SETTING);
+    expect((await readProjectPlaybook(playbookDeps(w), ORG_A, "web", { lenient: true })).designReview).toBeUndefined();
     const bare = world();
     item(bare, { defaultProcess: { kind: "from_the_future" } });
     expect((await readProjectPlaybook(playbookDeps(bare), ORG_A, "web", { lenient: true })).designReview).toBeUndefined();

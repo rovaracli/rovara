@@ -41,7 +41,7 @@ export function DesignReviewCard({ project, canEdit, filter }: { project: string
  const response = playbook.data, setting = designReviewSettingOf(response.playbook), locked = lockedSet(response.designReviewLocked), groups = response.designReviewGroups === true;
  const names = new Map((members.data?.members ?? []).map(member => [member.developerId, member.name]));
  const nameOf = (person: string) => names.get(person);
- const rows = designRows(setting, locked, nameOf), lines = settingLines(setting, locked), editing = draft !== undefined;
+ const rows = designRows(setting, locked, nameOf), lines = settingLines(setting, locked, response.designReviewUnreadable === true ? { canEdit } : undefined), editing = draft !== undefined;
  const shownRows = filter === "locked" ? rows.filter(row => row.values.some(value => value.mark.locked)) : filter === "changed" ? rows.filter(row => row.values.some(value => value.mark.source === "project")) : rows;
  const current = draft ?? draftOf(setting), anyLocked = locked.size > 0;
  const patch = (change: Partial<SettingDraft>) => { setSaved(false);setError(undefined);setDraft({ ...current, ...change }); };

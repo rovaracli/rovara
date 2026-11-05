@@ -1,8 +1,8 @@
-// Design review stage (DR8): the setting a task runs with, read in one place. The project's How we work value (the playbook's `designReview`, or Off with the owner's defaults when it has none) held to the
+// Design review stage (DR8): the setting a task runs with, read in one place. The project's How we work value (the playbook's `designReview`; Off with the owner's defaults when it has none OR when the stored one cannot be read) held to the
 // company's lock. Consumers (mode resolution, the cost gate, approval by risk) call this and never read the playbook or the lock themselves. A lock that cannot be read gives the strictest posture; a read that fails is
 // the caller's to handle (a task is not started on a guessed setting).
 import type { OrgId } from "@agentx/contracts";
-import { readProjectPlaybook, type ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
+import { readProjectPlaybookDetail, type ProjectPlaybookDetail, type ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
 import type { EffectiveDesignReviewSetting } from "./effective-setting.js";
 import { effectiveDesignReviewSetting, lockedFields, readDesignReviewCompany, type DesignReviewCompanyRead, type LockViolation } from "./lock.js";
 
@@ -12,17 +12,19 @@ export interface EffectiveDesignReview {
   /** The fields the company's lock holds fixed, so the page can show them as locked. */
   locked: LockViolation[];
   lockUnreadable: boolean;
-  /** Whether the company allows design review at all (DR-FU4). False when the policy is not set or cannot be read. */
+  /** Whether the company allows design review at all (DR-FU4). False when the policy is not set or cannot be read, and when the lock cannot be read (the same rule as `readEffectiveWhenAllowed` and the switch). */
   allowed: boolean;
+  /** The project's stored setting is there but could not be read. It reads as Off (owner decision 2026-11-05), and the page says so; never Always or Auto. */
+  settingUnreadable: boolean;
 }
 
-const effectiveOf = (playbook: Awaited<ReturnType<typeof readProjectPlaybook>>, company: DesignReviewCompanyRead): EffectiveDesignReview => ({
-  setting: effectiveDesignReviewSetting(playbook, company.lock),
-  locked: company.lock.kind === "lock" ? lockedFields(company.lock.lock) : [], lockUnreadable: company.lock.kind === "unreadable", allowed: company.policy.allowed,
+const effectiveOf = (read: ProjectPlaybookDetail, company: DesignReviewCompanyRead): EffectiveDesignReview => ({
+  setting: effectiveDesignReviewSetting(read.playbook, company.lock), settingUnreadable: read.designReviewUnreadable,
+  locked: company.lock.kind === "lock" ? lockedFields(company.lock.lock) : [], lockUnreadable: company.lock.kind === "unreadable", allowed: company.policy.allowed && company.lock.kind !== "unreadable",
 });
 
 export async function readEffectiveDesignReview(deps: ProjectPlaybookReader, orgId: OrgId, project: string): Promise<EffectiveDesignReview> {
-  const [playbook, company] = await Promise.all([readProjectPlaybook(deps, orgId, project, { lenient: true }), readDesignReviewCompany(deps, orgId)]);
+  const [playbook, company] = await Promise.all([readProjectPlaybookDetail(deps, orgId, project, { lenient: true }), readDesignReviewCompany(deps, orgId)]);
   return effectiveOf(playbook, company);
 }
 
@@ -33,5 +35,5 @@ export async function readEffectiveDesignReview(deps: ProjectPlaybookReader, org
 export async function readEffectiveWhenAllowed(deps: ProjectPlaybookReader, orgId: OrgId, project: string): Promise<EffectiveDesignReview | undefined> {
   const company = await readDesignReviewCompany(deps, orgId);
   if (!company.policy.allowed || company.lock.kind === "unreadable") return undefined;
-  return effectiveOf(await readProjectPlaybook(deps, orgId, project, { lenient: true }), company);
+  return effectiveOf(await readProjectPlaybookDetail(deps, orgId, project, { lenient: true }), company);
 }
