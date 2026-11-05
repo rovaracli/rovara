@@ -78,7 +78,7 @@ export interface DesignReviewCompanyRead {
   policyUnreadable: boolean;
   /** The item's revision: 0 when there is no item, undefined when the item has no readable revision. */
   revision: number | undefined;
-  /** Who last wrote the item (`system` for the one-time `dp` move); undefined when there is no item. */
+  /** Who last wrote the item (`system` for an item the one-time `dp` move wrote before 0.5.7); undefined when there is no item. */
   updatedBy?: string | undefined;
 }
 

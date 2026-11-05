@@ -78,14 +78,6 @@ describe("the design review at the Understand step's ready answer", () => {
     }
   });
 
-  it("`dp` decides nothing any more: the old project list is ignored whether or not it names the project", async () => {
-    for (const dp of ["billing:payments", "billing", ""]) {
-      vi.stubEnv("DESIGN_REVIEW_PROJECTS", dp);
-      const result = await understoodAs(needed(), { switchOn: true });
-      expect(result.workflow, dp).toMatchObject({ path: "FULL", designReview: { status: "estimating" } });
-    }
-  });
-
   it("a project with no setting of its own is Off: nothing runs, whatever the company allows; the project's maintainers turn it on or off", async () => {
     const none = { revision: 1, defaultProcess: { kind: "builtin" } };
     const own = (mode: string) => ({ revision: 1, defaultProcess: { kind: "builtin" }, designReview: { mode, tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } });

@@ -71,6 +71,16 @@ const MIN_CALLBACK_SIGNING_KEY_LENGTH = 32;
 export const SECRET_PARAMETERS: ReadonlySet<string> = new Set(["CallbackSigningKey"]);
 
 /**
+ * Parameters a release has REMOVED from its template, kept in OPERATOR_PARAMETERS for exactly one release so that an upgrade finds a deployed value,
+ * sees that the new template no longer declares it, does not send it (CloudFormation refuses an unknown parameter) and tells the operator it was dropped
+ * (keptOperatorParameters, droppedConfigKeys). They are the only OPERATOR_PARAMETERS the template may omit (tests/contract/deploy-parameters.test.ts).
+ * 0.5.7 removed DesignReviewProjects (the old design review project list `dp`); delete it from here in the release after.
+ */
+export const RETIRED_OPERATOR_PARAMETERS: Readonly<Record<"control-plane", readonly string[]>> = {
+  "control-plane": ["DesignReviewProjects"],
+};
+
+/**
  * Stack parameters an operator sets after install (the budget question, agentx config set) that an
  * upgrade's answers do not carry. An upgrade keeps each one's deployed value unless its answers set
  * it, so no upgrade resets them to the template default. Models are not here: they live in the
@@ -83,7 +93,7 @@ export const OPERATOR_PARAMETERS: Readonly<Record<DeployPart, readonly string[]>
   // The AI navigation model the customer chose (agentx config set models.e2eAgent): a stack parameter and not a model role, so it is not in the settings the upgrade's answers read.
   // MODEL3: the fallback model the customer chose (agentx config set models.fallback), also a parameter of the Slack stack.
   runtime: ["E2eAgentModelId", "ModelFallback"],
-  "control-plane": ["BudgetMonthlyUsd", "BudgetScope", "SlackAppPostedMessages", "SlackThreadTurnsPerMinute", "SlackMemberWorkspaceLimit", "SlackOrganizationWorkspaceLimit", "McpConfirmElicitation", "TaskPeopleChangesEnabled", "TaskPeoplePublicInvitationsEnabled", "TaskPeoplePrivateInvitationsEnabled", "TaskPersonProofEnabled", "WorkflowDependenciesEnabled", "RovaraCodeV2Enabled", "PlanSelfCheckEnabled", "AutofixEnabled", "LiveSteerEnabled", "LiveRedirectEnabled", "LiveAskEnabled", "LiveFixEnabled", "ProofEvidenceEnabled", "DecisionCardsEnabled", "TestEnvironmentEnabled", "LearnedLessonsEnabled", "VerifyResultsEnabled", "SetupAgentEnabled", "TestServicesEnabled", "TestAccountsEnabled", "ProjectImagesEnabled", "SecondReviewEnabled", "SavedEnvEnabled", "DesignReviewEnabled", "DesignReviewProjects", "SetupRecipesEnabled", "NightlyHealthEnabled", "LearningSuggestionsDefault", "AuditLockProfile"],
+  "control-plane": ["BudgetMonthlyUsd", "BudgetScope", "SlackAppPostedMessages", "SlackThreadTurnsPerMinute", "SlackMemberWorkspaceLimit", "SlackOrganizationWorkspaceLimit", "McpConfirmElicitation", "TaskPeopleChangesEnabled", "TaskPeoplePublicInvitationsEnabled", "TaskPeoplePrivateInvitationsEnabled", "TaskPersonProofEnabled", "WorkflowDependenciesEnabled", "RovaraCodeV2Enabled", "PlanSelfCheckEnabled", "AutofixEnabled", "LiveSteerEnabled", "LiveRedirectEnabled", "LiveAskEnabled", "LiveFixEnabled", "ProofEvidenceEnabled", "DecisionCardsEnabled", "TestEnvironmentEnabled", "LearnedLessonsEnabled", "VerifyResultsEnabled", "SetupAgentEnabled", "TestServicesEnabled", "TestAccountsEnabled", "ProjectImagesEnabled", "SecondReviewEnabled", "SavedEnvEnabled", "DesignReviewEnabled", "SetupRecipesEnabled", "NightlyHealthEnabled", "LearningSuggestionsDefault", "AuditLockProfile", ...RETIRED_OPERATOR_PARAMETERS["control-plane"]],
   slack: ["SlowTurnMinutes", "ModelFallback"],
 };
 

@@ -74,19 +74,6 @@ describe("the broker keeps room (ENV-ROOM)", () => {
   }
 });
 
-describe("B2-m2: the broker's environment is measured with the design review's project list at its longest", () => {
-  const brokerBytes = (values: Record<string, string>): number => environmentsOf(LONGEST_ENVIRONMENT, { agentxCloud: true }, values).find((entry) => /^Broker[0-9A-F]{8}$/.test(entry.logicalId))!.bytes;
-
-  it("gives `dp` its 20 characters, so the headroom the gate reports is the worst case (an empty `dp` would hide 20 bytes)", () => {
-    expect(DEPLOY_PARAMETER_VALUES.DesignReviewProjects).toHaveLength(20);
-    expect(DEPLOY_PARAMETER_VALUES.DesignReviewProjects).toMatch(/^[a-z][a-z0-9-]{0,62}(:[a-z][a-z0-9-]{0,62})*$/u);
-    const worst = brokerBytes(DEPLOY_PARAMETER_VALUES);
-    const empty = brokerBytes({ ...DEPLOY_PARAMETER_VALUES, DesignReviewProjects: "" });
-    expect(worst - empty).toBeGreaterThanOrEqual(20);
-    expect(CEILING_BYTES - worst).toBeGreaterThanOrEqual(BROKER_HEADROOM_BYTES);
-  });
-});
-
 describe("the legacy install (no environment name), whose templates this fix leaves as they were", () => {
   const functions = environmentsOf(undefined, {});
 

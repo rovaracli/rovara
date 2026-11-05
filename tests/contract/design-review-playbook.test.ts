@@ -16,7 +16,7 @@ import { designPlaybookDeps } from "../../packages/broker/src/aws/developer-rout
 
 // The setting is read and saved only where the design review stage exists (`dr` on and the company allows it, DR-FU4); the OFF answers are pinned in tests/contract/design-review-final-fix.test.ts. `world()` is a company that allows it (default mode Auto).
 beforeEach(() => { process.env.DESIGN_REVIEW_ENABLED = "1"; });
-afterEach(() => { delete process.env.DESIGN_REVIEW_ENABLED; delete process.env.DESIGN_REVIEW_PROJECTS; });
+afterEach(() => { delete process.env.DESIGN_REVIEW_ENABLED; });
 const world = (seed: CompanyPolicySeed | null = {}): MergeWorld => { const w = mergeWorld(); if (seed !== null) seedDesignReviewCompany(w.db, ORG_A, seed); return w; };
 
 const ROLES: Record<string, OrgRole> = { [OLA]: "admin" };

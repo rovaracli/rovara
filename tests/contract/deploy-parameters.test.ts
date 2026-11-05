@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { ENVIRONMENT_PLACEHOLDER, renderTemplate, type ReleaseManifest } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { OPERATOR_PARAMETERS, SECRET_PARAMETERS, installOrder, privateImageUri, stackParameters, upgradeOrder, type DeployPart, type InstallAnswers } from "../../packages/cli/src/deploy/parameters.js";
+import { OPERATOR_PARAMETERS, RETIRED_OPERATOR_PARAMETERS, SECRET_PARAMETERS, installOrder, privateImageUri, stackParameters, upgradeOrder, type DeployPart, type InstallAnswers } from "../../packages/cli/src/deploy/parameters.js";
 
 const d = (c: string) => c.repeat(64);
 let templates: Map<string, { Parameters?: Record<string, { Default?: unknown; NoEcho?: boolean }>; Outputs?: Record<string, unknown> }>;
@@ -241,6 +241,8 @@ describe("deploy parameters", () => {
       const declared = Object.keys(templates.get(part)?.Parameters ?? {});
       for (const name of names) {
         if (name === "TaskPersonProofEnabled") continue; // Declared only in the owner-approved named TEST template.
+        // A parameter a release removed stays listed for one release so the upgrade can report it dropped; it is the only kind the template may omit.
+        if ((RETIRED_OPERATOR_PARAMETERS[part as keyof typeof RETIRED_OPERATOR_PARAMETERS] ?? []).includes(name)) { expect(declared, `${part} ${name} (retired)`).not.toContain(name); continue; }
         expect(declared, `${part} ${name}`).toContain(name);
       }
     }

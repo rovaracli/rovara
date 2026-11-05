@@ -62,7 +62,7 @@ import { ROVARA_CODE_NAME } from "./model-access.js";
 import { learnModelNotEnabled } from "../../model-sources/learn-not-enabled.js";
 import { planCritiqueOutcome, planRunEstimate, spendLimitKind, storePlanAnswer, type PlannerReplies } from "./plan-answers.js";
 import { requirePullRequest } from "./records.js";
-import { designDpMigrationOf, designWaitSweepOf } from "../../design-review/wait-wiring.js";
+import { designWaitSweepOf } from "../../design-review/wait-wiring.js";
 import { githubScopeOf } from "./scope-helpers.js";
 import { liveSteerChangeItems, liveSteerCodingStop } from "../../agent-sessions/live-steer-revise.js";
 import { PLAN_EVIDENCE_SWEEP_LIMIT, WORKFLOW_DISPATCH_SWEEP_LIMIT } from "./sweeps-and-readiness.js";
@@ -90,8 +90,6 @@ export async function retryDueWorkflowDispatches(dependencies: AwsBrokerDependen
   const rows = (page.Items ?? []) as WorkflowDispatchRecord[];
   let dispatched = 0;
   for (const row of rows) if (await runWorkflowDispatch(dependencies, row) === "DISPATCHED") dispatched += 1;
-  // DR-FU4: the one-time move of the old `dp` project list into stored settings, AFTER the dispatch work and in a small budget, so it can never delay a due row (it reads nothing while `dr` is off or `dp` is empty).
-  await designDpMigrationOf(dependencies).catch((error: unknown) => console.log(JSON.stringify({ component: "broker", event: "design_review.dp_migration_failed", error: error instanceof Error ? error.name : "unknown" })));
   return { attempted: rows.length, dispatched };
 }
 

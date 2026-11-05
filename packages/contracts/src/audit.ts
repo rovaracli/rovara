@@ -199,7 +199,7 @@ export const AUDIT_ACTIONS = [
   "playbook.default_process_changed",
   // Design review stage (DR8): a maintainer changed the project's design review setting in How we work.
   "playbook.design_review_changed",
-  // Design review (DR-FU4): a company admin changed the company's design review policy (allowed, lock) or the system moved `dp` projects into it; turning "allowed" on waits for a different admin.
+  // Design review (DR-FU4): a company admin changed the company's design review policy (allowed, lock; before 0.5.7 the system also moved the old `dp` projects into it, and those events stay readable); turning "allowed" on waits for a different admin.
   "company.design_review_policy_proposed",
   "company.design_review_policy_changed",
   "company.change_applied_to_project",

@@ -363,39 +363,3 @@ export async function approveDesignReviewChange(deps: DesignReviewCompanyDeps, i
   return ok ? { ok: true, status: "applied", changed: true, revision } : { ok: false, code: "stale" };
 }
 
-export const DESIGN_REVIEW_DP_MIGRATION_SK = "DESIGNREVIEW#DPMIGRATION";
-
-/** The record that the move of the old `dp` list ran (or was skipped) for this company, if any. */
-export async function dpMigrationRecord(table: DesignReviewLockTable, orgId: string): Promise<{ outcome: "moved" | "skipped" } | undefined> {
-  const item = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: orgPk(orgId), sk: DESIGN_REVIEW_DP_MIGRATION_SK }, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
-  return item === undefined ? undefined : { outcome: item["outcome"] === "skipped" ? "skipped" : "moved" };
-}
-/** Whether the move already ran (or was skipped) for this company. */
-export async function dpMigrationRan(table: DesignReviewLockTable, orgId: string): Promise<boolean> {
-  return (await dpMigrationRecord(table, orgId)) !== undefined;
-}
-
-/**
- * The company half of the `dp` move (dp-migration.ts), by the system, and the record that the move ran in the SAME transaction (so it never repeats). With `allow`, the company becomes "allowed" unless an admin already
- * touched the item (a member wrote it after it first existed: their choice stands, the record is still written). Without `allow` (the move was refused for a project, or has no evidence for this company) only the record
- * is written, as `skipped`, so a refusal is not retried every tick. Audited as the system with mode `migration`. Answers `ran` for a move that already ran, `stale` for a lost race (the next tick tries again).
- */
-export async function recordDpMigration(deps: DesignReviewCompanyDeps, input: { orgId: OrgId; projectCount: number; allow: boolean; reason?: string }): Promise<"done" | "kept" | "skipped" | "ran" | "stale" | "unreadable"> {
-  if (await dpMigrationRan(deps, input.orgId)) return "ran";
-  const read = await readDesignReviewCompany(deps, input.orgId);
-  const at = new Date(deps.now()).toISOString();
-  const marker = (outcome: "moved" | "skipped"): TransactItem => ({ Put: { TableName: deps.tableName, Item: { pk: orgPk(input.orgId), sk: DESIGN_REVIEW_DP_MIGRATION_SK, entityType: "DESIGN_REVIEW_DP_MIGRATION", orgId: input.orgId, ranAt: at, projectCount: input.projectCount, outcome, ...(input.reason === undefined ? {} : { reason: input.reason }) }, ConditionExpression: "attribute_not_exists(pk)" } });
-  if (!input.allow) return (await commit(deps, [marker("skipped")], [])) ? "skipped" : "ran";
-  if (read.revision === undefined || read.lock.kind === "unreadable" || read.policyUnreadable) return "unreadable";
-  // An admin's choice before the move reached this company stands.
-  if (read.policy.allowed || (read.revision > 0 && read.updatedBy !== undefined && read.updatedBy !== "system")) return (await commit(deps, [marker("moved")], [])) ? (read.policy.allowed ? "done" : "kept") : "ran";
-  const revision = read.revision + 1;
-  const events = await tryAuditEvents(deps.audit === undefined ? {} : { audit: deps.audit }, () => [auditCompanyDesignReviewPolicyChanged({
-    orgId: input.orgId, actor: SYSTEM_ACTOR, occurredAt: at, occurrence: auditOccurrence("design_review_policy", "allowed", String(revision)),
-    field: "allowed", from: "off", to: "on", mode: "migration", revision,
-  })]);
-  const currentLock = read.lock.kind === "lock" ? read.lock.lock : {};
-  const item = itemOf(input.orgId, revision, currentLock, { allowed: true }, "system", at);
-  return (await commit(deps, [putCompany(deps, input.orgId, read, item), marker("moved")], events)) ? "done" : "stale";
-}
-

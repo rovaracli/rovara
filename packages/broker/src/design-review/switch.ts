@@ -2,7 +2,7 @@
 //   `dr`  (BROKER_SETTINGS.designReview, variable DESIGN_REVIEW_ENABLED)   the operator's environment-wide master switch; the stage exists in this environment only when the value is exactly "1";
 //   the company's `allowed` (design-review/lock.ts, set by a company admin in How we work)   whether the company allows design review at all;
 //   the project's effective mode (its How we work setting, or Off when it has none, held to the company's lock)   not Off (`never`).
-// `dp` (BROKER_SETTINGS.designReviewProjects, stack parameter DesignReviewProjects) no longer gates anything: it stays one more release so an upgrade can move its projects into stored settings (dp-migration.ts), and is removed after.
+// The old per-environment project list `dp` is gone: it gated nothing since 0.5.5, and its one-time move into stored settings was removed in 0.5.7.
 // Fail closed: a value that is not "1" in `dr` is OFF with NO table read at all, so with `dr` off nothing else runs, `resolveDesignMode` is never called, and no task ever carries a `designReview`. A company item or a project
 // setting that cannot be read gives OFF here (the caller of a read that must not guess uses `readEffectiveDesignReview`, which throws).
 // The switch is read at every step, not only when a task enters the stage (B2-m3): `dr` at 0, the company no longer allowing it, or the project set to Off, ends a review under way at its next round or planner run, as not run
