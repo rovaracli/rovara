@@ -39,6 +39,8 @@ export function createDesignReviewApi(host: AppHost) {
   designFirst: (taskId: string, requestId: string): Promise<SendResult<unknown>> => api.send("POST", taskPath(taskId) + "/first", { requestId }, AnyAnswer, { retry: "never" }),
   /** "Skip design review": the broker works out again whether this person may (the project allows it, and only the design approver on a high-risk design). */
   skip: (taskId: string, requestId: string): Promise<SendResult<unknown>> => api.send("POST", taskPath(taskId) + "/skip", { requestId }, AnyAnswer, { retry: "never" }),
+  /** "Retry review": the same design reviewed again after a review that did not run (`POST .../design-review/retry`). The broker applies the rule again and refuses what it no longer allows. */
+  retry: (taskId: string, requestId: string): Promise<SendResult<unknown>> => api.send("POST", taskPath(taskId) + "/retry", { requestId }, AnyAnswer, { retry: "never" }),
   /** One choice on the cost card. `shownDigest` is what the person was shown: a changed card is refused as stale. */
   async chooseSpend(decision: ReadDecision, action: ReadDecisionCard["actions"][number], requestId: string): Promise<void> {
    const target = spendChoiceOf(decision.card, action);

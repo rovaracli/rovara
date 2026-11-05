@@ -7,11 +7,11 @@ import { ApiError } from "../../api/errors.js";
 import { TaskDecisions } from "../home/NeedsYou.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { classificationLine, notNeededLine, readDesignActions, readDesignReview } from "./design-review-view.js";
+import { classificationLine, notNeededLine, readDesignActions, readDesignReview, retryOffer } from "./design-review-view.js";
 import type { ReadSession } from "./SessionHeader.js";
 import { workspaceTask, type ReadTask } from "./workspace-types.js";
 
-/** What the task page says about design review for a task: the classification line, and the Design first and Skip actions the broker offered this person (`designActions`). Nothing shows for a task with neither. */
+/** What the task page says about design review for a task: the classification line, and the Design first, Skip and Retry review actions the broker offered this person (`designActions`). Nothing shows for a task with neither. */
 export function designActionsModel(task: ReadTask): { line: string | undefined; actions: DesignActionsView | undefined } {
  const workflow = task.workflow, review = readDesignReview(workflow?.designReview), actions = readDesignActions(task.designActions);
  const assessment = workflow?.intent?.assessment, design = assessment?.kind === "ready" ? assessment.design : undefined;
@@ -26,18 +26,18 @@ export function DesignActions({ task, sessionKey }: { task: ReadTask; sessionKey
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [message, setMessage] = useState<string>(), [confirmSkip, setConfirmSkip] = useState(false);
  const { line, actions } = designActionsModel(task);
  if (line === undefined && actions === undefined) return null;
- async function press(kind: "first" | "skip") {
+ async function press(kind: "first" | "skip" | "retry") {
   if (busy) return;
   setBusy(true);setError(undefined);setMessage(undefined);
   try {
-   const result = await (kind === "first" ? api.designFirst(task.taskId, crypto.randomUUID()) : api.skip(task.taskId, crypto.randomUUID()));
+   const result = await (kind === "first" ? api.designFirst(task.taskId, crypto.randomUUID()) : kind === "retry" ? api.retry(task.taskId, crypto.randomUUID()) : api.skip(task.taskId, crypto.randomUUID()));
    if (result.kind !== "done") throw new ApiError(409, "PENDING", "This is waiting for confirmation. Open the task to continue.");
-   setConfirmSkip(false);setMessage(kind === "first" ? "Asked for design review first. Rovara reviews the design before it builds." : "Design review skipped.");
+   setConfirmSkip(false);setMessage(kind === "first" ? "Asked for design review first. Rovara reviews the design before it builds." : kind === "retry" ? "Asked for the design review again." : "Design review skipped.");
    await query.invalidateQueries({ queryKey: [...sessionKey] });
   } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't do that. Try again."); }
   finally { setBusy(false); }
  }
- const skip = actions?.skip;
+ const skip = actions?.skip, retry = retryOffer(actions?.retry);
  return <section className="rv-design-actions" aria-label="Design review actions">
   {line !== undefined && <p className="rv-design-line"><VisibleText text={line} /></p>}
   {actions?.hint === true && <p className="rv-design-hint" role="status">This may need design review.</p>}
@@ -45,6 +45,7 @@ export function DesignActions({ task, sessionKey }: { task: ReadTask; sessionKey
   <div className="rv-actions">
    {actions?.designFirst === true && <Button disabled={busy} onClick={() => { void press("first"); }}>Design first</Button>}
    {skip?.allowed === true && !confirmSkip && <Button disabled={busy} onClick={() => setConfirmSkip(true)}>Skip design review</Button>}
+   {retry !== undefined && <><Button disabled={busy} onClick={() => { void press("retry"); }}>Retry review</Button><span className="rv-muted">{retry.left}</span></>}
   </div>
   {confirmSkip && <div role="group" aria-label="Confirm skipping design review"><p>Skip design review for this task? The design goes to a person without fresh-context reviewers reading it first.</p><div className="rv-actions"><Button variant="primary" busy={busy} onClick={() => { void press("skip"); }}>Skip design review</Button><Button disabled={busy} onClick={() => setConfirmSkip(false)}>Keep it</Button></div></div>}
   {message !== undefined && <p role="status">{message}</p>}

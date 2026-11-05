@@ -1,7 +1,12 @@
-import { useMemo } from "react";
+import { useContext, useMemo, useState } from "react";
+import { QueryClientContext } from "@tanstack/react-query";
+import { useAppHost } from "../../host.js";
+import { createDesignReviewApi } from "../../api/design-review.js";
+import { ApiError } from "../../api/errors.js";
+import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { isGithubUrl, safeExternalUrl } from "../../text/links.js";
-import { designTabModel, readDesignReview, type CitationLine, type CodeLinkBase, type DesignTabModel, type FindingLine, type QuestionLine, type RoundLine } from "./design-review-view.js";
+import { designTabModel, readDesignActions, readDesignReview, type CitationLine, type CodeLinkBase, type DesignTabModel, type FindingLine, type QuestionLine, type RoundLine } from "./design-review-view.js";
 import type { ReadTask } from "./workspace-types.js";
 
 // The Design tab (DR11). Every word a model wrote is shown through VisibleText: text, never markup, never a link. The one exception is a code citation, which links only through `codeLinkBase`, a base
@@ -68,8 +73,24 @@ function Question({ question }: { question: QuestionLine }) {
  </li>;
 }
 
+/** "Retry review" (DR-KEY-1 D): asks the broker, which applies the rule again; a refusal is shown in its words. */
+export function RetryReview({ left, onRetry }: { left: string; onRetry: () => Promise<void> }) {
+ const [busy, setBusy] = useState(false), [error, setError] = useState<string>();
+ async function press() {
+  if (busy) return;
+  setBusy(true);setError(undefined);
+  try { await onRetry(); } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't retry the review. Try again."); }
+  finally { setBusy(false); }
+ }
+ return <div className="rv-actions" role="group" aria-label="Retry design review">
+  <Button busy={busy} onClick={() => { void press(); }}>Retry review</Button>
+  <span className="rv-muted">{left}</span>
+  {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
+ </div>;
+}
+
 /** The tab's content from its model (separate from the task, so the tests and the page share it). */
-export function DesignTabView({ model }: { model: DesignTabModel }) {
+export function DesignTabView({ model, onRetry }: { model: DesignTabModel; onRetry?: (() => Promise<void>) | undefined }) {
  return <section aria-label="Design review" className="rv-design">
   <p className="rv-design-line"><VisibleText text={model.classification} /></p>
   {model.reading !== undefined && <p><span className="rv-muted">Rovara's reading of the request: </span><VisibleText text={model.reading} /></p>}
@@ -82,6 +103,7 @@ export function DesignTabView({ model }: { model: DesignTabModel }) {
   </dl>
   {model.progress !== undefined && <p role="status">{model.progress}</p>}
   {model.notRun !== undefined && <p role="status" className="rv-design-notrun">{model.notRun}</p>}
+  {model.retry !== undefined && onRetry !== undefined && <RetryReview left={model.retry.left} onRetry={onRetry} />}
   {model.waiting !== undefined && <p role="status">{model.waiting}</p>}
   {model.decisions.length > 0 && <ul aria-label="Money decisions">{model.decisions.map((line, index) => <li key={index}>{line}</li>)}</ul>}
   {model.earlier !== undefined && <p className="rv-muted">{model.earlier}</p>}
@@ -99,9 +121,21 @@ export function DesignTabView({ model }: { model: DesignTabModel }) {
  </section>;
 }
 
-export function DesignTab({ task }: { task: ReadTask }) {
+export function DesignTab({ task, sessionKey }: { task: ReadTask; sessionKey?: readonly unknown[] | undefined }) {
  const base = useMemo(() => codeLinkBaseOf(task), [task]), review = useMemo(() => readDesignReview(task.workflow?.designReview), [task]);
  if (review === undefined) return null;
  if (review === "unreadable") return <section aria-label="Design review" className="rv-design"><p role="status">This design review can't be shown by this version of the app. Reload the page; if it stays like this, the app needs an update.</p></section>;
- return <DesignTabView model={designTabModel(review, { note: review.note, codeLinkBase: base, designWritten: (task.workflow?.artifacts ?? []).some(artifact => artifact.type === "design") })} />;
+ const model = designTabModel(review, { note: review.note, codeLinkBase: base, designWritten: (task.workflow?.artifacts ?? []).some(artifact => artifact.type === "design"), retry: readDesignActions(task.designActions)?.retry });
+ return model.retry === undefined ? <DesignTabView model={model} /> : <DesignTabWithRetry model={model} taskId={task.taskId} sessionKey={sessionKey} />;
+}
+
+/** The tab when the broker offered "Retry review": the press goes to the broker, then the task is read again (through the page's query cache, when it has one). */
+function DesignTabWithRetry({ model, taskId, sessionKey }: { model: DesignTabModel; taskId: string; sessionKey?: readonly unknown[] | undefined }) {
+ const host = useAppHost(), query = useContext(QueryClientContext), api = useMemo(() => createDesignReviewApi(host), [host]);
+ const onRetry = async (): Promise<void> => {
+  const result = await api.retry(taskId, crypto.randomUUID());
+  if (result.kind !== "done") throw new ApiError(409, "PENDING", "This is waiting for confirmation. Open the task to continue.");
+  if (sessionKey !== undefined && query !== undefined) await query.invalidateQueries({ queryKey: [...sessionKey] });
+ };
+ return <DesignTabView model={model} onRetry={onRetry} />;
 }

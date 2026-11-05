@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_EARLIER_MAX, DESIGN_REVIEW_EARLIER_MAX_BYTES, DESIGN_REVIEW_REARMS_MAX, WorkflowSnapshotSchema, blockWorkflow, closeParkedDesignReview, designReviewCapRoom,
-  lowerDesignReviewTier, parkDesignReview, skipDesignReview, raiseDesignReviewCap, rearmedDesignReview, resumeBlockedDesignReview, resumeParkedDesignReview, retryDesignReviewNotRun, answerDesignQuestions, askDesignQuestions, closeDesignReview, closePlanCritique, createWorkflowSnapshot, decideWorkflow, designFindingFingerprint,
+  lowerDesignReviewTier, parkDesignReview, skipDesignReview, raiseDesignReviewCap, rearmedDesignReview, resumeBlockedDesignReview, resumeParkedDesignReview, retryDesignReviewNotRun, designReviewRetryOffer, answerDesignQuestions, askDesignQuestions, closeDesignReview, closePlanCritique, createWorkflowSnapshot, decideWorkflow, designFindingFingerprint,
   designReviewDisagreements, designReviewRevisionsUsed, enableDesignReview, holdDesignReviewForCost, resolveDesignReview, retryDesignReview, startDesignReview, submitDesignReview, submitPlanCritique,
   submitWorkflowArtifact, workflowIsDesignReviewing, type WorkflowProgram, type WorkflowSnapshot,
 } from "../../packages/contracts/src/index.js";
@@ -733,6 +733,7 @@ describe("re-arming on REQUEST_CHANGES keeps the evidence and the spend, and is 
     const unreviewed = resubmit(last, version + 1);
     expect(unreviewed).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "not_run", notRunReason: "rearm_limit" } });
     expect(() => retryDesignReviewNotRun(unreviewed, { expectedRevision: unreviewed.revision, by: ACTOR, now: LATER })).toThrow(/only a design review that did not run/);
+    expect(designReviewRetryOffer(unreviewed), "the re-review limit is not offered Retry review").toBeUndefined();
     const lowered = lowerDesignReviewTier(unreviewed, { expectedRevision: unreviewed.revision, tier: "light", by: ACTOR, now: LATER });
     expect(lowered).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY", designReview: { status: "estimating", rearms: 0, tier: "light" } });
     expect(lowered.designReview!.earlierReviews!.length).toBe(DESIGN_REVIEW_REARMS_MAX + 1);
@@ -797,6 +798,7 @@ describe("M2: Retry review after a review that did not run", () => {
   it("goes back to the same design, keeps the spend, runs under the cap check, and is bounded", () => {
     let workflow = notRun();
     expect(workflow.designReview).toMatchObject({ status: "not_run", spentUsd: 0.2 });
+    expect(designReviewRetryOffer(workflow)).toEqual({ allowed: true, retriesLeft: 2 });
     const first = retryDesignReviewNotRun(workflow, { expectedRevision: workflow.revision, by: ACTOR, now: LATER });
     expect(first).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY", designReview: { status: "estimating", spentUsd: 0.2, retries: 1, rounds: [] } });
     expect(designOf(first)).toBe(designOf(workflow));
@@ -809,6 +811,7 @@ describe("M2: Retry review after a review that did not run", () => {
       workflow = submitRound(started(again), [], {}, [failedRun("critic", "timeout")]);
     }
     expect(() => retryDesignReviewNotRun(workflow, { expectedRevision: workflow.revision, by: ACTOR, now: LATER })).toThrow(/retried as often/);
+    expect(designReviewRetryOffer(workflow), "no retries left").toEqual({ allowed: false, retriesLeft: 0 });
     const raised = raiseDesignReviewCap(workflow, { expectedRevision: workflow.revision, capUsd: 20, by: ACTOR, now: LATER });
     expect(raised.designReview).toMatchObject({ retries: 0, status: "estimating" });
   });
@@ -823,6 +826,19 @@ describe("M2: Retry review after a review that did not run", () => {
     expect(() => retryDesignReviewNotRun(finished, { expectedRevision: finished.revision, by: ACTOR, now: LATER })).toThrow(/did not run/);
     const stopped = closeDesignReview(designSubmitted(), { expectedRevision: designSubmitted().revision, outcome: "stopped_at_cap", now: LATER });
     expect(() => retryDesignReviewNotRun(stopped, { expectedRevision: stopped.revision, by: ACTOR, now: LATER })).toThrow(/did not run/);
+    expect(designReviewRetryOffer(finished)).toBeUndefined();
+    expect(designReviewRetryOffer(stopped)).toBeUndefined();
+    expect(designReviewRetryOffer(retried), "a review that is about to run again").toBeUndefined();
+  });
+
+  it("DR-KEY-1 D: Retry review is offered, by the same rule as the move, for a review that did not run because the worker failed or no model could be used", () => {
+    for (const reason of ["worker_failed", "no_model_source"] as const) {
+      const ended = closeDesignReview(started(designSubmitted()), { expectedRevision: started(designSubmitted()).revision, outcome: "not_run", notRunReason: reason, now: LATER });
+      expect(ended, reason).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "not_run", notRunReason: reason } });
+      expect(designReviewRetryOffer(ended), reason).toEqual({ allowed: true, retriesLeft: 2 });
+      expect(retryDesignReviewNotRun(ended, { expectedRevision: ended.revision, by: ACTOR, now: LATER }).stage, reason).toBe("PLAN_CRITIQUE");
+    }
+    expect(designReviewRetryOffer({ not: "a workflow" })).toBeUndefined();
   });
 });
 
@@ -980,6 +996,7 @@ describe("money fix round 2: skip, spend on resume, a round that found nothing",
     expect(skipped.designReview!.estimateUsd).toBeUndefined();
     // the skip stands: Retry review, a raised cap, a lower tier and a re-arm all leave it alone
     expect(() => retryDesignReviewNotRun(skipped, { expectedRevision: skipped.revision, by: ACTOR2, now: LATER })).toThrow(/did not run/);
+    expect(designReviewRetryOffer(skipped), "a person's skip is not offered Retry review").toBeUndefined();
     expect(() => raiseDesignReviewCap(skipped, { expectedRevision: skipped.revision, capUsd: 20, by: ACTOR2, now: LATER })).toThrow(/skipped/);
     expect(() => lowerDesignReviewTier(skipped, { expectedRevision: skipped.revision, tier: "light", by: ACTOR2, now: LATER })).toThrow(/skipped/);
     expect(rearmedDesignReview(skipped.designReview!, { at: LATER, by: ACTOR2 })).toEqual(skipped.designReview);

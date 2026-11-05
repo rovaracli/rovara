@@ -11,7 +11,7 @@
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  ModelSelectionSchema, WORKSPACE_PROJECT_INDEX, WorkflowTransitionError, isHighRiskDesign, workspaceProjectIndexValue, agentXError, enableDesignReview, retryDesignReviewNotRun, DESIGN_ACTIONS_NAME_MAX, plainOneLine, type DesignActionsView, type DesignReason, type ModelIdentifier, type OrgId, type WorkflowSnapshot,
+  ModelSelectionSchema, WORKSPACE_PROJECT_INDEX, WorkflowTransitionError, isHighRiskDesign, workspaceProjectIndexValue, agentXError, enableDesignReview, retryDesignReviewNotRun, designReviewRetryOffer, DESIGN_ACTIONS_NAME_MAX, plainOneLine, type DesignActionsView, type DesignReason, type ModelIdentifier, type OrgId, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { StatusReply } from "../status-reply.js";
 import { effectiveTaskOwner, taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -686,8 +686,11 @@ export function designActionsFor(deps: DeveloperRouteDependencies, caller: Devel
       }
     }
     const hint = designFirst && quickCard && await planHint(env, task, workflow).catch(() => false);
-    if (!designFirst && skip === undefined) return undefined;
-    return { designFirst, ...(skip === undefined ? {} : { skip }), ...(hint ? { hint: true } : {}) };
+    // DR-KEY-1 (D): "Retry review" by the route's own rules: the workflow's (`designReviewRetryOffer`) and who may press it (the requester or a maintainer).
+    const offer = designReviewRetryOffer(workflow);
+    const retry = offer === undefined ? undefined : { allowed: offer.allowed && mayDirectWork(directory, task, caller.developerId), retriesLeft: offer.retriesLeft };
+    if (!designFirst && skip === undefined && retry === undefined) return undefined;
+    return { designFirst, ...(skip === undefined ? {} : { skip }), ...(hint ? { hint: true } : {}), ...(retry === undefined ? {} : { retry }) };
   };
 }
 

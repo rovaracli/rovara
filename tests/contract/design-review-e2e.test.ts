@@ -1124,10 +1124,14 @@ describe("slice C: the design review's routes", () => {
     await runWorker(w, String(w.operations()[0]!.id), {}, { failure: { error: "the run failed" } });
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "not_run" } });
     seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "viewer"]]);
+    // DR-KEY-1 D: the task view offers Retry review to the person who may press it, by the route's own rule, with the retries left.
+    const actionsOf = async (who: Developer) => ((await w.dev(who, "GET", `/v1/dev/tasks/${w.taskId}`, undefined, { "x-agentx-task-view": "2" })).body.task as { designActions?: { retry?: unknown } } | undefined)?.designActions?.retry;
+    expect(await actionsOf(MAYA)).toEqual({ allowed: true, retriesLeft: 2 });
     expect((await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/retry`, { requestId: randomUUID() })).status, "a viewer cannot").toBe(404);
     const done = await w.dev(MAYA, "POST", `/v1/app/tasks/${w.taskId}/design-review/retry`, { requestId: randomUUID() });
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY", designReview: { status: "estimating" } });
+    expect(await actionsOf(MAYA), "not offered once the review is going again").toBeUndefined();
     expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIQUE")).toHaveLength(1);
   });
 
