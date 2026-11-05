@@ -236,6 +236,20 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     expect(state.paused).toBe(false);
   });
 
+  it("passes the round's abort signal to the resolver guard's docker calls: through runSealedCheckRound's options, and through the setup's own signal (low-1)", async () => {
+    const p = plan();
+    const controller = new AbortController();
+    for (const mode of ["options", "setup"] as const) {
+      const fake = fakeDocker(p.sandboxName);
+      const seen: Array<AbortSignal | undefined> = [];
+      const docker: DockerCli = { run: (args, options) => { if (args.includes("NET_ADMIN")) seen.push(options?.signal); return fake.docker.run(args, options); } };
+      const input = roundInput(docker, p, mode === "setup" ? { signal: controller.signal } : {});
+      await runSealedCheckRound(input, planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: mode === "options" ? controller.signal : new AbortController().signal });
+      expect(seen, mode).toHaveLength(2);
+      for (const signal of seen) expect(signal, mode).toBe(controller.signal);
+    }
+  });
+
   it("each round is its own: a second call starts a second check sandbox after the first was removed (the TESTPROOF rerun)", async () => {
     const p = plan();
     const { docker, calls } = fakeDocker(p.sandboxName);

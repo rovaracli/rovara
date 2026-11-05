@@ -2,6 +2,7 @@
 import { execFile, spawnSync } from "node:child_process";
 import { createSocket } from "node:dgram";
 import { createServer, type Server } from "node:net";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -146,6 +147,45 @@ describe("the probe program's resolver probes (TS-SEAL-5)", () => {
   }, 30_000);
 });
 
+describe.skipIf(!existsSync("/proc/net/tcp6") || !existsSync("/proc/net/udp6"))("the IPv6 listener probe, against real sockets of this (Linux) machine", () => {
+  const probeV6 = (): Promise<string> => new Promise((done) => {
+    execFile(process.execPath, ["-e", PROBE_JS, JSON.stringify({ tests: [{ label: "v", kind: "v6listen" }] })], { timeout: 20_000 }, (_error, stdout) => { done(parseProbeOutput(stdout).get("v")?.rest ?? "no-result"); });
+  });
+  const listenV6 = (address: string): Promise<Server> => new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, address, () => resolve(server));
+  });
+  const closeServer = (server: Server): Promise<void> => new Promise((done) => { server.close(() => done()); });
+  const hex = (port: number): string => port.toString(16).toUpperCase().padStart(4, "0");
+
+  it("flags a loopback listener and a wildcard listener (neither is exempt), and a bound IPv6 UDP socket", async (context) => {
+    let loopback: Server;
+    try { loopback = await listenV6("::1"); } catch { context.skip(); return; }
+    const wildcard = await listenV6("::");
+    const udp = createSocket("udp6");
+    try {
+      await new Promise<void>((done, fail) => { udp.once("error", fail); udp.bind(0, "::1", done); });
+      const bad = await probeV6();
+      expect(bad).toContain(`tcp6:00000000000000000000000001000000:${hex((loopback.address() as { port: number }).port)}`);
+      expect(bad).toContain(`tcp6:00000000000000000000000000000000:${hex((wildcard.address() as { port: number }).port)}`);
+      expect(bad).toContain(`udp6:00000000000000000000000001000000:${hex(udp.address().port)}`);
+    } finally {
+      udp.close();
+      await closeServer(wildcard);
+      await closeServer(loopback);
+    }
+  }, 30_000);
+
+  it("does not count the probe program's own sockets: with the listeners closed, none of this test's ports is reported", async (context) => {
+    let server: Server;
+    try { server = await listenV6("::1"); } catch { context.skip(); return; }
+    const port = (server.address() as { port: number }).port;
+    await closeServer(server);
+    expect(await probeV6()).not.toContain(`:${hex(port)}`);
+  }, 30_000);
+});
+
 describe("the two embedded-resolver items (TS-SEAL-5)", () => {
   const rows = (text: string) => parseProbeOutput(text);
   const sealed = "resolv file \"nameserver 172.30.5.2\"\nembedded error:EPERM\nembedded-public error:EPERM\nembedded-tcp timeout\nembedded-direct error:EPERM\nembedded-direct-tcp timeout\nv6 v6listen bad=\ncaps caps eff=0000000000000000 bnd=0000000000000000 amb=0000000000000000\n";
@@ -164,17 +204,20 @@ describe("the two embedded-resolver items (TS-SEAL-5)", () => {
     expect(embeddedResolverLines(evidence()).map((line) => line.id)).toEqual(["L3.embedded-resolver", "L3.embedded-resolver-blocked"]);
   });
 
-  it("L3.embedded-resolver measures the accepted floor where the resolver is OPEN (the unguarded control): a public name gets no address there, and the run's own container names may be answered", () => {
+  it("L3.embedded-resolver measures the accepted floor where the resolver is OPEN (the unguarded control): a public name must get an ANSWER with no address there, and the run's own container names may be answered", () => {
     expect(byId(evidence())["L3.embedded-resolver"]!.detail).toContain("answer");
-    for (const good of ["ctl-embedded-public answer rcode=0 an=0", "ctl-embedded-public timeout", "ctl-embedded-public answer rcode=3 an=0", "ctl-embedded-public error:EHOSTUNREACH"]) {
+    for (const good of ["ctl-embedded-public answer rcode=0 an=0", "ctl-embedded-public answer rcode=3 an=0", "ctl-embedded-public answer rcode=2 an=0", "ctl-embedded-public answer rcode=5 an=0"]) {
       expect(byId(evidence({}, sealed, control.replace("ctl-embedded-public answer rcode=0 an=0", good)))["L3.embedded-resolver"]!.status, good).toBe("PASS");
     }
-    for (const bad of ["ctl-embedded-public answer rcode=0 an=1", "ctl-embedded-public answer rcode=0 an=2", "ctl-embedded-public open", "ctl-embedded-public resolved 1.2.3.4"]) {
+    // a timeout is not enough: the control's resolver is alive (ctl-embedded answered), so silence for a public name is what a forward that left and got nothing looks like
+    for (const bad of ["ctl-embedded-public timeout", "ctl-embedded-public error:EHOSTUNREACH", "ctl-embedded-public error:EPERM", "ctl-embedded-public answer rcode=0 an=1", "ctl-embedded-public answer rcode=0 an=2", "ctl-embedded-public open", "ctl-embedded-public resolved 1.2.3.4"]) {
       const line = byId(evidence({}, sealed, control.replace("ctl-embedded-public answer rcode=0 an=0", bad)))["L3.embedded-resolver"]!;
       expect(line.status, bad).toBe("FAIL");
       expect(line.detail, bad).toContain("embedded-public-in-the-unguarded-control=");
     }
     expect(byId(evidence({}, sealed, control.replace("ctl-embedded-public answer rcode=0 an=0\n", "")))["L3.embedded-resolver"]!.detail).toContain("embedded-public-in-the-unguarded-control=no-result");
+    // and a control whose resolver did not answer a run name has proved nothing about the floor either
+    expect(byId(evidence({}, sealed, control.replace("ctl-embedded answer rcode=0 an=1", "ctl-embedded timeout")))["L3.embedded-resolver"]!.detail).toContain("control-resolver-not-alive:ctl-embedded=timeout");
   });
 
   it("L3.embedded-resolver does not take the sealed sandbox's own public-name probe as the measurement (it is only ever the guard's EPERM)", () => {
@@ -249,6 +292,9 @@ describe("the two embedded-resolver items (TS-SEAL-5)", () => {
     expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=", "v6 v6listen bad=tcp6:0000000000000000FFFF00000B00007F:1F90"))).detail).toContain("ipv6-listener:v6listen(bad=tcp6:");
     expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=\n", ""))).detail).toContain("ipv6-listener:no-result");
     expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=", "v6 error:EACCES"))).status).toBe("FAIL");
+    // the wildcard and the loopback are NOT exempt: the probe itself reports them (see the probe test), and any entry fails the item
+    expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=", "v6 v6listen bad=tcp6:00000000000000000000000001000000:1F90"))).status).toBe("FAIL");
+    expect(blocked(evidence({}, sealed.replace("v6 v6listen bad=", "v6 v6listen bad=udp6:00000000000000000000000000000000:0035"))).status).toBe("FAIL");
   });
 });
 

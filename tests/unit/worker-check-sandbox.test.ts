@@ -628,7 +628,7 @@ function statefulDocker(state: { networks: string[]; sandboxExists?: boolean; rm
       if (args[0] === "run") { if (state.startFails === true) return done(125); state.sandboxExists = true; return done(0, "id\n"); }
       if (args[0] === "rm") { if (state.rmFails !== true) state.sandboxExists = false; return done(state.rmFails === true ? 1 : 0); }
       if (args[0] === "container" && args[1] === "inspect") {
-        if (state.guardSurvivesRm === true && String(args[args.length - 1]).includes("-guard")) return done(0, "guard-id\n");
+        if (String(args[args.length - 1]).includes("-guard")) return state.guardSurvivesRm === true ? done(0, "guard-id\n") : done(1);
         return done(state.sandboxExists === true ? 0 : 1, state.sandboxExists === true ? "id\n" : "");
       }
       return done(1);
@@ -1033,6 +1033,15 @@ describe("the resolver guard runs before the check sandbox is handed back, and t
     const { result } = await start({ networks: [NET, "agentx-task"], guardExit: 1, guardSurvivesRm: true });
     expect(String(result)).toMatch(/resolver guard container could not be removed/u);
     expect(result).toEqual(expect.objectContaining({ code: "RUNTIME_UNAVAILABLE" }));
+  });
+
+  it("says so, specifically, when the check sandbox itself cannot be removed after a failed guard (it is still up without the rule)", async () => {
+    const { result } = await start({ networks: [NET, "agentx-task"], guardExit: 1, rmFails: true });
+    expect(String(result)).toMatch(/embedded resolver could not be closed/u);
+    expect(String(result)).toMatch(/check sandbox itself could not be removed and is still running without the rule/u);
+    expect(String(result)).not.toMatch(/guard container could not be removed/u);
+    const both = await start({ networks: [NET, "agentx-task"], guardExit: 1, rmFails: true, guardSurvivesRm: true });
+    expect(String(both.result)).toMatch(/guard container could not be removed, and the check sandbox itself could not be removed/u);
   });
 
   it("does not run the guard when the sandbox did not start", async () => {

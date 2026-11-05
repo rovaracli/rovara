@@ -134,6 +134,8 @@ export interface SealedRoundSetup {
   files: HelperFiles;
   environment: ServiceEnvironment;
   redactor: ServiceRedactor;
+  /** The task's signal, passed down to the resolver guard's docker calls when the check sandbox starts: a cancelled task does not wait for them (check-sandbox.ts). */
+  signal?: AbortSignal;
 }
 
 /** What the usage record is built from (s1-sealed's `ServiceUsageRecordInput`). */
@@ -963,7 +965,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
 
       // The sealed round: the working sandbox was never on this network; the check sandbox starts inside `withSealedCheckRound`.
       // The working phase's network is where the working sandbox belongs (none when the run has no working phase).
-      const setup: SealedRoundSetup = { docker, hasDevcontainer: false, workingPhaseNetwork: workSession === undefined ? null : { name: workSession.network.name, ip: workSession.network.workingSandboxIp }, plan, rootPath: root, files: roundFiles, environment, redactor: roundRedactor };
+      const setup: SealedRoundSetup = { docker, hasDevcontainer: false, workingPhaseNetwork: workSession === undefined ? null : { name: workSession.network.name, ip: workSession.network.workingSandboxIp }, plan, rootPath: root, files: roundFiles, environment, redactor: roundRedactor, signal };
       let release!: () => void;
       const closed = new Promise<void>((done) => { release = done; });
       let handOver!: (runners: CheckRunners) => void;

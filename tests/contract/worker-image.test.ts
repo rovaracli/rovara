@@ -18,7 +18,7 @@ describe("the worker image", () => {
     expect(finalStage).toContain("rm -rf /var/lib/apt/lists/*");
   });
 
-  // TS-SEAL-5 (b): the sealed round's resolver guard runs `iptables-nft` from this image (packages/worker/src/check-sandbox.ts RESOLVER_GUARD_SCRIPT).
+  // TS-SEAL-5 (b): the sealed round's resolver guard runs `iptables-nft` from this image (packages/worker/src/check-sandbox.ts RESOLVER_GUARD_BINARY and RESOLVER_GUARD_STEPS).
   it("carries the iptables package, which provides the iptables-nft the sealed round's resolver guard runs by absolute path", () => {
     const install = /apt-get install --yes --no-install-recommends ([^\n\\]+)/.exec(finalStage)?.[1] ?? "";
     expect(install.split(/\s+/)).toContain("iptables");

@@ -730,9 +730,12 @@ export async function startCheckSandbox(docker: DockerCli, plan: CheckSandboxPla
     await removeQuietly(docker, plan.sandboxName);
     const leftovers: string[] = [];
     for (const name of guards) if (await containerLeft(docker, name)) leftovers.push(name);
-    throw agentXError("RUNTIME_UNAVAILABLE", leftovers.length === 0
-      ? "the check sandbox's embedded resolver could not be closed, so the sealed round did not start"
-      : "the check sandbox's embedded resolver could not be closed, so the sealed round did not start, and a resolver guard container could not be removed");
+    const sandboxLeft = await containerLeft(docker, plan.sandboxName);
+    throw agentXError("RUNTIME_UNAVAILABLE", [
+      "the check sandbox's embedded resolver could not be closed, so the sealed round did not start",
+      ...(leftovers.length === 0 ? [] : ["a resolver guard container could not be removed"]),
+      ...(sandboxLeft ? ["the check sandbox itself could not be removed and is still running without the rule"] : []),
+    ].join(", and "));
   }
   return started.stdout.trim();
 }

@@ -736,6 +736,18 @@ describe("a worker whose boot withheld test services (AGENTX_TEST_SERVICES_NOT_P
     expect(testServicesConfigFromEnvironment(withoutWorker, docker)).toBeUndefined();
     for (const bad of ["", "worker:latest", `registry.example.test/agentx/worker@sha256:${"e".repeat(63)}`]) expect(testServicesConfigFromEnvironment({ ...complete, AGENTX_WORKER_IMAGE: bad }, docker), bad).toBeUndefined();
   });
+  it("hands the round's abort signal to the sealed round's setup, so the resolver guard's docker calls stop with a cancelled task (TS-SEAL-5 b, low-1)", async () => {
+    const h = await harness();
+    const run = await h.start();
+    const controller = new AbortController();
+    await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: controller.signal });
+    expect(h.state.setups).toHaveLength(1);
+    const handed = h.state.setups[0]!.signal;
+    expect(handed).toBeInstanceOf(AbortSignal);
+    expect(handed?.aborted).toBe(false);
+    controller.abort();
+    expect(handed?.aborted).toBe(true);
+  });
   it("the task path refuses with the fixed sentence and makes no docker call and no file, when the configuration comes from the environment", async () => {
     const h = await harness();
     for (const [name, value] of Object.entries({ ...complete, AGENTX_TEST_SERVICES_NOT_PULLED: "all" })) vi.stubEnv(name, value);
