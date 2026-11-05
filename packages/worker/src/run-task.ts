@@ -1275,7 +1275,8 @@ async function runTask(
         }
       };
       if (designReviewBinding !== undefined) {
-        // Reviewers are sessions of their own (design-review-sessions.ts); this operation's own session is never prompted, so it makes no model call and mints no key.
+        // Reviewers are sessions of their own (design-review-sessions.ts); this operation's own session is never prompted, so it makes no model call and mints no key (main.ts gives it
+        // `operationModelProxy`, which never asks the broker: opening a proxied session asks for its key at once, and the broker refuses a design-review operation's own key).
         const designReview = dependencies.designReview;
         if (designReview === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "this worker cannot run a design review");
         monitor.stop();

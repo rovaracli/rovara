@@ -6,6 +6,7 @@ import { DESIGN_REVIEW_ARTIFACT, PACKET_DELIVERY_BYTES_MAX, agentXError, type De
 import type { ArtifactSink } from "./artifacts.js";
 import { runDesignReview, modelKeyIdOf, type DesignReviewOptions, type DesignReviewPorts, type DesignReviewSession, type OpenDesignReviewSession } from "./design-review.js";
 import type { FileOpsTarget } from "./file-ops-exec.js";
+import type { ModelProxyOptions } from "@agentx/model-runtime";
 import { lazyModelProxy, modelAccessSource } from "./model-access.js";
 import { createWorkspacePiSession, type PiSessionAdapter, type WorkspaceModelConfiguration } from "./pi-session.js";
 import { assistantOutcome, failedTurn, type AssistantOutcome } from "./session-events.js";
@@ -20,6 +21,23 @@ const READ_TOOLS: ReadonlySet<string> = new Set(["read", "grep", "find", "ls"]);
 /** Whether this operation is the design-review form of the plan check. Plan check without the binding is unchanged. */
 export function designReviewBindingOf(payload: { workflowMode?: string | undefined; designReview?: DesignReviewBinding | undefined }): DesignReviewBinding | undefined {
   return payload.workflowMode === "PLAN_CRITIQUE" ? payload.designReview : undefined;
+}
+
+/** What a design-review operation's own session holds where a key would be. It is not a key: the proxy refuses it, so a call made with it fails closed. */
+export const DESIGN_REVIEW_NO_OPERATION_KEY = "design-review-operation-has-no-key";
+
+/**
+ * DR-KEY-1: the proxy of a task operation's own session (main.ts), or undefined on a worker with no model proxy. A design-review operation has no model key of its own: the broker hands out keys by slot
+ * only and refuses the operation's own (security S6). Its own session is still opened (its transcript and rule files) but never prompted, and opening a proxied session asks for its key at once, so
+ * that session holds `DESIGN_REVIEW_NO_OPERATION_KEY` and never asks the broker. Each reviewer asks for its slot's key itself (`slotRuntimeFor`). Any other operation asks for its own key, as before.
+ */
+export function operationModelProxy(input: { payload: { workflowMode?: string | undefined; designReview?: DesignReviewBinding | undefined }; proxyUrl: string | undefined; controlPlaneUrl: string; capability: string; fetch?: typeof fetch }): ModelProxyOptions | undefined {
+  if (input.proxyUrl === undefined || input.proxyUrl === "") return undefined;
+  if (designReviewBindingOf(input.payload) !== undefined) {
+    const baseUrl = input.proxyUrl;
+    return lazyModelProxy({ baseUrl, source: async () => ({ baseUrl, apiKey: DESIGN_REVIEW_NO_OPERATION_KEY, expiresAt: Number.MAX_SAFE_INTEGER }) });
+  }
+  return lazyModelProxy({ baseUrl: input.proxyUrl, source: modelAccessSource({ controlPlaneUrl: input.controlPlaneUrl, capability: input.capability, ...(input.fetch === undefined ? {} : { fetch: input.fetch }) }) });
 }
 
 /** The reviewer's packet from the broker's route, with the operation's capability. Bounded; anything but a JSON answer is an error (the reviewer then gives no result). */

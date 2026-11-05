@@ -50,21 +50,29 @@ const BUDGET_CODE_SCOPES: ReadonlyMap<string, ModelBudgetScope> = new Map([
  * (ruling R35) and the member's otherwise. An agent with no budget (AGENT_BUDGET_REQUIRED, a 409) is the agent's too. Only the code and the first words of
  * the message are read; nothing of the body is kept.
  */
-async function budgetScopeOf(response: Response): Promise<ModelBudgetScope | undefined> {
-  if (response.status !== 402 && response.status !== 409) return undefined;
-  const body = await response.json().catch(() => undefined) as { error?: { code?: unknown; message?: unknown } } | undefined;
+function budgetScopeOf(status: number, body: RefusalBody | undefined): ModelBudgetScope | undefined {
+  if (status !== 402 && status !== 409) return undefined;
   const { code, message } = body?.error ?? {};
   if (typeof code !== "string") return undefined;
-  if (response.status === 409) return code === "AGENT_BUDGET_REQUIRED" ? "agent" : code === "CHAIN_BUDGET_REQUIRED" ? "chain" : undefined;
+  if (status === 409) return code === "AGENT_BUDGET_REQUIRED" ? "agent" : code === "CHAIN_BUDGET_REQUIRED" ? "chain" : undefined;
   if (code !== "BUDGET_EXCEEDED") return BUDGET_CODE_SCOPES.get(code);
   return typeof message === "string" && message.startsWith(TASK_BUDGET_EXCEEDED_PREFIX) ? "task" : "member";
 }
 
 /** Task 26: a 403 MODEL_NOT_ALLOWED is the control plane saying no AI source serves the step's model; its words are kept (bounded, printable). */
-async function notAllowedText(response: Response): Promise<string | undefined> {
-  if (response.status !== 403) return undefined;
-  const body = await response.json().catch(() => undefined) as { error?: { code?: unknown; message?: unknown } } | undefined;
+function notAllowedText(status: number, body: RefusalBody | undefined): string | undefined {
+  if (status !== 403) return undefined;
   return body?.error?.code === "MODEL_NOT_ALLOWED" ? safeRefusalWords(body.error.message) : undefined;
+}
+
+/** The control plane's refusal, as far as it is read: its code and, for the two refusals above, its first words. */
+type RefusalBody = { error?: { code?: unknown; message?: unknown } };
+
+/** The refusal's code, when it is one of the control plane's fixed words (upper-case letters, digits and underscores); nothing else of the body is ever repeated. */
+const REFUSAL_CODE = /^[A-Z][A-Z0-9_]{0,63}$/u;
+function refusalCodeOf(body: RefusalBody | undefined): string | undefined {
+  const code = body?.error?.code;
+  return typeof code === "string" && REFUSAL_CODE.test(code) ? code : undefined;
 }
 
 /**
@@ -92,11 +100,15 @@ export function modelAccessSource(input: ModelAccessSourceInput): () => Promise<
       try {
         const response = await transport(url, { method: "GET", headers: { "x-agentx-callback-capability": input.capability } });
         if (!response.ok) {
-          const exhausted = await budgetScopeOf(response);
+          // The body is read once; only its code (and, for a spent budget or a refused model, its first words) is used.
+          const body = await response.json().catch(() => undefined) as RefusalBody | undefined;
+          const exhausted = budgetScopeOf(response.status, body);
           if (exhausted !== undefined) throw new ModelBudgetExhaustedError(exhausted);
-          const refused = await notAllowedText(response);
+          const refused = notAllowedText(response.status, body);
           if (refused !== undefined) throw new ModelNotAllowedError(refused);
-          throw agentXError("RUNTIME_UNAVAILABLE", `model access request failed with HTTP ${response.status}`);
+          // DR-KEY-1: the status and the refusal's fixed code, so a refusal is never an unexplained failure (no message text, no ids).
+          const code = refusalCodeOf(body);
+          throw agentXError("RUNTIME_UNAVAILABLE", `model access request failed with HTTP ${response.status}${code === undefined ? "" : ` (${code})`}`);
         }
         current = parseModelAccess(await response.json().catch(() => undefined));
         return current;

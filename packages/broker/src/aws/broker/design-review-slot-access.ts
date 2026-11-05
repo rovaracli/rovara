@@ -13,6 +13,8 @@ import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { readGuardrails } from "../../agents/guardrails.js";
 import { finalizeKey } from "../../spend/ledger.js";
 import { servableModels, servingRoutes } from "../../model-sources/routing.js";
+import { ProcessModelRefusal } from "../../model-selection/process-refusal.js";
+import { SLOT_PATTERN } from "../../design-review/packet-store.js";
 import { DESIGN_REVIEW_KEY_TTL_SECONDS, bindingSlotOf, putSlotKey, readSlotCeiling, recordSlotReask, slotKeyRowExists, type BindingSlot } from "../../design-review/slot-keys.js";
 import { getItem, type OperationRecord } from "../cancellation.js";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -37,6 +39,18 @@ export function designReviewSlotOf(operation: OperationRecord, path: string): Bi
   const slot = bindingSlotOf(binding.data, new URL(path, "https://agentx.invalid").searchParams.get("slot"));
   if (slot === undefined) throw agentXError("FORBIDDEN", SLOT_REFUSED);
   return slot;
+}
+
+/**
+ * DR-KEY-1: one line for a design-review operation's key request that was refused, whatever refused it (the slot lookup, the slot's checks, or the ordinary checks of model-access.ts): the operation, the
+ * slot asked for (`none` when no slot was named, `invalid` when the name is not a slot's shape: a client's text is never repeated) and the refusal's fixed code. No person's id and no key material.
+ */
+export function logSlotKeyRefused(operationId: string, path: string, error: unknown): void {
+  let asked: string | null;
+  try { asked = new URL(path, "https://agentx.invalid").searchParams.get("slot"); } catch { asked = ""; }
+  const slot = asked === null ? "none" : SLOT_PATTERN.test(asked) ? asked : "invalid";
+  const code = error instanceof AgentXError || error instanceof ProcessModelRefusal ? error.code : "UNEXPECTED";
+  console.log(JSON.stringify({ component: "broker", event: "design_review.slot_key_refused", operationId, slot, code, ...(code === "UNEXPECTED" ? { errorName: error instanceof Error ? error.name : "unknown" } : {}) }));
 }
 
 /** Whether an error is this module's fixed refusal (model-access.ts lets it through unchanged instead of answering that the proxy failed). */

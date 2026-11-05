@@ -18,10 +18,9 @@ import { invokeAuthenticationFromEnvironment } from "./invoke-auth.js";
 import { modelFallbackReporter, resolveTaskSessionModel, secondReviewerRuntimes, taskMissingKeyAuthorizer } from "./task-model.js";
 import { createDefaultPiSessionAdapter } from "./pi-session.js";
 import { chatGptTokenSource } from "./chatgpt-token.js";
-import { lazyModelProxy, modelAccessSource } from "./model-access.js";
 import { agentSkillsSource } from "./agent-step.js";
 import { brokerContextCall, contextToolsCatalogSource } from "./context-sources/bridge.js";
-import { designReviewBindingOf, designReviewDependencies } from "./design-review-sessions.js";
+import { designReviewBindingOf, designReviewDependencies, operationModelProxy } from "./design-review-sessions.js";
 import { createDefaultProjectSetupExecutor, createReadinessGatedProjectSetupRuntime } from "./project-setup-executor.js";
 import { postProjectSetupTerminalResult } from "./project-setup-callback.js";
 import { postWorkerTerminalResult } from "./terminal-callback.js";
@@ -157,9 +156,8 @@ const state = createWorkerServerState(
         // Ruling R29: on an install with a model proxy the task calls models through it, with a key minted for this task;
         // the worker holds no provider secret. The key is asked for lazily, at the first request that needs the proxy (a ChatGPT
         // plan's own requests never do), so a task on a plan is not held up by a proxy it may never call.
-        const proxy = process.env.AGENTX_MODEL_PROXY_URL
-          ? lazyModelProxy({ baseUrl: process.env.AGENTX_MODEL_PROXY_URL, source: modelAccessSource({ controlPlaneUrl, capability: invocation.callbackCapability }) })
-          : undefined;
+        // DR-KEY-1: a design-review operation's own session (never prompted) never asks for a key; its reviewers ask by slot.
+        const proxy = operationModelProxy({ payload: invocation.payload, proxyUrl: process.env.AGENTX_MODEL_PROXY_URL, controlPlaneUrl, capability: invocation.callbackCapability });
         const session = await resolveTaskSessionModel(invocation.payload,
           invocation.payload.chatgpt === undefined ? undefined : chatGptTokenSource(chatGptToken), process.env, chatGptFallback, proxy, taskFallbackAuthorizer(invocation.payload,authorizeModelFallback));
         const missingKeyAuthority=taskMissingKeyAuthorizer(invocation.payload,authorizeModelFallback,proxy,process.env);

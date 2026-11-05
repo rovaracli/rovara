@@ -214,6 +214,18 @@ export async function createConfiguredModelRuntime(selected: ModelIdentifier & {
 }
 
 /**
+ * DR-KEY-1: why the proxy key could not be obtained, kept on the error. Only an AgentXError's own words are kept (the worker's key source writes fixed words: the HTTP status and the control plane's
+ * refusal code), bounded and printable; any other error (a transport's, whose text can name hosts or addresses) adds its name only. The key itself is never in either.
+ */
+function proxyKeyUnavailable(error: unknown): Error {
+  // By shape, not class: the key source may be built against another copy of the contracts.
+  const code = error instanceof Error && error.name === "AgentXError" ? (error as { code?: unknown }).code : undefined;
+  const reason = typeof code === "string" && error instanceof Error && error.message.startsWith(`${code}: `) ? error.message.slice(code.length + 2) : error instanceof Error ? error.name : "unknown";
+  const safe = reason.replace(/[^\x20-\x7e]/gu, " ").trim().slice(0, 160);
+  return agentXError("RUNTIME_UNAVAILABLE", `the model proxy key could not be obtained${safe === "" ? "" : `: ${safe}`}`);
+}
+
+/**
  * A runtime whose models are the Claude models the proxy serves (rulings R21 and R29). Pi's own Bedrock transport
  * is replaced by `anthropic-messages` against the proxy, because that is the one route verified end to end; the
  * models keep Pi's Bedrock catalog ids, which the proxy's model list names exactly. The key is the task's proxy key.
@@ -232,7 +244,7 @@ async function createProxiedModelRuntime(selected: ModelIdentifier & { thinkingL
   const initialKey = requestKey === undefined ? proxy.apiKey as string : await requestKey().catch((error: unknown) => {
     // A spent budget is the task's to end on, not a proxy fault.
     if (error instanceof ModelBudgetExhaustedError || error instanceof ModelNotAllowedError) throw error;
-    throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be obtained");
+    throw proxyKeyUnavailable(error);
   });
   const api = "anthropic-messages";
   runtime.registerProvider(selected.provider, {
@@ -260,7 +272,7 @@ async function createRoutedModelRuntime(selected: ModelIdentifier & { thinkingLe
   const requestKey = typeof proxy.apiKey === "function" ? proxy.apiKey : undefined;
   const initialKey = requestKey === undefined ? proxy.apiKey as string : await requestKey().catch((error: unknown) => {
     if (error instanceof ModelBudgetExhaustedError || error instanceof ModelNotAllowedError) throw error;
-    throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be obtained");
+    throw proxyKeyUnavailable(error);
   });
   const origin = proxy.baseUrl.replace(/\/+$/u, "");
   // Pi's Anthropic client adds /v1/messages itself; the OpenAI clients add /responses and /chat/completions to a base that ends in /v1.
