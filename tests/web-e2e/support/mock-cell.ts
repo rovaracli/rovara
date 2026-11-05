@@ -32,8 +32,8 @@ import { lessonsMock, resetLessons, setSourceEditing } from "./lessons-mock.js";
 import { resetTestEnvironment, testEnvironmentMock } from "./test-environment-mock.js";
 import { learningMock, learningSettingsMock, lockLearning, resetLearning, overviewLearning, homeSuggestionCards } from "./learning-mock.js";
 import { companyPolicyMock, resetCompanyPolicy } from "./company-policy-mock.js";
-import { mockCellOrigin, mockCellPort } from "./port.js";
-const origin = mockCellOrigin(), directory = resolve(".test-build/web-e2e/tls");
+import { mockCellOrigin, mockCellPort, SLOT_ENV } from "./port.js";
+const origin = mockCellOrigin(), directory = resolve(".test-build/web-e2e/tls-" + (process.env[SLOT_ENV] ?? "0")); // one directory per mock cell process: several start at once, and none may read a half-written key
 mkdirSync(directory, { recursive: true });
 const key = resolve(directory, "localhost-key.pem"), cert = resolve(directory, "localhost-cert.pem"), config = resolve(directory, "localhost.cnf");
 // RULING Q19: ephemeral, test-only loopback TLS exercises Secure cookies and HTTPS-only confirmation links without relaxing production guards.

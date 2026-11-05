@@ -50,7 +50,9 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
   // by the 16-minute lint; the lint waits for `checks` too and then runs beside the shards.
   it("starts the lint, the test shards, the release check, the Linux runtime check, the MCP runner check and the browser tests only after the type checks pass", async () => {
     const { jobs } = await workflow();
-    for (const name of ["lint", "test", "release", "linux-runtime", "mcp-runner-linux", "web-e2e"]) expect(jobs[name]!.needs, name).toEqual(["scope", "checks"]);
+    for (const name of ["lint", "test", "release", "linux-runtime", "mcp-runner-linux", "web-e2e-build"]) expect(jobs[name]!.needs, name).toEqual(["scope", "checks"]);
+    // The browser legs also wait for the one build they unpack.
+    expect(jobs["web-e2e"]!.needs).toEqual(["scope", "checks", "web-e2e-build"]);
   });
 
   it("keeps the full-repository lint out of the job that gates the others, and the type checks in it", async () => {

@@ -41,7 +41,7 @@ export function needsVerdict(needsJson: string, requiredJobs: readonly string[] 
 
 // Usage: NEEDS='<toJSON(needs)>' node scripts/ci-gate.ts
 if (process.argv[1]?.endsWith("ci-gate.ts")) {
-  const verdict = needsVerdict(process.env.NEEDS ?? "", ["web-e2e"]);
+  const verdict = needsVerdict(process.env.NEEDS ?? "", ["web-e2e-build", "web-e2e"]);
   console.log(verdict.ok ? `CI passed: ${verdict.reason}.` : `CI did not pass: ${verdict.reason}.`);
   process.exitCode = verdict.ok ? 0 : 1;
 }

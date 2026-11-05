@@ -1,5 +1,11 @@
 import { test as base, expect } from "@playwright/test";
-export const test = base.extend<{ cspGuard: void }>({ cspGuard: [async ({ context }, use) => {
+import { mockCellOrigin } from "./port.js";
+export const test = base.extend<{ cspGuard: void }>({
+ // Each worker slot talks to its own mock cell process (playwright.config.ts starts one per slot), so the base URL is the one of this worker's slot. A restarted worker keeps its slot (parallelIndex).
+ // Playwright reads the fixtures a function needs from a destructuring pattern in its first parameter, so the empty pattern stays.
+ // eslint-disable-next-line no-empty-pattern
+ baseURL: [async ({}, use, testInfo) => { await use(mockCellOrigin(testInfo.parallelIndex)); }, { scope: "test" }],
+ cspGuard: [async ({ context }, use) => {
  const records: string[] = [];
  await context.exposeBinding("__rovaraReportCsp", (_source, value: unknown) => {
  const safe = typeof value === "string" && /^[a-z-]+:(?:\/app\/assets\/[A-Za-z0-9._-]+|\[page\]):[0-9]+:[0-9]+:[a-z0-9+.-]+$/u.test(value) ? value : "CSP_VIOLATION";

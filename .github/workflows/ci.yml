@@ -460,13 +460,48 @@ jobs:
           docker ps -aq --filter label=rovara.mcp-ci | xargs -r docker rm -f
           docker volume ls -q --filter label=rovara.mcp-ci | xargs -r docker volume rm -f
 
+  # The browser tests build nothing themselves: this job builds the packages (`tsc -b`, which the mock cell's imports read through each package's dist) and the web app (`build:web`) once, and the three
+  # web-e2e legs unpack its archive. Before this, each leg spent about 3 minutes on the same two commands (CI-E2E-2). The archive holds every packages/*/dist, which includes packages/web/dist (the
+  # app the mock cell serves, precompressed). It is a tarball so that file modes survive and the artifact is one file, not thousands.
+  web-e2e-build:
+    needs: [scope, checks]
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 15 }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      # The mock cell reuses broker guards and their package dependencies.
+      - run: npx tsc -b
+        env:
+          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
+          NODE_OPTIONS: --max-old-space-size=6144
+      - run: npm run build:web
+      # Fails here, not in three legs, when a build output is missing; the legs run the same check on what they unpack.
+      - name: The build holds what the browser tests need
+        run: node scripts/web-e2e-build-guard.ts
+      - name: Archive the build outputs
+        run: tar -czf "$RUNNER_TEMP/web-e2e-build.tgz" packages/*/dist
+      - name: Upload the build for the browser legs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-e2e-build
+          path: ${{ runner.temp }}/web-e2e-build.tgz
+          if-no-files-found: error
+          # Already compressed.
+          compression-level: 0
+          retention-days: 1
+
   # One leg per browser, in parallel. The three browsers ran one after another in one job on the private repo's 2 vCPU runners: 36 of the 45 minutes in run 41973400105 (CI-E2E-2), and past 30 minutes
   # once v1.2 landed (run 41270914332). The job keeps the name web-e2e: GitHub reports a matrix job's result as success only when every leg succeeded, so `local` and scripts/ci-gate.ts
   # still wait for all three browsers through this one name, and a Markdown-only change still skips all three legs through the same `if`. Each leg installs, caches and uploads only its own browser.
-  # Every leg still builds the packages itself (tsc -b and build:web, about 3 minutes): the legs start together, so building once in a job of its own would not shorten the run, only
-  # add an artifact hand-off of every package's dist and the web build to keep correct.
+  # Each leg runs two Playwright workers, each with a mock cell of its own (tests/web-e2e/playwright.config.ts).
   web-e2e:
-    needs: [scope, checks]
+    needs: [scope, checks, web-e2e-build]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 45 || 20 }}
@@ -482,12 +517,16 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
-      # The mock cell reuses broker guards and their package dependencies.
-      - run: npx tsc -b
-        env:
-          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
-          NODE_OPTIONS: --max-old-space-size=6144
-      - run: npm run build:web
+      # The packages and the web app come from the web-e2e-build job: nothing is compiled here.
+      - name: Download the build
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: web-e2e-build
+          path: ${{ runner.temp }}/web-e2e-build
+      - name: Unpack the build over the checkout
+        run: tar -xzf "$RUNNER_TEMP/web-e2e-build/web-e2e-build.tgz"
+      - name: The build holds what the browser tests need
+        run: node scripts/web-e2e-build-guard.ts
       # A browser is ~500 MB; it only changes with the Playwright version, which package-lock pins, so the key is that version and the browser of this leg. The system packages (apt) are not in the cache:
       # a hit runs `install-deps` for them, a miss runs the full `install --with-deps`.
       - name: Playwright version
@@ -515,10 +554,12 @@ jobs:
       - run: npx playwright test -c tests/web-e2e/playwright.config.ts
         env:
           ROVARA_E2E_BROWSER: ${{ matrix.browser }}
+          # Two workers, each with its own mock cell process (tests/web-e2e/playwright.config.ts).
+          ROVARA_E2E_WORKERS: "2"
       # A failed leg leaves the Playwright traces (retained on failure) and the HTML report of its browser to open with `npx playwright show-trace` or `show-report`.
       - name: Upload Playwright traces and report
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: web-e2e-playwright-${{ matrix.browser }}
           path: |
@@ -529,7 +570,7 @@ jobs:
 
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:
-    needs: [scope, checks, lint, test, release, linux-runtime, mcp-runner-linux, web-e2e]
+    needs: [scope, checks, lint, test, release, linux-runtime, mcp-runner-linux, web-e2e-build, web-e2e]
     if: >-
       always() && github.event.pull_request.draft != true && (
       (github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name != 'push')
