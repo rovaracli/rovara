@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
- canonicalJson, agentXError, orgMemberKey, orgSettingsKey, projectAiKey, orgProjectCatalogKey, projectMetaKey,
+ canonicalJson, agentXError, orgScoped, orgMemberKey, orgSettingsKey, projectAiKey, orgProjectCatalogKey, projectMetaKey,
  TaskStopCompanyPolicySchema, TaskStopProjectPolicySchema, TaskStopPendingChangeSchema, TaskStopEditingContextSchema,
  TaskStopEditBodySchema, TaskStopDecisionBodySchema, TaskStopEditResultSchema, taskStopEditKind, type TaskStopEditablePolicy,
 } from "@agentx/contracts";
@@ -79,7 +79,17 @@ async function source(deps: Deps, caller: DeveloperCaller, project?: string) {
  return { key, row, original, sourceMissing, raw, policy, revision, sourceDigest, pending, guards };
 }
 export async function getTaskStopEditing(deps: Deps, caller: DeveloperCaller, project?: string) {
- await authority(deps, caller, project);const s = await source(deps, caller, project);await authority(deps, caller, project);
+ await authority(deps, caller, project);
+ // QA6-04: a company with no stored policy and no seed receipt has task stops Disabled (admission reads that as disabled). Say so, with nothing to edit: the policy is created by Rovara's spending setup, never by this editor,
+ // so a write against it stays refused (`source` still throws CHANGE_STALE). An absent row is the only case: a row that is there but wrong is still an error.
+ if (project === undefined && await read(deps, orgSettingsKey(caller.orgId, "TASK_STOP_POLICY")) === undefined) {
+  // The same rule admission uses (`captureTaskStopSnapshot`): Disabled only when the seed receipts are missing too. A seeded company whose policy row has disappeared is refused as invalid there, so it is told so here.
+  const receipts = await Promise.all(["V1#bootstrap", "V1#upgrade"].map(sk => read(deps, { pk: orgScoped(caller.orgId, "TASK_STOP_SEED"), sk })));
+  if (receipts.some(receipt => receipt !== undefined)) throw invalid();
+  await authority(deps, caller, project);
+  return TaskStopEditingContextSchema.parse({ orgId: caller.orgId, scopeKind: "company", revision: 0, sourceState: "not_set_up", sourceDigest: digest([caller.orgId, null, 0, null, null]), policy: { kind: "rovara_estimate" } });
+ }
+ const s = await source(deps, caller, project);await authority(deps, caller, project);
  const provenance = project === undefined ? s.row.seedProvenance : undefined;
  if (provenance !== undefined && (typeof provenance !== "object" || provenance === null || Array.isArray(provenance))) throw invalid();
  const seed = provenance as Row | undefined;

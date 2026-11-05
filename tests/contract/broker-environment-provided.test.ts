@@ -109,3 +109,14 @@ describe("what the broker reads is still there when it starts (final review C1)"
     });
   }
 });
+
+describe("QA6-10: the release the deploy carries reaches the broker", () => {
+  it("is AGENTX_RELEASE_VERSION when the deploy names one (-c agentxReleaseVersion), and absent when it does not", () => {
+    expect(brokerEnvironment("staging", { agentxCloud: true, agentxReleaseVersion: "0.5.8" }).AGENTX_RELEASE_VERSION).toBe("0.5.8");
+    expect(brokerEnvironment("staging", { agentxCloud: true })).not.toHaveProperty("AGENTX_RELEASE_VERSION");
+    expect(brokerEnvironment("staging", { agentxCloud: true, agentxReleaseVersion: "" })).not.toHaveProperty("AGENTX_RELEASE_VERSION");
+  });
+  it("refuses anything but a plain release number, so nothing else can be written into the broker's environment through it", () => {
+    for (const bad of ["0.5", "v0.5.8", "0.5.8; rm", "0.5.8-rc1", 5, true]) expect(() => brokerEnvironment("staging", { agentxCloud: true, agentxReleaseVersion: bad }), String(bad)).toThrow(/agentxReleaseVersion/u);
+  });
+});

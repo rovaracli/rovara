@@ -32,7 +32,7 @@ export interface TurnModelAccessInput {
   models?: { orchestrator?: { provider: string; modelId: string }; classifier?: { provider: string; modelId: string } };
   now?: () => number;
   /** Live interaction A3: an Ask about a task asks its own route (`/v1/asks/model-access`) and names the Ask in the body; a Slack turn keeps the default route and body. */
-  route?: { path: string; body: Readonly<Record<string, string>> };
+  route?: { path: string; body: Readonly<Record<string, string | boolean>> };
 }
 
 const KEY_PATTERN = /^[^\s]{1,16384}$/u;

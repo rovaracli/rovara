@@ -159,6 +159,44 @@ describe("GET /v1/app/org/audit/records", () => {
     expect(ranged.records.map((entry) => entry.record.seq)[0]).toBe(7);
   });
 
+  it("QA6-09: order=newest returns the newest records first, pages back with its own cursor to the oldest, and honours the filters and the time range; without it the order is as before", async () => {
+    const b = await world();
+    const page = async (query: string) => (await orgCall(b, adminOf(A), "GET", `/v1/app/org/audit/records?${query}`)).body as { records: Array<{ record: { seq: number } }>; nextCursor?: string };
+    const first = await page("order=newest&limit=5");
+    expect(first.records.map((entry) => entry.record.seq)).toStrictEqual([12, 11, 10, 9, 8]);
+    const second = await page(`order=newest&limit=5&cursor=${first.nextCursor!}`);
+    expect(second.records.map((entry) => entry.record.seq)).toStrictEqual([7, 6, 5, 4, 3]);
+    const third = await page(`order=newest&limit=5&cursor=${second.nextCursor!}`);
+    expect(third.records.map((entry) => entry.record.seq)).toStrictEqual([2, 1]);
+    expect(third.nextCursor).toBeUndefined();
+    expect((await page("order=newest&limit=50")).nextCursor).toBeUndefined();
+    const filtered = await page("order=newest&actorId=dev_2&fromSeq=1&toSeq=12&limit=3");
+    expect(filtered.records).toHaveLength(3);
+    const seqs = filtered.records.map((entry) => entry.record.seq);
+    expect(seqs).toStrictEqual([...seqs].sort((x, y) => y - x));
+    const ranged = await page(`order=newest&limit=50&from=${encodeURIComponent(iso(at(1) - 120_000))}`);
+    expect(ranged.records.map((entry) => entry.record.seq)[0]).toBe(12);
+    expect(ranged.records.at(-1)?.record.seq).toBe(7);
+    expect((await page("limit=3")).records.map((entry) => entry.record.seq)).toStrictEqual([1, 2, 3]);
+    await rejection(orgCall(b, adminOf(A), "GET", "/v1/app/org/audit/records?order=oldest")).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("QA6-09: names for the members the page names, from the resolver the route is given (display names only; ids it cannot name are left out); none asked, none returned", async () => {
+    const b = await world();
+    const asked: string[][] = [];
+    const names = async (ids: string[]) => { asked.push(ids); return Object.fromEntries(ids.filter((id) => id === "dev_1").map((id) => [id, "Priya"])); };
+    const reply = await routeAuditRequest(b.deps, adminOf(A), { method: "GET", body: {}, requestId: nextRequestId() }, url("/v1/app/org/audit/records?limit=4"), names);
+    expect((reply.body as { actorNames?: Record<string, string> }).actorNames).toEqual({ dev_1: "Priya" });
+    expect(asked).toHaveLength(1);
+    expect(new Set(asked[0])).toContain("dev_1");
+    expect(asked[0]!.length).toBe(new Set(asked[0]).size);
+    const plain = await orgCall(b, adminOf(A), "GET", "/v1/app/org/audit/records?limit=4");
+    expect(plain.body).not.toHaveProperty("actorNames");
+    const failing = await routeAuditRequest(b.deps, adminOf(A), { method: "GET", body: {}, requestId: nextRequestId() }, url("/v1/app/org/audit/records?limit=4"), async () => { throw new Error("names down"); });
+    expect(failing.status).toBe(200);
+    expect(failing.body).not.toHaveProperty("actorNames");
+  });
+
   it("refuses what is not a query of this route: unknown or repeated parameters, an org id, and whole numbers that are not", async () => {
     const b = await world();
     await rejection(orgCall(b, adminOf(A), "GET", `/v1/app/org/audit/records?orgId=${B}`)).toMatchObject({ code: "CONFIG_INVALID" });

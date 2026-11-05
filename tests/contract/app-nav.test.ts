@@ -44,6 +44,14 @@ describe("navigation contract and aggregation", () => {
  await expect(appNav({ now: Date.now, webFeatures: "", localAgents: false }, priya)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
  const f = fixture();f.sources.home.mockRejectedValueOnce(new Error("unavailable"));await expect(appNav(f.deps, priya)).rejects.toThrow();expect((await appNav(f.deps, priya)).homeCount).toBe(3);
  });
+ it("QA6-10: carries the release the deploy says, only as a plain release number, and nothing when there is none or it is not one", async () => {
+ const f = fixture();
+ expect((await appNav({ ...f.deps, release: "0.5.8" }, priya)).release).toBe("0.5.8");
+ for (const bad of [undefined, "", "0.5", "v0.5.8", "0.5.8-rc1", "0.5.8 <b>x</b>", "1".repeat(40)]) {
+  const value = await appNav({ ...fixture().deps, ...(bad === undefined ? {} : { release: bad }) }, priya);
+  expect(value, String(bad)).not.toHaveProperty("release");
+ }
+ });
  it("keeps unknown enum values and extra fields in the client reader, but strict server shapes reject extras", async () => {
  const value = await appNav(fixture().deps, priya);expect(AppNavSchema.safeParse({ ...value, extra: true }).success).toBe(false);
  expect(AppNavReaderSchema.parse({ ...value, me: { ...value.me, orgRole: "future" }, extra: true })).toMatchObject({ me: { orgRole: "unknown" }, extra: true });

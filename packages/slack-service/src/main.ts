@@ -190,16 +190,17 @@ const askProxiedModels = modelProxyEnabled ? createProxiedModels({
 
 // Live interaction F2: a light diagnosis, like an Ask, has no Slack thread or member. Its turn is keyed by the queue event's id; the diagnosis it belongs to is remembered here while the turn runs, so
 // the model key is asked for on the diagnosis's own broker route (which names the diagnosis, reads the requester's right again and decides who pays) and never on a Slack thread's.
-const diagnosisTurns = new Map<string, DiagnosisRef>();
+const diagnosisTurns = new Map<string, { ref: DiagnosisRef; retry: boolean }>();
 const diagnosisProxiedModels = modelProxyEnabled ? createProxiedModels({
   controlPlaneUrl,
   signedFetchFor: () => createSignedServiceFetch({ region, credentials }),
   classifierModel, orchestratorModel: model, classifierTimeoutMs: gateClassifierTimeoutMs, log,
   createClassifier: createHostedClassifier, createRouter: createHostedRequestRouter,
   accessRouteFor: (message) => {
-    const ref = diagnosisTurns.get(message.eventId);
-    if (ref === undefined) throw new Error("no diagnosis is running for this turn");
-    return { orgId: ref.orgId, path: "/v1/diagnoses/model-access", body: { diagnosisId: ref.diagnosisId } };
+    const running = diagnosisTurns.get(message.eventId);
+    if (running === undefined) throw new Error("no diagnosis is running for this turn");
+    // QA6-14: the one retry after the provider refused the first model asks for its key with the flag; the broker leaves the refused model out.
+    return { orgId: running.ref.orgId, path: "/v1/diagnoses/model-access", body: { diagnosisId: running.ref.diagnosisId, ...(running.retry ? { retryAfterRefusal: true } : {}) } };
   },
 }) : undefined;
 
@@ -506,10 +507,10 @@ await runConsumer(queue, (message, { route, taskQuestion, ...context }) => taskQ
     const diagnosisApi = createDiagnosisApi({ controlPlaneUrl, signedFetch: createSignedServiceFetch({ region, credentials }) });
     return handleDiagnosis(message, {
       api: diagnosisApi,
-      runTurn: async ({ ref, question, eventId, turn }) => {
+      runTurn: async ({ ref, question, eventId, turn, retry }) => {
         // The turn needs a message-shaped record for its models and logs; its ids are placeholders, used nowhere that reaches Slack or the broker.
         const placeholder = SlackRequestMessageSchema.parse({ version: 1, eventId, thread: { teamId: "T0000000000", channelId: "C0000000000", threadTs: "1700000000.000000" }, userId: "U0000000000", text: question, receivedAt: new Date().toISOString() });
-        diagnosisTurns.set(eventId, ref);
+        diagnosisTurns.set(eventId, { ref, retry: retry === true });
         try {
           return await runTurn({
             message: placeholder, subject: `diagnosis:${ref.diagnosisId}`, workspaceId: turn.workspaceId, conversationId: deterministicUuid(`${ref.diagnosisId}:diagnosis-conversation`),

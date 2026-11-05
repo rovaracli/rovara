@@ -7,7 +7,7 @@
 // The switch (`fd`, LIVE_FIX_ENABLED) is OFF by default: every route then answers NOT_FOUND exactly as if it did not exist.
 import { createHash } from "node:crypto";
 import {
-  DIAGNOSIS_REFUSALS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
+  DIAGNOSIS_FAILURE_WORDS, DIAGNOSIS_REFUSALS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
   DiagnosisRecordSchema, agentXError, diagnosisRouteAttributes, errorRefKey,
   type DiagnosisRecord, type DiagnosisStatus, type DiagnosisTier, type DiagnosisTurnResult, type OrgId,
 } from "@agentx/contracts";
@@ -104,7 +104,9 @@ export async function statusOf(deps: DiagnosisCoreDependencies, orgId: OrgId, re
   if (request.state === "failed") {
     // A deep diagnosis whose task ended without an answer lets go of its error's place the first time that is seen, so the error can be asked about again.
     if (request.tier === "deep") await freeOpenPlace(deps, orgId, request).catch(() => undefined);
-    return DiagnosisStatusSchema.parse({ ...base, state: "failed", failure: request.tier === "deep" ? DEEP_DIAGNOSIS_FAILED_MESSAGE : DIAGNOSIS_UNAVAILABLE_MESSAGE, ...withDeep });
+    // QA6-14: a light diagnosis that said why it ended reads the fixed words for that reason; without one, the generic words.
+    const failure = request.tier === "deep" ? DEEP_DIAGNOSIS_FAILED_MESSAGE : request.failureReason === undefined ? DIAGNOSIS_UNAVAILABLE_MESSAGE : DIAGNOSIS_FAILURE_WORDS[request.failureReason];
+    return DiagnosisStatusSchema.parse({ ...base, state: "failed", failure, ...withDeep });
   }
   return DiagnosisStatusSchema.parse({ ...base, state: "queued", ...withDeep });
 }
@@ -241,7 +243,7 @@ export async function completeDiagnosis(deps: DiagnosisCoreDependencies, value: 
   }
   const { request } = waiting;
   if (answer.outcome === "FAILED" || answer.text === undefined || answer.text.trim() === "") {
-    await settleDiagnosis(deps, answer.orgId, request, { state: "failed" });
+    await settleDiagnosis(deps, answer.orgId, request, { state: "failed", ...(answer.outcome === "FAILED" && answer.reason !== undefined ? { reason: answer.reason } : {}) });
     return { outcome: "FAILED" };
   }
   const sanitized = sanitizeDiagnosis(answer.text);

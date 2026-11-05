@@ -173,9 +173,9 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
           deps: context.deploy ?? {}, stderr: context.stderr,
         })),
         // Enterprise foundations E2: the diff is synthesized with the install's recorded edition, as the deploy is, so it does not show the edition stamp as removed.
-        cdkDiff: overrides.cdkDiff ?? (async (request, settings, source, reservedConcurrency) => {
+        cdkDiff: overrides.cdkDiff ?? (async (request, settings, source, reservedConcurrency, releaseVersion) => {
           const edition = await resolveDeployEdition({ store, env: settings.env, engine: settings.engine, cloud: settings.cloud === true });
-          return cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), ...(edition === undefined ? {} : { edition }), request });
+          return cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), ...(edition === undefined ? {} : { edition }), ...(releaseVersion === undefined ? {} : { releaseVersion }), request });
         }),
         ask: overrides.ask ?? readlineAsk(),
         isInteractive: overrides.isInteractive ?? (() => process.stdin.isTTY === true),

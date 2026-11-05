@@ -9,9 +9,9 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  DIAGNOSIS_DEDUPE_SECONDS, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DiagnosisRecordSchema, ErrorRefSchema, INDEX_EXPIRY_ATTRIBUTE,
+  DIAGNOSIS_DEDUPE_SECONDS, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DiagnosisFailureReasonSchema, DiagnosisRecordSchema, ErrorRefSchema, INDEX_EXPIRY_ATTRIBUTE,
   agentXError, diagnosisByPersonKey, diagnosisByPersonPk, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey,
-  type DiagnosisRecord, type DiagnosisTier, type ErrorRef, type OrgId,
+  type DiagnosisFailureReason, type DiagnosisRecord, type DiagnosisTier, type ErrorRef, type ModelIdentifier, type OrgId,
 } from "@agentx/contracts";
 
 type Client = { send(command: unknown): Promise<unknown> };
@@ -59,6 +59,8 @@ export interface DiagnosisRequest {
   basedOn?: string | undefined;
   /** Deep: the task that is reading the repositories. */
   taskId?: string | undefined;
+  /** QA6-14, light, failed: why the service said it ended without an answer. Absent: no reason known. */
+  failureReason?: DiagnosisFailureReason | undefined;
 }
 
 export async function readDiagnosisRequest(deps: DiagnosisStoreDependencies, orgId: OrgId, diagnosisId: string): Promise<DiagnosisRequest | undefined> {
@@ -75,6 +77,7 @@ export async function readDiagnosisRequest(deps: DiagnosisStoreDependencies, org
     ...(typeof item["context"] === "string" ? { context: item["context"] } : {}),
     ...(typeof item["basedOn"] === "string" ? { basedOn: item["basedOn"] } : {}),
     ...(typeof item["taskId"] === "string" ? { taskId: item["taskId"] } : {}),
+    ...(DiagnosisFailureReasonSchema.safeParse(item["failureReason"]).success ? { failureReason: item["failureReason"] as DiagnosisFailureReason } : {}),
   };
 }
 
@@ -209,12 +212,12 @@ export async function admitDiagnosis(deps: DiagnosisStoreDependencies, input: Di
  * limits, which count one turn per admitted diagnosis, are hard limits. The key is never stored (a retry cannot be given the same one back), so a mint that fails after this claim ends the
  * diagnosis as failed and the person asks again (a new diagnosis, counted again). Only a request that is still waiting can be claimed.
  */
-export async function claimDiagnosisKey(deps: DiagnosisStoreDependencies, orgId: OrgId, diagnosisId: string): Promise<boolean> {
+export async function claimDiagnosisKey(deps: DiagnosisStoreDependencies, orgId: OrgId, diagnosisId: string, chosen?: ChosenModel): Promise<boolean> {
   try {
     await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "REQUEST"), UpdateExpression: "SET keyClaimedAt = :now",
+      TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "REQUEST"), UpdateExpression: chosen === undefined ? "SET keyClaimedAt = :now" : "SET keyClaimedAt = :now, keyModel = :model, keySource = :source",
       ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #state = :queued AND attribute_not_exists(keyClaimedAt)", ExpressionAttributeNames: { "#state": "state" },
-      ExpressionAttributeValues: { ":now": new Date(deps.now()).toISOString(), ":org": orgId, ":queued": "queued" },
+      ExpressionAttributeValues: { ":now": new Date(deps.now()).toISOString(), ":org": orgId, ":queued": "queued", ...(chosen === undefined ? {} : { ":model": modelItem(chosen.model), ":source": chosen.sourceId }) },
     }));
     return true;
   } catch (error) {
@@ -226,19 +229,65 @@ export async function claimDiagnosisKey(deps: DiagnosisStoreDependencies, orgId:
   }
 }
 
+/** The model a key was minted for and the source that serves it, kept on the request so a refusal can be taught and the retry can leave that model out. */
+export interface ChosenModel { model: ModelIdentifier; sourceId: string }
+const modelItem = (model: ModelIdentifier): { provider: string; modelId: string } => ({ provider: model.provider, modelId: model.modelId });
+
+/**
+ * QA6-14: the one retry. The company's AI provider refused the model the first key was for, the chat service says so and asks for a second key. Given once per diagnosis, only after a first key was taken, and
+ * only to a request still waiting; it answers the model the first key was for (so the retry leaves it out), or undefined when no retry is allowed. The retry key is capped like the first
+ * (DIAGNOSIS_LIGHT_BUDGET_USD) and is COUNTED: the claim also takes a place in the project's daily light count, in the same transaction (not refused when the count is full: the diagnosis was already admitted). The
+ * company's money for one diagnosis is therefore at most two keys, each capped at DIAGNOSIS_LIGHT_BUDGET_USD; the refused first call normally spends nothing, but the broker cannot check that.
+ */
+export async function claimDiagnosisRetry(deps: DiagnosisStoreDependencies, orgId: OrgId, diagnosisId: string): Promise<{ rejected?: ChosenModel } | undefined> {
+  const key = diagnosisKey(orgId, diagnosisId, "REQUEST");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const item = await getItem(deps, key);
+    if (item === undefined || item["orgId"] !== orgId || item["state"] !== "queued" || item["keyClaimedAt"] === undefined || item["retryClaimedAt"] !== undefined || typeof item["project"] !== "string") return undefined;
+    const step = await rateStep(deps, diagnosisRateKey(orgId, "light_project", item["project"]), orgId, Number.MAX_SAFE_INTEGER, DAY_MS);
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        { Update: {
+          TableName: deps.tableName, Key: key, UpdateExpression: "SET retryClaimedAt = :now",
+          ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #state = :queued AND attribute_exists(keyClaimedAt) AND attribute_not_exists(retryClaimedAt)", ExpressionAttributeNames: { "#state": "state" },
+          ExpressionAttributeValues: { ":now": new Date(deps.now()).toISOString(), ":org": orgId, ":queued": "queued" },
+        } },
+        step.item,
+      ] as never }));
+    } catch (error) {
+      if (!isCancelled(error)) throw error;
+      // Either the retry was taken (or the request ended) at the same moment, which the next read shows, or only the counter moved: read again.
+      deps.log?.({ event: "diagnosis.retry_refused", orgId });
+      continue;
+    }
+    const model = item["keyModel"] as { provider?: unknown; modelId?: unknown } | undefined, source = item["keySource"];
+    return typeof model?.provider === "string" && typeof model.modelId === "string" && typeof source === "string" ? { rejected: { model: { provider: model.provider, modelId: model.modelId }, sourceId: source } } : {};
+  }
+  return undefined;
+}
+
+/** Remembers the model the retry key is for (a retry that fails is taught too). Best effort: the key is already minted. */
+export async function recordRetryModel(deps: DiagnosisStoreDependencies, orgId: OrgId, diagnosisId: string, chosen: ChosenModel): Promise<void> {
+  await deps.documentClient.send(new UpdateCommand({
+    TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "REQUEST"), UpdateExpression: "SET keyModel = :model, keySource = :source",
+    ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #state = :queued", ExpressionAttributeNames: { "#state": "state" },
+    ExpressionAttributeValues: { ":model": modelItem(chosen.model), ":source": chosen.sourceId, ":org": orgId, ":queued": "queued" },
+  })).catch(() => undefined);
+}
+
 // ---- settling
 
 /** The items that end a waiting request: its state (conditional on `queued`, so only the first ending counts), the context text removed, and, for a result, the record. */
 export function diagnosisSettleItems(
-  tableName: string, orgId: OrgId, diagnosisId: string, nowMs: number, outcome: { state: "failed" } | { state: "ready"; record: DiagnosisRecord },
+  tableName: string, orgId: OrgId, diagnosisId: string, nowMs: number, outcome: { state: "failed"; reason?: DiagnosisFailureReason | undefined } | { state: "ready"; record: DiagnosisRecord },
 ): TransactItem[] {
   const keep = Math.floor(nowMs / 1000) + DIAGNOSIS_RETENTION_DAYS * 86_400;
   return [
     { Update: {
       TableName: tableName, Key: diagnosisKey(orgId, diagnosisId, "REQUEST"),
-      UpdateExpression: "SET #state = :next, settledAt = :now, #expires = :keep REMOVE #context",
+      UpdateExpression: outcome.state === "failed" && outcome.reason !== undefined ? "SET #state = :next, settledAt = :now, #expires = :keep, failureReason = :reason REMOVE #context" : "SET #state = :next, settledAt = :now, #expires = :keep REMOVE #context",
       ConditionExpression: "#state = :queued AND orgId = :org", ExpressionAttributeNames: { "#state": "state", "#expires": INDEX_EXPIRY_ATTRIBUTE, "#context": "context" },
-      ExpressionAttributeValues: { ":next": outcome.state, ":queued": "queued", ":now": new Date(nowMs).toISOString(), ":keep": keep, ":org": orgId },
+      ExpressionAttributeValues: { ":next": outcome.state, ":queued": "queued", ":now": new Date(nowMs).toISOString(), ":keep": keep, ":org": orgId, ...(outcome.state === "failed" && outcome.reason !== undefined ? { ":reason": outcome.reason } : {}) },
     } },
     ...(outcome.state === "ready" ? [{ Put: { TableName: tableName, Item: { ...diagnosisKey(orgId, diagnosisId, "RECORD"), entityType: "DIAGNOSIS_RECORD", orgId, ...outcome.record, [INDEX_EXPIRY_ATTRIBUTE]: keep } } }] : []),
   ];
@@ -246,7 +295,7 @@ export function diagnosisSettleItems(
 
 /** Ends a waiting request. Answers whether this call ended it (a repeat answers false and writes nothing). A failure also frees the error's open place, so it can be asked about again. */
 export async function settleDiagnosis(
-  deps: DiagnosisStoreDependencies, orgId: OrgId, request: Pick<DiagnosisRequest, "diagnosisId" | "tier" | "errorRef">, outcome: { state: "failed" } | { state: "ready"; record: DiagnosisRecord },
+  deps: DiagnosisStoreDependencies, orgId: OrgId, request: Pick<DiagnosisRequest, "diagnosisId" | "tier" | "errorRef">, outcome: { state: "failed"; reason?: DiagnosisFailureReason | undefined } | { state: "ready"; record: DiagnosisRecord },
 ): Promise<boolean> {
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: diagnosisSettleItems(deps.tableName, orgId, request.diagnosisId, deps.now(), outcome) }));

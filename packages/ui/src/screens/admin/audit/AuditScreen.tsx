@@ -17,7 +17,15 @@ const text = z.string().max(200);
 const statusFields = { headSeq: number, sealedThroughSeq: number, latestTimestamp: z.string().max(40).optional(), epochsWithoutTimestamp: z.array(text).max(20), lockMode: z.enum(["COMPLIANCE", "GOVERNANCE"]).optional() };
 const statusSchema = z.object({ ...statusFields, limits: z.literal(AUDIT_LIMITS_COPY) }).refine(value => value.sealedThroughSeq <= value.headSeq);
 function recordsSchema(orgId: string, cursor: string) {
- return z.object({ ...statusFields, records: z.array(z.object({ record: z.object({ orgId: z.literal(orgId), seq: number.refine(value => value > 0), action: z.string().max(100), occurredAt: z.string().max(40), recordedAt: z.string().max(40), actor: z.object({ kind: text, id: text }), target: z.object({ kind: text, id: text }), proof: z.object({ kind: text, method: text.optional(), via: text.optional(), authTime: z.string().max(40).optional() }).optional() }) })).max(50), nextCursor: z.string().max(2048).regex(/^[A-Za-z0-9_-]+$/).optional() }).refine(value => value.sealedThroughSeq <= value.headSeq && (value.nextCursor === undefined || value.nextCursor !== cursor));
+ return z.object({ ...statusFields, records: z.array(z.object({ record: z.object({ orgId: z.literal(orgId), seq: number.refine(value => value > 0), action: z.string().max(100), occurredAt: z.string().max(40), recordedAt: z.string().max(40), actor: z.object({ kind: text, id: text }), target: z.object({ kind: text, id: text }), proof: z.object({ kind: text, method: text.optional(), via: text.optional(), authTime: z.string().max(40).optional() }).optional() }) })).max(50), actorNames: z.record(z.string(), z.unknown()).optional(), nextCursor: z.string().max(2048).regex(/^[A-Za-z0-9_-]+$/).optional() }).refine(value => value.sealedThroughSeq <= value.headSeq && (value.nextCursor === undefined || value.nextCursor !== cursor));
+}
+// QA6-09: a member is shown by the name the server gave for them, else a plain label: the record's own id is an opaque hash that tells a reader nothing. Anything that is not a member keeps its kind and id.
+const PERSON_ID = /^[a-f0-9]{64}$/;
+// A name that is not a short string is one name that is not shown (the plain label stands); it never fails the page.
+function who(side: { kind: string; id: string }, names: Record<string, unknown> | undefined): string {
+ if (side.kind !== "member" || !PERSON_ID.test(side.id)) return `${side.kind}: ${side.id}`;
+ const name = names?.[side.id];
+ return typeof name === "string" && name.trim() !== "" && name.length <= 200 ? name : "Unnamed member";
 }
 function utc(value: string): string | undefined {
  if (!value) return undefined;
@@ -35,7 +43,7 @@ function AuditView() {
  const [range, setRange] = useState<{ from?: string; to?: string }>({}), [generation, setGeneration] = useState(0), [cursors, setCursors] = useState([""]), [page, setPage] = useState(0);
  const cursor = cursors[page] ?? "";
  useEffect(() => () => { const key = ["admin", "lane-c", "audit", orgId, developerId, role];void query.cancelQueries({ queryKey: key });query.removeQueries({ queryKey: key }); }, [query, orgId, developerId, role]);
- const params = new URLSearchParams({ limit: "50" });if (range.from !== undefined) params.set("from", range.from);if (range.to !== undefined) params.set("to", range.to);if (cursor) params.set("cursor", cursor);
+ const params = new URLSearchParams({ limit: "50", order: "newest" });if (range.from !== undefined) params.set("from", range.from);if (range.to !== undefined) params.set("to", range.to);if (cursor) params.set("cursor", cursor);
  const status = useQuery({ ...readPolicy, queryKey: ["admin", "lane-c", "audit", orgId, developerId, role, "status"], queryFn: () => api.get("/v1/app/org/audit/status", statusSchema) });
  const records = useQuery({ ...readPolicy, queryKey: ["admin", "lane-c", "audit", orgId, developerId, role, "records", range.from ?? "", range.to ?? "", cursor, generation], queryFn: () => api.get("/v1/app/org/audit/records?" + params.toString(), recordsSchema(orgId, cursor)) });
  function apply(event: FormEvent) {
@@ -57,10 +65,10 @@ function AuditView() {
  {validation && <p id="audit-range-error" role="alert">{validation}</p>}<p>Applied range: {range.from === undefined ? "Beginning of the available log" : checkedTime(range.from)} through {range.to === undefined ? "the current returned log" : checkedTime(range.to)}. Times filter when records were recorded.</p>
  <p>Actor, action and target search are not available in this view. No background scan is performed.</p>
  <h2>Records</h2><ReadSection read={records} label="Audit records">{data => <>
- <p role="status" aria-label="Audit records shown on this page" aria-live="polite" aria-atomic="true">Audit records: Page {page + 1}: {data.records.length} {data.records.length === 1 ? "record" : "records"} returned, up to 50 per page. {data.records.length > 0 && <>Sequence {data.records[0]!.record.seq} through {data.records.at(-1)!.record.seq}. </>}Log head at this read: {data.headSeq}.</p>
+ <p role="status" aria-label="Audit records shown on this page" aria-live="polite" aria-atomic="true">Audit records: Page {page + 1}: {data.records.length} {data.records.length === 1 ? "record" : "records"} returned, up to 50 per page. {data.records.length > 0 && <>Sequence {Math.min(...data.records.map(row => row.record.seq))} through {Math.max(...data.records.map(row => row.record.seq))}. </>}Log head at this read: {data.headSeq}.</p>
  {data.records.length === 0 ? <p>No audit records returned for this page and time range. This does not prove no action occurred.</p> : <DataTable caption="Audit record metadata" rows={data.records} rowKey={row => String(row.record.seq)} columns={[
  { key: "seq", title: "Sequence", render: row => row.record.seq }, { key: "action", title: "Action", render: row => <VisibleText text={row.record.action} /> },
- { key: "actor", title: "Actor", render: row => <VisibleText text={`${row.record.actor.kind}: ${row.record.actor.id}`} /> }, { key: "target", title: "Target", render: row => <VisibleText text={`${row.record.target.kind}: ${row.record.target.id}`} /> },
+ { key: "actor", title: "Actor", render: row => <VisibleText text={who(row.record.actor, data.actorNames)} /> }, { key: "target", title: "Target", render: row => <VisibleText text={who(row.record.target, data.actorNames)} /> },
  { key: "at", title: "Recorded (UTC)", render: row => checkedTime(row.record.recordedAt) }, { key: "proof", title: "Recorded proof", render: row => row.record.proof === undefined ? "Not returned" : <VisibleText text={row.record.proof.kind} /> },
  ]} />}
  <div className="rv-audit-pagination"><Button disabled={page === 0 || records.isFetching} onClick={() => setPage(previous => Math.max(0, previous - 1))}>Previous page</Button><Button disabled={records.isFetching || records.isError || data.nextCursor === undefined} onClick={() => { if (data.nextCursor !== undefined && !records.isFetching && !records.isError) { setCursors(previous => [...previous.slice(0, page + 1), data.nextCursor!]);setPage(previous => previous + 1); } }}>Next page</Button></div>

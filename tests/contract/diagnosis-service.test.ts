@@ -3,7 +3,7 @@
 // Rovara-paid design): the key is asked for in the requester's name on the company's own AI provider; nothing in a request can ask for another payer.
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DIAGNOSIS_LIGHT_BUDGET_USD, DiagnosisModelAccessRequestSchema, SLACK_ROUTE_DIAGNOSIS, diagnosisRouteAttributes, isDiagnosisRoute } from "../../packages/contracts/src/index.js";
+import { DIAGNOSIS_LIGHT_BUDGET_USD, DiagnosisModelAccessRequestSchema, canonicalModelName, SLACK_ROUTE_DIAGNOSIS, diagnosisRouteAttributes, isDiagnosisRoute } from "../../packages/contracts/src/index.js";
 
 const mint = vi.hoisted(() => vi.fn((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); }));
 vi.mock("../../packages/broker/src/aws/broker/model-access.js", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), mintChatTurnKey: mint }));
@@ -71,6 +71,43 @@ describe("who pays for a light diagnosis", () => {
       w.retried();
       const second = await startLightDiagnosis(w.diagnosis, w.caller(ARJUN), { requestId: randomUUID(), errorRef: w.ref() });
       await expect(ask(second.diagnosisId)).resolves.toMatchObject({ statusCode: 200 });
+    } finally {
+      mint.mockReset();
+      mint.mockImplementation((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); });
+    }
+  });
+
+  it("QA6-14: after the provider refused the first model, one retry key is given that leaves that model out for this diagnosis only (nothing is written to the install-wide usable-models record); a second retry or a retry with no first key is refused", async () => {
+    const w = diagnosisWorld({ edition: "public" });
+    const status = await startLightDiagnosis(w.diagnosis, w.caller(PRIYA), { requestId: randomUUID(), errorRef: w.ref() });
+    const t = service(w, "public");
+    const markUnusable = vi.fn(async (model: unknown) => { void model; });
+    (t.dependencies as unknown as { usableModels: unknown }).usableModels = { unusable: async () => new Set<string>(), markUnusable };
+    const haiku = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-5-5" };
+    mint.mockImplementation(async (...args: unknown[]) => {
+      const options = args[6] as { diagnosis?: { claimKey(chosen?: unknown): Promise<boolean>; avoid?: string } };
+      if (options.diagnosis !== undefined && !(await options.diagnosis.claimKey({ model: options.diagnosis.avoid === undefined ? haiku : { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" }, sourceId: "rovara" }))) throw new Error("already claimed");
+      return { baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 };
+    });
+    try {
+      const ask = (extra: object = {}) => handleDiagnosisServiceRoute(t.dependencies, t.dependencies.diagnosisService, t.request("/diagnoses/model-access", { orgId: ORG_A, diagnosisId: status.diagnosisId, turnId: `Ev${randomUUID().replaceAll("-", "").slice(0, 12)}`, ...extra }), "/v1/diagnoses/model-access");
+      // A retry before any key was taken is refused and mints nothing.
+      await expect(ask({ retryAfterRefusal: true })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+      expect(mint).not.toHaveBeenCalled();
+      await expect(ask()).resolves.toMatchObject({ statusCode: 200 });
+      mint.mockClear();
+      await expect(ask({ retryAfterRefusal: true })).resolves.toMatchObject({ statusCode: 200 });
+      expect(mint).toHaveBeenCalledTimes(1);
+      const options = mint.mock.calls[0]![6] as { diagnosis: { avoid?: string } };
+      expect(options.diagnosis.avoid).toBe(canonicalModelName(haiku));
+      // F2: the refusal is this diagnosis's alone: the install-wide record is never touched from here.
+      expect(markUnusable).not.toHaveBeenCalled();
+      // The retry is once: another is refused, and no plain key is given again either.
+      mint.mockClear();
+      await expect(ask({ retryAfterRefusal: true })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+      await expect(ask()).rejects.toThrow("already claimed");
+      expect(mint).toHaveBeenCalledTimes(1);
+      expect(markUnusable).not.toHaveBeenCalled();
     } finally {
       mint.mockReset();
       mint.mockImplementation((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); });

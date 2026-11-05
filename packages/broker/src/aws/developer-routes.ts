@@ -152,6 +152,7 @@ import { requireReviewedModelSourceWebWrite } from "../model-sources/routes.js";
 import { restoreProjectReviewedWithEffects, archiveProjectReviewedWithEffects } from "../org/project-archive.js";
 import { effectiveProjectRole, requireNewWorkAllowed } from "../developer/project-roles.js";
 import { isAuditOrgPath, routeAuditRequest } from "../audit/routes.js";
+import { auditActorNamesOf } from "../audit/actor-names.js";
 import { requireFreshSignInForExport, startsAuditExport } from "./developer-routes/audit-export-fresh.js";
 import { canReadAuditLog, requireAuditorRoute } from "../org/auditor.js";
 import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
@@ -807,7 +808,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     // Starting an export (the whole log in one file) needs a fresh sign-in; the role check comes first, so a caller who may not read the log is told that, not asked to sign in again.
     if (startsAuditExport(request.method, url.pathname) && canReadAuditLog(caller.orgRole)) await requireFreshSignInForExport(deps, caller);
     const reply = await routeAuditRequest(deps.auditLedger, { developerId: caller.developerId, orgId: caller.orgId, orgRole: caller.orgRole },
-      { method: request.method, body: request.method === "POST" ? jsonBody(request) : {}, requestId: request.requestId }, url);
+      { method: request.method, body: request.method === "POST" ? jsonBody(request) : {}, requestId: request.requestId }, url,
+      auditActorNamesOf({ documentClient: deps.documentClient, stateTable: deps.tableName, signInTable: deps.developer.signInTableName, teamRecordTable: deps.teamRecord?.table.tableName, orgId: caller.orgId }));
     return reply.status === 200 ? reply.body : new StatusReply(reply.status, reply.body);
   }
   throw agentXError("NOT_FOUND", "route not found");

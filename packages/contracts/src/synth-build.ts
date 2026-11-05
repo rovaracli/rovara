@@ -68,6 +68,7 @@ export const SYNTH_FIXED_KEYS = ["agentxEnv", "agentxRegion", "agentxSynthesizer
  * unless the key is in `SYNTH_CONTEXT_KEYS`, `SYNTH_FIXED_KEYS` or here, so a key added to the infrastructure later cannot be left out of the build unnoticed (review I1).
  */
 export const SYNTH_EXCLUDED_KEYS: Readonly<Record<string, string>> = {
+  agentxReleaseVersion: "the release being deployed, passed by the CLI's own deploy and upgrade from the release it carries (a plain x.y.z only); it is not an install setting, and a build made from recorded settings simply has none (the app then shows no release line)",
   rovaraNewInstall: "set only by `init` for a new install; an install being upgraded is not new",
   agentxCloud: "the hosted Rovara cloud; an Enterprise install is refused inside it",
   agentxDeploymentMode: "only ec2-ebs is accepted; there is nothing to choose",

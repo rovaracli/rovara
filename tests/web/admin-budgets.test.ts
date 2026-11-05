@@ -161,3 +161,19 @@ it("stale enable tells the owner to cancel setup; failure sends no follow-up wri
   expect(f.request.mock.calls.filter(([r]) => r.method === "PUT")).toHaveLength(1);expect(screen.queryByText(/raw server words/)).toBeNull();
  } finally { f.close(); }
 });
+
+// QA6-04: a company with no stored task-stop policy is shown as Disabled, with the next step, and no editing controls (not "Couldn't check this task stop").
+it("shows Disabled with the next step for a company that has no task-stop policy, and offers nothing to edit", async () => {
+ const context = { orgId, scopeKind: "company", revision: 0, sourceState: "not_set_up", sourceDigest: "c".repeat(64), policy: { kind: "rovara_estimate" } };
+ const f = mount({ respond: async r => r.path.includes("task-stop-policy") ? { status: 200, body: context } : { status: 200, body: settings } });
+ try {
+  await screen.findByRole("table", { name: "Monthly base budgets" });
+  fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));
+  await screen.findByText("Current task stop: Disabled.");
+  expect(screen.getByText(/ask the administrator of this Rovara installation/i)).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+  for (const label of ["Task stop amount (USD)", "Task stop policy"]) expect(screen.queryByLabelText(label)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Review task stop change" })).toBeNull();
+  expect(f.request.mock.calls.some(([r]) => r.method !== "GET")).toBe(false);
+ } finally { f.close(); }
+});

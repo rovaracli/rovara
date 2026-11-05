@@ -2,7 +2,7 @@
 // for a diagnosis. Rovara's METERED built-in AI source counts as the company's provider (owner, 2026-11-03: "bill it to them"), but only through the ordinary admitted, budget-capped chat-turn key billed to the
 // company or project. With no usable provider the diagnosis is not offered, in one fixed sentence. These tests use the real routing over a real source store; only the proxy mint and the budget admission are stubbed.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE, DIAGNOSIS_REFUSALS, ModelSourceSchema, editionPolicy, sourceAlias, type Edition, type ModelIdentifier, type ModelSource } from "../../packages/contracts/src/index.js";
+import { canonicalModelName, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE, DIAGNOSIS_REFUSALS, ModelSourceSchema, editionPolicy, sourceAlias, type Edition, type ModelIdentifier, type ModelSource } from "../../packages/contracts/src/index.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import type { RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
 import { chooseDiagnosisRoute, customerProviderRouting } from "../../packages/broker/src/model-sources/diagnosis-provider.js";
@@ -179,6 +179,32 @@ describe("a diagnosis turn's key", () => {
     await expect(mint(claimKey)).rejects.toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
     await expect(mint(claimKey, "Ev9999999999")).rejects.toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
     expect(minted).toHaveBeenCalledTimes(1);
+  });
+
+  it("QA6-14: the key is claimed with the model and source it is for; a retry that avoids the refused model is keyed on another one, and with no other model it is refused in fixed words before anything is claimed or minted", async () => {
+    // The first key: the company's Anthropic source, claimed with its model and source.
+    const claimKey = vi.fn(async (chosen?: unknown) => { void chosen; return true; });
+    await mint(claimKey);
+    expect(claimKey).toHaveBeenCalledWith({ model: SONNET, sourceId: SRC_ANTHROPIC });
+    // The retry: the model just refused is left out, so the next source's model is the choice.
+    minted.mockClear(); admit.mockClear();
+    const retryClaim = vi.fn(async (chosen?: unknown) => { void chosen; return true; });
+    const retried = await mintChatTurnKey(dependencies, TEST_ORG, "web", undefined, { turnId: "Ev1234567890R" }, undefined, { diagnosis: { claimKey: retryClaim, avoid: canonicalModelName(SONNET) } });
+    const chosen = retryClaim.mock.calls[0]![0] as { model: ModelIdentifier; sourceId: string };
+    expect(chosen.sourceId).toBe("rovara");
+    expect(canonicalModelName(chosen.model)).not.toBe(canonicalModelName(SONNET));
+    expect(retried).toMatchObject({ apiKey: "fake-proxy-key" });
+    expect((minted.mock.calls[0]![1] as { models: string[] }).models).not.toContain(sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET));
+    // Only that one source and model: leaving it out leaves nothing, and the words say so.
+    world.routing = { ...t.deps, projectSourceOrder: async () => [SRC_ANTHROPIC] };
+    minted.mockClear(); admit.mockClear();
+    const noneLeft = vi.fn(async () => true);
+    const error = await mintChatTurnKey(dependencies, TEST_ORG, "web", undefined, { turnId: "Ev1234567890R" }, undefined, { diagnosis: { claimKey: noneLeft, avoid: canonicalModelName(SONNET) } }).then(() => undefined, (caught: unknown) => caught as { code: string; message: string });
+    expect(error?.code).toBe("MODEL_NOT_ALLOWED");
+    expect(error?.message).toContain("Your company's AI provider has no other model Rovara can try for this diagnosis.");
+    expect(noneLeft).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+    expect(minted).not.toHaveBeenCalled();
   });
 
   it("a company with only the metered Rovara source gets a diagnosis, billed to the company or project like its tasks: admitted against its budgets, capped at 25 cents or what is left, and never a key outside the company's own team", async () => {

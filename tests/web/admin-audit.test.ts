@@ -117,3 +117,34 @@ for(const role of ["owner","admin"] as const)it(`links rejected Audit range fiel
 for(const field of ["company","person","role"] as const)it(`resets linked Audit range errors and page state when ${field} scope changes`,async()=>{
  const f=audit();try{await screen.findByText("member.role_changed");const oldPrefix=["admin","lane-c","audit",orgId,f.me.developer.id,"owner"],initial=f.query.getQueryData<{records:{record:{orgId:string;action:string}}[]}>([...oldPrefix,"records","","","",0]),status=f.query.getQueryData([...oldPrefix,"status"]);if(initial===undefined||status===undefined)throw new Error("Initial Audit caches missing");fireEvent.click(screen.getByRole("button",{name:"Next page"}));await screen.findByText("org.renamed");fireEvent.change(screen.getByLabelText("From (UTC)"),{target:{value:"2026-10-02T12:30"}});fireEvent.change(screen.getByLabelText("Through (UTC)"),{target:{value:"2026-10-01T12:30"}});fireEvent.click(screen.getByRole("button",{name:"Apply time range"}));await screen.findByText("From must be no later than Through.");expect(screen.getByLabelText("From (UTC)").getAttribute("aria-invalid")).toBe("true");const oldHeading=screen.getByRole("heading",{name:"Audit"}),next=structuredClone(f.me);if(field==="company")next.org.orgId="org_bbbbbbbbbbbbbbbbbbbb";else if(field==="person")next.developer.id="b".repeat(64);else next.developer.orgRole="admin";const prefix=["admin","lane-c","audit",next.org.orgId,next.developer.id,next.developer.orgRole],fresh={...initial,records:initial.records.map(item=>({...item,record:{...item.record,orgId:next.org.orgId,action:"new-scope-action"}}))};f.query.setQueryData([...prefix,"status"],status);f.query.setQueryData([...prefix,"records","","","",0],fresh);const before=f.request.mock.calls.length,original=f.request.getMockImplementation()!;f.request.mockImplementation(async r=>r.path==="/v1/app/me"?{status:200,body:next}:original(r));await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","identity"]});});await screen.findByText("new-scope-action");expect(screen.queryByRole("alert")).toBeNull();for(const name of ["From (UTC)","Through (UTC)"]){const input=screen.getByLabelText<HTMLInputElement>(name);expect(input.value).toBe("");expect(input.getAttribute("aria-invalid")).toBeNull();expect(input.getAttribute("aria-describedby")).toBeNull();}const heading=screen.getByRole("heading",{name:"Audit"});expect(heading).not.toBe(oldHeading);expect(document.activeElement).toBe(heading);expect(screen.queryByText("org.renamed")).toBeNull();expect(screen.getByRole("status",{name:"Audit records shown on this page"}).textContent).toContain("Audit records: Page 1: 1 record returned");await waitFor(()=>expect(f.query.getQueriesData({queryKey:oldPrefix})).toEqual([]));expect(f.query.getQueryData([...prefix,"records","","","",0])).toEqual(fresh);expect(f.query.getQueryData([...prefix,"status"])).toEqual(status);const reads=f.request.mock.calls.slice(before);expect(reads.map(([r])=>({method:r.method,path:r.path})).filter((r)=>r.path!=="/v1/app/org/second-review")).toEqual([{method:"GET",path:"/v1/app/me"}]);expect(f.host.openExternal).not.toHaveBeenCalled();}finally{f.close();}
 });
+
+// QA6-09: the newest records first, and members by name (never the opaque id) where the server named them.
+it("asks for the newest records first and shows member names, with a plain label (never the hash) for a member it could not name", async () => {
+ const hex = (c: string) => c.repeat(64);
+ const rows = [3, 2, 1].map(seq => ({ ...row, record: { ...row.record, seq, actor: { kind: "member", id: seq === 3 ? hex("a") : hex("c") }, target: { kind: "member", id: hex("b") } } }));
+ const f = mount({ path: "/app/admin/audit", respond: async r => ({ status: 200, body: r.path === "/v1/app/me" ? { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId, name: "Acme", plan: "team" }, identities: [] } : r.path.includes("/audit/records") ? { ...ledgerStatus, records: rows, actorNames: { [hex("a")]: "Priya Shah", [hex("b")]: "A former member" } } : r.path.includes("/audit/status") ? { ...ledgerStatus, limits: limits } : r.path === "/v1/app/nav" ? AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { ...features } }) : {} }) });
+ return (async () => { try {
+  await screen.findByText("Priya Shah");
+  const call = f.request.mock.calls.map(([r]) => r).find(r => r.path.includes("/audit/records"))!;
+  expect(call.path).toContain("order=newest");
+  expect(screen.getAllByText("A former member").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Unnamed member").length).toBeGreaterThan(0);
+  expect(document.body.textContent).not.toContain(hex("a"));
+  expect(document.body.textContent).not.toContain(hex("c"));
+  const sequences = screen.getAllByRole("row").slice(1).map(tr => tr.querySelector("td")?.textContent);
+  expect(sequences).toEqual(["3", "2", "1"]);
+  expect(screen.getByRole("status", { name: "Audit records shown on this page" }).textContent).toContain("Sequence 1 through 3.");
+ } finally { f.close(); } })();
+});
+
+// F1: one bad name must never fail the page: it is dropped for that person and the records show.
+it("shows the records when the server sends a name that is too long or not text: that one name falls back to the plain label", async () => {
+ const hex = (c: string) => c.repeat(64);
+ const rows = [2, 1].map(seq => ({ ...row, record: { ...row.record, seq, actor: { kind: "member", id: seq === 2 ? hex("a") : hex("c") }, target: { kind: "member", id: hex("b") } } }));
+ const f = mount({ path: "/app/admin/audit", respond: async r => ({ status: 200, body: r.path === "/v1/app/me" ? { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId, name: "Acme", plan: "team" }, identities: [] } : r.path.includes("/audit/records") ? { ...ledgerStatus, records: rows, actorNames: { [hex("a")]: "\u{1F600}".repeat(150), [hex("b")]: 42, [hex("c")]: "Maya Cole" } } : r.path.includes("/audit/status") ? { ...ledgerStatus, limits: limits } : r.path === "/v1/app/nav" ? AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { ...features } }) : {} }) });
+ return (async () => { try {
+  await screen.findByText("Maya Cole");
+  expect(screen.getAllByText("Unnamed member").length).toBeGreaterThan(0);
+  expect(screen.queryByRole("alert")).toBeNull();
+ } finally { f.close(); } })();
+});

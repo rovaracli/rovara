@@ -25,7 +25,7 @@ export interface ProxiedModelsOptions {
   createRouter: typeof createHostedRequestRouter;
   now?: () => number;
   /** Live interaction A3: where this message's key is asked for, when it is not a Slack turn's (an Ask names its own route and body). */
-  accessRouteFor?: (message: SlackRequestMessage) => { orgId: string; path: string; body: Readonly<Record<string, string>> } | undefined;
+  accessRouteFor?: (message: SlackRequestMessage) => { orgId: string; path: string; body: Readonly<Record<string, string | boolean>> } | undefined;
 }
 
 export interface ProxiedModels {

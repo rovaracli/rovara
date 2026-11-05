@@ -107,6 +107,8 @@ describe("sanitizeModelCallEvent on a keyed provider's failure", () => {
       text: "OpenRouter request failed; check the key's credit balance and spending limit" },
     { name: "AgentX transport: fixed text for a rejected key", provider: "anthropic", cls: "key-rejected", signal: null, action: /key/u, secret: "zzz",
       text: "Anthropic request failed; check the API key and its permissions" },
+    { name: "AgentX transport: fixed text for a key the provider does not accept (401, QA6-14)", provider: "anthropic", cls: "key-rejected", signal: null, status: 401, action: /key/u, secret: "zzz",
+      text: "Anthropic request failed; the API key was refused; check that it is valid and has not expired" },
     { name: "AgentX transport: fixed text for a 429", provider: "openai", cls: "limit-or-rate-limited", signal: null, status: 429, action: /rate limit/u, secret: "zzz",
       text: "OpenAI request failed; rate limited or out of credits; check the key's usage limits before retrying" },
     { name: "AgentX transport: fixed text for an upstream 5xx", provider: "openrouter", cls: "provider-outage", signal: null, action: /retry/u, secret: "zzz",

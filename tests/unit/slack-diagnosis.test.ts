@@ -75,6 +75,49 @@ describe("answering a queued diagnosis", () => {
   });
 });
 
+describe("QA6-14: a model the provider refuses", () => {
+  const refused = () => Object.assign(new Error("Model source request failed; check the API key and its permissions"), { name: "AgentXError" });
+
+  it("tries once more, on a fresh turn flagged as the retry, and answers when the second model works", async () => {
+    let calls = 0;
+    const t = setup({ answer: async () => { calls += 1; if (calls === 1) throw refused(); return '{"summary":"ok"}'; } });
+    await handleDiagnosis(message, t.deps);
+    expect(t.runTurn).toHaveBeenCalledTimes(2);
+    const [first, second] = t.runTurn.mock.calls.map((call) => call[0] as { eventId: string; retry?: true });
+    expect(first).toEqual({ ref, question: DIAGNOSIS_TURN_QUESTION, eventId: message.eventId, turn });
+    expect(second?.retry).toBe(true);
+    expect(second?.eventId).not.toBe(message.eventId);
+    expect(second?.eventId).toMatch(/^Ev[A-Za-z0-9]{4,64}$/u);
+    expect(t.written).toEqual([{ ...ref, outcome: "ANSWERED", text: '{"summary":"ok"}', contextBytes: Buffer.byteLength(turn.taskContext, "utf8") }]);
+  });
+
+  it("when the second model is refused too, stops there and writes FAILED with the reason (never the error text)", async () => {
+    const t = setup({ answer: async () => { throw refused(); } });
+    await handleDiagnosis(message, t.deps);
+    expect(t.runTurn).toHaveBeenCalledTimes(2);
+    expect(t.written).toEqual([{ ...ref, outcome: "FAILED", reason: "model_rejected" }]);
+    expect(JSON.stringify(t.logs)).not.toContain("API key");
+  });
+
+  it("a 404 from the provider is the same refusal; a limit or an outage is told apart and not retried; anything else has no reason", async () => {
+    const cases: Array<[string, string | undefined, number]> = [
+      ["Model source request failed; check the model ID and that the key's organization can use it", "model_rejected", 2],
+      ["Model source request failed; the API key was refused; check that it is valid and has not expired", "key_invalid", 1],
+      ["Model source request failed; check the key's credit balance and spending limit", "limit_reached", 1],
+      ["Model source request failed; rate limited; wait before retrying", "limit_reached", 1],
+      ["Model source request failed; upstream unavailable; check provider status before retrying", "provider_unavailable", 1],
+      ["Model source request failed; the provider is overloaded; wait before retrying", "provider_unavailable", 1],
+      ["something else entirely", undefined, 1],
+    ];
+    for (const [text, reason, runs] of cases) {
+      const t = setup({ answer: async (): Promise<string> => { throw new Error(text); } });
+      await handleDiagnosis(message, t.deps);
+      expect(t.runTurn, text).toHaveBeenCalledTimes(runs);
+      expect(t.written, text).toEqual([{ ...ref, outcome: "FAILED", ...(reason === undefined ? {} : { reason }) }]);
+    }
+  });
+});
+
 describe("the queue: the diagnosis route, and an older service", () => {
   it("is its own route; an older service's chat schema refuses the body, and the body carries ids only", () => {
     expect(DiagnosisQueueMessageSchema.safeParse(message).success).toBe(true);

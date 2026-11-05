@@ -498,6 +498,26 @@ describe("the cdk source (issue 152)", () => {
     expect(diffRunner.calls[0]!.args).toContain("agentxReservedConcurrency=false");
   });
 
+  it("QA6-10: passes agentxReleaseVersion to the synth, diff and deploy only for a plain x.y.z; any other version leaves the arguments exactly as they were", async () => {
+    const base = { env: "staging", region: "us-east-1", identityMode: "cognito" as const };
+    expect(cdkAppArguments({ ...base, releaseVersion: "0.5.8" })).toEqual([...cdkAppArguments(base), "-c", "agentxReleaseVersion=0.5.8"]);
+    for (const version of [undefined, "", "0.5", "v0.5.8", "0.5.8-rc.1", "0.5.8+build", "1.2.3; rm -rf", "12345.1.1"]) expect(cdkAppArguments({ ...base, ...(version === undefined ? {} : { releaseVersion: version }) }), String(version)).toEqual(cdkAppArguments(base));
+
+    const runner = synthRunner({});
+    await synthDeclaredParameters({ runner, source: "/src", ...base, releaseVersion: "0.5.8" });
+    expect(runner.calls[0]!.args).toContain("agentxReleaseVersion=0.5.8");
+
+    const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
+    const deployRunner = recordingRunner(dir, { "agentx-staging-slack": {} });
+    await cdkDeployer({ runner: deployRunner, source: "/src", ...base, releaseVersion: "0.5.8", outputsDir: dir, outputs: async () => undefined })
+      .deploy({ part: "slack", stackName: "agentx-staging-slack", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false });
+    expect(deployRunner.calls[0]!.args).toContain("agentxReleaseVersion=0.5.8");
+
+    const diffRunner = recordingRunner(dir, {});
+    await cdkDiff({ runner: diffRunner, source: "/src", ...base, releaseVersion: "0.5.8", request: { part: "slack", stackName: "agentx-staging-slack", parameters: {}, terminationProtection: false } });
+    expect(diffRunner.calls[0]!.args).toContain("agentxReleaseVersion=0.5.8");
+  });
+
   it("refuses when the assembly has no stack for a part, naming it", async () => {
     const declared = await synthDeclaredParameters({ runner: synthRunner({}, { omit: ["AgentXSlackOrchestrator"] }), source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito" });
     expect(() => declared("slack")).toThrow("cdk synth of /src made no stack AgentXSlackOrchestrator (agentx-staging-slack); check the checkout builds");

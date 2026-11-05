@@ -52,7 +52,17 @@ export const DiagnosisModelAccessRequestSchema = DiagnosisRefSchema.extend({
   turnId: z.string().min(1).max(200),
   model: ModelIdentifierSchema.optional(),
   classifierModel: ModelIdentifierSchema.optional(),
+  /**
+   * QA6-14: set on the second key of a diagnosis, asked for only after the first model was refused by the company's AI provider. The broker then leaves that model out and gives the one retry (once per
+   * diagnosis; a repeat is refused). It cannot name a model, a budget or a payer: the broker decides all three.
+   */
+  retryAfterRefusal: z.literal(true).optional(),
 }).strict();
+
+/** QA6-14: why a light diagnosis ended without an answer, as a fixed word the chat service picks from the kind of failure it saw (never the failure's text). Absent: no reason known. */
+export const DIAGNOSIS_FAILURE_REASONS = ["model_rejected", "key_invalid", "limit_reached", "provider_unavailable"] as const;
+export const DiagnosisFailureReasonSchema = z.enum(DIAGNOSIS_FAILURE_REASONS);
+export type DiagnosisFailureReason = z.infer<typeof DiagnosisFailureReasonSchema>;
 
 /** `POST /v1/service/diagnoses/answered`: the answer (or that there is none). A repeat of an outcome already recorded answers the same and writes nothing. */
 export const DiagnosisAnsweredRequestSchema = DiagnosisRefSchema.extend({
@@ -60,6 +70,8 @@ export const DiagnosisAnsweredRequestSchema = DiagnosisRefSchema.extend({
   text: z.string().min(1).max(DIAGNOSIS_ANSWER_MAX_CHARS).optional(),
   contextBytes: z.number().int().min(0).max(DIAGNOSIS_CONTEXT_MAX_BYTES + 8_192).optional(),
   model: z.string().min(1).max(200).optional(),
+  /** Only with FAILED. */
+  reason: DiagnosisFailureReasonSchema.optional(),
 }).strict();
 export type DiagnosisAnsweredRequest = z.infer<typeof DiagnosisAnsweredRequestSchema>;
 
@@ -123,6 +135,13 @@ export const DIAGNOSIS_APPLY_BUTTON_LABEL = "Apply this change" as const;
 export const DIAGNOSIS_HELD_WORDS = "Held: this change is waiting for its check to pass. Nothing has been applied yet." as const;
 export const DIAGNOSIS_ANSWER_LABEL = "AI diagnosis from this error's data; it can be wrong, and it has changed nothing." as const;
 export const DIAGNOSIS_NO_PROVIDER_MESSAGE = "Diagnosis uses your company's AI provider. Connect one in Settings to turn it on." as const;
+/** QA6-14: what a person reads when a light diagnosis could not run, by reason. Fixed words that say what to check next; at most 200 characters (the status's `failure`). */
+export const DIAGNOSIS_FAILURE_WORDS: Record<DiagnosisFailureReason, string> = {
+  model_rejected: "Your AI provider refused the models Rovara tried. Ask an admin to enable a Claude model in your provider account, then try again.",
+  key_invalid: "Your AI provider did not accept the connection's key. Check the connection in Admin, Connections, then try again.",
+  limit_reached: "Your AI provider's limit or credit ran out while diagnosing. Check it in Admin, AI sources, then try again.",
+  provider_unavailable: "Your AI provider didn't answer. Try again in a few minutes.",
+};
 export const DIAGNOSIS_REFUSALS = {
   notAvailable: "Fix with agent isn't available for this error.",
   notCurrent: "This error has changed since it was shown. Look at where it is now and try again.",

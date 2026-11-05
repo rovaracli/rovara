@@ -2,7 +2,7 @@
 // and inert), the answer read again, and what a diagnosis may write. Everything runs on the fake table; the chat service is played by calling the broker's three service functions.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { DIAGNOSIS_RATE, ErrorRefSchema, diagnosisKey, errorRefKey } from "../../packages/contracts/src/index.js";
+import { DIAGNOSIS_FAILURE_WORDS, DIAGNOSIS_RATE, ErrorRefSchema, diagnosisKey, errorRefKey } from "../../packages/contracts/src/index.js";
 import { DIAGNOSIS_TURN_INSTRUCTIONS, completeDiagnosis, diagnosisStatusFor, prepareDiagnosisTurn, startLightDiagnosis, waitingForKey } from "../../packages/broker/src/diagnosis/light.js";
 import { admitDiagnosis, eraseDiagnosisPerson, readDiagnosisRecord, readDiagnosisRequest } from "../../packages/broker/src/diagnosis/store.js";
 import { ARJUN, MAX, ORG_A, PRIYA, diagnosisWorld, type DiagnosisWorld } from "../support/diagnosis-world.js";
@@ -230,6 +230,27 @@ describe("the turn, the answer and what a person reads", () => {
     expect(again.diagnosisId).not.toBe(first.diagnosisId);
     // An answer with nothing readable in it is a failure too.
     await expect(completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: again.diagnosisId, outcome: "ANSWERED", text: "   \n" })).resolves.toEqual({ outcome: "FAILED" });
+  });
+
+  it("QA6-14: a failed diagnosis says why in fixed words when the service names a reason, and keeps the generic words when it names none or an unknown one", async () => {
+    for (const reason of ["model_rejected", "key_invalid", "limit_reached", "provider_unavailable"] as const) {
+      const w = diagnosisWorld();
+      const first = await start(w, PRIYA);
+      await expect(completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: first.diagnosisId, outcome: "FAILED", reason })).resolves.toEqual({ outcome: "FAILED" });
+      const read = await diagnosisStatusFor(w.diagnosis, w.caller(PRIYA), first.diagnosisId);
+      expect(read).toMatchObject({ state: "failed", failure: DIAGNOSIS_FAILURE_WORDS[reason] });
+      expect(DIAGNOSIS_FAILURE_WORDS[reason].length).toBeLessThanOrEqual(200);
+      expect(DIAGNOSIS_FAILURE_WORDS[reason]).not.toContain("Couldn't diagnose this now");
+      if (reason === "key_invalid") expect(DIAGNOSIS_FAILURE_WORDS[reason]).toContain("Admin, Connections");
+      // A repeat of the outcome keeps the first reason.
+      await completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: first.diagnosisId, outcome: "FAILED", reason: "limit_reached" });
+      expect(await diagnosisStatusFor(w.diagnosis, w.caller(PRIYA), first.diagnosisId)).toMatchObject({ failure: DIAGNOSIS_FAILURE_WORDS[reason] });
+    }
+    const w = diagnosisWorld();
+    const plain = await start(w, PRIYA);
+    await completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: plain.diagnosisId, outcome: "FAILED" });
+    expect(await diagnosisStatusFor(w.diagnosis, w.caller(PRIYA), plain.diagnosisId)).toMatchObject({ failure: "Couldn't diagnose this now." });
+    await expect(completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: plain.diagnosisId, outcome: "FAILED", reason: "anything it likes" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 
   it("a requester whose use ended since asking gets nothing: no context, no key, and the service is told it cannot answer", async () => {
