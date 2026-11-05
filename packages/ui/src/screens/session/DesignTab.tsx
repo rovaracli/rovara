@@ -103,5 +103,5 @@ export function DesignTab({ task }: { task: ReadTask }) {
  const base = useMemo(() => codeLinkBaseOf(task), [task]), review = useMemo(() => readDesignReview(task.workflow?.designReview), [task]);
  if (review === undefined) return null;
  if (review === "unreadable") return <section aria-label="Design review" className="rv-design"><p role="status">This design review can't be shown by this version of the app. Reload the page; if it stays like this, the app needs an update.</p></section>;
- return <DesignTabView model={designTabModel(review, { note: review.note, codeLinkBase: base })} />;
+ return <DesignTabView model={designTabModel(review, { note: review.note, codeLinkBase: base, designWritten: (task.workflow?.artifacts ?? []).some(artifact => artifact.type === "design") })} />;
 }
