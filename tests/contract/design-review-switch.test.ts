@@ -96,13 +96,20 @@ describe("the retired design review project list (`dp`, DesignReviewProjects) is
     expect(result.kept).toEqual({ DesignReviewEnabled: "1" });
     expect(result.kept).not.toHaveProperty("DesignReviewProjects");
     const stacks = { describe: async (name: string) => (name === environmentStackName("staging", "control-plane") ? { parameters: deployed } : undefined) } as unknown as StackReader;
-    expect(await droppedConfigKeys({ declared: (part) => (part === "control-plane" ? declared : undefined), env: "staging", parts: ["control-plane"], stacks })).toEqual([{ key: "DesignReviewProjects", value: "demo-tasklog" }]);
+    expect(await droppedConfigKeys({ declared: (part) => (part === "control-plane" ? declared : undefined), env: "staging", parts: ["control-plane"], stacks })).toEqual([{ key: "designReview.projects", value: "demo-tasklog", instead: "allow design review in company How we work and set each of these projects to Auto" }]);
+    // With the release's parameters unknown (a cdk-only release), a retired parameter is still dropped, never sent.
+    const unknown = keptOperatorParameters({ part: "control-plane", computed: {}, deployed, declared: undefined });
+    expect(unknown.dropped).toEqual([{ parameter: "DesignReviewProjects", value: "demo-tasklog" }]);
+    expect(unknown.kept).toEqual({ DesignReviewEnabled: "1" });
   });
 
   it("an old packed `dp=` entry is ignored by hydration, and `dr` is unaffected", () => {
-    const env: MutableEnvironment = { [BROKER_SETTINGS_VARIABLE]: "dr=1" };
-    hydrateBrokerEnvironment(env);
+    // A broker of this release started while the stack still packs the old list (a rolling deploy): `dp` is not a setting any more. It is not
+    // read as the dispatcher function (whose code is also `dp`, but in AGENTX_NAMES, not here), and it does not make hydration throw.
+    const env: MutableEnvironment = { [BROKER_SETTINGS_VARIABLE]: "dr=1,dp=demo-tasklog" };
+    expect(() => hydrateBrokerEnvironment(env)).not.toThrow();
     expect(env["DESIGN_REVIEW_PROJECTS"]).toBeUndefined();
+    expect(env["DISPATCHER_FUNCTION_ARN"]).toBeUndefined();
     expect(designReviewEnabled(env)).toBe(true);
   });
 });

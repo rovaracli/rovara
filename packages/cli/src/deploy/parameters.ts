@@ -80,6 +80,14 @@ export const RETIRED_OPERATOR_PARAMETERS: Readonly<Record<"control-plane", reado
   "control-plane": ["DesignReviewProjects"],
 };
 
+/** What an upgrade tells the operator about a retired parameter it drops: its old config key, and what to do instead. */
+export const RETIRED_PARAMETER_NOTES: Readonly<Record<string, { key: string; instead: string }>> = {
+  DesignReviewProjects: { key: "designReview.projects", instead: "allow design review in company How we work and set each of these projects to Auto" },
+};
+
+/** Whether a parameter is retired: an upgrade always drops it, never sends it, whatever the release's template says. */
+export const isRetiredParameter = (part: DeployPart, name: string): boolean => (part === "control-plane" ? RETIRED_OPERATOR_PARAMETERS["control-plane"] : []).includes(name);
+
 /**
  * Stack parameters an operator sets after install (the budget question, agentx config set) that an
  * upgrade's answers do not carry. An upgrade keeps each one's deployed value unless its answers set
