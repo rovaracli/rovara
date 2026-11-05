@@ -36,28 +36,51 @@ export interface PolicyStatementJson {
   Condition?: Record<string, Record<string, string | string[]>>;
 }
 
+/** The tag the custom domain's certificate carries (set by the stack, infra/lib/custom-domain.ts) and the deploy role's certificate grants are limited to. */
+export const CUSTOM_DOMAIN_TAG = "agentx:env";
+
 /**
  * The deploy (service) role's grants for the optional custom domain, and nothing else in Certificate Manager or Route 53:
- *  - RequestCertificate takes no resource (the certificate does not exist yet), so it is on "*", limited to this region and to the one domain name;
- *  - the rest of the certificate's life (describe while it validates, tags, delete) is on this account's and region's certificates;
- *  - the records (the DNS validation CNAME CloudFormation writes, and the alias A and AAAA records) are changed in the one hosted zone, and read there;
+ *  - RequestCertificate takes no resource (the certificate does not exist yet), so it is on "*", limited to this region, to the one domain name (and it must name one:
+ *    ForAllValues is true for a request with no names, so a Null guard comes with it) and to a request that tags the certificate as this environment's;
+ *  - the certificate's life after that (describe while it validates, remove tags, delete, list tags) is limited to certificates carrying this environment's tag, and
+ *    tagging is limited to a request that sets that tag, so the role can touch no other certificate in the account;
+ *  - the records: ChangeResourceRecordSets in the one hosted zone is limited to the domain's own name and the `_<hash>.<domain>` name of the DNS validation record,
+ *    A, AAAA and CNAME only, so the zone's apex and every other record stay out of reach (route53:ChangeResourceRecordSetsNormalizedRecordNames is the lower-case name
+ *    without the trailing dot, and an underscore is not escaped); the reads CloudFormation's record handler makes (GetHostedZone, ListResourceRecordSets) are on that zone,
+ *    and ListHostedZones takes no resource;
  *  - GetChange waits for a change to reach the name servers; it names a change id, which cannot be known in advance.
  * Not in the permissions boundary: no role CloudFormation creates ever calls these.
  */
-const customDomainStatements = (scope: Pick<PolicyScope, "partition" | "region" | "account" | "customDomain">): PolicyStatementJson[] => {
+const customDomainStatements = (scope: Pick<PolicyScope, "env" | "partition" | "region" | "account" | "customDomain">): PolicyStatementJson[] => {
   const domain = scope.customDomain;
   if (domain === undefined) return [];
+  const certificates = `arn:${scope.partition}:acm:${scope.region}:${scope.account}:certificate/*`;
+  const zone = `arn:${scope.partition}:route53:::hostedzone/${domain.hostedZoneId}`;
   return [
     {
       Sid: "CustomDomainCertificateRequest", Effect: "Allow", Action: ["acm:RequestCertificate"], Resource: "*",
-      Condition: { StringEquals: { "aws:RequestedRegion": scope.region }, "ForAllValues:StringEquals": { "acm:DomainNames": [domain.domainName] } },
+      Condition: {
+        StringEquals: { "aws:RequestedRegion": scope.region, [`aws:RequestTag/${CUSTOM_DOMAIN_TAG}`]: scope.env },
+        "ForAllValues:StringEquals": { "acm:DomainNames": [domain.domainName] },
+        Null: { "acm:DomainNames": "false" },
+      },
+    },
+    { Sid: "CustomDomainCertificateTag", Effect: "Allow", Action: ["acm:AddTagsToCertificate"], Resource: certificates, Condition: { StringEquals: { [`aws:RequestTag/${CUSTOM_DOMAIN_TAG}`]: scope.env } } },
+    {
+      Sid: "CustomDomainCertificates", Effect: "Allow", Action: ["acm:DescribeCertificate", "acm:DeleteCertificate", "acm:RemoveTagsFromCertificate", "acm:ListTagsForCertificate"], Resource: certificates,
+      Condition: { StringEquals: { [`aws:ResourceTag/${CUSTOM_DOMAIN_TAG}`]: scope.env } },
     },
     {
-      Sid: "CustomDomainCertificates", Effect: "Allow",
-      Action: ["acm:DescribeCertificate", "acm:DeleteCertificate", "acm:AddTagsToCertificate", "acm:RemoveTagsFromCertificate", "acm:ListTagsForCertificate"],
-      Resource: `arn:${scope.partition}:acm:${scope.region}:${scope.account}:certificate/*`,
+      Sid: "CustomDomainRecords", Effect: "Allow", Action: ["route53:ChangeResourceRecordSets"], Resource: zone,
+      Condition: {
+        "ForAllValues:StringLike": { "route53:ChangeResourceRecordSetsNormalizedRecordNames": [domain.domainName, `_*.${domain.domainName}`] },
+        "ForAllValues:StringEquals": { "route53:ChangeResourceRecordSetsRecordTypes": ["A", "AAAA", "CNAME"] },
+        Null: { "route53:ChangeResourceRecordSetsNormalizedRecordNames": "false", "route53:ChangeResourceRecordSetsRecordTypes": "false" },
+      },
     },
-    { Sid: "CustomDomainRecords", Effect: "Allow", Action: ["route53:ChangeResourceRecordSets", "route53:ListResourceRecordSets"], Resource: `arn:${scope.partition}:route53:::hostedzone/${domain.hostedZoneId}` },
+    { Sid: "CustomDomainZoneReads", Effect: "Allow", Action: ["route53:GetHostedZone", "route53:ListResourceRecordSets"], Resource: zone },
+    { Sid: "CustomDomainZoneList", Effect: "Allow", Action: ["route53:ListHostedZones"], Resource: "*" },
     { Sid: "CustomDomainChanges", Effect: "Allow", Action: ["route53:GetChange"], Resource: `arn:${scope.partition}:route53:::change/*` },
   ];
 };

@@ -13,6 +13,7 @@ import { writeSlackTeamId } from "../../packages/cli/src/signin/settings.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { prepareDeployment } from "../../packages/cli/src/deploy/commands.js";
 import { agentXError } from "@agentx/contracts";
+import { writeCustomDomain } from "../../packages/cli/src/environments/custom-domain.js";
 import { accessChanged, runUpgrade, type UpgradeDependencies } from "../../packages/cli/src/upgrade/run.js";
 import { SETTINGS } from "../support/doctor-fakes.js";
 import { allStackOutputs, fakeGitHubApi, fakeRelease, memoryInitSecrets, scriptedDeployer, T0, TEST_PRIVATE_KEY } from "../support/init-fakes.js";
@@ -559,6 +560,14 @@ describe("agentx upgrade with the cdk engine", () => {
   it("needs --source", async () => {
     const h = await cdk();
     await expect(runUpgrade(options, h.deps)).rejects.toThrow("the cdk engine upgrades from a checkout of the target release's tag; pass --source <dir>");
+  });
+
+  it("a hosted cloud with a custom domain recorded is not upgradable with operator credentials either: the access stack (the deploy role's domain grants) is never skipped (0.5.7)", async () => {
+    const h = await cdk({ caller: OPERATOR });
+    await writeEnvironmentSettings(h.store, { ...INSTALLED, engine: "cdk", cloud: true });
+    await writeCustomDomain(h.store, "staging", { domainName: "staging.rovara.dev", hostedZoneId: "Z08286002FKUL2VBSO3MO" });
+    await expect(runUpgrade({ ...options, source: "/src" }, h.deps)).rejects.toThrow("a cdk environment upgrades with admin credentials");
+    expect(h.deployer.deployed).toEqual([]);
   });
 
   it("refuses the operator role up front, naming admin credentials (ruling F20)", async () => {

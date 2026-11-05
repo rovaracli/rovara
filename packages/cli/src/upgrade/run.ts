@@ -14,7 +14,7 @@ import { reportText, type DoctorReport } from "../doctor/checks.js";
 import type { CallerIdentity, StackDescription, StackReader } from "../environments/adopt.js";
 import { withEnvironmentLock, type LockRecord } from "../environments/lock.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
-import { machineEndpoint, readEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
+import { readEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
 import { activeHintLine, ensureGithubWebhook, missingEventsLine } from "../github/webhook-setup.js";
 import { isOperatorRole } from "../init/commands.js";
 import type { InitSecrets } from "../init/context.js";
@@ -179,7 +179,7 @@ async function setUpGithubWebhook(env: string, deps: UpgradeDependencies): Promi
     const outcome = await ensureGithubWebhook({
       appJwt: githubAppJwt({ appId: app.appId, privateKey: app.privateKey, nowSeconds: Math.floor(deps.now() / 1000) }),
       api: github, secrets, secretValue: raw, secretId: secretName,
-      webhookUrl: controlPlane?.outputs.GithubWebhookUrl ?? githubWebhookUrl(machineEndpoint(settings)),
+      webhookUrl: controlPlane?.outputs.GithubWebhookUrl ?? githubWebhookUrl(settings.controlPlaneUrl),
     });
     deps.write(`GitHub webhook: ${outcome.status}`);
     for (const line of [activeHintLine(outcome), missingEventsLine(outcome)]) if (line !== undefined) deps.write(line);

@@ -2,7 +2,6 @@
 // memory and is never written anywhere.
 import { appSettingsUrl, GITHUB_WEBHOOK_EVENTS, TRIGGER_PERMISSIONS, githubAppJwt, githubAppSecretName, githubWebhookUrl, parseAppSecret } from "../init/github-app.js";
 import { storedWebhookSecret } from "../github/webhook-setup.js";
-import { machineEndpoint } from "../environments/settings.js";
 import { plainMessage } from "../output.js";
 import { check, type DoctorCheck, type DoctorContext } from "./checks.js";
 import { jsonObject } from "./secrets.js";
@@ -103,7 +102,9 @@ export async function githubWebhookChecks(context: DoctorContext): Promise<Docto
   const checks: DoctorCheck[] = [];
   let settingsPage: string | undefined;
   let hookUrl: string | undefined;
-  const expectedUrl = githubWebhookUrl(machineEndpoint(settings));
+  // 0.5.7: the webhook is a machine address and stays on the API's own address, which the control plane stack reports as GithubWebhookUrl; settings.controlPlaneUrl may be a custom domain.
+  const controlPlane = await services.stacks.describe(settings.stacks["control-plane"]).catch(() => undefined);
+  const expectedUrl = controlPlane?.outputs.GithubWebhookUrl ?? githubWebhookUrl(settings.controlPlaneUrl);
   const jwt = githubAppJwt({ appId: app.appId, privateKey: app.privateKey, nowSeconds: Math.floor(services.now() / 1000) });
   try {
     const hook = await services.github.getHookConfig(jwt);

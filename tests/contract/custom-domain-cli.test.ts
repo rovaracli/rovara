@@ -2,13 +2,14 @@
 import type { ReleaseManifest } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { CloudSignInAnswersSchema } from "../../packages/cli/src/deploy/answer-schemas.js";
-import { publicAddresses } from "../../packages/cli/src/deploy/deploy-environment.js";
-import { customDomainParameters, stackParameters, type InstallAnswers } from "../../packages/cli/src/deploy/parameters.js";
-import { machineEndpoint, readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSettings } from "../../packages/cli/src/environments/settings.js";
+import { publicAddress } from "../../packages/cli/src/deploy/deploy-environment.js";
+import { stackParameters, type InstallAnswers } from "../../packages/cli/src/deploy/parameters.js";
+import { customDomainParameterName, customDomainParameters, readCustomDomain, writeCustomDomain } from "../../packages/cli/src/environments/custom-domain.js";
+import { EnvironmentSettingsSchema, readEnvironmentSettings, settingsParameterName, writeEnvironmentSettings, type EnvironmentSettings } from "../../packages/cli/src/environments/settings.js";
 import { readInstallAnswers, writeInstallAnswers } from "../../packages/cli/src/init/install-state.js";
 import { runSigninCloud, type CloudSignInFlags } from "../../packages/cli/src/signin/cloud.js";
 import type { SigninServices } from "../../packages/cli/src/signin/commands.js";
-import { describeCloudSignIn } from "../../packages/cli/src/signin/settings.js";
+import { EnvironmentSettingsSchema as Settings056 } from "../support/settings-schema-056.js";
 import { stagingSettings } from "../support/environment-fixtures.js";
 import { SIGN_IN_PARAMETERS, fakeCloudFormation } from "../support/fake-cloudformation.js";
 import { HOLDER, T0, fakeSlackApi, memoryInitSecrets, sampleAnswers, scriptedPrompter } from "../support/init-fakes.js";
@@ -18,7 +19,6 @@ const ACCOUNT = "123456789012";
 const DOMAIN = "staging.rovara.dev";
 const ZONE = "Z08286002FKUL2VBSO3MO";
 const API = "https://abc123.execute-api.us-west-2.amazonaws.com";
-const set = { customDomainName: DOMAIN, customDomainHostedZoneId: ZONE };
 
 const installed: EnvironmentSettings = {
   ...stagingSettings,
@@ -42,24 +42,39 @@ async function harness(options: { settings?: EnvironmentSettings } = {}) {
 }
 const run = (h: Awaited<ReturnType<typeof harness>>, flags: CloudSignInFlags, yes = false) => runSigninCloud(h.services, "staging", flags, yes);
 
+const record = async (h: Awaited<ReturnType<typeof harness>>) => readCustomDomain(h.store, "staging");
+
 describe("agentx signin cloud --custom-domain", () => {
-  it("records the name and zone in the settings and the init answers, changes nothing in AWS, and says the next upgrade applies it", async () => {
+  it("records the name and zone in a record of its own, changes nothing in AWS or in the settings and install answers, and says the next upgrade applies it", async () => {
     const h = await harness();
+    const settingsBefore = h.store.values.get(settingsParameterName("staging"));
     expect(await run(h, { customDomain: DOMAIN, hostedZoneId: ZONE }, true)).toEqual({ changed: true });
-    expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toEqual(set);
-    expect((await readInstallAnswers(h.store, "staging"))?.cloudSignIn).toEqual(set);
+    expect(await record(h)).toEqual({ domainName: DOMAIN, hostedZoneId: ZONE });
+    expect(h.store.values.has(customDomainParameterName("staging"))).toBe(true);
+    // The settings and the install answers are exactly what they were: a 0.5.6 command reads both, and refuses keys it does not know.
+    expect(h.store.values.get(settingsParameterName("staging"))).toBe(settingsBefore);
+    expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toBeUndefined();
+    expect((await readInstallAnswers(h.store, "staging"))?.cloudSignIn).toBeUndefined();
     expect(h.cloudFormation.calls.map((call) => call.name)).not.toContain("CreateChangeSetCommand");
     expect(h.lines.join("\n")).toContain("Custom domain: off -> staging.rovara.dev (hosted zone Z08286002FKUL2VBSO3MO)");
     expect(h.lines.join("\n")).toContain("applied by the next agentx upgrade");
   });
 
-  it("keeps the other cloud sign-in settings, and --no-custom-domain takes only the domain off", async () => {
-    const github = { githubClientId: "Iv1.0123456789abcdef", githubClientSecretArn: `arn:aws:secretsmanager:us-east-1:${ACCOUNT}:secret:agentx/staging/github-oauth-AbCdEf`, ...set };
+  it("keeps the other cloud sign-in settings, and --no-custom-domain deletes only the record", async () => {
+    const github = { githubClientId: "Iv1.0123456789abcdef", githubClientSecretArn: `arn:aws:secretsmanager:us-east-1:${ACCOUNT}:secret:agentx/staging/github-oauth-AbCdEf` };
     const h = await harness({ settings: { ...installed, cloudSignIn: github } });
+    await writeCustomDomain(h.store, "staging", { domainName: DOMAIN, hostedZoneId: ZONE });
     await run(h, { noCustomDomain: true }, true);
-    const { customDomainName: _name, customDomainHostedZoneId: _zone, ...rest } = github;
-    void _name; void _zone;
-    expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toEqual(rest);
+    expect(await record(h)).toBeUndefined();
+    expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toEqual(github);
+  });
+
+  it("refuses to change a recorded domain to another name in one step, and accepts the same name again", async () => {
+    const h = await harness();
+    await writeCustomDomain(h.store, "staging", { domainName: DOMAIN, hostedZoneId: ZONE });
+    await expect(run(h, { customDomain: "other.rovara.dev", hostedZoneId: ZONE }, true)).rejects.toThrow(/two steps/);
+    expect(await record(h)).toEqual({ domainName: DOMAIN, hostedZoneId: ZONE });
+    expect(await run(h, { customDomain: DOMAIN, hostedZoneId: ZONE }, true)).toEqual({ changed: false });
   });
 
   it.each([
@@ -71,52 +86,53 @@ describe("agentx signin cloud --custom-domain", () => {
   ] as Array<[string, CloudSignInFlags, RegExp]>)("refuses %s, with nothing written", async (_name, flags, message) => {
     const h = await harness();
     await expect(run(h, flags, true)).rejects.toThrow(message);
-    expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toBeUndefined();
-  });
-
-  it("shows in signin show", () => {
-    expect(describeCloudSignIn(set)).toContain(`Custom domain: ${DOMAIN} (hosted zone ${ZONE})`);
-    expect(describeCloudSignIn(undefined)).toContain("Custom domain: off");
+    expect(await record(h)).toBeUndefined();
   });
 });
 
-describe("the stored answers and what the deploy sends", () => {
-  it("takes the name and the zone together or not at all", () => {
-    expect(CloudSignInAnswersSchema.safeParse(set).success).toBe(true);
-    expect(CloudSignInAnswersSchema.safeParse({ customDomainName: DOMAIN }).success).toBe(false);
-    expect(CloudSignInAnswersSchema.safeParse({ customDomainHostedZoneId: ZONE }).success).toBe(false);
-    expect(CloudSignInAnswersSchema.safeParse({ ...set, customDomainName: "rovara" }).success).toBe(false);
-    expect(CloudSignInAnswersSchema.safeParse({}).success).toBe(true);
+describe("a 0.5.6 command still reads what 0.5.7 wrote (emergency rollback)", () => {
+  it("the 0.5.6 strict settings schema parses the settings after the domain was recorded and after a deploy wrote a custom controlPlaneUrl", async () => {
+    const h = await harness();
+    await run(h, { customDomain: DOMAIN, hostedZoneId: ZONE }, true);
+    const stored = JSON.parse(h.store.values.get(settingsParameterName("staging"))!) as unknown;
+    expect(Settings056.safeParse(stored).success).toBe(true);
+    // What a deploy writes once the domain is live: the same keys, with the domain as controlPlaneUrl.
+    const live = { ...(stored as EnvironmentSettings), controlPlaneUrl: publicAddress(API, `https://${DOMAIN}`) };
+    expect(Settings056.safeParse(live).success).toBe(true);
+    expect(EnvironmentSettingsSchema.safeParse(live).success).toBe(true);
   });
 
-  it("sends the two parameters to the access stack and the control plane on the hosted cloud, and nothing without a domain", () => {
-    const answers = (extra: Partial<InstallAnswers>): InstallAnswers => ({
-      env: "staging", region: "us-west-2", account: ACCOUNT, release: {} as ReleaseManifest,
-      models: { orchestrator: "a", classifier: "b", worker: "c" }, identity: { mode: "cognito" },
-      github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: `arn:aws:secretsmanager:us-west-2:${ACCOUNT}:secret:agentx/staging/github-app-AbCdEf` },
-      callbackSigningKey: "k".repeat(40), ...extra,
-    });
-    const outputs = { access: { ArtifactBucketName: "b" } } as never;
-    const params = { CustomDomainName: DOMAIN, CustomDomainHostedZoneId: ZONE };
-    expect(stackParameters("access", answers({ cloud: true, cloudSignIn: set }), outputs, { packages: false })).toMatchObject(params);
-    expect(stackParameters("access", answers({ cloud: true }), outputs, { packages: false })).not.toHaveProperty("CustomDomainName");
+  it("the current settings and cloud sign-in schemas have exactly the 0.5.6 keys, so nothing 0.5.7 adds can be seen by a strict 0.5.6 schema", () => {
+    expect(Object.keys(EnvironmentSettingsSchema.shape).sort()).toEqual(Object.keys(Settings056.shape).sort());
+    expect(Object.keys(CloudSignInAnswersSchema.shape).sort()).toEqual(["domainPrefix", "emailFrom", "emailSourceArn", "githubClientId", "githubClientSecretArn", "googleClientId", "googleClientSecretArn"]);
+    expect(CloudSignInAnswersSchema.safeParse({ customDomainName: DOMAIN, customDomainHostedZoneId: ZONE }).success).toBe(false);
+  });
+});
+
+describe("what the deploy sends", () => {
+  const answers = (extra: Partial<InstallAnswers>): InstallAnswers => ({
+    env: "staging", region: "us-west-2", account: ACCOUNT, release: {} as ReleaseManifest,
+    models: { orchestrator: "a", classifier: "b", worker: "c" }, identity: { mode: "cognito" },
+    github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: `arn:aws:secretsmanager:us-west-2:${ACCOUNT}:secret:agentx/staging/github-app-AbCdEf` },
+    callbackSigningKey: "k".repeat(40), ...extra,
+  });
+  const outputs = { access: { ArtifactBucketName: "b" } } as never;
+
+  it("sends the name and zone to the access stack on the hosted cloud, and empty values when there is no domain, so a removal reaches the stack", () => {
+    const domain = { domainName: DOMAIN, hostedZoneId: ZONE };
+    expect(stackParameters("access", answers({ cloud: true, customDomain: domain }), outputs, { packages: false })).toMatchObject({ CustomDomainName: DOMAIN, CustomDomainHostedZoneId: ZONE });
+    expect(stackParameters("access", answers({ cloud: true }), outputs, { packages: false })).toMatchObject({ CustomDomainName: "", CustomDomainHostedZoneId: "" });
     // Not the hosted cloud: no stack declares them, so none is sent.
-    expect(stackParameters("access", answers({ cloudSignIn: set }), outputs, { packages: false })).not.toHaveProperty("CustomDomainName");
-    expect(customDomainParameters(set)).toEqual(params);
-    expect(customDomainParameters(undefined)).toEqual({});
+    expect(stackParameters("access", answers({ customDomain: domain }), outputs, { packages: false })).not.toHaveProperty("CustomDomainName");
+    expect(customDomainParameters(domain)).toEqual({ CustomDomainName: DOMAIN, CustomDomainHostedZoneId: ZONE });
   });
 });
 
 describe("which address the CLI records", () => {
-  it("records the PublicUrl output for people, and the API's own beside it for machines, only when they differ", () => {
-    expect(publicAddresses(API, `https://${DOMAIN}`)).toEqual({ controlPlaneUrl: `https://${DOMAIN}`, apiEndpoint: API });
-    expect(publicAddresses(API, API)).toEqual({ controlPlaneUrl: API });
-    expect(publicAddresses(API, undefined)).toEqual({ controlPlaneUrl: API });
-    expect(publicAddresses(API, "")).toEqual({ controlPlaneUrl: API });
-  });
-
-  it("machines (the GitHub App's webhook) keep the API's own address", () => {
-    expect(machineEndpoint({ controlPlaneUrl: `https://${DOMAIN}`, apiEndpoint: API })).toBe(API);
-    expect(machineEndpoint({ controlPlaneUrl: API })).toBe(API);
+  it("records the PublicUrl output for people when the stack has one, else the API's own", () => {
+    expect(publicAddress(API, `https://${DOMAIN}`)).toBe(`https://${DOMAIN}`);
+    expect(publicAddress(API, API)).toBe(API);
+    expect(publicAddress(API, undefined)).toBe(API);
+    expect(publicAddress(API, "")).toBe(API);
   });
 });

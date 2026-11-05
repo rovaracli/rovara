@@ -14,7 +14,7 @@ import { routeSecondReviewEvidence } from "./second-review-evidence-routes.js";
 import { isSlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { ProcessModelRefusal, processModelRefusalBody } from "../../model-selection/process-refusal.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "../task-web.js";
-import { legacyHostRedirect } from "../../developer/legacy-host-redirect.js";
+import { isBrowserPagePath, legacyHostRedirect } from "../../developer/legacy-host-redirect.js";
 import { withDecideIsolation } from "../../developer/confirm-page.js";
 import { authenticateWebRequest, webRouteAllowed } from "../web-auth.js";
 import { appCsrfTokenFor } from "../../developer/app-csrf.js";
@@ -593,14 +593,17 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const url = new URL(request.path, "https://agentx.invalid");
       // Shared links belong exclusively to the web shell, including stale broker route events.
       if (url.pathname.startsWith("/s/")) throw agentXError("NOT_FOUND", "route not found");
+      // 0.5.7: with a custom domain, every browser page opened on the API's own address (an old Slack link, a bookmark, the GitHub App's install callback) moves to the domain:
+      // its cookies are host-only and its Origin checks and sign-in are the domain's. Machine routes are not pages and are never redirected.
+      if (dependencies.developer !== undefined && isBrowserPagePath(url.pathname)) {
+        const moved = legacyHostRedirect({ issuer: dependencies.developer.issuer, previousIssuer: dependencies.developer.previousIssuer, method: request.method, headers: request.headers, path: request.path });
+        if (moved !== undefined) return moved;
+      }
       // The browser page uses its own opaque revocable session cookie and reauthorizes each
       // request. Only API Gateway's exact public review route may reach this branch.
       // The audit page (`/v1/app/audit/view`) is a browser page of the same kind: its own session cookie, no API Gateway authorizer.
       if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || isAuditViewPath(url.pathname)) {
         if (!(url.pathname.startsWith("/review/") || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
-        // 0.5.7: on the API's own address these pages go to the custom domain, where their cookies and sign-in live.
-        const moved = legacyHostRedirect({ issuer: dependencies.developer.issuer, previousIssuer: dependencies.developer.previousIssuer, method: request.method, headers: request.headers, path: request.path });
-        if (moved !== undefined) return moved;
         return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),

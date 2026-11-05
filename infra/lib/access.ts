@@ -1,4 +1,4 @@
-import { Aws, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Validations, type StackProps } from "aws-cdk-lib";
+import { Aws, CfnCondition, CfnRule, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Validations, type StackProps } from "aws-cdk-lib";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
@@ -112,6 +112,19 @@ export class AccessStack extends Stack {
       name: new CfnParameter(this, "CustomDomainName", { type: "String", default: "", allowedPattern: CUSTOM_DOMAIN_NAME_PATTERN, maxLength: 64, description: "The control plane's custom domain name; the deploy role may request a certificate for it. Empty: none" }),
       zone: new CfnParameter(this, "CustomDomainHostedZoneId", { type: "String", default: "", allowedPattern: CUSTOM_DOMAIN_ZONE_PATTERN, description: "The Route 53 hosted zone that holds the custom domain's DNS; the deploy role may change records in this zone only. Empty: none" }),
     };
+    // One without the other would silently grant nothing (the condition below needs both): refuse it, as the control-plane stack does.
+    if (customDomainParameters !== undefined) {
+      const { name, zone } = customDomainParameters;
+      new CfnRule(this, "CustomDomainNeedsBothOrNeither", {
+        assertions: [{
+          assert: Fn.conditionOr(
+            Fn.conditionAnd(Fn.conditionEquals(name.valueAsString, ""), Fn.conditionEquals(zone.valueAsString, "")),
+            Fn.conditionAnd(Fn.conditionNot(Fn.conditionEquals(name.valueAsString, "")), Fn.conditionNot(Fn.conditionEquals(zone.valueAsString, ""))),
+          ),
+          assertDescription: "CustomDomainName and CustomDomainHostedZoneId go together: set both, or leave both empty",
+        }],
+      });
+    }
     const customDomainSet = customDomainParameters === undefined ? undefined : new CfnCondition(this, "CustomDomainEnabled", {
       expression: Fn.conditionAnd(Fn.conditionNot(Fn.conditionEquals(customDomainParameters.name.valueAsString, "")), Fn.conditionNot(Fn.conditionEquals(customDomainParameters.zone.valueAsString, ""))),
     });

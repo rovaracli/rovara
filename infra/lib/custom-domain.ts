@@ -9,10 +9,13 @@
 // The hosted zone is only ever written by these three records (and the validation record); nothing existing in it is read or changed here.
 import { Fn, Token, aws_apigatewayv2 as apigwv2, aws_certificatemanager as acm, aws_route53 as route53, CfnCondition, CfnOutput, CfnParameter, CfnRule, Stack } from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { CUSTOM_DOMAIN_TAG } from "@agentx/contracts";
 import { CUSTOM_DOMAIN_NAME_PATTERN, CUSTOM_DOMAIN_ZONE_PATTERN } from "./custom-domain-patterns.js";
 
 
 export interface CustomDomainProps {
+  /** The environment's name: the certificate is tagged with it, and the deploy role's certificate grants are limited to that tag. */
+  env: string;
   /** The HTTP API the name is mapped to. */
   api: apigwv2.CfnApi;
   /** Its `$default` stage: the mapping targets the stage by name, which also orders the mapping after it. */
@@ -61,6 +64,7 @@ export class CustomDomain extends Construct {
       validationMethod: "DNS",
       // HostedZoneId makes CloudFormation create the CNAME validation record itself (and remove it with the certificate).
       domainValidationOptions: [{ domainName: this.name.valueAsString, hostedZoneId: this.hostedZoneId.valueAsString }],
+      tags: [{ key: CUSTOM_DOMAIN_TAG, value: props.env }],
     });
     certificate.cfnOptions.condition = this.enabled;
 

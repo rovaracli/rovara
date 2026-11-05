@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { evaluate, type CfnContext } from "../support/cfn-evaluate.js";
 import { brokerSettingsIn } from "../support/broker-names-template.js";
+import { customDomainDeployOrder } from "../../packages/cli/src/deploy/deploy-environment.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -152,27 +153,113 @@ describe("the deploy role's grants for the custom domain (access stack)", () => 
   const granted = (json: Json, parameters: Record<string, string>) => statements(json)
     .filter((statement) => JSON.stringify(statement).includes("CustomDomainEnabled"))
     .map((statement) => evaluate(literal(statement), { parameters, conditions: json.Conditions, pseudo: { "AWS::Partition": "aws", "AWS::Region": "us-west-2", "AWS::AccountId": "944937319445" } }))
-    .filter((statement) => statement !== undefined) as Array<{ Sid: string; Action: string[]; Resource: unknown; Condition?: unknown }>;
+    .filter((statement) => statement !== undefined) as Array<{ Sid: string; Action: string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>> }>;
 
   it("grants nothing for it by default, and nothing at all to an environment that is not the hosted cloud", () => {
     expect(granted(access, off)).toEqual([]);
-    // Four statements exist in the template, each behind the condition: the cloud access stack carries them, and the plain one does not.
-    expect(statements(access).filter((statement) => JSON.stringify(statement).includes("CustomDomainEnabled"))).toHaveLength(4);
+    // Seven statements exist in the template, each behind the condition: the cloud access stack carries them, and the plain one does not.
+    expect(statements(access).filter((statement) => JSON.stringify(statement).includes("CustomDomainEnabled"))).toHaveLength(7);
     expect(JSON.stringify(statements(plainAccess))).not.toContain("acm:");
     expect(JSON.stringify(statements(plainAccess))).not.toContain("route53:");
   });
 
-  it("grants certificate and record changes for that name and that one hosted zone only", () => {
+  it("takes the same both-or-neither rule as the control plane", () => {
+    expect(access.Rules).toHaveProperty("CustomDomainNeedsBothOrNeither");
+    expect(access.Parameters.CustomDomainName?.Default).toBe("");
+    expect(access.Parameters.CustomDomainHostedZoneId?.Default).toBe("");
+  });
+
+  it("grants certificate and record changes for that name and that one hosted zone only, never the apex", () => {
     const all = granted(access, on);
-    expect(all.map((statement) => statement.Sid)).toEqual(["CustomDomainCertificateRequest", "CustomDomainCertificates", "CustomDomainRecords", "CustomDomainChanges"]);
+    expect(all.map((statement) => statement.Sid)).toEqual(["CustomDomainCertificateRequest", "CustomDomainCertificateTag", "CustomDomainCertificates", "CustomDomainRecords", "CustomDomainZoneReads", "CustomDomainZoneList", "CustomDomainChanges"]);
     const bySid = Object.fromEntries(all.map((statement) => [statement.Sid, statement]));
-    expect(bySid.CustomDomainCertificateRequest).toMatchObject({ Action: ["acm:RequestCertificate"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": "us-west-2" }, "ForAllValues:StringEquals": { "acm:DomainNames": [DOMAIN] } } });
-    expect(bySid.CustomDomainCertificates).toMatchObject({ Resource: "arn:aws:acm:us-west-2:944937319445:certificate/*" });
-    expect(bySid.CustomDomainRecords).toMatchObject({ Action: ["route53:ChangeResourceRecordSets", "route53:ListResourceRecordSets"], Resource: `arn:aws:route53:::hostedzone/${ZONE}` });
+    // The certificate: this region, this one name (and it must name one), tagged as this environment's.
+    expect(bySid.CustomDomainCertificateRequest).toMatchObject({ Action: ["acm:RequestCertificate"], Resource: "*", Condition: {
+      StringEquals: { "aws:RequestedRegion": "us-west-2", "aws:RequestTag/agentx:env": "staging" }, "ForAllValues:StringEquals": { "acm:DomainNames": [DOMAIN] }, Null: { "acm:DomainNames": "false" } } });
+    expect(bySid.CustomDomainCertificateTag).toMatchObject({ Action: ["acm:AddTagsToCertificate"], Condition: { StringEquals: { "aws:RequestTag/agentx:env": "staging" } } });
+    expect(bySid.CustomDomainCertificates).toMatchObject({ Resource: "arn:aws:acm:us-west-2:944937319445:certificate/*", Condition: { StringEquals: { "aws:ResourceTag/agentx:env": "staging" } } });
+    expect([bySid.CustomDomainCertificates!.Action].flat().sort()).toEqual(["acm:DeleteCertificate", "acm:DescribeCertificate", "acm:ListTagsForCertificate", "acm:RemoveTagsFromCertificate"]);
+    // The records: the domain's own name and its `_<hash>.<domain>` validation name, A, AAAA and CNAME, in that one zone. The apex is not among the names.
+    expect(bySid.CustomDomainRecords).toMatchObject({ Action: ["route53:ChangeResourceRecordSets"], Resource: `arn:aws:route53:::hostedzone/${ZONE}`, Condition: {
+      "ForAllValues:StringLike": { "route53:ChangeResourceRecordSetsNormalizedRecordNames": [DOMAIN, `_*.${DOMAIN}`] },
+      "ForAllValues:StringEquals": { "route53:ChangeResourceRecordSetsRecordTypes": ["A", "AAAA", "CNAME"] },
+      Null: { "route53:ChangeResourceRecordSetsNormalizedRecordNames": "false", "route53:ChangeResourceRecordSetsRecordTypes": "false" } } });
+    const names = bySid.CustomDomainRecords!.Condition!["ForAllValues:StringLike"]!["route53:ChangeResourceRecordSetsNormalizedRecordNames"] as string[];
+    const matches = (pattern: string, name: string) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test(name);
+    for (const allowed of [DOMAIN, `_0a1b2c.${DOMAIN}`]) expect(names.some((pattern) => matches(pattern, allowed)), allowed).toBe(true);
+    for (const refused of ["rovara.dev", "www.rovara.dev", `x.${DOMAIN}`, "evil-staging.rovara.dev", "_0a1b2c.rovara.dev"]) expect(names.some((pattern) => matches(pattern, refused)), refused).toBe(false);
+    // The reads CloudFormation's record handler makes, and the one action that takes no resource.
+    expect(bySid.CustomDomainZoneReads).toMatchObject({ Action: ["route53:GetHostedZone", "route53:ListResourceRecordSets"], Resource: `arn:aws:route53:::hostedzone/${ZONE}` });
+    expect(bySid.CustomDomainZoneList).toMatchObject({ Action: ["route53:ListHostedZones"], Resource: "*" });
     expect(bySid.CustomDomainChanges).toMatchObject({ Action: ["route53:GetChange"], Resource: "arn:aws:route53:::change/*" });
-    // Nothing wider: no wildcard action, no hosted-zone wildcard, and no zone or certificate action beyond these.
     const actions = all.flatMap((statement) => statement.Action);
     expect(actions.filter((action) => action.endsWith("*"))).toEqual([]);
-    expect(actions.sort()).toEqual(["acm:AddTagsToCertificate", "acm:DeleteCertificate", "acm:DescribeCertificate", "acm:ListTagsForCertificate", "acm:RemoveTagsFromCertificate", "acm:RequestCertificate", "route53:ChangeResourceRecordSets", "route53:GetChange", "route53:ListResourceRecordSets"]);
+    expect(actions.sort()).toEqual(["acm:AddTagsToCertificate", "acm:DeleteCertificate", "acm:DescribeCertificate", "acm:ListTagsForCertificate", "acm:RemoveTagsFromCertificate", "acm:RequestCertificate",
+      "route53:ChangeResourceRecordSets", "route53:GetChange", "route53:GetHostedZone", "route53:ListHostedZones", "route53:ListResourceRecordSets"]);
+  });
+
+  it("tags the certificate as this environment's, the tag the grants are limited to", () => {
+    const [, certificate] = resourcesOf(control, "AWS::CertificateManager::Certificate")[0]!;
+    expect(certificate.Properties.Tags).toEqual([{ Key: "agentx:env", Value: "staging" }]);
+  });
+});
+
+describe("adding, removing and re-adding the domain never leaves a resource without the grants to change it", () => {
+  const POSITIONS = { on: { name: DOMAIN, zone: ZONE }, off: { name: "", zone: "" } } as const;
+  type Place = keyof typeof POSITIONS;
+  const accessGrants = (place: Place) => {
+    const role = resourcesOf(access, "AWS::IAM::Role").find(([id]) => id === "CloudFormationServiceRole")![1];
+    const parameters = { CustomDomainName: POSITIONS[place].name, CustomDomainHostedZoneId: POSITIONS[place].zone };
+    return (role.Properties.Policies as Array<{ PolicyDocument: { Statement: unknown[] } }>)[0]!.PolicyDocument.Statement
+      .filter((statement) => JSON.stringify(statement).includes("CustomDomainEnabled"))
+      .map((statement) => evaluate(literal(statement), { parameters, conditions: access.Conditions, pseudo: { "AWS::Partition": "aws", "AWS::Region": "us-west-2", "AWS::AccountId": "944937319445" } }))
+      .filter((statement) => statement !== undefined).length;
+  };
+  /** The custom domain's resources the control plane has with these parameters (conditions evaluated on the template's own definition). */
+  const controlResources = (place: Place) => Object.entries(control.Resources).filter(([, resource]) => resource.Condition === "CustomDomainEnabled"
+    && evaluate({ Condition: "CustomDomainEnabled" }, context(control, { CustomDomainName: POSITIONS[place].name, CustomDomainHostedZoneId: POSITIONS[place].zone }))).length;
+
+  /** Deploys the stacks in `order`, from `from` to `to`; returns every control plane deploy that touched domain resources while the role had no grants. */
+  function run(order: string[], from: Place, to: Place): string[] {
+    const state = { access: from, "control-plane": from };
+    const unprotected: string[] = [];
+    for (const part of order) {
+      if (part !== "access" && part !== "control-plane") continue;
+      if (part === "control-plane" && (controlResources(state["control-plane"]) > 0 || controlResources(to) > 0) && accessGrants(state.access) === 0) unprotected.push(`control-plane ${state["control-plane"]} -> ${to} with access ${state.access}`);
+      state[part] = to;
+    }
+    return unprotected;
+  }
+
+  it("has the resources and the grants together exactly when the domain is set", () => {
+    expect([controlResources("on"), controlResources("off")]).toEqual([5, 0]);
+    expect([accessGrants("on"), accessGrants("off")]).toEqual([7, 0]);
+  });
+
+  it("adding: access first, so the grants exist before the control plane creates the certificate and records", () => {
+    expect(run(customDomainDeployOrder(["access", "control-plane"], { deployed: "", wanted: DOMAIN }), "off", "on")).toEqual([]);
+  });
+
+  it("removing: the control plane first, so the grants are still there when it deletes the certificate and records; access last", () => {
+    const order = customDomainDeployOrder(["access", "control-plane"], { deployed: DOMAIN, wanted: undefined });
+    expect(order).toEqual(["control-plane", "access"]);
+    expect(run(order, "on", "off")).toEqual([]);
+  });
+
+  it("the usual order on removal would have orphaned them (the bug this order fixes)", () => {
+    expect(run(["access", "control-plane"], "on", "off")).toEqual(["control-plane on -> off with access off"]);
+  });
+
+  it("removal followed by re-adding works, and so does a second removal", () => {
+    for (const [from, to, deployed, wanted] of [["off", "on", "", DOMAIN], ["on", "off", DOMAIN, undefined], ["off", "on", "", DOMAIN], ["on", "off", DOMAIN, undefined]] as const) {
+      expect(run(customDomainDeployOrder(["access", "control-plane"], { deployed, wanted }), from, to), `${from} -> ${to}`).toEqual([]);
+    }
+  });
+
+  it("refuses to change the domain to another name in one step, and keeps the usual order when nothing changes", () => {
+    expect(() => customDomainDeployOrder(["access", "control-plane"], { deployed: DOMAIN, wanted: "other.rovara.dev" })).toThrow(/two steps/);
+    expect(customDomainDeployOrder(["access", "control-plane"], { deployed: DOMAIN, wanted: DOMAIN })).toEqual(["access", "control-plane"]);
+    expect(customDomainDeployOrder(["access", "control-plane"], { deployed: "", wanted: undefined })).toEqual(["access", "control-plane"]);
+    expect(customDomainDeployOrder(["access", "control-plane"], { deployed: undefined, wanted: undefined })).toEqual(["access", "control-plane"]);
   });
 });

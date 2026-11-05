@@ -13,6 +13,7 @@ import { CloudSignInAnswersSchema, type CloudSignInAnswers } from "../deploy/ans
 import { updateStackParameters } from "../deploy/parameter-update.js";
 import { withEnvironmentLock } from "../environments/lock.js";
 import { readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
+import { CUSTOM_DOMAIN_NAME, CUSTOM_DOMAIN_ZONE, deleteCustomDomain, describeCustomDomain, readCustomDomain, writeCustomDomain, type CustomDomain } from "../environments/custom-domain.js";
 import { readInstallAnswers, writeInstallAnswers } from "../init/install-state.js";
 import { errorReason } from "./apply.js";
 import { installed, type SigninServices } from "./commands.js";
@@ -72,9 +73,8 @@ function checkFlags(flags: CloudSignInFlags): void {
   if ((flags.customDomain === undefined) !== (flags.hostedZoneId === undefined)) {
     throw agentXError("CONFIG_INVALID", "--custom-domain and --hosted-zone-id go together (omit both to leave the custom domain as it is, or use --no-custom-domain to turn it off)");
   }
-  if (flags.customDomain !== undefined) {
-    const parsed = CloudSignInAnswersSchema.safeParse({ customDomainName: flags.customDomain.trim(), customDomainHostedZoneId: flags.hostedZoneId!.trim() });
-    if (!parsed.success) throw agentXError("CONFIG_INVALID", `--custom-domain must be a lower-case DNS name such as staging.rovara.dev and --hosted-zone-id a Route 53 hosted zone id such as Z0123456789ABCDEFGHIJ (${parsed.error.issues[0]?.path.join(".") ?? "invalid"})`);
+  if (flags.customDomain !== undefined && (!CUSTOM_DOMAIN_NAME.test(flags.customDomain.trim()) || flags.customDomain.trim().length > 64 || !CUSTOM_DOMAIN_ZONE.test(flags.hostedZoneId!.trim()))) {
+    throw agentXError("CONFIG_INVALID", "--custom-domain must be a lower-case DNS name such as staging.rovara.dev and --hosted-zone-id a Route 53 hosted zone id such as Z0123456789ABCDEFGHIJ");
   }
   if (METHOD_IDS.every((method) => off[method] !== true && given[method][0] === undefined) && flags.emailFrom === undefined && flags.noEmailFrom !== true && flags.customDomain === undefined && flags.noCustomDomain !== true) {
     throw agentXError("CONFIG_INVALID", "give --github-client-id and --github-client-secret-arn, --google-client-id and --google-client-secret-arn, --email-from, --custom-domain and --hosted-zone-id, --no-github, --no-google, --no-email-from or --no-custom-domain");
@@ -156,8 +156,6 @@ function nextSignIn(current: CloudSignInAnswers | undefined, flags: CloudSignInF
   const next: CloudSignInAnswers = { ...current };
   if (flags.noEmailFrom === true) { delete next.emailFrom; delete next.emailSourceArn; }
   if (sender !== undefined) { next.emailFrom = sender.emailFrom; next.emailSourceArn = sender.emailSourceArn; }
-  if (flags.noCustomDomain === true) { delete next.customDomainName; delete next.customDomainHostedZoneId; }
-  if (flags.customDomain !== undefined && flags.hostedZoneId !== undefined) { next.customDomainName = flags.customDomain.trim(); next.customDomainHostedZoneId = flags.hostedZoneId.trim(); }
   if (flags.noGithub === true) { delete next.githubClientId; delete next.githubClientSecretArn; }
   if (flags.noGoogle === true) { delete next.googleClientId; delete next.googleClientSecretArn; }
   if (flags.githubClientId !== undefined && flags.githubClientSecretArn !== undefined) { next.githubClientId = flags.githubClientId.trim(); next.githubClientSecretArn = flags.githubClientSecretArn.trim(); }
@@ -195,10 +193,9 @@ const sameSignIn = (a: CloudSignInAnswers | undefined, b: CloudSignInAnswers | u
 
 const describeChange = (label: string, was: string, now: string): string => (was === now ? `  ${label}: ${now}` : `  ${label}: ${was} -> ${now}`);
 
-const describeCustomDomain = (signIn: CloudSignInAnswers | undefined): string => (signIn?.customDomainName === undefined ? "off" : `${signIn.customDomainName} (hosted zone ${signIn.customDomainHostedZoneId ?? "?"})`);
 
 /** The change's own words, with each method's old and new state and only a secret's name. */
-function summaryLines(env: string, before: CloudSignInAnswers | undefined, after: CloudSignInAnswers | undefined): string[] {
+function summaryLines(env: string, before: CloudSignInAnswers | undefined, after: CloudSignInAnswers | undefined, domain: { before: CustomDomain | undefined; after: CustomDomain | undefined }): string[] {
   return [
     `Cloud sign-in for ${env}:`,
     ...METHOD_IDS.map((method) => {
@@ -208,7 +205,7 @@ function summaryLines(env: string, before: CloudSignInAnswers | undefined, after
       return was === now ? `  ${label} sign-in: ${now}` : `  ${label} sign-in: ${was} -> ${now}`;
     }),
     describeChange("Sign-in email", describeEmailSender(before?.emailFrom), describeEmailSender(after?.emailFrom)),
-    describeChange("Custom domain", describeCustomDomain(before), describeCustomDomain(after)),
+    describeChange("Custom domain", describeCustomDomain(domain.before), describeCustomDomain(domain.after)),
   ];
 }
 
@@ -244,7 +241,14 @@ export async function runSigninCloud(services: SigninServices, env: string, flag
     // Read before the stack changes, so answers that cannot be read stop the change instead of following it.
     const answers = await readInstallAnswers(services.store, env);
     const next = nextSignIn(settings.cloudSignIn, flags, sender);
-    const summary = summaryLines(env, settings.cloudSignIn, next);
+    // 0.5.7: the custom domain is a record of its own (environments/custom-domain.ts), so a 0.5.6 command can still read the settings and the install answers.
+    const currentDomain = await readCustomDomain(services.store, env);
+    const nextDomain: CustomDomain | undefined = flags.noCustomDomain === true ? undefined : flags.customDomain !== undefined && flags.hostedZoneId !== undefined ? { domainName: flags.customDomain.trim(), hostedZoneId: flags.hostedZoneId.trim() } : currentDomain;
+    if (currentDomain !== undefined && nextDomain !== undefined && currentDomain.domainName !== nextDomain.domainName) {
+      throw agentXError("CONFIG_INVALID", `${env} has the custom domain ${currentDomain.domainName}; change it in two steps so the deploy role's grants never name one domain while the resources are another's: agentx signin cloud --no-custom-domain, agentx upgrade, then agentx signin cloud --custom-domain ${nextDomain.domainName} --hosted-zone-id ${nextDomain.hostedZoneId}, agentx upgrade`);
+    }
+    const domainChanged = JSON.stringify(currentDomain) !== JSON.stringify(nextDomain);
+    const summary = summaryLines(env, settings.cloudSignIn, next, { before: currentDomain, after: nextDomain });
     const confirm = async (text: string) => { services.write(text); return yes || services.prompter.confirm("Apply this change?", { defaultValue: false }); };
 
     let asked = false;
@@ -259,10 +263,14 @@ export async function runSigninCloud(services: SigninServices, env: string, flag
       },
     });
     const settingsChanged = !sameSignIn(settings.cloudSignIn, next);
-    const domainNamed = flags.customDomain !== undefined || flags.noCustomDomain === true;
-    // The domain is never changed on the live stack here: the deploy role's grants for it are in the access stack, which `agentx upgrade` deploys first, and then the control plane.
-    const domainNote = domainNamed ? [`The custom domain is recorded here and applied by the next agentx upgrade of ${env} (the access stack first, then the control plane); nothing in AWS changes until then.`] : [];
-    if (!stackChanged && settingsChanged && !asked && !(await confirm([...summary, ...domainNote, `${stackName} already has the other parameters; the settings will record this.`].join("\n")))) throw notApplied(stackName);
+    // The domain is never changed on the live stack here: the deploy role's grants for it are in the access stack, which `agentx upgrade` deploys in the right order (access first to add it, last to remove it).
+    const domainNote = domainChanged ? [`The custom domain is recorded here and applied by the next agentx upgrade of ${env}; nothing in AWS changes until then.`] : [];
+    if (!stackChanged && (settingsChanged || domainChanged) && !asked && !(await confirm([...summary, ...domainNote, ...(settingsChanged ? [`${stackName} already has the other parameters; the settings will record this.`] : [])].join("\n")))) throw notApplied(stackName);
+    if (domainChanged) {
+      if (nextDomain === undefined) await deleteCustomDomain(services.store, env);
+      else await writeCustomDomain(services.store, env, nextDomain);
+      services.write(domainNote.join("\n"));
+    }
     if (settingsChanged || stackChanged) {
       try {
         await writeEnvironmentSettings(services.store, withSignIn(settings, next, { updatedAt: new Date(services.now()).toISOString() }));
@@ -274,12 +282,11 @@ export async function runSigninCloud(services: SigninServices, env: string, flag
           : agentXError("RUNTIME_UNAVAILABLE", `${what}, but recording the sign-in settings failed (${errorReason(error)}); run agentx signin cloud again with the same flags to record them`);
       }
     }
-    if (domainNamed && (settingsChanged || stackChanged)) services.write(domainNote.join("\n"));
     const outputs = next?.githubClientId === undefined && next?.googleClientId === undefined ? {} : await stackOutputs(services, stackName);
     const githubCallbackUrl = next?.githubClientId === undefined ? undefined : outputs.CloudIdentityGitHubCallbackUrl;
     const googleRedirectUri = next?.googleClientId === undefined ? undefined : outputs.CloudIdentityGoogleRedirectUri;
     return {
-      changed: stackChanged || settingsChanged,
+      changed: stackChanged || settingsChanged || domainChanged,
       ...(githubCallbackUrl === undefined || githubCallbackUrl === "" ? {} : { githubCallbackUrl }),
       ...(googleRedirectUri === undefined || googleRedirectUri === "" ? {} : { googleRedirectUri }),
     };

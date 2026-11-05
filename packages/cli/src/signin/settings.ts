@@ -135,6 +135,5 @@ export function describeCloudSignIn(signIn: CloudSignInAnswers | undefined): str
     signIn?.githubClientId === undefined ? "GitHub sign-in: off" : `GitHub sign-in: on (client ${signIn.githubClientId})`,
     signIn?.googleClientId === undefined ? "Google sign-in: off" : `Google sign-in: on (client ${signIn.googleClientId})`,
     `Sign-in email: ${describeEmailSender(signIn?.emailFrom)}`,
-    signIn?.customDomainName === undefined ? "Custom domain: off" : `Custom domain: ${signIn.customDomainName} (hosted zone ${signIn.customDomainHostedZoneId ?? "?"})`,
   ];
 }

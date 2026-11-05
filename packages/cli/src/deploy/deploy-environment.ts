@@ -2,6 +2,7 @@
 // lock, the callback signing key and environment settings. Phase 15d's `agentx init`/`agentx
 // upgrade` build a StackDeployer (the templates or cdk engine), collect DeployAnswers, and call
 // deployEnvironment; everything else (order, outputs feeding forward, the lock, settings) lives here.
+import { readCustomDomain } from "../environments/custom-domain.js";
 import { agentXError, environmentStackName } from "@agentx/contracts";
 import { PROTECTED_PARTS, type DeployEvent, type DeployRequest, type StackDeployer } from "./deployer.js";
 import { currentLockHolder, withEnvironmentLock } from "../environments/lock.js";
@@ -164,10 +165,24 @@ export function upgradeKeptParameterNames(part: DeployPart): ReadonlySet<string>
   return new Set([...OPERATOR_PARAMETERS[part], ...SECRET_PARAMETERS]);
 }
 
-/** `controlPlaneUrl` is the PublicUrl output when there is one; `apiEndpoint` is recorded only when the two differ. */
-export function publicAddresses(apiEndpoint: string, publicUrl: string | undefined): { controlPlaneUrl: string; apiEndpoint?: string } {
-  if (publicUrl === undefined || publicUrl === "" || publicUrl === apiEndpoint) return { controlPlaneUrl: apiEndpoint };
-  return { controlPlaneUrl: publicUrl, apiEndpoint };
+/** The address people use: the PublicUrl output when the stack has one, else the API's own. */
+export function publicAddress(apiEndpoint: string, publicUrl: string | undefined): string {
+  return publicUrl === undefined || publicUrl === "" ? apiEndpoint : publicUrl;
+}
+
+/**
+ * Where the access stack goes in an upgrade. Its grants for the custom domain must outlive the resources they let CloudFormation create and delete, so:
+ *  - adding a domain: access first (the usual order), then the control plane creates the certificate and records under the new grants;
+ *  - removing it: the control plane first (it deletes the certificate, the records and the validation record under the grants still there), then access drops them;
+ *  - changing it to another name: refused. Remove the old one first, upgrade, then add the new one, so the grants are never for one name while the resources are another's.
+ * `deployed` is the control-plane stack's CustomDomainName now; `wanted` the recorded domain.
+ */
+export function customDomainDeployOrder(order: DeployPart[], domain: { deployed: string | undefined; wanted: string | undefined }): DeployPart[] {
+  const deployed = domain.deployed ?? "";
+  const wanted = domain.wanted ?? "";
+  if (deployed === "" || deployed === wanted) return order;
+  if (wanted !== "") throw agentXError("CONFIG_INVALID", `the control plane has the custom domain ${deployed}, and ${wanted} is recorded; change it in two steps: agentx signin cloud --no-custom-domain, agentx upgrade, then agentx signin cloud --custom-domain ${wanted} --hosted-zone-id <id>, agentx upgrade`);
+  return [...order.filter((part) => part !== "access"), ...order.filter((part) => part === "access")];
 }
 
 /** Throws the exact message a missing stack output must report, naming the real (`environment`-naming) stack name. */
@@ -232,7 +247,10 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
   // read the deployed parameters would reset every operator parameter to its template default.
   // The order and the parts are read once, here, and the deploy loop below uses these same values, so
   // the parts this guard checks are exactly the parts that deploy.
-  const fullOrder = mode === "install" ? installOrder(answers.identity.mode) : upgradeOrder(answers.identity.mode);
+  // 0.5.7: the custom domain is its own record (environments/custom-domain.ts); a deploy that was handed none uses the recorded one, so no deploy removes the domain by leaving it out.
+  const customDomain = answers.cloud === true ? answers.customDomain ?? await readCustomDomain(store, env) : undefined;
+  const deployedDomain = answers.cloud === true && mode === "upgrade" && input.deployedParameters !== undefined ? (await input.deployedParameters(environmentStackName(env, "control-plane")))?.CustomDomainName : undefined;
+  const fullOrder = customDomainDeployOrder(mode === "install" ? installOrder(answers.identity.mode) : upgradeOrder(answers.identity.mode), { deployed: deployedDomain, wanted: customDomain?.domainName });
   const deploySet = new Set(input.parts ?? fullOrder);
   if (mode === "upgrade" && input.deployedParameters === undefined && [...deploySet].some((part) => OPERATOR_PARAMETERS[part].length > 0)) {
     throw agentXError("CONFIG_INVALID", "an upgrade must read the deployed stacks' parameters to keep what the operator set; this is an AgentX bug, so report it");
@@ -266,7 +284,7 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
     const environmentNamed = existing === undefined || existing.naming === "environment";
     // R7: a control-plane deploy always carries the stored developer sign-in, so no deploy resets it.
     const developerSignIn = answers.developerSignIn ?? (deploySet.has("control-plane") && environmentNamed ? await readStoredDeveloperSignIn(store, env) : undefined);
-    const fullAnswers: InstallAnswers = { ...answers, ...(developerSignIn === undefined ? {} : { developerSignIn }), release: release.manifest, callbackSigningKey: key };
+    const fullAnswers: InstallAnswers = { ...answers, ...(customDomain === undefined ? {} : { customDomain }), ...(developerSignIn === undefined ? {} : { developerSignIn }), release: release.manifest, callbackSigningKey: key };
 
     const outputs: Partial<Record<DeployPart, StackOutputs>> = {};
     const droppedParameters: DeployEnvironmentResult["droppedParameters"] = [];
@@ -404,8 +422,8 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
         "control-plane": controlPlaneStack,
         slack: slackStack,
       },
-      // 0.5.7: the address people use is the PublicUrl output (the custom domain when one is set, else the API's own); the API's own is kept beside it for machines.
-      ...publicAddresses(requiredOutput(outputs, "control-plane", "ApiEndpoint", env), outputs["control-plane"]?.PublicUrl),
+      // 0.5.7: the address people use is the PublicUrl output (the custom domain when one is set, else the API's own). The API's own stays in the stack's ApiEndpoint output, which the Slack stack and the machine addresses read.
+      controlPlaneUrl: publicAddress(requiredOutput(outputs, "control-plane", "ApiEndpoint", env), outputs["control-plane"]?.PublicUrl),
       identity: identitySettings,
       models: answers.models,
       ...(answers.cloud === true ? { cloud: true as const } : {}),

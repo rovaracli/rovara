@@ -2,6 +2,7 @@
 // It turns the operator's answers, a release manifest, and the stack outputs collected so far into
 // the exact CloudFormation Parameters map for one environment stack. The caller (phase 15d's `agentx
 // init`/`agentx upgrade`) reads secrets and calls CloudFormation; this file only computes values.
+import { customDomainParameters, type CustomDomain } from "../environments/custom-domain.js";
 import type { Edition } from "@agentx/contracts";
 import { CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentStackName } from "@agentx/contracts";
 import type { ReleaseManifest, StackPart } from "@agentx/contracts";
@@ -14,6 +15,8 @@ export type StackOutputs = Record<string, string>;
 export type DeployPart = StackPart;
 
 export interface InstallAnswers {
+  /** 0.5.7: the environment's custom domain (its own record, see environments/custom-domain.ts), sent to the access stack and the control plane on the hosted cloud. */
+  customDomain?: CustomDomain;
   env: string;
   region: string;
   account: string;
@@ -262,15 +265,6 @@ function adminParameters(identity: InstallAnswers["identity"]): Record<string, s
   return { AdminClaim: adminClaim, AdminValues: JSON.stringify(adminValues) };
 }
 
-/**
- * 0.5.7: the custom domain's two parameters. Sent only when a domain is set (a template from before them never sees them). The access stack
- * takes the same two, so the deploy role's Certificate Manager and Route 53 grants are limited to this name and this hosted zone; the
- * control-plane stack takes them to create the certificate, the domain name, the mapping and the records.
- */
-export function customDomainParameters(signIn: CloudSignInAnswers | undefined): Record<string, string> {
-  return signIn?.customDomainName === undefined || signIn.customDomainHostedZoneId === undefined ? {} : { CustomDomainName: signIn.customDomainName, CustomDomainHostedZoneId: signIn.customDomainHostedZoneId };
-}
-
 /** The cloud control plane's sign-in parameters (R46): Google only when a client id is set, the domain prefix only when named. */
 function cloudSignInParameters(signIn: CloudSignInAnswers | undefined): Record<string, string> {
   return {
@@ -283,7 +277,6 @@ function cloudSignInParameters(signIn: CloudSignInAnswers | undefined): Record<s
     // Sign-in codes from a branded Amazon SES sender (Task 7): the template sends with SES only when both are non-empty.
     ...(signIn?.emailFrom === undefined ? {} : { CloudSignInEmailFrom: signIn.emailFrom }),
     ...(signIn?.emailSourceArn === undefined ? {} : { CloudSignInEmailSourceArn: signIn.emailSourceArn }),
-    ...customDomainParameters(signIn),
   };
 }
 
@@ -309,7 +302,7 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
   const routing = openRouter?.providers ? { OpenRouterProviders: openRouter.providers.join(",") } : {};
   switch (part) {
     case "access":
-      return { ...base, OperatorPrincipalArn: answers.operatorPrincipalArn ?? "", ...(answers.cloud === true ? customDomainParameters(answers.cloudSignIn) : {}) };
+      return { ...base, OperatorPrincipalArn: answers.operatorPrincipalArn ?? "", ...(answers.cloud === true ? customDomainParameters(answers.customDomain) : {}) };
 
     case "foundation":
       return base;
@@ -339,7 +332,7 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
         // The EC2 session lifecycle (#83) runs in the foundation's network with its key and role.
         ...Object.fromEntries([...CONTROL_PLANE_FOUNDATION_PARAMETERS, ...MODEL_PROXY_FOUNDATION_PARAMETERS, ...CLOUD_PROJECT_FOUNDATION_PARAMETERS].map((name) => [name, required(outputs, "foundation", name, answers.env)])),
         ...(answers.slackAppPostedMessages === undefined ? {} : { SlackAppPostedMessages: answers.slackAppPostedMessages }),
-        ...(answers.cloud === true ? cloudSignInParameters(answers.cloudSignIn) : {}),
+        ...(answers.cloud === true ? { ...cloudSignInParameters(answers.cloudSignIn), ...customDomainParameters(answers.customDomain) } : {}),
         // Plan 2, Task 19: the hosted cloud's foundation has the DNS firewall, and the broker keeps its project list current.
         ...(answers.cloud === true ? { ProjectAllowListId: required(outputs, "foundation", "ProjectAllowListId", answers.env) } : {}),
         ...(answers.budget === undefined ? {} : { BudgetMonthlyUsd: String(answers.budget.monthlyUsd), BudgetScope: answers.budget.scope }),

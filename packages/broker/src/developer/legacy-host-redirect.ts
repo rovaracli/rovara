@@ -19,3 +19,14 @@ export function legacyHostRedirect(input: LegacyHostRedirectInput): { statusCode
   if (!input.path.startsWith("/") || input.path.startsWith("//")) return undefined;
   return { statusCode: 307, headers: { location: `${new URL(input.issuer).origin}${input.path}`, "cache-control": "no-store" }, body: "" };
 }
+
+/**
+ * The origin machine addresses are built on: the API's own when a custom domain is set (`previousIssuer`), else the issuer's. Vendors' event-hook URLs
+ * (`/v1/hooks/...`) are registered at other companies once and must keep resolving when the domain is removed or rolled back, so they never move.
+ */
+export const machineOrigin = (developer: { issuer: string; previousIssuer?: string | undefined }): string => new URL(developer.previousIssuer ?? developer.issuer).origin;
+
+/** The browser pages a person can reach from an old link on the API's own address: each GET moves to the domain, where its cookies, sign-in and Origin checks live. */
+export const BROWSER_PAGE_PREFIXES = ["/review/", "/v1/app/approve/", "/v1/app/audit/view"] as const;
+export const GITHUB_INSTALL_CALLBACK = "/v1/github/install/callback";
+export const isBrowserPagePath = (pathname: string): boolean => pathname === GITHUB_INSTALL_CALLBACK || BROWSER_PAGE_PREFIXES.some((prefix) => pathname.startsWith(prefix));

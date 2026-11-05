@@ -1298,7 +1298,7 @@ export class ControlPlaneStack extends Stack {
     // Spec 025 phase 25a: developer sign-in, named environments only (R3).
     let signInFunction: DeveloperSignIn["signInFunction"] | undefined;
     // 0.5.7: an optional custom domain in front of the same API (hosted cloud installs only; both parameters empty = nothing is created, nothing changes).
-    const customDomain = props?.cloud === true && naming.env !== undefined && signInParameters !== undefined ? new CustomDomain(this, "CustomDomain", { api, stage: defaultStage }) : undefined;
+    const customDomain = props?.cloud === true && naming.env !== undefined && signInParameters !== undefined ? new CustomDomain(this, "CustomDomain", { env: naming.env, api, stage: defaultStage }) : undefined;
     if (naming.env !== undefined && signInParameters !== undefined) {
       // A bootstrap-free (legacy-synthesizer) template is the released one: the release pipeline packages zip Lambda code only, and CloudFront hosting adds a BucketDeployment and its AWS CLI layer (a file asset), so a released template has the cell serve the web files.
       // Every other named environment (deployed with the CDK engine, bootstrapped) defaults to CloudFront, as Plan 7 Task 4 specifies.
