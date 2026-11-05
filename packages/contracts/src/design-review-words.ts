@@ -2,7 +2,7 @@
 // These moved here, unchanged, from broker/src/design-review/mode.ts (which re-exports them): the reason phrases, the skip rules and the sentence for a refused Skip. `DesignActionsViewSchema` is new:
 // what the broker tells the task page about the Design first and Skip buttons for THIS caller (the page never works out who may skip; it shows what the broker decided).
 import { z } from "zod";
-import { isHighRiskDesign, type DesignReason, type DesignReviewSetting } from "./design-review.js";
+import { DESIGN_REVIEW_RETRIES_MAX, isHighRiskDesign, type DesignReason, type DesignReviewSetting } from "./design-review.js";
 
 const REASON_PHRASES: Readonly<Record<DesignReason, string>> = {
   new_api: "adds a new API",
@@ -64,6 +64,11 @@ export const DesignActionsViewSchema = z.object({
     z.object({ allowed: z.literal(false), because: z.enum(["skip_off", "needs_high_risk_approver"]), approverName: z.string().min(1).max(DESIGN_ACTIONS_NAME_MAX).optional() }).strict(),
   ]).optional(),
   hint: z.boolean().optional(),
+  /**
+   * DR-KEY-1 (D): "Retry review" under a review that did not run (`designReviewRetryOffer`, the same rule as the route `POST .../design-review/retry`). Absent when the review is not one that did not run (a skip,
+   * the re-review limit, a cap stop); `allowed` is false when its retries are used, or this person may not direct the task's work.
+   */
+  retry: z.object({ allowed: z.boolean(), retriesLeft: z.number().int().min(0).max(DESIGN_REVIEW_RETRIES_MAX) }).strict().optional(),
 }).strict();
 export type DesignActionsView = z.infer<typeof DesignActionsViewSchema>;
 

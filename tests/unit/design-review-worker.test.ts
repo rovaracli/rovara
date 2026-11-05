@@ -1,18 +1,20 @@
 // Design review stage, DR5 (3.2, 3.4, 3.13): the worker runs every reviewer in a NEW read-only session, in parallel, then the merge step.
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   DESIGN_REVIEW_WORKER_FEATURE, DesignReviewBindingSchema, DesignReviewWorkerResultSchema, PacketDeliverySchema, READ_ONLY_TOOLS, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema,
-  LIGHT_CRITIC_PROMPT_ID, packetDigestOf, reviewerMessagesOf, type DesignReviewBinding, type DesignReviewTier, type ReviewerRole,
+  LIGHT_CRITIC_PROMPT_ID, MODEL_NOT_ENABLED_CODE, modelFailureCodeOf, packetDigestOf, reviewerMessagesOf, type DesignReviewBinding, type DesignReviewTier, type ReviewerRole, type WorkerInvocation,
 } from "@agentx/contracts";
 import { buildReviewerPacket, type PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import { WorkerReportSchema, verifyReviewerReport } from "../../packages/broker/src/design-review/verify.js";
 import { assembleRoundFindings } from "../../packages/broker/src/design-review/round-findings.js";
 import { designReviewRetryPrompt, mergeMaterialOf, modelKeyIdOf, runDesignReview, sentDigestOf, type DesignReviewPorts, type DesignReviewSession, type OpenDesignReviewSession } from "../../packages/worker/src/design-review.js";
-import { createReviewSessionOpener, designReviewBindingOf, slotRuntimeFor } from "../../packages/worker/src/design-review-sessions.js";
+import { createReviewSessionOpener, designReviewBindingOf, runDesignReviewOperation, slotRuntimeFor } from "../../packages/worker/src/design-review-sessions.js";
+import { failedTurn } from "../../packages/worker/src/session-events.js";
+import { OperationJournal, createWorkerServerState, handleWorkerRequest } from "../../packages/worker/src/index.js";
 import type { PiSessionAdapter, PiSessionHandle } from "../../packages/worker/src/pi-session.js";
 import { modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
@@ -633,5 +635,27 @@ describe("integration of the DR3/DR4 proof fixes", () => {
     expect(withPrompt.reviewers[0]!.paraphrase).toContain("An endpoint.");
     expect(assembleRoundFindings({ ...input, promptIds: new Map([["critic" as const, "design-review-critic"]]) }).reviewers[0]).toMatchObject({ counted: false, verified: false, verifyFailure: "unreadable_output", notUsed: "unreadable_output" });
     expect(assembleRoundFindings(input).reviewers[0]).toMatchObject({ counted: false, verified: false, verifyFailure: "unreadable_output", notUsed: "unreadable_output" });
+  });
+});
+
+describe("DR-KEY-1 review: a round whose every reviewer's model was not enabled, through the worker server", () => {
+  it("ends the operation FAILED with modelFailureCode on its result (server.ts), from the reviewers' own coded errors", async () => {
+    const { binding, deliveries } = await setup(["critic", "codebase"], false);
+    // What a reviewer session throws for the proxy's 403 "not available for this account" (model-runtime's fixed sentence, classified by the worker).
+    const refused = () => failedTurn({ stopReason: "error", errorMessage: "Anthropic request failed; the model is not available for this account", provider: "amazon-bedrock" })!;
+    expect(modelFailureCodeOf(refused())).toBe(MODEL_NOT_ENABLED_CODE);
+    const { ports } = fakePorts({ answers: { "slot-critic": [refused()], "slot-codebase": [refused()] } }, deliveries);
+    const uploaded: string[] = [];
+    const terminal: Array<Record<string, unknown>> = [];
+    const state = createWorkerServerState(new OperationJournal(await mkdtemp(join(tmpdir(), "agentx-dr-terminal-"))), {
+      execute: async () => { await runDesignReviewOperation({ binding, ports, artifactSink: async (artifact) => { uploaded.push(String(artifact.content)); } }); return undefined; },
+    }, { onTerminal: async (result) => { terminal.push(result as unknown as Record<string, unknown>); } });
+    const invocation: WorkerInvocation = { protocolVersion: 1, kind: "task", operationId: randomUUID(), workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64), payload: { conversationId: randomUUID(), prompt: "Review the design" } };
+    await handleWorkerRequest(new Request("http://worker/invocations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(invocation) }), state);
+    await vi.waitFor(() => expect(terminal).toHaveLength(1));
+    expect(terminal[0]).toMatchObject({ status: "FAILED", result: { modelFailureCode: MODEL_NOT_ENABLED_CODE } });
+    expect(String(terminal[0]!.error)).toContain("the model call failed: key-rejected ModelNotEnabled");
+    // The round's result was uploaded first, with each reviewer's failure as the fixed code.
+    expect((JSON.parse(uploaded[0]!) as { reviewers: Array<{ failure?: string }> }).reviewers.map((reviewer) => reviewer.failure)).toEqual(["model_not_enabled", "model_not_enabled"]);
   });
 });

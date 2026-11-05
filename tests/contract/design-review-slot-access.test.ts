@@ -498,6 +498,38 @@ describe("a slot's model key", () => {
     expect(t.db.find((item) => item.entityType === "DESIGN_REVIEW_SLOT_KEY")).toEqual([]);
   });
 
+  it("logs every refused slot key request once, with the operation, the slot and the fixed code, and nothing of a person or a key", async () => {
+    const t = await setup();
+    await t.asDesignReview();
+    const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const refusedLines = () => logs.mock.calls.map(([line]) => { try { return JSON.parse(String(line)) as Record<string, unknown>; } catch { return {}; } }).filter((line) => line.event === "design_review.slot_key_refused");
+    // The slot lookup: no slot, an unknown one, and one that is not a slot's shape (the client's text is not repeated).
+    expect((await t.key(undefined)).status).toBe(403);
+    expect((await t.key("slot-nobody")).status).toBe(403);
+    expect((await t.key("../merge")).status).toBe(403);
+    // The pass-through checks of model-access.ts: a stale fence, and the slot's checks: no allocated ceiling.
+    const stale = issueCapability({ callbackSigningKey: SIGNING_KEY }, t.workspaceId, t.operationId, t.operationItem().fence + 1, { modelAccess: true });
+    expect((await t.key("slot-critic", stale)).status).toBe(409);
+    t.db.delete(`ORG#${TEST_ORG}#DESIGN_REVIEW#${t.operationId}`, "ALLOC");
+    expect((await t.key("slot-critic")).status).toBe(402);
+    // The slot's own checks: a forbidden model.
+    await t.asDesignReview();
+    t.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", orgId: TEST_ORG, revision: 1, guardrails: { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), forbiddenModels: [MODEL] } });
+    expect((await t.key("slot-codebase")).status).toBe(403);
+    const lines = refusedLines();
+    expect(lines.map(({ slot, code }) => `${String(slot)} ${String(code)}`)).toEqual(["none FORBIDDEN", "slot-nobody FORBIDDEN", "invalid FORBIDDEN", "slot-critic STALE_FENCE", "slot-critic BUDGET_EXCEEDED", "slot-codebase MODEL_NOT_ALLOWED"]);
+    for (const line of lines) expect(Object.keys(line).sort()).toEqual(["code", "component", "event", "operationId", "slot"]);
+    for (const line of lines) expect(line.operationId).toBe(t.operationId);
+    expect(JSON.stringify(lines)).not.toContain(MAYA.developerId);
+    // A slot key that is handed out logs no refusal, and neither does an operation without a binding.
+    t.db.delete(agentGuardrailsKey(TEST_ORG));
+    expect((await t.key("slot-codebase")).status).toBe(200);
+    t.db.set({ ...t.operationItem(), designReview: undefined });
+    await t.key(undefined);
+    expect(refusedLines()).toHaveLength(6);
+    logs.mockRestore();
+  });
+
   it("refuses the key when the binding stored on the operation changed after the request was resolved", async () => {
     const t = await setup();
     const { binding } = await t.asDesignReview();

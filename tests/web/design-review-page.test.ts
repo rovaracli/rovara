@@ -29,7 +29,7 @@ const spendItem: DecisionItem = designSpendCardItem({ taskId: TASK, subjectId: "
  gate: { kind: "ask", why: "over_cap", estimateUsd: 12.5, choices: [{ choice: "lower_tier", tier: "light", estimateUsd: 2 }, { choice: "raise_cap", newCapUsd: 13 }, { choice: "skip" }] } as never });
 const viewOf = (items: DecisionItem[]) => { const p = projectDecisionCards(items); return DecisionCardsViewSchema.parse({ cards: p.cards, total: p.cards.length, tabs: p.tabs, details: p.details, digests: p.digests, dropped: p.dropped }); };
 
-function screenSetup(session: ReturnType<typeof designTaskSession>, items: DecisionItem[] = []) {
+function screenSetup(session: ReturnType<typeof designTaskSession>, items: DecisionItem[] = [], hash = "") {
  const f = fakeHost(async request => {
   if (request.path === "/v1/app/decisions") return { status: 200, body: viewOf(items) };
   if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
@@ -39,7 +39,7 @@ function screenSetup(session: ReturnType<typeof designTaskSession>, items: Decis
   if (request.method === "POST") return { status: 202, body: { ok: true } };
   return { status: 200, body: { session } };
  });
- const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
+ const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID + hash] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
  const posts = () => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST" && !request.path.endsWith("/presence"));
  return { ...f, ...ui, posts, close() { ui.unmount();router.dispose();query.clear(); } };
@@ -103,6 +103,50 @@ it("offers Design first and Skip as the broker decided, and says why a Skip is r
  const off = screenSetup(designTaskSession(designReviewFixture({ status: "waiting_cost", rounds: [] }), { designActions: { designFirst: false, skip: { allowed: false, because: "skip_off" } } }));
  expect(await screen.findByText("This project does not allow skipping design review.")).toBeTruthy();
  off.close();
+});
+
+it("DR-KEY-1 D: offers Retry review under a review that did not run, on the Design tab and above the task's cards, posts the retry and reads the task again", async () => {
+ const notRun = (reason: string) => designReviewFixture({ status: "not_run", notRunReason: reason, rounds: [] });
+ for (const reason of ["worker_failed", "no_model_source"]) {
+  const f = screenSetup(designTaskSession(notRun(reason), { designActions: { designFirst: false, retry: { allowed: true, retriesLeft: 2 } } }));
+  const strip = await screen.findByRole("region", { name: "Design review actions" });
+  expect(within(strip).getByText("2 retries left")).toBeTruthy();
+  const reads = () => f.request.mock.calls.filter(([request]) => request.method === "GET" && request.path.includes("/sessions/") && !request.path.endsWith("/events") && !request.path.endsWith("/presence")).length;
+  const before = reads();
+  fireEvent.click(within(strip).getByRole("button", { name: "Retry review" }));
+  await waitFor(() => expect(f.posts().map(request => request.path)).toEqual(["/v1/app/tasks/" + TASK + "/design-review/retry"]));
+  expect(typeof (f.posts()[0]!.body as { requestId: unknown }).requestId).toBe("string");
+  await waitFor(() => expect(reads(), reason).toBeGreaterThan(before));
+  f.close();
+ }
+ // One button per view: on the task page with the Design tab open, the strip's button is the only one.
+ const page = screenSetup(designTaskSession(notRun("worker_failed"), { designActions: { designFirst: false, retry: { allowed: true, retriesLeft: 2 } } }), [], "#design");
+ await screen.findByRole("region", { name: "Design review" });
+ await screen.findByRole("region", { name: "Design review actions" });
+ expect(screen.getAllByRole("button", { name: "Retry review" })).toHaveLength(1);
+ expect(within(screen.getByRole("region", { name: "Design review actions" })).getByRole("button", { name: "Retry review" })).toBeTruthy();
+ page.close();
+ // The Design tab on its own (no strip above it, e.g. a chain's section): the button sits under the not-run line.
+ const tab = workspaceSetup(designTaskSession(notRun("worker_failed"), { designActions: { designFirst: false, retry: { allowed: true, retriesLeft: 1 } } }), "#design");
+ const region = await screen.findByRole("region", { name: "Design review" });
+ expect(within(region).getByText("Design review did not run: the reviewers did not start or did not finish.")).toBeTruthy();
+ const group = within(region).getByRole("group", { name: "Retry design review" });
+ expect(within(group).getByText("1 retry left")).toBeTruthy();
+ fireEvent.click(within(group).getByRole("button", { name: "Retry review" }));
+ tab.close();
+ // Not offered: no retries left, or nothing offered (a skip, the re-review limit and a cap stop carry no offer).
+ for (const actions of [{ designFirst: false, retry: { allowed: false, retriesLeft: 0 } }, { designFirst: false }]) {
+  const none = workspaceSetup(designTaskSession(notRun("worker_failed"), { designActions: actions }), "#design");
+  await screen.findByRole("region", { name: "Design review" });
+  expect(screen.queryByRole("button", { name: "Retry review" })).toBeNull();
+  none.close();
+ }
+ for (const review of [designReviewFixture({ status: "not_run", notRunReason: "skipped", decidedBy: "person_skip", skippedBy: { actorId: "a".repeat(64) }, rounds: [] }), designReviewFixture({ status: "not_run", notRunReason: "rearm_limit", rounds: [] }), designReviewFixture({ status: "stopped_at_cap" })]) {
+  const none = screenSetup(designTaskSession(review, { designActions: { designFirst: false } }));
+  await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+  expect(screen.queryByRole("button", { name: "Retry review" })).toBeNull();
+  none.close();
+ }
 });
 
 it("says a design is not needed and offers Design first, and shows no actions when the broker offered none", async () => {

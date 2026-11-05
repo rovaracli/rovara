@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { PER_TASK_BUDGET_USD, agentXError } from "../../packages/contracts/src/index.js";
 import { bedrockClaudeModelIds } from "../../packages/model-runtime/src/catalog.js";
-import { createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
+import { ModelBudgetExhaustedError, ModelNotAllowedError, createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
 import { MODEL_ACCESS_MARGIN_MS, lazyModelProxy, modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { resolveTaskSessionModel } from "../../packages/worker/src/task-model.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
@@ -79,6 +79,19 @@ describe("the model runtime with a proxy", () => {
     current = "sk-proxy-second-key-0002";
     await runtime.streamSimple(model, context, { maxTokens: 64 }).result();
     expect(requests.map((request) => request.headers.get("x-api-key"))).toEqual(["sk-proxy-first-key-0001", "sk-proxy-second-key-0002"]);
+  });
+
+  it("says why the key could not be obtained: the key source's fixed words, or only the name of any other error", async () => {
+    const failing = (error: unknown) => createConfiguredModelRuntime({ provider: "amazon-bedrock", modelId: BEDROCK_MODEL }, { proxy: { baseUrl: PROXY_URL, apiKey: async () => { throw error; } } }).then(() => new Error("opened"), (caught: unknown) => caught as Error);
+    expect(await failing(agentXError("RUNTIME_UNAVAILABLE", "model access request failed with HTTP 409 (STALE_FENCE)"))).toMatchObject({
+      code: "RUNTIME_UNAVAILABLE", message: "RUNTIME_UNAVAILABLE: the model proxy key could not be obtained: model access request failed with HTTP 409 (STALE_FENCE)" });
+    // A transport's own text can name hosts and addresses: only the error's name is kept.
+    expect((await failing(new TypeError("fetch failed: connect ECONNREFUSED 10.0.0.12:443"))).message).toBe("RUNTIME_UNAVAILABLE: the model proxy key could not be obtained: TypeError");
+    expect((await failing("not an error")).message).toBe("RUNTIME_UNAVAILABLE: the model proxy key could not be obtained: unknown");
+    // A routed model's runtime says the same.
+    const route = { alias: "company-claude", api: "anthropic-messages" as const, catalog: "anthropic/claude-sonnet-4-6" };
+    const routed = await createConfiguredModelRuntime({ provider: "amazon-bedrock", modelId: BEDROCK_MODEL }, { proxy: { baseUrl: PROXY_URL, route, apiKey: async () => { throw agentXError("RUNTIME_UNAVAILABLE", "model access request failed with HTTP 403 (FORBIDDEN)"); } } }).then(() => new Error("opened"), (caught: unknown) => caught as Error);
+    expect(routed.message).toBe("RUNTIME_UNAVAILABLE: the model proxy key could not be obtained: model access request failed with HTTP 403 (FORBIDDEN)");
   });
 
   it("accepts a fixed key too", async () => {
@@ -160,6 +173,22 @@ describe("modelAccessSource", () => {
       await good();
       for (const spy of logs) expect(JSON.stringify(spy.mock.calls)).not.toContain("sk-proxy");
     } finally { for (const spy of logs) spy.mockRestore(); }
+  });
+
+  it("says the HTTP status and the control plane's fixed refusal code, never its message or anything that is not a code", async () => {
+    const refusalOf = async (status: number, body: unknown) => (await modelAccessSource({ controlPlaneUrl: "https://api.example.test", capability: "cap.sig",
+      fetch: async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status }) })().catch((caught: unknown) => caught)) as Error & { code?: string };
+    const stale = await refusalOf(409, { error: { code: "STALE_FENCE", message: "callback operation binding is stale for op_123" } });
+    expect(stale).toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: "RUNTIME_UNAVAILABLE: model access request failed with HTTP 409 (STALE_FENCE)" });
+    expect((await refusalOf(403, { error: { code: "FORBIDDEN", message: "a design review asks for a model key by one of its own slots" } })).message).toBe("RUNTIME_UNAVAILABLE: model access request failed with HTTP 403 (FORBIDDEN)");
+    expect((await refusalOf(401, { error: { code: "AUTH_REQUIRED" } })).message).toBe("RUNTIME_UNAVAILABLE: model access request failed with HTTP 401 (AUTH_REQUIRED)");
+    // A body that is not the control plane's refusal, or a "code" that is free text, adds nothing.
+    expect((await refusalOf(502, "<html>bad gateway</html>")).message).toBe("RUNTIME_UNAVAILABLE: model access request failed with HTTP 502");
+    expect((await refusalOf(409, { error: { code: "sk-proxy-secret echo" } })).message).toBe("RUNTIME_UNAVAILABLE: model access request failed with HTTP 409");
+    // A spent budget and a refused model are still read from the same body.
+    // (By name: the worker is built against the package, this test against its source.)
+    expect((await refusalOf(402, { error: { code: "ORG_BUDGET_EXCEEDED", message: "x" } })).constructor.name).toBe(ModelBudgetExhaustedError.name);
+    expect((await refusalOf(403, { error: { code: "MODEL_NOT_ALLOWED", message: "No source serves this model." } })).constructor.name).toBe(ModelNotAllowedError.name);
   });
 });
 

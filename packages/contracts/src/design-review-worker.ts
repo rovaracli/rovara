@@ -14,6 +14,20 @@ export const DESIGN_REVIEW_STAGE_TIMEOUT_MS = 40 * 60_000;
 /** The most bytes of one answer that are uploaded; an over-long answer keeps its end, where the block is. */
 export const DESIGN_REVIEW_ANSWER_MAX_BYTES = 65_536;
 
+/**
+ * DR-KEY-1 (B): the structured reason a model call failed, carried from the worker to the broker beside the words: on a failed operation's result (`modelFailureCode`) and as a reviewer's failure
+ * (`model_not_enabled`). `ModelNotEnabled` is Amazon Bedrock refusing the model for this ACCOUNT (the proxy's 403 PermissionDeniedError / AccessDeniedException "<model> is not available for this account"),
+ * which the broker learns from (learn-not-enabled.ts) so the next default choice leaves the model out. A refused key or a missing permission is not this code.
+ */
+export const MODEL_NOT_ENABLED_CODE = "ModelNotEnabled" as const;
+export const MODEL_FAILURE_CODES = [MODEL_NOT_ENABLED_CODE] as const;
+export type ModelFailureCode = (typeof MODEL_FAILURE_CODES)[number];
+/** The code an error object carries (`modelFailureCode`), when it is one of the fixed codes. */
+export function modelFailureCodeOf(value: unknown): ModelFailureCode | undefined {
+  const code = value !== null && typeof value === "object" ? (value as { modelFailureCode?: unknown }).modelFailureCode : undefined;
+  return (MODEL_FAILURE_CODES as readonly unknown[]).includes(code) ? code as ModelFailureCode : undefined;
+}
+
 /** Why a reviewer (or the merge step) gave no result. Fixed codes; nothing the model or a provider wrote. */
 export const DESIGN_REVIEW_RUN_FAILURES = [
   /** The answer had no readable block, even after the one retry. */
@@ -28,6 +42,8 @@ export const DESIGN_REVIEW_RUN_FAILURES = [
   "model_failed",
   "budget_exhausted",
   "model_not_allowed",
+  /** The account may not use the reviewer's model (`MODEL_NOT_ENABLED_CODE`): the round is tried again on the next model. */
+  "model_not_enabled",
   /** The packet the worker fetched does not hash to the digest the broker built, so nothing was sent. */
   "packet_changed",
   /** The session did not say its first request was the rendered packet (the user message exactly, a system text that begins with the role prompt). */
@@ -56,12 +72,18 @@ const Tokens = z.number().int().min(0);
 const Usd = z.number().min(0).max(10_000);
 const Instant = z.string().datetime({ offset: true });
 
+/**
+ * A reviewer's (or the merge step's) failure, read tolerantly (DR-KEY-1 review): a worker newer than this broker may send a failure code this version does not know. It reads as the generic model failure, so the
+ * rest of the result (the other reviewers' paid answers) is never dropped for one unknown word. A failure only ever lowers what counts; it never makes a reviewer count.
+ */
+const RunFailureSchema = z.enum(DESIGN_REVIEW_RUN_FAILURES).optional().catch("model_failed");
+
 export const DesignReviewerOutcomeSchema = z.object({
   role: ReviewerRoleSchema,
   keySlot: z.string().min(1).max(32),
   /** "answered": the last answer holds a block the worker could read. "no_result": it did not (see `failure`). The broker decides for itself either way. */
   status: z.enum(["answered", "no_result"]),
-  failure: z.enum(DESIGN_REVIEW_RUN_FAILURES).optional(),
+  failure: RunFailureSchema,
   /** True when the reviewer was asked once more in the same session because its first block could not be read. */
   retried: z.boolean(),
   report: DesignReviewerReportSchema.optional(),
@@ -78,7 +100,7 @@ export type DesignReviewerOutcome = z.infer<typeof DesignReviewerOutcomeSchema>;
 
 export const DesignReviewMergeOutcomeSchema = z.object({
   status: z.enum(["answered", "skipped", "no_result"]),
-  failure: z.enum(DESIGN_REVIEW_RUN_FAILURES).optional(),
+  failure: RunFailureSchema,
   answer: z.string().max(DESIGN_REVIEW_ANSWER_MAX_BYTES * 4).optional(),
   tokensIn: Tokens,
   tokensOut: Tokens,

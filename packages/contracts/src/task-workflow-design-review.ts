@@ -312,13 +312,28 @@ export function retryDesignReviewNotRun(currentInput: unknown, input: { expected
   const current = parsed(currentInput);
   if (current.revision !== input.expectedRevision) throw fail("workflow revision is stale");
   const review = current.designReview;
-  if (review === undefined || current.reviewPhase !== "DESIGN" || current.path !== "FULL" || current.stage !== "PLAN_REVIEW" || current.state !== "WAITING"
-    || review.notRunReason === undefined || review.notRunReason === "rearm_limit" || review.notRunReason === "skipped" || review.decidedBy === "person_skip" || (review.status !== "not_run" && review.status !== "done")) {
-    throw fail("only a design review that did not run can be retried");
-  }
+  if (review === undefined || !notRunRetryable(current, review)) throw fail("only a design review that did not run can be retried");
   actorOf(input.by);
   if ((review.retries ?? 0) >= DESIGN_REVIEW_RETRIES_MAX) throw fail("the review has been retried as often as allowed: a person raises the cap or picks a lower tier");
   return reopened(current, review, { retries: (review.retries ?? 0) + 1, ...(input.estimateUsd === undefined ? {} : { estimateUsd: input.estimateUsd }) }, input.now);
+}
+
+/** The state `retryDesignReviewNotRun` accepts: a review that did not run (not one a person skipped, and not the re-review limit), with the design on the person's card. */
+function notRunRetryable(current: WorkflowSnapshot, review: WorkflowDesignReview): boolean {
+  return current.reviewPhase === "DESIGN" && current.path === "FULL" && current.stage === "PLAN_REVIEW" && current.state === "WAITING"
+    && review.notRunReason !== undefined && review.notRunReason !== "rearm_limit" && review.notRunReason !== "skipped" && review.decidedBy !== "person_skip" && (review.status === "not_run" || review.status === "done");
+}
+
+/**
+ * The "Retry review" offer for the task page, by the SAME rule as `retryDesignReviewNotRun` (the route re-checks it on every press): undefined when the review is not one that did not run (a skip, the re-review
+ * limit, a cap stop, a review that ran or is running); otherwise whether a retry is left and how many.
+ */
+export function designReviewRetryOffer(currentInput: unknown): { allowed: boolean; retriesLeft: number } | undefined {
+  const current = WorkflowSnapshotSchema.safeParse(currentInput);
+  const review = current.success ? current.data.designReview : undefined;
+  if (!current.success || review === undefined || !notRunRetryable(current.data, review)) return undefined;
+  const retriesLeft = Math.max(0, DESIGN_REVIEW_RETRIES_MAX - (review.retries ?? 0));
+  return { allowed: retriesLeft > 0, retriesLeft };
 }
 
 // ---- a person skips

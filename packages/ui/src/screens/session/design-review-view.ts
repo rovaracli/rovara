@@ -227,6 +227,8 @@ export interface DesignTabModel {
   tierWords: string;
   cost: { estimate: string; spent: string; limit: string };
   notRun?: string | undefined;
+  /** DR-KEY-1 (D): "Retry review" under the not-run line, when the broker offered it to this person (`designActions.retry`), with how many retries are left. */
+  retry?: { left: string } | undefined;
   /** "Design review, round 1 of 2: reviewers reading the design." while it runs. */
   progress?: string | undefined;
   decisions: string[];
@@ -245,7 +247,7 @@ export const AWAITING_DESIGN_WORDS = "Waiting for the design";
  * What the Design tab shows, all of it. `note` is Understand's one-line reading, when the page has it. `designWritten` is whether the task has a design document yet (the caller reads the task's artifacts):
  * a review that is "estimating" with no rounds and no design is waiting for its first design, not working out a cost.
  */
-export function designTabModel(review: DesignReviewView, options: { note?: string | undefined; codeLinkBase?: CodeLinkBase | undefined; designWritten?: boolean | undefined } = {}): DesignTabModel {
+export function designTabModel(review: DesignReviewView, options: { note?: string | undefined; codeLinkBase?: CodeLinkBase | undefined; designWritten?: boolean | undefined; retry?: DesignActionsView["retry"] } = {}): DesignTabModel {
   const codeLinkBase = options.codeLinkBase, note = options.note ?? review.note;
   const approvals = (review.approvals ?? []).map((approval) => {
     switch (approval.kind) {
@@ -261,6 +263,7 @@ export function designTabModel(review: DesignReviewView, options: { note?: strin
     statusWords: review.status === "estimating" && review.rounds.length === 0 && options.designWritten === false ? AWAITING_DESIGN_WORDS : STATUS_WORDS[review.status], tierWords: TIER_WORDS[review.tier],
     cost: { estimate: usdWords(review.estimateUsd), spent: usdWords(review.spentUsd), limit: review.capUsd === undefined ? "not set" : usdWords(review.capUsd) },
     notRun: review.status === "not_run" && review.notRunReason !== undefined ? NOT_RUN_WORDS[review.notRunReason] : review.status === "stopped_at_cap" ? "Design review stopped because it reached the cost limit." : undefined,
+    retry: retryOffer(options.retry),
     progress: review.status === "running" ? `Design review, round ${String(Math.min(review.rounds.length + 1, 2))} of 2: reviewers reading the design.` : undefined,
     decisions: approvals,
     waiting: waiting === undefined ? undefined : waiting.closedAt !== undefined ? "Closed as not decided after a long wait for answers." : waiting.parkedAt !== undefined ? "Parked: nobody answered for 7 days. Answering resumes it." : "Waiting for answers.",
@@ -270,6 +273,12 @@ export function designTabModel(review: DesignReviewView, options: { note?: strin
     questions: questionLines(review, codeLinkBase),
     earlier: (review.earlierReviews ?? []).length === 0 ? undefined : `${String((review.earlierReviews ?? []).length)} earlier review${(review.earlierReviews ?? []).length === 1 ? "" : "s"} of designs that were sent back (their cost counts toward the limit).`,
   };
+}
+
+/** The "Retry review" button's words, only when the broker said this person may retry now. */
+export function retryOffer(retry: DesignActionsView["retry"]): { left: string } | undefined {
+  if (retry?.allowed !== true || retry.retriesLeft < 1) return undefined;
+  return { left: `${String(retry.retriesLeft)} ${retry.retriesLeft === 1 ? "retry" : "retries"} left` };
 }
 
 /** The Design tab appears only when the task view carries a design review (Rovara Code version 2 reads). Every other task page is exactly as it was. */

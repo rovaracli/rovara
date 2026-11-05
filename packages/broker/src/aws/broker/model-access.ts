@@ -63,7 +63,7 @@ import { SYSTEM_OWNER_REFUSAL, isSystemOwned } from "../../developer/system-owne
 import { requireTaskStopWindowContext, taskStopKeyActorChecks, withAdmittedTaskSource } from "../../org/task-stop-window.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { taskRecipeKey } from "../../developer/task-records.js";
-import { designReviewSlotOf, isSlotRefusal, resolveSlotAsk } from "./design-review-slot-access.js";
+import { designReviewSlotOf, isSlotRefusal, logSlotKeyRefused, resolveSlotAsk } from "./design-review-slot-access.js";
 import { plannerRunRoomUsd } from "../../design-review/resolve-budget.js";
 import { ownerStopTarget, ownerWorkRefusal, recordWorkRefused } from "../../developer/work-refusal.js";
 
@@ -253,6 +253,14 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
   try { claims = verifyCapability(dependencies, token, "model-access"); }
   catch { throw agentXError("AUTH_REQUIRED", "invalid callback capability"); }
   const operation = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
+  if (operation.designReview === undefined) return answerModelAccess(dependencies, request, claims, operation);
+  // DR-KEY-1: a design-review operation's key requests are all by slot; one that is refused, for whatever reason, is logged with its fixed code, so a refusal is never invisible.
+  try { return await answerModelAccess(dependencies, request, claims, operation); }
+  catch (error) { logSlotKeyRefused(operation.id, request.path, error); throw error; }
+}
+
+/** `handleModelAccess` once the capability is verified and its operation read. */
+async function answerModelAccess(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest, claims: CallbackClaims, operation: OperationRecord) {
   if (operation.fence !== claims.fence || operation.id !== claims.operationId || operation.workspaceId !== claims.workspaceId || operation.entityType !== "OPERATION") throw agentXError("STALE_FENCE", "callback operation binding is stale");
   if (TERMINAL.has(operation.status)) throw agentXError("STALE_FENCE", "terminal operations cannot ask for model access");
   const modelAccess = dependencies.modelAccess;

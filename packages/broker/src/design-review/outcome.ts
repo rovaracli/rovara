@@ -13,12 +13,13 @@ import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, blockWorkflow, closeDesignReview, retryDesignReview,
   WorkflowSnapshotSchema, addDesignUsd, type OperationStatus, type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { queryAllItems } from "../aws/admin-reads.js";
+import { queryAllItems, type AdminReadDependencies } from "../aws/admin-reads.js";
 import type { OperationRecord } from "../aws/cancellation.js";
 import type { AwsBrokerDependencies } from "../aws/broker/definitions.js";
 import { readObjectText, loadWorkflowDocument } from "../developer/plan-artifacts.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { criticFailures } from "../model-selection/task-failures.js";
+import { scopedTaskOperations } from "../model-selection/task-references.js";
 import { CRITIC_MODEL_ATTEMPTS_MAX, criticModelUnusable } from "../rovara-code/critic.js";
 import { recordDesignReviewRound, releaseDesignReviewRound, type RoundRecordPorts } from "./round-record.js";
 import { roundRecordPortsOf } from "./wiring.js";
@@ -30,6 +31,19 @@ async function mayTryNextModel(dependencies: AwsBrokerDependencies, task: Develo
     .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt))).at(-1);
   // This operation is not yet stored as failed: it is one more try than the stored ones.
   return criticFailures(operations.filter((item) => item.id !== operation.id), planner).sinceLatestPlan + 1 < CRITIC_MODEL_ATTEMPTS_MAX;
+}
+
+/**
+ * DR-KEY-1 review: whether the plan-check stage has used its model tries since the latest planning run, by the dispatch's own rule (task-operations.ts: the task's scoped operations, `criticFailures` since the
+ * latest PLAN, refused at CRITIC_MODEL_ATTEMPTS_MAX). A "Retry review" then could only be refused when it dispatches, so it is not offered. An unreadable history offers nothing either (fail closed).
+ */
+export async function planCheckModelTriesUsed(dependencies: Pick<AdminReadDependencies, "documentClient" | "tableName">, task: Pick<DeveloperTaskRecord, "orgId" | "workspaceId" | "conversationId" | "taskId">): Promise<boolean> {
+  if (task.orgId === undefined) return true;
+  try {
+    const operations = scopedTaskOperations(await queryAllItems(dependencies, `WORKSPACE#${task.workspaceId}`, "OPERATION#"), { orgId: task.orgId, workspaceId: task.workspaceId, conversationId: task.conversationId, taskId: task.taskId });
+    const planner = operations.filter((item) => item.workflowMode === "PLAN").sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+    return criticFailures(operations, planner).sinceLatestPlan >= CRITIC_MODEL_ATTEMPTS_MAX;
+  } catch { return true; }
 }
 
 /**

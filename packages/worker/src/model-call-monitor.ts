@@ -71,8 +71,10 @@ const PI_RETRY_CANCELLED = "Retry cancelled";
  * What AgentX's own keyed-provider transport (packages/model-runtime `safeError`) writes after "<Label> request failed; ": one fixed sentence chosen from the HTTP status alone. Each is matched whole, and only a
  * status comes out of it: `classify` is the status the classifier decides on, `report` the status that is certain (a class of statuses has none). None of the text is copied.
  */
-const TRANSPORT_DETAILS: ReadonlyMap<string, { classify: number; report?: number; chatgpt?: true }> = new Map([
+const TRANSPORT_DETAILS: ReadonlyMap<string, { classify: number; report?: number; chatgpt?: true; signal?: string }> = new Map([
   ["check the API key and its permissions", { classify: 401 }],
+  // The model proxy's 403 whose body says the account cannot use the model (model-runtime MODEL_NOT_ENABLED_DETAIL): read as `key-rejected ModelNotEnabled` below.
+  ["the model is not available for this account", { classify: 403, report: 403, signal: MODEL_NOT_ENABLED_SIGNAL }],
   ["check the key's credit balance and spending limit", { classify: 402, report: 402 }],
   ["check model availability and the provider allowlist", { classify: 404, report: 404 }],
   ["check the model ID and that the key's organization can use it", { classify: 404, report: 404 }],
@@ -108,9 +110,9 @@ function keyedFacts(provider: ModelProvider, message: Record<string, unknown>): 
   if (found.status === undefined) {
     const detail = TRANSPORT_FAILURE.exec(text)?.[1];
     const known = detail === undefined ? undefined : TRANSPORT_DETAILS.get(detail);
-    if (known !== undefined) { found.classifyStatus = known.classify; if (known.report !== undefined) found.status = known.report; if (known.chatgpt === true) found.chatgpt = true; }
+    if (known !== undefined) { found.classifyStatus = known.classify; if (known.report !== undefined) found.status = known.report; if (known.chatgpt === true) found.chatgpt = true; if (known.signal !== undefined) found.signal = known.signal; }
   }
-  for (const match of text.matchAll(BODY_TOKEN)) {
+  for (const match of found.signal === undefined ? text.matchAll(BODY_TOKEN) : []) {
     const token = match[1]!;
     if (classifyProviderFailure({ provider, signal: token }).class !== "unknown") { found.signal = token; break; }
   }

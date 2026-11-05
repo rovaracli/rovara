@@ -2,10 +2,11 @@
 // Each reviewer is a NEW pi session made by `createWorkspacePiSession` as an agent-run session: its own system prompt (the role prompt), no repository context files and no coding preamble, the
 // read-only file tools (nothing for the merge step), and no history. The one user message is sent by `design-review.ts`; this file only wires pi to the port.
 import { randomUUID } from "node:crypto";
-import { DESIGN_REVIEW_ARTIFACT, PACKET_DELIVERY_BYTES_MAX, agentXError, type DesignReviewBinding } from "@agentx/contracts";
+import { DESIGN_REVIEW_ARTIFACT, MODEL_NOT_ENABLED_CODE, PACKET_DELIVERY_BYTES_MAX, agentXError, type DesignReviewBinding, type DesignReviewWorkerResult } from "@agentx/contracts";
 import type { ArtifactSink } from "./artifacts.js";
 import { runDesignReview, modelKeyIdOf, type DesignReviewOptions, type DesignReviewPorts, type DesignReviewSession, type OpenDesignReviewSession } from "./design-review.js";
 import type { FileOpsTarget } from "./file-ops-exec.js";
+import type { ModelProxyOptions } from "@agentx/model-runtime";
 import { lazyModelProxy, modelAccessSource } from "./model-access.js";
 import { createWorkspacePiSession, type PiSessionAdapter, type WorkspaceModelConfiguration } from "./pi-session.js";
 import { assistantOutcome, failedTurn, type AssistantOutcome } from "./session-events.js";
@@ -20,6 +21,23 @@ const READ_TOOLS: ReadonlySet<string> = new Set(["read", "grep", "find", "ls"]);
 /** Whether this operation is the design-review form of the plan check. Plan check without the binding is unchanged. */
 export function designReviewBindingOf(payload: { workflowMode?: string | undefined; designReview?: DesignReviewBinding | undefined }): DesignReviewBinding | undefined {
   return payload.workflowMode === "PLAN_CRITIQUE" ? payload.designReview : undefined;
+}
+
+/** What a design-review operation's own session holds where a key would be. It is not a key: the proxy refuses it, so a call made with it fails closed. */
+export const DESIGN_REVIEW_NO_OPERATION_KEY = "design-review-operation-has-no-key";
+
+/**
+ * DR-KEY-1: the proxy of a task operation's own session (main.ts), or undefined on a worker with no model proxy. A design-review operation has no model key of its own: the broker hands out keys by slot
+ * only and refuses the operation's own (security S6). Its own session is still opened (its transcript and rule files) but never prompted, and opening a proxied session asks for its key at once, so
+ * that session holds `DESIGN_REVIEW_NO_OPERATION_KEY` and never asks the broker. Each reviewer asks for its slot's key itself (`slotRuntimeFor`). Any other operation asks for its own key, as before.
+ */
+export function operationModelProxy(input: { payload: { workflowMode?: string | undefined; designReview?: DesignReviewBinding | undefined }; proxyUrl: string | undefined; controlPlaneUrl: string; capability: string; fetch?: typeof fetch }): ModelProxyOptions | undefined {
+  if (input.proxyUrl === undefined || input.proxyUrl === "") return undefined;
+  if (designReviewBindingOf(input.payload) !== undefined) {
+    const baseUrl = input.proxyUrl;
+    return lazyModelProxy({ baseUrl, source: async () => ({ baseUrl, apiKey: DESIGN_REVIEW_NO_OPERATION_KEY, expiresAt: Number.MAX_SAFE_INTEGER }) });
+  }
+  return lazyModelProxy({ baseUrl: input.proxyUrl, source: modelAccessSource({ controlPlaneUrl: input.controlPlaneUrl, capability: input.capability, ...(input.fetch === undefined ? {} : { fetch: input.fetch }) }) });
 }
 
 /** The reviewer's packet from the broker's route, with the operation's capability. Bounded; anything but a JSON answer is an error (the reviewer then gives no result). */
@@ -148,6 +166,22 @@ export async function runDesignReviewOperation(input: {
 }): Promise<void> {
   const result = await runDesignReview(input.binding, input.ports, input.options);
   await input.artifactSink({ name: DESIGN_REVIEW_ARTIFACT, mediaType: "application/json", content: JSON.stringify(result) });
+  const unusable = modelUnusableRound(result);
+  if (unusable !== undefined) throw unusable;
+}
+
+/**
+ * DR-KEY-1 (C): a round in which NO reviewer gave a result because the account could not use the reviewers' model (every failure is `model_not_enabled` or `model_not_allowed`) ends the operation as the plan check's
+ * failure on that model does, so the broker tries the round again on the next model (`retryDesignReview`, bounded like the plan check's) instead of recording a review that did not run. The error carries the
+ * structured code (`modelFailureCode`) the broker learns from, and fixed words only. A round with any other failure, or any answer, is recorded as it ran.
+ */
+export function modelUnusableRound(result: DesignReviewWorkerResult): Error | undefined {
+  const failures = result.reviewers.map((reviewer) => (reviewer.status === "answered" ? undefined : reviewer.failure));
+  if (failures.length === 0 || failures.some((failure) => failure !== "model_not_enabled" && failure !== "model_not_allowed")) return undefined;
+  if (failures.every((failure) => failure === "model_not_enabled")) {
+    return Object.assign(agentXError("RUNTIME_UNAVAILABLE", `the model call failed: key-rejected ${MODEL_NOT_ENABLED_CODE} HTTP 403; the reviewers' model is not available for this account`), { modelFailureCode: MODEL_NOT_ENABLED_CODE });
+  }
+  return agentXError("MODEL_NOT_ALLOWED", "the reviewers' model cannot be used on this account right now");
 }
 
 /** What run-task.ts needs for a design-review operation: the packet source and the per-slot models. Built by main.ts from the invocation's capability. */
