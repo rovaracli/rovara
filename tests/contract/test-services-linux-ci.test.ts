@@ -635,8 +635,8 @@ describe("TS-SEAL egress capture (scripts/ci-egress-capture.sh) on the Docker 25
 
   it("the job's judge requires the egress line to be PASS when the capture was on, and ignores it when it was off", () => {
     const base = (): string[] => [
-      "TSL L1.walls PASS walls | ok", ...["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"].map((id) => `TSL ${id} PASS name | saw`),
-      "TSL L1.internal-drops PENDING x | later", "TSL L5.live PENDING x | later", "TSL L7.live PENDING x | later", "TSL L8.live PENDING x | later", "TSL SUMMARY pass=17 fail=0 pending=4",
+      "TSL L1.walls PASS walls | ok", ...["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.embedded-resolver-blocked", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"].map((id) => `TSL ${id} PASS name | saw`),
+      "TSL L1.internal-drops PENDING x | later", "TSL L5.live PENDING x | later", "TSL L7.live PENDING x | later", "TSL L8.live PENDING x | later", "TSL SUMMARY pass=18 fail=0 pending=4",
     ];
     const run = (lines: string[], egress: string): number | null => {
       const dir = mkdtempSync(join(tmpdir(), "tsl-judge-eg-"));
