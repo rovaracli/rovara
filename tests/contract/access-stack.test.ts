@@ -15,8 +15,10 @@ type Resource = { Type: string; Condition?: string; Properties: Record<string, u
 const resourcesOf = (stack: Stack) => Template.fromStack(stack).toJSON().Resources as Record<string, Resource>;
 /** Every statement granted to a role: the role's own Policies, each AWS::IAM::Policy, and the broker's named managed grant policies (ruling M2). */
 function roleStatements(resources: Record<string, Resource>): Statement[] {
+  /** A statement the hosted cloud's access stack grants only while the custom domain is set is an Fn::If; the check reads the statement it grants. */
+  const granted = (statement: Statement | { "Fn::If": [string, Statement, unknown] }): Statement => ("Fn::If" in statement ? statement["Fn::If"][1] : statement);
   return Object.values(resources).flatMap((r) => {
-    if (r.Type === "AWS::IAM::Role") return ((r.Properties.Policies ?? []) as { PolicyDocument: { Statement: Statement[] } }[]).flatMap((p) => p.PolicyDocument.Statement);
+    if (r.Type === "AWS::IAM::Role") return ((r.Properties.Policies ?? []) as { PolicyDocument: { Statement: Statement[] } }[]).flatMap((p) => p.PolicyDocument.Statement.map(granted));
     if (r.Type === "AWS::IAM::Policy") return (r.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
     if (r.Type === "AWS::IAM::ManagedPolicy" && /^agentx-.+-broker-/.test((typeof r.Properties.ManagedPolicyName === "string" ? r.Properties.ManagedPolicyName : ""))) return (r.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
     return [];
@@ -25,6 +27,8 @@ function roleStatements(resources: Record<string, Resource>): Statement[] {
 
 /** IAM's action wildcard: `*` matches any run of characters, case-insensitively. */
 const globMatches = (pattern: string, action: string) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i").test(action);
+/** The custom domain's grants (0.5.7) are by name, in their own statements, and exist only while a domain is set: the resource types they create are not "needed" in the wildcard sense. */
+const CUSTOM_DOMAIN_SERVICES: ReadonlySet<string> = new Set(["certificatemanager", "route53"]);
 const CLOUDFRONT_ALL_ACTIONS = [...new Set([...CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS, ...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS, ...CLOUDFRONT_DISTRIBUTION_ACTIONS, ...CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS, ...CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS, ...CLOUDFRONT_UNSCOPED_ACTIONS])];
 
 describe("access stack", () => {
@@ -57,7 +61,7 @@ describe("access stack", () => {
    * as a need would make the "nothing unused" checks circular.
    */
   const usedActions = () => new Set(environmentResources().flatMap(({ stack, resources }) => roleStatements(resources)
-    .filter((st) => !(stack.stackName === "agentx-staging-access" && (st.Sid === "Services" || st.Sid?.startsWith("CloudFront"))))
+    .filter((st) => !(stack.stackName === "agentx-staging-access" && (st.Sid === "Services" || st.Sid?.startsWith("CloudFront") || st.Sid?.startsWith("CustomDomain"))))
     .flatMap((st) => [st.Action].flat())));
 
   it("exists only for named environments, first in the app", () => {
@@ -155,7 +159,7 @@ describe("access stack", () => {
     // CloudFront is allowed by name too (distributions by environment tag, the rest by ARN), never `cloudfront:*`.
     expect(allowedServices.has("cloudfront")).toBe(false);
     expect([...CLOUDFRONT_ALL_ACTIONS].filter((action) => !CLOUDFRONT_BOUNDARY_ACTIONS.some((pattern) => globMatches(pattern, action)))).toEqual([]);
-    expect([...neededServices].filter((service) => !allowedServices.has(service) && !(service === "events" && allowed.has("events:*")) && service !== "appsync" && service !== "cloudfront")).toEqual([]);
+    expect([...neededServices].filter((service) => !allowedServices.has(service) && !(service === "events" && allowed.has("events:*")) && service !== "appsync" && service !== "cloudfront" && !CUSTOM_DOMAIN_SERVICES.has(service))).toEqual([]);
     // Every action a role uses is allowed by its service's wildcard or by name (IAM, STS and
     // Service Quotas only by name: servicequotas:GetServiceQuota is the operator's one scoped
     // quota read, never servicequotas:*).
@@ -256,7 +260,7 @@ describe("access stack", () => {
     const needed = resourceTypeServices();
     // IAM resource types (roles, instance profiles, and the broker's agentx-* managed policies, ruling M2) are created through
     // the service role's by-name IAM statements, never an iam:* wildcard.
-    expect([...needed].filter((service) => !SERVICE_ROLE_SERVICES.includes(service) && service !== "events" && service !== "iam" && service !== "appsync" && service !== "cloudfront")).toEqual([]);
+    expect([...needed].filter((service) => !SERVICE_ROLE_SERVICES.includes(service) && service !== "events" && service !== "iam" && service !== "appsync" && service !== "cloudfront" && !CUSTOM_DOMAIN_SERVICES.has(service))).toEqual([]);
     // AppSync (Events APIs and namespaces, Plan 5 Task 8) is created through its named actions, never `appsync:*`.
     const created = roleStatements(template.toJSON().Resources as Record<string, Resource>).find((st) => st.Sid === "AppSyncEvents")!;
     expect([...(created.Action as string[])].sort()).toEqual([...APPSYNC_EVENTS_ACTIONS].sort());

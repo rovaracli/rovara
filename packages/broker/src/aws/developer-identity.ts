@@ -28,6 +28,7 @@ import { syncBudgets } from "../org/budget.js";
 import { duplicateMerger } from "../org/merge-members.js";
 import { OrgStore } from "../org/store.js";
 import { unlockTrial } from "../org/trial.js";
+import { developerIssuers } from "../developer/custom-domain.js";
 import { trialAvailable } from "../org/trial-availability.js";
 import { createEditionGuard, editionBackupName, editionRecordName, installEditionPolicy, ssmEditionRecordReader } from "./broker/edition-wiring.js";
 import { SSMClient } from "@aws-sdk/client-ssm";
@@ -107,6 +108,12 @@ function githubConfigFromEnvironment(env: NodeJS.ProcessEnv): Pick<DeveloperIden
   return { github: { displayName: GITHUB_DISPLAY_NAME }, githubSettings: { clientId } };
 }
 
+/** The canonical issuer, and the API's own as `legacyIssuer` when a custom domain is set (DEVELOPER_CUSTOM_DOMAIN): one function, two addresses. */
+function issuersOf(env: NodeJS.ProcessEnv): Pick<DeveloperIdentityLambdaConfig, "issuer" | "legacyIssuer"> {
+  const { issuer, previousIssuer } = developerIssuers(required(env, "DEVELOPER_TOKEN_ISSUER"), env.DEVELOPER_CUSTOM_DOMAIN);
+  return { issuer, ...(previousIssuer === undefined ? {} : { legacyIssuer: previousIssuer }) };
+}
+
 export function developerIdentityConfigFromEnvironment(env: NodeJS.ProcessEnv): DeveloperIdentityLambdaConfig {
   const issuer = env.DEVELOPER_OIDC_ISSUER ?? "";
   const teamId = env.SLACK_TEAM_ID ?? "";
@@ -114,7 +121,7 @@ export function developerIdentityConfigFromEnvironment(env: NodeJS.ProcessEnv): 
     ...cloudConfigFromEnvironment(env),
     ...githubConfigFromEnvironment(env),
     env: required(env, "AGENTX_ENV"),
-    issuer: required(env, "DEVELOPER_TOKEN_ISSUER"),
+    ...issuersOf(env),
     slack: { enabled: env.DEVELOPER_SIGNIN_SLACK === "enabled", ...(teamId === "" ? {} : { teamId }), ...sinceFrom(env.DEVELOPER_SIGNIN_SLACK_SINCE) },
     // Spec 025 E16: absent means the pop-up is allowed; only named environments set it.
     ...(env.MCP_CONFIRM_ELICITATION === "disabled" ? { confirmElicitation: false } : {}),

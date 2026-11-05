@@ -6,6 +6,7 @@ import type { Construct } from "constructs";
 import { defaultBoundaryName, defaultBoundaryStatements, environmentRolePath, operatorRoleStatements, serviceRoleStatements, withoutSids } from "./access-policies.js";
 import type { AgentXNaming } from "./naming.js";
 import { OperatorAccess, type OperatorAccessSettings } from "./operator-access.js";
+import { CUSTOM_DOMAIN_NAME_PATTERN, CUSTOM_DOMAIN_ZONE_PATTERN } from "./custom-domain-patterns.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
 
 export interface AccessStackProps extends StackProps {
@@ -25,6 +26,11 @@ export interface AccessStackProps extends StackProps {
    * customer's suspend switch. Absent: none of it exists (Public, and every Enterprise install that does not ask for it).
    */
   operatorAccess?: OperatorAccessSettings;
+  /**
+   * The hosted cloud (agentxCloud context): the stack takes the control plane's custom domain name and hosted zone as parameters (both empty by default), and the deploy
+   * role is granted Certificate Manager and Route 53 access for that name and that zone only while they are set. Without the context the stack is unchanged.
+   */
+  cloud?: boolean;
 }
 
 /**
@@ -36,7 +42,7 @@ export interface AccessStackProps extends StackProps {
 export class AccessStack extends Stack {
   constructor(scope: Construct, id: string, props: AccessStackProps) {
     super(scope, id, props);
-    const { naming, rovaraOrganizationId, bundleImageRepositories, operatorAccess } = props;
+    const { naming, rovaraOrganizationId, bundleImageRepositories, operatorAccess, cloud } = props;
     const env = naming.env;
     if (env === undefined) throw new Error("the access stack exists only for named environments");
     const ecsFailureRuleArn = Fn.sub(`arn:${"${AWS::Partition}"}:events:${"${AWS::Region}"}:${"${AWS::AccountId}"}:rule/agentx-${env}-*-service-failures`);
@@ -100,6 +106,16 @@ export class AccessStack extends Stack {
       repository.applyRemovalPolicy(RemovalPolicy.RETAIN);
     }
 
+    // 0.5.7: the same two parameters the control-plane stack takes (infra/lib/custom-domain.ts), so the deploy role's grants name exactly this domain and zone.
+    // The grants exist only while both are set (each statement is an Fn::If below); with the defaults the role has none of them.
+    const customDomainParameters = cloud !== true ? undefined : {
+      name: new CfnParameter(this, "CustomDomainName", { type: "String", default: "", allowedPattern: CUSTOM_DOMAIN_NAME_PATTERN, maxLength: 64, description: "The control plane's custom domain name; the deploy role may request a certificate for it. Empty: none" }),
+      zone: new CfnParameter(this, "CustomDomainHostedZoneId", { type: "String", default: "", allowedPattern: CUSTOM_DOMAIN_ZONE_PATTERN, description: "The Route 53 hosted zone that holds the custom domain's DNS; the deploy role may change records in this zone only. Empty: none" }),
+    };
+    const customDomainSet = customDomainParameters === undefined ? undefined : new CfnCondition(this, "CustomDomainEnabled", {
+      expression: Fn.conditionAnd(Fn.conditionNot(Fn.conditionEquals(customDomainParameters.name.valueAsString, "")), Fn.conditionNot(Fn.conditionEquals(customDomainParameters.zone.valueAsString, ""))),
+    });
+    const customDomain = customDomainParameters === undefined ? undefined : { domainName: customDomainParameters.name.valueAsString, hostedZoneId: customDomainParameters.zone.valueAsString };
     const policyScope = {
       env,
       partition: Aws.PARTITION,
@@ -110,10 +126,12 @@ export class AccessStack extends Stack {
       artifactBucketArn: bucket.bucketArn,
       pullThroughPrefix: naming.pullThroughPrefix,
       cloudFormationRoleName: naming.cloudFormationRoleName,
+      ...(customDomain === undefined ? {} : { customDomain }),
     };
     // The boundary Deny statements always apply and name the effective boundary.
     const serviceStatements = serviceRoleStatements({ ...policyScope, permissionsBoundaryArn: effectiveBoundaryArn })
-      .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement);
+      .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement)
+      .map((statement) => customDomainSet !== undefined && statement.Sid.startsWith("CustomDomain") ? Fn.conditionIf(customDomainSet.logicalId, statement, Aws.NO_VALUE) : statement);
 
     // Built before the deploy role, which gains the one statement it needs to read the templates the customer approved.
     const operatorAccessConstruct = operatorAccess === undefined ? undefined : new OperatorAccess(this, "RovaraOperatorAccess", { naming, settings: operatorAccess });

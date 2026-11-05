@@ -164,6 +164,12 @@ export function upgradeKeptParameterNames(part: DeployPart): ReadonlySet<string>
   return new Set([...OPERATOR_PARAMETERS[part], ...SECRET_PARAMETERS]);
 }
 
+/** `controlPlaneUrl` is the PublicUrl output when there is one; `apiEndpoint` is recorded only when the two differ. */
+export function publicAddresses(apiEndpoint: string, publicUrl: string | undefined): { controlPlaneUrl: string; apiEndpoint?: string } {
+  if (publicUrl === undefined || publicUrl === "" || publicUrl === apiEndpoint) return { controlPlaneUrl: apiEndpoint };
+  return { controlPlaneUrl: publicUrl, apiEndpoint };
+}
+
 /** Throws the exact message a missing stack output must report, naming the real (`environment`-naming) stack name. */
 function requiredOutput(outputs: Partial<Record<DeployPart, StackOutputs>>, part: DeployPart, name: string, env: string): string {
   const value = outputs[part]?.[name];
@@ -398,7 +404,8 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
         "control-plane": controlPlaneStack,
         slack: slackStack,
       },
-      controlPlaneUrl: requiredOutput(outputs, "control-plane", "ApiEndpoint", env),
+      // 0.5.7: the address people use is the PublicUrl output (the custom domain when one is set, else the API's own); the API's own is kept beside it for machines.
+      ...publicAddresses(requiredOutput(outputs, "control-plane", "ApiEndpoint", env), outputs["control-plane"]?.PublicUrl),
       identity: identitySettings,
       models: answers.models,
       ...(answers.cloud === true ? { cloud: true as const } : {}),

@@ -147,17 +147,22 @@ export function registerSigninCommands(program: Command, context: SigninCommandC
     .option("--google-client-secret-arn <arn>", "the Secrets Manager secret holding the Google client secret as {\"clientSecret\": ...}; its name must start with agentx/<env>/")
     .option("--email-from <sender>", "send sign-in codes from this Amazon SES sender, \"Name <address>\" or an address; its domain must be verified in SES in the environment's region")
     .option("--no-email-from", "send sign-in codes from Amazon Cognito's default sender again")
+    .option("--custom-domain <name>", "put the control plane at this DNS name too, for example staging.rovara.dev (with --hosted-zone-id); applied by the next agentx upgrade. The API's own address keeps working")
+    .option("--hosted-zone-id <id>", "the Route 53 hosted zone, in this account, that holds the custom domain's DNS; only the domain's own records are added to it")
+    .option("--no-custom-domain", "take the custom domain off again (the API's own address was never turned off)")
     .option("--no-github", "turn GitHub sign-in off")
     .option("--no-google", "turn Google sign-in off")
     .option(regionOption, regionHelp)
     .option("--yes", "apply without asking; the change is still printed", false)
-    .action(async (options: { githubClientId?: string; githubClientSecretArn?: string; googleClientId?: string; googleClientSecretArn?: string; emailFrom?: string | false; github: boolean; google: boolean; region?: string; yes: boolean }, command: Command) => {
+    .action(async (options: { githubClientId?: string; githubClientSecretArn?: string; googleClientId?: string; googleClientSecretArn?: string; emailFrom?: string | false; customDomain?: string | false; hostedZoneId?: string; github: boolean; google: boolean; region?: string; yes: boolean }, command: Command) => {
       const globals = globalOptions(command);
       const flags = definedEntries<CloudSignInFlags>({
         githubClientId: options.githubClientId, githubClientSecretArn: options.githubClientSecretArn,
         googleClientId: options.googleClientId, googleClientSecretArn: options.googleClientSecretArn,
         // With both --email-from and --no-email-from declared, commander sets false for the negated one.
         emailFrom: typeof options.emailFrom === "string" ? options.emailFrom : undefined, noEmailFrom: options.emailFrom === false ? true : undefined,
+        customDomain: typeof options.customDomain === "string" ? options.customDomain : undefined, noCustomDomain: options.customDomain === false ? true : undefined,
+        hostedZoneId: options.hostedZoneId,
         // commander names a lone --no-<x> option <x>, true unless the flag was given.
         noGithub: options.github ? undefined : true, noGoogle: options.google ? undefined : true,
       });

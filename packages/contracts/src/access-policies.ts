@@ -18,6 +18,12 @@ export interface PolicyScope {
    * boundary's AssumeOrgRoles statement excludes every account of that organization, not only this one; when not, it excludes this account alone.
    */
   rovaraOrganizationId?: string;
+  /**
+   * 0.5.7, hosted cloud installs with a custom domain (infra/lib/custom-domain.ts): the name and the Route 53 hosted zone that holds its DNS. The service role then
+   * (and only then) may request a certificate for that name, manage its certificates, and change records in that one zone. Absent: none of it is granted.
+   * The values may be CDK tokens (the access stack passes its parameters).
+   */
+  customDomain?: { domainName: string; hostedZoneId: string };
 }
 
 export interface PolicyStatementJson {
@@ -29,6 +35,32 @@ export interface PolicyStatementJson {
   NotResource?: string | string[];
   Condition?: Record<string, Record<string, string | string[]>>;
 }
+
+/**
+ * The deploy (service) role's grants for the optional custom domain, and nothing else in Certificate Manager or Route 53:
+ *  - RequestCertificate takes no resource (the certificate does not exist yet), so it is on "*", limited to this region and to the one domain name;
+ *  - the rest of the certificate's life (describe while it validates, tags, delete) is on this account's and region's certificates;
+ *  - the records (the DNS validation CNAME CloudFormation writes, and the alias A and AAAA records) are changed in the one hosted zone, and read there;
+ *  - GetChange waits for a change to reach the name servers; it names a change id, which cannot be known in advance.
+ * Not in the permissions boundary: no role CloudFormation creates ever calls these.
+ */
+const customDomainStatements = (scope: Pick<PolicyScope, "partition" | "region" | "account" | "customDomain">): PolicyStatementJson[] => {
+  const domain = scope.customDomain;
+  if (domain === undefined) return [];
+  return [
+    {
+      Sid: "CustomDomainCertificateRequest", Effect: "Allow", Action: ["acm:RequestCertificate"], Resource: "*",
+      Condition: { StringEquals: { "aws:RequestedRegion": scope.region }, "ForAllValues:StringEquals": { "acm:DomainNames": [domain.domainName] } },
+    },
+    {
+      Sid: "CustomDomainCertificates", Effect: "Allow",
+      Action: ["acm:DescribeCertificate", "acm:DeleteCertificate", "acm:AddTagsToCertificate", "acm:RemoveTagsFromCertificate", "acm:ListTagsForCertificate"],
+      Resource: `arn:${scope.partition}:acm:${scope.region}:${scope.account}:certificate/*`,
+    },
+    { Sid: "CustomDomainRecords", Effect: "Allow", Action: ["route53:ChangeResourceRecordSets", "route53:ListResourceRecordSets"], Resource: `arn:${scope.partition}:route53:::hostedzone/${domain.hostedZoneId}` },
+    { Sid: "CustomDomainChanges", Effect: "Allow", Action: ["route53:GetChange"], Resource: `arn:${scope.partition}:route53:::change/*` },
+  ];
+};
 
 /** Only this environment's uniquely named ECS deployment-failure rule. */
 function ecsFailureRuleArn(scope: Pick<PolicyScope, "env" | "partition" | "region" | "account">): string {
@@ -470,6 +502,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
     ...appsyncEvents(scope),
     ...cloudFrontStatements(scope),
+    ...customDomainStatements(scope),
     { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: withRootRoles },
     fixedNameRoleLookupStatement(scope),
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },

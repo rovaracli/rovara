@@ -322,6 +322,53 @@ Developers need no AWS credentials: they run `npx @preplabsai/rovara-code login 
 To hand tasks to Rovara from Claude Code, Codex or Cursor, and to share them to Slack, they follow
 [docs/mcp-install.md](mcp-install.md).
 
+## A custom domain for the control plane (Rovara Cloud)
+
+Optional, for a Rovara Cloud install deployed with the cdk engine. It puts the control plane (the web app at `/app`, sign-in at `/v1/auth`) at a name you own, for example `https://staging.rovara.dev`, in front of the same HTTP API. Off by default: with nothing set, no resource is added and no address changes.
+
+What it adds, and only this: a regional certificate for the name (validated by a DNS record that CloudFormation writes in your hosted zone), an API Gateway domain name with one mapping to the API's `$default` stage, and alias `A` and `AAAA` records for the name. It never reads or changes any other record in the zone, so a zone that also serves a website at its apex (rovara.dev serves GitHub Pages there) is not touched. The hosted zone must be in the same AWS account as the install.
+
+### Set it
+
+```sh
+agentx --env <env> signin cloud --custom-domain staging.rovara.dev --hosted-zone-id Z0123456789ABCDEFGHIJ
+agentx --env <env> upgrade --region <region>
+```
+
+The first command only records the two values in the environment's settings (nothing in AWS changes; `--no-custom-domain` records their removal). The upgrade applies them, access stack first: the deploy role (the CloudFormation service role in the access stack) gains grants for this name and this one zone, and nothing else, and then the control plane gets the certificate, domain name, mapping and records. Certificate validation usually takes a few minutes; the control plane stack waits for it. The upgrade then records the new address as the environment's `controlPlaneUrl` (the API's own address stays recorded beside it for machine callers).
+
+The deploy role's new grants, present only while a name and a zone are set (statement ids `CustomDomain*`): `acm:RequestCertificate` for exactly that domain name in the install's region; `acm:DescribeCertificate`, `DeleteCertificate`, `AddTagsToCertificate`, `RemoveTagsFromCertificate` and `ListTagsForCertificate` on this account's and region's certificates; `route53:ChangeResourceRecordSets` and `ListResourceRecordSets` on that one hosted zone; `route53:GetChange` on `change/*` (a change id cannot be known in advance). API Gateway domain names and mappings are already covered by the role's `apigateway:*`. If the first upgrade is refused for a missing action, the error names it: add that one action to the statement and report it.
+
+### Register the new address with the sign-in apps (by hand, before people use it)
+
+The sign-in redirect addresses are built from the name, so each provider that lists them must list the new one. The old addresses can stay listed, so sign-in through the API's own address keeps working while you move.
+
+1. **Slack, "Sign in with Slack"**: at api.slack.com/apps, open the install's Slack app, OAuth & Permissions, Redirect URLs, add `https://<name>/v1/auth/callback/slack`, save. `agentx --env <env> signin check` then tests it ("Slack redirect URL").
+2. **GitHub sign-in (OAuth app)**: GitHub allows one callback URL per OAuth app. Set it to the stack output `CloudIdentityGitHubCallbackUrl` (`https://<name>/v1/auth/callback/github`). From then on, signing in with GitHub through the API's own address is refused by GitHub; the other methods are unaffected. `agentx signin cloud` prints this URL when GitHub sign-in is on.
+3. **Google**: nothing. Google redirects to the Cognito hosted domain, which does not move. The Cognito app client's callback list is updated by the upgrade and keeps both addresses.
+4. Company sign-in with OpenID Connect or SAML, if the install uses it: add `https://<name>/v1/auth/callback/oidc` (OpenID Connect), or for SAML the assertion consumer URL `https://<name>/v1/auth/callback/saml` and the metadata URL `https://<name>/v1/auth/saml/metadata`, at the identity provider.
+
+Not moved on purpose: the Slack app's event and interactivity URLs, the GitHub App's webhook, setup and callback URLs, the event-hook URLs, and every address the workers and services call. These are machine calls that keep using the API's own address (workers and services reach it through the VPC endpoint and the egress allow-list, which a public name would not pass). Invite links still point at `ROVARA_WEB_ORIGIN` (default `https://rovara.dev/join`), which forwards by `web/rovara-dev-join/cell.json`; changing `cellUrl` there is a separate change to the public site, made after the checks below pass.
+
+### Check it after the upgrade
+
+1. `agentx --env <env> env use` (refreshes this computer's record), then `agentx --env <env> signin check`: the control plane offers exactly the enabled methods under the new issuer, and Slack lists the redirect URL.
+2. `curl -s https://<name>/v1/auth/.well-known/agentx-configuration`: `issuer` and the endpoints are on `https://<name>`. The same call on the API's own address answers with its own address as the issuer.
+3. Open `https://<name>/app` in a private window and sign in with each method that is on. Open a task link from Slack: it is on the new name.
+4. `agentx login https://<name>` works, and so does `agentx login <the API's own address>` (the sign-in then runs as that address).
+5. A page opened on the API's own address (`/app`, a task review page `/review/...`) redirects to the same path on the new name. Slack event delivery and GitHub webhook deliveries still arrive (no change to check them: their addresses did not move).
+6. Browser sessions are per host (`__Host-` cookies): everyone signs in once on the new name. A developer token signed under the API's own address stays valid until it expires (one hour); a refresh token is exchanged at whichever address the command line signed in to.
+
+`agentx --env <env> doctor` reports the GitHub webhook against the API's own address, as before.
+
+### Roll back
+
+The API's own address never stops working, so there is no outage to undo. To take the name off:
+
+1. `agentx --env <env> signin cloud --no-custom-domain`, then `agentx --env <env> upgrade --region <region>` (access stack first, then the control plane). The certificate, domain name, mapping and the alias and validation records are removed with the stack's resources; the zone's other records are not touched. The recorded address returns to the API's own.
+2. Put the Slack and GitHub OAuth redirect addresses back to the API's own (the Slack list may keep both; GitHub holds one). People signed in on the name sign in again; tokens signed under the name stop being accepted at the next deploy.
+3. Do this before downgrading to a release older than 0.5.7: that release's templates do not declare the two parameters, and CloudFormation refuses a parameter its template lacks.
+
 ## GitHub connection requests (Rovara Cloud)
 
 Only the Rovara operator can redeliver an `installation.created` webhook, from the GitHub App's settings (Advanced, Recent Deliveries), and only within about 3 days of the delivery: use it when an approved "ask my GitHub admin" request was not bound because GitHub or the control plane was down (the request stays waiting and a redelivery retries it).

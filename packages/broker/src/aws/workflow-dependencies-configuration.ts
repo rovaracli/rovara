@@ -1,3 +1,4 @@
+import { developerIssuers } from "../developer/custom-domain.js";
 import type { DeveloperApiConfiguration } from "./developer-routes.js";
 import { developerSinceFromEnvironment } from "./developer-routes.js";
 import { webOriginFromEnvironment } from "../org/invite-url.js";
@@ -17,11 +18,13 @@ type DeveloperApiIntegrations = Omit<DeveloperApiConfiguration,
 /** The deployed developer configuration factory; transports remain injected and this seam is directly contract-tested. */
 export function createDeveloperApiConfiguration(
   environment: Record<string, string | undefined>,
-  integrations: (issuer: string, identityFunctionName: string) => DeveloperApiIntegrations,
+  integrations: (issuer: string, identityFunctionName: string, previousIssuer?: string) => DeveloperApiIntegrations,
   inviteTaskPerson?: DeveloperApiConfiguration["inviteTaskPerson"],
 ): DeveloperApiConfiguration | undefined {
-  const issuer = environment.DEVELOPER_TOKEN_ISSUER;
-  if (!issuer) return undefined;
+  const ownIssuer = environment.DEVELOPER_TOKEN_ISSUER;
+  if (!ownIssuer) return undefined;
+  // 0.5.7: with a custom domain (DEVELOPER_CUSTOM_DOMAIN) it is the canonical address and the API's own is the previous issuer.
+  const { issuer, previousIssuer } = developerIssuers(ownIssuer, environment.DEVELOPER_CUSTOM_DOMAIN);
   // The sign-in function by name (Lambda's Invoke takes a name as it takes an ARN): the variable is held to Lambda's 4 KB with the rest
   // of the broker's. An ARN still works, for an environment that gives one.
   const identityFunctionName = environment.DEVELOPER_IDENTITY_FUNCTION_NAME || environment.DEVELOPER_IDENTITY_FUNCTION_ARN;
@@ -32,9 +35,10 @@ export function createDeveloperApiConfiguration(
   if (!env) throw new Error("AGENTX_ENV is required");
   const slackTeamId = environment.SLACK_TEAM_ID ?? "";
   return {
-    ...integrations(issuer, identityFunctionName),
-    reservedIssuers: [issuer, environment.DEVELOPER_OIDC_ISSUER, environment.DEVELOPER_CLOUD_ISSUER, SLACK_OIDC_ISSUER, GITHUB_ISSUER].filter((value): value is string => value !== undefined && value !== ""),
+    ...integrations(issuer, identityFunctionName, previousIssuer),
+    reservedIssuers: [issuer, previousIssuer, environment.DEVELOPER_OIDC_ISSUER, environment.DEVELOPER_CLOUD_ISSUER, SLACK_OIDC_ISSUER, GITHUB_ISSUER].filter((value): value is string => value !== undefined && value !== ""),
     issuer,
+    ...(previousIssuer === undefined ? {} : { previousIssuer }),
     env,
     methods: { slack: environment.DEVELOPER_SIGNIN_SLACK === "enabled", oidc: (environment.DEVELOPER_OIDC_ISSUER ?? "") !== "", cloud: (environment.DEVELOPER_CLOUD_ISSUER ?? "") !== "",
       // GitHub sign-in needs a cloud install and a configured GitHub OAuth app (the client id is not a secret; the sign-in function holds the secret).

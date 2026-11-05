@@ -14,6 +14,7 @@ import { routeSecondReviewEvidence } from "./second-review-evidence-routes.js";
 import { isSlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { ProcessModelRefusal, processModelRefusalBody } from "../../model-selection/process-refusal.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "../task-web.js";
+import { legacyHostRedirect } from "../../developer/legacy-host-redirect.js";
 import { withDecideIsolation } from "../../developer/confirm-page.js";
 import { authenticateWebRequest, webRouteAllowed } from "../web-auth.js";
 import { appCsrfTokenFor } from "../../developer/app-csrf.js";
@@ -597,6 +598,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // The audit page (`/v1/app/audit/view`) is a browser page of the same kind: its own session cookie, no API Gateway authorizer.
       if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || isAuditViewPath(url.pathname)) {
         if (!(url.pathname.startsWith("/review/") || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
+        // 0.5.7: on the API's own address these pages go to the custom domain, where their cookies and sign-in live.
+        const moved = legacyHostRedirect({ issuer: dependencies.developer.issuer, previousIssuer: dependencies.developer.previousIssuer, method: request.method, headers: request.headers, path: request.path });
+        if (moved !== undefined) return moved;
         return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),

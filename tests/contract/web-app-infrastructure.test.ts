@@ -61,11 +61,11 @@ describe("named web hosting and isolated throttle budgets", () => {
   expect(behavior.Compress).toBe(true);expect(behavior.ViewerProtocolPolicy).toBe("https-only");expect(behavior.AllowedMethods).toEqual(["GET", "HEAD"]);expect(behavior.CachePolicyId).toBe("658327ea-f89d-4fab-a63d-7e88639e58f6");expect(distribution.PriceClass).toBe("PriceClass_100");
   const origins = distribution.Origins as Array<Record<string, unknown>>;expect(origins[0]!.OriginAccessControlId).toBeTruthy();
   const headers = record(ofType(hosted, "AWS::CloudFront::ResponseHeadersPolicy")[0]![1].Properties.ResponseHeadersPolicyConfig), cors = record(headers.CorsConfig), security = record(headers.SecurityHeadersConfig);
-  expect(record(cors.AccessControlAllowOrigins).Items).toEqual([{ "Fn::GetAtt": [ofType(hosted, "AWS::ApiGatewayV2::Api")[0]![0], "ApiEndpoint"] }]);expect(record(security.ContentTypeOptions).Override).toBe(true);expect(record(security.StrictTransportSecurity).AccessControlMaxAgeSec).toBeGreaterThan(0);
+  const own = { "Fn::GetAtt": [ofType(hosted, "AWS::ApiGatewayV2::Api")[0]![0], "ApiEndpoint"] };const items = record(record(cors.AccessControlAllowOrigins).Items)["Fn::If"] as unknown[];expect(items[0]).toBe("CustomDomainEnabled");expect(items[2]).toEqual([own]);expect((items[1] as unknown[])[1]).toEqual(own);expect(record(security.ContentTypeOptions).Override).toBe(true);expect(record(security.StrictTransportSecurity).AccessControlMaxAgeSec).toBeGreaterThan(0);
  });
  it("gives the 256 MB, ten-second web function only log permissions", () => {
   const [, fn] = webFunction(hosted);expect(fn.Properties.Runtime).toBe("nodejs22.x");expect(fn.Properties.MemorySize).toBe(256);expect(fn.Properties.Timeout).toBe(10);expect(fn.Properties.TracingConfig).toBeUndefined();
-  const environment = record(record(fn.Properties.Environment).Variables);expect(environment.ASSET_ORIGIN).toBeTruthy();expect(Object.keys(environment).sort()).toEqual(["ASSET_ORIGIN", "REALTIME_HTTP_HOST", "REALTIME_WS_HOST", "ROVARA_EDITION"]);
+  const environment = record(record(fn.Properties.Environment).Variables);expect(environment.ASSET_ORIGIN).toBeTruthy();expect(Object.keys(environment).sort()).toEqual(["ASSET_ORIGIN", "CANONICAL_ORIGIN", "REALTIME_HTTP_HOST", "REALTIME_WS_HOST", "ROVARA_EDITION"]);
   const roleId = (record(fn.Properties.Role)["Fn::GetAtt"] as string[])[0]!;const role = hosted.Resources[roleId]!;
   const policies = ofType(hosted, "AWS::IAM::Policy").filter(([, policy]) => JSON.stringify(policy.Properties.Roles).includes(roleId));
   for (const [, policy] of policies) for (const statement of statements(policy.Properties.PolicyDocument)) expect([statement.Action].flat().every(action => typeof action === "string" && action.startsWith("logs:"))).toBe(true);

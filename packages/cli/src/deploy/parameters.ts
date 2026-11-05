@@ -262,6 +262,15 @@ function adminParameters(identity: InstallAnswers["identity"]): Record<string, s
   return { AdminClaim: adminClaim, AdminValues: JSON.stringify(adminValues) };
 }
 
+/**
+ * 0.5.7: the custom domain's two parameters. Sent only when a domain is set (a template from before them never sees them). The access stack
+ * takes the same two, so the deploy role's Certificate Manager and Route 53 grants are limited to this name and this hosted zone; the
+ * control-plane stack takes them to create the certificate, the domain name, the mapping and the records.
+ */
+export function customDomainParameters(signIn: CloudSignInAnswers | undefined): Record<string, string> {
+  return signIn?.customDomainName === undefined || signIn.customDomainHostedZoneId === undefined ? {} : { CustomDomainName: signIn.customDomainName, CustomDomainHostedZoneId: signIn.customDomainHostedZoneId };
+}
+
 /** The cloud control plane's sign-in parameters (R46): Google only when a client id is set, the domain prefix only when named. */
 function cloudSignInParameters(signIn: CloudSignInAnswers | undefined): Record<string, string> {
   return {
@@ -274,6 +283,7 @@ function cloudSignInParameters(signIn: CloudSignInAnswers | undefined): Record<s
     // Sign-in codes from a branded Amazon SES sender (Task 7): the template sends with SES only when both are non-empty.
     ...(signIn?.emailFrom === undefined ? {} : { CloudSignInEmailFrom: signIn.emailFrom }),
     ...(signIn?.emailSourceArn === undefined ? {} : { CloudSignInEmailSourceArn: signIn.emailSourceArn }),
+    ...customDomainParameters(signIn),
   };
 }
 
@@ -299,7 +309,7 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
   const routing = openRouter?.providers ? { OpenRouterProviders: openRouter.providers.join(",") } : {};
   switch (part) {
     case "access":
-      return { ...base, OperatorPrincipalArn: answers.operatorPrincipalArn ?? "" };
+      return { ...base, OperatorPrincipalArn: answers.operatorPrincipalArn ?? "", ...(answers.cloud === true ? customDomainParameters(answers.cloudSignIn) : {}) };
 
     case "foundation":
       return base;

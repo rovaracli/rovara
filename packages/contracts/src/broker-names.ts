@@ -219,6 +219,8 @@ export const BROKER_SETTINGS = {
   githubAppId: { code: "gi", variable: "GITHUB_APP_ID" },
   developerGithubClientId: { code: "gc", variable: "DEVELOPER_GITHUB_CLIENT_ID" },
   webFeatures: { code: "wf", variable: "WEB_FEATURES" },
+  // 0.5.7: the hosted cloud's custom domain name (empty when none). With a name the broker takes `https://<name>/v1/auth` as the sign-in issuer and the API's own address as the previous one.
+  customDomain: { code: "cd", variable: "DEVELOPER_CUSTOM_DOMAIN" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

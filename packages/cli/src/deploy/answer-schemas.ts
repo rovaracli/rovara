@@ -44,7 +44,10 @@ export const CloudSignInAnswersSchema = z.object({
   /** Sign-in codes from a branded Amazon SES sender (Task 7): `Name <address>` or an address, and the ARN of the verified SES identity (the domain) that sends it. Optional, and together. */
   emailFrom: z.string().min(3).max(320).optional(),
   emailSourceArn: z.string().max(2048).regex(/^arn:aws[a-z-]*:ses:[a-z0-9-]+:\d{12}:identity\/\S+$/).optional(),
-}).strict().refine((answers) => (answers.emailFrom === undefined) === (answers.emailSourceArn === undefined), { message: "emailFrom and emailSourceArn go together", path: ["emailFrom"] });
+  /** 0.5.7: a custom domain in front of the control plane (a DNS name in a Route 53 hosted zone of this account), for example staging.rovara.dev. Optional, and together. */
+  customDomainName: z.string().max(64).regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/).optional(),
+  customDomainHostedZoneId: z.string().regex(/^Z[A-Z0-9]{4,31}$/).optional(),
+}).strict().refine((answers) => (answers.customDomainName === undefined) === (answers.customDomainHostedZoneId === undefined), { message: "customDomainName and customDomainHostedZoneId go together", path: ["customDomainName"] }).refine((answers) => (answers.emailFrom === undefined) === (answers.emailSourceArn === undefined), { message: "emailFrom and emailSourceArn go together", path: ["emailFrom"] });
 export type CloudSignInAnswers = z.infer<typeof CloudSignInAnswersSchema>;
 
 /** Said wherever the prebuilt-templates engine would be used for a cloud environment (R45): the release's templates are synthesized without the cloud switch. */

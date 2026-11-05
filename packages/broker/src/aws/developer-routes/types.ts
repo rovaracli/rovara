@@ -83,7 +83,10 @@ export interface DeveloperApiConfiguration {
    * equal to one of them is refused when the settings are saved. A defence beside the method prefix in every SAML account key.
    */
   reservedIssuers?: readonly string[];
-  issuer: string; env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean; github?: boolean; saml?: boolean }; slackTeamId?: string;
+  issuer: string;
+  /** 0.5.7: with a custom domain, the API's own issuer, whose tokens are still accepted until they expire (`issuer` is then the custom domain's). */
+  previousIssuer?: string;
+  env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean; github?: boolean; saml?: boolean }; slackTeamId?: string;
   /** Each method's enabled-since cutoff, epoch seconds (FR-045): a session started before it was ended by a disable. */
   since?: { slack?: number; oidc?: number; cloud?: number; github?: number; saml?: number };
   signInTableName: string;

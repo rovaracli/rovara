@@ -14,7 +14,10 @@ export const EnvironmentSettingsSchema = z.object({
   /** Legacy for a deployment adopted with fixed stack names. */
   naming: z.enum(["environment", "legacy"]),
   stacks: z.object({ access: z.string().optional(), foundation: z.string(), identity: z.string().optional(), runtime: z.string(), "control-plane": z.string(), slack: z.string() }).strict(),
+  /** The address people and the agentx command use: the control plane's custom domain when it has one, else its API's own address. */
   controlPlaneUrl: z.string().url(),
+  /** 0.5.7: the API's own address, recorded only when `controlPlaneUrl` is a custom domain. Machine callers (the GitHub App's webhook, the Slack app's event URLs) stay on it. */
+  apiEndpoint: z.string().url().optional(),
   identity: z.object({
     mode: z.enum(["cognito", "oidc"]),
     issuer: z.string().url(),
@@ -41,6 +44,9 @@ export const EnvironmentSettingsSchema = z.object({
 }).strict();
 
 export type EnvironmentSettings = z.infer<typeof EnvironmentSettingsSchema>;
+
+/** The address machines call (webhooks, service calls): the API's own, which keeps answering when a custom domain is in front of it. */
+export const machineEndpoint = (settings: Pick<EnvironmentSettings, "controlPlaneUrl" | "apiEndpoint">): string => settings.apiEndpoint ?? settings.controlPlaneUrl;
 
 export function settingsParameterName(env: string): string {
   return `${environmentSettingsPrefix(env)}settings`;
