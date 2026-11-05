@@ -217,7 +217,10 @@ if [[ -z "$at_isolation" ]]; then fails="no-rvi-to-rvi-isolation-drop"
 else opened=$(rvi_opened_before DOCKER-USER "$DOCKER_USER" "$at_isolation"); [[ -z "$opened" ]] || fails="rvi-opened-above-the-isolation-drop(lines:${opened% })"; fi
 verdict L1.isolation rvi-to-rvi-isolation-drop-present "$fails" "DOCKER-USER drops -i rvi+ -o rvi+ that is not bridged, at line ${at_isolation:-?}"
 
-# ---- TS-L1 (Docker is new enough): CVE-2024-29018, an internal network's containers could have DNS queries forwarded out by the daemon; fixed in Moby 26.0.0, 25.0.4 and 23.0.11 (reported by the NVD mirrors and distro trackers; the upstream advisory itself was not reachable when this was written, so confirm it). 24.x has no fix.
+# ---- TS-L1 (Docker is new enough): CVE-2024-29018, an internal network's containers could have DNS queries forwarded out by the daemon. Source: the Moby security advisory GHSA-mq39-4gv4-mvpx
+# (https://github.com/moby/moby/security/advisories/GHSA-mq39-4gv4-mvpx), "Patches": "Moby releases 26.0.0-rc3, 25.0.5 (released) and 23.0.11 (to be released) are patched"; its patched_versions are >= 26.0.0-rc3, >= 25.0.5 and >= 23.0.11.
+# The moby release notes of v25.0.5, v23.0.11 and v26.0.0 each list the fix. The gate is: 26.0.0 final or later (a 26.0.0 release candidate only from rc3), 25.0.5 or later, 23.0.11 or later. 24.x has no fix (the advisory lists none; 24 is end of life).
+# This replaces the earlier gate (25.0.4 and a note that the advisory had not been read): 25.0.4 is still vulnerable. The staging workers' Amazon Linux 2023 Docker (25.0.18 on 2026-11-04) is past the cut-off.
 fails=""
 version=""
 if have_docker; then version=$(dk version --format '{{.Server.Version}}' 2>/dev/null || true); fi
@@ -225,7 +228,8 @@ if [[ -z "$version" ]]; then fails="docker-version-unreadable"
 else
   major=${version%%.*}
   if [[ "$major" == 24 ]]; then fails="docker-$version-has-no-fix-for-CVE-2024-29018"
-  elif ! { version_at_least "$version" 26.0.0 || { [[ "$major" == 25 ]] && version_at_least "$version" 25.0.4; } || { [[ "$major" == 23 ]] && version_at_least "$version" 23.0.11; }; }; then fails="docker-$version-older-than-the-CVE-2024-29018-fix"; fi
+  elif [[ "$version" =~ ^26\.0\.0- && ! "$version" =~ ^26\.0\.0-rc([3-9]|[1-9][0-9])$ ]]; then fails="docker-$version-is-a-26.0.0-pre-release-before-rc3"
+  elif ! { version_at_least "$version" 26.0.0 || { [[ "$major" == 25 ]] && version_at_least "$version" 25.0.5; } || { [[ "$major" == 23 ]] && version_at_least "$version" 23.0.11; }; }; then fails="docker-$version-older-than-the-CVE-2024-29018-fix"; fi
 fi
 verdict L1.docker-version docker-has-the-CVE-2024-29018-fix "$fails" "Docker Engine ${version:-?}"
 

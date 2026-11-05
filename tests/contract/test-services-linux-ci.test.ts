@@ -16,11 +16,17 @@ const jobs = (YAML.parse(workflowText) as { jobs: Record<string, Job> }).jobs;
 const script = read("scripts/ci-test-services-linux.sh");
 const scriptCode = script.split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
 const GATE = "needs.scope.outputs.test_services != 'false'";
+const engineScript = read("scripts/ci-docker25-engine.sh");
+const engineCode = engineScript.split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
+// The Docker the workers run (TS-SEAL-6). 25.0.5 is the newest 25.0.x that Docker publishes as a static build, and the first release with the CVE-2024-29018 fix (GHSA-mq39-4gv4-mvpx).
+const DOCKER25 = "25.0.5";
 
 describe("the linux-runtime job runs the test services Linux checks", () => {
   const job = jobs["linux-runtime"]!;
   const build = job.steps.find((step) => (step.name ?? "").startsWith("Test services Linux checks (build"))!;
   const check = job.steps.find((step) => (step.name ?? "").startsWith("Test services Linux checks (rules"))!;
+  const swap = job.steps.find((step) => (step.name ?? "").startsWith("Test services Linux checks on Docker 25.0.5 (swap"))!;
+  const check25 = job.steps.find((step) => (step.name ?? "").startsWith("Test services Linux checks on Docker 25.0.5 (rules"))!;
 
   it("keeps the job's structure: after scope and checks, behind the docs-only skip, read-only permissions, no cloud credentials", () => {
     expect(job.needs).toEqual(["scope", "checks"]);
@@ -30,12 +36,12 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
     expect(scriptCode).not.toMatch(/(?:^|[\s;|(])aws\s+[a-z]|\bssm\b|send-command|AWS_/mu);
   });
 
-  it("has both steps, gated on the scope job's changed-paths output, and they are the last steps (they restart Docker)", () => {
+  it("has the build and check steps, gated on the scope job's changed-paths output, and with the Docker 25 steps they are the last steps (they restart Docker)", () => {
     expect(build, "build step").toBeDefined();
     expect(check, "check step").toBeDefined();
     expect(build.if).toBe(GATE);
     expect(check.if).toBe(GATE);
-    expect(job.steps.slice(-2)).toEqual([build, check]);
+    expect(job.steps.slice(-4)).toEqual([build, check, swap, check25]);
     const lastVitest = job.steps.map((step) => step.run ?? "").map((run, index) => (run.includes("vitest run") ? index : -1)).reduce((a, b) => Math.max(a, b), -1);
     expect(job.steps.indexOf(build)).toBeGreaterThan(lastVitest);
   });
@@ -55,6 +61,31 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
     expect(check.env).toEqual({ TSL_CI_WORKER_IMAGE: "rovara-worker:ci", TSL_CI_DRIVER_JS: "${{ runner.temp }}/tsl-live.mjs" });
     expect(check.run).not.toMatch(/\|\||\|\s*true|continue-on-error/u);
     expect(YAML.stringify(check)).not.toContain("continue-on-error");
+  });
+
+  it("TS-SEAL-6: runs the same checks again on the pinned Docker 25.0.5 the workers run, in the same job (no second copy of the suite), asserting the version it ran on", () => {
+    expect(swap, "swap step").toBeDefined();
+    expect(check25, "Docker 25 check step").toBeDefined();
+    expect(swap.if).toBe(GATE);
+    expect(check25.if).toBe(GATE);
+    // After the checks on the runner's own Docker (the swap replaces that Docker), and nothing else runs after them.
+    expect(job.steps.indexOf(swap)).toBe(job.steps.indexOf(check) + 1);
+    expect(job.steps.indexOf(check25)).toBe(job.steps.indexOf(swap) + 1);
+    expect(swap.run).toBe("sudo --preserve-env=TSL_DOCKER25_WORKER_IMAGE,RUNNER_TEMP bash scripts/ci-docker25-engine.sh");
+    expect(swap.env).toEqual({ TSL_DOCKER25_WORKER_IMAGE: "rovara-worker:ci" });
+    // The same script, the same worker image and driver (not rebuilt), and the exact version it must run on.
+    expect(check25.run).toBe("sudo --preserve-env=TSL_CI_WORKER_IMAGE,TSL_CI_DRIVER_JS,TSL_EXPECT_DOCKER_VERSION,RUNNER_TEMP bash scripts/ci-test-services-linux.sh");
+    expect(check25.env).toEqual({ TSL_CI_WORKER_IMAGE: "rovara-worker:ci", TSL_CI_DRIVER_JS: "${{ runner.temp }}/tsl-live.mjs", TSL_EXPECT_DOCKER_VERSION: DOCKER25 });
+    for (const step of [swap, check25]) {
+      expect(YAML.stringify(step)).not.toMatch(/continue-on-error|\|\|\s*true/u);
+      expect(step.uses).toBeUndefined();
+    }
+    // Cheap: one job, one image build, one checkout. The Docker 25 steps add no other job, no build and no checkout.
+    expect(job.steps.filter((step) => (step.run ?? "").includes("docker build"))).toHaveLength(2);
+    expect(Object.keys(jobs).filter((name) => name.includes("docker25") || name.includes("docker-25"))).toEqual([]);
+    // Changing the engine script re-runs these checks.
+    const scope = jobs["scope"]!.steps.find((candidate) => candidate.id === "test_services")!;
+    expect(new RegExp(/grep -Eq '([^']+)'/u.exec(scope.run!)![1]!, "u").test("scripts/ci-docker25-engine.sh")).toBe(true);
   });
 
   it("the scope job exposes test_services (false only when nothing the checks read changed since the previous release tag or the PR base, and the input is not always)", () => {
@@ -102,6 +133,38 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
   });
 });
 
+describe("scripts/ci-docker25-engine.sh", () => {
+  it("is valid bash that only runs when executed, and needs root", () => {
+    expect(spawnSync("bash", ["-n"], { input: engineScript, encoding: "utf8" }).status).toBe(0);
+    expect(engineScript).toContain('if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi');
+    expect(engineCode).toContain("[[ $EUID -eq 0 ]]");
+    expect(engineCode).not.toMatch(/(?:^|[\s;|(])aws\s+[a-z]|\bssm\b|AWS_/mu);
+  });
+
+  it("pins the exact version, downloads it from download.docker.com by that version, and verifies a SHA-256 for each CPU before unpacking", () => {
+    expect(engineScript).toContain(`readonly DOCKER25_VERSION=${DOCKER25}`);
+    expect(engineScript).toMatch(/^readonly DOCKER25_SHA256_AARCH64=[a-f0-9]{64}$/mu);
+    expect(engineScript).toMatch(/^readonly DOCKER25_SHA256_X86_64=[a-f0-9]{64}$/mu);
+    expect(engineCode).toContain('url="https://download.docker.com/linux/static/stable/$arch/docker-$DOCKER25_VERSION.tgz"');
+    expect(engineCode).not.toMatch(/\blatest\b|get\.docker\.com|apt-get|apt install|yum|dnf/u);
+    const verify = engineCode.indexOf("sha256sum -c");
+    expect(verify).toBeGreaterThan(engineCode.indexOf("curl "));
+    expect(verify).toBeLessThan(engineCode.indexOf("tar -xzf"));
+    expect(engineCode).toMatch(/sha256sum -c - >&2 \|\| die/u);
+  });
+
+  it("requires the server AND the client to report exactly the pinned version, a separate data root, and the same worker image id after the load", () => {
+    expect(engineCode).toContain('[[ "$server" == "$DOCKER25_VERSION" ]]');
+    expect(engineCode).toContain('[[ "$client" == "$DOCKER25_VERSION" ]]');
+    expect(engineCode).toContain("{{.DockerRootDir}}");
+    expect(engineCode).toContain('[[ "$(docker image inspect --format \'{{.Id}}\' "$image")" == "$id" ]]');
+    // The image is saved on the old engine before the swap and loaded after it; the old engine's data root is never opened by Docker 25.
+    expect(engineCode.indexOf("docker save")).toBeLessThan(engineCode.indexOf("systemctl stop docker.service"));
+    expect(engineCode.indexOf("systemctl stop docker.service")).toBeLessThan(engineCode.indexOf("docker load"));
+    expect(engineScript).toContain("readonly DOCKER25_DATA_ROOT=/var/lib/docker25");
+  });
+});
+
 describe("scripts/ci-test-services-linux.sh", () => {
   it("applies the rules with boot-stage2.sh's own functions, in stage2_main's order, and never copies their iptables rules", () => {
     expect(script).toContain('source "$root/packages/worker/ec2/boot-stage2.sh"');
@@ -131,11 +194,11 @@ describe("scripts/ci-test-services-linux.sh", () => {
     expect(script).toContain("judge \"$check_out\"");
   });
 
-  const judge = (output: string) => {
+  const judge = (output: string, expectedVersion = "") => {
     const dir = mkdtempSync(join(tmpdir(), "tsl-judge-"));
     const file = join(dir, "out");
     writeFileSync(file, output);
-    const ran = spawnSync("bash", ["-c", 'source "$1"; judge "$2"', "x", new URL("../../scripts/ci-test-services-linux.sh", import.meta.url).pathname, file], { encoding: "utf8" });
+    const ran = spawnSync("bash", ["-c", 'source "$1"; judge "$2" "$3"', "x", new URL("../../scripts/ci-test-services-linux.sh", import.meta.url).pathname, file, expectedVersion], { encoding: "utf8" });
     return { status: ran.status, err: ran.stderr };
   };
   const LIVE = ["L1.live", "L1.live-other-run", "L2.live", "L3.live", "L3.embedded-resolver", "L3.working-relay", "L3.ipv6", "L3.no-route", "L3.other-run", "L3.multicast", "L3.run-files", "L3.spoofing", "L4.live", "L4.template-db", "L6.live"];
@@ -152,6 +215,19 @@ describe("scripts/ci-test-services-linux.sh", () => {
     expect(create).toBeGreaterThan(scriptCode.indexOf("apply_rules \"$root\" || return 1"));
     expect(create).toBeLessThan(scriptCode.indexOf("tsl-live.mjs ci"));
     expect(scriptCode).not.toMatch(/network rm[^\n]*agentx-task/u);
+  });
+
+  it("TS-SEAL-6: with an expected Docker version the judge also needs the L1.docker-version PASS line to name exactly that version", () => {
+    const withVersion = (version: string, status = "PASS"): string => `TSL L1.docker-version ${status} docker-has-the-CVE-2024-29018-fix | Docker Engine ${version}\n${good().join("\n")}\n`;
+    expect(judge(withVersion(DOCKER25), DOCKER25).status).toBe(0);
+    // Without an expectation (the runner's own Docker) the judge does not look at the version.
+    expect(judge(withVersion("28.0.4")).status).toBe(0);
+    for (const [label, output] of [["another version", withVersion("28.0.4")], ["a longer version", withVersion("25.0.55")], ["a version that only starts the same", withVersion("125.0.5")], ["a failed version line", withVersion(DOCKER25, "FAIL")], ["no version line", `${good().join("\n")}\n`]] as const) {
+      expect(judge(output, DOCKER25).status, label).toBe(1);
+    }
+    // The script itself refuses to start on a daemon that is not the expected version, and reads the expectation from the environment.
+    expect(scriptCode).toContain('judge "$check_out" "${TSL_EXPECT_DOCKER_VERSION:-}"');
+    expect(scriptCode).toContain('[[ "$running" == "$TSL_EXPECT_DOCKER_VERSION" ]]');
   });
 
   it("judge passes a full run with only the known later-slice items pending", () => {

@@ -12,7 +12,7 @@ name: CI
 on:
   workflow_dispatch:
     inputs:
-      # The test services Linux checks (the last two steps of linux-runtime) add 10 to 15 minutes. auto: the scope job decides from the changed paths since the previous release tag (or cloud/next
+      # The test services Linux checks (the last four steps of linux-runtime: the checks on the runner's Docker, then again on Docker 25.0.5) add 16 to 24 minutes. auto: the scope job decides from the changed paths since the previous release tag (or cloud/next
       # when there is no tag), as it does for a pull request. always: run them whatever changed.
       test_services:
         description: "Test services Linux checks: auto (only when the change touches what they read) or always"
@@ -92,7 +92,7 @@ jobs:
             fi
             echo "Changed paths compared with $base."
           fi
-          if grep -Eq '^(packages/worker/|packages/contracts/src/(service-catalog|test-env|test-services)|environments/(base|service-catalog)/|infra/lib/(worker|ec2|network|access)|scripts/(linux-check-test-services|ci-test-services-linux)|\.github/workflows/ci\.yml)' "$changed"; then
+          if grep -Eq '^(packages/worker/|packages/contracts/src/(service-catalog|test-env|test-services)|environments/(base|service-catalog)/|infra/lib/(worker|ec2|network|access)|scripts/(linux-check-test-services|ci-test-services-linux|ci-docker25-engine)|\.github/workflows/ci\.yml)' "$changed"; then
             echo "test_services=true" >> "$GITHUB_OUTPUT"
           else
             echo "test_services=false" >> "$GITHUB_OUTPUT"
@@ -388,6 +388,23 @@ jobs:
           TSL_CI_WORKER_IMAGE: rovara-worker:ci
           TSL_CI_DRIVER_JS: ${{ runner.temp }}/tsl-live.mjs
         run: sudo --preserve-env=TSL_CI_WORKER_IMAGE,TSL_CI_DRIVER_JS,RUNNER_TEMP bash scripts/ci-test-services-linux.sh
+      # TS-SEAL-6: the same checks again on the Docker the workers run. Staging workers are Amazon Linux 2023 with Docker 25 (25.0.18 on 2026-11-04); this runner's Docker is 28.x, and the two differ in how they treat internal networks,
+      # DNS and iptables. The smallest thing that proves L1 and L3 on Docker 25 is the same script on the same job, not a second copy of the suite: no new checkout, install, build or image build. The first step swaps the engine for the
+      # pinned static Docker 25.0.5 (checksum verified; the newest 25.0.x Docker publishes as a static build, and the first with the CVE-2024-29018 fix) and carries the worker image over with save and load. The second runs the script again
+      # with TSL_EXPECT_DOCKER_VERSION=25.0.5: it refuses to start on any other daemon, and the job fails unless the checker passed L1.docker-version on exactly Docker Engine 25.0.5. Estimated 6 to 9 minutes (download and swap 1 to 2,
+      # image carry-over 1, checks 4 to 6); not measured. Same gate as the steps above. These come last in the job: they replace the runner's Docker.
+      - name: Test services Linux checks on Docker 25.0.5 (swap the engine)
+        if: needs.scope.outputs.test_services != 'false'
+        env:
+          TSL_DOCKER25_WORKER_IMAGE: rovara-worker:ci
+        run: sudo --preserve-env=TSL_DOCKER25_WORKER_IMAGE,RUNNER_TEMP bash scripts/ci-docker25-engine.sh
+      - name: Test services Linux checks on Docker 25.0.5 (rules, live driver, host checks)
+        if: needs.scope.outputs.test_services != 'false'
+        env:
+          TSL_CI_WORKER_IMAGE: rovara-worker:ci
+          TSL_CI_DRIVER_JS: ${{ runner.temp }}/tsl-live.mjs
+          TSL_EXPECT_DOCKER_VERSION: "25.0.5"
+        run: sudo --preserve-env=TSL_CI_WORKER_IMAGE,TSL_CI_DRIVER_JS,TSL_EXPECT_DOCKER_VERSION,RUNNER_TEMP bash scripts/ci-test-services-linux.sh
 
   # Stdio MCP host redesign (T11, design section 14): the runner image on a real Linux host. It builds environments/mcp-runner/Dockerfile and runs it the way ECS runs a runner task
   # (read-only, every capability dropped, a non-root user, an init process, the bundle volume read-only for the server): the processes' uid, no_new_privs, capabilities and limits

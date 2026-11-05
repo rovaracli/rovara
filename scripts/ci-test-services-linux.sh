@@ -14,6 +14,8 @@
 #      items, and on a live item with no PASS. It needs no AWS: nothing here reads a credential.
 #
 # Inputs (environment): TSL_CI_WORKER_IMAGE (a local image tag, built by the workflow), TSL_CI_DRIVER_JS (the driver as JavaScript: `npx tsx scripts/linux-check-test-services-live.ts --js`), RUNNER_TEMP.
+# Optional: TSL_EXPECT_DOCKER_VERSION (an exact Docker Engine version, for example 25.0.5; TS-SEAL-6). When set, the script refuses to start unless the daemon reports exactly that server version, and the judge fails the job unless the
+# checker's L1.docker-version line passed on that very version. The workflow runs this script twice: on the runner's own Docker, then again after scripts/ci-docker25-engine.sh swapped in the pinned Docker 25.0.5 (what the workers run).
 set -uo pipefail
 
 readonly POSTGRES_PINNED='public.ecr.aws/docker/library/postgres:16@sha256:5db6dac2ef5dcff512f4f00a009c3c332b9f2f28f24277175bf3e4a3d02ef83a'
@@ -26,9 +28,13 @@ readonly ALLOWED_PENDING='^TSL (L1\.internal-drops|L[578]\.[a-z-]+) PENDING '
 
 log() { printf 'ci-test-services-linux: %s\n' "$*" >&2; }
 
-# judge FILE: the checker's whole output. Exit 0 only when nothing failed, no unexpected item is pending, and every live item passed.
+# judge FILE [EXPECTED_DOCKER_VERSION]: the checker's whole output. Exit 0 only when nothing failed, no unexpected item is pending, and every live item passed. With an expected version, the L1.docker-version line must also have
+# passed on exactly that Docker Engine version (the checker prints "Docker Engine <version>" from the daemon it ran against).
 judge() {
-  local file=$1 problems=0 id
+  local file=$1 expected=${2:-} problems=0 id
+  if [[ -n "$expected" ]]; then
+    grep -Eq "^TSL L1\\.docker-version PASS [^ ]+ \\| Docker Engine ${expected//./\\.}\$" "$file" || { log "FAIL: the checks did not pass on Docker Engine $expected (no L1.docker-version PASS line for that version)"; problems=1; }
+  fi
   if grep -Eq '^TSL ERROR|^TSL BLOCKED| FAIL ' "$file"; then log "FAIL: the checks reported a failure or an error:"; grep -E '^TSL ERROR|^TSL BLOCKED| FAIL ' "$file" >&2; problems=1; fi
   if grep -E ' PENDING ' "$file" | grep -Evq "$ALLOWED_PENDING"; then log "FAIL: an item is PENDING that may not be:"; grep -E ' PENDING ' "$file" | grep -Ev "$ALLOWED_PENDING" >&2; problems=1; fi
   for id in $LIVE_IDS; do
@@ -91,12 +97,18 @@ cleanup_labelled() {
 }
 
 main() {
-  local root work gid image_id digest live_out check_out
+  local root work gid image_id digest live_out check_out running
   [[ $EUID -eq 0 ]] || { log "run as root (sudo)"; return 2; }
   : "${TSL_CI_WORKER_IMAGE:?set TSL_CI_WORKER_IMAGE}" "${TSL_CI_DRIVER_JS:?set TSL_CI_DRIVER_JS}" "${RUNNER_TEMP:?set RUNNER_TEMP}"
   root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
   [[ -s "$TSL_CI_DRIVER_JS" ]] || { log "the driver program is missing"; return 2; }
   trap cleanup_labelled EXIT
+  if [[ -n "${TSL_EXPECT_DOCKER_VERSION:-}" ]]; then
+    [[ "$TSL_EXPECT_DOCKER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { log "TSL_EXPECT_DOCKER_VERSION must be a full version such as 25.0.5"; return 2; }
+    running=$(docker version --format '{{.Server.Version}}' 2>/dev/null) || running=""
+    [[ "$running" == "$TSL_EXPECT_DOCKER_VERSION" ]] || { log "FAIL: the daemon reports Docker Engine '${running:-unreadable}', not the expected $TSL_EXPECT_DOCKER_VERSION"; return 1; }
+  fi
+  log "running on Docker Engine $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)"
   apply_rules "$root" || return 1
   digest=$(push_postgres) || return 1
   image_id=$(docker image inspect --format '{{.Id}}' "$TSL_CI_WORKER_IMAGE") || { log "the worker image $TSL_CI_WORKER_IMAGE is not there"; return 1; }
@@ -121,7 +133,7 @@ main() {
   TSL_ENV=ci TSL_LIVE_OUT_FILE="$live_out" bash "$root/scripts/linux-check-test-services.sh" > "$check_out" 2>&1
   log "checker exit status $? (0: all pass; 3: only later-slice items pending; 1: a failure)"
   cat "$check_out"
-  judge "$check_out"
+  judge "$check_out" "${TSL_EXPECT_DOCKER_VERSION:-}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
