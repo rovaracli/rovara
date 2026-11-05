@@ -438,6 +438,118 @@ describe("an agent's owner change re-checks its triggers under the new owner", (
   });
 });
 
+// ---- S1-M2: a maintainer's grant is pinned by the write that rests on it
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+/** Every write on an agent or chain that rests on a project maintainer's manage access: the route call, and the same write straight on the store. */
+function grantWrites(kind: Kind): Array<{ name: string; archived?: true; call: [string, string, Record<string, unknown>]; store: (f: Fixture, actor: ReturnType<typeof fixtureActor>, by?: string) => Promise<unknown> }> {
+  const by = FAY.developerId;
+  return [
+    { name: "archive", call: ["POST", "/archive", {}], store: (f, actor, who = by) => f.store.archive(TEST_ORG, f.id, who, undefined, { actor }) },
+    { name: "unarchive", archived: true, call: ["POST", "/unarchive", {}], store: (f, actor, who = by) => f.store.unarchive(TEST_ORG, f.id, who, undefined, { actor }) },
+    { name: "budget", call: ["PUT", "/budget", { monthlyUsd: 12 }],
+      store: (f, actor, who = by) => (kind === "agent" ? (f.store as never as { setBudget(...args: unknown[]): Promise<unknown> }).setBudget(TEST_ORG, f.id, { monthlyUsd: 12 }, who, undefined, { actor }) : (f.store as never as { setBudget(...args: unknown[]): Promise<unknown> }).setBudget(TEST_ORG, f.id, 12, who, undefined, { actor })) },
+    // Only an org admin may hand a thing to another member, so a maintainer's owner change keeps the project as owner and names another accountable maintainer.
+    { name: "owner change", call: ["PUT", "/owner", { owner: { kind: "project", project: "payments" }, accountable: { developerId: DEB.developerId } }], store: (f, actor, who = by) => f.store.setOwner(TEST_ORG, f.id, { kind: "project", project: "payments" }, who, { developerId: DEB.developerId }, undefined, { actor }) },
+    { name: "accountable change", call: ["PUT", "/accountable", { accountable: { developerId: DEB.developerId } }], store: (f, actor, who = by) => f.store.setAccountable(TEST_ORG, f.id, { developerId: DEB.developerId }, who, undefined, { actor }) },
+  ];
+}
+const GRANT_ACTOR_LOSSES = ["grant_removed", "grant_demoted"] as const;
+/** The transactions sent while `run` runs that carry a condition on `who`'s grant on payments. */
+async function grantChecksSeen(t: World, who: Developer, run: () => Promise<unknown>): Promise<number> {
+  const send = t.db.send.bind(t.db);
+  const grant = projectMemberKey(TEST_ORG, who.developerId, "payments");
+  let seen = 0;
+  t.db.send = async command => {
+    if (command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.ConditionCheck?.Key?.pk === grant.pk && item.ConditionCheck.Key.sk === grant.sk)) seen += 1;
+    return send(command);
+  };
+  try { await run(); } finally { t.db.send = send; }
+  return seen;
+}
+
+for (const kind of ["agent", "chain"] as const) {
+  describe(`S1-M2: a ${kind} write by a project maintainer pins the maintainer's own grant`, () => {
+    for (const write of grantWrites(kind)) {
+      for (const loss of GRANT_ACTOR_LOSSES) {
+        it(`${write.name}: refuses a maintainer whose grant is ${loss.replace("grant_", "")} between the route's read and the commit (403), and writes nothing`, async () => {
+          const f = await fixture(kind, write.archived === true ? { archived: true } : {});
+          const before = f.state();
+          const race = f.raceOnce(() => loseDestination(f.t, loss, FAY));
+          const reply = await f.t.api(FAY, write.call[0], f.path + write.call[1], { ...write.call[2], requestId: randomUUID() });
+          expect(race.raced).toBe(true);
+          expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+          expect(f.state()).toEqual(before);
+        });
+
+        it(`${write.name}: the store refuses an actor whose grant is already ${loss.replace("grant_", "")} when it reads it, and writes nothing`, async () => {
+          const f = await fixture(kind, write.archived === true ? { archived: true } : {});
+          const actor = fixtureActor(f.t.db, TEST_ORG, FAY.developerId);
+          loseDestination(f.t, loss, FAY);
+          const before = f.state();
+          await expect(write.store(f, actor)).rejects.toMatchObject({ code: "FORBIDDEN" });
+          expect(f.state()).toEqual(before);
+        });
+      }
+
+      it(`${write.name}: a maintainer with a current grant succeeds, and the commit carries a condition on that grant (positive control)`, async () => {
+        const f = await fixture(kind, write.archived === true ? { archived: true } : {});
+        let reply: { status: number; body: Record<string, unknown> } | undefined;
+        const seen = await grantChecksSeen(f.t, FAY, async () => { reply = await f.t.api(FAY, write.call[0], f.path + write.call[1], { ...write.call[2], requestId: randomUUID() }); });
+        expect(reply!.status, JSON.stringify(reply!.body)).toBe(200);
+        expect(seen).toBe(1);
+        expect(f.events().length).toBeGreaterThan(0);
+      });
+
+      it(`${write.name}: an org admin with no grant succeeds and adds no grant condition`, async () => {
+        const f = await fixture(kind, write.archived === true ? { archived: true } : {});
+        let reply: { status: number; body: Record<string, unknown> } | undefined;
+        const seen = await grantChecksSeen(f.t, DEB, async () => { reply = await f.t.api(DEB, write.call[0], f.path + write.call[1], { ...write.call[2], requestId: randomUUID() }); });
+        expect(reply!.status, JSON.stringify(reply!.body)).toBe(200);
+        expect(seen).toBe(0);
+      });
+
+      it(`${write.name}: the store refuses a plain member with no grant, and an auditor, on a project's ${kind}, and writes nothing`, async () => {
+        const f = await fixture(kind, write.archived === true ? { archived: true } : {});
+        const before = f.state();
+        const eve = fixtureActor(f.t.db, TEST_ORG, EVE.developerId);
+        await expect(write.store(f, eve, EVE.developerId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+        await expect(write.store(f, { developerId: FAY.developerId, role: "auditor" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+        expect(f.state()).toEqual(before);
+      });
+    }
+
+    it(`a person's own member-owned ${kind} rests on their org role alone: no grant is needed or pinned`, async () => {
+      const t = await setup({ decide: true });
+      await addMember(t, EVE, "member");
+      let id: string;
+      if (kind === "agent") id = await t.agentOf(TRIAGE, { by: EVE });
+      else {
+        const created = await t.api(EVE, "POST", "/v1/app/chains", { name: `Mine ${randomUUID().slice(0, 8)}` });
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
+        id = (created.body.chain as { chainId: string }).chainId;
+      }
+      const key = kind === "agent" ? agentKey(TEST_ORG, id, "META") : chainKey(TEST_ORG, id, "META");
+      expect(t.db.get(key)?.owner).toEqual({ kind: "member", developerId: EVE.developerId });
+      let reply: { status: number; body: Record<string, unknown> } | undefined;
+      const anyGrant = projectMemberKey(TEST_ORG, EVE.developerId, "payments");
+      expect(t.db.get(anyGrant)).toBeUndefined();
+      const seen = await grantChecksSeen(t, EVE, async () => { reply = await t.api(EVE, "POST", pathOf(kind, id) + "/archive", { requestId: randomUUID() }); });
+      expect(reply!.status, JSON.stringify(reply!.body)).toBe(200);
+      expect(seen).toBe(0);
+      expect(t.db.get(key)?.status).toBe("archived");
+    });
+
+    it(`a maintainer who takes the accountable seat themselves still has their grant pinned once (the actor is also the destination)`, async () => {
+      const f = await fixture(kind);
+      let reply: { status: number; body: Record<string, unknown> } | undefined;
+      const seen = await grantChecksSeen(f.t, FAY, async () => { reply = await f.t.api(FAY, "PUT", f.path + "/accountable", { accountable: { developerId: FAY.developerId } }); });
+      expect(reply!.status, JSON.stringify(reply!.body)).toBe(200);
+      expect(seen).toBe(1);
+    });
+  });
+}
+
 // ---- Cross-org, with a real resource on each side
 
 for (const kind of ["agent", "chain"] as const) {

@@ -4,7 +4,7 @@
 // `OwnerBudgets` ledger, so a person's agent budgets and chain budgets are one monthly total. Every multi-item write is one transaction, so a
 // refused write leaves nothing behind. A published version pins every agent step to a number; publishing checks again, inside its transaction,
 // that each pinned agent version and built-in pin is still what validation saw.
-import { unarchiveActorChecks, archiveActorChecks, budgetActorChecks, budgetActorRefused, destinationChecks, fenceRefusal, type DestinationNeed } from "../agents/budget-authority.js";
+import { unarchiveActorChecks, archiveActorChecks, actorGrantChecks, budgetActorChecks, budgetActorRefused, destinationChecks, fenceRefusal, type DestinationNeed } from "../agents/budget-authority.js";
 import { createHash } from "node:crypto";
 import {
   sameJsonContent,
@@ -511,8 +511,10 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
 
   private async setStatus(orgId: OrgId, chainId: ChainId, status: "active" | "archived", by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<ChainRecord> {
     // Both directions carry the actor fence and the manage snapshot the route was granted on; archiving used to carry neither (C106).
-    const actorChecks = status === "active" ? unarchiveActorChecks(this.input.tableName, orgId, by, request, options) : archiveActorChecks(this.input.tableName, orgId, by, request, options);
+    const orgChecks = status === "active" ? unarchiveActorChecks(this.input.tableName, orgId, by, request, options) : archiveActorChecks(this.input.tableName, orgId, by, request, options);
     const chain = await this.require(orgId, chainId);
+    // A person who manages a project's chain through a maintainer grant is held to that grant too (S1-M2). An archive that changes nothing writes nothing, so it needs none.
+    const actorChecks = [...orgChecks, ...(options.actor === undefined || options.overrideCap !== undefined || (chain.status === status && status !== "active") ? [] : await actorGrantChecks((key) => this.read(key), this.input.tableName, orgId, options.actor, chain))];
     const sourceGuard = (a: Aliases) => `${budgetGuard(chain)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(chain.updatedAt)}`}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`;
     if (chain.status === status) {
       // An archive of something already archived changes nothing, so it writes nothing (L6): the arguments were checked above, and there is no share to take out.
@@ -559,8 +561,10 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
     if (actor === undefined) throw budgetActorRefused();
     if (actor !== undefined && (actor.developerId !== by || (request !== undefined && request.developerId !== actor.developerId))) throw budgetActorRefused();
     if (options.actor !== undefined && options.overrideCap !== undefined && (options.overrideCap.actor?.developerId !== actor?.developerId || options.overrideCap.actor?.role !== actor?.role)) throw budgetActorRefused();
-    const actorChecks = actor === undefined || options.overrideCap !== undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
+    const orgChecks = actor === undefined || options.overrideCap !== undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     const chain = await this.require(orgId, chainId);
+    // A person who manages a project's chain through a maintainer grant is held to that grant too (S1-M2).
+    const actorChecks = [...orgChecks, ...(actor === undefined || options.overrideCap !== undefined ? [] : await actorGrantChecks((key) => this.read(key), this.input.tableName, orgId, actor, chain))];
     const updatedAt = this.iso();
     const written = withBudgetFields({ ...chain, updatedAt }, { monthlyBudgetUsd: monthlyUsd });
     const totals = await this.totalsFor(orgId, chain, written, options.ownerCap);
@@ -597,10 +601,12 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       (actor !== undefined && (actor.developerId !== by || options.overrideCap !== undefined)) ||
       (request !== undefined && (request.orgId !== orgId || request.developerId !== actor?.developerId)) ||
       (actor === undefined && options.overrideCap === undefined && (by !== "system" || options.cause === undefined))) throw budgetActorRefused();
-    const actorChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
+    const orgChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     const chain = await this.require(orgId, chainId);
     const managedOwner = (subject: BudgetSubject) => ({ owner: subject.owner, accountable: subject.accountable });
     if (options.manageSnapshot !== undefined && !sameJsonContent(managedOwner(chain), managedOwner(options.manageSnapshot))) throw budgetActorRefused();
+    // The grant that gave the person manage access to the chain as it is now (S1-M2); the new owner is the destination's concern.
+    const actorChecks = [...orgChecks, ...(actor === undefined ? [] : await actorGrantChecks((key) => this.read(key), this.input.tableName, orgId, actor, chain))];
     const updatedAt = this.iso();
     const { accountable: _before, ...rest } = chain; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped when the new owner has none
     const moved: ChainRecord = { ...rest, owner, ...(accountable === undefined ? {} : { accountable }), updatedAt };
@@ -639,11 +645,13 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       (actor !== undefined && (actor.developerId !== by || options.overrideCap !== undefined)) ||
       (request !== undefined && (request.orgId !== orgId || request.developerId !== actor?.developerId)) ||
       (actor === undefined && options.overrideCap === undefined && (by !== "system" || options.cause === undefined))) throw budgetActorRefused();
-    const actorChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
+    const orgChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     const chain = await this.require(orgId, chainId);
     const managedOwner = (subject: BudgetSubject) => ({ owner: subject.owner, accountable: subject.accountable });
     if (options.manageSnapshot !== undefined && !sameJsonContent(managedOwner(chain), managedOwner(options.manageSnapshot))) throw budgetActorRefused();
     if (chain.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's chain has an accountable maintainer");
+    // The grant that gave the person manage access to the chain (S1-M2).
+    const actorChecks = [...orgChecks, ...(actor === undefined ? [] : await actorGrantChecks((key) => this.read(key), this.input.tableName, orgId, actor, chain))];
     const updatedAt = this.iso();
     const changed: ChainRecord = { ...chain, accountable, updatedAt };
     const totals = await this.totalsFor(orgId, chain, withBudgetFields(chain, { accountable }), options.ownerCap);

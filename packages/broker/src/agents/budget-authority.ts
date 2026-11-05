@@ -1,5 +1,5 @@
 // Transactional current-org actor fence for the existing user budget write paths.
-import { OrgIdSchema, OrgRoleSchema, agentXError, orgMemberKey, developerOrgKey, orgMetaKey, projectMemberKey, type OrgId, type OrgRole } from "@agentx/contracts";
+import { OrgIdSchema, OrgRoleSchema, agentXError, orgMemberKey, developerOrgKey, orgMetaKey, projectMemberKey, type AgentOwner, type OrgId, type OrgRole } from "@agentx/contracts";
 import type { TransactItem } from "./table-writes.js";
 export interface BudgetIdentity { developerId: string; role: OrgRole }
 export interface BudgetActor extends BudgetIdentity { signedIn?: BudgetIdentity }
@@ -48,6 +48,26 @@ export function archiveActorChecks(tableName: string, orgId: OrgId, by: string,
     return [];
   }
   return unarchiveActorChecks(tableName, orgId, by, request, options);
+}
+
+/**
+ * The grant that gave a person who is not an org owner or admin their manage access to a project's agent or chain (S1-M2). The org-role checks above pin
+ * who the person is in the company; a project maintainer's access to the project's things is the grant row, so a write that rests on it pins that row as well,
+ * in the same transaction. A grant revoked or lowered between the route's check and the commit then fails the write whole (FORBIDDEN, like the other
+ * actor losses). An org owner or admin holds every project with no grant, and a member's own agent or chain rests on the org role alone, so neither adds a check.
+ * A person whose grant does not read as a maintainer's is refused here too: the route would not have let them in.
+ * Only the direct write carries this; an approved request brings the deciding actor's checks (withOverride).
+ */
+export async function actorGrantChecks(
+  read: (key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined>,
+  tableName: string, orgId: OrgId, actor: BudgetActor, subject: { owner?: AgentOwner },
+): Promise<TransactItem[]> {
+  if (actor.role === "owner" || actor.role === "admin" || subject.owner === undefined || subject.owner.kind !== "project") return [];
+  if (actor.role !== "member") throw budgetActorRefused();
+  const key = projectMemberKey(orgId, actor.developerId, subject.owner.project), grant = await read(key);
+  if (grant?.["role"] !== "developer" || grant["projectRole"] !== "maintainer") throw budgetActorRefused();
+  return [{ ConditionCheck: { TableName: tableName, Key: key, ConditionExpression: "#grantRole = :grantRole AND #projectRole = :projectRole",
+    ExpressionAttributeNames: { "#grantRole": "role", "#projectRole": "projectRole" }, ExpressionAttributeValues: { ":grantRole": "developer", ":projectRole": "maintainer" } } }];
 }
 
 /** What a person named as an owner or accountable maintainer must still be when the write commits. */

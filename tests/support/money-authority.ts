@@ -1,6 +1,6 @@
 // Explicit membership setup for older low-level writer fixtures. Actor-loss tests seed membership explicitly; this helper prepares unrelated setup/competing writes.
 import { createHash } from "node:crypto";
-import { OrgRoleSchema, developerOrgKey, orgMemberKey, orgMetaKey, type OrgId } from "@agentx/contracts";
+import { OrgRoleSchema, developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, type OrgId } from "@agentx/contracts";
 import type { BudgetActor } from "../../packages/broker/src/agents/budget-authority.js";
 import type { FakeDynamoDb } from "./fake-dynamodb.js";
 import { seedMembership } from "./developer-task-broker.js";
@@ -24,4 +24,16 @@ export function fixtureActor(source: unknown, orgId: OrgId, by: string, requireC
     if (org !== undefined) db.set(org);
   }
   return { developerId, role };
+}
+
+/**
+ * The stored grant row that makes a member a project's maintainer, as the real writer stores it. A write on a project's agent or chain by a member who is not an org
+ * admin pins this row (S1-M2), so a low-level fixture that acts as a maintainer through a store call needs it. Returns a function that takes the row away again.
+ */
+export function seedMaintainerGrant(source: unknown, orgId: OrgId, developerId: string, project: string): () => void {
+  const container = source as { documentClient?: unknown; input?: { documentClient: unknown } };
+  const db = (container.documentClient ?? container.input?.documentClient ?? source) as FakeDynamoDb;
+  const key = projectMemberKey(orgId, developerId, project);
+  db.set({ ...key, entityType: "MEMBERSHIP", ownerKey: developerId, projectName: project, grantId: createHash("sha256").update(`grant:${orgId}:${developerId}:${project}`).digest("hex"), role: "developer", projectRole: "maintainer" });
+  return () => db.delete(key);
 }
