@@ -178,14 +178,17 @@ describe("the risk a press has seen", () => {
     }
   });
 
-  it("security review: a HIGH risk pull request never merges on a click: a browser press makes the pending change (the presser's approval card, decided with the decide-grade sign-in) and nothing is merged", async () => {
+  it("final review: a HIGH risk pull request never merges on a click outside its card: the Merge button is told to use the merge card; a token gets the pending change, confirmed with the email-code sign-in", async () => {
     const w = await ready();
     w.setWorkflow({ risk: risk("high", ["This PR changes CI configuration."]) });
-    const reply = await webPress(w, { risk: "high" });
-    expect(reply.status).toBe(202);
-    expect(reply.body).toMatchObject({ status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED" });
+    const refused = await webPress(w, { risk: "high" }).then(() => undefined, (error: unknown) => error as { code?: string; message?: string });
+    expect(refused?.code).toBe("FORBIDDEN");
+    expect(refused?.message).toContain("merge card");
     expect(w.github.mergeCalls).toEqual([]);
-    expect(w.db.find((item) => item.entityType === "APPROVAL").length).toBe(1);
+    expect(w.db.find((item) => item.entityType === "APPROVAL").length, "no pending change for a browser").toBe(0);
+    const reply = await tokenPress(w);
+    expect(reply.status).toBe(202);
+    expect(w.github.mergeCalls).toEqual([]);
     // Confirmed with the decide-grade sign-in: merged, and the audit proof on the decision is the decide session's own (its real method).
     const confirmUrl = (reply.body as { confirmUrl: string }).confirmUrl;
     const cookie = await w.browser(PRIYA, w.approvalIdOf(confirmUrl));

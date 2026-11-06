@@ -7,6 +7,8 @@ import { z } from "zod";
 import type { BudgetScope } from "@agentx/contracts";
 import { DecisionCardsViewSchema } from "@agentx/contracts";
 import { pressMerge } from "../../packages/broker/src/rovara-code/merge.js";
+import { withCardDecideGrade } from "../../packages/broker/src/aws/developer-routes/card-decide-grade.js";
+import type { DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes/types.js";
 import { createSpendRequest, decideSpendRequest, getSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { effectiveLimits } from "../../packages/broker/src/spend/settings.js";
 import { createDecisionPerformer, mergeHandler, spendHandler } from "../../packages/broker/src/decisions/performer.js";
@@ -49,6 +51,23 @@ function mergeRoute(w: MergeWorld, items: DecisionItem[], browser: boolean, lock
   const shown = async (who: string) => DecisionCardsViewSchema.parse((await routeDecisionCards(deps, { orgId: "org", developerId: who, who }, { method: "GET", pathname: "/v1/app/decisions", searchParams: new URLSearchParams(), body: undefined }))?.body);
   const open = async (who: string, digest: string) => routeDecisionCards(deps, { orgId: "org", developerId: who, who }, { method: "POST", pathname: `${decisionCardPath("merge:pr1")}/evidence-opened`, searchParams: new URLSearchParams(), body: { requestId: randomUUID(), shownDigest: digest } });
   return { run, shown, open, deps };
+}
+
+/** The merge card as the wiring builds it for a browser: a high merge runs under the card's decide-grade sign-in (`withCardDecideGrade`), with the browser's decide cookie. */
+function gradedMergeRoute(w: MergeWorld, items: DecisionItem[], cookie: () => string | undefined) {
+  type Caller = DecisionCaller & { who: string };
+  const developer = { documentClient: w.db, tableName: "state", developer: { signInTableName: "signin" }, now: () => w.clock.now, agents: w.deps } as unknown as DeveloperRouteDependencies;
+  const performer = createDecisionPerformer<Caller>({
+    merge: mergeHandler<Caller>((caller, sessionId, body, expectedHeads, input) => {
+      const who = { ...w.caller(caller.who), browserSession: true as const };
+      return pressMerge(w.shareDeps, who, sessionId, body, w.deps, { expectedHeads, decideGrade: (apply) => withCardDecideGrade(developer, who, cookie(), { cardId: input.card.id, taskId: input.item.taskId!, contentVersion: input.item.contentVersion, openPath: input.item.openPath }, apply) });
+    }),
+  });
+  const deps = { sources: { list: async () => items, locks: async () => ({}) }, performer, store: inMemoryDecisionStore(() => NOW), now: () => NOW, highOnCard: new Set(["merge"]) };
+  const run = async (who: string, action: "approve" | "reject", body: Record<string, unknown>) =>
+    routeDecisionCards(deps, { orgId: "org", developerId: who, who }, { method: "POST", pathname: `${decisionCardPath("merge:pr1")}/${action}`, searchParams: new URLSearchParams(), body });
+  const shown = async (who: string) => DecisionCardsViewSchema.parse((await routeDecisionCards(deps, { orgId: "org", developerId: who, who }, { method: "GET", pathname: "/v1/app/decisions", searchParams: new URLSearchParams(), body: undefined }))?.body);
+  return { run, shown };
 }
 
 describe("merge card: the real pressMerge", () => {
@@ -119,22 +138,45 @@ describe("merge card: the real pressMerge", () => {
     expect(t.deps.store.decisions).toHaveLength(0);
   });
 
-  it("security review: a HIGH-risk pull request never merges on a press, browser or not, whatever the web sign-in: it makes the pending change, the presser's approval card, decided with the decide-grade sign-in", async () => {
+  it("final review: a browser's HIGH-risk merge is merged on its card under the decide-grade sign-in (email code) for that card and heads, with the session's proof on the merge; a token only gets the pending change", async () => {
     const w = await ready();
     w.setWorkflow({ risk: risk("high") });
-    const t = mergeRoute(w, [mergeItem(w, "high")], true);
+    const item = { ...mergeItem(w, "high"), taskId: w.taskId };
+    const jar: { cookie?: string } = {};
+    const t = gradedMergeRoute(w, [item], () => jar.cookie);
     const view = await t.shown(PRIYA);
-    expect(view.cards[0]!.actions.map((action) => action.kind)).toEqual(["open"]);
-    // The card's press (a high merge is pressed on its card) answers 202 with the approval's link: nothing merged.
-    const card = await t.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: view.digests["merge:pr1"]! });
-    expect(card?.statusCode).toBe(202);
-    expect(card?.body).toMatchObject({ outcome: "needs_confirmation", confirmUrl: expect.stringMatching(/\/v1\/app\/approve\/apr_/u) });
-    const direct = await pressMerge(w.shareDeps, { ...w.caller(PRIYA), browserSession: true as const }, w.sessionId, { requestId: randomUUID(), risk: "high" }, w.deps);
-    expect(direct.status).toBe(202);
+    const digest = view.digests["merge:pr1"]!;
+    // A web session alone (signed in just now, with GitHub): REAUTH_REQUIRED with the decide sign-in made for this card; nothing merges and no pending merge change is made.
+    const github = await t.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: digest }).then(() => undefined, (error: unknown) => error as { code?: string; reason?: string; signInUrl?: string });
+    expect(github).toMatchObject({ code: "REAUTH_REQUIRED", reason: "decide_sign_in" });
+    const approvalId = /apr_[0-9a-z]{20}/u.exec(decodeURIComponent(github!.signInUrl!))![0];
+    // Pressing again before signing in reuses the same record (no pile-up).
+    const again = await t.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: digest }).then(() => undefined, (error: unknown) => error as { signInUrl?: string });
+    expect(decodeURIComponent(again!.signInUrl!)).toContain(approvalId);
+    expect(w.db.find((record) => record.entityType === "APPROVAL").map((record) => (record.subject as { kind: string }).kind)).toEqual(["card_decision"]);
+    expect(w.github.mergeCalls).toEqual([]);
+    // A push after the card was shown: the heads pin refuses it even with the sign-in, and the session is given back.
+    jar.cookie = await w.browser(PRIYA, approvalId);
+    w.seedTracking({ headSha: HEAD_B });
+    await expect(gradedMergeRoute(w, [item], () => jar.cookie).run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: digest })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(w.github.mergeCalls).toEqual([]);
+    w.seedTracking({});
+    // With the email-code decide session for this card: merged, once, and the record carries the session's proof.
+    const merged = await t.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: digest });
+    expect(merged?.statusCode, JSON.stringify(merged?.body)).toBe(200);
+    expect(w.github.mergeCalls).toHaveLength(1);
+    const record = w.db.find((entry) => entry.entityType === "APPROVAL" && entry.approvalId === approvalId)[0];
+    expect(record).toMatchObject({ status: "APPROVED_DONE", subject: { kind: "card_decision", cardId: "merge:pr1" }, decisionProof: { kind: "fresh_sign_in", method: "email_code" } });
+    const sessionRef = (record!.decisionProof as { sessionRef: string }).sessionRef;
+    const claims = w.audited().filter((event) => event.action === "pull_request.merge_requested");
+    expect(claims.length).toBeGreaterThan(0);
+    expect(claims.every((event) => (event.proof as { sessionRef?: string } | undefined)?.sessionRef === sessionRef), "the merge's audit claim carries the same proof").toBe(true);
+    // A browser press from outside the card (the Merge button) is told where it is merged; a token gets the pending change and never merges.
+    await expect(pressMerge(w.shareDeps, { ...w.caller(PRIYA), browserSession: true as const }, w.sessionId, { requestId: randomUUID(), risk: "high" }, w.deps)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const before = w.github.mergeCalls.length;
     const token = await pressMerge(w.shareDeps, w.caller(PRIYA), w.sessionId, { requestId: randomUUID() }, w.deps);
     expect(token.status).toBe(202);
-    expect(w.github.mergeCalls).toEqual([]);
-    expect(w.db.find((item) => item.entityType === "APPROVAL").length).toBeGreaterThan(0);
+    expect(w.github.mergeCalls).toHaveLength(before);
   });
 
   it("the endpoint gets the PULL REQUEST's risk, not the card's tier: a lock that raises a low-risk card to medium is still pressed with the level the person saw ('low'), and merges in place", async () => {

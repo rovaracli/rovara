@@ -125,6 +125,23 @@ it("S1c: a high-risk Skip without a recent sign-in says so where it was pressed,
  f.close();
 });
 
+it("final review: while the cost card waits, the strip offers no Skip (the card's own Skip is the one); a strip Skip's decide sign-in is a link to it", async () => {
+ const waiting = designTaskSession(designReviewFixture({ status: "waiting_cost" }), { designActions: { designFirst: false, skip: { allowed: true } } });
+ const f = taskPage([], "", undefined, waiting);
+ const strip = await screen.findByRole("region", { name: "Design review actions" });
+ expect(within(strip).queryByRole("button", { name: "Skip design review" })).toBeNull();
+ f.close();
+ const SIGN_IN = "/v1/auth/decide/identify?return=" + encodeURIComponent("/v1/app/approve/apr_" + "a".repeat(20));
+ const before = designTaskSession(undefined, { designActions: { designFirst: false, skip: { allowed: true } } });
+ const g = taskPage([], "", (path, method) => method === "POST" && path.endsWith("/design-review/skip")
+  ? { status: 403, body: { error: { code: "REAUTH_REQUIRED", reason: "decide_sign_in", signInUrl: SIGN_IN, message: "Sign in again to decide this. A high-risk decision needs a sign-in with the email code within the last 10 minutes." } } } : undefined, before);
+ const strip2 = await screen.findByRole("region", { name: "Design review actions" });
+ fireEvent.click(within(strip2).getByRole("button", { name: "Skip design review" }));
+ fireEvent.click(within(await screen.findByRole("group", { name: "Confirm skipping design review" })).getByRole("button", { name: "Skip design review" }));
+ expect((await within(strip2).findByRole("link", { name: "Sign in again" })).getAttribute("href")).toBe("https://cell.example" + SIGN_IN);
+ g.close();
+});
+
 it("S1c: any other refusal is said without Sign in again", async () => {
  const session = designTaskSession(undefined, { designActions: { designFirst: false, skip: { allowed: true } } });
  const f = taskPage([], "", (path, method) => method === "POST" && path.endsWith("/design-review/skip") ? { status: 403, body: { error: { code: "FORBIDDEN", message: "Decide this in the Rovara app." } } } : undefined, session);

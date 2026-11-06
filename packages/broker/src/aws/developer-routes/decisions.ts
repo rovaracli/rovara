@@ -35,7 +35,8 @@ import { visibleProjectRoles } from "./project-list.js";
 import { dynamoDecisionStore } from "../../decisions/store.js";
 import { mergeItemsFor } from "../../decisions/merge-source.js";
 import type { DecisionRouteDependencies } from "../../decisions/routes.js";
-import { pressMerge } from "../../rovara-code/merge.js";
+import { pressMerge, type MergePressReply } from "../../rovara-code/merge.js";
+import { withCardDecideGrade } from "./card-decide-grade.js";
 import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { designReviewEnabled } from "../../design-review/switch.js";
@@ -135,7 +136,11 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
       async locks() { return {}; },
     },
     performer: createDecisionPerformer<DeveloperCaller>({
-      merge: mergeHandler((who, sessionId, body, expectedHeads) => pressMerge(sessionReadDependencies(deps, who), who, sessionId, body, agents, { expectedHeads })),
+      // A browser's high merge is merged on this card under its decide-grade sign-in, bound to the card and the heads shown (its content version); the sign-in comes back to this card on the task page.
+      merge: mergeHandler((who, sessionId, body, expectedHeads, input) => pressMerge(sessionReadDependencies(deps, who), who, sessionId, body, agents, {
+        expectedHeads,
+        ...(input.item.taskId === undefined ? {} : { decideGrade: (apply: Parameters<typeof withCardDecideGrade<MergePressReply>>[4]) => withCardDecideGrade(deps, who, request.decideCookie, { cardId: input.card.id, taskId: input.item.taskId!, contentVersion: input.item.contentVersion, openPath: input.item.openPath }, apply) }),
+      })),
       approve_test_env: testEnvHandler(async (who, item, requestId) => {
         const role = (await visibleProjectRoles(deps, who)).get(item.project);
         await approveChecked(deps, who, role, item.project, { digest: item.digest, expectedRevision: item.expectedRevision, requestId }, nightlyHooks());

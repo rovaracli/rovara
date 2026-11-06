@@ -81,7 +81,7 @@ export function MergeSection({ session, task }: { session: ReadSession; task: Re
   {mergeCard === undefined && mayPress && !merged && done === undefined && <Dialog title="Press Merge?" description="Rovara merges it now, with the project's merge method." open={open} onOpenChange={value => { if (!busy) { if (value) requestId.current = crypto.randomUUID();setOpen(value); } }}
    trigger={<Button variant="primary" disabled={!task.merge.ready || pending !== undefined}>Merge</Button>}>
    <ul className="rv-merge-items">{unmerged.map(item => <li key={item.repositoryId + "#" + String(item.number)}><VisibleText text={item.repositoryId + " #" + String(item.number)} /></li>)}</ul>
-   {task.merge.risk && levelOf(task.merge.risk) !== "low" && <p role="note"><strong>{RISK_WORDS[levelOf(task.merge.risk)!]}.</strong> <VisibleText text={task.merge.risk.reasons.join(" ")} /> {levelOf(task.merge.risk) === "high" ? "You confirm it on its approval card, after the email-code sign-in." : "Merge anyway?"}</p>}
+   {task.merge.risk && levelOf(task.merge.risk) !== "low" && <p role="note"><strong>{RISK_WORDS[levelOf(task.merge.risk)!]}.</strong> <VisibleText text={task.merge.risk.reasons.join(" ")} /> {levelOf(task.merge.risk) === "high" ? "It is merged on its merge card on this page, after a sign-in with the email code." : "Merge anyway?"}</p>}
    <div className="rv-actions"><Button disabled={busy} onClick={() => setOpen(false)}>Not now</Button><Button variant="primary" busy={busy} onClick={() => { void press(); }}>Press Merge</Button></div>
   </Dialog>}
   {error && <p role="alert"><VisibleText text={error} /></p>}

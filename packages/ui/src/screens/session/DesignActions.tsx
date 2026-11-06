@@ -41,6 +41,8 @@ export function DesignActions({ task, sessionKey }: { task: ReadTask; sessionKey
   }
   finally { setBusy(false); }
  }
+ // While the cost card waits, its own Skip is the one (behind its evidence and, when high, the email-code sign-in): this strip offers none (final review: one Skip).
+ const review = readDesignReview(task.workflow?.designReview), costWaiting = review !== undefined && review !== "unreadable" && review.status === "waiting_cost";
  const skip = actions?.skip, retry = retryOffer(actions?.retry);
  return <section className="rv-design-actions" aria-label="Design review actions">
   {line !== undefined && <p className="rv-design-line"><VisibleText text={line} /></p>}
@@ -48,7 +50,7 @@ export function DesignActions({ task, sessionKey }: { task: ReadTask; sessionKey
   {skip !== undefined && !skip.allowed && <p className="rv-muted"><VisibleText text={skipRefusalText(skip, skip.approverName)} /></p>}
   <div className="rv-actions">
    {actions?.designFirst === true && <Button disabled={busy} onClick={() => { void press("first"); }}>Design first</Button>}
-   {skip?.allowed === true && !confirmSkip && <Button disabled={busy} onClick={() => setConfirmSkip(true)}>Skip design review</Button>}
+   {skip?.allowed === true && !costWaiting && !confirmSkip && <Button disabled={busy} onClick={() => setConfirmSkip(true)}>Skip design review</Button>}
    {retry !== undefined && <><Button disabled={busy} onClick={() => { void press("retry"); }}>Retry review</Button><span className="rv-muted">{retry.left}</span></>}
   </div>
   {confirmSkip && <div role="group" aria-label="Confirm skipping design review"><p>Skip design review for this task? The design goes to a person without fresh-context reviewers reading it first.</p><div className="rv-actions"><Button variant="primary" busy={busy} onClick={() => { void press("skip"); }}>Skip design review</Button><Button disabled={busy} onClick={() => setConfirmSkip(false)}>Keep it</Button></div></div>}

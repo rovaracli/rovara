@@ -2,11 +2,11 @@
 // own, and the decide sign-in for it comes back to the card on its task page (decide-web), for the browser holding the decide session for that very record.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createPendingChange } from "../../packages/broker/src/agents/approvals.js";
+import { createPendingChange, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { CARD_DECISION_RULE } from "../../packages/broker/src/aws/developer-routes/card-decide-grade.js";
 import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
-import { DECIDE_COOKIE } from "../../packages/broker/src/developer/decide-session.js";
-import { ARJUN, PRIYA } from "../support/agent-session-world.js";
+import { DECIDE_COOKIE, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
+import { ARJUN, CELL, PRIYA } from "../support/agent-session-world.js";
 import { mergeWorld } from "../support/rovara-code-merge-world.js";
 
 describe("the card_decision record of a high card's decide-grade sign-in", () => {
@@ -35,6 +35,21 @@ describe("the card_decision record of a high card's decide-grade sign-in", () =>
     // No decide session, or one for another approval: the approval's own card-only page, as before.
     expect(await open(w, record.approvalId)).toMatchObject({ statusCode: 302, headers: { location: `/app/decisions/approve_request/${record.approvalId}` } });
     expect(await open(w, record.approvalId, await w.browser(PRIYA, `apr_${"b".repeat(20)}`))).toMatchObject({ statusCode: 302, headers: { location: `/app/decisions/approve_request/${record.approvalId}` } });
+  });
+
+  it("final review: with the cards OFF the decide sign-in still returns to the task page, and the confirmation page never decides a card_decision (its Approve would spend the session)", async () => {
+    delete process.env.DECISION_CARDS_ENABLED;
+    const { w, record, returnPath } = await made();
+    const cookie = await w.browser(PRIYA, record.approvalId);
+    expect(await open(w, record.approvalId, cookie)).toMatchObject({ statusCode: 302, headers: { location: returnPath } });
+    const posted = await routeDecidePage(w.context(), {
+      method: "POST", path: `/v1/app/approve/${record.approvalId}`, requestId: "r",
+      headers: { cookie: `${DECIDE_COOKIE}=${cookie}`, origin: CELL, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ decision: "approve", csrf: csrfTokenFor(cookie) }).toString(),
+    }, new URL(`${CELL}/v1/app/approve/${record.approvalId}`));
+    expect(posted.statusCode).toBe(409);
+    expect(posted.body).toContain("Decide this on its card in the task.");
+    expect((await getAnyApproval(w.deps, w.orgId, record.approvalId))?.status, "nothing was decided").toBe("PENDING");
   });
 
   it("a record whose return is not a task page is never followed", async () => {

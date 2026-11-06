@@ -61,6 +61,8 @@ import { approvalReviewsOf, changeRequestRef, changedPathsOf, type ConsumerRepos
 
 /** The rule a merge change names: only the person who pressed Merge decides it, while they can still press it. */
 export const MERGE_RULE = "pull_request_merge";
+/** What a browser's HIGH press from outside its merge card hears: where it is merged. */
+export const M_HIGH_ON_CARD = "This change is high risk. Merge it on its merge card on the task page, after a sign-in with the email code.";
 
 
 // ---- whether the pull requests may be merged
@@ -332,14 +334,21 @@ export type MergePressReply = { status: 200; body: MergeDone } | { status: 202; 
  *
  * - A browser session (the web boundary vouched for the cookie and the CSRF token: `caller.browserSession`) merges in place, from the Merge button or the merge card (it names `expectedHeads`) alike
  *   (decision journey slice 3; this replaces the 2026-10-30 and WEB-1 rules). The press must name the risk level the person saw when it is medium or high; one that saw another level is refused. Low and
- *   medium merge on the press (`200` with the pull requests merged). HIGH makes the pending change below, decided on its approval card with the decide-grade sign-in (security review 2026-11-06).
+ *   medium merge on the press (`200` with the pull requests merged). HIGH merges only on its merge card, under that card's decide-grade sign-in (`options.decideGrade`, final review 2026-11-06).
  * - Any other caller (the CLI, an AI tool: a token) never merges. It gets `202 NEEDS_CONFIRMATION` with ONE pending change that lists every required pull request and its head, decided only by the
  *   presser on the confirmation page (R66) with a fresh sign-in.
  */
 export async function pressMerge(
   deps: SessionShareDependencies, caller: ShareCaller, sessionId: string, rawBody: unknown, approvals: ApprovalDependencies | undefined,
   /** The head of each pull request the person was SHOWN (a decision card carries them). When given, the press is refused unless exactly those heads are what would be merged now. */
-  options: { expectedHeads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }> } = {},
+  options: {
+    expectedHeads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }>;
+    /**
+     * The merge card's decide-grade sign-in (`withCardDecideGrade`, final review 2026-11-06): a browser's HIGH merge runs inside it, with the decide session's proof on the merge's audit claim. Given only by the
+     * merge card's press; without it a browser's HIGH press is refused with the way to its card.
+     */
+    decideGrade?: (apply: (proof: AuditProof) => Promise<{ applied: boolean; result: MergePressReply }>) => Promise<MergePressReply>;
+  } = {},
 ): Promise<MergePressReply> {
   const { requestId, risk: seen } = parsePressBody(rawBody);
   const host = approvals?.codeMerge;
@@ -390,11 +399,19 @@ export async function pressMerge(
   const current = riskOfTask(tracked.workflow, items).level;
   if (caller.browserSession === true && (seen ?? "low") !== current) throw agentXError("MERGE_NOT_READY", M.riskChanged(current));
   // Decision journey slice 3 (owner: one merge control; this replaces the 2026-10-30 and WEB-1 rules for low and medium): a person in a signed-in browser merges a LOW or MEDIUM risk change in place, from the
-  // merge card or the Merge button alike. A HIGH risk change, and any press that is not a browser's (a token, Slack), makes the pending change below: it is the presser's approval card
-  // (`approve_request`), decided with the decide-grade sign-in (an email code, from a clean sign-in, as the member's own pool user), whose proof the merge's audit claim records.
+  // merge card or the Merge button alike. A browser's HIGH risk change is merged on its merge card, under the decide-grade sign-in for that card and the heads shown (an email code, from a clean sign-in, as
+  // the member's own pool user), whose proof the merge's audit claim records (final review 2026-11-06; this replaces the pending change for a browser). Any press that is not a browser's (a token, Slack)
+  // makes the pending change below, decided only on the confirmation page.
   if (caller.browserSession === true && current !== "high") {
     const merged = await mergeTask(approvals, host, tracked, subject, { decidedBy: caller.developerId, occurrence: requestId });
     return { status: 200, body: { status: "MERGED", pullRequests: merged } };
+  }
+  if (caller.browserSession === true) {
+    if (options.decideGrade === undefined || options.expectedHeads === undefined) throw agentXError("FORBIDDEN", M_HIGH_ON_CARD);
+    return options.decideGrade(async (proof) => {
+      const merged = await mergeTask(approvals, host, tracked, subject, { decidedBy: caller.developerId, occurrence: requestId, proof });
+      return { applied: true, result: { status: 200, body: { status: "MERGED", pullRequests: merged } } };
+    });
   }
 
   const record = await createPendingChange(approvals, {

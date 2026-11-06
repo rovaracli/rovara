@@ -7,8 +7,8 @@
 //                record is approved by the approval decide kind with the session's proof (`decideProofOf`, the real method), which its audit event carries. The session is spent by an applied
 //                decision and given back when the decision was refused.
 //   not changed  who may decide anything: the card's handler decides that, as before. The record's own rule only lets the person who pressed decide it.
-import { randomUUID } from "node:crypto";
-import { agentXError, decisionFocusPath, decisionTaskSessionOf } from "@agentx/contracts";
+import { createHash } from "node:crypto";
+import { agentXError, decisionFocusPath, decisionTaskSessionOf, type AuditProof } from "@agentx/contracts";
 import { approvalDecideKind } from "../../agents/approval-decide-kind.js";
 import { createPendingChange, getAnyApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies } from "../../agents/approvals.js";
 import { DECIDE_SECONDS, DecideStore, decideProofOf } from "../../developer/decide-session.js";
@@ -18,6 +18,20 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 export const CARD_DECISION_RULE = "card_decision";
 export const CARD_DECIDE_REAUTH_MESSAGE = "Sign in again to decide this. A high-risk decision needs a sign-in with the email code within the last 10 minutes.";
 const RECORD_MINUTES = 30;
+const RECORD_ATTEMPTS = 20;
+/** Records are named per quarter hour: a record made in a window lives 30 minutes, so it still has 15 when the window ends. */
+const RECORD_WINDOW_MS = 15 * 60_000;
+/** A reused record keeps at least this long, so the decide sign-in (10 minutes) can finish inside it. */
+const RECORD_MIN_LEFT_MS = (DECIDE_SECONDS + 60) * 1000;
+
+/** The request id of a card's record: the same person, card and version (and attempt) always name the same record. */
+function requestIdOf(developerId: string, card: CardDecideTarget, attempt: string): string {
+  const hex = createHash("sha256").update(`rovara-card-decision|${developerId}|${card.cardId}|${card.contentVersion}|${attempt}`).digest("hex").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = "89ab"[Number.parseInt(hex[16]!, 16) % 4]!;
+  const joined = hex.join("");
+  return `${joined.slice(0, 8)}-${joined.slice(8, 12)}-${joined.slice(12, 16)}-${joined.slice(16, 20)}-${joined.slice(20)}`;
+}
 
 /** The card being decided: its id and the version of it that was shown, the task, and its page (where the decide sign-in comes back to). */
 export interface CardDecideTarget { cardId: string; taskId: string; contentVersion: string; openPath: string }
@@ -47,7 +61,7 @@ const agentsOf = (deps: DeveloperRouteDependencies): ApprovalDependencies => {
  * Runs `apply` (the card's own decision) only under the decide-grade sign-in for this card. Without it: a `card_decision` record for this person and card version, and REAUTH_REQUIRED with the reason
  * `decide_sign_in` and the sign-in for that record. `apply` says whether the decision was applied (a refusal gives the session back). Never for a token.
  */
-export async function withCardDecideGrade<T>(deps: DeveloperRouteDependencies, who: DeveloperCaller, cookie: string | undefined, card: CardDecideTarget, apply: () => Promise<{ applied: boolean; result: T }>): Promise<T> {
+export async function withCardDecideGrade<T>(deps: DeveloperRouteDependencies, who: DeveloperCaller, cookie: string | undefined, card: CardDecideTarget, apply: (proof: AuditProof) => Promise<{ applied: boolean; result: T }>): Promise<T> {
   if (who.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
   const agents = agentsOf(deps);
   const store = new DecideStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: () => deps.now() });
@@ -56,24 +70,30 @@ export async function withCardDecideGrade<T>(deps: DeveloperRouteDependencies, w
   const fresh = session !== undefined && session.orgId === who.orgId && session.developerId === who.developerId && session.method === "email_code" && session.usedAt === undefined
     && session.expiresAt > nowSeconds && nowSeconds - session.signedInAt <= DECIDE_SECONDS;
   const record = fresh && /^apr_[0-9a-z]{20}$/u.test(session.approvalId) ? await getAnyApproval(agents, who.orgId, session.approvalId) : undefined;
-  const bound = record?.kind === "change" && record.status === "PENDING" && record.requestedBy === who.developerId && record.subject.kind === "card_decision"
+  const bound = record?.kind === "change" && record.status === "PENDING" && Date.parse(record.expiresAt) > deps.now() && record.requestedBy === who.developerId && record.subject.kind === "card_decision"
     && record.subject.cardId === card.cardId && record.subject.contentVersion === card.contentVersion && record.subject.taskId === card.taskId;
   if (!fresh || !bound || cookie === undefined) {
     const returnPath = decisionFocusPath(card.openPath, card.cardId);
     if (decisionTaskSessionOf(returnPath) === undefined) throw decideSignInRequired();
-    const made = await createPendingChange(agents, {
-      orgId: who.orgId, requestId: randomUUID(), requestedBy: who.developerId,
-      subject: { kind: "card_decision", taskId: card.taskId, cardId: card.cardId, contentVersion: card.contentVersion, returnPath },
-      changes: ["Confirm the high-risk decision you pressed Approve on, with a sign-in by email code. You decide it on its card, back on the task page."],
-      approvers: { kind: "rule", rule: CARD_DECISION_RULE, candidates: [] }, expiresAt: new Date(deps.now() + RECORD_MINUTES * 60_000).toISOString(),
-    });
+    // Repeated presses of the same card version reuse its open record (the request id is derived from the person, the card, the version and the quarter hour); a record that ended makes the next one.
+    let made: Awaited<ReturnType<typeof createPendingChange>> | undefined;
+    for (let attempt = 0; attempt < RECORD_ATTEMPTS && made === undefined; attempt += 1) {
+      const record = await createPendingChange(agents, {
+        orgId: who.orgId, requestId: requestIdOf(who.developerId, card, `${String(Math.floor(deps.now() / RECORD_WINDOW_MS))}:${String(attempt)}`), requestedBy: who.developerId,
+        subject: { kind: "card_decision", taskId: card.taskId, cardId: card.cardId, contentVersion: card.contentVersion, returnPath },
+        changes: ["Confirm the high-risk decision you pressed on its card, with a sign-in by email code. You decide it on its card, back on the task page."],
+        approvers: { kind: "rule", rule: CARD_DECISION_RULE, candidates: [] }, expiresAt: new Date(deps.now() + RECORD_MINUTES * 60_000).toISOString(),
+      });
+      if (record.status === "PENDING" && Date.parse(record.expiresAt) - deps.now() > RECORD_MIN_LEFT_MS) made = record;
+    }
+    if (made === undefined) throw agentXError("TOO_MANY_REQUESTS", "Too many attempts at this decision. Reload the page and try again later.");
     throw decideSignInRequired(`/v1/auth/decide/identify?return=${encodeURIComponent(`/v1/app/approve/${made.approvalId}`)}`);
   }
   // One decision per decide session: claimed now, spent by an applied decision, given back when the decision was refused.
   if (!await store.claimSession(cookie, session.approvalId)) throw decideSignInRequired();
   let outcome: { applied: boolean; result: T };
   try {
-    outcome = await apply();
+    outcome = await apply(decideProofOf(cookie, session));
   } catch (error) {
     await store.releaseSession(cookie).catch(() => undefined);
     throw error;

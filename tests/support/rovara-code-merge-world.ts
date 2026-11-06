@@ -135,6 +135,8 @@ export interface MergeWorldExtras {
   approvalOf: (url: string) => Promise<Awaited<ReturnType<typeof getAnyApproval>> & object>;
   approvalIdOf: (url: string) => string;
   requestId: () => string;
+  /** Every audit event the world's actions recorded. */
+  audited: () => Array<{ action: string; proof?: unknown }>;
   prs: PullRequestRef[];
   seedTracking: (overrides?: Partial<MergeTrackingItem> | ((pr: PullRequestRef) => Partial<MergeTrackingItem>)) => void;
   trackingOf: (pr: PullRequestRef) => (MergeTrackingItem & Record<string, unknown>) | undefined;
@@ -271,7 +273,7 @@ export function mergeWorld(options: MergeWorldOptions = {}): MergeWorld {
   const approvalOf = async (url: string) => (await getAnyApproval(deps, ORG_A, approvalIdOf(url)))!;
   const requestId = () => randomUUID();
   return {
-    ...w, sessionId, taskId, orgId, github, host, deps, kind, context, browser, decide, approvalOf, approvalIdOf, requestId, prs, seedTracking, trackingOf, trackingItem, settings, linkAll,
+    ...w, sessionId, taskId, orgId, github, host, deps, kind, context, browser, decide, approvalOf, approvalIdOf, requestId, audited: () => audit.recorded(), prs, seedTracking, trackingOf, trackingItem, settings, linkAll,
     setWorkflow, setPullRequests, store, shareDeps, decideStore, audit,
   };
 }
