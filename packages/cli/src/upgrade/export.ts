@@ -44,6 +44,8 @@ function parameterFile(input: { part: DeployPart; version: string; computed: Rec
 export async function writeUpgradeBundle(input: {
   dir: string; settings: EnvironmentSettings; answers: DeployAnswers; release: LoadedRelease; parts: DeployPart[];
   outputs: Partial<Record<DeployPart, StackOutputs>>; deployed: Partial<Record<DeployPart, Record<string, string>>>;
+  /** The upgrade's one-time forced operator values (forced-values.ts): written as values, never as UsePreviousValue. */
+  forced?: Partial<Record<DeployPart, Record<string, string>>>;
 }): Promise<{ dir: string; files: string[] }> {
   const { settings, release } = input;
   const { env, region } = settings;
@@ -85,7 +87,9 @@ export async function writeUpgradeBundle(input: {
         if (!(error instanceof MissingStackOutputError)) throw error;
         throw agentXError("CONFIG_INVALID", `release ${version} needs output ${error.output} of stack ${error.stackName}, which the deployed stack does not have yet, so one bundle cannot upgrade ${stackName}. Run agentx --env ${env} upgrade --to ${version} with admin credentials instead: it deploys ${error.stackName} first, then reads its new output`);
       }
-      const computed = part === "control-plane" && input.answers.developerSignIn !== undefined ? withDeclaredSignIn(raw, declared) : raw;
+      const signedIn = part === "control-plane" && input.answers.developerSignIn !== undefined ? withDeclaredSignIn(raw, declared) : raw;
+      const forced = Object.fromEntries(Object.entries(input.forced?.[part] ?? {}).filter(([name]) => declared === undefined || declared.has(name)));
+      const computed = { ...signedIn, ...forced };
       const parameters = parameterFile({ part, version, computed, deployed: input.deployed[part], declared });
       await write(`parameters/${part}.json`, `${JSON.stringify(parameters, null, 2)}\n`);
       await write(`templates/${part}.template.json`, release.template(part, region, env));

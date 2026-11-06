@@ -47,6 +47,8 @@ export interface DeployEnvironmentInput {
    * release does: the cdk engine's synth of its source (issue 152, prepareDeployment). Omitted, they
    * are read from the release's own templates (templateParameterNames), as the templates engine does. */
   declaredParameters?: (part: DeployPart) => ReadonlySet<string>;
+  /** An upgrade's one-time forced operator values (upgrade/forced-values.ts): sent over the deployed value, when the part's template declares the parameter. */
+  forcedParameters?: Partial<Record<DeployPart, Record<string, string>>>;
   /** The cdk engine only: makes sure the CDK deploy role may hand the AgentX CloudFormation role to
    * CloudFormation (init/pass-role.ts). Called once, just before the first stack deployed through that
    * role (any part but access); a throw stops the deploy there. The templates engine never calls it. */
@@ -367,6 +369,12 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
         parameters = { ...kept, ...parameters };
         droppedParameters.push(...dropped.map((entry) => ({ stackName, ...entry })));
         if (candidates.length > 0) input.onEvent?.({ kind: "kept", stackName, kept: Object.keys(kept), dropped: dropped.map((entry) => entry.parameter) });
+      }
+      // A one-time forced value of this upgrade replaces what was kept (an explicit operator value included), only where the release's template declares it.
+      const forced = mode === "upgrade" ? input.forcedParameters?.[part] : undefined;
+      if (forced !== undefined) {
+        const declared = declaredFor(part);
+        parameters = { ...parameters, ...Object.fromEntries(Object.entries(forced).filter(([name]) => declared === undefined || declared.has(name))) };
       }
       const roleArn = part === "access" ? undefined : requiredOutput(outputs, "access", "CloudFormationRoleArn", env);
       const request: DeployRequest = {

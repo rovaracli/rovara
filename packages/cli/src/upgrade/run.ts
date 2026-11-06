@@ -25,6 +25,7 @@ import { upgradeAnswers } from "./answers.js";
 import { recordInstalledBundle, recordRestorePoint } from "./bundle/restore-point.js";
 import type { VerifiedBundle } from "./bundle/verify.js";
 import { writeUpgradeBundle } from "./export.js";
+import { FORCED_OPERATOR_VALUES, forcedOperatorValues, forcedValueLines } from "./forced-values.js";
 import { cdkDiffRisks, cdkReviewedDeployer, guardData, upgradeConfirm } from "./review.js";
 import { notesText, refusePrereleaseTarget, upgradeDirection, type ReleaseNotes } from "./target.js";
 
@@ -117,13 +118,11 @@ export async function droppedConfigKeys(input: { declared: (part: DeployPart) =>
   return dropped;
 }
 
-/** Said once by an upgrade that keeps decision cards off (0.5.9: new installs default to on; an upgrade keeps what an install has, since an explicit 0 can't be told from the old default). */
-export const DECISION_CARDS_KEPT_OFF_NOTE = "decision cards are off in this environment (decisionCards.enabled 0); the decision journey's rules apply only with cards on. Turn them on with `agentx config set decisionCards.enabled 1`.";
-
-/** The lines an upgrade says about switches it keeps off that the release turns on for new installs: today, decision cards. */
-export async function keptOffNotes(input: { env: string; stacks: StackReader }): Promise<string[]> {
-  const deployed = (await input.stacks.describe(environmentStackName(input.env, "control-plane")))?.parameters;
-  return deployed?.["DecisionCardsEnabled"] === "0" ? [DECISION_CARDS_KEPT_OFF_NOTE] : [];
+/** The lines an upgrade says about the operator values it forces once (forced-values.ts; 0.5.9: decision cards on), for each stack that held another value. */
+export async function forcedNotes(input: { env: string; from: string; to: string; stacks: StackReader }): Promise<string[]> {
+  const deployed: Partial<Record<DeployPart, Record<string, string> | undefined>> = {};
+  for (const part of new Set(FORCED_OPERATOR_VALUES.map((entry) => entry.part))) deployed[part] = (await input.stacks.describe(environmentStackName(input.env, part)))?.parameters;
+  return forcedValueLines(input.from, input.to, (part) => deployed[part]);
 }
 
 /** FR-026: the upgrade as files for a platform team's pipeline. No AWS write and no lock: it reads
@@ -154,14 +153,14 @@ async function exportUpgrade(input: { options: UpgradeOptions; deps: UpgradeDepe
   for (const entry of await droppedConfigKeys({ declared: (part) => templateParameterNames(release, part, env), env, parts, stacks })) {
     deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; ${entry.instead === undefined ? "nothing replaces it" : `instead, ${entry.instead}`}`);
   }
-  for (const line of await keptOffNotes({ env, stacks })) deps.write(line);
+  for (const line of await forcedNotes({ env, from: settings.version, to: target, stacks })) deps.write(line);
   const outputs: Partial<Record<DeployPart, Record<string, string>>> = {};
   const deployed: Partial<Record<DeployPart, Record<string, string>>> = {};
   for (const part of order) {
     const stack = described.get(settings.stacks[part] ?? environmentStackName(env, part));
     if (stack !== undefined) { outputs[part] = stack.outputs; deployed[part] = stack.parameters; }
   }
-  const written = await writeUpgradeBundle({ dir: input.dir, settings, answers: { ...answers, ...(developerSignIn === undefined ? {} : { developerSignIn }) }, release, parts, outputs, deployed });
+  const written = await writeUpgradeBundle({ dir: input.dir, settings, answers: { ...answers, ...(developerSignIn === undefined ? {} : { developerSignIn }) }, release, parts, outputs, deployed, forced: forcedOperatorValues(settings.version, target) });
   return { env, from: settings.version, to: target, parts, exported: written.dir };
 }
 
@@ -326,7 +325,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
       for (const entry of await droppedConfigKeys({ declared, env, parts, stacks: deps.stacks })) {
         deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; ${entry.instead === undefined ? "nothing replaces it" : `instead, ${entry.instead}`}`);
       }
-      for (const line of await keptOffNotes({ env, stacks: deps.stacks })) deps.write(line);
+      for (const line of await forcedNotes({ env, from: settings.version, to: target, stacks: deps.stacks })) deps.write(line);
 
       // N3: the restore point is written (and read back) before the first image or stack changes; if it cannot be, nothing has been.
       if (bundle !== undefined) {
@@ -354,6 +353,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
           onEvent: (event) => deps.write(progressLine(event)),
           ...(settings.engine === "templates" ? { confirm: review.confirm } : {}),
           deployedParameters: async (stackName) => (await deps.stacks.describe(stackName))?.parameters,
+          forcedParameters: forcedOperatorValues(settings.version, target),
           ...(declaredBy === undefined ? {} : { declaredParameters: declaredBy }),
           ...(settings.engine === "cdk" && prepared.ensurePassRole !== undefined ? { ensurePassRole: prepared.ensurePassRole } : {}),
           now: deps.now,
