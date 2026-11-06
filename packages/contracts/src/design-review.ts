@@ -60,9 +60,9 @@ export const DesignReviewSettingSchema = z.object({
 }).strict();
 export type DesignReviewSetting = z.infer<typeof DesignReviewSettingSchema>;
 
-/** Owner decisions 2026-11-03: auto, Standard (3 reviewers), Skip allowed, $10 per task, maintainers approve high-risk designs. */
+/** Owner decisions 2026-11-03: auto, Standard (3 reviewers), Skip allowed, maintainers approve high-risk designs. Cost limit per task $15 (owner 2026-11-06, raised from $10 after FU3 made estimates honest; review spend stays inside the task run limit). Stored settings keep their own value. */
 export const DESIGN_REVIEW_DEFAULT_SETTING: Readonly<DesignReviewSetting> = Object.freeze({
-  mode: "auto", tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: Object.freeze({ kind: "maintainers" as const }),
+  mode: "auto", tier: "standard", allowSkip: true, capUsdPerTask: 15, highRiskApprover: Object.freeze({ kind: "maintainers" as const }),
 });
 
 /** Owner Q7: at most 2 review rounds and 2 planner revisions per design. */

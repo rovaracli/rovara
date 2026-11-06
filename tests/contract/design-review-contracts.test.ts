@@ -41,8 +41,8 @@ describe("design review contracts", () => {
     expect(IntentAssessmentSchema.safeParse({ ...base, design: { needed: false, reasons: ["bug_fix"], note: "ok‮evil" } }).success).toBe(false);
   });
 
-  it("gives a playbook with no setting the owner's defaults (auto, standard, skip allowed, $10, maintainers)", () => {
-    expect(DESIGN_REVIEW_DEFAULT_SETTING).toEqual({ mode: "auto", tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } });
+  it("gives a playbook with no setting the owner's defaults (auto, standard, skip allowed, $15, maintainers)", () => {
+    expect(DESIGN_REVIEW_DEFAULT_SETTING).toEqual({ mode: "auto", tier: "standard", allowSkip: true, capUsdPerTask: 15, highRiskApprover: { kind: "maintainers" } });
     const old = { revision: 3, defaultProcess: { kind: "builtin" } };
     expect(ProjectPlaybookSchema.parse(old)).toEqual(old);
     expect(designReviewSettingOf(ProjectPlaybookSchema.parse(old))).toEqual(DESIGN_REVIEW_DEFAULT_SETTING);

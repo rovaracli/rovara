@@ -101,7 +101,7 @@ describe("the design review at the Understand step's ready answer", () => {
 
   it("ON, a design that is needed: the effective setting decides, the task is forced onto the Full path at the requirements, and the review is switched on with the project's tier and cap", async () => {
     const result = await understoodAs(needed(), { switchOn: true });
-    expect(result.workflow).toMatchObject({ stage: "PLAN", state: "RUNNING", path: "FULL", reviewPhase: "REQUIREMENTS", designReview: { decidedBy: "auto", status: "estimating", tier: "standard", capUsd: 10, reasons: ["new_api"], rounds: [] } });
+    expect(result.workflow).toMatchObject({ stage: "PLAN", state: "RUNNING", path: "FULL", reviewPhase: "REQUIREMENTS", designReview: { decidedBy: "auto", status: "estimating", tier: "standard", capUsd: 15, reasons: ["new_api"], rounds: [] } });
     expect(result.playbookRead).toBe(true);
   });
 

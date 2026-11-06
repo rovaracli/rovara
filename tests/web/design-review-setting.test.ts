@@ -35,7 +35,7 @@ it("shows the stage card with its six rows and the settings, from the owner's de
  for (const title of ["Who does it", "What it knows", "What it may do", "How it's checked", "Evidence", "Who approves"]) expect(within(card).getByText(title)).toBeTruthy();
  expect(within(card).getByText(/Three reviewers plus a merge step/u)).toBeTruthy();
  expect(within(within(card).getByLabelText("Design review settings")).getByText("Auto: Rovara decides from the request")).toBeTruthy();
- expect(within(card).getByText("$10.00. Above it, a person decides.")).toBeTruthy();
+ expect(within(card).getByText("$15.00. Above it, a person decides.")).toBeTruthy();
  expect(within(card).getByText(/project maintainers/u)).toBeTruthy();
  f.close();
 });
@@ -54,7 +54,7 @@ it("reads a locked field as read-only with the reason, and the page can still ch
  fireEvent.change(within(editor).getByLabelText("When it runs"), { target: { value: "never" } });
  fireEvent.click(within(editor).getByRole("button", { name: "Save design review settings" }));
  await waitFor(() => expect(f.puts).toHaveLength(1));
- expect(f.puts[0]!.body).toMatchObject({ expectedRevision: 4, defaultProcess: { kind: "builtin" }, designReview: { mode: "never", tier: "standard", allowSkip: false, capUsdPerTask: 10, highRiskApprover: { kind: "maintainers" } } });
+ expect(f.puts[0]!.body).toMatchObject({ expectedRevision: 4, defaultProcess: { kind: "builtin" }, designReview: { mode: "never", tier: "standard", allowSkip: false, capUsdPerTask: 15, highRiskApprover: { kind: "maintainers" } } });
  expect(await screen.findByText("Saved. New design reviews use these settings; running ones keep theirs.")).toBeTruthy();
  f.close();
 });
