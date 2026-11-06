@@ -1,4 +1,5 @@
 import { previewTaskStartStop } from "../org/task-stop-start-preview.js";
+import { DECIDE_COOKIE, cookieOf } from "../developer/decide-session.js";
 import { getTaskStopEnrollment, reviewTaskStopEnrollment, writeTaskStopEnrollment } from "../org/task-stop-enrollment.js";
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
 // The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
@@ -447,7 +448,9 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Decision cards (wire-proof): `/v1/app/decisions*`. The dependencies exist only while the cards switch is on; with it off the path falls through as any unknown path.
   if (isDecisionPath(url.pathname)) {
-    const cardDeps = decisionRouteDepsOf(deps, caller);
+    // The outside approval named by the card page's read (`?approval=`) or by a press on its card (the path).
+    const focusApprovalId = /^\/v1\/app\/decisions\/approve_request\/((?:apr|spr)_[0-9a-z]{20})\//u.exec(url.pathname)?.[1] ?? (/^(?:apr|spr)_[0-9a-z]{20}$/u.test(url.searchParams.get("approval") ?? "") ? url.searchParams.get("approval")! : undefined);
+    const cardDeps = decisionRouteDepsOf(deps, caller, process.env, { decideCookie: cookieOf(request.headers, DECIDE_COOKIE), focusApprovalId });
     if (cardDeps !== undefined) {
       const answer = await routeDecisionCards(cardDeps, caller, { method: request.method, pathname: url.pathname, searchParams: url.searchParams, body: request.method === "POST" ? jsonBody(request) : undefined });
       if (answer !== undefined) return answer;

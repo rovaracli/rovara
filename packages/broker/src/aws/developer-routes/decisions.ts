@@ -40,8 +40,8 @@ import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { designReviewEnabled } from "../../design-review/switch.js";
 import { designApproveHandlerFor, designReviewItemsFor } from "./design-review.js";
-import { freshSignInProofOf } from "../../design-review/route-facts.js";
-import { outsideCardHandler, outsideItemsFor } from "./outside-cards.js";
+import { outsideCardHandler, outsideEvidenceOpened, outsideItemsFor } from "./outside-cards.js";
+import { DecideStore } from "../../developer/decide-session.js";
 import { approvalDecideKind } from "../../agents/approval-decide-kind.js";
 import { spendDecideKind } from "../../spend/requests.js";
 import type { DecideKinds } from "../../developer/decide-kinds.js";
@@ -60,7 +60,7 @@ export const DECISION_PATH = /^\/v1\/app\/decisions(?:\/|$)/u;
 export const isDecisionPath = (pathname: string): boolean => DECISION_PATH.test(pathname);
 
 /** The card routes' dependencies for one caller, or undefined while the switch is off or where sessions, tasks or agents are not set up (fail closed). */
-export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, env: NodeJS.ProcessEnv = process.env): DecisionRouteDependencies<DeveloperCaller> | undefined {
+export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, env: NodeJS.ProcessEnv = process.env, request: { decideCookie?: string | undefined; /** The outside approval a link or a press names (`apr_`/`spr_`): listed when its kind lets this person decide it. */ focusApprovalId?: string | undefined } = {}): DecisionRouteDependencies<DeveloperCaller> | undefined {
   if (!decisionCardsEnabled(env)) return undefined;
   const sessions = sessionDependenciesOf(deps);
   const agents = deps.agents;
@@ -127,7 +127,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
           // Slice 2: the requirements and coding plans of the caller's own tasks.
           planCardItemsFor(deps, who),
           // Slice 3b: the agent approvals and spend requests this person may decide (the confirmation page's live rule).
-          outsideItemsFor(deps, who, outsideKinds),
+          outsideItemsFor(deps, who, outsideKinds, request.focusApprovalId),
         ]);
         return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup, ...hosts, ...secondReviewNotices, ...designCards, ...planCards, ...outside];
       },
@@ -135,7 +135,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
       async locks() { return {}; },
     },
     performer: createDecisionPerformer<DeveloperCaller>({
-      merge: mergeHandler((who, sessionId, body, expectedHeads) => pressMerge(sessionReadDependencies(deps, who), who, sessionId, body, agents, { expectedHeads, freshSignIn: () => freshSignInProofOf({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: () => deps.now() }, who) })),
+      merge: mergeHandler((who, sessionId, body, expectedHeads) => pressMerge(sessionReadDependencies(deps, who), who, sessionId, body, agents, { expectedHeads })),
       approve_test_env: testEnvHandler(async (who, item, requestId) => {
         const role = (await visibleProjectRoles(deps, who)).get(item.project);
         await approveChecked(deps, who, role, item.project, { digest: item.digest, expectedRevision: item.expectedRevision, requestId }, nightlyHooks());
@@ -148,13 +148,16 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
       // Design review (`dr`): approving a design goes through `designApproveHandler`, which refuses a task that carries no design review. Not registered while `dr` is off: the kind stays page-decided.
       ...(designReviewEnabled(env) ? { approve_design: { ...designApproveHandlerFor(deps, caller), requestChanges: (who: DeveloperCaller, input: Parameters<typeof requestChanges>[2]) => requestChanges(deps, who, input) } } : {}),
       approve_plan: planCardHandler(deps, caller),
-      approve_request: outsideCardHandler(deps, outsideKinds),
+      approve_request: outsideCardHandler(deps, outsideKinds, { cookie: request.decideCookie, store: new DecideStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: () => deps.now() }), now: () => deps.now() }),
       approve_requirements: planCardHandler(deps, caller),
       ...(hostsOn ? { setup_host: setupHostHandler<DeveloperCaller>(hostDeps, { webOrigin: deps.developer.webOrigin ?? new URL(deps.developer.issuer).origin }) } : {}),
     }),
     // Slice 2: a high requirements or coding plan card is approved on its card, on the task page; its handler asks for the browser session and the recent sign-in.
     // Slice 3: a high merge too (pressMerge asks for the recent sign-in in a browser).
     highOnCard: new Set(["approve_plan", "approve_requirements", "merge", "approve_request"]),
+    // Security review: an outside approval's evidence is opened first (as a medium card's), and opening it is what the kind records as its page having been read.
+    evidenceFirstOnHigh: new Set(["approve_request"]),
+    onEvidenceOpened: async (who, subject) => { if (subject.item.kind === "approve_request") await outsideEvidenceOpened(outsideKinds, who, subject.item.subjectId); },
     store: dynamoDecisionStore({ ...table, now: deps.now }),
     now: deps.now,
     log: (measure) => console.log(JSON.stringify({ component: "broker", ...measure })),

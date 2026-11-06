@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DecisionCardsViewSchema } from "@agentx/contracts";
 import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
+import { DECIDE_COOKIE, DecideStore } from "../../packages/broker/src/developer/decide-session.js";
+import { orgMemberKey, orgRemovedKey } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { BEN, PREPARED, setup, type World } from "../support/spend-world.js";
 import { browserRequests } from "../support/browser-session.js";
@@ -34,6 +36,14 @@ async function blocked(): Promise<{ w: World; taskId: string; requestId: string 
   const request = w.requestOf(taskId, "run_limit")[0]!;
   expect(request.approverIds).toContain(BEN.developerId);
   return { w, taskId, requestId: request.spendRequestId };
+}
+
+/** The decide session the decide sign-in (an email code from a clean sign-in, as the member's own pool user) writes for one approval; the browser holds it as its decide cookie. */
+async function decideSessionFor(w: World, developerId: string, approvalId: string): Promise<string> {
+  const value = randomUUID() + "-" + "x".repeat(20);
+  const signedInAt = Math.floor(Date.now() / 1000) - 30;
+  await new DecideStore({ documentClient: w.db, tableName: "state", now: () => Date.now() }).putSession(value, { orgId: TEST_ORG, developerId, approvalId, signedInAt, method: "email_code", csrfHash: "h".repeat(64), expiresAt: signedInAt + 600 });
+  return `${DECIDE_COOKIE}=${value}`;
 }
 
 type Card = { id: string; kind: string; risk: string; taskId?: string; actions: Array<{ kind: string; href: string; label: string }> };
@@ -69,41 +79,61 @@ describe("slice 3b: an outside approval is decided on its card", () => {
     expect((await web(MAYA, "POST", `/v1/app/decisions/approve_request/${requestId}/approve`, { requestId: randomUUID(), shownDigest: ben.digests[card!.id]! })).status).toBe(404);
   });
 
-  it("approves only from a signed-in browser after a recent sign-in, then once: a token is refused, a stale sign-in asks again, a changed card is stale, a replay is the first answer", async () => {
+  it("approves only from a signed-in browser with the decide-grade sign-in, after the evidence was opened, then once: a token is refused, a fresh GitHub sign-in is not enough, a changed card is stale, a replay is the first answer", async () => {
     const { w, requestId } = await blocked();
     const web = browserRequests(w);
     const { cards, digests } = await cardsOf(web, BEN);
     const id = `approve_request:${requestId}`;
     const path = `/v1/app/decisions/approve_request/${requestId}/approve`;
     expect(cards.some((card) => card.id === id)).toBe(true);
-    // A token (an AI tool) never decides it.
+    // The decide session the email-code sign-in writes for this approval.
+    const cookie = await decideSessionFor(w, BEN.developerId, requestId);
+    // The evidence first: approving before it was opened is refused.
+    expect((await web(BEN, "POST", path, { requestId: randomUUID(), shownDigest: digests[id]! }, 0, cookie)).status).toBe(409);
+    expect((await web(BEN, "POST", `/v1/app/decisions/approve_request/${requestId}/evidence-opened`, { requestId: randomUUID(), shownDigest: digests[id]! })).status).toBe(200);
+    // A token (an AI tool) never decides it, even after the evidence was opened.
     expect((await w.dev(BEN, "POST", path, { requestId: randomUUID(), shownDigest: digests[id]! })).status).toBe(403);
-    // A sign-in that is not recent: REAUTH_REQUIRED, said on the card.
-    const stale = await web(BEN, "POST", path, { requestId: randomUUID(), shownDigest: digests[id]! }, 20 * 60_000);
-    expect(stale.status).toBe(403);
-    expect(stale.body).toMatchObject({ error: { code: "REAUTH_REQUIRED" } });
+    // A browser signed in just now with GitHub (no decide session): REAUTH_REQUIRED, said on the card, which starts the decide sign-in.
+    const github = await web(BEN, "POST", path, { requestId: randomUUID(), shownDigest: digests[id]! });
+    expect(github.status).toBe(403);
+    expect(github.body).toMatchObject({ error: { code: "REAUTH_REQUIRED" } });
     // What was shown must be what is true now.
-    expect((await web(BEN, "POST", path, { requestId: randomUUID(), shownDigest: "f".repeat(64) })).status).toBe(409);
-    expect(w.requestOf(w.requests()[0]!.taskId!, "run_limit")[0]).toMatchObject({ status: "PENDING" });
+    expect((await web(BEN, "POST", path, { requestId: randomUUID(), shownDigest: "f".repeat(64) }, 0, cookie)).status).toBe(409);
+    expect(w.requests().find((record) => record.spendRequestId === requestId)).toMatchObject({ status: "PENDING" });
     const pressId = randomUUID();
-    const approved = await web(BEN, "POST", path, { requestId: pressId, shownDigest: digests[id]! });
+    const approved = await web(BEN, "POST", path, { requestId: pressId, shownDigest: digests[id]! }, 0, cookie);
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     expect(approved.body).toMatchObject({ cardId: id, outcome: "approved" });
     expect(w.requests().find((record) => record.spendRequestId === requestId)).toMatchObject({ status: "APPROVED" });
     // The same press again answers what it first did; the card is gone.
-    expect((await web(BEN, "POST", path, { requestId: pressId, shownDigest: digests[id]! })).body).toMatchObject({ cardId: id, outcome: "approved" });
+    expect((await web(BEN, "POST", path, { requestId: pressId, shownDigest: digests[id]! }, 0, cookie)).body).toMatchObject({ cardId: id, outcome: "approved" });
     expect((await cardsOf(web, BEN)).cards.some((card) => card.id === id)).toBe(false);
   });
 
-  it("declines on the card with the same checks", async () => {
+  it("declines on the card with the same sign-in", async () => {
     const { w, requestId } = await blocked();
     const web = browserRequests(w);
     const path = `/v1/app/decisions/approve_request/${requestId}/reject`;
     expect((await w.dev(BEN, "POST", path, { requestId: randomUUID(), reason: "other" })).status).toBe(403);
-    expect((await web(BEN, "POST", path, { requestId: randomUUID(), reason: "other" }, 20 * 60_000)).body).toMatchObject({ error: { code: "REAUTH_REQUIRED" } });
-    const declined = await web(BEN, "POST", path, { requestId: randomUUID(), reason: "other" });
+    expect((await web(BEN, "POST", path, { requestId: randomUUID(), reason: "other" })).body).toMatchObject({ error: { code: "REAUTH_REQUIRED" } });
+    const declined = await web(BEN, "POST", path, { requestId: randomUUID(), reason: "other" }, 0, await decideSessionFor(w, BEN.developerId, requestId));
     expect(declined.status, JSON.stringify(declined.body)).toBe(200);
     expect(w.requests().find((record) => record.spendRequestId === requestId)).toMatchObject({ status: "DENIED" });
+  });
+
+  it("another org's id, an id that is not an approval, and a removed member: nothing is shown or decided", async () => {
+    const { w, requestId } = await blocked();
+    const web = browserRequests(w);
+    const cookie = await decideSessionFor(w, BEN.developerId, requestId);
+    for (const other of ["spr_zzzzzzzzzzzzzzzzzzzz", "apr_zzzzzzzzzzzzzzzzzzzz"]) {
+      expect((await web(BEN, "POST", `/v1/app/decisions/approve_request/${other}/approve`, { requestId: randomUUID(), shownDigest: "a".repeat(64) }, 0, cookie)).status).toBe(404);
+    }
+    // Ben leaves the company: the card goes, and a press is refused.
+    w.db.set({ ...orgRemovedKey(TEST_ORG, BEN.developerId), entityType: "ORG_REMOVED", orgId: TEST_ORG, developerId: BEN.developerId, removedAt: new Date().toISOString() });
+    w.db.delete?.(orgMemberKey(TEST_ORG, BEN.developerId).pk, orgMemberKey(TEST_ORG, BEN.developerId).sk);
+    const after = await web(BEN, "GET", "/v1/app/decisions");
+    expect(JSON.stringify(after.body)).not.toContain(requestId);
+    expect(w.requests().find((record) => record.spendRequestId === requestId)).toMatchObject({ status: "PENDING" });
   });
 
   it("the old confirmation link sends a browser to the card while the cards are on (kept one release); with them off it is the page as before", async () => {

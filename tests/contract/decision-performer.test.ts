@@ -37,12 +37,10 @@ function mergeItem(w: MergeWorld, prRisk: "low" | "medium" | "high"): DecisionIt
     heads: [{ repositoryId: "payments", number: 7, headSha: HEAD_A }], targets: [{ repositoryId: "payments", number: 7, baseBranch: "main" }], prRisk, prReasons: ["A reason in words."], proof: { proven: 2, passed: 0, failed: 0, notTested: 0 }, reviewVerdict: "approved", ci: "passing", securityFindingsHigh: 0, fullSuitePending: false };
 }
 
-/** The proof of a recent sign-in, as the wiring reads it from the session (`freshSignInProofOf`). */
-const FRESH_PROOF = { kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: "2026-11-06T11:58:00.000Z", sessionRef: "a".repeat(64) };
-function mergeRoute(w: MergeWorld, items: DecisionItem[], browser: boolean, locks: Record<string, "low" | "medium" | "high"> = {}, fresh = false) {
+function mergeRoute(w: MergeWorld, items: DecisionItem[], browser: boolean, locks: Record<string, "low" | "medium" | "high"> = {}) {
   type Caller = DecisionCaller & { who: string };
   const performer = createDecisionPerformer<Caller>({
-    merge: mergeHandler<Caller>((caller, sessionId, body, expectedHeads) => pressMerge(w.shareDeps, { ...w.caller(caller.who), ...(browser ? { browserSession: true as const } : {}) }, sessionId, body, w.deps, { expectedHeads, freshSignIn: async () => (fresh ? FRESH_PROOF : undefined) })),
+    merge: mergeHandler<Caller>((caller, sessionId, body, expectedHeads) => pressMerge(w.shareDeps, { ...w.caller(caller.who), ...(browser ? { browserSession: true as const } : {}) }, sessionId, body, w.deps, { expectedHeads })),
   });
   // Slice 3: a high merge card is approved on the card (the press asks for the recent sign-in), as the wiring sets it.
   const deps = { sources: { list: async () => items, locks: async () => locks }, performer, store: inMemoryDecisionStore(() => NOW), now: () => NOW, highOnCard: new Set(["merge"]) };
@@ -121,41 +119,22 @@ describe("merge card: the real pressMerge", () => {
     expect(t.deps.store.decisions).toHaveLength(0);
   });
 
-  it("slice 3: a HIGH-risk pull request is merged on its card in a browser only after a recent sign-in; a token press still never merges", async () => {
+  it("security review: a HIGH-risk pull request never merges on a press, browser or not, whatever the web sign-in: it makes the pending change, the presser's approval card, decided with the decide-grade sign-in", async () => {
     const w = await ready();
     w.setWorkflow({ risk: risk("high") });
-    const stale = mergeRoute(w, [mergeItem(w, "high")], true, {}, false);
-    const view = await stale.shown(PRIYA);
+    const t = mergeRoute(w, [mergeItem(w, "high")], true);
+    const view = await t.shown(PRIYA);
     expect(view.cards[0]!.actions.map((action) => action.kind)).toEqual(["open"]);
-    await expect(stale.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: view.digests["merge:pr1"]! })).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
-    expect(w.github.mergeCalls).toEqual([]);
-    const direct = pressMerge(w.shareDeps, { ...w.caller(PRIYA), browserSession: true as const }, w.sessionId, { requestId: randomUUID(), risk: "high" }, w.deps);
-    await expect(direct).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
+    // The card's press (a high merge is pressed on its card) answers 202 with the approval's link: nothing merged.
+    const card = await t.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: view.digests["merge:pr1"]! });
+    expect(card?.statusCode).toBe(202);
+    expect(card?.body).toMatchObject({ outcome: "needs_confirmation", confirmUrl: expect.stringMatching(/\/v1\/app\/approve\/apr_/u) });
+    const direct = await pressMerge(w.shareDeps, { ...w.caller(PRIYA), browserSession: true as const }, w.sessionId, { requestId: randomUUID(), risk: "high" }, w.deps);
+    expect(direct.status).toBe(202);
     const token = await pressMerge(w.shareDeps, w.caller(PRIYA), w.sessionId, { requestId: randomUUID() }, w.deps);
     expect(token.status).toBe(202);
     expect(w.github.mergeCalls).toEqual([]);
-    const fresh = mergeRoute(w, [mergeItem(w, "high")], true, {}, true);
-    const merged = await fresh.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: view.digests["merge:pr1"]! });
-    expect(merged?.statusCode).toBe(200);
-    expect(w.github.mergeCalls).toHaveLength(1);
-    // The audit claim carries the recent sign-in the high merge required (review fix), as the confirmation page's did.
-    const [event] = w.audit.recordedBy("pull_request.merge_requested");
-    expect(event).toMatchObject({ proof: FRESH_PROOF });
-  });
-
-  it("review fix: a token (no browser) press on a high merge card makes a pending change and a link, never a merge, even with a recent sign-in", async () => {
-    const w = await ready();
-    w.setWorkflow({ risk: risk("high") });
-    const t = mergeRoute(w, [mergeItem(w, "high")], false, {}, true);
-    const view = await t.shown(PRIYA);
-    const reply = await t.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: view.digests["merge:pr1"]! });
-    expect(reply?.statusCode).toBe(202);
-    expect(reply?.body).toMatchObject({ outcome: "needs_confirmation", confirmUrl: expect.stringMatching(/^https:\/\/.*\/v1\/app\/approve\//u) });
-    expect(w.github.mergeCalls).toEqual([]);
-    // A press straight to the endpoint by a token, with a recent sign-in, is the same.
-    const direct = await pressMerge(w.shareDeps, w.caller(PRIYA), w.sessionId, { requestId: randomUUID() }, w.deps, { freshSignIn: async () => FRESH_PROOF });
-    expect(direct.status).toBe(202);
-    expect(w.github.mergeCalls).toEqual([]);
+    expect(w.db.find((item) => item.entityType === "APPROVAL").length).toBeGreaterThan(0);
   });
 
   it("the endpoint gets the PULL REQUEST's risk, not the card's tier: a lock that raises a low-risk card to medium is still pressed with the level the person saw ('low'), and merges in place", async () => {

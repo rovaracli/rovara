@@ -263,7 +263,7 @@ it("a medium or high risk adds one line to the dialog and is still one click; th
     const dialog = await screen.findByRole("dialog", { name: "Press Merge?" });
     expect(dialog.textContent).toContain(`${risk.level === "high" ? "High" : "Medium"} risk`);
     expect(dialog.textContent).toContain(risk.reasons[0]);
-    expect(dialog.textContent).toContain(risk.level === "high" ? "Merging needs a sign-in within the last 10 minutes." : "Merge anyway?");
+    expect(dialog.textContent).toContain(risk.level === "high" ? "You confirm it on its approval card, after the email-code sign-in." : "Merge anyway?");
     fireEvent.click(screen.getByRole("button", { name: "Press Merge" }));
     await screen.findByText("Merged payments #42.");
     expect(f.presses()).toHaveLength(1);
@@ -310,13 +310,3 @@ it("slice 3: while the task's merge card waits on the page, the Merge section sh
   f.close();
 });
 
-it("slice 3: a high-risk merge without a recent sign-in says so where it was pressed, with Sign in again", async () => {
-  const words = "Sign in again to merge this. A high-risk change needs a sign-in within the last 10 minutes.";
-  const f = setup(mergeSession({ ready: true, risk: { level: "high", reasons: ["Changes CI."] } }), async () => ({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: words } } }));
-  fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Press Merge" }));
-  expect(await screen.findByText(words)).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
-  expect(f.host.signIn).toHaveBeenCalled();
-  f.close();
-});

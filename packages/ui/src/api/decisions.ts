@@ -80,10 +80,11 @@ export function createDecisionsApi(host: AppHost) {
    return result;
   },
   /** Slice 2: a HIGH requirements or coding plan card, approved on its card on the task page. The broker asks for the browser session and the recent sign-in (REAUTH_REQUIRED otherwise). */
-  async approveHighOnCard(decision: ReadDecision, shownDigest: string, acknowledgedRunLimitUsd?: number): Promise<void> {
+  async approveHighOnCard(decision: ReadDecision, shownDigest: string, acknowledgedRunLimitUsd?: number): Promise<DecisionResult> {
    const card = decision.card;
    if (card.risk !== "high" || !HIGH_ON_CARD_KINDS.includes(card.kind) || typeof card.id !== "string") throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
-   done(await api.send("POST", "/v1/app/decisions/" + card.id.replace(":", "/") + "/approve", { requestId: crypto.randomUUID(), shownDigest, ...(acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd }) }, DecisionOutcomeReaderSchema, { retry: "never" }));
+   // A high merge answers 202: its approval card (decided there with the decide-grade sign-in) is where it goes on.
+   return resultOf(done(await api.send("POST", "/v1/app/decisions/" + card.id.replace(":", "/") + "/approve", { requestId: crypto.randomUUID(), shownDigest, ...(acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd }) }, DecisionOutcomeReaderSchema, { retry: "never" })));
   },
   /** Slice 3b: Decline an outside approval on its card (its reject route; the broker asks for the browser, the recent sign-in and the decider's authority, as the confirmation page did). */
   async declineOnCard(decision: ReadDecision): Promise<void> {
@@ -109,12 +110,14 @@ export function createDecisionsApi(host: AppHost) {
  * The caller's decision cards. Only a 404 is "no cards": the cards switch is off in this deployment and the route does not exist (the broker's tests pin that the browser boundary lets the route through, so a 404 here is the switch).
  * Any other failure (a refusal, a server error, no connection, an answer that cannot be read) is an error for the screen to show; it is never read as "no cards" (WEB-1: a 404 from the browser boundary was swallowed that way).
  */
-export function useDecisions() {
+export function useDecisions(approval?: string) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
+ // Slice 3b: the card page of an outside approval names it, so the server lists it for a person who may decide it even when no list names them (a rule's approver).
+ const named = approval !== undefined && /^(?:apr|spr)_[0-9a-z]{20}$/u.test(approval) ? approval : undefined;
  return useQuery({
-  queryKey: ["decisions"], retry: false,
+  queryKey: named === undefined ? ["decisions"] : ["decisions", named], retry: false,
   queryFn: async () => {
-   try { return readDecisions(await api.get("/v1/app/decisions", DecisionCardsViewReaderSchema)); }
+   try { return readDecisions(await api.get(named === undefined ? "/v1/app/decisions" : "/v1/app/decisions?approval=" + named, DecisionCardsViewReaderSchema)); }
    catch (failure) { if (failure instanceof ApiError && failure.status === 404) return []; throw failure; }
   },
  });

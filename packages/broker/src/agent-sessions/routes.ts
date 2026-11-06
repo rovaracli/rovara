@@ -1,7 +1,7 @@
 // The session routes (Plan 5 Task 5): `/v1/app/sessions*` for the app, CLI and MCP, only. Shared `/s/` links belong to the web shell. Each maps to a function
 // that checks the caller's level first; the reads are in read.ts and the shares in shares.ts. A session the caller can't view is `NOT_FOUND` everywhere.
 import { sessionResponseForClient, taskResponseForClient } from "../rovara-code/task-view-compat.js";
-import { LIVE_PAGE_MAX, SessionIdSchema, agentXError, type AgentSessionRecord, type AuditProof, type OrgId, type OrgRole, type SessionId } from "@agentx/contracts";
+import { LIVE_PAGE_MAX, SessionIdSchema, agentXError, type AgentSessionRecord, type OrgId, type OrgRole, type SessionId } from "@agentx/contracts";
 import type { ApprovalCaller, ApprovalDependencies } from "../agents/approvals.js";
 import { listApprovalsFor, mayDecideApproval, shownText } from "../agents/approvals.js";
 import { mayDecideSpendRequest } from "../spend/requests.js";
@@ -41,8 +41,6 @@ import { realtimeTokenFor, type RealtimeTokenDependencies } from "../realtime/to
 /** What the session routes need: the read dependencies, and (for a company-wide share and the decisions a caller may make) Plan 3's approvals core. */
 export interface SessionRouteDependencies extends SessionReadDependencies, Pick<SessionDiffDependencies, "diff"> {
   approvals?: ApprovalDependencies & Partial<AgentRouteDependencies>;
-  /** Decision journey slice 3: whether the caller signed in within the last 10 minutes (a high-risk merge in a browser needs it). Absent: never fresh. */
-  freshSignIn?: (() => Promise<AuditProof | undefined>) | undefined;
   /** What the realtime token route needs (Task 8). Without it the route answers `RUNTIME_UNAVAILABLE`. */
   realtime?: RealtimeTokenDependencies;
   /** The events API a presence notice is posted to (Task 9); without it a heartbeat is kept and nothing is posted. */
@@ -284,9 +282,9 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     if (control === "answers") return answerIntentOnSession(read, caller, sessionId, jsonBody(request));
     // Stop & redirect: the owner stops the step and gives a new instruction. The route exists only while the `rd` switch is on.
     if (control === "redirect") return redirectSession({ ...read, redirect: deps.redirect }, caller, sessionId, jsonBody(request));
-    // Rovara Code: a person presses Merge. In a signed-in browser it merges in place (high-risk after a recent sign-in); a token gets 202 with the link where they confirm it (decision journey slice 3).
+    // Rovara Code: a person presses Merge. In a signed-in browser a low or medium risk change merges in place; a high one, or a token's press, gets 202 and the presser's approval card (decision journey slice 3).
     if (control === "merge") {
-      const reply = await pressMerge(read, caller, sessionId, jsonBody(request), deps.approvals, { ...(deps.freshSignIn === undefined ? {} : { freshSignIn: deps.freshSignIn }) });
+      const reply = await pressMerge(read, caller, sessionId, jsonBody(request), deps.approvals);
       return new StatusReply(reply.status, reply.body);
     }
     // Rovara Code: a task that ended Answered, followed by a new task that makes the change anyway (202, like the app's start).

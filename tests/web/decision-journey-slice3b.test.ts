@@ -25,32 +25,43 @@ const viewOf = (items: DecisionItem[]) => { const p = projectDecisionCards(items
 const decided = (outcome: "approved" | "rejected") => ({ status: 200, body: { cardId: CARD, outcome, remainingTabs: [] } });
 
 function page(answer: (request: ApiRequest) => { status: number; body: unknown } | undefined = () => undefined) {
- const f = fakeHost(async request => answer(request) ?? (request.path === "/v1/app/decisions" ? { status: 200, body: viewOf([item, other]) } : { status: 200, body: {} }));
+ const f = fakeHost(async request => answer(request) ?? (request.path.split("?")[0] === "/v1/app/decisions" ? { status: 200, body: viewOf([item, other]) }
+  : request.method === "POST" && request.path.endsWith("/evidence-opened") ? { status: 200, body: { cardId: CARD, opened: true, recorded: true } } : { status: 200, body: {} }));
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/decisions/:kind/:subject", element: h(DecisionScreen, {}) }], { initialEntries: ["/app/decisions/approve_request/" + ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
  const posts = () => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST");
  return { ...f, posts, close() { ui.unmount();router.dispose();query.clear(); } };
 }
 
-it("the card-only page shows that one card and its evidence, nothing else, with Approve and Decline", async () => {
+it("the card-only page names the approval in its read and shows that one card and its evidence, nothing else (no task title, plan or diff), with Approve and Decline", async () => {
  const f = page();
  const card = await screen.findByRole("article", { name: "Raise the run limit to $20" });
+ expect(f.request.mock.calls.map(([request]) => request.path)).toContain("/v1/app/decisions?approval=" + ID);
  expect(screen.getAllByRole("article")).toHaveLength(1);
  expect(screen.queryByText("Someone else's plan")).toBeNull();
+ for (const absent of [/Retry failed payments/u, /src\/a\.ts/u, /Plan/u, /Changes/u, /pull request/iu]) expect(document.body.textContent ?? "").not.toMatch(absent);
  expect(await within(card).findByRole("button", { name: "Approve" })).toBeTruthy();
  expect(within(card).getByRole("button", { name: "Decline" })).toBeTruthy();
  f.close();
 });
 
-it("Approve with a stale sign-in says so on the card with Sign in again; Decline posts the card's own reject", async () => {
+it("Approve waits for the evidence; without the decide-grade sign-in the card says so and Sign in again starts that sign-in for this approval; Decline posts the card's own reject", async () => {
  let fresh = false;
  const f = page(request => request.method === "POST" && request.path.endsWith("/approve") ? (fresh ? decided("approved") : { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to decide this. Decisions like this need a sign-in within the last 10 minutes." } } })
   : request.method === "POST" && request.path.endsWith("/reject") ? decided("rejected") : undefined);
  const card = await screen.findByRole("article", { name: "Raise the run limit to $20" });
- fireEvent.click(await within(card).findByRole("button", { name: "Approve" }));
+ const approve = await within(card).findByRole("button", { name: "Approve" });
+ // The evidence first (what the kind records as its page having been read).
+ expect(approve.hasAttribute("disabled")).toBe(true);
+ const summary = within(card).getByText("Show the evidence");
+ (summary.closest("details") as HTMLDetailsElement).open = true;fireEvent(summary.closest("details")!, new Event("toggle"));
+ await waitFor(() => expect(f.posts().map(request => request.path)).toContain("/v1/app/decisions/approve_request/" + ID + "/evidence-opened"));
+ await waitFor(() => expect(approve.hasAttribute("disabled")).toBe(false));
+ fireEvent.click(approve);
  expect((await within(card).findByRole("alert")).textContent).toContain("Sign in again to decide this");
- fireEvent.click(within(card).getByRole("button", { name: "Sign in again" }));
- expect(f.host.signIn).toHaveBeenCalled();
+ // Sign in again is the decide-grade sign-in for this approval (an email code from a clean sign-in), which comes back to this card.
+ expect(within(card).getByRole("link", { name: "Sign in again" }).getAttribute("href")).toBe("/v1/auth/decide/identify?return=" + encodeURIComponent("/v1/app/approve/" + ID));
+ expect(f.host.signIn).not.toHaveBeenCalled();
  fresh = true;
  fireEvent.click(within(card).getByRole("button", { name: "Decline" }));
  await waitFor(() => expect(f.posts().map(request => request.path)).toContain("/v1/app/decisions/approve_request/" + ID + "/reject"));
@@ -59,7 +70,7 @@ it("Approve with a stale sign-in says so on the card with Sign in again; Decline
 });
 
 it("a decision that is not waiting for this person says so (the page shows nothing of it)", async () => {
- const f = page(request => request.path === "/v1/app/decisions" ? { status: 200, body: viewOf([other]) } : undefined);
+ const f = page(request => request.path.split("?")[0] === "/v1/app/decisions" ? { status: 200, body: viewOf([other]) } : undefined);
  expect(await screen.findByText("This decision is no longer waiting for you.")).toBeTruthy();
  expect(screen.queryByRole("article")).toBeNull();
  f.close();

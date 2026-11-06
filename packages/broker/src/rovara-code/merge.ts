@@ -311,8 +311,6 @@ export function mergeViewFromReadiness(readiness: Readiness): MergeView {
 // ---- pressing Merge
 
 const UNAVAILABLE = "Merging isn't available right now.";
-/** What a high-risk merge says when the presser has not signed in recently. */
-export const MERGE_HIGH_REAUTH_MESSAGE = "Sign in again to merge this. A high-risk change needs a sign-in within the last 10 minutes.";
 /** A code host that does not offer `merge` (the port's `merge` is optional): Rovara never merges there, a person does on the host. */
 const HOST_WILL_NOT_MERGE = "Rovara can't merge on this repository's code host. Merge it there.";
 const changeText = (repository: string, number: number, method: string): string => `Merge ${repository} pull request ${String(number)} (${method})`;
@@ -334,14 +332,14 @@ export type MergePressReply = { status: 200; body: MergeDone } | { status: 202; 
  *
  * - A browser session (the web boundary vouched for the cookie and the CSRF token: `caller.browserSession`) merges in place, from the Merge button or the merge card (it names `expectedHeads`) alike
  *   (decision journey slice 3; this replaces the 2026-10-30 and WEB-1 rules). The press must name the risk level the person saw when it is medium or high; one that saw another level is refused. Low and
- *   medium merge on the press; HIGH needs a sign-in within the last 10 minutes (`freshSignIn` answers its proof, which the audit claim records), else REAUTH_REQUIRED. Answers `200` with the pull requests merged.
+ *   medium merge on the press (`200` with the pull requests merged). HIGH makes the pending change below, decided on its approval card with the decide-grade sign-in (security review 2026-11-06).
  * - Any other caller (the CLI, an AI tool: a token) never merges. It gets `202 NEEDS_CONFIRMATION` with ONE pending change that lists every required pull request and its head, decided only by the
  *   presser on the confirmation page (R66) with a fresh sign-in.
  */
 export async function pressMerge(
   deps: SessionShareDependencies, caller: ShareCaller, sessionId: string, rawBody: unknown, approvals: ApprovalDependencies | undefined,
   /** The head of each pull request the person was SHOWN (a decision card carries them). When given, the press is refused unless exactly those heads are what would be merged now. */
-  options: { expectedHeads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }>; /** Decision journey slice 3: the proof that the presser signed in within the last 10 minutes, or undefined when they did not (a high-risk merge in a browser needs it, and its audit records it). Absent: never. */ freshSignIn?: (() => Promise<AuditProof | undefined>) | undefined } = {},
+  options: { expectedHeads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }> } = {},
 ): Promise<MergePressReply> {
   const { requestId, risk: seen } = parsePressBody(rawBody);
   const host = approvals?.codeMerge;
@@ -391,14 +389,11 @@ export async function pressMerge(
   // What the person saw in the dialog has to be what is true now: a medium or high risk is part of the click, and a risk that changed since is a new question.
   const current = riskOfTask(tracked.workflow, items).level;
   if (caller.browserSession === true && (seen ?? "low") !== current) throw agentXError("MERGE_NOT_READY", M.riskChanged(current));
-  // Decision journey slice 3 (owner: one merge control, checks inside the card, no separate confirmation page; this replaces the 2026-10-30 and WEB-1 rules): a person in a signed-in browser merges in place,
-  // from the merge card or the Merge button alike. Low and medium merge on the press; HIGH needs a sign-in within the last 10 minutes (REAUTH_REQUIRED otherwise, said on the card with Sign in again).
-  // A token (the CLI, an AI tool) or a Slack press still never merges: it makes the pending change below, decided by the presser in the app.
-  if (caller.browserSession === true) {
-    const proof = current === "high" && options.freshSignIn !== undefined ? await options.freshSignIn() : undefined;
-    if (current === "high" && proof === undefined) throw agentXError("REAUTH_REQUIRED", MERGE_HIGH_REAUTH_MESSAGE);
-    // A high merge's audit claim carries the recent sign-in it required, as the confirmation page's did.
-    const merged = await mergeTask(approvals, host, tracked, subject, { decidedBy: caller.developerId, occurrence: requestId, ...(proof === undefined ? {} : { proof }) });
+  // Decision journey slice 3 (owner: one merge control; this replaces the 2026-10-30 and WEB-1 rules for low and medium): a person in a signed-in browser merges a LOW or MEDIUM risk change in place, from the
+  // merge card or the Merge button alike. A HIGH risk change, and any press that is not a browser's (a token, Slack), makes the pending change below: it is the presser's approval card
+  // (`approve_request`), decided with the decide-grade sign-in (an email code, from a clean sign-in, as the member's own pool user), whose proof the merge's audit claim records.
+  if (caller.browserSession === true && current !== "high") {
+    const merged = await mergeTask(approvals, host, tracked, subject, { decidedBy: caller.developerId, occurrence: requestId });
     return { status: 200, body: { status: "MERGED", pullRequests: merged } };
   }
 

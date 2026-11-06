@@ -16,6 +16,7 @@ import { recordFixSetup } from "../../packages/broker/src/test-env/fix-setup.js"
 import { readKnownFailingRow } from "../../packages/broker/src/test-env/known-failing.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
+import { browserRequests } from "../support/browser-session.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 
@@ -244,6 +245,33 @@ describe("opening the page before confirming holds on every route (M3)", () => {
     const w = await world();
     const redirected = await routeDecidePage({} as never, { method: "GET", path: `/v1/app/approve/${w.card.approvalId}`, requestId: "r", headers: {} }, new URL(`${CELL}/v1/app/approve/${w.card.approvalId}`));
     expect(redirected).toMatchObject({ statusCode: 302, headers: { location: `/app/decisions/approve_request/${w.card.approvalId}` } });
+  });
+
+  it("slice 3b (security review): the known-failing approval is decided on its card: Approve is refused until its evidence is opened (which records the page as read), then taken with the decide-grade sign-in", async () => {
+    const w = await world();
+    const web = browserRequests(w.t);
+    // A rule's approver is not on any list: the card page names the approval (as the old link's redirect does), and the server lists it because the kind lets her decide it now.
+    const unnamed = await web(MAYA, "GET", "/v1/app/decisions");
+    expect(JSON.stringify(unnamed.body)).not.toContain(`approve_request:${w.card.approvalId}`);
+    const list = await web(MAYA, "GET", `/v1/app/decisions?approval=${w.card.approvalId}`);
+    const { requestId: gateway, ...own } = list.body; void gateway;
+    const view = DecisionCardsViewSchema.parse(own);
+    const id = `approve_request:${w.card.approvalId}`;
+    expect(view.cards.map((entry) => entry.id), "the second person has the card").toContain(id);
+    // Someone the kind does not let decide it (the presser) gets nothing, named or not.
+    expect(JSON.stringify((await web(OMAR, "GET", `/v1/app/decisions?approval=${w.card.approvalId}`)).body)).not.toContain(id);
+    const digest = view.digests[id]!;
+    const value = randomUUID() + "-" + "x".repeat(20);
+    const signedInAt = Math.floor(Date.now() / 1000) - 30;
+    await new DecideStore({ documentClient: w.t.db, tableName: "state", now: () => Date.now() }).putSession(value, { orgId: TEST_ORG, developerId: MAYA.developerId, approvalId: w.card.approvalId, signedInAt, method: "email_code", csrfHash: "h".repeat(64), expiresAt: signedInAt + 600 });
+    const cookie = `${DECIDE_COOKIE}=${value}`;
+    const path = `/v1/app/decisions/approve_request/${w.card.approvalId}`;
+    expect((await web(MAYA, "POST", `${path}/approve`, { requestId: randomUUID(), shownDigest: digest }, 0, cookie)).status).toBe(409);
+    expect(w.status()).toBe("PENDING");
+    expect((await web(MAYA, "POST", `${path}/evidence-opened`, { requestId: randomUUID(), shownDigest: digest })).status).toBe(200);
+    const approved = await web(MAYA, "POST", `${path}/approve`, { requestId: randomUUID(), shownDigest: digest }, 0, cookie);
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(w.status()).not.toBe("PENDING");
   });
 
   it("the page refuses a POST approve with no earlier GET, and the session is given back; a GET then a POST confirms", async () => {

@@ -46,7 +46,7 @@ export interface DecisionCardActions {
   * On the task page, a HIGH-risk approve_design card is decided on the card itself (the inline Approve), not on another page: `read` asks the server whether this person may and what the card's digest is now,
   * `approve` presses it with the digest that was shown. Absent where the card only links to the task (Home): the link goes to this card on the task page.
   */
- highRisk?: { read(): Promise<DesignApprovalRead>; approve(shownDigest: string, reason?: string, acknowledgedRunLimitUsd?: number): Promise<void> };
+ highRisk?: { read(): Promise<DesignApprovalRead>; approve(shownDigest: string, reason?: string, acknowledgedRunLimitUsd?: number): Promise<void | DecisionResult> };
  /** Slice 3b: Decline an outside approval on its card (with the same recent sign-in). */
  decline?(): Promise<void>;
 }
@@ -85,7 +85,8 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  const target = decisionOpenTarget(card, host.origin);
  const canApprove = mayApproveHere(card);
  const canReject = card.actions.some(action => action.kind === "reject") && card.risk !== "high";
- const needsEvidence = card.friction.expandEvidenceFirst && card.risk === "medium";
+ // An outside approval's evidence is opened first where it is decided (security review: what its kind records as its page having been read), as a medium card's is.
+ const needsEvidence = (card.friction.expandEvidenceFirst && card.risk === "medium") || (card.kind === "approve_request" && actions.highRisk !== undefined);
  const activeTab = tabs === undefined ? undefined : tab;
  // The requirements are approved before the design: the design tab's Approve waits for them.
  const designBlocked = (which: DecisionTabId | undefined) => which === "design" && tabs?.some(item => item.id === "requirements" && !item.approved) === true;
@@ -117,7 +118,10 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
   const high = actions.highRisk!;
   const now = await high.read();
   if (now.digest !== digest) { setOpened({});actions.onStale();setError(CHANGED_WORDS);return; }
-  await high.approve(digest, reasonOf(undefined), ack);setNote(<p role="status">Approved. Rovara goes on from here.</p>);
+  const result = await high.approve(digest, reasonOf(undefined), ack);
+  // A high merge goes on as its approval card, decided there with the decide-grade sign-in.
+  if (result !== undefined && result.kind === "needs_confirmation") { settle(result);return; }
+  setNote(<p role="status">Approved. Rovara goes on from here.</p>);
  });
  // Whether this card is on its own task page. There everything is decided on the card: its link to the same page is left out (a high card that is not decided inline keeps it).
  const onItsPage = target?.kind === "internal" && decisionTaskSessionOf(target.to) !== undefined && decisionTaskSessionOf(target.to) === sessionOfPage(location.pathname);
@@ -150,7 +154,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  /** What a high-risk design card offers in place of the link to itself: Approve for the person who may, who can for everyone else. */
  const inlineActions = !inline ? null : eligibility.isPending ? <p className="rv-muted" role="status">Checking who can approve this design.</p>
   : eligibility.data === undefined ? <p role="alert">Couldn't check who can approve this design. <Button variant="quiet" onClick={() => { void eligibility.refetch(); }}>Try again</Button></p>
-  : eligibility.data.mayApprove ? <>{reasonField(undefined)}<Button variant="primary" busy={busy} disabled={(blockers(undefined) > 0 && reasonOf(undefined) === undefined) || limitBlocked} onClick={() => { void approveInline(); }}>{blockers(undefined) > 0 ? DECISION_LABELS.approveWithReason : DECISION_LABELS.approve}</Button>{actions.decline !== undefined && <Button busy={busy} onClick={() => { void run(async () => { await actions.decline!();setNote(<p role="status">Declined.</p>); }); }}>Decline</Button>}</>
+  : eligibility.data.mayApprove ? <>{reasonField(undefined)}<Button variant="primary" busy={busy} disabled={(blockers(undefined) > 0 && reasonOf(undefined) === undefined) || limitBlocked || (needsEvidence && !isOpened(undefined))} onClick={() => { void approveInline(); }}>{blockers(undefined) > 0 ? DECISION_LABELS.approveWithReason : DECISION_LABELS.approve}</Button>{actions.decline !== undefined && <Button busy={busy} onClick={() => { void run(async () => { await actions.decline!();setNote(<p role="status">Declined.</p>); }); }}>Decline</Button>}</>
   : <p className="rv-muted">{eligibility.data.approverName === undefined ? "Someone else has to approve this design." : <><VisibleText text={eligibility.data.approverName} /> can approve this design.</>}</p>;
  const limitBox = limit !== undefined && <div className="rv-decision-limit" role="group" aria-label="Run limit">
   <p>{limit.currentUsd === undefined ? <>No run limit yet → proposed limit <Money usd={limit.proposedUsd} /></> : <>Current limit <Money usd={limit.currentUsd} /> → proposed limit <Money usd={limit.proposedUsd} /></>}</p>
@@ -195,6 +199,9 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
    <div className="rv-actions"><Button variant="primary" onClick={() => { const url = confirming.url;setConfirming(undefined);setNote(<p role="status">Nothing is merged until you confirm on the next page.</p>);host.openExternal(url); }}>Confirm</Button><Button onClick={() => { setConfirming(undefined);setNote(<p role="status">Nothing was merged.</p>); }}>Cancel</Button></div></div>}
   {note}
   {error && <p role="alert"><VisibleText text={error} /></p>}
-  {signIn && <Button onClick={() => host.signIn(host.currentPath())}>{DECISION_LABELS.signInAgain}</Button>}
+  {signIn && (card.kind === "approve_request"
+   // An outside approval needs the decide-grade sign-in (an email code from a clean sign-in): its own flow, which comes back to this approval's card.
+   ? <a className="rv-button rv-button-secondary" href={"/v1/auth/decide/identify?return=" + encodeURIComponent("/v1/app/approve/" + String(card.id).slice("approve_request:".length))}>{DECISION_LABELS.signInAgain}</a>
+   : <Button onClick={() => host.signIn(host.currentPath())}>{DECISION_LABELS.signInAgain}</Button>)}
  </article>;
 }

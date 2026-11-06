@@ -61,6 +61,10 @@ export interface DecisionRouteDependencies<C extends DecisionCaller = DecisionCa
    * other kind a high card still has no approve route. Absent: none.
    */
   highOnCard?: ReadonlySet<string> | undefined;
+  /** Security review 2026-11-06: the high-on-card kinds whose evidence is still opened first (and recorded for the digest shown) before Approve: an outside approval's. */
+  evidenceFirstOnHigh?: ReadonlySet<string> | undefined;
+  /** Called once the evidence of a card was recorded as opened: an outside approval's kind records that its page was read (`opened`). Errors are the caller's to absorb. */
+  onEvidenceOpened?: ((caller: C, subject: Subject) => Promise<void>) | undefined;
 }
 
 export interface DecisionRequest { method: string; pathname: string; searchParams: URLSearchParams; body: unknown }
@@ -179,12 +183,13 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     const body = DecisionOpenedBodySchema.safeParse(request.body);
     if (!body.success) return ISSUE(body.error);
     const pending = pendingCard(await project(deps, caller), cardId);
-    if (pending.card.risk === "high") throw agentXError("NOT_FOUND", DECISION_FULL_PAGE_MESSAGE);
+    if (pending.card.risk === "high" && deps.evidenceFirstOnHigh?.has(pending.card.kind) !== true) throw agentXError("NOT_FOUND", DECISION_FULL_PAGE_MESSAGE);
     // What the person was shown must be what the server shows now: a stale view never creates a fresh record.
     if (body.data.shownDigest !== pending.digest) throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);
     const tab = tabOf(request.searchParams.get("tab"), pending.tabs);
     const recorded = pending.card.friction.expandEvidenceFirst;
     if (recorded) await deps.store.recordEvidenceOpened({ ...who, cardId, tab }, pending.digest, nowIso());
+    if (recorded && deps.onEvidenceOpened !== undefined) await deps.onEvidenceOpened(caller, actingSubject(pending, tab));
     const answer: DecisionEvidenceOpenedAnswer = { cardId, opened: true, recorded };
     return new StatusReply(200, answer);
   }
@@ -216,7 +221,7 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     if (body.data.acknowledgedRunLimitUsd !== undefined && !DECISION_RUN_LIMIT_KINDS.includes(acting.item.kind)) throw agentXError("CONFIG_INVALID", "acknowledgedRunLimitUsd: this card sets no run limit");
     let openedAt: string | undefined;
     // A high card decided on its card has the recent sign-in as its check (its handler asks for it), not the evidence record a medium card needs.
-    if (card.friction.expandEvidenceFirst && !highOnCard) {
+    if (card.friction.expandEvidenceFirst && (!highOnCard || deps.evidenceFirstOnHigh?.has(card.kind) === true)) {
       openedAt = await deps.store.evidenceOpenedAt({ ...who, cardId, tab: body.data.tab }, pending.digest);
       if (openedAt === undefined) throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);
     }
