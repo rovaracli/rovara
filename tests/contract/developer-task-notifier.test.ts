@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { orgMemberKey, projectMemberKey, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
 import { developerTaskIdentity, plannerRepliesKey } from "../../packages/broker/src/developer/task-records.js";
 import { SlackPostError, chatPostMessage } from "../../packages/broker/src/aws/slack-web.js";
-import { cachedSlackPoster, createNotifierHandler, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
+import { cachedSlackPoster, createNotifierHandler, designCardUrlFor, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, recordStream } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
@@ -2656,5 +2656,20 @@ describe("a spec on hold tells the owner (wire lane D, MD-1)", () => {
     expect(noticesOf(state({ status: "written" }), failed, at, "e1")).toEqual([{ id: `${taskId}:spec_hold:5`, kind: "spec_hold", taskId, at }]);
     expect(noticesOf(failed, state({ status: "failed", revision: 6 }), at, "e2")).toEqual([]);
     expect(noticesOf(undefined, state({ status: "due", revision: 1 }), at, "e3")).toEqual([]);
+  });
+});
+
+describe("decision journey slice 1: a plan-review message for a design under review links to its card (from the task record)", () => {
+  const taskId = "11111111-1111-4111-8111-111111111111", sessionId = `ses_${"a".repeat(20)}`, page = `https://agentx.example.test/review/${taskId}/task`;
+  const review = { status: "waiting_person" } as never;
+  it("the card on the task's session page when the record carries a design review at the design step", () => {
+    expect(designCardUrlFor("https://agentx.example.test", { taskId, sessionId }, { designReview: review, reviewPhase: "DESIGN" }, page))
+      .toBe(`https://agentx.example.test/app/sessions/${sessionId}?decision=approve_design%3A${taskId}`);
+    // No session on the record: the task page, still never an Approve.
+    expect(designCardUrlFor("https://agentx.example.test", { taskId }, { designReview: review, reviewPhase: "DESIGN" }, page)).toBe(page);
+  });
+  it("nothing (Approve stays) without a design review, or at another step", () => {
+    expect(designCardUrlFor("https://agentx.example.test", { taskId, sessionId }, { designReview: undefined, reviewPhase: "DESIGN" }, page)).toBeUndefined();
+    expect(designCardUrlFor("https://agentx.example.test", { taskId, sessionId }, { designReview: review, reviewPhase: "IMPLEMENTATION_PLAN" }, page)).toBeUndefined();
   });
 });

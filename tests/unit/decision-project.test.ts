@@ -241,10 +241,10 @@ describe("Full path: requirements and design are one card with two tabs", () => 
     const confirm = projectDecisionCards([{ ...ITEMS.approve_setting, confirmPath: "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }]).cards[0]!;
     expect(confirm.actions.find((action) => action.kind === "open")?.href).toBe("/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa");
   });
-  it("uses the one vocabulary on every action: Approve, Merge, Answer, Open, Not now", () => {
+  it("uses the one vocabulary on every action: Approve, Review and merge, Answer, Open, Not now", () => {
     const labels = (kind: DecisionKind) => projectDecisionCards([ITEMS[kind]], { pairFullCards: false }).cards[0]!.actions.map((action) => action.label);
     expect(labels("approve_plan")).toEqual(["Approve", "Not now", "Open"]);
-    expect(labels("merge")).toEqual(["Merge", "Not now", "Open"]);
+    expect(labels("merge")).toEqual(["Review and merge", "Not now", "Open"]);
     expect(labels("answer_question")).toEqual(["Answer"]);
     expect(labels("approve_setting")).toEqual(["Open"]);
   });

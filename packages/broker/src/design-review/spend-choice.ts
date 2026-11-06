@@ -168,13 +168,7 @@ export function designSpendChoiceHandler<C extends DecisionCaller>(ports: Design
     const risk = riskTierOf("approve_spend", { spend: { amountUsd: designSpendAmountUsd(gate, context.taskCapUsd, context.spentUsd) } }, locks).risk;
     // High: a fresh sign-in AND a browser session. A token (an AI tool) never decides a high card, as the decisions route refuses high entirely (ON-9).
     if (risk === "high" && context.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
-    // A sign-in that is not recent asks for a new one (REAUTH_REQUIRED: the page shows "Sign in again" where the choice was pressed); who may choose is decided above and does not change.
-    if (risk === "high" && !context.freshSignIn) throw agentXError("REAUTH_REQUIRED", DESIGN_CHOICE_REAUTH_MESSAGE);
-    if (risk === "medium" || card.friction.expandEvidenceFirst) {
-      const opened = await ports.store.evidenceOpenedAt({ ...who, cardId }, digest);
-      if (opened === undefined) throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);
-    }
-    // Authority, by choice.
+    // Authority, by choice, BEFORE the sign-in: a person who may not make this choice is refused (FORBIDDEN), never asked to sign in again for something they cannot do.
     let applied: DesignSpendApplied;
     switch (offered.choice) {
       case "skip":
@@ -191,6 +185,12 @@ export function designSpendChoiceHandler<C extends DecisionCaller>(ports: Design
         applied = offered.choice === "lower_tier" ? { choice: "lower_tier", tier: offered.tier } : offered.choice === "raise_cap" ? { choice: "raise_cap", newCapUsd: offered.newCapUsd } : { choice: "run_unpriced", stopAtMeasuredUsd: context.taskCapUsd };
         break;
       }
+    }
+    // A sign-in that is not recent asks for a new one (REAUTH_REQUIRED: the page shows "Sign in again" where the choice was pressed), only for a choice this person may make.
+    if (risk === "high" && !context.freshSignIn) throw agentXError("REAUTH_REQUIRED", DESIGN_CHOICE_REAUTH_MESSAGE);
+    if (risk === "medium" || card.friction.expandEvidenceFirst) {
+      const opened = await ports.store.evidenceOpenedAt({ ...who, cardId }, digest);
+      if (opened === undefined) throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);
     }
     const written = await ports.commit(caller, { taskId: context.taskId, requestId: request.requestId, actorId: caller.developerId, applied, revision: context.revision, fence: secondPersonMembershipCondition(context.directory.people.membershipVersion) });
     if (written !== "done") throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);

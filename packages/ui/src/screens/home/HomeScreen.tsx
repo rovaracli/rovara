@@ -22,7 +22,11 @@ const DECISIONS_KEY = ["decisions"] as const;
 export function HomeScreen() {
  const host = useAppHost(), query = useQueryClient(), home = useHome(), announce = useAnnounce(), previous = useRef<Array<{ cardId: string; title: string }> | undefined>(undefined);
  // The decision cards Needs you loaded, read from the cache (never fetched here, and no query options are set here, so Needs you's own read is untouched): an older card whose decision a pending card holds is not shown twice.
- const decisions = useSyncExternalStore(useCallback((changed: () => void) => query.getQueryCache().subscribe(changed), [query]), () => query.getQueryData<ReadDecision[]>(DECISIONS_KEY));
+ // Only a read that succeeded and has no error since counts: a failed or stale-with-error read hides nothing (every older card shows).
+ const decisions = useSyncExternalStore(useCallback((changed: () => void) => query.getQueryCache().subscribe(changed), [query]), () => {
+  const state = query.getQueryState<ReadDecision[]>(DECISIONS_KEY);
+  return state?.status === "success" && state.error === null ? state.data : undefined;
+ });
  const cards = home.isError ? undefined : home.data?.cards, ready = cards !== undefined;
  const shown = cards === undefined ? undefined : withoutDecided(cards, decisions), total = Math.max(0, (home.data?.total ?? 0) - (cards?.length ?? 0) + (shown?.length ?? 0));
  useEffect(() => { if (!ready) return;const invalidator = createNoticeInvalidator(query), realtime = createRealtimeClient(host, { onNotice: notice => invalidator.notice(notice), onStatus: () => undefined, onReset: () => invalidator.reset() });realtime.start();return () => { realtime.stop();invalidator.stop(); }; }, [host, query, ready]);

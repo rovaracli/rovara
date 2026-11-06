@@ -81,6 +81,14 @@ it("S1b: with no decision cards (the switch is off) every older card still shows
  f.close();
 });
 
+it("S1b (review fix): a failed decisions read hides nothing: every older card still shows", async () => {
+ const f = home({ status: 500, body: { error: { code: "INTERNAL", message: "boom" } } });
+ await screen.findByText("5 things need you");
+ expect(screen.getByText("Your plan is ready to review")).toBeTruthy();
+ expect(screen.getByText("Your pull request is ready for review")).toBeTruthy();
+ f.close();
+});
+
 it("S1b: the rule itself: only the kinds a card replaces, only for the card's own session, and a decided card replaces nothing", () => {
  const decisions = readDecisions(viewOf([designItem]));
  const cards = homeCards as never[];
@@ -94,13 +102,13 @@ it("S1a: Home's merge card opens its card on the task page, and the task page ma
  const f = home({ status: 200, body: viewOf([mergeItem]) });
  const needsYou = await screen.findByRole("list", { name: "Decisions waiting for you" });
  expect(within(needsYou).getByRole("link", { name: "Open" }).getAttribute("href")).toBe(SESSION_PATH + "?decision=merge%3Apr1");
- expect(within(needsYou).getByRole("button", { name: "Merge" })).toBeTruthy();
+ expect(within(needsYou).getByRole("button", { name: "Review and merge" })).toBeTruthy();
  f.close();
  const page = taskPage([mergeItem], "?decision=merge%3Apr1");
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
  expect(card.getAttribute("data-focused")).toBe("true");
  expect(within(card).queryByRole("link", { name: "Open" })).toBeNull();
- expect(within(card).getByRole("button", { name: "Merge" })).toBeTruthy();
+ expect(within(card).getByRole("button", { name: "Review and merge" })).toBeTruthy();
  page.close();
 });
 

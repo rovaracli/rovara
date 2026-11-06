@@ -988,6 +988,15 @@ function planAutoRevisionsOf(task: DeveloperTaskRecord, workflow: WorkflowSnapsh
   return planRevisionsUsed(task.planSelfCheck, artifactType, workflow.artifacts.filter((entry) => entry.type === artifactType).length + 1);
 }
 
+/**
+ * Design review (ON-1): where a plan-review message for this task sends the person instead of an Approve, or undefined when Approve stays. A design under review is approved on its card only, so the message
+ * links to that card. The task's own record says it carries a review (a workflow only gets one while the stage is on); this Lambda has no `dr` setting to read (infra/lib/developer-task-notifier.ts).
+ */
+export function designCardUrlFor(reviewUrlBase: string | undefined, task: Pick<DeveloperTaskRecord, "taskId" | "sessionId">, workflow: Pick<WorkflowSnapshot, "designReview" | "reviewPhase">, page: string | undefined): string | undefined {
+  if (workflow.designReview === undefined || workflow.reviewPhase !== "DESIGN") return undefined;
+  return decisionCardUrl(reviewUrlBase, task, `approve_design:${task.taskId}`, page);
+}
+
 async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, workflow: WorkflowSnapshot, reopenedPullRequests?: ReadonlyArray<{ repositoryId: string; number: number }>): Promise<Reply | undefined> {
   // A task closed in Slack has its own closed reply; a second "closed" line would say it twice.
   if (workflow.stage === "CLOSED" && task.closedAt !== undefined) return undefined;
@@ -1016,12 +1025,8 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
       });
       if (answered !== undefined) context.commentAnswers = answered;
     }
-    // Design review (ON-1): a design under review is approved on its card only, so the message links to that card in place of an Approve the server would refuse. The task's own record says it carries a
-    // review (a workflow only gets one while the stage is on); this Lambda has no `dr` setting to read (infra/lib/developer-task-notifier.ts).
-    if (workflow.designReview !== undefined && workflow.reviewPhase === "DESIGN") {
-      const card = decisionCardUrl(deps.reviewUrlBase, task, `approve_design:${task.taskId}`, page);
-      if (card !== undefined) context.designCardUrl = card;
-    }
+    const card = designCardUrlFor(deps.reviewUrlBase, task, workflow, page);
+    if (card !== undefined) context.designCardUrl = card;
   } else if (workflow.state === "BLOCKED" || (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING")) {
     // Replies that came in after the plan and that no step has taken: said, with where to read them.
     context.newReplies = await newThreadReplies(deps, task);

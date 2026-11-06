@@ -17,7 +17,8 @@ export const DECISION_LABELS = {
   requestChanges: "Request changes",
   answer: "Answer",
   retry: "Retry",
-  merge: "Merge",
+  /** A merge card's press asks once more and goes to a confirmation (slice 3 may make it decide on the card; it says "Merge" then). */
+  merge: "Review and merge",
   open: "Open",
   openInRovara: "Open in Rovara",
   showEvidence: "Show the evidence",

@@ -311,6 +311,10 @@ describe("the spend choice handler (M7)", () => {
     const high = rig({ estimate: priced(250), lowerTier: { tier: "light", estimate: priced(6, "light") }, freshSignIn: false });
     expect(await failure(high.choose("priya", "lower_tier", { open: true }))).toEqual({ code: "REAUTH_REQUIRED", message: DESIGN_CHOICE_REAUTH_MESSAGE });
     expect(high.writes).toEqual([]);
+    // A choice this person may not make is refused as such, even with a stale sign-in: REAUTH never hides a refusal (review fix).
+    const staleOutsider = rig({ estimate: priced(250), lowerTier: { tier: "light", estimate: priced(6, "light") }, freshSignIn: false, directory: directory({ projectMemberIds: ["own", "max", "priya", "aud"], notApproverIds: ["aud"] }) });
+    expect(await failure(staleOutsider.choose("aud", "lower_tier", { open: true }))).toEqual({ code: "FORBIDDEN", message: "You can't decide this." });
+    expect(staleOutsider.writes).toEqual([]);
     const fresh = rig({ estimate: priced(250), lowerTier: { tier: "light", estimate: priced(6, "light") }, freshSignIn: true });
     expect(await fresh.choose("priya", "lower_tier", { open: true })).toMatchObject({ kind: "done" });
     // ... and a browser: a token (an AI tool) never decides a high card, as the decisions route refuses high entirely (ON-9).
