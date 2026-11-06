@@ -332,17 +332,16 @@ export type MergePressReply = { status: 200; body: MergeDone } | { status: 202; 
  * `POST /v1/app/sessions/{id}/merge { requestId, risk? }`: the session's effective owner, a maintainer of its project or an org owner or admin presses Merge. Readiness is checked from what tracking
  * stored (the merge re-reads GitHub); a branch GitHub needs up to date is brought up to date first. Not ready, it answers `409 MERGE_NOT_READY` and writes nothing.
  *
- * - A browser session (the web boundary vouched for the cookie and the CSRF token: `caller.browserSession`) merges at once at low or medium risk: one click and the app's own confirm dialog, no email-code
- *   sign-in. The press must name the risk level the person saw when it is medium or high; one that saw another level is refused. Answers `200` with the pull requests merged. At HIGH risk it never merges
- *   on a click: it answers like a token press (below), so the person decides on the confirmation page with a fresh sign-in (owner decision 2026-10-30). A press from a decision card (it names `expectedHeads`) does
- *   the same at EVERY level (WEB-1, 2026-11-02).
+ * - A browser session (the web boundary vouched for the cookie and the CSRF token: `caller.browserSession`) merges in place, from the Merge button or the merge card (it names `expectedHeads`) alike
+ *   (decision journey slice 3; this replaces the 2026-10-30 and WEB-1 rules). The press must name the risk level the person saw when it is medium or high; one that saw another level is refused. Low and
+ *   medium merge on the press; HIGH needs a sign-in within the last 10 minutes (`freshSignIn` answers its proof, which the audit claim records), else REAUTH_REQUIRED. Answers `200` with the pull requests merged.
  * - Any other caller (the CLI, an AI tool: a token) never merges. It gets `202 NEEDS_CONFIRMATION` with ONE pending change that lists every required pull request and its head, decided only by the
  *   presser on the confirmation page (R66) with a fresh sign-in.
  */
 export async function pressMerge(
   deps: SessionShareDependencies, caller: ShareCaller, sessionId: string, rawBody: unknown, approvals: ApprovalDependencies | undefined,
   /** The head of each pull request the person was SHOWN (a decision card carries them). When given, the press is refused unless exactly those heads are what would be merged now. */
-  options: { expectedHeads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }>; /** Decision journey slice 3: whether the presser signed in within the last 10 minutes (a high-risk merge in a browser needs it). Absent: never. */ freshSignIn?: (() => Promise<boolean>) | undefined } = {},
+  options: { expectedHeads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }>; /** Decision journey slice 3: the proof that the presser signed in within the last 10 minutes, or undefined when they did not (a high-risk merge in a browser needs it, and its audit records it). Absent: never. */ freshSignIn?: (() => Promise<AuditProof | undefined>) | undefined } = {},
 ): Promise<MergePressReply> {
   const { requestId, risk: seen } = parsePressBody(rawBody);
   const host = approvals?.codeMerge;
@@ -396,8 +395,10 @@ export async function pressMerge(
   // from the merge card or the Merge button alike. Low and medium merge on the press; HIGH needs a sign-in within the last 10 minutes (REAUTH_REQUIRED otherwise, said on the card with Sign in again).
   // A token (the CLI, an AI tool) or a Slack press still never merges: it makes the pending change below, decided by the presser in the app.
   if (caller.browserSession === true) {
-    if (current === "high" && !(options.freshSignIn !== undefined && await options.freshSignIn())) throw agentXError("REAUTH_REQUIRED", MERGE_HIGH_REAUTH_MESSAGE);
-    const merged = await mergeTask(approvals, host, tracked, subject, { decidedBy: caller.developerId, occurrence: requestId });
+    const proof = current === "high" && options.freshSignIn !== undefined ? await options.freshSignIn() : undefined;
+    if (current === "high" && proof === undefined) throw agentXError("REAUTH_REQUIRED", MERGE_HIGH_REAUTH_MESSAGE);
+    // A high merge's audit claim carries the recent sign-in it required, as the confirmation page's did.
+    const merged = await mergeTask(approvals, host, tracked, subject, { decidedBy: caller.developerId, occurrence: requestId, ...(proof === undefined ? {} : { proof }) });
     return { status: 200, body: { status: "MERGED", pullRequests: merged } };
   }
 

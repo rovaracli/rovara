@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import type { AuditProof } from "@agentx/contracts";
 // Design review stage, DR7 slice C: what the design review's routes read about a task, fresh for each request and never from the request body. Three things:
 //   - the people: who is a member of the project and may approve (maintainers, admins, owners), who never may (Auditors and viewers), through the same live roster the second-person approvals read
 //     (`readApproverRoster`) and the project's member list. Groups have no store yet, so `groups` is left out and a group approver reads as nobody (`no_high_risk_approver`, fail closed);
@@ -86,9 +88,18 @@ export async function readLatestDesignText(workflow: Pick<WorkflowSnapshot, "art
  * no readable authentication time is not fresh.
  */
 export async function freshSignInOf(deps: Pick<DesignFactsDeps, "documentClient" | "tableName" | "signInTableName" | "now">, caller: { developerId: string; sessionId: string }): Promise<boolean> {
+  return (await freshSignInProofOf(deps, caller)) !== undefined;
+}
+
+/**
+ * The same rule, answering the audit proof of the recent sign-in (when it is recent): when the person signed in (`authTime`, not when they decided) and the SHA-256 of their session's id. A decision that
+ * required the sign-in records it, as the confirmation page's decide session did.
+ */
+export async function freshSignInProofOf(deps: Pick<DesignFactsDeps, "documentClient" | "tableName" | "signInTableName" | "now">, caller: { developerId: string; sessionId: string }): Promise<AuditProof | undefined> {
   try {
     const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.signInTableName, nameTableName: deps.tableName, now: () => deps.now() });
     const session = await store.getSession(caller.sessionId);
-    return session !== undefined && session.developerId === caller.developerId && session.revokedAt === undefined && isFreshSignIn(session, deps.now());
-  } catch { return false; }
+    if (session === undefined || session.developerId !== caller.developerId || session.revokedAt !== undefined || session.authTime === undefined || !isFreshSignIn(session, deps.now())) return undefined;
+    return { kind: "fresh_sign_in", method: "email_code", authTime: new Date(session.authTime).toISOString(), sessionRef: createHash("sha256").update(caller.sessionId, "utf8").digest("hex") };
+  } catch { return undefined; }
 }

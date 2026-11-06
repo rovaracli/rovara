@@ -1,4 +1,4 @@
-import { freshSignInOf } from "../../design-review/route-facts.js";
+import { freshSignInProofOf } from "../../design-review/route-facts.js";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { designActionsFor } from "./design-review.js";
 import { randomUUID } from "node:crypto";
@@ -342,7 +342,7 @@ export function sessionReadDependencies(deps: DeveloperRouteDependencies, caller
   const chainDeps = chainRouteDependenciesFor(deps, caller);
   return {
     ...sessions, origin: new URL(deps.developer.issuer).origin,
-    freshSignIn: () => freshSignInOf({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: () => deps.now() }, caller),
+    freshSignIn: () => freshSignInProofOf({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: () => deps.now() }, caller),
     ...(deps.handoff === undefined ? {} : { handoff: deps.handoff }),
     ...(deps.sessionDiffFiles === undefined ? {} : { diff: {
       files: deps.sessionDiffFiles,

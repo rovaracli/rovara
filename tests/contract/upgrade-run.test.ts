@@ -14,7 +14,7 @@ import { executeCli } from "../../packages/cli/src/main.js";
 import { prepareDeployment } from "../../packages/cli/src/deploy/commands.js";
 import { agentXError } from "@agentx/contracts";
 import { writeCustomDomain } from "../../packages/cli/src/environments/custom-domain.js";
-import { accessChanged, runUpgrade, type UpgradeDependencies } from "../../packages/cli/src/upgrade/run.js";
+import { DECISION_CARDS_KEPT_OFF_NOTE, accessChanged, keptOffNotes, runUpgrade, type UpgradeDependencies } from "../../packages/cli/src/upgrade/run.js";
 import { SETTINGS } from "../support/doctor-fakes.js";
 import { allStackOutputs, fakeGitHubApi, fakeRelease, memoryInitSecrets, scriptedDeployer, T0, TEST_PRIVATE_KEY } from "../support/init-fakes.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
@@ -701,5 +701,17 @@ describe("accessChanged (question 9)", () => {
 
   it("is true when the deployed template is not JSON", async () => {
     expect(await accessChanged(input("Resources:\n  ArtifactBucket:\n    Type: AWS::S3::Bucket\n"))).toBe(true);
+  });
+});
+
+describe("0.5.9: an upgrade that keeps decision cards off says so once, with the command that turns them on", () => {
+  const stacks = (value: string | undefined) => ({ describe: async (name: string) => (name.endsWith("control-plane") ? { outputs: {}, parameters: value === undefined ? {} : { DecisionCardsEnabled: value } } : undefined) }) as never;
+  it("one line for a deployed 0, naming `agentx config set decisionCards.enabled 1`", async () => {
+    expect(await keptOffNotes({ env: "staging", stacks: stacks("0") })).toEqual([DECISION_CARDS_KEPT_OFF_NOTE]);
+    expect(DECISION_CARDS_KEPT_OFF_NOTE).toContain("agentx config set decisionCards.enabled 1");
+  });
+  it("nothing when cards are on, or the parameter is not there yet", async () => {
+    expect(await keptOffNotes({ env: "staging", stacks: stacks("1") })).toEqual([]);
+    expect(await keptOffNotes({ env: "staging", stacks: stacks(undefined) })).toEqual([]);
   });
 });

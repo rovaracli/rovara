@@ -117,6 +117,15 @@ export async function droppedConfigKeys(input: { declared: (part: DeployPart) =>
   return dropped;
 }
 
+/** Said once by an upgrade that keeps decision cards off (0.5.9: new installs default to on; an upgrade keeps what an install has, since an explicit 0 can't be told from the old default). */
+export const DECISION_CARDS_KEPT_OFF_NOTE = "decision cards are off in this environment (decisionCards.enabled 0); the decision journey's rules apply only with cards on. Turn them on with `agentx config set decisionCards.enabled 1`.";
+
+/** The lines an upgrade says about switches it keeps off that the release turns on for new installs: today, decision cards. */
+export async function keptOffNotes(input: { env: string; stacks: StackReader }): Promise<string[]> {
+  const deployed = (await input.stacks.describe(environmentStackName(input.env, "control-plane")))?.parameters;
+  return deployed?.["DecisionCardsEnabled"] === "0" ? [DECISION_CARDS_KEPT_OFF_NOTE] : [];
+}
+
 /** FR-026: the upgrade as files for a platform team's pipeline. No AWS write and no lock: it reads
  * the stacks and writes a directory. A changed access stack is included for the platform team to
  * deploy with its own credentials (question 9); an unchanged one is left out. */
@@ -145,6 +154,7 @@ async function exportUpgrade(input: { options: UpgradeOptions; deps: UpgradeDepe
   for (const entry of await droppedConfigKeys({ declared: (part) => templateParameterNames(release, part, env), env, parts, stacks })) {
     deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; ${entry.instead === undefined ? "nothing replaces it" : `instead, ${entry.instead}`}`);
   }
+  for (const line of await keptOffNotes({ env, stacks })) deps.write(line);
   const outputs: Partial<Record<DeployPart, Record<string, string>>> = {};
   const deployed: Partial<Record<DeployPart, Record<string, string>>> = {};
   for (const part of order) {
@@ -316,6 +326,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
       for (const entry of await droppedConfigKeys({ declared, env, parts, stacks: deps.stacks })) {
         deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; ${entry.instead === undefined ? "nothing replaces it" : `instead, ${entry.instead}`}`);
       }
+      for (const line of await keptOffNotes({ env, stacks: deps.stacks })) deps.write(line);
 
       // N3: the restore point is written (and read back) before the first image or stack changes; if it cannot be, nothing has been.
       if (bundle !== undefined) {

@@ -40,7 +40,7 @@ import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { designReviewEnabled } from "../../design-review/switch.js";
 import { designApproveHandlerFor, designReviewItemsFor } from "./design-review.js";
-import { freshSignInOf } from "../../design-review/route-facts.js";
+import { freshSignInProofOf } from "../../design-review/route-facts.js";
 import { planCardHandler, planCardItemsFor, requestChanges, taskPagePathOf } from "./plan-cards.js";
 import { setupAgentEnabled } from "../../rovara-code/setup-agent-switch.js";
 import { hostAskItemsFor, setupHostHandler, type HostDecisionDeps } from "../../rovara-code/setup-host-ask.js";
@@ -127,7 +127,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
       async locks() { return {}; },
     },
     performer: createDecisionPerformer<DeveloperCaller>({
-      merge: mergeHandler((who, sessionId, body, expectedHeads) => pressMerge(sessionReadDependencies(deps, who), who, sessionId, body, agents, { expectedHeads, freshSignIn: () => freshSignInOf({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: () => deps.now() }, who) })),
+      merge: mergeHandler((who, sessionId, body, expectedHeads) => pressMerge(sessionReadDependencies(deps, who), who, sessionId, body, agents, { expectedHeads, freshSignIn: () => freshSignInProofOf({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: () => deps.now() }, who) })),
       approve_test_env: testEnvHandler(async (who, item, requestId) => {
         const role = (await visibleProjectRoles(deps, who)).get(item.project);
         await approveChecked(deps, who, role, item.project, { digest: item.digest, expectedRevision: item.expectedRevision, requestId }, nightlyHooks());
