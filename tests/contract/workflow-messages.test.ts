@@ -890,3 +890,18 @@ describe("decision journey slice 1: a design under review links to its card, nev
     expect(buttonsOf(shown.blocks).map((button) => [button.action_id, button.text.text])).toContainEqual(["agentx_workflow_approve", "Approve design"]);
   });
 });
+
+describe("decision journey slice 2: a coding plan that raises the run limit links to its card, never an Approve the server refuses", () => {
+  const cardUrl = "https://cell.example/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_plan%3A" + taskId;
+  it("offers Open in Rovara to the plan's card, says why, and keeps Request changes and Close", () => {
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured: { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false }, runLimitCardUrl: cardUrl })!;
+    const elements = (shown.blocks.find((block) => block.type === "actions") as { elements: Array<Record<string, unknown>> }).elements;
+    expect(elements.find((element) => element["action_id"] === "agentx_open_decision")).toMatchObject({ text: { text: "Open in Rovara" }, url: cardUrl });
+    expect(elements.map((element) => element["action_id"])).not.toContain("agentx_workflow_approve");
+    expect(shown.text).toContain("raises the run limit");
+  });
+  it("is ignored for requirements (approving them sets no run limit)", () => {
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING", { path: "FULL", reviewPhase: "REQUIREMENTS", artifacts: [{ ...plan, type: "requirements" }] }), documentSummary: ["The requirements."], runLimitCardUrl: cardUrl })!;
+    expect(buttonsOf(shown.blocks).map((button) => button.action_id)).toContain("agentx_workflow_approve");
+  });
+});

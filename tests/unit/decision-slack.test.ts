@@ -17,11 +17,14 @@ const URL_ = "https://app.example.com/s/ses_aaaaaaaaaaaaaaaaaaaa";
 const elementsOf = (message: ReturnType<typeof slackCardMessage>) => (message.blocks.find((block) => block["type"] === "actions") as { elements: Array<Record<string, unknown>> } | undefined)?.elements ?? [];
 
 describe("the Slack card follows the card's friction", () => {
-  it("low: Approve in one tap, Not now, and an Open link", () => {
+  it("low: Approve in one tap and an Open link; a document is sent back on its card (Request changes needs a reason), so Slack has no Not now for it", () => {
     const elements = elementsOf(slackCardMessage(card(lowItem), { cardUrl: URL_, digest: DIGEST }));
     expect(elements.map((element) => [element["action_id"], (element["text"] as { text: string }).text, element["url"]])).toEqual([
-      [DECISION_SLACK_APPROVE_ACTION, "Approve", undefined], [DECISION_SLACK_REJECT_ACTION, "Not now", undefined], [DECISION_SLACK_OPEN_ACTION, "Open", URL_],
+      [DECISION_SLACK_APPROVE_ACTION, "Approve", undefined], [DECISION_SLACK_OPEN_ACTION, "Open", URL_],
     ]);
+    // A kind that can be put off keeps Not now.
+    const feedback: DecisionItem = { ...base("fb1"), kind: "review_feedback", comments: 2, touchesSensitivePaths: false };
+    expect(elementsOf(slackCardMessage(card(feedback), { cardUrl: URL_, digest: DIGEST })).map((element) => (element["text"] as { text: string }).text)).toEqual(["Approve", "Not now", "Open"]);
     expect(elements[0]?.["value"]).toBe(`approve_plan:plan1|${DIGEST}`);
   });
   it("medium: no approve button; the evidence is reviewed on the web", () => {

@@ -10,6 +10,7 @@ import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { getTaskDocumentView, releaseFinishedTask, resumeAfterRunLimitApproval } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
+import { runLimitAckMessage } from "../../packages/broker/src/aws/developer-tasks/decide.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import {
   acceptRunLimit, estimateRun, recordRunCost, suggestMaxPerRun, type EstimatePath, type RequestRunLimit,
@@ -363,7 +364,7 @@ async function world(options: { proxy?: boolean; requestRunLimit?: RequestRunLim
     return { digest: workflow.artifacts.at(-1)!.sha256, revision: workflow.revision };
   };
   const decide = (taskId: string, plan: { digest: string; revision: number }, requestId: string = randomUUID(), decision: "APPROVE" | "REQUEST_CHANGES" = "APPROVE") =>
-    h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId, expectedRevision: plan.revision, decision, reason: "Approved", artifactDigest: plan.digest });
+    h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId, expectedRevision: plan.revision, decision, reason: "Approved", artifactDigest: plan.digest, ...(decision === "APPROVE" ? { acknowledgedRunLimitUsd: (h.db.get(`DEVTASK#${taskId}`, "META") as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd } : {}) });
   /** A Quick workflow task with its plan made and waiting for the owner. */
   const planned = async (path: "QUICK" | "FULL" = "QUICK") => {
     const { taskId, workspaceId } = await startTask({ workflow: true, workflowPath: path });
@@ -751,8 +752,85 @@ describe("approving the plan", () => {
     await t.finishPrepare(workspaceId);
     const plan = await t.finishPlanning(started.taskId, workspaceId);
     expect(t.meta(started.taskId).runEstimate).toMatchObject({ runLimitUsd: 6 });
-    expect((await t.decide(started.taskId, plan)).status).toBe(200);
+    // The limit stays the one the run started with (not a raise), so no acknowledgement is needed (slice 2 asks for one only for a raise).
+    const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${started.taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: plan.digest });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     expect(t.meta(started.taskId)).toMatchObject({ budgetUsd: 1 });
+  });
+
+  it("slice 2: a plan that raises the run limit is never approved without the limit acknowledged, whoever asks (a tool, Slack: both come through this decision)", async () => {
+    const t = await world();
+    seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+    const { taskId, plan } = await t.planned("QUICK");
+    const before = t.meta(taskId) as unknown as { budgetUsd?: number; runEstimate: { runLimitUsd: number } };
+    expect(before.runEstimate.runLimitUsd, "positive control: approving raises the limit").toBeGreaterThan(before.budgetUsd ?? 0);
+    const body = { expectedRevision: plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: plan.digest };
+    const refused = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), ...body });
+    expect(refused.status).toBe(400);
+    expect(refused.body).toMatchObject({ error: { code: "CONFIG_INVALID", message: runLimitAckMessage(before.budgetUsd, before.runEstimate.runLimitUsd) } });
+    expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
+    expect(t.meta(taskId).budgetUsd).toBe(before.budgetUsd);
+    // With the limit acknowledged, it goes on.
+    const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), ...body, acknowledgedRunLimitUsd: before.runEstimate.runLimitUsd });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+  });
+
+  it("slice 2: the coding plan is a decision card: it shows the run limit, refuses a raise without the tick, approves with it, and sends the plan back with a reason", async () => {
+    process.env.DECISION_CARDS_ENABLED = "1";
+    try {
+      const t = await world();
+      seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      const { taskId } = await t.planned("QUICK");
+      const before = t.meta(taskId) as unknown as { budgetUsd?: number; runEstimate: { runLimitUsd: number } };
+      const cardOf = async () => {
+        const list = await t.h.dev(MAYA, "GET", "/v1/app/decisions");
+        const card = ((list.body.cards ?? []) as Array<{ id: string; kind: string; risk: string; actions: Array<{ kind: string; label: string; href: string }>; runLimit?: { currentUsd?: number; proposedUsd: number } }>).find((candidate) => candidate.kind === "approve_plan");
+        return card === undefined ? undefined : { card, digest: (list.body.digests as Record<string, string>)[card.id]! };
+      };
+      const shown = await cardOf();
+      expect(shown, "the owner's plan is a card").toBeDefined();
+      expect(shown!.card.id).toBe(`approve_plan:${taskId}`);
+      expect(shown!.card.runLimit).toEqual({ proposedUsd: before.runEstimate.runLimitUsd, ...(before.budgetUsd === undefined ? {} : { currentUsd: before.budgetUsd }) });
+      expect(shown!.card.actions.map((action) => [action.kind, action.label])).toEqual(expect.arrayContaining([["approve", "Approve"], ["request_changes", "Request changes"]]));
+      expect(shown!.card.actions.some((action) => action.kind === "reject"), "no Not now on a document").toBe(false);
+      const path = (action: string) => `/v1/app/decisions/approve_plan/${taskId}/${action}`;
+      const evidence = async () => { if (shown!.card.risk === "medium") expect((await t.h.dev(MAYA, "POST", path("evidence-opened"), { requestId: randomUUID(), shownDigest: shown!.digest })).status).toBe(200); };
+      await evidence();
+      // No tick: refused with the words, and nothing moved.
+      const refused = await t.h.dev(MAYA, "POST", path("approve"), { requestId: randomUUID(), shownDigest: shown!.digest });
+      expect(refused.status).toBe(400);
+      expect(JSON.stringify(refused.body)).toContain("raises the run limit");
+      expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
+      // Request changes from the card: the plan goes back with the reason, through the one workflow decision.
+      const changes = await t.h.dev(MAYA, "POST", path("request-changes"), { requestId: randomUUID(), shownDigest: shown!.digest, reason: "Keep the old export too." });
+      expect(changes.status, JSON.stringify(changes.body)).toBe(200);
+      expect(changes.body).toMatchObject({ cardId: `approve_plan:${taskId}`, outcome: "rejected" });
+      const workflow = (t.meta(taskId) as unknown as { workflow: { stage: string; decisions: Array<{ decision: string; reason: string }> } }).workflow;
+      expect(workflow.stage).toBe("PLAN");
+      expect(workflow.decisions.at(-1)).toMatchObject({ decision: "REQUEST_CHANGES", reason: "Keep the old export too." });
+      expect(await cardOf(), "no card while the plan is being revised").toBeUndefined();
+    } finally { delete process.env.DECISION_CARDS_ENABLED; }
+  });
+
+  it("slice 2: the plan card approves with the ticked limit", async () => {
+    process.env.DECISION_CARDS_ENABLED = "1";
+    try {
+      const t = await world();
+      seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      const { taskId } = await t.planned("QUICK");
+      const list = await t.h.dev(MAYA, "GET", "/v1/app/decisions");
+      const card = ((list.body.cards ?? []) as Array<{ id: string; risk: string; runLimit: { proposedUsd: number } }>).find((candidate) => candidate.id === `approve_plan:${taskId}`)!;
+      const digest = (list.body.digests as Record<string, string>)[card.id]!;
+      if (card.risk === "medium") await t.h.dev(MAYA, "POST", `/v1/app/decisions/approve_plan/${taskId}/evidence-opened`, { requestId: randomUUID(), shownDigest: digest });
+      // A limit other than the one shown is refused as changed; the shown one approves.
+      expect((await t.h.dev(MAYA, "POST", `/v1/app/decisions/approve_plan/${taskId}/approve`, { requestId: randomUUID(), shownDigest: digest, acknowledgedRunLimitUsd: card.runLimit.proposedUsd + 1 })).status).toBe(400);
+      const approved = await t.h.dev(MAYA, "POST", `/v1/app/decisions/approve_plan/${taskId}/approve`, { requestId: randomUUID(), shownDigest: digest, acknowledgedRunLimitUsd: card.runLimit.proposedUsd });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      // Approved: coding starts, or waits for the raise a maintainer has to grant (the run_limit request, an outsider's decision: slice 3).
+      expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "IMPLEMENT" } });
+      // The tick belongs to a coding plan's card only.
+      expect((await t.h.dev(MAYA, "POST", `/v1/app/decisions/approve_plan/${taskId}/approve`, { requestId: randomUUID(), shownDigest: digest, acknowledgedRunLimitUsd: 1 })).status).not.toBe(200);
+    } finally { delete process.env.DECISION_CARDS_ENABLED; }
   });
 
   it("tells the task page what the task waits for", async () => {

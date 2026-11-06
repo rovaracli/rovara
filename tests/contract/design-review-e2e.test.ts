@@ -994,6 +994,24 @@ describe("slice C: the design review's routes", () => {
     expect(specDesignLineOf(w.task() as never)).toBe("Design reviewed: 3 reviewers, 1 open blocker");
   });
 
+  it("slice 2: the design card sends the design back with a reason (Request changes), never 'Not now'; the same workflow decision and authority as Slack and the task page", async () => {
+    const w = await openBlockerCard();
+    seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+    const shown = await cardOf(w, MAYA, "approve_design");
+    expect(shown!.card.actions.map((action) => action.kind)).toContain("request_changes");
+    expect(shown!.card.actions.some((action) => action.kind === "reject")).toBe(false);
+    const path = `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/request-changes`;
+    // A changed card is refused; an empty reason too.
+    expect((await w.dev(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: "f".repeat(64), reason: "Bound the retries." })).status).toBe(409);
+    expect((await w.dev(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: shown!.digest, reason: " " })).status).toBe(400);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+    const sent = await w.dev(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: shown!.digest, reason: "Bound the retries." });
+    expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+    const workflow = w.task().workflow as { stage: string; decisions: Array<{ decision: string; reason: string }> };
+    expect(workflow.stage).toBe("PLAN");
+    expect(workflow.decisions.at(-1)).toMatchObject({ decision: "REQUEST_CHANGES", reason: "Bound the retries." });
+  });
+
   it("a high-risk design is decided on the confirmation page only: not by the card route, not by a token, not by the requester, not without a fresh sign-in; then by the design approver", async () => {
     const w = await openBlockerCard({ touches: ["auth"] });
     seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);

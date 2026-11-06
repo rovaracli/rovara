@@ -59,6 +59,9 @@ export const RunEstimateSchema = z.object({
 }).strict();
 export type RunEstimate = z.infer<typeof RunEstimateSchema>;
 
+/** Decision journey slice 2: whether approving a coding plan sets a higher run limit than the task has (or its first one). Such an approval is taken only with the limit acknowledged. */
+export const runLimitRaises = (currentUsd: number | undefined, proposedUsd: number): boolean => currentUsd === undefined || proposedUsd > currentUsd;
+
 /** How the words a workflow blocks with begin when approving its plan needs a higher tier to accept the run limit (Task 34). */
 export const RUN_LIMIT_BLOCK_PREFIX = "This plan's run limit is $";
 /**

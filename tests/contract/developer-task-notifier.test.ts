@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { orgMemberKey, projectMemberKey, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
 import { developerTaskIdentity, plannerRepliesKey } from "../../packages/broker/src/developer/task-records.js";
 import { SlackPostError, chatPostMessage } from "../../packages/broker/src/aws/slack-web.js";
-import { cachedSlackPoster, createNotifierHandler, designCardUrlFor, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
+import { cachedSlackPoster, createNotifierHandler, designCardUrlFor, retryDelaySeconds, runLimitCardUrlFor, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, recordStream } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
@@ -2671,5 +2671,20 @@ describe("decision journey slice 1: a plan-review message for a design under rev
   it("nothing (Approve stays) without a design review, or at another step", () => {
     expect(designCardUrlFor("https://agentx.example.test", { taskId, sessionId }, { designReview: undefined, reviewPhase: "DESIGN" }, page)).toBeUndefined();
     expect(designCardUrlFor("https://agentx.example.test", { taskId, sessionId }, { designReview: review, reviewPhase: "IMPLEMENTATION_PLAN" }, page)).toBeUndefined();
+  });
+});
+
+describe("decision journey slice 2: a coding plan that raises the run limit links to its card (from the task record)", () => {
+  const taskId = "11111111-1111-4111-8111-111111111111", sessionId = `ses_${"a".repeat(20)}`, page = `https://agentx.example.test/review/${taskId}/task`;
+  const estimate = (runLimitUsd: number) => ({ lowUsd: 1, highUsd: 3, runLimitUsd, stopAtUsd: runLimitUsd, basis: "default" as const, samples: 0 });
+  it("the plan's card when approving raises the limit (none yet, or a higher one)", () => {
+    const url = `https://agentx.example.test/app/sessions/${sessionId}?decision=approve_plan%3A${taskId}`;
+    expect(runLimitCardUrlFor("https://agentx.example.test", { taskId, sessionId, budgetUsd: 2, runEstimate: estimate(6) }, { path: "QUICK", reviewPhase: undefined }, page)).toBe(url);
+    expect(runLimitCardUrlFor("https://agentx.example.test", { taskId, sessionId, runEstimate: estimate(6) }, { path: "FULL", reviewPhase: "IMPLEMENTATION_PLAN" }, page)).toBe(url);
+  });
+  it("nothing (Approve stays) when the limit does not rise, there is no estimate, or the document is not the coding plan", () => {
+    expect(runLimitCardUrlFor("https://agentx.example.test", { taskId, sessionId, budgetUsd: 6, runEstimate: estimate(6) }, { path: "QUICK", reviewPhase: undefined }, page)).toBeUndefined();
+    expect(runLimitCardUrlFor("https://agentx.example.test", { taskId, sessionId, budgetUsd: 2 }, { path: "QUICK", reviewPhase: undefined }, page)).toBeUndefined();
+    expect(runLimitCardUrlFor("https://agentx.example.test", { taskId, sessionId, runEstimate: estimate(6) }, { path: "FULL", reviewPhase: "REQUIREMENTS" }, page)).toBeUndefined();
   });
 });

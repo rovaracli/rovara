@@ -11,6 +11,8 @@ import type { DecisionItem } from "./project.js";
 export type KindHandler<C extends DecisionCaller> = {
   approve(caller: C, input: PerformInput): Promise<PerformOutcome>;
   reject?(caller: C, input: PerformInput & { reason: string }): Promise<PerformOutcome>;
+  /** Slice 2: send the document back with the person's reason (the workflow decision's REQUEST_CHANGES). */
+  requestChanges?(caller: C, input: PerformInput & { reason: string }): Promise<PerformOutcome>;
 };
 
 /** A performer from per-kind handlers. A kind without one, or a reject the kind cannot do, is refused (`unsupported`): the person decides on the page. */
@@ -23,6 +25,10 @@ export function createDecisionPerformer<C extends DecisionCaller>(handlers: Part
     async reject(caller, input) {
       const handler = handlers[input.card.kind];
       return handler?.reject === undefined ? { kind: "refused", reason: "unsupported" } : handler.reject(caller, input);
+    },
+    async requestChanges(caller, input) {
+      const handler = handlers[input.card.kind];
+      return handler?.requestChanges === undefined ? { kind: "refused", reason: "unsupported" } : handler.requestChanges(caller, input);
     },
   };
 }

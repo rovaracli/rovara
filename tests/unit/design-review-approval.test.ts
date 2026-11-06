@@ -102,7 +102,8 @@ describe("the approve_design card", () => {
     const high = item(facts({ touches: ["money"] }));
     const made = cardOfItem({ ...high, confirmPath: `/v1/app/approve/${"b".repeat(20)}` })!;
     expect(made.card.risk).toBe("high");
-    expect(made.card.actions.map((action) => action.kind)).toEqual(["open"]);
+    // No approve: Open and Request changes (slice 2), which never approves.
+    expect(made.card.actions.map((action) => action.kind)).toEqual(["open", "request_changes"]);
     expect(made.card.actions[0]!.href).toBe(`/v1/app/approve/${"b".repeat(20)}`);
     expect(made.card.friction).toMatchObject({ freshSignIn: true });
   });

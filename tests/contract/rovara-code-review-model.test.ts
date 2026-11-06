@@ -142,7 +142,7 @@ async function builtTask(options: { beforeBuild?: (ctx: { h: Awaited<ReturnType<
   await h.artifact(workspaceId, String(critique.id), "plan-critique.md", `I read the plan.\n\n\`\`\`rovara-plan-critique\n{"verdict":"ok","points":[]}\n\`\`\`\n`);
   await h.finish(workspaceId, String(critique.id), "SUCCEEDED", { result: { workflowMode: "PLAN_CRITIQUE" } });
   const approved = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, {
-    requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record().workflow.artifacts.at(-1)!.sha256,
+    requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record().workflow.artifacts.at(-1)!.sha256, acknowledgedRunLimitUsd: (record() as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd,
   });
   expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   options.beforeBuild?.({ h, workspaceId, operations });

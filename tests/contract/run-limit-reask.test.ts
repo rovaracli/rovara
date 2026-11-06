@@ -36,6 +36,8 @@ async function blockedPlan() {
   const workflow = w.meta(taskId).workflow as unknown as { revision: number; artifacts: Array<{ sha256: string }> };
   const approved = await w.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, {
     requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256,
+    // The raised limit, acknowledged as the task page's tick sends it (slice 2).
+    acknowledgedRunLimitUsd: (w.meta(taskId) as { runEstimate?: { runLimitUsd?: number } }).runEstimate?.runLimitUsd,
   });
   expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   const implementations = () => w.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT");

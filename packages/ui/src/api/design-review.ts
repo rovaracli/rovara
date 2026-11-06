@@ -64,6 +64,16 @@ export function createDesignReviewApi(host: AppHost) {
    const result = await api.send("POST", taskPath(taskId) + "/approve", { requestId, shownDigest, ...(reason === undefined ? {} : { reason }) }, ApprovedAnswer, { retry: "never" });
    if (result.kind !== "done") throw new ApiError(409, "PENDING", "This isn't finished. Reload the task to continue.");
   },
+  /** Slice 2: the answers to the design questions, from their card (`POST .../design-review/answers`). The broker checks who may answer and every answer. */
+  async answer(taskId: string, requestId: string, answers: ReadonlyArray<{ questionId: string; optionId?: string; text?: string }>): Promise<void> {
+   const result = await api.send("POST", taskPath(taskId) + "/answers", { requestId, answers }, AnyAnswer, { retry: "never" });
+   if (result.kind !== "done") throw new ApiError(409, "PENDING", "This isn't finished. Reload the task to continue.");
+  },
+  /** Slice 2: keep a parked review waiting without answering yet (`POST .../design-review/resume`). */
+  async resume(taskId: string, requestId: string): Promise<void> {
+   const result = await api.send("POST", taskPath(taskId) + "/resume", { requestId }, AnyAnswer, { retry: "never" });
+   if (result.kind !== "done") throw new ApiError(409, "PENDING", "This isn't finished. Reload the task to continue.");
+  },
   /** One choice on the cost card. `shownDigest` is what the person was shown: a changed card is refused as stale. */
   async chooseSpend(decision: ReadDecision, action: ReadDecisionCard["actions"][number], requestId: string): Promise<void> {
    const target = spendChoiceOf(decision.card, action);

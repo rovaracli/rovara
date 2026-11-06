@@ -31,6 +31,7 @@ import {
 } from "@agentx/contracts";
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { acceptRunLimit } from "../../spend/estimate.js";
+import { runLimitRaises } from "@agentx/contracts";
 import { cleanUsd } from "../../spend/top-ups.js";
 import { aiToolTurn, developerTaskIdentity, effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { planDocumentKindName } from "../broker-shared.js";
@@ -543,6 +544,10 @@ export async function decideTaskWorkflow(
 const runLimitChangedMessage = (shownUsd: number, nowUsd: number): string =>
   `This plan's run limit is now $${String(nowUsd)}, not the $${String(shownUsd)} you were shown. Refresh the page, check the limit, and approve again.`;
 
+/** Said when an approval that raises the run limit came without the limit acknowledged (Slack, a tool, an older page). */
+export const runLimitAckMessage = (currentUsd: number | undefined, proposedUsd: number): string =>
+  `Approving this plan raises the run limit from ${currentUsd === undefined ? "no limit" : `$${String(currentUsd)}`} to $${String(proposedUsd)}. Approve it on its card in Rovara, where you confirm the new limit.`;
+
 /** Plan 3, Task 34: what approving the coding plan did with its run limit. `baselineUsd` is what planning spent, where the run limit's window starts. */
 type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: number } | { accepted: false; message: string };
 
@@ -561,6 +566,9 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
   if (acknowledgedUsd !== undefined && decision.runLimitUsd !== acknowledgedUsd) {
     throw Object.assign(agentXError("CONFIG_INVALID", runLimitChangedMessage(acknowledgedUsd, decision.runLimitUsd)), { pageReason: "changed" });
   }
+  // Decision journey slice 2: an approval that RAISES the run limit (none set yet, or a higher one) is taken only with the limit acknowledged, whoever asks (the decision card's tick, the task page's
+  // tick; never a Slack button or a tool that cannot show it). The limit is the amount the person agrees to spend up to, so it is never raised without them seeing it.
+  if (acknowledgedUsd === undefined && runLimitRaises(task.budgetUsd, decision.runLimitUsd)) throw agentXError("CONFIG_INVALID", runLimitAckMessage(task.budgetUsd, decision.runLimitUsd));
   if (decision.accepted) return { accepted: true, runLimitUsd: decision.runLimitUsd, baselineUsd: await capWindowBaseline(deps, task) ?? 0 };
   const ask = deps.agentRuns?.requestRunLimit;
   let asked = false;

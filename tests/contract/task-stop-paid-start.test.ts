@@ -1092,7 +1092,7 @@ for (const recovery of ["valid", "bounded_valid", "closing", "cap_source", "inva
     const settings: Record<string, unknown> = { ...f.t.db.get(f.agent)!, revision: 2, stopKind: "inherit" }; delete settings.maxPerRunUsd; f.t.db.set(settings);
   }
   const workflow = f.t.db.get(taskKey(taskId))!.workflow as { revision: number; artifacts: Array<{ sha256: string }> };
-  expect((await f.t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256 })).status).toBe(200);
+  expect((await f.t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256, acknowledgedRunLimitUsd: (f.t.db.get(taskKey(taskId)) as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd })).status).toBe(200);
   const request = f.t.requestOf(taskId, "run_limit")[0]!; expect(request).toMatchObject({ resume: "implement", newLimitUsd: 20 });
   const decisionId = randomUUID(), send = f.t.db.send.bind(f.t.db); let lost = false, changed = false, captures = 0;
   f.t.db.send = async command => {

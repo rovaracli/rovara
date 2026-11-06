@@ -65,7 +65,7 @@ async function world() {
     await h.artifact(run.workspaceId, String(plan.id), "plan.md", planAnswer(planDocument({ noChangeNeeded: noChange() }), { checks: { checks: [], none_reason: "Nothing runs." } }));
     await h.finish(run.workspaceId, String(plan.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
     const digest = meta(taskId).workflow.artifacts.at(-1)!.sha256;
-    const decided = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: meta(taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
+    const decided = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: meta(taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest, acknowledgedRunLimitUsd: (meta(taskId) as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd });
     expect(decided.status, JSON.stringify(decided.body)).toBe(200);
     return run;
   };

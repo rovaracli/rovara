@@ -7,7 +7,7 @@ import { ApiError } from "../../api/errors.js";
 import { TaskDecisions } from "../home/NeedsYou.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { classificationLine, notNeededLine, readDesignActions, readDesignReview, retryOffer } from "./design-review-view.js";
+import { classificationLine, notNeededLine, questionLines, readDesignActions, readDesignReview, retryOffer } from "./design-review-view.js";
 import type { ReadSession } from "./SessionHeader.js";
 import { workspaceTask, type ReadTask } from "./workspace-types.js";
 
@@ -67,5 +67,15 @@ export function TaskDesignPanel({ session, taskId }: { session: ReadSession; tas
   if (result.kind !== "done") throw new ApiError(409, "PENDING", "This is waiting for confirmation. Open the task to continue.");
   await query.invalidateQueries({ queryKey: [...key] });
  } } : undefined;
- return <>{task !== undefined && <DesignActions task={task} sessionKey={key} />}<TaskDecisions taskId={taskId} design={design} /></>;
+ // Slice 2: the design questions this task waits on, for their card (answered there; a parked review can be kept waiting). The broker checks who may answer and every answer.
+ const review = useMemo(() => readDesignReview(task?.workflow?.designReview), [task]);
+ const asked = review !== undefined && review !== "unreadable" && review.status === "waiting_answers" ? questionLines(review) : undefined;
+ const reread = async () => { await Promise.all([query.invalidateQueries({ queryKey: [...key] }), query.invalidateQueries({ queryKey: ["decisions"] }), query.invalidateQueries({ queryKey: ["home"] })]); };
+ const questions = asked === undefined || review === undefined || review === "unreadable" ? undefined : {
+  items: asked.questions.map(question => ({ id: question.id, unclear: question.unclear, why: question.why, recommended: question.recommended, options: question.options.map(option => ({ id: option.id, label: option.label, consequence: option.consequence })) })),
+  parked: review.waiting?.parkedAt !== undefined,
+  submit: async (answers: ReadonlyArray<{ questionId: string; optionId?: string; text?: string }>) => { await api.answer(taskId, crypto.randomUUID(), answers);await reread(); },
+  resume: async () => { await api.resume(taskId, crypto.randomUUID());await reread(); },
+ };
+ return <>{task !== undefined && <DesignActions task={task} sessionKey={key} />}<TaskDecisions taskId={taskId} design={design} questions={questions} /></>;
 }

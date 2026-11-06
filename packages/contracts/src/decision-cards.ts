@@ -90,8 +90,11 @@ export function decisionFriction(risk: DecisionRisk, secondPerson = false): Deci
   return { expandEvidenceFirst: true, freshSignIn: true, secondPerson };
 }
 
-/** What an action does. `approve` is the only one that decides in favour; there is none on a high card. */
-export const DECISION_ACTION_KINDS = ["approve", "reject", "open", "answer", "choose"] as const;
+/**
+ * What an action does. `approve` is the only one that decides in favour; there is none on a high card. `request_changes` (decision journey slice 2) sends the document back with the person's reason, through
+ * the same workflow decision Slack and the task page use; it never approves.
+ */
+export const DECISION_ACTION_KINDS = ["approve", "reject", "open", "answer", "choose", "request_changes"] as const;
 export const DecisionActionKindSchema = z.enum(DECISION_ACTION_KINDS);
 export type DecisionActionKind = z.infer<typeof DecisionActionKindSchema>;
 
@@ -155,6 +158,11 @@ export const DecisionCardSchema = z
     riskReasons: z.array(line(100)).max(5),
     friction: DecisionFrictionSchema,
     actions: z.array(CardActionSchema).max(4),
+    /**
+     * A coding plan's card (slice 2): approving it sets the task's run limit. `currentUsd` is the limit now (absent: none yet), `proposedUsd` the one approving sets. When it raises the limit, the card asks for a
+     * tick and the approve carries `acknowledgedRunLimitUsd` (the server refuses a raise without it, whoever asks).
+     */
+    runLimit: z.object({ currentUsd: z.number().min(0).max(100_000).optional(), proposedUsd: z.number().min(0).max(100_000) }).strict().optional(),
     rejectReasons: z.array(DecisionRejectReasonSchema).max(6),
     /** Set exactly when a standing rule answered the card (recorded in history; never for a high card). */
     answeredByRule: z.object({ ruleId: line(64), at: z.string().datetime() }).strict().optional(),
@@ -177,6 +185,7 @@ export const DecisionCardSchema = z
     if (card.risk === "high" && card.answeredByRule !== undefined) problem(["answeredByRule"], "a high-risk card is never answered by a rule");
     if ((card.status === "answered_by_rule") !== (card.answeredByRule !== undefined)) problem(["answeredByRule"], "answeredByRule is there exactly when a rule answered the card");
     if (card.status !== "pending" && card.actions.length > 0) problem(["actions"], "an answered card has no actions");
+    if (card.runLimit !== undefined && card.kind !== "approve_plan") problem(["runLimit"], "only a coding plan's card carries a run limit");
     if (card.actions.some((action) => action.kind === "reject") && card.rejectReasons.length === 0) problem(["rejectReasons"], "a card that can be rejected lists its reject reasons");
     if (new Set(card.rejectReasons).size !== card.rejectReasons.length) problem(["rejectReasons"], "reject reasons are unique");
   });

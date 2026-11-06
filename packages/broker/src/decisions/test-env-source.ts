@@ -98,6 +98,8 @@ export async function approveTestEnvItemsFor(ports: TestEnvCardPorts, caller: Wh
 export interface EnvChangePorts {
   store: TestEnvDeps;
   task(taskId: string): Promise<DeveloperTaskRecord | undefined>;
+  /** Decision journey slice 2: the task's page (its session, so the card's link names the card there). Absent or failing: the project's page, as before. */
+  taskPagePathOf?: ((task: DeveloperTaskRecord) => Promise<string>) | undefined;
 }
 
 /** The checks of an environment as a running task depends on them: which commands run, in which order. A change to anything here is not a change a running task can take. */
@@ -129,7 +131,7 @@ async function changeItemOf(ports: EnvChangePorts, task: DeveloperTaskRecord): P
   return {
     kind: "confirm_env_change", subjectId: task.taskId, taskId: task.taskId, project: task.project, title: task.title, createdAt: latest.approvedAt,
     what: lines.some((line) => line.startsWith("selection")) || lines.some((line) => line.includes(".selectArgs:")) ? "selection" : "environment",
-    openPath: `/app/projects/${encodeURIComponent(task.project)}`, contentVersion: sha(`${pin.digest}:${latestDigest}`),
+    openPath: (ports.taskPagePathOf === undefined ? undefined : await ports.taskPagePathOf(task).catch(() => undefined)) ?? `/app/projects/${encodeURIComponent(task.project)}`, contentVersion: sha(`${pin.digest}:${latestDigest}`),
     details: [{ title: "What changes for this task", lines }],
   };
 }

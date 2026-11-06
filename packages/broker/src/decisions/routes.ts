@@ -8,7 +8,7 @@
 // decided, needs the confirmation page (a fresh sign-in), or refused. Only a decided answer is recorded and reported as approved; a surface never says "Approved" for anything else.
 // Mounting is one call (routeDecisionCards).
 import {
-  DECISION_CARDS_MAX, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, agentXError, approveReasonProblem,
+  DECISION_CARDS_MAX, DECISION_RUN_LIMIT_KINDS, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, DecisionRequestChangesBodySchema, agentXError, approveReasonProblem,
   type DecisionAnswered, type DecisionCard, type DecisionCardsView, type DecisionEvidenceOpenedAnswer, type DecisionNeedsConfirmation, type DecisionRefusalReason, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
 } from "@agentx/contracts";
 import { StatusReply } from "../aws/status-reply.js";
@@ -35,6 +35,8 @@ export type PerformOutcome =
 /** The thing to act on: the card's own subject, or for a tab the document's own card and item (`kind` is the document's kind, never the pair's). */
 export interface PerformInput {
   card: DecisionCard; item: DecisionItem; requestId: string; tab?: DecisionTabId | undefined; /** The approve body's one-line reason: present only on an `approve_design` card (the route refuses it elsewhere). */ reason?: string | undefined;
+  /** A coding plan's card only: the run limit the person ticked (slice 2); the workflow decision checks it. */
+  acknowledgedRunLimitUsd?: number | undefined;
   /** The card and the digest the person was SHOWN (the evidence-opened record is keyed by them): set by the approve route, read by the design handler's medium friction. */
   shown?: { cardId: string; digest: string } | undefined;
 }
@@ -43,6 +45,8 @@ export interface PerformInput {
 export interface DecisionPerformer<C extends DecisionCaller = DecisionCaller> {
   approve(caller: C, input: PerformInput): Promise<PerformOutcome>;
   reject(caller: C, input: PerformInput & { reason: DecisionRejectReason }): Promise<PerformOutcome>;
+  /** Slice 2: send a document back with the person's reason, through the existing workflow decision (REQUEST_CHANGES). Absent: no card can do it. */
+  requestChanges?(caller: C, input: PerformInput & { reason: string }): Promise<PerformOutcome>;
 }
 
 export interface DecisionRouteDependencies<C extends DecisionCaller = DecisionCaller> {
@@ -52,17 +56,24 @@ export interface DecisionRouteDependencies<C extends DecisionCaller = DecisionCa
   now: () => number;
   /** Measure lines go here (METRIC style); a failure to log never changes an answer. */
   log?: ((measure: DecisionMeasure) => void) | undefined;
+  /**
+   * Slice 2: the kinds whose HIGH-risk card is approved on the card itself, on its task page, because their handler asks for a browser session and a recent sign-in itself (REAUTH_REQUIRED otherwise). For any
+   * other kind a high card still has no approve route. Absent: none.
+   */
+  highOnCard?: ReadonlySet<string> | undefined;
 }
 
 export interface DecisionRequest { method: string; pathname: string; searchParams: URLSearchParams; body: unknown }
 
-const PATH = /^\/v1\/app\/decisions(?:\/([a-z_]+\/[A-Za-z0-9_-]{1,150})\/(approve|reject|evidence-opened))?$/u;
+const PATH = /^\/v1\/app\/decisions(?:\/([a-z_]+\/[A-Za-z0-9_-]{1,150})\/(approve|reject|evidence-opened|request-changes))?$/u;
 const ISSUE = (error: { issues: ReadonlyArray<{ path: PropertyKey[]; message: string }> }): never => {
   const issue = error.issues[0];
   // Field names only: the values are the caller's.
   throw agentXError("CONFIG_INVALID", `${issue?.path.map(String).join(".") || "body"}: ${issue?.message ?? "invalid"}`);
 };
 
+/** What a Request changes is recorded as in the card history (its outcome is "rejected": the document was not approved). */
+export const CHANGES_REASON = "request_changes";
 export const DECISION_OPEN_FIRST_MESSAGE = "Open the evidence first. It has changed or has not been opened.";
 export const DECISION_CHANGED_MESSAGE = "This changed since you loaded it. Reload to see the current version.";
 export const DECISION_FULL_PAGE_MESSAGE = "This decision is made on its own page. Open it to decide.";
@@ -188,8 +199,9 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     }
     const pending = pendingCard(await project(deps, caller), cardId);
     const { card, tabs } = pending;
-    // High: there is no approve route for it, whatever the card or a client says.
-    if (card.risk === "high" || !card.actions.some((action2) => action2.kind === "approve")) throw agentXError("NOT_FOUND", DECISION_FULL_PAGE_MESSAGE);
+    // High: there is no approve route for it, whatever the card or a client says; except a kind whose handler asks for the recent sign-in itself (`highOnCard`), decided on its card on the task page.
+    const highOnCard = card.risk === "high" && deps.highOnCard?.has(card.kind) === true;
+    if ((card.risk === "high" && !highOnCard) || (!highOnCard && !card.actions.some((action2) => action2.kind === "approve"))) throw agentXError("NOT_FOUND", DECISION_FULL_PAGE_MESSAGE);
     if (tabs === undefined && body.data.tab !== undefined) throw agentXError("CONFIG_INVALID", "tab: this card has no tabs");
     if (tabs !== undefined) {
       if (body.data.tab === undefined || !tabsPending(tabs).includes(body.data.tab)) throw agentXError("CONFIG_INVALID", "tab: name a document that is still waiting");
@@ -201,18 +213,45 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     // A reason belongs to a design approved with an open blocker and nowhere else: the body is refused before any friction step or anything is performed, never dropped.
     const reasonProblem = approveReasonProblem(acting.item.kind, body.data.reason);
     if (reasonProblem !== undefined) throw agentXError("CONFIG_INVALID", reasonProblem);
+    if (body.data.acknowledgedRunLimitUsd !== undefined && !DECISION_RUN_LIMIT_KINDS.includes(acting.item.kind)) throw agentXError("CONFIG_INVALID", "acknowledgedRunLimitUsd: this card sets no run limit");
     let openedAt: string | undefined;
-    if (card.friction.expandEvidenceFirst) {
+    // A high card decided on its card has the recent sign-in as its check (its handler asks for it), not the evidence record a medium card needs.
+    if (card.friction.expandEvidenceFirst && !highOnCard) {
       openedAt = await deps.store.evidenceOpenedAt({ ...who, cardId, tab: body.data.tab }, pending.digest);
       if (openedAt === undefined) throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);
     }
-    const outcome = await deps.performer.approve(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, tab: body.data.tab, shown: { cardId, digest: pending.digest }, ...(body.data.reason === undefined ? {} : { reason: body.data.reason }) });
+    const outcome = await deps.performer.approve(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, tab: body.data.tab, shown: { cardId, digest: pending.digest }, ...(body.data.reason === undefined ? {} : { reason: body.data.reason }), ...(body.data.acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd: body.data.acknowledgedRunLimitUsd }) });
     const notDecided = outcomeReply(cardId, outcome, asksForMerging(request));
     if (notDecided !== undefined) return notDecided;
     const decidedAt = nowIso();
     await remember(deps, { ...who, cardId: acting.card.id, kind: acting.card.kind, risk: acting.card.risk, outcome: "approved", tab: body.data.tab, requestId: body.data.requestId, createdAt: acting.card.createdAt, openedAt, decidedAt });
     emit(deps, decisionMadeMeasure(who, acting.card, { outcome: "approved", createdAt: acting.card.createdAt, at: decidedAt }));
     const answer: DecisionAnswered = { cardId, outcome: "approved", ...(body.data.tab === undefined ? {} : { tab: body.data.tab }), remainingTabs: tabsPending(tabs).filter((tab) => tab !== body.data.tab) };
+    return new StatusReply(200, answer);
+  }
+
+  if (action === "request-changes") {
+    const body = DecisionRequestChangesBodySchema.safeParse(request.body);
+    if (!body.success) return ISSUE(body.error);
+    const earlier = await deps.store.findDecision(who, body.data.requestId);
+    if (earlier !== undefined) {
+      if (earlier.outcome !== "rejected" || earlier.cardId !== cardId || earlier.reason !== CHANGES_REASON) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
+      return new StatusReply(200, answerOfRecord(earlier));
+    }
+    const pending = pendingCard(await project(deps, caller), cardId);
+    const { card, tabs } = pending;
+    if (!card.actions.some((action2) => action2.kind === "request_changes") || deps.performer.requestChanges === undefined) throw agentXError("NOT_FOUND", DECISION_FULL_PAGE_MESSAGE);
+    if (body.data.shownDigest !== pending.digest) throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);
+    // A card with tabs sends back the first document still waiting.
+    const tab = tabs === undefined ? undefined : tabsPending(tabs)[0];
+    const acting = actingSubject(pending, tab);
+    const outcome = await deps.performer.requestChanges(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, reason: body.data.reason, tab });
+    const notDecided = outcomeReply(cardId, outcome);
+    if (notDecided !== undefined) return notDecided;
+    const decidedAt = nowIso();
+    await remember(deps, { ...who, cardId: acting.card.id, kind: acting.card.kind, risk: acting.card.risk, outcome: "rejected", reason: CHANGES_REASON, tab, requestId: body.data.requestId, createdAt: acting.card.createdAt, decidedAt });
+    emit(deps, decisionMadeMeasure(who, acting.card, { outcome: "rejected", createdAt: acting.card.createdAt, at: decidedAt }));
+    const answer: DecisionAnswered = { cardId, outcome: "rejected", ...(tab === undefined ? {} : { tab }), remainingTabs: [] };
     return new StatusReply(200, answer);
   }
 

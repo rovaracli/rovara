@@ -107,7 +107,9 @@ async function workflowAtVerification(harness: Harness, structured?: PlanDocumen
   const plan = "# Plan\n\n1. Fix retry handling.\n2. Add a regression test.\n";
   await finishPlanningWithMarkdown(harness, workspaceId, String(planning.id), plan);
   const digest = structured === undefined ? createHash("sha256").update(plan).digest("hex") : seedStructured(harness, taskId, "plan", structured);
-  await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: taskWorkflow(harness, taskId).revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
+  // The run limit approving sets, acknowledged as the task page's tick sends it (slice 2: a raise is never approved without it). Absent where no estimate was made.
+  const acknowledgedRunLimitUsd = (harness.db.get(`DEVTASK#${taskId}`, "META") as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd;
+  await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: taskWorkflow(harness, taskId).revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest, ...(acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd }) });
   const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
   const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
   const finishImplementation = () => harness.finish(workspaceId, String(implementation.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: passingChecks() } });

@@ -116,7 +116,9 @@ describe("friction on the card", () => {
     const card = cardOf(ITEMS.approve_plan);
     expect(card.actions[0]).toEqual({ kind: "approve", label: "Approve", href: `${decisionCardPath("approve_plan:plan1")}/approve`, method: "POST" });
     expect(card.recommended.action).toBe("approve");
-    expect(card.rejectReasons.length).toBeGreaterThan(0);
+    // A document is sent back with Request changes (slice 2), so its card has no reject and no reject reasons; a kind that can be put off keeps them.
+    expect(card.rejectReasons).toEqual([]);
+    expect(cardOf(ITEMS.approve_dependency).rejectReasons.length).toBeGreaterThan(0);
   });
   it("medium keeps the evidence-first flag and still offers approve (the server enforces the open)", () => {
     const card = cardOf(ITEMS.approve_dependency);
@@ -217,7 +219,8 @@ describe("Full path: requirements and design are one card with two tabs", () => 
   it("a high pair has no approve on the card", () => {
     const projection = projectDecisionCards([ITEMS.approve_requirements, ITEMS.approve_design], { locks: { approve_design: "high" } });
     expect(projection.cards[0]?.risk).toBe("high");
-    expect(projection.cards[0]?.actions.map((action) => action.kind)).toEqual(["open"]);
+    // Request changes stays (it never approves); Approve does not.
+    expect(projection.cards[0]?.actions.map((action) => action.kind)).toEqual(["open", "request_changes"]);
   });
   it("every card about a task links to that card on its task page (?decision=<card id>), whatever the kind or tier (decision journey S1a)", () => {
     const page = `/app/sessions/ses_${"a".repeat(20)}`;
@@ -241,9 +244,10 @@ describe("Full path: requirements and design are one card with two tabs", () => 
     const confirm = projectDecisionCards([{ ...ITEMS.approve_setting, confirmPath: "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }]).cards[0]!;
     expect(confirm.actions.find((action) => action.kind === "open")?.href).toBe("/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa");
   });
-  it("uses the one vocabulary on every action: Approve, Review and merge, Answer, Open, Not now", () => {
+  it("uses the one vocabulary on every action: Approve, Request changes, Review and merge, Answer, Open, Not now", () => {
     const labels = (kind: DecisionKind) => projectDecisionCards([ITEMS[kind]], { pairFullCards: false }).cards[0]!.actions.map((action) => action.label);
-    expect(labels("approve_plan")).toEqual(["Approve", "Not now", "Open"]);
+    expect(labels("approve_plan")).toEqual(["Approve", "Request changes", "Open"]);
+    expect(labels("approve_dependency")).toEqual(["Approve", "Not now", "Open"]);
     expect(labels("merge")).toEqual(["Review and merge", "Not now", "Open"]);
     expect(labels("answer_question")).toEqual(["Answer"]);
     expect(labels("approve_setting")).toEqual(["Open"]);

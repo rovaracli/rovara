@@ -78,6 +78,11 @@ export interface WorkflowMessageContext {
    * place of Approve. Request changes and Close stay.
    */
   designCardUrl?: string | undefined;
+  /**
+   * Slice 2: approving this coding plan raises the run limit, which is taken only with the limit acknowledged (a tick Slack cannot show), so the message offers "Open in Rovara" to the plan's card in place of
+   * Approve. The notifier sets it from the task record (`runEstimate`, `budgetUsd`).
+   */
+  runLimitCardUrl?: string | undefined;
 }
 export interface WorkflowMessage { text: string; blocks: Array<Record<string, unknown>> }
 
@@ -478,9 +483,10 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
   const decide = (decision: "APPROVE" | "REQUEST_CHANGES") => JSON.stringify({ taskId: context.taskId, revision: workflow.revision, digest: document?.sha256, decision,
     ...(decision === "APPROVE" && context.workBreakdownDigest !== undefined ? { workBreakdownDigest: context.workBreakdownDigest } : {}) });
   // A design under review is approved on its card only: the message links to that card ("Open in Rovara") and never offers an Approve the server refuses. A link button carries no value, so a press is not an action.
-  const cardOnly = context.designCardUrl !== undefined;
+  const cardUrl = context.designCardUrl ?? (workflowDocumentType(workflow) === "plan" ? context.runLimitCardUrl : undefined);
+  const cardOnly = cardUrl !== undefined;
   const approve: Button = cardOnly
-    ? { type: "button", action_id: "agentx_open_decision", text: { type: "plain_text", text: DECISION_LABELS.openInRovara }, url: context.designCardUrl, style: "primary" }
+    ? { type: "button", action_id: "agentx_open_decision", text: { type: "plain_text", text: DECISION_LABELS.openInRovara }, url: cardUrl, style: "primary" }
     : exits.button("agentx_workflow_approve", `${DECISION_LABELS.approve} ${name}`, { value: decide("APPROVE"), primary: true });
   const decisions = document === undefined ? [exits.close] : needsE2ECorrection ? [
     exits.button("agentx_workflow_changes", DECISION_LABELS.requestChanges, { value: decide("REQUEST_CHANGES") }), exits.close,
@@ -525,7 +531,7 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
     return { text: lines.join("\n"), buttons: decisions };
   }
   // FR-036: what Approve in Slack takes. A tiny plan (FR-037) is approved in Slack as it is, so its card is unchanged.
-  const lead = cardOnly ? [`Approve the ${name} on its card in Rovara.`] : structured.decisionCount > 0
+  const lead = cardOnly ? [context.designCardUrl === undefined ? `Approving it raises the run limit: approve the ${name} on its card in Rovara, where you confirm the new limit.` : `Approve the ${name} on its card in Rovara.`] : structured.decisionCount > 0
     ? [`Approve here uses AgentX's answers for ${plural(structured.decisionCount, "decision")} and includes the open comments (up to 25) from the task page.`]
     : structured.tiny ? [] : ["Approve here includes the open comments (up to 25) from the task page."];
   tail.unshift(...lead);

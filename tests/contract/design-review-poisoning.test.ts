@@ -96,7 +96,8 @@ describe("the round trip with a poisoned design and persuaded reviewers", () => 
     });
     const card = cardOfItem(item)!.card;
     expect(card.risk).toBe("high");
-    expect(card.actions.map((action) => action.kind)).toEqual(["open"]);
+    // No approve: Open (the card on its task page) and Request changes (slice 2), which never approves.
+    expect(card.actions.map((action) => action.kind)).toEqual(["open", "request_changes"]);
     expect(card.friction).toMatchObject({ freshSignIn: true });
     expect(card.riskReasons.join(" ")).toContain("touches money");
     // The planted words are not on the card at all (none of the finding fields carry them: there are no findings).

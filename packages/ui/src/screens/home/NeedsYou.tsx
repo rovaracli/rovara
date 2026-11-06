@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { DECISION_FOCUS_PARAM } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
-import { createDecisionsApi, useDecisions, type ReadDecision } from "../../api/decisions.js";
+import { HIGH_ON_CARD_KINDS, createDecisionsApi, useDecisions, type ReadDecision } from "../../api/decisions.js";
 import { DecisionCard, type DecisionCardActions } from "../../design/DecisionCard.js";
 import { createDesignReviewApi } from "../../api/design-review.js";
 import { ApiError } from "../../api/errors.js";
@@ -21,7 +21,9 @@ export function useDecisionActions() {
  const refresh = async () => { await Promise.all([query.invalidateQueries({ queryKey: ["decisions"] }), query.invalidateQueries({ queryKey: ["home"] })]); };
  return (decision: ReadDecision) => ({
   onOpenEvidence: async (tab?: Parameters<typeof api.evidenceOpened>[1]) => { await api.evidenceOpened(decision, tab); },
-  onApprove: async (tab?: Parameters<typeof api.approve>[1], reason?: string) => { const result = await api.approve(decision, tab, reason);await refresh();return result; },
+  onApprove: async (tab?: Parameters<typeof api.approve>[1], reason?: string, acknowledgedRunLimitUsd?: number) => { const result = await api.approve(decision, tab, reason, acknowledgedRunLimitUsd);await refresh();return result; },
+  // Slice 2: Request changes on a document's card; the task is read again too (its step moved).
+  onRequestChanges: async (reason: string) => { const result = await api.requestChanges(decision, reason);await Promise.all([refresh(), query.invalidateQueries({ queryKey: ["session"] })]);return result; },
   // A choice on a design review's cost card: the card's own action, through the design review route (the broker re-checks who may choose it).
   onChoose: async (action: ReadDecision["card"]["actions"][number]) => { await designApi.chooseSpend(decision, action, crypto.randomUUID());await refresh(); },
   onReject: async (reason: Parameters<typeof api.reject>[1]) => { const result = await api.reject(decision, reason);await refresh();return result; },
@@ -29,11 +31,19 @@ export function useDecisionActions() {
  });
 }
 
-/** The inline Approve of a high-risk design card on its task page: the server's own routes (`readApproval`, `approveHighRisk`), then the cards, Home and the task read again. Only where the card's task is known. */
+/**
+ * The inline Approve of a high-risk card on its task page, then the cards, Home and the task read again. Only where the card's task is known. A design: the design review's own routes (`readApproval`,
+ * `approveHighRisk`). A requirements or coding plan card (slice 2): the card's approve route, where the broker asks for the recent sign-in; only the owner sees the card, so nothing else is read first.
+ */
 function useInlineApprove() {
- const host = useAppHost(), query = useQueryClient(), designApi = useMemo(() => createDesignReviewApi(host), [host]);
+ const host = useAppHost(), query = useQueryClient(), designApi = useMemo(() => createDesignReviewApi(host), [host]), decisionsApi = useMemo(() => createDecisionsApi(host), [host]);
+ const reread = () => Promise.all([query.invalidateQueries({ queryKey: ["decisions"] }), query.invalidateQueries({ queryKey: ["home"] }), query.invalidateQueries({ queryKey: ["session"] })]);
  return (decision: ReadDecision): Partial<DecisionCardActions> => {
   const taskId = decision.card.taskId;
+  if (HIGH_ON_CARD_KINDS.includes(decision.card.kind) && taskId !== undefined) return { highRisk: {
+   read: async () => ({ digest: decision.digest, mayApprove: true }),
+   approve: async (shownDigest, _reason, acknowledgedRunLimitUsd) => { await decisionsApi.approveHighOnCard(decision, shownDigest, acknowledgedRunLimitUsd);await reread(); },
+  } };
   if (decision.card.kind !== "approve_design" || taskId === undefined) return {};
   return { highRisk: {
    read: () => designApi.readApproval(taskId),
@@ -61,10 +71,10 @@ export function NeedsYou() {
 }
 
 /** The decisions that are about one task, on its page. */
-export function TaskDecisions({ taskId, design }: { taskId: string; /** The Design first action for this task's plan card, when the task view offers it (`designActions.designFirst`), and whether the plan may need design. */ design?: { hint: boolean; onDesignFirst(): Promise<void> } | undefined }) {
+export function TaskDecisions({ taskId, design, questions }: { taskId: string; /** The Design first action for this task's plan card, when the task view offers it (`designActions.designFirst`), and whether the plan may need design. */ design?: { hint: boolean; onDesignFirst(): Promise<void> } | undefined; /** Slice 2: the design questions this task waits on, answered on their card. */ questions?: DecisionCardActions["questions"] }) {
  const decisions = useDecisions(), [params] = useSearchParams(), inlineApprove = useInlineApprove();
  if (decisions.isError) return <section aria-label="Decision for this task"><DecisionsError error={decisions.error} retry={() => { void decisions.refetch(); }} /></section>;
  const mine = (decisions.data ?? []).filter(decision => decision.card.status === "pending" && decision.card.taskId === taskId);
  if (mine.length === 0) return null;
- return <section aria-label="Decision for this task"><DecisionList decisions={mine} label="Decisions for this task" focus={params.get(DECISION_FOCUS_PARAM) ?? undefined} extras={decision => ({ ...inlineApprove(decision), ...(design === undefined ? {} : { design }) })} /></section>;
+ return <section aria-label="Decision for this task"><DecisionList decisions={mine} label="Decisions for this task" focus={params.get(DECISION_FOCUS_PARAM) ?? undefined} extras={decision => ({ ...inlineApprove(decision), ...(design === undefined ? {} : { design }), ...(questions === undefined ? {} : { questions }) })} /></section>;
 }

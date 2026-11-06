@@ -53,7 +53,11 @@ export interface Cost { lowUsd?: number | undefined; highUsd: number; minutes?: 
 export interface ProofCounts { proven: number; passed: number; failed: number; notTested: number }
 
 export type DecisionItem =
-  | (ItemBase & { kind: "approve_plan"; path: "quick" | "full"; files: readonly string[]; claims: number; untestedClaims: number; cost?: Cost | undefined; tooBig?: boolean | undefined })
+  | (ItemBase & {
+    kind: "approve_plan"; path: "quick" | "full"; files: readonly string[]; claims: number; untestedClaims: number; cost?: Cost | undefined; tooBig?: boolean | undefined;
+    /** Slice 2: the run limit approving sets (`proposedUsd`) and the one the task has now (`currentUsd`, absent: none). The card shows it and, when it raises the limit, asks for a tick. */
+    runLimit?: { currentUsd?: number | undefined; proposedUsd: number } | undefined;
+  })
   | (ItemBase & { kind: "approve_requirements"; claims: number })
   | (ItemBase & {
     kind: "approve_design"; files: readonly string[];
@@ -135,6 +139,9 @@ export interface Projection {
 export const DECISION_ROUTE_BASE = "/v1/app/decisions";
 /** `<kind>/<subject>` as two path segments (the contract allows no colon or percent-escape in a path). */
 export const decisionCardPath = (cardId: string): string => `${DECISION_ROUTE_BASE}/${cardId.replace(":", "/")}`;
+
+/** The documents a person approves or sends back (slice 2): their cards carry Request changes in place of "Not now". */
+const DOCUMENT_KINDS: ReadonlySet<DecisionKind> = new Set<DecisionKind>(["approve_plan", "approve_requirements", "approve_design"]);
 
 const APPROVABLE: ReadonlySet<DecisionKind> = new Set<DecisionKind>([
   "approve_plan", "approve_requirements", "approve_design", "merge", "approve_dependency", "approve_e2e_plan", "review_feedback", "autofix_ask",
@@ -307,12 +314,14 @@ function tierInputsOf(item: DecisionItem): TierInputs {
 
 function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { actions: CardAction[]; recommended: CardAction["kind"] } {
   const base = decisionCardPath(cardId);
+  // Slice 2: a document to approve (requirements, a coding plan, a design) can always be sent back with a reason, on its card: never "Not now", which decided nothing.
+  const changes: CardAction | undefined = DOCUMENT_KINDS.has(item.kind) ? { kind: "request_changes", label: DECISION_LABELS.requestChanges, href: `${base}/request-changes`, method: "POST" } : undefined;
   // Every link to a decision lands on its card: a card about a task whose page is its session opens `/app/sessions/<id>?decision=<card id>`, and the task page scrolls to that card and marks it (S1a).
   // A high card with a confirmation page still opens that page (its fresh sign-in); one without opens its card on the task page, where it is decided inline. Never a link to a page that shows the same link.
   const focused = item.taskId === undefined ? item.openPath : decisionFocusPath(item.openPath, cardId);
   const page = isSafeRelativePath(focused) ? focused : item.openPath;
   const open: CardAction = { kind: "open", label: DECISION_LABELS.open, href: risk === "high" ? item.confirmPath ?? page : page, method: "GET" };
-  if (risk === "high") return { actions: [open], recommended: "open" };
+  if (risk === "high") return { actions: changes === undefined ? [open] : [open, changes], recommended: "open" };
   // A question or a checks choice is answered on its own page: the card only opens it (an answer or a choice is a POST of that page, never a link).
   if (item.kind === "answer_question") return { actions: [{ ...open, label: DECISION_LABELS.answer }], recommended: "open" };
   if (item.kind === "choose_checks") return { actions: [{ ...open, label: "Choose checks" }], recommended: "open" };
@@ -337,7 +346,7 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   // A design with an open blocker is never a one-tap approve (owner Q8): the action says a reason goes with it, the approve body takes `reason`, and the handler refuses an approval without one.
   const openBlockers = item.kind === "approve_design" ? item.review?.blockers.length ?? 0 : 0;
   const approve: CardAction = { kind: "approve", label: openBlockers > 0 ? DECISION_LABELS.approveWithReason : item.kind === "merge" ? DECISION_LABELS.merge : DECISION_LABELS.approve, href: `${base}/approve`, method: "POST" };
-  const reject: CardAction = { kind: "reject", label: DECISION_LABELS.notNow, href: `${base}/reject`, method: "POST" };
+  const reject: CardAction = changes ?? { kind: "reject", label: DECISION_LABELS.notNow, href: `${base}/reject`, method: "POST" };
   // The recommendation follows the evidence: something failed, or a blocker is open, so look first.
   const look = openBlockers > 0 || (item.kind === "merge" && (item.proof.failed > 0 || item.ci === "failing"));
   return look ? { actions: [open, reject, approve], recommended: "open" } : { actions: [approve, reject, open], recommended: "approve" };
@@ -370,6 +379,8 @@ export function cardOfItem(item: DecisionItem, locks: DecisionLocks = {}): { car
     risk, riskReasons: tier.reasons,
     friction: decisionFriction(risk, tier.secondPerson),
     actions: closed ? [] : actions,
+    ...(item.kind === "approve_plan" && item.runLimit !== undefined && Number.isFinite(item.runLimit.proposedUsd)
+      ? { runLimit: { proposedUsd: item.runLimit.proposedUsd, ...(item.runLimit.currentUsd === undefined || !Number.isFinite(item.runLimit.currentUsd) ? {} : { currentUsd: item.runLimit.currentUsd }) } } : {}),
     rejectReasons: closed || !actions.some((action) => action.kind === "reject") ? [] : [...REJECTABLE_REASONS],
     ...(answered === undefined ? {} : { answeredByRule: { ruleId: plainLine(answered.ruleId, 64), at: answered.at } }),
     status, createdAt: item.createdAt, ...(item.expiresAt === undefined ? {} : { expiresAt: item.expiresAt }),
@@ -408,10 +419,10 @@ function pairCards(requirements: Subject, design: Subject): { card: DecisionCard
   const risk = requirements.card.risk === "high" || design.card.risk === "high" ? "high" : requirements.card.risk === "medium" || design.card.risk === "medium" ? "medium" : "low";
   const base = requirements.card;
   const high = risk === "high";
-  const actions = base.actions.filter((action) => action.kind === "open" || (action.kind === "approve" && !high) || (action.kind === "reject" && !high)).slice(0, 4);
+  const actions = base.actions.filter((action) => action.kind === "open" || action.kind === "request_changes" || (action.kind === "approve" && !high) || (action.kind === "reject" && !high)).slice(0, 4);
   const confirm = requirements.item.confirmPath ?? design.item.confirmPath;
   const page = base.actions.find((action) => action.kind === "open")?.href ?? requirements.item.openPath;
-  const shown: CardAction[] = high ? [{ kind: "open", label: DECISION_LABELS.open, href: confirm ?? page, method: "GET" }] : actions;
+  const shown: CardAction[] = high ? [{ kind: "open", label: DECISION_LABELS.open, href: confirm ?? page, method: "GET" }, ...actions.filter((action) => action.kind === "request_changes")] : actions;
   const merged = DecisionCardSchema.safeParse({
     ...base,
     title: plainLine(requirements.item.title, 80),

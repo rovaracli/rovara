@@ -79,13 +79,13 @@ it("lists high first and offers no bulk control", async () => {
  expect(screen.getAllByRole("article").map(a => a.getAttribute("data-risk"))).toEqual(["high", "medium", "low"]);
  expect(screen.queryByRole("button", { name: /all/i })).toBeNull();
 });
-it("rejects in one tap with a reason", async () => {
- const f = setupHome([lowItem]);
+it("rejects in one tap with a reason (a kind that can be put off; a document is sent back with Request changes instead)", async () => {
+ const f = setupHome([{ ...base("fb1"), kind: "review_feedback", comments: 2, touchesSensitivePaths: false }]);
  await screen.findByRole("heading", { name: "Retry failed payments" });
  fireEvent.click(screen.getAllByText("Not now")[0]!);
  fireEvent.click(screen.getByRole("button", { name: "Too big" }));
  await waitFor(() => expect(posts(f)).toHaveLength(1));
- expect(posts(f)[0]).toMatchObject({ path: "/v1/app/decisions/approve_plan/plan1/reject",  });
+ expect(posts(f)[0]).toMatchObject({ path: "/v1/app/decisions/review_feedback/fb1/reject",  });
  expect(posts(f)[0]!.body).toMatchObject({ reason: "too_big" });
 });
 it("swipes to approve only a low card, only far enough and mostly sideways", async () => {
