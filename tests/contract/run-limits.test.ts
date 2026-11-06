@@ -10,7 +10,8 @@ import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { getTaskDocumentView, releaseFinishedTask, resumeAfterRunLimitApproval } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
-import { PLAN_HIGH_REAUTH_MESSAGE, RUN_LIMIT_ACK_PLACE_MESSAGE } from "../../packages/broker/src/aws/developer-tasks/decide.js";
+import { RUN_LIMIT_ACK_PLACE_MESSAGE } from "../../packages/broker/src/aws/developer-tasks/decide.js";
+import { decideSessionFor, signInApprovalOf } from "../support/decide-sign-in.js";
 import { pageDecision } from "../support/page-decision.js";
 import { browserRequests } from "../support/browser-session.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
@@ -876,7 +877,7 @@ describe("approving the plan", () => {
     });
   });
 
-  it("review fix: the HIGH plan card is approved only by its owner, in a signed-in browser, after a recent sign-in", async () => {
+  it("security review: the HIGH plan card is approved only by its owner, in a signed-in browser, under the decide-grade sign-in (email code) made for this card, whose proof is recorded", async () => {
     await withCards(async () => {
       const t = await world();
       const web = browserRequests(t.h);
@@ -891,15 +892,28 @@ describe("approving the plan", () => {
       const stale = await web(MAYA, "POST", path, body(), 20 * 60_000);
       expect(stale.status).toBe(403);
       expect(stale.body).toMatchObject({ error: { code: "REAUTH_REQUIRED" } });
+      // A web session signed in just now (with GitHub) is not the decide-grade sign-in: REAUTH_REQUIRED, with the decide sign-in made for this card, which comes back to the card on its task page.
+      const github = await web(MAYA, "POST", path, body());
+      expect(github.status).toBe(403);
+      const approvalId = signInApprovalOf(github.body);
+      expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
+      const record = () => t.h.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === approvalId)[0];
+      expect(record()).toMatchObject({ status: "PENDING", subject: { kind: "card_decision", cardId: card.id } });
+      expect(String((record()?.["subject"] as { returnPath?: unknown } | undefined)?.returnPath)).toMatch(new RegExp(`^/app/sessions/ses_[0-9a-z]{20}\\?decision=${encodeURIComponent(card.id)}$`, "u"));
+      // A decide session for another approval is not this card's.
+      const other = await decideSessionFor(t.h.db, MAYA.developerId, "apr_00000000000000000000");
+      expect((await web(MAYA, "POST", path, body(), 0, other.cookie)).body).toMatchObject({ error: { code: "REAUTH_REQUIRED" } });
       // Someone else: the card is not theirs.
       seedMembership(t.h.db, OMAR.developerId, { orgId: TEST_ORG, role: "member" });
       expect((await cardsOf(web, OMAR)).cards.some((candidate) => candidate.id === card.id)).toBe(false);
       expect((await web(OMAR, "POST", path, body())).status).toBe(404);
       expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
-      // The owner, signed in just now: approved.
-      const approved = await web(MAYA, "POST", path, body());
+      // The owner, with the email-code decide session for this card: approved, and the record carries the session's own proof (its real method).
+      const { cookie, proof } = await decideSessionFor(t.h.db, MAYA.developerId, approvalId);
+      const approved = await web(MAYA, "POST", path, body(), 0, cookie);
       expect(approved.status, JSON.stringify(approved.body)).toBe(200);
       expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "IMPLEMENT" } });
+      expect(record()).toMatchObject({ status: "APPROVED_DONE", decidedBy: MAYA.developerId, decisionProof: { ...proof, method: "email_code" } });
     });
   });
 
@@ -909,7 +923,7 @@ describe("approving the plan", () => {
       const high = await t.planned("QUICK", INFRA);
       const refused = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${high.taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: high.plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: high.plan.digest });
       expect(refused.status).toBe(403);
-      expect(JSON.stringify(refused.body)).toContain("This plan is high risk, so it is approved on its card in Rovara, after a recent sign-in");
+      expect(JSON.stringify(refused.body)).toContain("This plan is high risk, so it is approved on its card in Rovara, after a sign-in with the email code");
       expect(JSON.stringify(refused.body)).toContain(`decision=approve_plan%3A${high.taskId}`);
       const medium = await t.planned("QUICK");
       const unproved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${medium.taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: medium.plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: medium.plan.digest });
@@ -929,19 +943,19 @@ describe("approving the plan", () => {
     });
   });
 
-  it("review fix: a HIGH plan on the plan review page: a stale sign-in is told to sign in again (403 reauth, not 'couldn't do that'), a fresh one approves", async () => {
+  it("security review: a HIGH plan is not approved on the plan review page, whatever the web sign-in: the page sends the person to its card (the decide-grade sign-in)", async () => {
     await withCards(async () => {
       const t = await world();
       const { taskId, plan } = await t.planned("QUICK", INFRA);
       const proposed = (t.meta(taskId) as unknown as { runEstimate: { runLimitUsd: number } }).runEstimate.runLimitUsd;
       const body = { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, acknowledgedRunLimitUsd: proposed, answers: [{ decisionId: "d1", optionId: "three", opened: true }] };
-      const stale = await pageDecision(t.h, MAYA, taskId, body, 20 * 60_000);
-      expect(stale.status).toBe(403);
-      expect(stale.body).toMatchObject({ error: "reauth", message: PLAN_HIGH_REAUTH_MESSAGE });
-      expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
-      const fresh = await pageDecision(t.h, MAYA, taskId, body);
-      expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
-      expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "IMPLEMENT" } });
+      for (const agoMs of [20 * 60_000, 0]) {
+        const refused = await pageDecision(t.h, MAYA, taskId, body, agoMs);
+        expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+        expect(refused.body).toMatchObject({ error: "refused" });
+        expect(String(refused.body.message)).toContain("approved on its card in Rovara, after a sign-in with the email code");
+        expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
+      }
     });
   });
 

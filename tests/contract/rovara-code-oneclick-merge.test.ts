@@ -186,6 +186,12 @@ describe("the risk a press has seen", () => {
     expect(reply.body).toMatchObject({ status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED" });
     expect(w.github.mergeCalls).toEqual([]);
     expect(w.db.find((item) => item.entityType === "APPROVAL").length).toBe(1);
+    // Confirmed with the decide-grade sign-in: merged, and the audit proof on the decision is the decide session's own (its real method).
+    const confirmUrl = (reply.body as { confirmUrl: string }).confirmUrl;
+    const cookie = await w.browser(PRIYA, w.approvalIdOf(confirmUrl));
+    await w.decide(w.approvalIdOf(confirmUrl), cookie);
+    expect(w.github.mergeCalls.length).toBeGreaterThan(0);
+    expect((await w.approvalOf(confirmUrl)).decisionProof).toMatchObject({ kind: "fresh_sign_in", method: "email_code" });
     // A press that did not see the risk is still refused first, as before.
     const unseen = await ready();
     unseen.setWorkflow({ risk: risk("high") });

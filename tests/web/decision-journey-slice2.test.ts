@@ -81,18 +81,18 @@ it("S2b: Request changes on the card sends the reason (one line) to the card's o
  f.close();
 });
 
-it("S2a: a HIGH plan is approved on its card on the task page; a stale sign-in says Sign in again on the same card", async () => {
+it("S2a (security review): a HIGH plan is approved on its card on the task page; without the decide-grade sign-in the same card says so, with the decide sign-in made for it", async () => {
  let signedIn = false;
  const high = plan(undefined, ["infra/main.tf", "iam/policy.json"]);
  const risk = projectDecisionCards([high]).cards[0]!.risk;
  expect(risk, "positive control: infrastructure files make the plan high").toBe("high");
  const f = taskPage([high], request => request.method === "POST" && request.path === "/v1/app/decisions/approve_plan/" + TASK + "/approve"
-  ? signedIn ? decided("approve_plan:" + TASK, "approved") : { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to approve this. A high-risk decision needs a sign-in within the last 10 minutes." } } } : undefined);
+  ? signedIn ? decided("approve_plan:" + TASK, "approved") : { status: 403, body: { error: { code: "REAUTH_REQUIRED", reason: "decide_sign_in", signInUrl: "/v1/auth/decide/identify?return=" + encodeURIComponent("/v1/app/approve/apr_" + "a".repeat(20)), message: "Sign in again to decide this. A high-risk decision needs a sign-in with the email code within the last 10 minutes." } } } : undefined);
  const card = await cardOn();
  fireEvent.click(await within(card).findByRole("button", { name: "Approve" }));
- expect((await within(card).findByRole("alert")).textContent).toContain("Sign in again to approve this");
- fireEvent.click(within(card).getByRole("button", { name: "Sign in again" }));
- expect(f.host.signIn).toHaveBeenCalled();
+ expect((await within(card).findByRole("alert")).textContent).toContain("Sign in again to decide this");
+ expect(within(card).getByRole("link", { name: "Sign in again" }).getAttribute("href")).toBe("https://cell.example" + "/v1/auth/decide/identify?return=" + encodeURIComponent("/v1/app/approve/apr_" + "a".repeat(20)));
+ expect(f.host.signIn).not.toHaveBeenCalled();
  signedIn = true;
  fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
  expect(await within(card).findByText("Approved. Rovara goes on from here.")).toBeTruthy();

@@ -43,6 +43,8 @@ import type { AdaptedHttpRequest } from "../lambda.js";
 import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencies.js";
 import { jsonBody } from "./organization.js";
 import { signInStoreOf } from "./common.js";
+import { withCardDecideGrade } from "./card-decide-grade.js";
+import { DECIDE_COOKIE, cookieOf } from "../../developer/decide-session.js";
 import { isInfraPath } from "../../decisions/risk-tier.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import { projectMembersDepsOf, visibleProjectRoles } from "./project-list.js";
@@ -132,13 +134,17 @@ const PAGE_REAUTH = "reauth";
 /** What Skip of a high-risk design review says when the person's sign-in is not recent enough (REAUTH_REQUIRED). */
 export const DESIGN_SKIP_REAUTH_MESSAGE = "Sign in again to skip this design review. A high-risk design needs a sign-in within the last 10 minutes.";
 
-function approvePortsOf(env: Env, page = false): DesignApprovePorts<DeveloperCaller> {
+/**
+ * `decideGrade` is true only inside `withCardDecideGrade` (the task page's press with the decide-grade sign-in for this card: an email code from a clean sign-in, as the member's own pool user, unused, within
+ * 10 minutes). The web session's freshness no longer counts for a high design (security review 2026-11-06).
+ */
+function approvePortsOf(env: Env, page = false, decideGrade = false): DesignApprovePorts<DeveloperCaller> {
   return {
-    async context(caller, item) {
+    async context(_caller, item) {
       const loaded = item.taskId === undefined ? undefined : await loadDesignTask(env, item.taskId);
       if (loaded === undefined || !waitingOnDesign(loaded.workflow)) return undefined;
       const facts = await factsOf(env, loaded);
-      return { requesterId: loaded.task.developerId, setting: facts.setting, edition: facts.edition, directory: facts.directory, freshSignIn: await freshSignInOf(env.facts, caller) };
+      return { requesterId: loaded.task.developerId, setting: facts.setting, edition: facts.edition, directory: facts.directory, freshSignIn: decideGrade };
     },
     // Company locks on a card's tier are not stored anywhere yet: the tiers are the projector's own (as `decisionRouteDepsOf` says).
     locks: async () => ({}),
@@ -566,7 +572,7 @@ async function retryNotRun(env: Env, taskId: string, requestId: string): Promise
 
 // ---- the high-risk confirmation page
 
-async function approveOnPage(env: Env, taskId: string, body: { requestId: string; shownDigest: string; reason?: string | undefined }): Promise<StatusReply> {
+async function approveOnPage(env: Env, taskId: string, body: { requestId: string; shownDigest: string; reason?: string | undefined }, decideCookie: string | undefined): Promise<StatusReply> {
   // The confirmation page is a browser's: a token (an AI tool) never decides a design on a click, as a token never merges one.
   if (env.caller.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
   const loaded = await loadDesignTask(env, taskId);
@@ -586,9 +592,17 @@ async function approveOnPage(env: Env, taskId: string, body: { requestId: string
   const digest = projection.digests[card?.id ?? ""];
   if (card === undefined || digest === undefined) throw agentXError("NOT_FOUND", GONE);
   if (body.shownDigest !== digest) throw agentXError("CHANGE_STALE", DECISION_REFUSALS.stale.message);
-  const outcome = await designApproveHandler(approvePortsOf(env, true)).approve(env.caller, { card, item, requestId: body.requestId, shown: { cardId: card.id, digest }, ...(body.reason === undefined ? {} : { reason: body.reason }) });
+  const run = (decideGrade: boolean) => designApproveHandler(approvePortsOf(env, true, decideGrade)).approve(env.caller, { card, item, requestId: body.requestId, shown: { cardId: card.id, digest }, ...(body.reason === undefined ? {} : { reason: body.reason }) });
+  let outcome = await run(false);
+  // An approver of a high design who has every other right to approve it: the decide-grade sign-in for this card (REAUTH_REQUIRED with the decide sign-in that comes back to this card on the task page), then
+  // the handler again, every check of its own included, with the session's proof recorded.
+  if (outcome.kind === "needs_confirmation") {
+    outcome = await withCardDecideGrade(env.deps, env.caller, decideCookie, { cardId: card.id, taskId, contentVersion: item.contentVersion, openPath: item.openPath }, async () => {
+      const graded = await run(true);
+      return { applied: graded.kind === "done", result: graded };
+    });
+  }
   if (outcome.kind === "done") return new StatusReply(200, { cardId: card.id, outcome: "approved" });
-  // The only confirmation a design has is a fresh sign-in (an approver without one): the person signs in again and presses once more. No confirmation page exists for it, so there is no 202 with a link.
   if (outcome.kind === "needs_confirmation") throw agentXError("REAUTH_REQUIRED", DESIGN_APPROVE_REAUTH_MESSAGE);
   const refusal = DECISION_REFUSALS[outcome.reason];
   throw agentXError(refusal.code, refusal.message);
@@ -652,7 +666,7 @@ export async function routeDesignReview(deps: DeveloperRouteDependencies, caller
     if (task !== undefined && await replayOf(env, markerOf(taskId, "DESIGN_RESUME", requestId)) === "done") return { kind: "done" };
     return designResumeHandler(resumePortsOf(env))(caller, { taskId, requestId });
   }
-  if (action === "approve") return approveOnPage(env, taskId, bodyOf(z.object({ requestId: Request, shownDigest: z.string().min(1).max(200), reason: z.string().max(500).optional() }).strict(), request));
+  if (action === "approve") return approveOnPage(env, taskId, bodyOf(z.object({ requestId: Request, shownDigest: z.string().min(1).max(200), reason: z.string().max(500).optional() }).strict(), request), cookieOf(request.headers, DECIDE_COOKIE));
   if (action === "answers") {
     const body = bodyOf(z.object({ requestId: Request, answers: z.array(z.unknown()).min(1).max(3) }).strict(), request);
     if (await loadDesignTask(env, taskId) !== undefined && await replayOf(env, markerOf(taskId, "DESIGN_ANSWERS", body.requestId)) === "done") return { kind: "done" };

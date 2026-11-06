@@ -64,7 +64,7 @@ export async function outsideItemsFor(deps: DeveloperRouteDependencies, caller: 
   const now = deps.now();
   if (kinds.apr !== undefined) {
     const open = (await listApprovalsFor(agents, { orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole }, "PENDING").catch(() => [] as AnyApprovalRecord[]))
-      .filter((record) => Date.parse(record.expiresAt) > now).slice(0, APPROVALS_MAX);
+      .filter((record) => Date.parse(record.expiresAt) > now && !(record.kind === "change" && record.subject.kind === "card_decision")).slice(0, APPROVALS_MAX);
     for (const record of open) {
       try {
         const inspection = await kinds.apr.inspect(target(record.approvalId));
@@ -103,7 +103,8 @@ export async function outsideItemsFor(deps: DeveloperRouteDependencies, caller: 
           : await getAnyApproval(agents, caller.orgId, focus) as unknown as Record<string, unknown> | undefined;
         const subject = record?.["subject"] as { kind?: unknown; taskId?: unknown } | undefined;
         const taskId = textOf(prefix === "spr" ? record?.["taskId"] : subject?.kind === "agent_run" ? subject.taskId : undefined);
-        found.push(itemOf(focus, inspection.view, { createdAt: textOf(record?.["createdAt"]) ?? new Date(now).toISOString(), expiresAt: textOf(record?.["expiresAt"]), taskId: taskId !== undefined && UUID.test(taskId) ? taskId : undefined, project: textOf(record?.["project"]) }));
+        // A high card's decide-grade sign-in record (`card_decision`) is decided on that card, on its task page: it is never a card of its own.
+        if (subject?.kind !== "card_decision") found.push(itemOf(focus, inspection.view, { createdAt: textOf(record?.["createdAt"]) ?? new Date(now).toISOString(), expiresAt: textOf(record?.["expiresAt"]), taskId: taskId !== undefined && UUID.test(taskId) ? taskId : undefined, project: textOf(record?.["project"]) }));
       }
     } catch { /* an approval that cannot be read is not a card */ }
   }

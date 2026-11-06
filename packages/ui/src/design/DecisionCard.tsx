@@ -75,7 +75,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  const { card, tabs, details, digest } = decision, host = useAppHost(), location = useLocation();
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [opened, setOpened] = useState<Record<string, string>>({}), [tab, setTab] = useState<DecisionTabId>("requirements");
  const [note, setNote] = useState<ReactNode>(null), [confirming, setConfirming] = useState<Confirming>(), [reason, setReason] = useState("");
- const touch = useRef<{ x: number; y: number } | undefined>(undefined), article = useRef<HTMLElement>(null), [signIn, setSignIn] = useState(false);
+ const touch = useRef<{ x: number; y: number } | undefined>(undefined), article = useRef<HTMLElement>(null), [signIn, setSignIn] = useState<false | { url?: string }>(false);
  const [ticked, setTicked] = useState(false), [changes, setChanges] = useState(""), [answers, setAnswers] = useState<Record<string, { optionId?: string; text: string }>>({});
  useEffect(() => { if (focused) article.current?.scrollIntoView?.({ block: "center" }); }, [focused]);
  const inline = (card.kind === "approve_design" || HIGH_ON_CARD_KINDS.includes(card.kind)) && card.risk === "high" && actions.highRisk !== undefined;
@@ -97,7 +97,8 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
   try { await work(); } catch (failure) {
    if (failure instanceof ApiError && failure.code === "CHANGE_STALE") { setOpened({});actions.onStale();setError(failure.message); }
    // A sign-in that is not recent enough is said on this card, with a way to sign in again and come back to it (never a separate page).
-   else if (failure instanceof ApiError && failure.code === "REAUTH_REQUIRED") { setSignIn(true);setError(failure.message); }
+   // A high card with no approval of its own (a design, a requirements or coding plan) gets the decide sign-in made for it (`signInUrl`), which comes back to this card on the task page.
+   else if (failure instanceof ApiError && failure.code === "REAUTH_REQUIRED") { setSignIn(failure.signInUrl === undefined ? {} : { url: failure.signInUrl });setError(failure.message); }
    else setError(failure instanceof Error && failure.message !== "" ? failure.message : "Couldn't complete this. Try again.");
   } finally { setBusy(false); }
  }
@@ -199,7 +200,9 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
    <div className="rv-actions"><Button variant="primary" onClick={() => { const url = confirming.url;setConfirming(undefined);setNote(<p role="status">Nothing is merged until you confirm on the next page.</p>);host.openExternal(url); }}>Confirm</Button><Button onClick={() => { setConfirming(undefined);setNote(<p role="status">Nothing was merged.</p>); }}>Cancel</Button></div></div>}
   {note}
   {error && <p role="alert"><VisibleText text={error} /></p>}
-  {signIn && (card.kind === "approve_request"
+  {signIn && (signIn.url !== undefined
+   ? <a className="rv-button rv-button-secondary" href={signIn.url}>{DECISION_LABELS.signInAgain}</a>
+   : card.kind === "approve_request"
    // An outside approval needs the decide-grade sign-in (an email code from a clean sign-in): its own flow, which comes back to this approval's card.
    ? <a className="rv-button rv-button-secondary" href={"/v1/auth/decide/identify?return=" + encodeURIComponent("/v1/app/approve/" + String(card.id).slice("approve_request:".length))}>{DECISION_LABELS.signInAgain}</a>
    : <Button onClick={() => host.signIn(host.currentPath())}>{DECISION_LABELS.signInAgain}</Button>)}

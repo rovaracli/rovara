@@ -34,7 +34,6 @@ import {
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { acceptRunLimit } from "../../spend/estimate.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
-import { freshSignInOf } from "../../design-review/route-facts.js";
 import { planFactsOf, planRiskOf } from "../../decisions/plan-risk.js";
 import { decisionCardUrl } from "../../decisions/open-path.js";
 import { cleanUsd } from "../../spend/top-ups.js";
@@ -169,7 +168,7 @@ export const DESIGN_CARD_ONLY_MESSAGE = "This design is approved from its design
 export async function decideTaskWorkflow(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown,
   /** `changeText`: Stop & redirect on a plan that waits for approval (LR-2): the owner's whole instruction (up to the redirect limit), for the planner's prompt. The decision keeps `reason`, held to its own 500 characters. */
-  options: { via?: "PAGE"; note?: string; changeText?: string; /** Design review (DR7 slice C): the items an approved design adds to its own transaction (approval record, membership fence, audit). Only `design-decision.ts` passes it. */ designApproval?: { items: TransactItems; /** The person who really pressed Approve. When it is not the owner whose seat the commit uses, the decision is recorded under THIS person, as a project approver's (`PROJECT_ADMIN`), never as the owner's. */ approverId: string } } = {},
+  options: { via?: "PAGE"; /** Security review (2026-11-06): set only by the plan card's press under the decide-grade sign-in (`withCardDecideGrade`); a HIGH plan is approved with nothing less. */ decideGrade?: true; note?: string; changeText?: string; /** Design review (DR7 slice C): the items an approved design adds to its own transaction (approval record, membership fence, audit). Only `design-decision.ts` passes it. */ designApproval?: { items: TransactItems; /** The person who really pressed Approve. When it is not the owner whose seat the commit uses, the decision is recorded under THIS person, as a project approver's (`PROJECT_ADMIN`), never as the owner's. */ approverId: string } } = {},
 ): Promise<{ task: DeveloperTaskView }> {
   const request = parse(WorkflowDecisionRequestSchema, value, deps, "workflow-decision");
   // What the planner is told as the requested changes: the decision's reason, or the whole instruction when a redirect brought one.
@@ -240,7 +239,7 @@ export async function decideTaskWorkflow(
     noChangeNeeded = { ...loaded.plan.noChangeNeeded, restatement: loaded.plan.title };
   }
   // Decision journey slice 2 (review fix), for every caller (the card, the task page, Slack, MCP, a token): who may approve a coding plan from where.
-  if (prior === undefined && request.decision === "APPROVE" && documentType === "plan" && options.designApproval === undefined) await requirePlanApprovalPlace(deps, caller, task, loaded, request, options.via === "PAGE");
+  if (prior === undefined && request.decision === "APPROVE" && documentType === "plan" && options.designApproval === undefined) await requirePlanApprovalPlace(deps, caller, task, loaded, request, options.via === "PAGE", options.decideGrade === true);
   const correction = task.e2ePlanCorrection;
   if (request.decision === "APPROVE" && documentType === "plan" && correction !== undefined) {
     if (workflow.candidate?.digest !== correction.candidateDigest) {
@@ -557,11 +556,9 @@ export const runLimitAckMessage = (currentUsd: number, proposedUsd: number, link
   `Approving this plan raises the run limit from $${String(currentUsd)} to $${String(proposedUsd)}. Approve it ${place === "card" ? "on its card in Rovara" : "on the plan review page"}, where you confirm the new limit${link === undefined ? "." : `: ${link}`}`;
 /** Said when a medium or high risk plan is approved from outside a signed-in browser (Slack, a tool, a token). */
 export const planRiskPlaceMessage = (risk: "medium" | "high", link?: string, place: "card" | "page" = "card"): string =>
-  `This plan is ${risk} risk, so it is approved ${place === "card" ? "on its card in Rovara" : "on the plan review page"}${risk === "high" ? ", after a recent sign-in" : ""}${link === undefined ? "." : `: ${link}`}`;
+  `This plan is ${risk} risk, so it is approved ${place === "card" ? "on its card in Rovara" : "on the plan review page"}${risk === "high" ? ", after a sign-in with the email code" : ""}${link === undefined ? "." : `: ${link}`}`;
 /** Said when the run limit is acknowledged from outside a signed-in browser: only a person who saw it there can agree to it. */
 export const RUN_LIMIT_ACK_PLACE_MESSAGE = "A run limit is confirmed only in the Rovara app, by the person who sees it there.";
-/** Said when a high-risk plan's approver has not signed in recently. */
-export const PLAN_HIGH_REAUTH_MESSAGE = "Sign in again to approve this. A high-risk decision needs a sign-in within the last 10 minutes.";
 
 /**
  * Where a refused approval sends the person: with the decision cards on, the plan's card on its task page (the plan review page when the session is not known); with them off, the plan review page, which
@@ -582,7 +579,7 @@ function planApprovalLink(deps: DeveloperTaskRouteDependencies, task: DeveloperT
  *   - a medium or high plan (its tier is the card's own, from the plan document: `planRiskOf`) is approved only from a signed-in browser (the card, or the plan review page), and a high one only after a
  *     recent sign-in (REAUTH_REQUIRED). A low plan is approved anywhere, as before. This rule holds while the decision cards are on (the first holds always); the refusal links to the card.
  */
-async function requirePlanApprovalPlace(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, loaded: Awaited<ReturnType<typeof loadWorkflowDocument>>, request: WorkflowDecisionRequest, page: boolean): Promise<void> {
+async function requirePlanApprovalPlace(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, loaded: Awaited<ReturnType<typeof loadWorkflowDocument>>, request: WorkflowDecisionRequest, page: boolean, decideGrade: boolean): Promise<void> {
   const browser = caller.browserSession === true || page;
   if (request.acknowledgedRunLimitUsd !== undefined && !browser) throw agentXError("FORBIDDEN", RUN_LIMIT_ACK_PLACE_MESSAGE);
   // NOT YET ALWAYS (see the slice 2 report): enforcing this with the cards off refuses Slack and tool approvals of most plans in every deployment (about 1,000 tests approve such plans that way);
@@ -591,10 +588,10 @@ async function requirePlanApprovalPlace(deps: DeveloperTaskRouteDependencies, ca
   const risk = planRiskOf(planFactsOf(loaded, task.workflow), task.runEstimate?.highUsd);
   if (risk === "low") return;
   if (!browser) { const { link, place } = planApprovalLink(deps, task); throw agentXError("FORBIDDEN", planRiskPlaceMessage(risk, link, place)); }
-  if (risk === "high") {
-    const fresh = deps.signInTableName !== undefined && await freshSignInOf({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.signInTableName, now: () => deps.now() }, caller);
-    if (!fresh) throw agentXError("REAUTH_REQUIRED", PLAN_HIGH_REAUTH_MESSAGE);
-  }
+  // Security review (2026-11-06; this replaces the web session's freshness): a HIGH plan is approved only on its card, under the decide-grade sign-in (an email code from a clean sign-in, as the member's own
+  // pool user, for this card, unused, within 10 minutes). The plan review page sends the person to the card.
+  // The page shows the words (`pageReason: "refused"`), never "no access".
+  if (risk === "high" && !decideGrade) { const { link } = planApprovalLink(deps, task); throw Object.assign(agentXError("FORBIDDEN", planRiskPlaceMessage(risk, link, "card")), { pageReason: "refused" }); }
 }
 
 /** Plan 3, Task 34: what approving the coding plan did with its run limit. `baselineUsd` is what planning spent, where the run limit's window starts. */

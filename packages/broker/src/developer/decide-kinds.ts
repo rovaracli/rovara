@@ -51,6 +51,8 @@ export interface DecideKind {
   decide(target: DecideTarget, decision: "approve" | "decline", proof: AuditProof): Promise<DecideOutcome>;
   /** Called only when the confirmation page is rendered (GET) for this member after `inspect` said "open": a kind that needs the member to have read the page records it here. */
   opened?(target: DecideTarget): Promise<void>;
+  /** Where the browser goes back to after the decide sign-in for this approval, when that is not the approval's own card (a high card's `card_decision`: its task page). */
+  returnPath?(target: DecideTarget): Promise<string | undefined>;
 }
 
 export type DecideKinds = Partial<Record<DecideKindPrefix, DecideKind>>;

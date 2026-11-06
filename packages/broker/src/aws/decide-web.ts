@@ -38,12 +38,27 @@ export async function routeDecidePage(context: DecideRequestContext | undefined,
   if (approvalId === undefined || !APPROVAL_ID_PATTERN.test(approvalId) || (request.method !== "GET" && request.method !== "POST")) return notFoundPage();
   // Decision journey slice 3b: while the decision cards are on, the approval is decided on its card (the same checks, in the app); an old link (Slack, email) is sent there. Kept one release as this
   // redirect; then the page goes. A POST from a page that was already open still decides here, as before.
-  if (request.method === "GET" && decisionCardsEnabled()) return found(`/app/decisions/approve_request/${approvalId}`);
+  if (request.method === "GET" && decisionCardsEnabled()) return found(await cardReturnOf(context, request.headers, approvalId) ?? `/app/decisions/approve_request/${approvalId}`);
   const decideRequest = { method: request.method, path: url.pathname, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }) };
   return request.method === "GET" ? showPage(context, decideRequest, approvalId, url) : decide(context, decideRequest, approvalId);
 }
 
 type DecideRequest = Parameters<typeof requireDecideSession>[1];
+
+/**
+ * Security review (2026-11-06): the decide sign-in for a HIGH card on a task page (`card_decision`) comes back to that card, not to a card-only page. Only for the browser that holds the decide session
+ * just written for this very approval, and only to the task page the record names (checked by the kind).
+ */
+async function cardReturnOf(context: DecideRequestContext, headers: Record<string, string | undefined>, approvalId: string): Promise<string | undefined> {
+  const cookie = cookieOf(headers, DECIDE_COOKIE);
+  if (cookie === undefined || cookie.length < 32 || cookie.length > 128) return undefined;
+  try {
+    const session = await context.store.getSession(cookie);
+    if (session === undefined || session.approvalId !== approvalId) return undefined;
+    const prefix = kindPrefixOf(approvalId);
+    return await (prefix === undefined ? undefined : context.kinds[prefix])?.returnPath?.({ orgId: session.orgId, developerId: session.developerId, approvalId });
+  } catch { return undefined; }
+}
 
 async function showPage(context: DecideRequestContext, request: DecideRequest, approvalId: string, url: URL): Promise<PageResponse> {
   let authority: Awaited<ReturnType<typeof requireDecideSession>>;

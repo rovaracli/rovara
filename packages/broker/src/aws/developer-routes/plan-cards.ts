@@ -14,8 +14,8 @@ import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { taskOpenPath } from "../../decisions/open-path.js";
 import type { DecisionItem } from "../../decisions/project.js";
 import { perform, type KindHandler } from "../../decisions/performer.js";
-import type { PerformInput } from "../../decisions/routes.js";
-import { freshSignInOf } from "../../design-review/route-facts.js";
+import type { PerformInput, PerformOutcome } from "../../decisions/routes.js";
+import { withCardDecideGrade } from "./card-decide-grade.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import { planRunLimit } from "../../spend/estimate.js";
 import { estimateDependencies } from "../developer-tasks/common.js";
@@ -26,8 +26,6 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 const OWN_TASKS_MAX = 50;
 type DocumentType = "requirements" | "plan" | "design";
 
-/** What a Request changes or an Approve of a design is refused with when the card's sign-in is not recent (high only). */
-export const PLAN_CARD_REAUTH_MESSAGE = "Sign in again to approve this. A high-risk decision needs a sign-in within the last 10 minutes.";
 /** Said on the card about what an Approve here takes (as Slack's Approve does): the plan's recommended answers and the open comments. */
 const TAKES = DECISION_APPROVE_TAKES;
 
@@ -124,18 +122,25 @@ async function current(deps: DeveloperRouteDependencies, caller: DeveloperCaller
   return { task, workflow, artifact };
 }
 
-/** Approve and Request changes of a requirements or coding plan card. */
-export function planCardHandler(deps: DeveloperRouteDependencies, caller: DeveloperCaller): KindHandler<DeveloperCaller> {
+/**
+ * Approve and Request changes of a requirements or coding plan card. A HIGH card is approved on its card on the task page under the decide-grade sign-in (`withCardDecideGrade`: an email code from a clean
+ * sign-in, as the member's own pool user, for this card, unused, within 10 minutes; security review 2026-11-06, which replaces the web session's freshness here), never by a token.
+ */
+export function planCardHandler(deps: DeveloperRouteDependencies, caller: DeveloperCaller, decideCookie?: string): KindHandler<DeveloperCaller> {
   return {
     approve: (who, input) => perform(async () => {
       const now = await current(deps, who, input);
       if (now === "stale") return { kind: "refused", reason: "stale" };
-      // High: decided on the card on the task page with a recent sign-in, never by a token or a click from elsewhere.
-      if (input.card.risk === "high") {
-        if (who.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
-        const fresh = await freshSignInOf({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now }, who);
-        if (!fresh) throw agentXError("REAUTH_REQUIRED", PLAN_CARD_REAUTH_MESSAGE);
-      }
+      if (input.card.risk !== "high") return approvePlan(deps, caller, who, input, now);
+      if (who.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
+      return withCardDecideGrade(deps, who, decideCookie, { cardId: input.card.id, taskId: now.task.taskId, contentVersion: input.item.contentVersion, openPath: input.item.openPath },
+        async () => ({ applied: true, result: await approvePlan(deps, caller, who, input, now, true) }));
+    }),
+    requestChanges: (who, input) => requestChanges(deps, who, input),
+  };
+}
+
+async function approvePlan(deps: DeveloperRouteDependencies, caller: DeveloperCaller, who: DeveloperCaller, input: PerformInput, now: { task: DeveloperTaskRecord; workflow: WorkflowSnapshot; artifact: WorkflowArtifact }, decideGrade = false): Promise<PerformOutcome> {
       // The work breakdown the approval binds to is the one in the document the card was drawn from (the workflow decision checks it again).
       const loaded = now.artifact.type === "plan" ? await loadWorkflowDocument(reader(deps, caller), now.artifact, {}).catch(() => undefined) : undefined;
       const breakdown = loaded?.format === "structured" && loaded.plan.workBreakdown !== undefined ? taskGraphDigest(loaded.plan.workBreakdown) : undefined;
@@ -143,11 +148,8 @@ export function planCardHandler(deps: DeveloperRouteDependencies, caller: Develo
         requestId: input.requestId, expectedRevision: now.workflow.revision, decision: "APPROVE", artifactDigest: now.artifact.sha256, reason: "Approved on its card in Rovara.",
         ...(breakdown === undefined ? {} : { workBreakdownDigest: breakdown }),
         ...(input.acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd: input.acknowledgedRunLimitUsd }),
-      });
+      }, decideGrade ? { decideGrade: true } : {});
       return { kind: "done" };
-    }),
-    requestChanges: (who, input) => requestChanges(deps, who, input),
-  };
 }
 
 /** Request changes for any document card (requirements, coding plan, design): the workflow decision's REQUEST_CHANGES with the person's reason, as Slack and the task page send it. */

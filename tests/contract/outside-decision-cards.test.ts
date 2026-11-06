@@ -96,7 +96,7 @@ describe("slice 3b: an outside approval is decided on its card", () => {
     // A browser signed in just now with GitHub (no decide session): REAUTH_REQUIRED, said on the card, which starts the decide sign-in.
     const github = await web(BEN, "POST", path, { requestId: randomUUID(), shownDigest: digests[id]! });
     expect(github.status).toBe(403);
-    expect(github.body).toMatchObject({ error: { code: "REAUTH_REQUIRED" } });
+    expect(github.body).toMatchObject({ error: { code: "REAUTH_REQUIRED", reason: "decide_sign_in" } });
     // What was shown must be what is true now.
     expect((await web(BEN, "POST", path, { requestId: randomUUID(), shownDigest: "f".repeat(64) }, 0, cookie)).status).toBe(409);
     expect(w.requests().find((record) => record.spendRequestId === requestId)).toMatchObject({ status: "PENDING" });
@@ -104,7 +104,8 @@ describe("slice 3b: an outside approval is decided on its card", () => {
     const approved = await web(BEN, "POST", path, { requestId: pressId, shownDigest: digests[id]! }, 0, cookie);
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     expect(approved.body).toMatchObject({ cardId: id, outcome: "approved" });
-    expect(w.requests().find((record) => record.spendRequestId === requestId)).toMatchObject({ status: "APPROVED" });
+    // The audit proof on the decision is the decide session's own (its real method), never the web session's.
+    expect(w.requests().find((record) => record.spendRequestId === requestId)).toMatchObject({ status: "APPROVED", decisionProof: { kind: "fresh_sign_in", method: "email_code" } });
     // The same press again answers what it first did; the card is gone.
     expect((await web(BEN, "POST", path, { requestId: pressId, shownDigest: digests[id]! }, 0, cookie)).body).toMatchObject({ cardId: id, outcome: "approved" });
     expect((await cardsOf(web, BEN)).cards.some((card) => card.id === id)).toBe(false);

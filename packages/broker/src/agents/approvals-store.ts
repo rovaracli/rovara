@@ -184,8 +184,15 @@ export interface PlaybookDefaultProcessSubject { kind: "playbook_default_process
  */
 export interface SetupItemSubject { kind: "setup_item"; project: string; draftTaskId: string; itemId: string; itemKind: "repository" | "devcontainer" | "source" | "intake" | "secret"; digest: string }
 
+/**
+ * Security review (2026-11-06): the vehicle of the decide-grade sign-in for a HIGH card that has no approval of its own (a high design, a high requirements or coding plan). Made when the person presses
+ * Approve without a decide session; the decide sign-in (email code, clean sign-in, own pool user) is minted for it, and the card's next press, with that session, applies the card's decision and then
+ * approves this record with the session's proof. Approving it changes nothing by itself. Bound to the card and the version of it that was shown; `returnPath` is the task page focused on the card.
+ */
+export interface CardDecisionSubject { kind: "card_decision"; taskId: string; cardId: string; contentVersion: string; returnPath: string }
+
 /** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5), merges and code settings (Plan 6), a project's process (How we work), a setup suggestion (meta repo lane B). */
-export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject | SetupItemSubject | TestEnvSubject | KnownFailingSubject;
+export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject | SetupItemSubject | TestEnvSubject | KnownFailingSubject | CardDecisionSubject;
 
 /** Plan 4 Task 4: a chain's publish or rollback that makes something less safe, bound to the draft revision and digest (or the version) that was shown. */
 export type ChainChangeSubject =
@@ -200,7 +207,7 @@ export type ChainChangeSubject =
  */
 export type TriggerChangeSubject = { kind: "trigger_enable"; triggerId: string; specDigest: string; triggerRevision: number };
 
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject | SetupItemSubject | TestEnvSubject | KnownFailingSubject;
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject | SetupItemSubject | TestEnvSubject | KnownFailingSubject | CardDecisionSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -440,6 +447,7 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     itemKind: z.enum(["repository", "devcontainer", "source", "intake", "secret"]), digest: Hex64,
   }).strict(),
   z.object({ kind: z.literal("test_env"), project: z.string().min(1).max(63), digest: Hex64, expectedRevision: z.number().int().min(0) }).strict(),
+  z.object({ kind: z.literal("card_decision"), taskId: z.string().uuid(), cardId: z.string().min(1).max(200), contentVersion: z.string().min(1).max(300), returnPath: z.string().min(1).max(300) }).strict(),
   z.object({ kind: z.literal("known_failing"), project: z.string().min(1).max(63), cause: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/), epoch: z.number().int().min(1), recordVersion: z.number().int().min(1), testSetSha256: Hex64 }).strict(),
   z.object({ kind: z.literal("playbook_default_process"), project: z.string().min(1).max(63), agentId: AgentIdSchema, layerVersion: z.number().int().min(1), expectedRevision: z.number().int().min(0) }).strict(),
   z.object({ kind: z.literal("trigger_enable"), triggerId: TriggerIdSchema, specDigest: Hex64, triggerRevision: z.number().int().min(1) }).strict(),

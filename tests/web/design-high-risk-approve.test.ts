@@ -80,23 +80,25 @@ it("pressing Approve reads the card from the server, then posts with the digest 
  f.close();
 });
 
-it("a missing recent sign-in is said on the same card with 'Sign in again', and the second press approves", async () => {
+it("security review: without the decide-grade sign-in the same card says so, and 'Sign in again' is the decide sign-in the broker made for this card (it comes back here); the second press approves", async () => {
  let signedIn = false;
- const f = taskPage([high], { read: mayApprove(high), approve: () => signedIn ? { status: 200, body: { cardId: "approve_design:design1", outcome: "approved" } } : { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to approve this design. A high-risk design needs a sign-in within the last 10 minutes." } } } });
+ const f = taskPage([high], { read: mayApprove(high), approve: () => signedIn ? { status: 200, body: { cardId: "approve_design:design1", outcome: "approved" } } : { status: 403, body: { error: { code: "REAUTH_REQUIRED", reason: "decide_sign_in", signInUrl: SIGN_IN, message: "Sign in again to decide this. A high-risk decision needs a sign-in with the email code within the last 10 minutes." } } } });
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
  fireEvent.click(await within(card).findByRole("button", { name: "Approve" }));
- expect((await within(card).findByRole("alert")).textContent).toContain("Sign in again to approve this design");
+ expect((await within(card).findByRole("alert")).textContent).toContain("Sign in again to decide this");
  expect(within(card).queryByText("Approved. Rovara goes on from here.")).toBeNull();
- fireEvent.click(within(card).getByRole("button", { name: "Sign in again" }));
- expect(f.host.signIn).toHaveBeenCalledWith("/app/live");
+ expect(within(card).getByRole("link", { name: "Sign in again" }).getAttribute("href")).toBe("https://cell.example" + SIGN_IN);
+ expect(f.host.signIn).not.toHaveBeenCalled();
  // Back from signing in: the person presses Approve once more.
  signedIn = true;
  fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
  await within(card).findByText("Approved. Rovara goes on from here.");
  expect(f.calls("POST")).toHaveLength(2);
- expect(within(card).queryByRole("button", { name: "Sign in again" })).toBeNull();
+ expect(within(card).queryByRole("link", { name: "Sign in again" })).toBeNull();
  f.close();
 });
+
+const SIGN_IN = "/v1/auth/decide/identify?return=" + encodeURIComponent("/v1/app/approve/apr_" + "a".repeat(20));
 
 it("a card that changed while the person looked is not approved: 'This changed while you were looking', and nothing is posted", async () => {
  let digest = digestOf(high);

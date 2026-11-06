@@ -147,13 +147,13 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
       }),
       // Design review (`dr`): approving a design goes through `designApproveHandler`, which refuses a task that carries no design review. Not registered while `dr` is off: the kind stays page-decided.
       ...(designReviewEnabled(env) ? { approve_design: { ...designApproveHandlerFor(deps, caller), requestChanges: (who: DeveloperCaller, input: Parameters<typeof requestChanges>[2]) => requestChanges(deps, who, input) } } : {}),
-      approve_plan: planCardHandler(deps, caller),
+      approve_plan: planCardHandler(deps, caller, request.decideCookie),
       approve_request: outsideCardHandler(deps, outsideKinds, { cookie: request.decideCookie, store: new DecideStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: () => deps.now() }), now: () => deps.now() }),
-      approve_requirements: planCardHandler(deps, caller),
+      approve_requirements: planCardHandler(deps, caller, request.decideCookie),
       ...(hostsOn ? { setup_host: setupHostHandler<DeveloperCaller>(hostDeps, { webOrigin: deps.developer.webOrigin ?? new URL(deps.developer.issuer).origin }) } : {}),
     }),
-    // Slice 2: a high requirements or coding plan card is approved on its card, on the task page; its handler asks for the browser session and the recent sign-in.
-    // Slice 3: a high merge too (pressMerge asks for the recent sign-in in a browser).
+    // Slice 2: a high requirements or coding plan card is approved on its card, on the task page; its handler asks for the browser session and the decide-grade sign-in (security review).
+    // Slice 3: a high merge too (its press makes the pending change, decided on its approval card with the decide-grade sign-in).
     highOnCard: new Set(["approve_plan", "approve_requirements", "merge", "approve_request"]),
     // Security review: an outside approval's evidence is opened first (as a medium card's), and opening it is what the kind records as its page having been read.
     evidenceFirstOnHigh: new Set(["approve_request"]),

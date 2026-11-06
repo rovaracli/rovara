@@ -1227,7 +1227,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (error instanceof ProcessModelRefusal) return json({error:processModelRefusalBody(error)},request.requestId,error.statusCode);
       if (error instanceof AgentXError) {
         // A decision that needs a person present says where to go (`confirmUrl` for a token, `signInUrl` for a browser): R66.
-        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...("reason" in error && error.reason === "settingsChanged" ? {reason:"settingsChanged"} : {}), ...(error instanceof DecideReauthRequired ? error.details : {}), ...(error instanceof TaskStopReadinessError ? { resource: error.resource } : {}) } }, request.requestId, error.statusCode);
+        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...("reason" in error && error.reason === "settingsChanged" ? {reason:"settingsChanged"} : {}), ...("reason" in error && error.reason === "decide_sign_in" ? { reason: "decide_sign_in", ...("signInUrl" in error && typeof error.signInUrl === "string" ? { signInUrl: error.signInUrl } : {}) } : {}), ...(error instanceof DecideReauthRequired ? error.details : {}), ...(error instanceof TaskStopReadinessError ? { resource: error.resource } : {}) } }, request.requestId, error.statusCode);
         return isolate ? withDecideIsolation(response) : response;
       }
       const response = unexpectedErrorAnswer(error, request.requestId);

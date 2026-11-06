@@ -22,6 +22,7 @@ import { DEV_ISSUER, MAYA, OMAR, seedMembership, createSingleAnswerPlanBroker, t
 import { designWaitArmOf } from "../../packages/broker/src/design-review/wait-rows.js";
 import { designWaitSweepDepsOf } from "../../packages/broker/src/design-review/wait-wiring.js";
 import { browserRequests } from "../support/browser-session.js";
+import { decideSessionFor, signInApprovalOf } from "../support/decide-sign-in.js";
 import { designApprovalKey } from "../../packages/broker/src/aws/developer-tasks/design-decision.js";
 import { proofDesignContextOf } from "../../packages/broker/src/aws/developer-tasks/design-proof.js";
 import { designSpecStateOf, specDesignLineOf } from "../../packages/broker/src/aws/developer-tasks/design-spec.js";
@@ -1018,7 +1019,7 @@ describe("slice C: the design review's routes", () => {
     expect(workflow.decisions.at(-1)).toMatchObject({ decision: "REQUEST_CHANGES", reason: "Bound the retries." });
   });
 
-  it("a high-risk design is decided on the confirmation page only: not by the card route, not by a token, not by the requester, not without a fresh sign-in; then by the design approver", async () => {
+  it("a high-risk design is decided on the confirmation page only: not by the card route, not by a token, not by the requester, not without the decide-grade sign-in (email code); then by the design approver, with that sign-in's proof recorded", async () => {
     const w = await openBlockerCard({ touches: ["auth"] });
     seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
     const shown = await cardOf(w, MAYA, "approve_design");
@@ -1036,18 +1037,30 @@ describe("slice C: the design review's routes", () => {
     expect(requesterRead.body).toMatchObject({ mayApprove: false });
     expect(typeof requesterRead.body.approverName, "the requester is told who can decide").toBe("string");
     expect((await w.dev(OMAR, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`)).body, "a token never decides it").toMatchObject({ mayApprove: false });
-    const press = (who: Developer, authAgoMs: number, body: Record<string, unknown> = {}) => page(who, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: digest, reason: "Reviewed the open blocker with the team.", ...body }, authAgoMs);
+    const press = (who: Developer, authAgoMs: number, body: Record<string, unknown> = {}, cookie?: string) => page(who, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: digest, reason: "Reviewed the open blocker with the team.", ...body }, authAgoMs, cookie);
     expect((await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: digest, reason: "x" })).status, "a token never decides it").toBe(403);
     expect((await press(MAYA, 0)).status, "the requester is not the second person").toBe(403);
     const stale = await press(OMAR, 20 * 60_000);
     expect(stale.status, "no fresh sign-in").toBe(403);
     expect(JSON.stringify(stale.body), "a browser without a recent sign-in is told to sign in again, not that it may not decide").toContain("REAUTH_REQUIRED");
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
-    expect((await press(OMAR, 0, { reason: undefined })).status, "an open blocker needs a reason").toBe(400);
+    // Security review: a web session signed in just now (with GitHub) is not enough either. REAUTH_REQUIRED with the decide sign-in made for this card, which comes back to it on the task page.
+    const github = await press(OMAR, 0);
+    expect(github.status).toBe(403);
+    const approvalId = signInApprovalOf(github.body);
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
-    const done = await press(OMAR, 0);
+    const { cookie, proof } = await decideSessionFor(w.db, OMAR.developerId, approvalId);
+    // A token with nothing but the cookie is still a token.
+    expect((await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: digest, reason: "x" })).status, "a token never decides it").toBe(403);
+    // The handler's own checks still run under the decide session, which a refusal gives back.
+    expect((await press(OMAR, 0, { reason: undefined }, cookie)).status, "an open blocker needs a reason").toBe(400);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+    const done = await press(OMAR, 0, {}, cookie);
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(w.task().workflow).toMatchObject({ stage: "PLAN", reviewPhase: "IMPLEMENTATION_PLAN" });
+    expect(w.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === approvalId)[0], "the decision's record carries the decide session's own proof").toMatchObject({
+      status: "APPROVED_DONE", decidedBy: OMAR.developerId, subject: { kind: "card_decision", cardId: shown!.card.id }, decisionProof: { ...proof, method: "email_code" },
+    });
     expect(w.db.get(...Object.values(designApprovalKey(w.taskId, sha256(designWith(["auth"])))) as [string, string])).toMatchObject({ approverId: OMAR.developerId, tier: "high", mode: "high_risk_approver" });
   });
 
@@ -1402,8 +1415,9 @@ describe("slice C: the design review's routes", () => {
     const page = web(high);
     const digest = (await page(OMAR, "GET", `/v1/app/tasks/${high.taskId}/design-review/approve`)).body.digest as string;
     const approveId = randomUUID();
-    const press = () => page(OMAR, "POST", `/v1/app/tasks/${high.taskId}/design-review/approve`, { requestId: approveId, shownDigest: digest, reason: "Reviewed the open blocker with the team." });
-    expect((await press()).status).toBe(200);
+    const press = (cookie?: string) => page(OMAR, "POST", `/v1/app/tasks/${high.taskId}/design-review/approve`, { requestId: approveId, shownDigest: digest, reason: "Reviewed the open blocker with the team." }, 0, cookie);
+    const { cookie } = await decideSessionFor(high.db, OMAR.developerId, signInApprovalOf((await press()).body));
+    expect((await press(cookie)).status).toBe(200);
     const replayed = await press();
     expect(replayed.status, JSON.stringify(replayed.body)).toBe(200);
     expect(replayed.body).toMatchObject({ outcome: "approved" });
