@@ -335,6 +335,10 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   const open: CardAction = { kind: "open", label: DECISION_LABELS.open, href: risk === "high" ? item.confirmPath ?? page : page, method: "GET" };
   // An outside approval is decided on its card (Approve with a recent sign-in through the high-on-card route, Decline here): it carries Decline as its reject.
   if (item.kind === "approve_request") return { actions: [open, { kind: "reject", label: "Decline", href: `${base}/reject`, method: "POST" }], recommended: "open" };
+  // A HIGH design cost card keeps its choices (decided on its task page behind the evidence, each under the decide-grade sign-in); it still opens first, and Slack and Home show only Open.
+  if (risk === "high" && item.kind === "approve_spend" && item.design !== undefined) {
+    return { actions: [open, ...item.design.choices.slice(0, 3).map((choice): CardAction => ({ kind: "choose", label: plainLine(choice.label, 60), href: choice.href, method: "POST" }))], recommended: "open" };
+  }
   if (risk === "high") return { actions: changes === undefined ? [open] : [open, changes], recommended: "open" };
   // A question or a checks choice is answered on its own page: the card only opens it (an answer or a choice is a POST of that page, never a link).
   if (item.kind === "answer_question") return { actions: [{ ...open, label: DECISION_LABELS.answer }], recommended: "open" };

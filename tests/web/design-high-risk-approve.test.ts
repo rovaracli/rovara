@@ -187,3 +187,53 @@ it("without the link's parameter no card is marked", async () => {
  expect(card.hasAttribute("data-focused")).toBe(false);
  f.close();
 });
+
+// Security review (no dead ends): a HIGH design cost card is decided on the task page, its choices behind "Show the evidence" (which records the evidence for the digest shown), each press under the decide-grade
+// sign-in; on Home it is "Open" only.
+const SPEND_PREFIX = "/v1/app/tasks/" + TASK + "/design-review/spend/";
+const highSpend: DecisionItem = { ...base(TASK), kind: "approve_spend", amountUsd: 250, scopeLabel: "Design review", design: { why: "over_cap", capUsd: 25, estimateUsd: 250, choices: [
+ { label: "Raise the limit to $250", href: SPEND_PREFIX + "raise-cap" }, { label: "Skip design review", href: SPEND_PREFIX + "skip" }] } };
+
+it("security review: on the task page a HIGH design cost card shows its choices after the evidence is opened, and a choice goes through the decide sign-in made for it", async () => {
+ expect(projectionOf([highSpend]).cards[0]!.risk, "positive control: the card is high").toBe("high");
+ let signedIn = false;
+ const f = fakeHost(async request => {
+  if (request.path === "/v1/app/decisions") return { status: 200, body: viewOf([highSpend]) };
+  if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
+  if (request.path.endsWith("/presence")) return { status: 200, body: { viewingNow: [] } };
+  if (request.method === "POST" && request.path.endsWith("/evidence-opened")) return { status: 200, body: { cardId: "approve_spend:" + TASK, opened: true, recorded: true } };
+  if (request.method === "POST" && request.path === SPEND_PREFIX + "skip") return signedIn ? { status: 200, body: { outcome: "done", choice: "skip" } }
+   : { status: 403, body: { error: { code: "REAUTH_REQUIRED", reason: "decide_sign_in", signInUrl: SIGN_IN, message: "Sign in again to decide this. A high-risk decision needs a sign-in with the email code within the last 10 minutes." } } };
+  return { status: 200, body: { session: designTaskSession(designReviewFixture()) } };
+ });
+ const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
+ const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
+ const card = (await screen.findAllByRole("article", { name: "Retry failed payments" })).find(article => article.getAttribute("data-risk") === "high")!;
+ const skip = await within(card).findByRole("button", { name: "Skip design review" });
+ expect(within(card).getByRole("button", { name: "Raise the limit to $250" })).toBeTruthy();
+ expect(within(card).queryByRole("link", { name: "Open" })).toBeNull();
+ // The evidence first: the choices wait for it, and opening it records it for the digest shown.
+ expect(skip.hasAttribute("disabled")).toBe(true);
+ const summary = within(card).getByText("Show the evidence");
+ (summary.closest("details") as HTMLDetailsElement).open = true;fireEvent(summary.closest("details")!, new Event("toggle"));
+ await waitFor(() => expect(f.request.mock.calls.map(([request]) => request.path)).toContain("/v1/app/decisions/approve_spend/" + TASK + "/evidence-opened"));
+ await waitFor(() => expect(skip.hasAttribute("disabled")).toBe(false));
+ fireEvent.click(skip);
+ expect((await within(card).findByRole("alert")).textContent).toContain("Sign in again to decide this");
+ expect(within(card).getByRole("link", { name: "Sign in again" }).getAttribute("href")).toBe("https://cell.example" + SIGN_IN);
+ // Back from the decide sign-in: the press applies.
+ signedIn = true;
+ fireEvent.click(within(card).getByRole("button", { name: "Skip design review" }));
+ await within(card).findByText("Done. Rovara goes on from here.");
+ ui.unmount();router.dispose();query.clear();
+});
+
+it("security review: on Home a HIGH design cost card is Open only, with no choice to press", async () => {
+ const home = fakeHost(async request => request.path === "/v1/app/decisions" ? { status: 200, body: viewOf([highSpend]) } : { status: 200, body: { cards: [], total: 0 } });
+ const query = createQueryClient();
+ const ui = renderUi(h(AppHostProvider, { host: home.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+ expect((await screen.findByRole("link", { name: "Open" })).getAttribute("href")).toBe(SESSION_PATH + "?decision=approve_spend%3A" + TASK);
+ expect(screen.queryByRole("button", { name: "Skip design review" })).toBeNull();
+ expect(screen.queryByRole("button", { name: "Raise the limit to $250" })).toBeNull();
+ ui.unmount();query.clear();
+});

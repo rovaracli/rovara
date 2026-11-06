@@ -1486,7 +1486,11 @@ describe("slice C: the design review's routes", () => {
     const page = web(w);
     const shown = await cardOf(w, MAYA, "approve_spend");
     expect(shown!.card.risk, "positive control: a costly model's estimate makes the card high").toBe("high");
-    const url = `/v1/app/tasks/${w.taskId}/design-review/skip`;
+    // The card keeps its choices (decided on its task page): the press is the card's own choice action, after Open.
+    expect(shown!.card.actions[0]!.kind).toBe("open");
+    const choice = shown!.card.actions.find((action) => action.kind === "choose" && action.href.endsWith("/spend/skip"));
+    expect(choice, "the high cost card offers its choices").toBeDefined();
+    const url = choice!.href;
     const requestId = randomUUID();
     const before = w.task().workflow;
     expect((await w.dev(MAYA, "POST", url, { requestId, shownDigest: shown!.digest })).status, "a token never decides a high card").toBe(403);

@@ -86,7 +86,9 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  const canApprove = mayApproveHere(card);
  const canReject = card.actions.some(action => action.kind === "reject") && card.risk !== "high";
  // An outside approval's evidence is opened first where it is decided (security review: what its kind records as its page having been read), as a medium card's is.
- const needsEvidence = (card.friction.expandEvidenceFirst && card.risk === "medium") || (card.kind === "approve_request" && actions.highRisk !== undefined);
+ // A HIGH design cost card is decided on its task page (its choices behind the evidence, each under the decide-grade sign-in); elsewhere (Home) it is "Open".
+ const highSpendHere = card.kind === "approve_spend" && card.risk === "high" && actions.onChoose !== undefined && target?.kind === "internal" && decisionTaskSessionOf(target.to) !== undefined && decisionTaskSessionOf(target.to) === sessionOfPage(location.pathname);
+ const needsEvidence = (card.friction.expandEvidenceFirst && card.risk === "medium") || (card.kind === "approve_request" && actions.highRisk !== undefined) || highSpendHere;
  const activeTab = tabs === undefined ? undefined : tab;
  // The requirements are approved before the design: the design tab's Approve waits for them.
  const designBlocked = (which: DecisionTabId | undefined) => which === "design" && tabs?.some(item => item.id === "requirements" && !item.approved) === true;
@@ -126,7 +128,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  });
  // Whether this card is on its own task page. There everything is decided on the card: its link to the same page is left out (a high card that is not decided inline keeps it).
  const onItsPage = target?.kind === "internal" && decisionTaskSessionOf(target.to) !== undefined && decisionTaskSessionOf(target.to) === sessionOfPage(location.pathname);
- const here = onItsPage && card.risk !== "high";
+ const here = onItsPage && (card.risk !== "high" || highSpendHere);
  // Owner decision (a), slice 3: a medium card is decided on its own page (the task page's card), never where it is merely shown (Home): there it is the card's front and "Open", nothing to press.
  const openOnly = card.risk === "medium" && !onItsPage && target !== undefined;
  const link: ReactNode = target === undefined || here ? null : target.kind === "internal" ? <Link className="rv-decision-open" to={target.to}>{DECISION_LABELS.open}</Link> : <Button variant="quiet" onClick={() => host.openExternal(target.href)}>{DECISION_LABELS.open}</Button>;
@@ -147,7 +149,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  };
  const reasonField = (which: DecisionTabId | undefined) => (canApprove || (inline && eligibility.data?.mayApprove === true)) && blockers(which) > 0 && <div className="rv-decision-reason"><label htmlFor={"reason-" + card.id}>Why approve with an open blocker?</label><input id={"reason-" + card.id} type="text" maxLength={200} value={reason} onChange={event => setReason(event.target.value)} aria-describedby={"reason-hint-" + card.id} /><p id={"reason-hint-" + card.id} className="rv-muted">{APPROVE_REASON_HINT}</p></div>;
  const approveButton = (which: DecisionTabId | undefined) => canApprove && <>{reasonField(which)}<Button variant="primary" busy={busy} disabled={(needsEvidence && !isOpened(which)) || designBlocked(which) || (blockers(which) > 0 && reasonOf(which) === undefined) || limitBlocked} onClick={() => { void approve(which); }}>{which === undefined ? (blockers(which) > 0 ? DECISION_LABELS.approveWithReason : card.kind === "merge" ? DECISION_LABELS.merge : DECISION_LABELS.approve) : DECISION_LABELS.approve + " " + (which === "requirements" ? "requirements" : "design")}</Button></>;
- const choices = card.kind === "approve_spend" && card.risk !== "high" && actions.onChoose !== undefined ? card.actions.filter(action => spendChoiceOf(card, action) !== undefined) : [];
+ const choices = card.kind === "approve_spend" && (card.risk !== "high" || highSpendHere) && actions.onChoose !== undefined ? card.actions.filter(action => spendChoiceOf(card, action) !== undefined) : [];
  const choiceButtons = choices.map(action => <Button key={action.href} variant={action.kind === card.recommended.action ? "primary" : "secondary"} busy={busy} disabled={needsEvidence && !isOpened(undefined)} onClick={() => { void run(async () => { await actions.onChoose!(action);setNote(<p role="status">Done. Rovara goes on from here.</p>); }); }}><VisibleText text={action.label} /></Button>);
  const design = card.kind === "approve_plan" ? actions.design : undefined;
  const designBox = design !== undefined && <div className="rv-decision-design">{design.hint && <p className="rv-design-hint" role="status">This may need design review.</p>}<Button busy={busy} onClick={() => { void run(async () => { await design.onDesignFirst();setNote(<p role="status">Asked for design review first. Rovara reviews the design before it builds.</p>); }); }}>Design first</Button></div>;
@@ -193,7 +195,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
   {readLink}
   {card.risk === "high" && <p className="rv-decision-high">{inline ? HIGH_RISK_NOTE : confirmPage ? "This decision is made on its own page, after you sign in again." : "This decision is made on its own page."}</p>}
   <div className="rv-decision-actions">
-   {card.risk === "high" ? <>{inline ? inlineActions : link}{designBox}</> : openOnly ? <><p className="rv-muted">Decided on its card in the task, after a look at the evidence.</p>{link}</> : <>{approveButton(activeTab)}{choiceButtons}{designBox}{canReject && <details className="rv-decision-reject"><summary>{DECISION_LABELS.notNow}</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
+   {card.risk === "high" ? <>{inline ? inlineActions : highSpendHere ? choiceButtons : link}{designBox}</> : openOnly ? <><p className="rv-muted">Decided on its card in the task, after a look at the evidence.</p>{link}</> : <>{approveButton(activeTab)}{choiceButtons}{designBox}{canReject && <details className="rv-decision-reject"><summary>{DECISION_LABELS.notNow}</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
    {!openOnly && changesBox}
   </div>
   {confirming && <div role="group" aria-label="Confirm merge" className="rv-decision-confirm"><p><VisibleText text={mergeQuestion(confirming.merging)} /></p>
