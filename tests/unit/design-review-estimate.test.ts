@@ -112,7 +112,7 @@ describe("the estimate", () => {
     expect(estimateReviewerUsd({ ...withCache, cacheWriteUsdPerMTok: 1 }, "codebase", mtok * 2, true)).toBeCloseTo(2 * (2 * (1 - share) + 0.2 * share), 6);
     // A cache price that is not a usable number is not trusted: the model is priced at the full input price. A cache-read price of 0 is "no cache price", not "cache reads are free".
     const bedrock: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" };
-    const run = (cache: number) => priced(estimateDesignReviewUsd({ tier: "light", models: { reviewer: bedrock, planner: PLANNER }, price: () => ({ inputUsdPerMTok: 2, outputUsdPerMTok: 0, cacheReadUsdPerMTok: cache }), packetTokens: 1_000_000, rounds: 1 })).breakdown.reviewersUsd;
+    const run = (cache: number) => priced(estimateDesignReviewUsd({ tier: "light", models: { reviewer: bedrock, planner: PLANNER }, price: () => ({ inputUsdPerMTok: 2, outputUsdPerMTok: 0, cacheReadUsdPerMTok: cache }), packetTokens: 1_000_000, rounds: 1, reviewerCaches: true })).breakdown.reviewersUsd;
     expect(run(Number.NaN)).toBeCloseTo(23 * 2, 6);
     expect(run(-1)).toBeCloseTo(23 * 2, 6);
     expect(run(0)).toBeCloseTo(23 * 2, 6);
@@ -126,16 +126,20 @@ describe("the estimate", () => {
     expect(routeCaches({ provider: "anthropic", modelId: "claude-haiku-4-5" })).toBe(false);
     expect(routeCaches({ provider: "openai", modelId: "gpt-5" })).toBe(false);
     const price = () => ({ inputUsdPerMTok: 2, outputUsdPerMTok: 0, cacheReadUsdPerMTok: 0.2 });
-    const run = (reviewer: ModelIdentifier) => priced(estimateDesignReviewUsd({ tier: "light", models: { reviewer, planner: PLANNER }, price, packetTokens: 1_000_000, rounds: 1 })).breakdown.reviewersUsd;
+    const run = (reviewer: ModelIdentifier, ...flag: [boolean | undefined] | []) => priced(estimateDesignReviewUsd({ tier: "light", models: { reviewer, planner: PLANNER }, price, packetTokens: 1_000_000, rounds: 1, reviewerCaches: flag.length === 0 ? true : flag[0] })).breakdown.reviewersUsd;
     expect(run({ provider: "anthropic", modelId: "claude-haiku-4-5" })).toBeCloseTo(23 * 2, 6);
     expect(run({ provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" })).toBeLessThan(23 * 2);
+    // The SOURCE matters too: a customer's own Bedrock account has the same model ids and was never measured, and an unknown source is not assumed to cache.
+    const bedrock: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" };
+    expect(run(bedrock, false)).toBeCloseTo(23 * 2, 6);
+    expect(run(bedrock, undefined)).toBeCloseTo(23 * 2, 6);
   });
 
   it("FU3: replays the first real round (task 88e0e88d, haiku-4-5 standard, packet 9,021 tokens): every reviewer's estimate is at or above what it cost, and the total is above $0.444 but within 1.6x", () => {
     // The catalog's price for this model on Bedrock: $1.1 in, $5.5 out, $0.11 cache read, $1.375 cache write.
     const haiku: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" };
     const listed: PriceLookup = () => ({ inputUsdPerMTok: 1.1, outputUsdPerMTok: 5.5, cacheReadUsdPerMTok: 0.11, cacheWriteUsdPerMTok: 1.375 });
-    const one = priced(estimateDesignReviewUsd({ tier: "standard", models: { reviewer: haiku, merge: haiku, planner: haiku }, price: listed, packetTokens: 9_021, rounds: 1 }));
+    const one = priced(estimateDesignReviewUsd({ tier: "standard", models: { reviewer: haiku, merge: haiku, planner: haiku }, price: listed, packetTokens: 9_021, rounds: 1, reviewerCaches: true }));
     expect(one.reviewers).toBe(3);
     const measured = 0.444;
     expect(one.breakdown.reviewersUsd).toBeGreaterThanOrEqual(measured);
@@ -144,11 +148,17 @@ describe("the estimate", () => {
     const roles = { comprehension: 0.1214, critic: 0.1908, codebase: 0.1321 } as const;
     for (const [role, usd] of Object.entries(roles)) expect(estimateReviewerUsd(listed(haiku)!, role as keyof typeof roles, 9_021, routeCaches(haiku)), role).toBeGreaterThanOrEqual(usd);
     // Light (the critic alone) is above what the critic cost.
-    const light = priced(estimateDesignReviewUsd({ tier: "light", models: { reviewer: haiku, planner: haiku }, price: listed, packetTokens: 9_021, rounds: 1 }));
+    const light = priced(estimateDesignReviewUsd({ tier: "light", models: { reviewer: haiku, planner: haiku }, price: listed, packetTokens: 9_021, rounds: 1, reviewerCaches: true }));
     expect(light.breakdown.reviewersUsd).toBeGreaterThanOrEqual(roles.critic);
     // Where the route is not known to cache, the same round is priced at full input: higher still.
-    const full = priced(estimateDesignReviewUsd({ tier: "standard", models: { reviewer: { provider: "anthropic", modelId: "claude-haiku-4-5" }, planner: haiku }, price: listed, packetTokens: 9_021, rounds: 1 }));
+    const full = priced(estimateDesignReviewUsd({ tier: "standard", models: { reviewer: { provider: "anthropic", modelId: "claude-haiku-4-5" }, planner: haiku }, price: listed, packetTokens: 9_021, rounds: 1, reviewerCaches: true }));
     expect(full.breakdown.reviewersUsd).toBeGreaterThan(one.breakdown.reviewersUsd);
+    // The same model through a source that is not Rovara's (a customer's own Bedrock account) is priced at full input, as is a source that is not known.
+    for (const reviewerCaches of [false, undefined]) {
+      const own = priced(estimateDesignReviewUsd({ tier: "standard", models: { reviewer: haiku, merge: haiku, planner: haiku }, price: listed, packetTokens: 9_021, rounds: 1, reviewerCaches }));
+      expect(own.breakdown.reviewersUsd).toBeCloseTo(full.breakdown.reviewersUsd, 6);
+      expect(own.breakdown.reviewersUsd).toBeGreaterThan(one.breakdown.reviewersUsd);
+    }
   });
 
   it("L3: Zoom-out runs only after round 1, so round 1 of Thorough plans four reviewers and round 2 five", () => {

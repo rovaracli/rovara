@@ -394,7 +394,7 @@ describe("what the broker checks about the packets and the pins itself", () => {
 
 describe("how a round ends short of a result", () => {
   it("stops at the cost cap when the measured spend takes the total past it, and starts no second round", async () => {
-    // The cap is just over the calibrated estimate (about $6.39 for two rounds, FU3) so the round starts; 
+    // The cap is just over the calibrated estimate (about $6.39 for two rounds, FU3) so the round starts.
     const w = await world({ capUsd: 7 });
     const operationId = String(w.operations()[0]!.id);
     // The merge step is not reached: the reviewers alone spend 7.2 against the 7 cap.

@@ -47,8 +47,8 @@ export const ROLE_OUTPUT_TOKENS: Readonly<Record<ReviewerRole, number>> = { comp
 export const REVIEWER_CACHE_READ_SHARE = 0.5;
 
 /**
- * Whether the reviewers' route is known to cache: Claude on Amazon Bedrock, which is Rovara's route and the one the measured round ran on. Any other provider or model is priced at full input price until a
- * round on it is measured (a person's own Anthropic or OpenAI key, an OpenRouter or custom endpoint may or may not cache, and the catalog cannot say).
+ * Whether the MODEL is one known to cache: Claude on Amazon Bedrock, which the measured round ran on. This is half the test: the estimate also needs `reviewerCaches` (the source is Rovara's own route), because a
+ * customer's own Bedrock account has the same model ids and was never measured. Any other provider or model is priced at full input price until a round on it is measured.
  */
 export function routeCaches(model: ModelIdentifier): boolean {
   return model.provider === "amazon-bedrock" && /(^|\.)anthropic\.claude-/u.test(model.modelId);
@@ -102,6 +102,11 @@ export interface DesignReviewEstimateInput {
   packetTokens: number;
   /** Rounds to price. Absent: the maximum, 2. */
   rounds?: 1 | 2 | undefined;
+  /**
+   * Whether the source that serves the reviewers is Rovara's own route (`sourceId === "rovara"`), the only one whose caching was measured. Absent or false (a source not known, or a customer's own Bedrock account,
+   * which has the same model ids): every input token is priced at the full input price. Even when true, the model must also be one `routeCaches` knows.
+   */
+  reviewerCaches?: boolean | undefined;
 }
 
 export interface DesignReviewCostBreakdown { reviewersUsd: number; mergeUsd: number; plannerUsd: number }
@@ -135,7 +140,7 @@ export function estimateDesignReviewUsd(input: DesignReviewEstimateInput): Desig
     return { ...rest, ...(usable(cacheReadUsdPerMTok) ? { cacheReadUsdPerMTok } : {}), ...(usable(cacheWriteUsdPerMTok) ? { cacheWriteUsdPerMTok } : {}) };
   };
   const reviewerPrice = priceOf(input.models.reviewer);
-  const reviewerCaches = input.models.reviewer !== undefined && routeCaches(input.models.reviewer);
+  const reviewerCaches = input.reviewerCaches === true && input.models.reviewer !== undefined && routeCaches(input.models.reviewer);
   const mergePrice = TIER_HAS_MERGE_MODEL[input.tier] ? priceOf(input.models.merge ?? input.models.reviewer) : undefined;
   const plannerPrice = priceOf(input.models.planner);
   const missing: PricedPart[] = [];

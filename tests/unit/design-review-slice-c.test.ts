@@ -99,6 +99,21 @@ describe("the cost card's estimates", () => {
     expect(out.lowerTier?.tier).toBe("light");
     expect(out.lowerTier?.estimate.kind === "priced" ? out.lowerTier.estimate.usd : 0).toBeCloseTo(lower.kind === "priced" ? lower.usd : -1, 1);
   });
+  it("FU3: the card works the lower tier out with the same cache rule the hold used (the reviewers' source), and never offers one it priced under a different rule", () => {
+    const { estimateDesignReviewUsd } = require_estimate();
+    const cachePrice = () => ({ inputUsdPerMTok: 3, outputUsdPerMTok: 15, cacheReadUsdPerMTok: 0.3, cacheWriteUsdPerMTok: 3.75 });
+    const bedrock = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" } as never;
+    const holdAt = (reviewerCaches: boolean) => { const held = estimateDesignReviewUsd({ tier: "standard", models: { reviewer: bedrock, merge: bedrock, planner: bedrock }, price: cachePrice, packetTokens: 80_000, rounds: 2, reviewerCaches }); return held.kind === "priced" ? held.usd : 0; };
+    expect(holdAt(true)).toBeLessThan(holdAt(false));
+    const card = (usd: number, reviewerCaches: boolean | undefined) => spendEstimatesOf({ review: { tier: "standard", estimateUsd: usd, rounds: [] }, reviewerModel: bedrock, plannerModel: bedrock, price: cachePrice, reviewerCaches });
+    // A hold made on Rovara's route is matched again when the card knows it is Rovara's route.
+    expect(card(holdAt(true), true).lowerTier?.tier).toBe("light");
+    expect(card(holdAt(false), false).lowerTier?.tier).toBe("light");
+    // A card that does not know the source prices at full input: its lower tier is dearer than the one worked out under the cache rule the hold used.
+    const lowerUsd = (value: ReturnType<typeof card>) => (value.lowerTier?.estimate.kind === "priced" ? value.lowerTier.estimate.usd : -1);
+    expect(lowerUsd(card(holdAt(true), undefined))).toBeGreaterThan(0);
+    expect(lowerUsd(card(holdAt(true), undefined))).toBeGreaterThanOrEqual(lowerUsd(card(holdAt(true), true)) * 0.99);
+  });
   it("is cost unavailable with no stored estimate, and offers no lower tier with no price", () => {
     expect(spendEstimatesOf({ review: { tier: "standard", estimateUsd: undefined, rounds: [] }, reviewerModel: model, plannerModel: model, price }).estimate.kind).toBe("unavailable");
     expect(spendEstimatesOf({ review: { tier: "standard", estimateUsd: 2, rounds: [] }, reviewerModel: model, plannerModel: model, price: () => undefined }).lowerTier).toBeUndefined();

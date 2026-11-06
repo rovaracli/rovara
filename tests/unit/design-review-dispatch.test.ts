@@ -368,6 +368,18 @@ describe("the preparation of a round", () => {
     expect(slotOf(2, "zoom_out")).toBe("r2-zoom_out");
   });
 
+  it("FU3: the cache discount is for Rovara's own route only: the same Bedrock model through a customer's own source is estimated at full input price", async () => {
+    const bedrock = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" };
+    const cachePrice = () => ({ inputUsdPerMTok: 1.1, outputUsdPerMTok: 5.5, cacheReadUsdPerMTok: 0.11, cacheWriteUsdPerMTok: 1.375 });
+    const estimateVia = async (sourceId: string) => (await prepareDesignReviewRound(inputs(ports({ price: cachePrice, taskRoomUsd: async () => 1_000 }).value, { capUsd: 100 }), { ...resolved, model: bedrock, sourceId })).estimateUsd!;
+    const own = await estimateVia("customer-bedrock");
+    const rovara = await estimateVia("rovara");
+    expect(rovara).toBeLessThan(own);
+    // The same model on Rovara's route with no cache price is the customer-route figure: the discount is the only difference.
+    const noCache = (await prepareDesignReviewRound(inputs(ports({ price: () => ({ inputUsdPerMTok: 1.1, outputUsdPerMTok: 5.5 }), taskRoomUsd: async () => 1_000 }).value, { capUsd: 100 }), { ...resolved, model: bedrock })).estimateUsd!;
+    expect(own).toBeCloseTo(noCache, 6);
+  });
+
   it("B2-M1: the review's room is held back for BOTH planner runs of a round that may ask (3 for two rounds), not one per round: the reviewers' ceilings add up to the cap less that", async () => {
     const p = ports({ taskRoomUsd: async () => 100 });
     await prepareDesignReviewRound(inputs(p.value, { capUsd: 10 }), resolved);
