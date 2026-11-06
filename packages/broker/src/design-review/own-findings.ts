@@ -2,7 +2,7 @@
 //   - A blocker for every approved requirement id that appears in no §3 subsection ("Each requirement id must appear in at least one §3 subsection").
 //   - A major "too long: split the work" for a design over 24 KB.
 // They carry `origin: "rovara"`: they name no reviewer and no raw finding, and cite the design section they are about. Pure and bounded.
-import { DESIGN_FINDING_TEXT_MAX_CHARS, DESIGN_TEXT_MAX_BYTES, DESIGN_REVIEW_FINDINGS_MAX, designFindingFingerprint, type DesignFinding } from "@agentx/contracts";
+import { DESIGN_FINDING_TEXT_MAX_CHARS, DESIGN_LOST_FINDING_ID_PREFIX, DESIGN_SECTIONS, DESIGN_TEXT_MAX_BYTES, DESIGN_REVIEW_FINDINGS_MAX, designFindingFingerprint, type DesignFinding, type DroppedFinding } from "@agentx/contracts";
 
 /** At most this many requirements get a finding each; any more are listed in one finding, so a design that covers nothing cannot fill the card. */
 export const OWN_FINDINGS_PER_REQUIREMENT_MAX = 12;
@@ -91,6 +91,26 @@ export function ownDesignFindings(input: { design: string; requirementIds: reado
     findings.push(ownFinding("rovara-too-long", "major", "§1", `Too long: split the work. The design is over ${DESIGN_TEXT_MAX_BYTES / 1024} KB, more than a reviewer or an approver can check well. Split it into designs that can each be reviewed and built on their own.`));
   }
   return findings.slice(0, DESIGN_REVIEW_FINDINGS_MAX);
+}
+
+/**
+ * A blocker no reader could show: a blocking finding of a reviewer that the reader dropped (a field was not valid, or no citation had an allowed shape; NOT one the citation check dropped for naming something the reviewer never saw, which counts for nothing), and findings whose severity could not be read (they may have been
+ * blockers). Each becomes ONE finding of the broker's own, with fixed words and no model text, so it counts as an open blocker like any other: the approve_design card lists it, the approver needs a reason
+ * to approve past it, and the Proof line counts it. A lost blocker is therefore never a clean review. One finding per section (so two never share a fingerprint), and one for the unreadable ones.
+ */
+export function lostBlockerFindings(input: { dropped: readonly DroppedFinding[]; unreadableMaybeBlockers: number }): DesignFinding[] {
+  const findings: DesignFinding[] = [];
+  for (const section of DESIGN_SECTIONS) {
+    const count = input.dropped.filter((entry) => entry.severity === "blocker" && entry.section === section).length;
+    if (count === 0) continue;
+    const who = count === 1 ? "A reviewer's blocking finding" : `${String(count)} blocking findings from reviewers`;
+    findings.push(ownFinding(`${DESIGN_LOST_FINDING_ID_PREFIX}${section.slice(1)}`, "blocker", section, `${who} about ${section} could not be read (a field was not valid, or no citation held), so it is not shown here. Have the design reviewed again before approving, or approve with a reason.`));
+  }
+  if (input.unreadableMaybeBlockers > 0) {
+    const who = input.unreadableMaybeBlockers === 1 ? "A reviewer's finding" : `${String(input.unreadableMaybeBlockers)} findings from reviewers`;
+    findings.push(ownFinding(`${DESIGN_LOST_FINDING_ID_PREFIX}unread`, "blocker", "§3", `${who} with no readable severity or section could not be read, and may have been a blocker. Have the design reviewed again before approving, or approve with a reason.`));
+  }
+  return findings;
 }
 
 const RANK: Record<DesignFinding["severity"], number> = { blocker: 0, major: 1, nit: 2 };

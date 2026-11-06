@@ -29,7 +29,7 @@
 // parsed with the strict DR1 schemas, and code (never a model) decides the fingerprint of a finding, whether a resolution is settled, and where the workflow goes next.
 import { z } from "zod";
 import {
-  DESIGN_REVIEW_APPROVALS_MAX, DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_FINDINGS_MAX, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS, DESIGN_REVIEW_NOT_RUN_REASONS, DESIGN_REVIEW_PARK_AFTER_MS, DESIGN_REVIEW_QUESTIONS_MAX,
+  DESIGN_DROPPED_FINDINGS_MAX, DESIGN_LOST_FINDING_ID_PREFIX, DESIGN_REVIEW_APPROVALS_MAX, DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_FINDINGS_MAX, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS, DESIGN_REVIEW_NOT_RUN_REASONS, DESIGN_REVIEW_PARK_AFTER_MS, DESIGN_REVIEW_QUESTIONS_MAX,
   DESIGN_REVIEW_RETRIES_MAX, DESIGN_REVIEW_REVISIONS_MAX, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_TIERS, DESIGN_REASONS_MAX, DESIGN_NOTE_MAX, DesignAnswerSchema, DesignFindingSchema,
   DesignModelRefSchema, DesignQuestionSchema, designFindingFingerprint, DesignReasonSchema, DesignReviewActorSchema, DesignReviewRoundSchema, DesignReviewTierSchema, FindingResolutionSchema, ReviewerRunSchema,
   WorkflowDesignReviewSchema,
@@ -413,7 +413,7 @@ export function submitDesignReview(
   currentInput: unknown,
   input: {
     expectedRevision: number; designDigest: string; reviewers: readonly unknown[]; findings: readonly unknown[]; mergeModel?: unknown; mergeCostUsd?: number;
-    undoesEarlierFix?: readonly { findingId: string; earlierFindingId: string }[]; stoppedAtCap?: true; droppedFindings?: readonly unknown[]; now: string;
+    undoesEarlierFix?: readonly { findingId: string; earlierFindingId: string }[]; stoppedAtCap?: true; droppedFindings?: readonly unknown[]; unreadableFindings?: number; now: string;
   },
 ): WorkflowSnapshot {
   const { current, review } = located(currentInput, input.expectedRevision, { stage: "PLAN_CRITIQUE", states: ["RUNNING"], statuses: ["running"] });
@@ -474,6 +474,7 @@ export function submitDesignReview(
     round: roundNumber, designDigest: input.designDigest, reviewers: runs.data, findings, resolutions: carried,
     ...(oscillation.length === 0 ? {} : { oscillation }), ...(mergeModel?.success === true ? { mergeModel: mergeModel.data } : {}),
     ...((input.droppedFindings ?? []).length === 0 ? {} : { droppedFindings: input.droppedFindings }),
+    ...(input.unreadableFindings === undefined || input.unreadableFindings <= 0 ? {} : { unreadableFindings: Math.min(input.unreadableFindings, DESIGN_DROPPED_FINDINGS_MAX) }),
   });
   if (!round.success) throw fail("the design review result is invalid");
   const spentUsd = addUsd(addUsd(review.spentUsd, runs.data.reduce((sum, run) => addUsd(sum, run.costUsd), 0)), mergeCost);
@@ -599,6 +600,8 @@ export function closeParkedDesignReview(currentInput: unknown, input: { expected
 function resolutionProblem(resolution: FindingResolution, finding: DesignFinding, round: DesignReviewRound, lastRoundOfReview: boolean): string | undefined {
   const comprehension = finding.fromReviewers.includes("comprehension");
   if (resolution.action === "contested" && comprehension) return "a finding that the design was not understood cannot be contested";
+  // A finding the reader could not show cannot be argued away: nobody can say what it claimed. A fix still settles it once a later round has looked again.
+  if (resolution.action === "contested" && finding.origin === "rovara" && finding.id.startsWith(DESIGN_LOST_FINDING_ID_PREFIX)) return "a finding that could not be read cannot be contested";
   if (resolution.action === "declined" && (finding.severity !== "nit" || comprehension)) return "only a nit that is not about understanding may be declined";
   if (lastRoundOfReview && (resolution.action === "asked" || resolution.action === "declined")) return "the last round is fixed or contested only";
   if (resolution.action === "asked") {

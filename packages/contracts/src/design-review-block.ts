@@ -1,7 +1,10 @@
 // Design review stage, DR3 (designs-2026-10-30/design-review-stage.md 3.3, 3.5 and 3.12): reading what the review models write, and checking the merge step.
 // A reviewer, the merge step and the planner's resolve step are models; what they write is untrusted. Each ends its answer with one fenced JSON block, and this is the one place
-// that reads them (the worker asks once more when a block is unreadable; the broker decides). Modelled on `readPlanCritique` (plan-critique-block.ts), but stricter: a block that
-// breaks a rule is an error in words the model can fix, never a block with the bad part quietly dropped. Nothing here can approve, lower a risk tier, or set a cost.
+// that reads them (the worker asks once more when a block is unreadable; the broker decides). Modelled on `readPlanCritique` (plan-critique-block.ts). The planner's and the merge step's blocks stay
+// strict: a block that breaks a rule is an error in words the model can fix. A reviewer's block is strict about what protects the review (untrusted text is cleaned, a citation must be one of
+// the allowed shapes and later resolve against the packet) and tolerant about labels: an id that is missing, too long or not plain is replaced by a generated one, and a design section written
+// as a subsection ("§3.1") is read as its top-level section ("§3"). A finding or citation that is still invalid is dropped on its own, and the drop is recorded (never silent); only a block that
+// is not JSON or has the wrong top-level shape is unreadable. Nothing here can approve, lower a risk tier, or set a cost.
 // Merge checks (3.5): every raw finding appears in exactly one merged finding, a group holds one section only, a merged finding keeps the highest severity of its raw findings, its text is
 // one of its highest-severity raw findings' own words, and its citations are only ever the raw findings' citations. The raw findings' words are kept on the merged finding. A merge that
 // fails any check is thrown away for a code-only merge (exact duplicates only, no rewording).
@@ -12,6 +15,7 @@ import {
   DESIGN_FINDING_SEVERITIES, DESIGN_REASONS, DESIGN_REVIEW_FINDINGS_MAX, DESIGN_REVIEW_QUESTIONS_MAX, DESIGN_SECTIONS, DesignCitationSchema, DesignQuestionSchema, DesignReasonSchema,
   DesignSectionSchema, REVIEWER_ROLES, designFindingFingerprint, normalizedFindingText, type DesignCitation, type DesignFinding, type DesignQuestion, type ReviewerRole,
 } from "./design-review.js";
+import type { DroppedCitation, DroppedFinding } from "./design-review-citations.js";
 
 export const DESIGN_REVIEW_INFO_STRING = "rovara-design-review";
 export const DESIGN_META_INFO_STRING = "rovara-design-meta";
@@ -77,19 +81,83 @@ function citationsArePlain(citations: readonly DesignCitation[]): boolean {
 // A reviewer's answer
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-const ReviewerFindingBlockSchema = z.object({
-  id: z.string().regex(PLAIN_ID),
-  severity: z.enum(DESIGN_FINDING_SEVERITIES),
-  section: DesignSectionSchema,
-  text: ModelText,
-  citations: z.array(DesignCitationSchema).min(1).max(5).refine(citationsArePlain, "citations must be plain text"),
-}).strict();
-
 const ReviewerBlockSchema = z.object({
   /** The comprehension reviewer only: what the design proposes, and how the system works today per the design. */
   paraphrase: z.object({ proposes: ModelText, today: ModelText }).strict().optional(),
-  findings: z.array(ReviewerFindingBlockSchema).max(DESIGN_REVIEW_FINDINGS_PER_REVIEWER_MAX),
+  /** Each entry is read on its own (`readFindingEntry`), so one bad finding does not cost the others. */
+  findings: z.array(z.unknown()).max(DESIGN_REVIEW_FINDINGS_PER_REVIEWER_MAX),
 }).strict();
+
+export type DesignSection = (typeof DESIGN_SECTIONS)[number];
+const SECTION_REFERENCE = /^(?:§\s*|section\s+|sec\.?\s*)?([1-9]\d*)(?:\.\d+)*\.?$/iu;
+/**
+ * A design section as a model may write it: "§3", "§3.1", "§3.2.4", "3.1" or "Section 3". A subsection is read as its top-level section. It is a section only when that number is one of
+ * `DESIGN_SECTIONS`; anything else ("§9", "§3a", "Alternatives") is undefined, never guessed.
+ */
+export function normalizeDesignSection(value: unknown): DesignSection | undefined {
+  if (typeof value !== "string" || value.length > 40) return undefined;
+  const found = SECTION_REFERENCE.exec(value.trim());
+  if (found === null) return undefined;
+  const candidate = `§${found[1]}`;
+  return DESIGN_SECTIONS.find((section) => section === candidate);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** One citation as a reviewer wrote it, or undefined when it is not one of the allowed shapes (a design citation's subsection is read as its section first). */
+function readCitationEntry(entry: unknown): DesignCitation | undefined {
+  let candidate = entry;
+  if (isRecord(entry) && entry["kind"] === "design") {
+    const section = normalizeDesignSection(entry["section"]);
+    if (section === undefined) return undefined;
+    candidate = { ...entry, section };
+  }
+  const parsed = DesignCitationSchema.safeParse(candidate);
+  return parsed.success && citationsArePlain([parsed.data]) ? parsed.data : undefined;
+}
+
+const SEVERITY_SCHEMA = z.enum(DESIGN_FINDING_SEVERITIES);
+/** "Blocker", " MAJOR " and "nit" are the three words, whatever the case. No other word ("high", "critical") is mapped: the contracts define no such mapping, and a guess could lower a blocker. */
+function readSeverity(value: unknown): DesignFinding["severity"] | undefined {
+  const parsed = SEVERITY_SCHEMA.safeParse(typeof value === "string" ? value.trim().toLowerCase() : value);
+  return parsed.success ? parsed.data : undefined;
+}
+const CITATION_KIND_RANK: Record<DesignCitation["kind"], number> = { design: 0, code: 1, source: 2 };
+type SalvagedFinding = { id: string | undefined; severity: DesignFinding["severity"]; section: DesignSection; text: string; citations: DesignCitation[]; overLimit: DesignCitation[]; invalidCitations: number };
+/** `finding` is set when the entry is usable. Otherwise `severity` and `section` are whatever of them could be read, so a dropped blocker can still be counted. */
+interface FindingEntryRead { finding?: SalvagedFinding; severity?: DesignFinding["severity"]; section?: DesignSection }
+
+/**
+ * One finding of a reviewer's block. The id is a label: a usable one is kept, anything else is left for `readDesignReview` to generate. Fields the reader does not know are never read (they cannot
+ * reach the record), so they do not cost the finding. The rest must hold, or the finding is not used.
+ */
+function readFindingEntry(entry: unknown): FindingEntryRead {
+  if (!isRecord(entry)) return {};
+  const severity = readSeverity(entry["severity"]);
+  const section = normalizeDesignSection(entry["section"]);
+  const partial: FindingEntryRead = { ...(severity === undefined ? {} : { severity }), ...(section === undefined ? {} : { section }) };
+  const text = ModelText.safeParse(entry["text"]);
+  const citations = entry["citations"];
+  if (severity === undefined || section === undefined || !text.success || !Array.isArray(citations)) return partial;
+  // A citation that is not an allowed shape is dropped, the finding keeps the rest; repeats (two subsections of one section) are one citation. Design and code citations are kept before source items,
+  // and at most five are kept: the rest are well-formed but over the limit and are recorded as such.
+  const seen = new Set<string>();
+  const valid: DesignCitation[] = [];
+  let invalidCitations = 0;
+  for (const candidate of citations) {
+    const citation = readCitationEntry(candidate);
+    if (citation === undefined) { invalidCitations += 1; continue; }
+    if (seen.has(citationKey(citation))) continue;
+    seen.add(citationKey(citation));
+    valid.push(citation);
+  }
+  if (valid.length === 0) return partial;
+  const ranked = valid.map((citation, index) => ({ citation, index })).sort((a, b) => CITATION_KIND_RANK[a.citation.kind] - CITATION_KIND_RANK[b.citation.kind] || a.index - b.index).map(({ citation }) => citation);
+  const id = typeof entry["id"] === "string" && PLAIN_ID.test(entry["id"]) ? entry["id"] : undefined;
+  return { ...partial, finding: { id, severity, section, text: text.data, citations: ranked.slice(0, 5), overLimit: ranked.slice(5), invalidCitations } };
+}
 
 /** One finding as a reviewer reported it. `rawId` is the reviewer's id made unique across reviewers (`critic-1`). */
 export interface RawDesignFinding {
@@ -100,11 +168,27 @@ export interface RawDesignFinding {
   text: string;
   citations: DesignCitation[];
 }
-export type ReadDesignReview = { ok: true; role: ReviewerRole; paraphrase?: string; findings: RawDesignFinding[] } | { ok: false; error: string };
+export type ReadDesignReview =
+  | {
+    ok: true; role: ReviewerRole; paraphrase?: string; findings: RawDesignFinding[];
+    /** Findings of the block that could not be used (an invalid field, no valid citation, no readable text) and whose severity and section could be read. Fixed fields only, never the words. */
+    dropped: DroppedFinding[];
+    /** Findings that could not be used and are not in `dropped` because their severity or section could not be read either (or they were not objects). */
+    unusable: number;
+    /** Of `unusable`, those that may have been blockers: the severity said blocker, or could not be read. A lost blocker must never read as "nothing found". */
+    unusableMaybeBlocker: number;
+    /** Well-formed citations left out of a finding that already held five (design and code citations are kept first). */
+    droppedCitations: DroppedCitation[];
+    /** Citations that were not an allowed shape, in findings that were kept: a count, there is nothing to keep. */
+    invalidCitations: number;
+  }
+  | { ok: false; error: string };
 
 /**
- * A reviewer's findings from the last `rovara-design-review` block of its answer. Strict: a missing, unclosed or unreadable block, more than 15 findings, a finding with no
- * citation, an unknown field or a repeated id is an `error`, and the worker may ask once more. Finding text is redacted, put on one line and cut to 500 characters. The comprehension
+ * A reviewer's findings from the last `rovara-design-review` block of its answer. A missing, unclosed or non-JSON block, a block of the wrong top-level shape (more than 15 findings, an unknown
+ * top-level field, a bad paraphrase) is an `error`, and the worker may ask once more. Inside a readable block each finding stands on its own: its id is kept when plain and otherwise generated
+ * (`f<position>`, made unique), a design section written as a subsection is read as its top-level section, a citation that is not an allowed shape is dropped, and a finding that ends with no
+ * citation, no readable text or an unreadable field is dropped and listed in `dropped`/`unusable`. Finding text is redacted, put on one line and cut to 500 characters. The comprehension
  * reviewer must give a paraphrase; no other reviewer may, except the Light tier's Critic (`withParaphrase: true`), which must. A block with no findings is a valid answer ("I found nothing"): it is information, and lowers nothing.
  */
 export function readDesignReview(answer: string, role: ReviewerRole, options: { withParaphrase?: boolean } = {}): ReadDesignReview {
@@ -115,13 +199,41 @@ export function readDesignReview(answer: string, role: ReviewerRole, options: { 
   const writesParaphrase = role === "comprehension" || options.withParaphrase === true;
   if (writesParaphrase && paraphrase === undefined) return { ok: false, error: `The ${DESIGN_REVIEW_INFO_STRING} block needs a paraphrase with "proposes" and "today" before the findings.` };
   if (!writesParaphrase && paraphrase !== undefined) return { ok: false, error: `Only the comprehension reviewer writes a paraphrase; remove it from the ${DESIGN_REVIEW_INFO_STRING} block.` };
-  if (new Set(findings.map((finding) => finding.id)).size !== findings.length) return { ok: false, error: `Each finding in the ${DESIGN_REVIEW_INFO_STRING} block needs its own id.` };
-  const kept: RawDesignFinding[] = [];
-  for (const finding of findings) {
-    const text = oneLine(finding.text, DESIGN_FINDING_TEXT_MAX_CHARS);
-    if (text === "") return { ok: false, error: `Finding ${finding.id} has no readable text.` };
-    kept.push({ rawId: `${role}-${finding.id}`, role, severity: finding.severity, section: finding.section, text, citations: finding.citations });
+  const entries = findings.map(readFindingEntry);
+  const kept: Array<{ position: number; finding: SalvagedFinding; text: string }> = [];
+  const dropped: DroppedFinding[] = [];
+  let unusable = 0;
+  let unusableMaybeBlocker = 0;
+  entries.forEach((entry, index) => {
+    const text = entry.finding === undefined ? "" : oneLine(entry.finding.text, DESIGN_FINDING_TEXT_MAX_CHARS);
+    if (entry.finding !== undefined && text !== "") { kept.push({ position: index + 1, finding: entry.finding, text }); return; }
+    if (entry.severity === undefined || entry.section === undefined) {
+      unusable += 1;
+      // Nothing is known about a finding with no readable severity: it may have been a blocker.
+      if (entry.severity === undefined || entry.severity === "blocker") unusableMaybeBlocker += 1;
+    } else dropped.push({ rawId: `~${role}-dropped-${index + 1}`, role, severity: entry.severity, section: entry.section, reason: "no_valid_citation" });
+  });
+  // Ids are labels. A usable id is kept the first time it appears; a missing, too long, not plain or repeated one becomes `f<position>`, given a suffix when that is taken, so the ids are unique and
+  // the same answer always gives the same ids (the worker, the merge step and the broker each read the answer and must agree).
+  const used = new Set<string>();
+  const ids = new Map<number, string>();
+  for (const { position, finding } of kept) {
+    if (finding.id !== undefined && !used.has(finding.id)) { used.add(finding.id); ids.set(position, finding.id); }
   }
+  const droppedCitations: DroppedCitation[] = [];
+  let invalidCitations = 0;
+  const result: RawDesignFinding[] = kept.map(({ position, finding, text }) => {
+    let id = ids.get(position);
+    if (id === undefined) {
+      id = `f${position}`;
+      for (let suffix = 2; used.has(id); suffix += 1) id = `f${position}-${suffix}`;
+      used.add(id);
+    }
+    const rawId = `${role}-${id}`;
+    for (const citation of finding.overLimit) droppedCitations.push({ rawId, role, reason: "over_limit", citation });
+    invalidCitations += finding.invalidCitations;
+    return { rawId, role, severity: finding.severity, section: finding.section, text, citations: finding.citations };
+  });
   let line: string | undefined;
   if (paraphrase !== undefined) {
     const proposes = oneLine(paraphrase.proposes, DESIGN_PARAPHRASE_PART_MAX_CHARS);
@@ -129,7 +241,7 @@ export function readDesignReview(answer: string, role: ReviewerRole, options: { 
     if (proposes === "" || today === "") return { ok: false, error: "The paraphrase has no readable text." };
     line = `Proposes: ${proposes} Today, per the design: ${today}`;
   }
-  return { ok: true, role, ...(line === undefined ? {} : { paraphrase: line }), findings: kept };
+  return { ok: true, role, ...(line === undefined ? {} : { paraphrase: line }), findings: result, dropped, unusable, unusableMaybeBlocker, droppedCitations, invalidCitations };
 }
 
 /** A blocker that cites only source items must also cite the design or the code; otherwise it is shown as "source-only" and cannot be the only basis for blocking (3.12 item 5). */

@@ -49,7 +49,7 @@ export const SEVERITY_TEXT = [
 
 export const CITATION_TEXT = [
   "CITATIONS (every finding needs at least one, at most five, in exactly these shapes)",
-  '{"kind":"design","section":"§3"}  a section of the design',
+  '{"kind":"design","section":"§3"}  a section of the design: exactly §1 to §8. The design has numbered parts such as 3.1 and 3.2; cite their section (§3), never "§3.1".',
   '{"kind":"code","repo":"<repository name>","path":"<file path>","startLine":12,"endLine":20,"anchor":"<a short exact quote from those lines>","commit":"<the at value of the file\'s opening tag, or the commit you read>"}  a place in the code',
   '{"kind":"source","ref":"<the ref attribute of the item\'s opening tag, copied exactly>","digest":"<the 64 hex characters of the digest attribute of that same opening tag, copied exactly>"}  a source item you were given',
   "A blocker that rests on a source item alone is not accepted as a blocker: also cite the design or the code. Never invent a path, a line, a commit, a ref or a digest.",
@@ -60,7 +60,7 @@ export function reviewerOutputText(withParaphrase: boolean): string {
   const lines = [
     "OUTPUT",
     "End your answer with exactly one fenced block whose info string is rovara-design-review. It holds one JSON object and nothing else. Unknown fields are refused.",
-    "At most 15 findings, ordered most serious first. Each finding: id (letters, digits, . _ - only, at most 32 characters, unique), severity (blocker | major | nit), section (one of §1..§8), text (one or two plain sentences, at most 500 characters: what is wrong, why it matters, what would fix it), citations (1 to 5).",
+    "At most 15 findings, ordered most serious first. Each finding: id (1 to 32 characters, letters, digits, . _ - only, unique: short ids such as 1, 2, 3 are best; never a sentence), severity (blocker | major | nit), section (exactly one of §1..§8: never a subsection such as §3.1, cite §3), text (one or two plain sentences, at most 500 characters: what is wrong, why it matters, what would fix it), citations (1 to 5).",
   ];
   if (withParaphrase) lines.push('Before "findings", the object has "paraphrase": {"proposes": "<2 to 5 sentences: what this design proposes>", "today": "<2 to 5 sentences: how the existing system works, as this design describes it>"}. It is required.');
   lines.push(

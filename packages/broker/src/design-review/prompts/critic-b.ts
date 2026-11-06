@@ -5,7 +5,7 @@ import { CRITIC_ROLE_TEXT, CRITIC_STEPS_TEXT } from "./critic.js";
 
 export const CRITIC_B_PROMPT: ReviewPrompt = {
   id: "design-review-critic-b",
-  version: 2,
+  version: 3,
   text: assemblePrompt([
     COMMON_RULES,
     CRITIC_ROLE_TEXT,

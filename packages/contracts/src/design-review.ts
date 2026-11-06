@@ -194,6 +194,9 @@ export const RawFindingRecordSchema = z.object({
 }).strict();
 export type RawFindingRecord = z.infer<typeof RawFindingRecordSchema>;
 
+/** The id prefix of the broker's own finding for a reviewer finding that could not be read (own-findings.ts). A requirement id (letters, digits, . _ -) can never make an id with this "~", so no other own finding can clash with it. */
+export const DESIGN_LOST_FINDING_ID_PREFIX = "rovara~lost-";
+
 export const DesignFindingSchema = z.object({
   id: z.string().min(1).max(64),
   severity: z.enum(DESIGN_FINDING_SEVERITIES),
@@ -286,6 +289,8 @@ export const DesignReviewRoundSchema = z.object({
   mergeModel: DesignModelRefSchema.optional(),
   /** The reviewers' findings that were left out because no citation held (broker-made, never the worker's list). Absent in a round recorded before this field. */
   droppedFindings: z.array(DroppedDesignFindingSchema).max(DESIGN_DROPPED_FINDINGS_MAX).optional(),
+  /** How many findings a reader could not use at all (no readable severity or section, not an object): a count only, there is nothing else to keep. Absent when none, and in a round recorded before this field. */
+  unreadableFindings: z.number().int().min(1).max(DESIGN_DROPPED_FINDINGS_MAX).optional(),
 }).strict();
 export type DesignReviewRound = z.infer<typeof DesignReviewRoundSchema>;
 

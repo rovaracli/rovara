@@ -17,7 +17,8 @@ import { codeCitationInPacket, plainPath, type CitablePacketItem } from "./desig
 export { CODE_CITATION_UNCHECKED, codeCitationInPacket, codeCitationLinkPath, type CitablePacketItem } from "./design-review-citation-links.js";
 import type { DesignResolutionDraft, RawDesignFinding } from "./design-review-block.js";
 
-export const CITATION_DROP_REASONS = ["source_not_in_packet", "source_digest_mismatch", "code_not_allowed"] as const;
+/** `over_limit`: a well-formed citation left out because the finding already holds five (design and code citations are kept before source items). Set by the reader, never by the packet check. */
+export const CITATION_DROP_REASONS = ["source_not_in_packet", "source_digest_mismatch", "code_not_allowed", "over_limit"] as const;
 export type CitationDropReason = (typeof CITATION_DROP_REASONS)[number];
 
 export interface DroppedCitation {

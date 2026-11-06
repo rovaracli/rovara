@@ -4,7 +4,7 @@ import { COMMON_RULES, CITATION_TEXT, DESIGN_TEMPLATE_TEXT, SEVERITY_TEXT, assem
 
 export const ZOOM_OUT_PROMPT: ReviewPrompt = {
   id: "design-review-zoom-out",
-  version: 2,
+  version: 3,
   text: assemblePrompt([
     COMMON_RULES,
     [

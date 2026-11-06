@@ -41,6 +41,12 @@ export interface AssembledRound {
   reviewers: RoundReviewerState[];
   droppedCitations: DroppedCitation[];
   droppedFindings: DroppedFinding[];
+  /** The part of `droppedFindings` the READER dropped (an invalid field or no citation of an allowed shape), as opposed to the citation check (a citation that names nothing the reviewer was given: a finding that counts for nothing, 3.12 item 5). */
+  readDroppedFindings: DroppedFinding[];
+  /** Findings a reader could not use at all (no readable severity or section): a count, kept on the round. */
+  unreadableFindings: number;
+  /** Of those, how many may have been blockers (severity blocker or unreadable). With the dropped blockers they become an open blocker of the round (own-findings.ts), so a lost blocker is never a clean review. */
+  unreadableMaybeBlockers: number;
   /** Present when the result was refused as a whole; the findings are then empty. */
   refused?: RoundResultRefusal;
 }
@@ -74,7 +80,7 @@ export function assembleRoundFindings(input: {
   promptIds?: ReadonlyMap<ReviewerRole, string>;
 }): AssembledRound {
   const refusedAll = (refused: RoundResultRefusal): AssembledRound => ({
-    findings: [], omitted: 0, mergeSource: "code", mergeFallback: "result_refused", droppedCitations: [], droppedFindings: [], refused,
+    findings: [], omitted: 0, mergeSource: "code", mergeFallback: "result_refused", droppedCitations: [], droppedFindings: [], readDroppedFindings: [], unreadableFindings: 0, unreadableMaybeBlockers: 0, refused,
     reviewers: input.binding.reviewers.map((entry) => ({ role: entry.role, counted: false, verified: false, verifyFailure: "unreadable_output", notUsed: "result_refused" })),
   });
   const refusal = resultRefusalOf(input.binding, input.result);
@@ -83,6 +89,11 @@ export function assembleRoundFindings(input: {
   const outcomes = new Map(input.result.reviewers.map((outcome) => [outcome.role, outcome] as const));
   const reviewers: RoundReviewerState[] = [];
   const raw: RawDesignFinding[] = [];
+  // Findings a reader could not use (an invalid field, no readable text): listed with the ones the citation check drops, so the card says so.
+  const readDropped: DroppedFinding[] = [];
+  const readDroppedCitations: DroppedCitation[] = [];
+  let unreadableFindings = 0;
+  let unreadableMaybeBlockers = 0;
   for (const entry of input.binding.reviewers) {
     const outcome = outcomes.get(entry.role);
     const unused = (notUsed: NonNullable<RoundReviewerState["notUsed"]>, verifyFailure: ReviewerVerifyFailure): void => { reviewers.push({ role: entry.role, counted: false, verified: false, verifyFailure, notUsed }); };
@@ -90,10 +101,25 @@ export function assembleRoundFindings(input: {
     if (outcome === undefined || verdict === undefined) { unused("no_answer", "unreadable_output"); continue; }
     if (!verdict.verified) { unused(verdict.failure, verdict.failure); continue; }
     // The worker's own signals may only lower the result, never raise it (N1): a reviewer it flagged (a timeout, a mismatch, a stopped stage) is not counted even if an answer and a report exist.
-    if (outcome.status !== "answered" || outcome.failure !== undefined) { unused("worker_flagged", "unreadable_output"); continue; }
+    if (outcome.status !== "answered" || outcome.failure !== undefined) {
+      // A reviewer the worker found unreadable (every finding lost, even after the retry) is not counted, but its answer is read ONCE MORE for one purpose: the blockers it lost. Those become open blockers of the
+      // broker's own, so a hostile or mistaken answer cannot make a blocker disappear by making it unreadable. This can only lower the result: nothing else of that answer is used.
+      if (outcome.failure === "unreadable" && outcome.answer !== undefined) {
+        const lost = readDesignReview(outcome.answer, entry.role, { withParaphrase: lightCriticWritesParaphrase(entry.role, input.promptIds?.get(entry.role) ?? "") });
+        if (lost.ok) { readDropped.push(...lost.dropped); unreadableFindings += lost.unusable; unreadableMaybeBlockers += lost.unusableMaybeBlocker; }
+      }
+      unused("worker_flagged", "unreadable_output");
+      continue;
+    }
     if (outcome.answer === undefined) { unused("no_answer", "unreadable_output"); continue; }
     const read = readDesignReview(outcome.answer, entry.role, { withParaphrase: lightCriticWritesParaphrase(entry.role, input.promptIds?.get(entry.role) ?? "") });
     if (!read.ok) { unused("unreadable_output", "unreadable_output"); continue; }
+    readDropped.push(...read.dropped);
+    readDroppedCitations.push(...read.droppedCitations);
+    unreadableFindings += read.unusable;
+    unreadableMaybeBlockers += read.unusableMaybeBlocker;
+    // A reviewer whose findings were ALL lost is not a clean review ("nothing found"): it did not give a result.
+    if (read.findings.length === 0 && read.dropped.length + read.unusable > 0) { unused("unreadable_output", "unreadable_output"); continue; }
     raw.push(...read.findings);
     reviewers.push({ role: entry.role, verified: true, inputProof: verdict.inputProof, counted: true, ...(read.paraphrase === undefined ? {} : { paraphrase: read.paraphrase }) });
   }
@@ -105,7 +131,7 @@ export function assembleRoundFindings(input: {
     const merged = mergeDesignFindings(cited.findings, input.result.merge.answer, { verifiedRoles });
     return {
       findings: merged.findings, omitted: merged.omitted, mergeSource: merged.source, ...(merged.fallback === undefined ? {} : { mergeFallback: merged.fallback }),
-      reviewers, droppedCitations: cited.droppedCitations, droppedFindings: cited.droppedFindings,
+      reviewers, droppedCitations: [...readDroppedCitations, ...cited.droppedCitations], droppedFindings: [...readDropped, ...cited.droppedFindings], readDroppedFindings: readDropped, unreadableFindings, unreadableMaybeBlockers,
     };
   } catch {
     // The merge contract throws on a caller bug (two different findings with one id). The round fails closed: nothing counts, and nothing is thrown out of the assembly.
