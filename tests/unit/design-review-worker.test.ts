@@ -361,6 +361,35 @@ describe("runDesignReview: unreadable blocks", () => {
     expect((await runDesignReview(binding, softened)).reviewers[0]).toMatchObject({ answer: lostFirst });
   });
 
+  it("a retry that fails after a readable first answer keeps the first read: not a timeout, the blocker is counted and its loss is recorded; after an unreadable first answer it is still the reviewer's failure", async () => {
+    const { binding, deliveries } = await setup(["critic"], false);
+    const first = block([finding("1", { severity: "blocker" }), { nonsense: true }]);
+    for (const retry of [new Error("model call failed"), "hang"] as const) {
+      const { ports, opened } = fakePorts({ answers: { "slot-critic": [first, retry] } }, deliveries);
+      const result = await runDesignReview(binding, ports, { reviewerTimeoutMs: 60, stageTimeoutMs: 5_000 });
+      expect(result.reviewers[0], String(retry)).toMatchObject({ status: "answered", retried: true, answer: first });
+      expect(result.reviewers[0]!.failure).toBeUndefined();
+      expect(result.findings.map((f) => [f.rawIds[0], f.severity])).toEqual([["critic-1", "blocker"]]);
+      expect(opened[0]!.aborted).toBe(true);
+    }
+    // an unreadable first answer keeps today's behaviour: a failed retry is the reviewer's failure
+    const { ports } = fakePorts({ answers: { "slot-critic": ["no block here", new Error("model call failed")] } }, deliveries);
+    expect((await runDesignReview(binding, ports)).reviewers[0]).toMatchObject({ status: "no_result", failure: "model_failed" });
+    const { ports: hung } = fakePorts({ answers: { "slot-critic": ["no block here", "hang"] } }, deliveries);
+    expect((await runDesignReview(binding, hung, { reviewerTimeoutMs: 60, stageTimeoutMs: 5_000 })).reviewers[0]).toMatchObject({ status: "no_result", failure: "timeout" });
+  });
+
+  it("a retry must not drop a section that held a blocker in the first read, even with as many blockers", async () => {
+    const { binding, deliveries } = await setup(["critic"], false);
+    const first = block([finding("1", { severity: "blocker", section: "§3" }), finding("2", { severity: "blocker", section: "§4", citations: [] })]);
+    const second = block([finding("1", { severity: "blocker", section: "§3" }), finding("2", { severity: "blocker", section: "§3", text: "Another." })]);
+    const { ports } = fakePorts({ answers: { "slot-critic": [first, second] } }, deliveries);
+    expect((await runDesignReview(binding, ports)).reviewers[0]).toMatchObject({ answer: first });
+    const kept = block([finding("1", { severity: "blocker", section: "§3" }), finding("2", { severity: "blocker", section: "§4" })]);
+    const { ports: better } = fakePorts({ answers: { "slot-critic": [first, kept] } }, deliveries);
+    expect((await runDesignReview(binding, better)).reviewers[0]).toMatchObject({ answer: kept });
+  });
+
   it("the worker does not send the reader's own citation drops (an old control plane would refuse a new reason)", async () => {
     const { binding, deliveries } = await setup(["critic"], false);
     const sources = Array.from({ length: 7 }, (_, index) => ({ kind: "code", repo: "demo", path: `src/f${String(index)}.ts`, startLine: 1, endLine: 2, anchor: "x", commit: "a".repeat(40) }));

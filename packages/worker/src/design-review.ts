@@ -102,6 +102,10 @@ const usableBlockersOf = (read: ReadOk): number => read.findings.filter((finding
  */
 const readIsBetter = (next: ReadOk, earlier: ReadOk): boolean => {
   if (usableBlockersOf(next) < usableBlockersOf(earlier) + lostBlockersOf(earlier)) return false;
+  // ...and it must not drop a section that held a blocker in the first read (a blocker moved or swapped for another section's does not count as the same blocker).
+  const nextSections = new Set(next.findings.filter((finding) => finding.severity === "blocker").map((finding) => finding.section));
+  const earlierSections = [...earlier.findings.filter((finding) => finding.severity === "blocker").map((finding) => finding.section), ...earlier.dropped.filter((entry) => entry.severity === "blocker").map((entry) => entry.section)];
+  if (earlierSections.some((section) => !nextSections.has(section))) return false;
   return lostFindingsOf(next) < lostFindingsOf(earlier) || (lostFindingsOf(next) === lostFindingsOf(earlier) && next.findings.length > earlier.findings.length);
 };
 
@@ -221,8 +225,17 @@ export async function runDesignReview(binding: DesignReviewBinding, ports: Desig
           retried = true;
           await say(`The ${entry.role} reviewer's answer ${read.ok ? "had findings that could not be used" : "could not be read"}; it is asked to answer again.`);
           const earlier = { read, answer };
-          answer = await within(session.prompt(designReviewRetryPrompt(read.ok ? DESIGN_REVIEW_LOST_FINDINGS_PROBLEM : read.error)), own.promise);
-          read = readDesignReview(answer ?? "", entry.role, readOptions);
+          try {
+            answer = await within(session.prompt(designReviewRetryPrompt(read.ok ? DESIGN_REVIEW_LOST_FINDINGS_PROBLEM : read.error)), own.promise);
+          } catch (error) {
+            // A retry that fails (a timeout, a session error) after a READABLE first answer costs nothing: the first read and its answer stand, and what it lost becomes blockers of the broker's own. After an
+            // unreadable first answer there is nothing to keep, and the failure is the reviewer's. A budget stop or a refused model still ends the reviewer, as does a cancel.
+            const code = failureOf(error, false);
+            if (!earlier.read.ok || !(code === "timeout" || code === "stage_timeout" || code === "model_failed")) throw error;
+            await session.abort().catch(() => undefined);
+            answer = earlier.answer;
+          }
+          read = answer === earlier.answer ? earlier.read : readDesignReview(answer ?? "", entry.role, readOptions);
           if (earlier.read.ok && !(read.ok && readIsBetter(read, earlier.read))) { read = earlier.read; answer = earlier.answer; }
         }
         // A reviewer whose findings were all lost gave no result: an empty list is "I found nothing", a block that lost every finding is not.
