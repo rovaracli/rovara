@@ -43,6 +43,9 @@ export const DECISION_KINDS = [
   // Test services (TS24, design test-services.md 7.4): a recorded or written fake (a fixture set) for a dependency, pinned by digest. Medium; high when the fake answers unrecorded requests from the schema or was
   // recorded from a customer test account for the first time. The card shows counts, the schema, three redacted sample pairs, the personal-data scan, the ignored paths and the faults.
   "approve_fixture_set",
+  // Decision journey slice 3b: an outside approval (an agent's approval `apr_`, a spend request `spr_`) decided on its card by the people the confirmation page let decide it, with the same checks (a recent
+  // sign-in, always: high).
+  "approve_request",
 ] as const;
 export const DecisionKindSchema = z.enum(DECISION_KINDS);
 export type DecisionKind = z.infer<typeof DecisionKindSchema>;
@@ -78,6 +81,7 @@ export const DECISION_KIND_FLOOR_RISK: Record<DecisionKind, DecisionRisk> = {
   setup_host: "medium",
   second_review_notice: "low",
   approve_fixture_set: "medium",
+  approve_request: "high",
 };
 
 export const DecisionFrictionSchema = z.object({ expandEvidenceFirst: z.boolean(), freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict();

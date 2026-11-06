@@ -23,7 +23,7 @@ export function decisionActionPath(card: ReadDecisionCard, kind: "approve" | "re
  return action.href === expected ? expected : undefined;
 }
 /** Slice 2: the kinds whose HIGH card is approved on the card itself, on its task page, with a recent sign-in (the broker's `highOnCard`). Every other high card has no approve here. */
-export const HIGH_ON_CARD_KINDS: readonly string[] = ["approve_plan", "approve_requirements", "merge"];
+export const HIGH_ON_CARD_KINDS: readonly string[] = ["approve_plan", "approve_requirements", "merge", "approve_request"];
 /** A coding plan's card: whether approving raises the run limit, so the card asks for a tick (the broker refuses a raise without it). */
 export function runLimitRaise(card: ReadDecisionCard): { currentUsd: number | undefined; proposedUsd: number; raises: boolean } | undefined {
  const limit = card.runLimit;
@@ -84,6 +84,12 @@ export function createDecisionsApi(host: AppHost) {
    const card = decision.card;
    if (card.risk !== "high" || !HIGH_ON_CARD_KINDS.includes(card.kind) || typeof card.id !== "string") throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
    done(await api.send("POST", "/v1/app/decisions/" + card.id.replace(":", "/") + "/approve", { requestId: crypto.randomUUID(), shownDigest, ...(acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd }) }, DecisionOutcomeReaderSchema, { retry: "never" }));
+  },
+  /** Slice 3b: Decline an outside approval on its card (its reject route; the broker asks for the browser, the recent sign-in and the decider's authority, as the confirmation page did). */
+  async declineOnCard(decision: ReadDecision): Promise<void> {
+   const card = decision.card, path = decisionActionPath(card, "reject");
+   if (card.kind !== "approve_request" || path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
+   done(await api.send("POST", path, { requestId: crypto.randomUUID(), reason: "other" }, DecisionOutcomeReaderSchema, { retry: "never" }));
   },
   /** Slice 2: send a document back with the person's reason (one line). Only the card's own request-changes route. */
   async requestChanges(decision: ReadDecision, reason: string): Promise<DecisionResult> {

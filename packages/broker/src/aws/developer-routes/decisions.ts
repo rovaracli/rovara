@@ -41,6 +41,10 @@ import { decisionCardsEnabled } from "../../proof/switch.js";
 import { designReviewEnabled } from "../../design-review/switch.js";
 import { designApproveHandlerFor, designReviewItemsFor } from "./design-review.js";
 import { freshSignInProofOf } from "../../design-review/route-facts.js";
+import { outsideCardHandler, outsideItemsFor } from "./outside-cards.js";
+import { approvalDecideKind } from "../../agents/approval-decide-kind.js";
+import { spendDecideKind } from "../../spend/requests.js";
+import type { DecideKinds } from "../../developer/decide-kinds.js";
 import { planCardHandler, planCardItemsFor, requestChanges, taskPagePathOf } from "./plan-cards.js";
 import { setupAgentEnabled } from "../../rovara-code/setup-agent-switch.js";
 import { hostAskItemsFor, setupHostHandler, type HostDecisionDeps } from "../../rovara-code/setup-host-ask.js";
@@ -96,11 +100,13 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
     documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }),
     prodDeny: async (orgId, project) => (await readApprovedTestEnvironment(store, orgId, project))?.environment.prodDeny,
   };
+  // Slice 3b: the confirmation page's own kinds (the same objects decide-web registers): who may decide an outside approval, what it shows and what deciding does.
+  const outsideKinds: DecideKinds = { apr: approvalDecideKind(agents), spr: spendDecideKind(agents) };
   const approvableHostProjects = async (who: DeveloperCaller): Promise<string[]> => (who.orgRole === "owner" || who.orgRole === "admin" ? [...(await visibleProjectRoles(deps, who)).keys()].sort() : []);
   return {
     sources: {
       async list(who) {
-        const [merges, specs, testEnv, envChanges, fixSetup, hosts, secondReviewNotices, designCards, planCards] = await Promise.all([
+        const [merges, specs, testEnv, envChanges, fixSetup, hosts, secondReviewNotices, designCards, planCards, outside] = await Promise.all([
           mergeItemsFor({
             ...table, now: deps.now,
             sessionIdOf: async (task) => (await new AgentSessionStore(sessions).getForTask(who.orgId, task))?.sessionId,
@@ -120,8 +126,10 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
           designReviewEnabled(env) ? designReviewItemsFor(deps, who) : Promise.resolve([]),
           // Slice 2: the requirements and coding plans of the caller's own tasks.
           planCardItemsFor(deps, who),
+          // Slice 3b: the agent approvals and spend requests this person may decide (the confirmation page's live rule).
+          outsideItemsFor(deps, who, outsideKinds),
         ]);
-        return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup, ...hosts, ...secondReviewNotices, ...designCards, ...planCards];
+        return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup, ...hosts, ...secondReviewNotices, ...designCards, ...planCards, ...outside];
       },
       // Company locks that raise a card's tier are not stored anywhere yet: none apply, so the tiers are the projector's own.
       async locks() { return {}; },
@@ -140,12 +148,13 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
       // Design review (`dr`): approving a design goes through `designApproveHandler`, which refuses a task that carries no design review. Not registered while `dr` is off: the kind stays page-decided.
       ...(designReviewEnabled(env) ? { approve_design: { ...designApproveHandlerFor(deps, caller), requestChanges: (who: DeveloperCaller, input: Parameters<typeof requestChanges>[2]) => requestChanges(deps, who, input) } } : {}),
       approve_plan: planCardHandler(deps, caller),
+      approve_request: outsideCardHandler(deps, outsideKinds),
       approve_requirements: planCardHandler(deps, caller),
       ...(hostsOn ? { setup_host: setupHostHandler<DeveloperCaller>(hostDeps, { webOrigin: deps.developer.webOrigin ?? new URL(deps.developer.issuer).origin }) } : {}),
     }),
     // Slice 2: a high requirements or coding plan card is approved on its card, on the task page; its handler asks for the browser session and the recent sign-in.
     // Slice 3: a high merge too (pressMerge asks for the recent sign-in in a browser).
-    highOnCard: new Set(["approve_plan", "approve_requirements", "merge"]),
+    highOnCard: new Set(["approve_plan", "approve_requirements", "merge", "approve_request"]),
     store: dynamoDecisionStore({ ...table, now: deps.now }),
     now: deps.now,
     log: (measure) => console.log(JSON.stringify({ component: "broker", ...measure })),

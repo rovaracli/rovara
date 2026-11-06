@@ -29,7 +29,10 @@ function pendingSessions(decisions: readonly ReadDecision[]): Map<string, Set<st
 export function withoutDecided(cards: readonly ReadHomeCard[], decisions: readonly ReadDecision[] | undefined): ReadHomeCard[] {
  if (decisions === undefined || decisions.length === 0) return [...cards];
  const sessions = pendingSessions(decisions);
+ // Slice 3b: an approval or a budget request that has its decision card (`approve_request:<id>`) is decided there.
+ const outside = new Set(decisions.filter(decision => decision.card.status === "pending" && decision.card.kind === "approve_request").map(decision => String(decision.card.id).slice("approve_request:".length)));
  return cards.filter(card => {
+  if ((card.kind === "approval" || card.kind === "spend_request") && outside.has(card.cardId.slice(card.cardId.indexOf(":") + 1))) return false;
   const replacing = REPLACED_BY[card.kind], session = card.sessionId;
   if (replacing === undefined || typeof session !== "string") return true;
   if (card.kind === "pull_request" && card.cardId !== "pull_request:" + session) return true;

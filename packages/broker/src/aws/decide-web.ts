@@ -10,6 +10,7 @@ import {
   type DecideRequestContext, type DecisionEnd,
 } from "../developer/decide-session.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
+import { decisionCardsEnabled } from "../proof/switch.js";
 
 const APPROVE_PATH = /^\/v1\/app\/approve\/([^/]+)$/;
 const MAX_FORM_BYTES = 2_048;
@@ -35,6 +36,9 @@ export async function routeDecidePage(context: DecideRequestContext | undefined,
   if (context === undefined) throw agentXError("NOT_FOUND", "route not found");
   const approvalId = APPROVE_PATH.exec(url.pathname)?.[1];
   if (approvalId === undefined || !APPROVAL_ID_PATTERN.test(approvalId) || (request.method !== "GET" && request.method !== "POST")) return notFoundPage();
+  // Decision journey slice 3b: while the decision cards are on, the approval is decided on its card (the same checks, in the app); an old link (Slack, email) is sent there. Kept one release as this
+  // redirect; then the page goes. A POST from a page that was already open still decides here, as before.
+  if (request.method === "GET" && decisionCardsEnabled()) return found(`/app/decisions/approve_request/${approvalId}`);
   const decideRequest = { method: request.method, path: url.pathname, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }) };
   return request.method === "GET" ? showPage(context, decideRequest, approvalId, url) : decide(context, decideRequest, approvalId);
 }

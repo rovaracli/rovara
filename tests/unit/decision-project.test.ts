@@ -29,10 +29,11 @@ const ITEMS: Record<DecisionKind, DecisionItem> = {
   setup_host: { ...base("hst1"), kind: "setup_host", host: "artifactory.corp.example", from: { path: "pip.conf", line: 2 }, journalN: 3, staffStep: true },
   second_review_notice: { ...base("srn1"), kind: "second_review_notice", message: "The second-opinion model your company chose no longer qualifies." },
   approve_fixture_set: { ...base("fxs1"), kind: "approve_fixture_set", dependency: "payments-api", origin: "recorded", entries: 4, faults: 1, scanClean: true, schemaSynth: false, firstFromTestAccount: false },
+  approve_request: { ...base("spr_aaaaaaaaaaaaaaaaaaaa", { openPath: "/app/decisions/approve_request/spr_aaaaaaaaaaaaaaaaaaaa" }), kind: "approve_request", prefix: "spr" },
 };
 const DEFAULT_RISK: Record<DecisionKind, DecisionRisk> = {
   approve_plan: "low", approve_requirements: "low", approve_design: "low", merge: "low", answer_question: "low", choose_checks: "low", approve_dependency: "medium", approve_e2e_plan: "medium",
-  review_feedback: "low", autofix_ask: "medium", approve_setting: "high", approve_spend: "low", approve_test_env: "medium", confirm_env_change: "medium", spec_choice: "low", fix_setup: "medium", setup_host: "medium", second_review_notice: "low", approve_fixture_set: "medium",
+  review_feedback: "low", autofix_ask: "medium", approve_setting: "high", approve_spend: "low", approve_test_env: "medium", confirm_env_change: "medium", spec_choice: "low", fix_setup: "medium", setup_host: "medium", second_review_notice: "low", approve_fixture_set: "medium", approve_request: "high",
 };
 const cardOf = (item: DecisionItem, locks = {}) => {
   const result = cardOfItem(item, locks);

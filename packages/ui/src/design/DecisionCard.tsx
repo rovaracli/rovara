@@ -47,6 +47,8 @@ export interface DecisionCardActions {
   * `approve` presses it with the digest that was shown. Absent where the card only links to the task (Home): the link goes to this card on the task page.
   */
  highRisk?: { read(): Promise<DesignApprovalRead>; approve(shownDigest: string, reason?: string, acknowledgedRunLimitUsd?: number): Promise<void> };
+ /** Slice 3b: Decline an outside approval on its card (with the same recent sign-in). */
+ decline?(): Promise<void>;
 }
 
 const HIGH_RISK_NOTE = "High risk: approving needs a recent sign-in.";
@@ -148,7 +150,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  /** What a high-risk design card offers in place of the link to itself: Approve for the person who may, who can for everyone else. */
  const inlineActions = !inline ? null : eligibility.isPending ? <p className="rv-muted" role="status">Checking who can approve this design.</p>
   : eligibility.data === undefined ? <p role="alert">Couldn't check who can approve this design. <Button variant="quiet" onClick={() => { void eligibility.refetch(); }}>Try again</Button></p>
-  : eligibility.data.mayApprove ? <>{reasonField(undefined)}<Button variant="primary" busy={busy} disabled={(blockers(undefined) > 0 && reasonOf(undefined) === undefined) || limitBlocked} onClick={() => { void approveInline(); }}>{blockers(undefined) > 0 ? DECISION_LABELS.approveWithReason : DECISION_LABELS.approve}</Button></>
+  : eligibility.data.mayApprove ? <>{reasonField(undefined)}<Button variant="primary" busy={busy} disabled={(blockers(undefined) > 0 && reasonOf(undefined) === undefined) || limitBlocked} onClick={() => { void approveInline(); }}>{blockers(undefined) > 0 ? DECISION_LABELS.approveWithReason : DECISION_LABELS.approve}</Button>{actions.decline !== undefined && <Button busy={busy} onClick={() => { void run(async () => { await actions.decline!();setNote(<p role="status">Declined.</p>); }); }}>Decline</Button>}</>
   : <p className="rv-muted">{eligibility.data.approverName === undefined ? "Someone else has to approve this design." : <><VisibleText text={eligibility.data.approverName} /> can approve this design.</>}</p>;
  const limitBox = limit !== undefined && <div className="rv-decision-limit" role="group" aria-label="Run limit">
   <p>{limit.currentUsd === undefined ? <>No run limit yet → proposed limit <Money usd={limit.proposedUsd} /></> : <>Current limit <Money usd={limit.currentUsd} /> → proposed limit <Money usd={limit.proposedUsd} /></>}</p>

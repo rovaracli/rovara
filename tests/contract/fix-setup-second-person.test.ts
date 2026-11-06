@@ -197,6 +197,13 @@ import { routeApprovalRequest } from "../../packages/broker/src/agents/approval-
 import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor, requireDecideSession, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
 
+/** Runs `work` with the decision cards switched off, then puts the switch back as it was. */
+async function withCardsOff<T>(work: () => Promise<T>): Promise<T> {
+  const was = process.env.DECISION_CARDS_ENABLED;
+  delete process.env.DECISION_CARDS_ENABLED;
+  try { return await work(); } finally { if (was !== undefined) process.env.DECISION_CARDS_ENABLED = was; }
+}
+
 describe("opening the page before confirming holds on every route (M3)", () => {
   const CELL = "https://cell.example.com";
   const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -218,11 +225,12 @@ describe("opening the page before confirming holds on every route (M3)", () => {
       await decideStore.putSession(cookie, { orgId: TEST_ORG, developerId: MAYA.developerId, approvalId, signedInAt, method: "email_code", csrfHash: sha(csrfTokenFor(cookie)), expiresAt: signedInAt + 600 });
       return cookie;
     };
-    const page = (method: "GET" | "POST", cookie: string, decision = "approve") => routeDecidePage(context, {
+    // The confirmation page as it is with the decision cards off (slice 3b: with them on, its GET sends a browser to the card, below).
+    const page = (method: "GET" | "POST", cookie: string, decision = "approve") => withCardsOff(() => routeDecidePage(context, {
       method, path: `/v1/app/approve/${card.approvalId}`, requestId: "r",
       headers: { cookie: `${DECIDE_COOKIE}=${cookie}`, ...(method === "POST" ? { origin: CELL, "content-type": "application/x-www-form-urlencoded" } : {}) },
       ...(method === "POST" ? { body: new URLSearchParams({ decision, csrf: csrfTokenFor(cookie) }).toString() } : {}),
-    }, new URL(`${CELL}/v1/app/approve/${card.approvalId}`));
+    }, new URL(`${CELL}/v1/app/approve/${card.approvalId}`)));
     const route = (cookie: string) => routeApprovalRequest(
       { ...deps, requireDecide: (request: Parameters<typeof requireDecideSession>[1]) => requireDecideSession(context, request) },
       { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "admin" } as never,
@@ -231,6 +239,12 @@ describe("opening the page before confirming holds on every route (M3)", () => {
     );
     return { ...made, card, page, session, route, status: () => (made.t.approvals().find((entry) => (entry as { approvalId: string }).approvalId === card.approvalId) as { status: string }).status };
   }
+
+  it("slice 3b: with the decision cards on, the page's GET sends a browser to the approval's card (one release, then the page goes)", async () => {
+    const w = await world();
+    const redirected = await routeDecidePage({} as never, { method: "GET", path: `/v1/app/approve/${w.card.approvalId}`, requestId: "r", headers: {} }, new URL(`${CELL}/v1/app/approve/${w.card.approvalId}`));
+    expect(redirected).toMatchObject({ statusCode: 302, headers: { location: `/app/decisions/approve_request/${w.card.approvalId}` } });
+  });
 
   it("the page refuses a POST approve with no earlier GET, and the session is given back; a GET then a POST confirms", async () => {
     const w = await world();

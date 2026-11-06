@@ -40,6 +40,11 @@ function useInlineApprove() {
  const reread = () => Promise.all([query.invalidateQueries({ queryKey: ["decisions"] }), query.invalidateQueries({ queryKey: ["home"] }), query.invalidateQueries({ queryKey: ["session"] })]);
  return (decision: ReadDecision): Partial<DecisionCardActions> => {
   const taskId = decision.card.taskId;
+  // Slice 3b: an outside approval is decided on its card wherever the decider reaches it (the task page, its own card page): Approve and Decline, each with the recent sign-in the broker asks for.
+  if (decision.card.kind === "approve_request") return {
+   highRisk: { read: async () => ({ digest: decision.digest, mayApprove: true }), approve: async (shownDigest) => { await decisionsApi.approveHighOnCard(decision, shownDigest);await reread(); } },
+   decline: async () => { await decisionsApi.declineOnCard(decision);await reread(); },
+  };
   if (HIGH_ON_CARD_KINDS.includes(decision.card.kind) && taskId !== undefined) return { highRisk: {
    read: async () => ({ digest: decision.digest, mayApprove: true }),
    approve: async (shownDigest, _reason, acknowledgedRunLimitUsd) => { await decisionsApi.approveHighOnCard(decision, shownDigest, acknowledgedRunLimitUsd);await reread(); },
@@ -68,6 +73,16 @@ export function NeedsYou() {
  const pending = (decisions.data ?? []).filter(decision => decision.card.status === "pending");
  if (pending.length === 0) return null;
  return <section className="rv-needs-you" aria-label="Needs you"><h2 className="rv-needs-you-title">Needs you</h2><DecisionList decisions={pending} label="Decisions waiting for you" /></section>;
+}
+
+/** Slice 3b: one decision on its own page (`/app/decisions/<kind>/<subject>`): the card and its evidence, nothing else, for someone who may decide it but is not on the task. */
+export function SingleDecision({ cardId }: { cardId: string }) {
+ const decisions = useDecisions(), inlineApprove = useInlineApprove();
+ if (decisions.isError) return <section aria-label="Decision"><DecisionsError error={decisions.error} retry={() => { void decisions.refetch(); }} /></section>;
+ if (decisions.isPending) return null;
+ const mine = (decisions.data ?? []).filter(decision => decision.card.id === cardId && decision.card.status === "pending");
+ if (mine.length === 0) return <section aria-label="Decision"><p role="status">This decision is no longer waiting for you.</p></section>;
+ return <section aria-label="Decision"><DecisionList decisions={mine} label="Decision" extras={decision => inlineApprove(decision)} /></section>;
 }
 
 /** The decisions that are about one task, on its page. */

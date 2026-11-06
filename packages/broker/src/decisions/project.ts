@@ -94,6 +94,8 @@ export type DecisionItem =
   | (ItemBase & { kind: "spec_choice"; message: string })
   /** Second review (lane cr-settings): the model that gives the second opinion stopped qualifying. `message` is the broker's fixed sentence; the card only opens the settings page. */
   | (ItemBase & { kind: "second_review_notice"; message: string })
+  /** Slice 3b: an outside approval (`apr_`, `spr_`); its evidence is the confirmation page's own view (the item's `details`). Always high: decided on its card with a recent sign-in. */
+  | (ItemBase & { kind: "approve_request"; prefix: "apr" | "spr" })
   /**
    * Setup and test health (SH17): the project's test environment kept `taskCount` tasks' checks from giving a verdict. `cause` is the auto-fix code that names the fault (a fixed word), `step` the failing step
    * in the card's words, `blockedResult` the fixed result label. `knownFailingTests` is how many tests "Mark as known failing" would add (0: the card has no such action). All of it is the broker's own record,
@@ -256,6 +258,8 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
       return { question: "Approve this test setup?", next: "Tasks in this project use it from now on.", evidence: [chip("environment", "Tier", item.tier, item.risk === "high" ? "warning" : "unknown"), chip("risk", "Risk", item.risk, item.risk === "high" ? "bad" : "warning")], why: "Rovara booted the app and proved the setup." };
     case "spec_choice":
       return { question: plainLine(item.message, 160), next: "You choose on the task page; the code pull requests wait until you do.", evidence: [], why: "Only the task owner can choose." };
+    case "approve_request":
+      return { question: item.prefix === "spr" ? "Approve this spend request?" : "Approve what the agent asks?", next: "Approving does what it asks now; Decline stops it.", evidence: [], why: "You are one of the people who may decide this; it needs a recent sign-in." };
     case "second_review_notice":
       return { question: plainLine(item.message, 160), next: "Choose another model on the settings page, or wait until it qualifies again. Tasks are not stopped.", evidence: [], why: "Only a company admin can choose the model." };
     case "fix_setup":
@@ -329,6 +333,8 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   const focused = item.taskId === undefined ? item.openPath : decisionFocusPath(item.openPath, cardId);
   const page = isSafeRelativePath(focused) ? focused : item.openPath;
   const open: CardAction = { kind: "open", label: DECISION_LABELS.open, href: risk === "high" ? item.confirmPath ?? page : page, method: "GET" };
+  // An outside approval is decided on its card (Approve with a recent sign-in through the high-on-card route, Decline here): it carries Decline as its reject.
+  if (item.kind === "approve_request") return { actions: [open, { kind: "reject", label: "Decline", href: `${base}/reject`, method: "POST" }], recommended: "open" };
   if (risk === "high") return { actions: changes === undefined ? [open] : [open, changes], recommended: "open" };
   // A question or a checks choice is answered on its own page: the card only opens it (an answer or a choice is a POST of that page, never a link).
   if (item.kind === "answer_question") return { actions: [{ ...open, label: DECISION_LABELS.answer }], recommended: "open" };
