@@ -34,6 +34,8 @@ it("FU3: each round shows what it was estimated at and what its reviewers spent;
  const finished = designTabModel(withEstimate(0.95));
  expect(finished.rounds[0]!.cost).toEqual({ estimate: "$0.95", reviewersSpent: "$0.96" });
  expect(finished.cost.estimate).toBe("$0.95");
+ // A review that never ran (a not_run record that still has a round) keeps the estimate too.
+ expect(designTabModel(designReviewFixture({ status: "not_run", notRunReason: "worker_failed", estimateUsd: undefined, rounds: [{ ...base.rounds[0]!, estimateUsd: 0.95 }] })).cost.estimate).toBe("$0.95");
  // A record from before the field has no estimate to show.
  const old = designTabModel(withEstimate(undefined));
  expect(old.rounds[0]!.cost).toEqual({ estimate: "not available", reviewersSpent: "$0.96" });
@@ -45,7 +47,7 @@ it("FU3: each round shows what it was estimated at and what its reviewers spent;
  // Round 2 is priced afresh: between rounds the review has no estimate yet, and round 1's is not shown as if it were round 2's.
  expect(designTabModel(designReviewFixture({ status: "estimating", estimateUsd: undefined, rounds: [{ ...base.rounds[0]!, estimateUsd: 0.95 }] })).cost.estimate).toBe("not available");
  const shown = render(h(DesignTabView, { model: finished }));
- expect(screen.getByText("Estimated $0.95, reviewers spent $0.96.")).toBeTruthy();
+ expect(screen.getByText("Estimated $0.95 for the rest of the review (all steps); reviewers spent $0.96 this round.")).toBeTruthy();
  shown.unmount();
 });
 

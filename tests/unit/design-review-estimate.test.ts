@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { DecisionCardSchema, type ModelIdentifier } from "@agentx/contracts";
 import * as estimateModule from "../../packages/broker/src/design-review/estimate.js";
-import { PLANNER_REVISION_TOKENS, MERGE_TOKENS, REVIEWER_CACHE_READ_SHARE, REVIEWER_OUTPUT_TOKENS, ROLE_INPUT_TURN_FACTOR, estimateReviewerUsd, plannerRunsFor, estimateDesignReviewUsd as estimateWithPacket, designReviewKeyBudgets, gateDesignReviewCost, nextLowerTier, recordedReviewerCost, reviewersForRound, TIER_REVIEWERS, type DesignReviewEstimate, type DesignReviewEstimateInput, type PriceLookup } from "../../packages/broker/src/design-review/estimate.js";
+import { PLANNER_REVISION_TOKENS, MERGE_TOKENS, REVIEWER_CACHE_READ_SHARE, ROLE_INPUT_FLOOR_TOKENS, ROLE_INPUT_TURN_FACTOR, ROLE_OUTPUT_TOKENS, estimateReviewerUsd, routeCaches, plannerRunsFor, estimateDesignReviewUsd as estimateWithPacket, designReviewKeyBudgets, gateDesignReviewCost, nextLowerTier, recordedReviewerCost, reviewersForRound, TIER_REVIEWERS, type DesignReviewEstimate, type DesignReviewEstimateInput, type PriceLookup } from "../../packages/broker/src/design-review/estimate.js";
 import { designSpendCardItem, designSpendChoicePath } from "../../packages/broker/src/design-review/spend-card.js";
 import { cardOfItem } from "../../packages/broker/src/decisions/project.js";
 import { estimateSecondReviewUsd } from "../../packages/broker/src/rovara-code/second-review-picker.js";
@@ -26,10 +26,10 @@ const priced = (estimate: DesignReviewEstimate) => { if (estimate.kind !== "pric
 describe("the estimate", () => {
   it("matches estimateSecondReviewUsd for one reviewer: Light is one reviewer, no merge model, two rounds", () => {
     const estimate = priced(estimateDesignReviewUsd({ tier: "light", models, price }));
-    // The one reviewer (Critic) searches with tools, so its input is the packet times its turn factor (M4).
-    const one = estimateSecondReviewUsd(PRICES["strong-model"]!, { input: PACKET * ROLE_INPUT_TURN_FACTOR.critic, maxOutput: REVIEWER_OUTPUT_TOKENS });
-    // 9,021 x 23 turns at $3 plus 15k out at $15, by hand (this price has no cache-read price, so all input is full price).
-    expect(one).toBeCloseTo(0.847449, 6);
+    // The one reviewer (Critic) searches with tools, so its input is the packet times its turn factor (M4), and never less than its floor.
+    const one = estimateSecondReviewUsd(PRICES["strong-model"]!, { input: Math.max(PACKET * ROLE_INPUT_TURN_FACTOR.critic, ROLE_INPUT_FLOOR_TOKENS.critic), maxOutput: ROLE_OUTPUT_TOKENS.critic });
+    // 9,021 x 23 = 207,483 turns at $3 plus 20k out at $15, by hand (this price has no cache-read price, so all input is full price).
+    expect(one).toBeCloseTo(0.622449 + 0.3, 6);
     expect(estimate.reviewers).toBe(1);
     expect(estimate.breakdown.reviewersUsd).toBeCloseTo(one * 2, 6);
     // Light merges in code: nothing is priced for the merge.
@@ -43,7 +43,7 @@ describe("the estimate", () => {
     const standard = priced(estimateDesignReviewUsd({ tier: "standard", models, price }));
     expect(standard.reviewers).toBe(3);
     expect(TIER_REVIEWERS.standard).toEqual(["comprehension", "critic", "codebase"]);
-    const reviewerUsd = (role: keyof typeof ROLE_INPUT_TURN_FACTOR) => estimateSecondReviewUsd(PRICES["strong-model"]!, { input: PACKET * ROLE_INPUT_TURN_FACTOR[role], maxOutput: REVIEWER_OUTPUT_TOKENS });
+    const reviewerUsd = (role: keyof typeof ROLE_INPUT_TURN_FACTOR) => estimateSecondReviewUsd(PRICES["strong-model"]!, { input: Math.max(PACKET * ROLE_INPUT_TURN_FACTOR[role], ROLE_INPUT_FLOOR_TOKENS[role]), maxOutput: ROLE_OUTPUT_TOKENS[role] });
     expect(standard.breakdown.reviewersUsd).toBeCloseTo((reviewerUsd("comprehension") + reviewerUsd("critic") + reviewerUsd("codebase")) * 2, 6);
     const merge = estimateSecondReviewUsd(PRICES["fast-model"]!, { input: MERGE_TOKENS.designInput + MERGE_TOKENS.perReviewerInput * 3, maxOutput: MERGE_TOKENS.output }) * 2;
     expect(standard.breakdown.mergeUsd).toBeCloseTo(merge, 6);
@@ -72,7 +72,8 @@ describe("the estimate", () => {
 
   it("M4: tool-using reviewers re-send the context every turn, so the estimate is a multiple of the packet for them (named factors measured from the first real round; Comprehension never reads the repository)", () => {
     expect(ROLE_INPUT_TURN_FACTOR).toEqual({ comprehension: 5, critic: 23, codebase: 32, zoom_out: 23, critic_b: 23 });
-    expect(REVIEWER_OUTPUT_TOKENS).toBe(15_000);
+    expect(ROLE_INPUT_FLOOR_TOKENS).toEqual({ comprehension: 43_000, critic: 207_000, codebase: 288_000, zoom_out: 207_000, critic_b: 207_000 });
+    expect(ROLE_OUTPUT_TOKENS).toEqual({ comprehension: 17_000, critic: 20_000, codebase: 9_000, zoom_out: 20_000, critic_b: 20_000 });
     const free: PriceLookup = () => ({ inputUsdPerMTok: 1, outputUsdPerMTok: 0 });
     const cost = (tier: "standard" | "thorough") => priced(estimateDesignReviewUsd({ tier, models: { reviewer: STRONG, planner: PLANNER }, price: free, packetTokens: 1_000_000, rounds: 1 })).breakdown.reviewersUsd;
     // 5 + 23 + 32 packets of 1M tokens at $1 per million, one round.
@@ -81,35 +82,73 @@ describe("the estimate", () => {
     expect(cost("thorough")).toBeCloseTo(106, 6);
   });
 
-  it("the cache share is applied to input only, and only to a model with a cache-read price (FU3)", () => {
-    const withCache = { inputUsdPerMTok: 2, outputUsdPerMTok: 0, cacheReadUsdPerMTok: 0.2 };
-    const share = REVIEWER_CACHE_READ_SHARE;
-    // Input only: the cached share at the cache-read price, the rest at the full price.
-    expect(estimateReviewerUsd(withCache, "codebase", 1_000_000 / 32)).toBeCloseTo(2 * (1 - share) + 0.2 * share, 6);
-    expect(estimateReviewerUsd({ ...withCache, outputUsdPerMTok: 10 }, "comprehension", 1_000_000 / 5)).toBeCloseTo(2 * (1 - share) + 0.2 * share + (15_000 * 10) / 1_000_000, 6);
-    // No cache-read price: full input price, no discount.
-    expect(estimateReviewerUsd({ inputUsdPerMTok: 2, outputUsdPerMTok: 0 }, "codebase", 1_000_000 / 32)).toBeCloseTo(2, 6);
-    // A cache-read price that is not a usable number is not trusted: the model is priced at the full input price.
-    const bad = (cache: number): PriceLookup => () => ({ inputUsdPerMTok: 2, outputUsdPerMTok: 0, cacheReadUsdPerMTok: cache });
-    const run = (lookup: PriceLookup) => priced(estimateDesignReviewUsd({ tier: "light", models: { reviewer: STRONG, planner: PLANNER }, price: lookup, packetTokens: 1_000_000, rounds: 1 })).breakdown.reviewersUsd;
-    expect(run(bad(Number.NaN))).toBeCloseTo(23 * 2, 6);
-    expect(run(bad(-1))).toBeCloseTo(23 * 2, 6);
-    expect(run(bad(0.2))).toBeCloseTo(23 * (2 * (1 - share) + 0.2 * share), 6);
+  it("FU3: a small packet does not shrink what the repository readers take in: input is at least the role's floor", () => {
+    const free: PriceLookup = () => ({ inputUsdPerMTok: 1, outputUsdPerMTok: 0 });
+    const cost = (tier: "light" | "standard" | "thorough", packetTokens: number) => priced(estimateDesignReviewUsd({ tier, models: { reviewer: STRONG, planner: PLANNER }, price: free, packetTokens, rounds: 1 })).breakdown.reviewersUsd;
+    // A 100-token packet: every role is at its floor (43k + 207k + 288k tokens at $1 per million).
+    expect(cost("standard", 100)).toBeCloseTo(0.538, 6);
+    expect(cost("light", 100)).toBeCloseTo(0.207, 6);
+    // Zoom-out and Critic B use the Critic's floor: Thorough adds two of them.
+    expect(cost("thorough", 100)).toBeCloseTo(0.538 + 0.207 * 2, 6);
+    // A packet big enough that its multiple passes the floor is priced by the multiple.
+    expect(cost("light", 100_000)).toBeCloseTo(2.3, 6);
   });
 
-  it("FU3: replays the first real round (task 88e0e88d, haiku-4-5 standard, packet 9,021 tokens): the reviewers' estimate is within 30% of the $0.444 measured", () => {
+  it("the cache share is applied to input only, only on a route known to cache, and only for a cache-read price above 0 (FU3)", () => {
+    const withCache = { inputUsdPerMTok: 2, outputUsdPerMTok: 0, cacheReadUsdPerMTok: 0.2 };
+    const share = REVIEWER_CACHE_READ_SHARE;
+    expect(share).toBe(0.5);
+    const mtok = 1_000_000 / 32;
+    // Input only: the cached share at the cache-read price, the rest at the full price.
+    expect(estimateReviewerUsd(withCache, "codebase", mtok * 2, true)).toBeCloseTo(2 * (2 * (1 - share) + 0.2 * share), 6);
+    // The role's own output is added at the output price, undiscounted.
+    expect(estimateReviewerUsd({ ...withCache, outputUsdPerMTok: 10 }, "comprehension", 1_000_000 / 5, true)).toBeCloseTo(2 * (1 - share) + 0.2 * share + (ROLE_OUTPUT_TOKENS.comprehension * 10) / 1_000_000, 6);
+    // The route does not cache: full input price, no discount.
+    expect(estimateReviewerUsd(withCache, "codebase", mtok * 2, false)).toBeCloseTo(2 * 2, 6);
+    // No cache-read price: full input price.
+    expect(estimateReviewerUsd({ inputUsdPerMTok: 2, outputUsdPerMTok: 0 }, "codebase", mtok * 2, true)).toBeCloseTo(2 * 2, 6);
+    // A cache-write price dearer than input prices the uncached share (the cost of writing what was not cached); a cheaper one never lowers it below the input price.
+    expect(estimateReviewerUsd({ ...withCache, cacheWriteUsdPerMTok: 2.5 }, "codebase", mtok * 2, true)).toBeCloseTo(2 * (2.5 * (1 - share) + 0.2 * share), 6);
+    expect(estimateReviewerUsd({ ...withCache, cacheWriteUsdPerMTok: 1 }, "codebase", mtok * 2, true)).toBeCloseTo(2 * (2 * (1 - share) + 0.2 * share), 6);
+    // A cache price that is not a usable number is not trusted: the model is priced at the full input price. A cache-read price of 0 is "no cache price", not "cache reads are free".
+    const bedrock: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" };
+    const run = (cache: number) => priced(estimateDesignReviewUsd({ tier: "light", models: { reviewer: bedrock, planner: PLANNER }, price: () => ({ inputUsdPerMTok: 2, outputUsdPerMTok: 0, cacheReadUsdPerMTok: cache }), packetTokens: 1_000_000, rounds: 1 })).breakdown.reviewersUsd;
+    expect(run(Number.NaN)).toBeCloseTo(23 * 2, 6);
+    expect(run(-1)).toBeCloseTo(23 * 2, 6);
+    expect(run(0)).toBeCloseTo(23 * 2, 6);
+    expect(run(0.2)).toBeCloseTo(23 * (2 * (1 - share) + 0.2 * share), 6);
+  });
+
+  it("FU3: only Claude on Amazon Bedrock is known to cache; every other route is priced at full input", () => {
+    expect(routeCaches({ provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" })).toBe(true);
+    expect(routeCaches({ provider: "amazon-bedrock", modelId: "anthropic.claude-sonnet-4-6" })).toBe(true);
+    expect(routeCaches({ provider: "amazon-bedrock", modelId: "amazon.nova-pro-v1:0" })).toBe(false);
+    expect(routeCaches({ provider: "anthropic", modelId: "claude-haiku-4-5" })).toBe(false);
+    expect(routeCaches({ provider: "openai", modelId: "gpt-5" })).toBe(false);
+    const price = () => ({ inputUsdPerMTok: 2, outputUsdPerMTok: 0, cacheReadUsdPerMTok: 0.2 });
+    const run = (reviewer: ModelIdentifier) => priced(estimateDesignReviewUsd({ tier: "light", models: { reviewer, planner: PLANNER }, price, packetTokens: 1_000_000, rounds: 1 })).breakdown.reviewersUsd;
+    expect(run({ provider: "anthropic", modelId: "claude-haiku-4-5" })).toBeCloseTo(23 * 2, 6);
+    expect(run({ provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" })).toBeLessThan(23 * 2);
+  });
+
+  it("FU3: replays the first real round (task 88e0e88d, haiku-4-5 standard, packet 9,021 tokens): every reviewer's estimate is at or above what it cost, and the total is above $0.444 but within 1.6x", () => {
+    // The catalog's price for this model on Bedrock: $1.1 in, $5.5 out, $0.11 cache read, $1.375 cache write.
     const haiku: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" };
-    const listed: PriceLookup = () => ({ inputUsdPerMTok: 1.1, outputUsdPerMTok: 5.5, cacheReadUsdPerMTok: 0.11 });
+    const listed: PriceLookup = () => ({ inputUsdPerMTok: 1.1, outputUsdPerMTok: 5.5, cacheReadUsdPerMTok: 0.11, cacheWriteUsdPerMTok: 1.375 });
     const one = priced(estimateDesignReviewUsd({ tier: "standard", models: { reviewer: haiku, merge: haiku, planner: haiku }, price: listed, packetTokens: 9_021, rounds: 1 }));
     expect(one.reviewers).toBe(3);
     const measured = 0.444;
-    expect(Math.abs(one.breakdown.reviewersUsd - measured) / measured).toBeLessThanOrEqual(0.3);
-    // Each reviewer on its own is also near what it cost: 0.1214 / 0.1908 / 0.1321 (a role may be off, the total is what the cap holds).
+    expect(one.breakdown.reviewersUsd).toBeGreaterThanOrEqual(measured);
+    expect(one.breakdown.reviewersUsd).toBeLessThanOrEqual(measured * 1.6);
+    // Each reviewer on its own: 0.1214 / 0.1908 / 0.1321.
     const roles = { comprehension: 0.1214, critic: 0.1908, codebase: 0.1321 } as const;
-    for (const [role, usd] of Object.entries(roles)) expect(Math.abs(estimateReviewerUsd(listed(haiku)!, role as keyof typeof roles, 9_021) - usd) / usd).toBeLessThanOrEqual(0.6);
-    // Without a cache-read price the same round is priced at full input: higher, never lower, than the measured cost.
-    const full = priced(estimateDesignReviewUsd({ tier: "standard", models: { reviewer: haiku, merge: haiku, planner: haiku }, price: () => ({ inputUsdPerMTok: 1.1, outputUsdPerMTok: 5.5 }), packetTokens: 9_021, rounds: 1 }));
-    expect(full.breakdown.reviewersUsd).toBeGreaterThan(measured);
+    for (const [role, usd] of Object.entries(roles)) expect(estimateReviewerUsd(listed(haiku)!, role as keyof typeof roles, 9_021, routeCaches(haiku)), role).toBeGreaterThanOrEqual(usd);
+    // Light (the critic alone) is above what the critic cost.
+    const light = priced(estimateDesignReviewUsd({ tier: "light", models: { reviewer: haiku, planner: haiku }, price: listed, packetTokens: 9_021, rounds: 1 }));
+    expect(light.breakdown.reviewersUsd).toBeGreaterThanOrEqual(roles.critic);
+    // Where the route is not known to cache, the same round is priced at full input: higher still.
+    const full = priced(estimateDesignReviewUsd({ tier: "standard", models: { reviewer: { provider: "anthropic", modelId: "claude-haiku-4-5" }, planner: haiku }, price: listed, packetTokens: 9_021, rounds: 1 }));
+    expect(full.breakdown.reviewersUsd).toBeGreaterThan(one.breakdown.reviewersUsd);
   });
 
   it("L3: Zoom-out runs only after round 1, so round 1 of Thorough plans four reviewers and round 2 five", () => {

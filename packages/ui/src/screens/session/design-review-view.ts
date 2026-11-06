@@ -104,8 +104,8 @@ export interface SectionGroup { section: string; findings: FindingLine[] }
 export interface RoundLine {
   round: number; designVersion: string; reviewers: ReviewerLine[]; verifiedCount: number; groups: SectionGroup[]; findingCount: number; unresolved: number;
   /**
-   * What the round was estimated at when it started (for the rounds then still to run: round 1 of two covers both) against what its reviewers cost. The merge step's and the planner's spend is in the review's
-   * total, not here. An old record has no estimate: "not available".
+   * What the review was estimated at when this round started: for the REST of the review and ALL its steps (reviewers, merge and planner, and round 1 of two covers both rounds), so it is not comparable with
+   * `reviewersSpent`, which is only this round's reviewers (the merge step's and the planner's spend is in the review's total). An old record has no estimate: "not available".
    */
   cost: { estimate: string; reviewersSpent: string };
 }
@@ -251,7 +251,7 @@ export const AWAITING_DESIGN_WORDS = "Waiting for the design";
 
 /** The review's own estimate is cleared when a round resolves or the review ends, so a finished review shows the estimate its first round started on (the one made for the whole review). */
 function finishedEstimate(review: Pick<DesignReviewView, "status" | "rounds">): number | undefined {
-  return review.status === "done" || review.status === "stopped_at_cap" ? review.rounds[0]?.estimateUsd : undefined;
+  return review.status === "done" || review.status === "stopped_at_cap" || review.status === "not_run" ? review.rounds[0]?.estimateUsd : undefined;
 }
 
 /**

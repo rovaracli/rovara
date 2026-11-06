@@ -50,7 +50,7 @@ function Round({ round }: { round: RoundLine }) {
  return <section className="rv-design-round" aria-labelledby={id}>
   <h3 id={id}>{"Round " + String(round.round) + " of 2"}</h3>
   <p className="rv-muted">{"Design version " + round.designVersion + ". " + String(round.verifiedCount) + " of " + String(round.reviewers.length) + " reviewers verified."}</p>
-  <p className="rv-muted">{"Estimated " + round.cost.estimate + ", reviewers spent " + round.cost.reviewersSpent + "."}</p>
+  <p className="rv-muted">{"Estimated " + round.cost.estimate + " for the rest of the review (all steps); reviewers spent " + round.cost.reviewersSpent + " this round."}</p>
   {round.reviewers.length > 0 && <ul className="rv-design-reviewers" aria-label={"Reviewers in round " + String(round.round)}>{round.reviewers.map((reviewer, index) => <li key={index} data-verified={reviewer.verified ? "true" : "false"}>
    <p><strong><VisibleText text={reviewer.role} /></strong> <span className="rv-muted"><VisibleText text={"(" + reviewer.model + ")"} /></span></p>
    <p><VisibleText text={reviewer.proof} /></p>

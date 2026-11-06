@@ -58,7 +58,7 @@ export function designReviewPortsOf(dependencies: AwsBrokerDependencies): Design
   const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
   return {
     table, now: Date.now, proxy: () => designReviewProxyCheck(dependencies),
-    price: (model) => { const price = listPricesPerMillion(model); return price === undefined ? undefined : { inputUsdPerMTok: price.input, outputUsdPerMTok: price.output, ...(price.cacheRead > 0 ? { cacheReadUsdPerMTok: price.cacheRead } : {}) }; },
+    price: (model) => { const price = listPricesPerMillion(model); return price === undefined ? undefined : { inputUsdPerMTok: price.input, outputUsdPerMTok: price.output, ...(price.cacheRead > 0 ? { cacheReadUsdPerMTok: price.cacheRead } : {}), ...(price.cacheWrite > 0 ? { cacheWriteUsdPerMTok: price.cacheWrite } : {}) }; },
     // A lock that cannot be read offers no raise at all (a ceiling of 0): never a looser rule than the company's.
     capCeilingUsd: async (orgId) => {
       const lock = await readDesignReviewLock(table, orgId).catch(() => ({ kind: "unreadable" as const }));
