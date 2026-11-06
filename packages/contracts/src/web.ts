@@ -123,6 +123,7 @@ export * from "./app-service-status.js";
 // Proof and evidence (W4/W5): browser-safe schemas for the evidence view, decision cards and the test environment.
 export * from "./evidence.js";
 export * from "./decision-cards.js";
+export * from "./decision-focus.js";
 // Setup and test health SH19: the four test results and their fixed words, for the task page's Evidence tab.
 export * from "./verification-result.js";
 export * from "./decision-card-tabs.js";

@@ -34,7 +34,7 @@ import { designSpendCommitItems } from "../../design-review/spend-follow.js";
 import { spendEstimatesOf } from "../../design-review/spend-estimates.js";
 import { designReviewAvailableFor } from "../../design-review/switch.js";
 import { planCheckModelTriesUsed } from "../../design-review/outcome.js";
-import { freshSignInOf, readDesignDirectory, readDesignTouches, readLatestDesignText, type DesignFactsDeps } from "../../design-review/route-facts.js";
+import { readDesignDirectory, readDesignTouches, readLatestDesignText, type DesignFactsDeps } from "../../design-review/route-facts.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, isConditional, workflowDispatchItem } from "../broker-shared.js";
 import { commitDesignApproval, membershipFenceItem } from "../developer-tasks/design-decision.js";
 import { TASK_ID, get } from "../developer-tasks/common.js";
@@ -43,6 +43,8 @@ import type { AdaptedHttpRequest } from "../lambda.js";
 import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencies.js";
 import { jsonBody } from "./organization.js";
 import { signInStoreOf } from "./common.js";
+import { withCardDecideGrade } from "./card-decide-grade.js";
+import { DECIDE_COOKIE, cookieOf } from "../../developer/decide-session.js";
 import { isInfraPath } from "../../decisions/risk-tier.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import { projectMembersDepsOf, visibleProjectRoles } from "./project-list.js";
@@ -58,6 +60,8 @@ const Request = z.string().uuid();
 interface Env {
   deps: DeveloperRouteDependencies;
   caller: DeveloperCaller;
+  /** The decide session cookie the browser holds (`__Host-rovara_decide`), for a high decision's decide-grade sign-in (`withCardDecideGrade`). */
+  decideCookie?: string | undefined;
   task: DeveloperTaskRouteDependencies;
   facts: DesignFactsDeps;
 }
@@ -117,25 +121,37 @@ async function approveItemOf(env: Env, loaded: Loaded, touches: readonly DesignR
   const { task, workflow } = loaded;
   const design = workflow.artifacts.filter((artifact) => artifact.type === "design").at(-1);
   if (!waitingOnDesign(workflow) || design === undefined || workflow.designReview === undefined) return undefined;
-  return designApproveItem({
+  const item = designApproveItem({
     subjectId: task.taskId, taskId: task.taskId, project: task.project, title: task.title, createdAt: workflow.updatedAt ?? nowIso(env), openPath: await sessionPathOf(env, task),
     contentVersion: design.sha256, files: await filesOf(env, workflow), review: designCardFactsOf(workflow.designReview, touches),
   });
+  // Slice 2 review fix: only the task's (effective) owner sends the design back, as the workflow decision allows; an approver or a maintainer gets no Request changes. Worked out here, so every
+  // projection of this card for this person (the list, the confirmation read, the press) is the same card with the same digest.
+  return item === undefined || item.kind !== "approve_design" ? item : { ...item, changesAllowed: tryEffectiveTaskOwner(task)?.developerId === env.caller.developerId };
 }
 
-function approvePortsOf(env: Env): DesignApprovePorts<DeveloperCaller> {
+/** What the confirmation page's press says when the approver's sign-in is not recent enough: a browser answers REAUTH_REQUIRED (the page shows "Sign in again" on the card), never "You can't decide this.". */
+export const DESIGN_APPROVE_REAUTH_MESSAGE = "Sign in again to approve this design. A high-risk design needs a sign-in within the last 10 minutes.";
+const PAGE_REAUTH = "reauth";
+
+/**
+ * `decideGrade` is true only inside `withCardDecideGrade` (the task page's press with the decide-grade sign-in for this card: an email code from a clean sign-in, as the member's own pool user, unused, within
+ * 10 minutes). The web session's freshness no longer counts for a high design (security review 2026-11-06).
+ */
+function approvePortsOf(env: Env, page = false, decideGrade = false): DesignApprovePorts<DeveloperCaller> {
   return {
-    async context(caller, item) {
+    async context(_caller, item) {
       const loaded = item.taskId === undefined ? undefined : await loadDesignTask(env, item.taskId);
       if (loaded === undefined || !waitingOnDesign(loaded.workflow)) return undefined;
       const facts = await factsOf(env, loaded);
-      return { requesterId: loaded.task.developerId, setting: facts.setting, edition: facts.edition, directory: facts.directory, freshSignIn: await freshSignInOf(env.facts, caller) };
+      return { requesterId: loaded.task.developerId, setting: facts.setting, edition: facts.edition, directory: facts.directory, freshSignIn: decideGrade };
     },
     // Company locks on a card's tier are not stored anywhere yet: the tiers are the projector's own (as `decisionRouteDepsOf` says).
     locks: async () => ({}),
     store: decisionStoreOf(env),
     nowMs: () => env.deps.now(),
-    confirmUrl: () => undefined,
+    // The decision cards' performer has no confirmation page for a design (undefined: refused). The task page's press (`page`) asks for the sign-in itself: `approveOnPage` turns this marker into REAUTH_REQUIRED.
+    confirmUrl: () => (page ? PAGE_REAUTH : undefined),
     async commit(caller, write) {
       const loaded = write.taskId === undefined ? undefined : await loadDesignTask(env, write.taskId);
       if (loaded === undefined) return "stale";
@@ -171,7 +187,7 @@ async function modelsOf(env: Env, task: DeveloperTaskRecord): Promise<{ reviewer
   return { reviewer: latest("PLAN_CRITIQUE") ?? planner, planner, reviewerCaches };
 }
 
-async function spendContextOf(env: Env, caller: DecisionCaller, loaded: Loaded): Promise<DesignSpendContext | undefined> {
+async function spendContextOf(env: Env, caller: DecisionCaller, loaded: Loaded, decideGrade: boolean): Promise<DesignSpendContext | undefined> {
   const { task, workflow } = loaded;
   const review = workflow.designReview;
   const ports = env.task.designReview;
@@ -182,16 +198,17 @@ async function spendContextOf(env: Env, caller: DecisionCaller, loaded: Loaded):
   return {
     taskId: task.taskId, requesterId: task.developerId, tier: review.tier, setting: facts.setting, taskCapUsd: review.capUsd ?? facts.setting.capUsdPerTask, spentUsd: review.spentUsd,
     capCeilingUsd: await ports.capCeilingUsd(caller.orgId), estimate: estimates.estimate, lowerTier: estimates.lowerTier, reasons: review.reasons, touches: facts.touches, directory: facts.directory, edition: facts.edition,
-    freshSignIn: await freshSignInOf(env.facts, env.caller), browserSession: env.caller.browserSession === true, revision: String(workflow.revision),
+    freshSignIn: decideGrade, browserSession: env.caller.browserSession === true, revision: String(workflow.revision),
     card: { subjectId: task.taskId, project: task.project, title: task.title, createdAt: workflow.updatedAt ?? nowIso(env), openPath: await sessionPathOf(env, task), contentVersion: `hold-${String(workflow.revision)}` },
   };
 }
 
-function spendPortsOf(env: Env): DesignSpendPorts<DeveloperCaller> {
+/** `decideGrade` is true only inside `withCardDecideGrade` (security review 2026-11-06: the web session's freshness no longer counts for a high cost choice). */
+function spendPortsOf(env: Env, decideGrade = false): DesignSpendPorts<DeveloperCaller> {
   return {
     async context(caller, taskId) {
       const loaded = await loadDesignTask(env, taskId);
-      return loaded === undefined ? undefined : spendContextOf(env, caller, loaded);
+      return loaded === undefined ? undefined : spendContextOf(env, caller, loaded, decideGrade);
     },
     locks: async () => ({}),
     store: decisionStoreOf(env),
@@ -345,7 +362,7 @@ async function cardsForTask(env: Env, caller: DeveloperCaller, loaded: Loaded): 
     return [item];
   }
   if (review.status === "waiting_cost") {
-    const context = await spendContextOf(env, caller, loaded);
+    const context = await spendContextOf(env, caller, loaded, false);
     if (context === undefined) return [];
     const { gate, skip } = designSpendGateFor(context, caller.developerId);
     if (gate.kind !== "ask") return [];
@@ -495,7 +512,18 @@ async function spendChoiceOf(env: Env, taskId: string, choice: DesignSpendChoice
   // A repeat of a choice that was made: the earlier answer, before anything is read again (once chosen, the card no longer asks).
   const earlier = await decisionStoreOf(env).findDecision({ orgId: env.caller.orgId, developerId: env.caller.developerId }, requestId);
   if (earlier !== undefined && earlier.cardId === `approve_spend:${taskId}` && earlier.reason === choice) return { outcome: "done", choice, replay: true };
-  const result = await designSpendChoiceHandler(spendPortsOf(env))(env.caller, { taskId, choice, requestId, ...(shownDigest === undefined ? {} : { shownDigest }) });
+  const choose = (decideGrade: boolean) => designSpendChoiceHandler(spendPortsOf(env, decideGrade))(env.caller, { taskId, choice, requestId, ...(shownDigest === undefined ? {} : { shownDigest }) });
+  let result;
+  try {
+    result = await choose(false);
+  } catch (error) {
+    // A high choice this person may make (the handler asks for the sign-in only after its authority checks): the decide-grade sign-in for this card, then the handler again with every check of its own.
+    if ((error as { code?: unknown }).code !== "REAUTH_REQUIRED") throw error;
+    const loaded = await loadDesignTask(env, taskId);
+    if (loaded === undefined) throw agentXError("NOT_FOUND", GONE);
+    result = await withCardDecideGrade(env.deps, env.caller, env.decideCookie, { cardId: `approve_spend:${taskId}`, taskId, contentVersion: `hold-${String(loaded.workflow.revision)}`, openPath: await sessionPathOf(env, loaded.task) },
+      async () => ({ applied: true, result: await choose(true) }));
+  }
   return { outcome: "done", choice: result.choice };
 }
 
@@ -513,11 +541,19 @@ async function skip(env: Env, taskId: string, requestId: string, shownDigest: st
   if (review.status === "waiting_cost" && workflow.stage === "PLAN_CRITIQUE" && workflow.state === "WAITING") return spendChoiceOf(env, taskId, "skip", requestId, shownDigest);
   const verdict = maySkipDesignReview({ setting: facts.setting, reasons: review.reasons, touches: facts.touches, skipperId: env.caller.developerId, directory: facts.directory, edition: facts.edition });
   if (!verdict.ok) throw agentXError("FORBIDDEN", skipRefusalWords(verdict.code, facts.setting));
-  // Before the design is written, a skip of a design review with a high-risk area is a high decision: a live browser session and a fresh sign-in, never a token.
+  // Before the design is written, a skip of a design review with a high-risk area is a high decision: a live browser session and the decide-grade sign-in for this Skip (security review 2026-11-06, which replaces
+  // the web session's freshness), never a token. Who may skip is decided above and does not change; the sign-in comes back to the task page.
   if (isHighRiskDesign([...review.reasons, ...facts.touches])) {
     if (env.caller.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
-    if (!(await freshSignInOf(env.facts, env.caller))) throw agentXError("FORBIDDEN", "Sign in again to decide this.");
+    return withCardDecideGrade(env.deps, env.caller, env.decideCookie, { cardId: `design_skip:${taskId}`, taskId, contentVersion: `skip-${String(workflow.revision)}`, openPath: await sessionPathOf(env, loaded.task) },
+      async () => ({ applied: true, result: await commitSkip(env, loaded, facts, marker) }));
   }
+  return commitSkip(env, loaded, facts, marker);
+}
+
+async function commitSkip(env: Env, loaded: Loaded, facts: Awaited<ReturnType<typeof factsOf>>, marker: ReturnType<typeof markerOf>): Promise<{ outcome: "done" }> {
+  const { task, workflow } = loaded;
+  const taskId = task.taskId;
   let commit;
   try { commit = designSpendCommitItems({ tableName: env.deps.tableName, taskId, workflow, write: { actorId: env.caller.developerId, applied: { choice: "skip" } }, now: nowIso(env) }); } catch (error) {
     if (error instanceof WorkflowTransitionError) throw agentXError("CONFIG_INVALID", "Design review can't be skipped at this step.");
@@ -560,7 +596,7 @@ async function retryNotRun(env: Env, taskId: string, requestId: string): Promise
 
 // ---- the high-risk confirmation page
 
-async function approveOnPage(env: Env, taskId: string, body: { requestId: string; shownDigest: string; reason?: string | undefined }): Promise<StatusReply> {
+async function approveOnPage(env: Env, taskId: string, body: { requestId: string; shownDigest: string; reason?: string | undefined }, decideCookie: string | undefined): Promise<StatusReply> {
   // The confirmation page is a browser's: a token (an AI tool) never decides a design on a click, as a token never merges one.
   if (env.caller.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
   const loaded = await loadDesignTask(env, taskId);
@@ -580,15 +616,27 @@ async function approveOnPage(env: Env, taskId: string, body: { requestId: string
   const digest = projection.digests[card?.id ?? ""];
   if (card === undefined || digest === undefined) throw agentXError("NOT_FOUND", GONE);
   if (body.shownDigest !== digest) throw agentXError("CHANGE_STALE", DECISION_REFUSALS.stale.message);
-  const outcome = await designApproveHandler(approvePortsOf(env)).approve(env.caller, { card, item, requestId: body.requestId, shown: { cardId: card.id, digest }, ...(body.reason === undefined ? {} : { reason: body.reason }) });
+  const run = (decideGrade: boolean) => designApproveHandler(approvePortsOf(env, true, decideGrade)).approve(env.caller, { card, item, requestId: body.requestId, shown: { cardId: card.id, digest }, ...(body.reason === undefined ? {} : { reason: body.reason }) });
+  let outcome = await run(false);
+  // An approver of a high design who has every other right to approve it: the decide-grade sign-in for this card (REAUTH_REQUIRED with the decide sign-in that comes back to this card on the task page), then
+  // the handler again, every check of its own included, with the session's proof recorded.
+  if (outcome.kind === "needs_confirmation") {
+    outcome = await withCardDecideGrade(env.deps, env.caller, decideCookie, { cardId: card.id, taskId, contentVersion: item.contentVersion, openPath: item.openPath }, async () => {
+      const graded = await run(true);
+      return { applied: graded.kind === "done", result: graded };
+    });
+  }
   if (outcome.kind === "done") return new StatusReply(200, { cardId: card.id, outcome: "approved" });
-  if (outcome.kind === "needs_confirmation") return new StatusReply(202, { cardId: card.id, outcome: "needs_confirmation", confirmUrl: outcome.confirmUrl });
+  if (outcome.kind === "needs_confirmation") throw agentXError("REAUTH_REQUIRED", DESIGN_APPROVE_REAUTH_MESSAGE);
   const refusal = DECISION_REFUSALS[outcome.reason];
   throw agentXError(refusal.code, refusal.message);
 }
 
-/** The confirmation page's read: the card as the server shows it now and its digest, for a project member only (anyone else gets "no longer waiting"). The press is `approveOnPage`. */
-async function confirmationCard(env: Env, taskId: string): Promise<{ card: unknown; digest: string }> {
+/**
+ * The confirmation page's read: the card as the server shows it now and its digest, for a project member only (anyone else gets "no longer waiting"), and whether THIS person may press Approve (`mayApprove`: the
+ * handler's own rule with the sign-in and the reason set aside, which the press asks for; a token never may) and, when not, who can (`approverName`, a high-risk design's first named approver). The press is `approveOnPage`.
+ */
+async function confirmationCard(env: Env, taskId: string): Promise<{ card: unknown; digest: string; mayApprove: boolean; approverName?: string }> {
   const loaded = await loadDesignTask(env, taskId);
   if (loaded === undefined) throw agentXError("NOT_FOUND", GONE);
   const facts = await factsOf(env, loaded);
@@ -597,8 +645,16 @@ async function confirmationCard(env: Env, taskId: string): Promise<{ card: unkno
   const projection = item === undefined ? undefined : projectDecisionCards([item], { locks: {}, pairFullCards: false });
   const card = projection?.cards[0];
   const digest = projection?.digests[card?.id ?? ""];
-  if (projection === undefined || card === undefined || digest === undefined) throw agentXError("NOT_FOUND", GONE);
-  return { card, digest };
+  if (projection === undefined || card === undefined || digest === undefined || item === undefined || item.kind !== "approve_design") throw agentXError("NOT_FOUND", GONE);
+  const verdict = decideDesignApproval({
+    tier: card.risk, requesterId: loaded.task.developerId, approverId: env.caller.developerId, nowMs: env.deps.now(), setting: facts.setting, edition: facts.edition, directory: facts.directory,
+    freshSignIn: true, openBlockers: item.review?.blockers.length ?? 0, blockerReason: "x",
+  });
+  const mayApprove = env.caller.browserSession === true && verdict.ok;
+  if (mayApprove || card.risk !== "high") return { card, digest, mayApprove };
+  const approvers = highRiskApprovers(facts.setting, facts.directory, facts.edition);
+  const named = approvers.ok && approvers.ids[0] !== undefined ? (await signInStoreOf(env.deps).getDeveloper(approvers.ids[0]).catch(() => undefined))?.displayName : undefined;
+  return { card, digest, mayApprove, ...(named === undefined || named === "" ? {} : { approverName: plainOneLine(named, DESIGN_ACTIONS_NAME_MAX) }) };
 }
 
 // ---- the routes
@@ -617,7 +673,7 @@ export async function routeDesignReview(deps: DeveloperRouteDependencies, caller
   const match = DESIGN_REVIEW_ROUTE.exec(url.pathname);
   if (match === null || (request.method !== "POST" && !(request.method === "GET" && match[2] === "approve"))) return undefined;
   if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
-  const env = envOf(deps, caller);
+  const env: Env = { ...envOf(deps, caller), decideCookie: cookieOf(request.headers, DECIDE_COOKIE) };
   const taskId = match[1]!;
   const action = match[2]!;
   if (request.method === "GET") return confirmationCard(env, taskId);
@@ -634,7 +690,7 @@ export async function routeDesignReview(deps: DeveloperRouteDependencies, caller
     if (task !== undefined && await replayOf(env, markerOf(taskId, "DESIGN_RESUME", requestId)) === "done") return { kind: "done" };
     return designResumeHandler(resumePortsOf(env))(caller, { taskId, requestId });
   }
-  if (action === "approve") return approveOnPage(env, taskId, bodyOf(z.object({ requestId: Request, shownDigest: z.string().min(1).max(200), reason: z.string().max(500).optional() }).strict(), request));
+  if (action === "approve") return approveOnPage(env, taskId, bodyOf(z.object({ requestId: Request, shownDigest: z.string().min(1).max(200), reason: z.string().max(500).optional() }).strict(), request), env.decideCookie);
   if (action === "answers") {
     const body = bodyOf(z.object({ requestId: Request, answers: z.array(z.unknown()).min(1).max(3) }).strict(), request);
     if (await loadDesignTask(env, taskId) !== undefined && await replayOf(env, markerOf(taskId, "DESIGN_ANSWERS", body.requestId)) === "done") return { kind: "done" };

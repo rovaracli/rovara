@@ -23,6 +23,7 @@ import { DEV_ISSUER, MAYA, OMAR, seedMembership, createSingleAnswerPlanBroker, t
 import { designWaitArmOf } from "../../packages/broker/src/design-review/wait-rows.js";
 import { designWaitSweepDepsOf } from "../../packages/broker/src/design-review/wait-wiring.js";
 import { browserRequests } from "../support/browser-session.js";
+import { decideSessionFor, signInApprovalOf } from "../support/decide-sign-in.js";
 import { designApprovalKey } from "../../packages/broker/src/aws/developer-tasks/design-decision.js";
 import { proofDesignContextOf } from "../../packages/broker/src/aws/developer-tasks/design-proof.js";
 import { designSpecStateOf, specDesignLineOf } from "../../packages/broker/src/aws/developer-tasks/design-spec.js";
@@ -38,10 +39,12 @@ import { seedDesignReviewCompany } from "../support/design-review-company.js";
 import { projectPlaybookKey } from "../../packages/contracts/src/index.js";
 
 // A test can take the catalog's price away from every model (a source whose models are not on the list): "cost unavailable", the unpriced path.
-const catalog = vi.hoisted(() => ({ unpriced: false }));
+// `scale` multiplies every list price (a costly model), for a high cost card.
+const catalog = vi.hoisted(() => ({ unpriced: false, scale: 1 }));
 vi.mock("@agentx/model-runtime/catalog", async (importOriginal) => {
   const actual = await importOriginal<typeof CatalogModule>();
-  return { ...actual, listPricesPerMillion: (model: Parameters<typeof actual.listPricesPerMillion>[0]) => (catalog.unpriced ? undefined : actual.listPricesPerMillion(model)) };
+  const scaled = (prices: ReturnType<typeof actual.listPricesPerMillion>) => (prices === undefined || catalog.scale === 1 ? prices : Object.fromEntries(Object.entries(prices).map(([key, value]) => [key, typeof value === "number" ? value * catalog.scale : value])) as typeof prices);
+  return { ...actual, listPricesPerMillion: (model: Parameters<typeof actual.listPricesPerMillion>[0]) => (catalog.unpriced ? undefined : scaled(actual.listPricesPerMillion(model))) };
 });
 
 /** A third person of the company (a maintainer or a plain contributor, as a test seeds them). */
@@ -53,8 +56,8 @@ const LATER = "2026-11-03T12:05:00.000Z";
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
 // The switch is read at every step (B2-m3): the world's company allows design review (default mode Auto) unless a test takes it off.
-beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); catalog.unpriced = false; });
-afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); catalog.unpriced = false; });
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); catalog.unpriced = false; catalog.scale = 1; });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); catalog.unpriced = false; catalog.scale = 1; });
 
 const REQUIREMENTS = "# Requirements\n\nR1: A payment that times out is retried once.\nR2: A payment is never charged twice.\n";
 const DESIGN_V1 = "# Design\n\n## 1. Problem and goal\nR1 and R2.\n\n## 3. Proposed design\n### 3.1 Retry\nR1: retry a timed-out payment once. R2: use the payment id as the idempotency key.\n";
@@ -1016,7 +1019,31 @@ describe("slice C: the design review's routes", () => {
     expect(specDesignLineOf(w.task() as never)).toBe("Design reviewed: 3 reviewers, 1 open blocker");
   });
 
-  it("a high-risk design is decided on the confirmation page only: not by the card route, not by a token, not by the requester, not without a fresh sign-in; then by the design approver", async () => {
+  it("slice 2: the design card sends the design back with a reason (Request changes), never 'Not now'; the same workflow decision and authority as Slack and the task page", async () => {
+    const w = await openBlockerCard();
+    seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+    const shown = await cardOf(w, MAYA, "approve_design");
+    expect(shown!.card.actions.map((action) => action.kind)).toContain("request_changes");
+    expect(shown!.card.actions.some((action) => action.kind === "reject")).toBe(false);
+    const path = `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/request-changes`;
+    // A changed card is refused; an empty reason too.
+    expect((await w.dev(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: "f".repeat(64), reason: "Bound the retries." })).status).toBe(409);
+    expect((await w.dev(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: shown!.digest, reason: " " })).status).toBe(400);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+    // Someone who is not the task's owner (a maintainer who may approve it) sees no Request changes: the workflow decision sends a document back for its owner only.
+    const other = await cardOf(w, OMAR, "approve_design");
+    expect(other, "positive control: the maintainer sees the card").toBeDefined();
+    expect(other!.card.actions.map((action) => action.kind)).not.toContain("request_changes");
+    expect(other!.card.actions.map((action) => action.kind)).not.toContain("reject");
+    expect((await w.dev(OMAR, "POST", path, { requestId: randomUUID(), shownDigest: other!.digest, reason: "Bound the retries." })).status).toBe(404);
+    const sent = await w.dev(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: shown!.digest, reason: "Bound the retries." });
+    expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+    const workflow = w.task().workflow as { stage: string; decisions: Array<{ decision: string; reason: string }> };
+    expect(workflow.stage).toBe("PLAN");
+    expect(workflow.decisions.at(-1)).toMatchObject({ decision: "REQUEST_CHANGES", reason: "Bound the retries." });
+  });
+
+  it("a high-risk design is decided on the confirmation page only: not by the card route, not by a token, not by the requester, not without the decide-grade sign-in (email code); then by the design approver, with that sign-in's proof recorded", async () => {
     const w = await openBlockerCard({ touches: ["auth"] });
     seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
     const shown = await cardOf(w, MAYA, "approve_design");
@@ -1026,15 +1053,38 @@ describe("slice C: the design review's routes", () => {
     const read = await page(OMAR, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`);
     expect(read.status).toBe(200);
     const digest = read.body.digest as string;
-    const press = (who: Developer, authAgoMs: number, body: Record<string, unknown> = {}) => page(who, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: digest, reason: "Reviewed the open blocker with the team.", ...body }, authAgoMs);
+    // The card's link names the card on the task page (never the same page with no way to decide), and the page's read says who may press Approve: the approver, not the requester, not a token.
+    expect(shown!.card.actions.find((action) => action.kind === "open")!.href).toContain(`?decision=${encodeURIComponent(shown!.card.id)}`);
+    expect(shown!.digest, "the page's read and the card list show the same digest").toBe(digest);
+    expect(read.body).toMatchObject({ mayApprove: true });
+    const requesterRead = await page(MAYA, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`);
+    expect(requesterRead.body).toMatchObject({ mayApprove: false });
+    expect(typeof requesterRead.body.approverName, "the requester is told who can decide").toBe("string");
+    expect((await w.dev(OMAR, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`)).body, "a token never decides it").toMatchObject({ mayApprove: false });
+    const press = (who: Developer, authAgoMs: number, body: Record<string, unknown> = {}, cookie?: string) => page(who, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: digest, reason: "Reviewed the open blocker with the team.", ...body }, authAgoMs, cookie);
     expect((await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: digest, reason: "x" })).status, "a token never decides it").toBe(403);
     expect((await press(MAYA, 0)).status, "the requester is not the second person").toBe(403);
-    expect((await press(OMAR, 20 * 60_000)).status, "no fresh sign-in").toBe(403);
-    expect((await press(OMAR, 0, { reason: undefined })).status, "an open blocker needs a reason").toBe(400);
+    const stale = await press(OMAR, 20 * 60_000);
+    expect(stale.status, "no fresh sign-in").toBe(403);
+    expect(JSON.stringify(stale.body), "a browser without a recent sign-in is told to sign in again, not that it may not decide").toContain("REAUTH_REQUIRED");
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
-    const done = await press(OMAR, 0);
+    // Security review: a web session signed in just now (with GitHub) is not enough either. REAUTH_REQUIRED with the decide sign-in made for this card, which comes back to it on the task page.
+    const github = await press(OMAR, 0);
+    expect(github.status).toBe(403);
+    const approvalId = signInApprovalOf(github.body);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+    const { cookie, proof } = await decideSessionFor(w.db, OMAR.developerId, approvalId);
+    // A token with nothing but the cookie is still a token.
+    expect((await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: digest, reason: "x" })).status, "a token never decides it").toBe(403);
+    // The handler's own checks still run under the decide session, which a refusal gives back.
+    expect((await press(OMAR, 0, { reason: undefined }, cookie)).status, "an open blocker needs a reason").toBe(400);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+    const done = await press(OMAR, 0, {}, cookie);
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(w.task().workflow).toMatchObject({ stage: "PLAN", reviewPhase: "IMPLEMENTATION_PLAN" });
+    expect(w.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === approvalId)[0], "the decision's record carries the decide session's own proof").toMatchObject({
+      status: "APPROVED_DONE", decidedBy: OMAR.developerId, subject: { kind: "card_decision", cardId: shown!.card.id }, decisionProof: { ...proof, method: "email_code" },
+    });
     expect(w.db.get(...Object.values(designApprovalKey(w.taskId, sha256(designWith(["auth"])))) as [string, string])).toMatchObject({ approverId: OMAR.developerId, tier: "high", mode: "high_risk_approver" });
   });
 
@@ -1115,14 +1165,15 @@ describe("slice C: the design review's routes", () => {
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { decidedBy: "person_skip", skippedBy: { actorId: OMAR.developerId }, status: "not_run" } });
   });
 
-  it("QA6-02: the design card's Open the details goes to a page the app has: the task's session, else its project, never /app/tasks/<id>", async () => {
+  it("QA6-02: the design card's Open goes to a page the app has: the card on the task's session page, else its project, never /app/tasks/<id>", async () => {
     const w = await openBlockerCard();
     seedPeople(w, [[MAYA, "member", "contributor"]]);
     const openOf = async () => (await cardOf(w, MAYA, "approve_design"))!.card.actions.find((action) => action.kind === "open")!;
     // The task's own session, read from its record (no session read needed).
     const sessionId = (w.task() as { sessionId?: string }).sessionId;
     expect(sessionId, "positive control: the started task has a session").toMatch(/^ses_[0-9a-z]{20}$/u);
-    expect((await openOf()).href).toBe(`/app/sessions/${sessionId}`);
+    // The link names the card, so the task page scrolls to it (decision journey S1a).
+    expect((await openOf()).href).toBe(`/app/sessions/${sessionId}?decision=approve_design%3A${w.taskId}`);
     // A task with no session: its project's page.
     const bare: Record<string, unknown> = { ...w.task() };
     delete bare["sessionId"];
@@ -1388,8 +1439,9 @@ describe("slice C: the design review's routes", () => {
     const page = web(high);
     const digest = (await page(OMAR, "GET", `/v1/app/tasks/${high.taskId}/design-review/approve`)).body.digest as string;
     const approveId = randomUUID();
-    const press = () => page(OMAR, "POST", `/v1/app/tasks/${high.taskId}/design-review/approve`, { requestId: approveId, shownDigest: digest, reason: "Reviewed the open blocker with the team." });
-    expect((await press()).status).toBe(200);
+    const press = (cookie?: string) => page(OMAR, "POST", `/v1/app/tasks/${high.taskId}/design-review/approve`, { requestId: approveId, shownDigest: digest, reason: "Reviewed the open blocker with the team." }, 0, cookie);
+    const { cookie } = await decideSessionFor(high.db, OMAR.developerId, signInApprovalOf((await press()).body));
+    expect((await press(cookie)).status).toBe(200);
     const replayed = await press();
     expect(replayed.status, JSON.stringify(replayed.body)).toBe(200);
     expect(replayed.body).toMatchObject({ outcome: "approved" });
@@ -1417,7 +1469,7 @@ describe("slice C: the design review's routes", () => {
     expect((await w.dev(MAYA, "POST", `/v1/app/tasks/${w.taskId}/design-review/skip`, skipBody)).status).toBe(200);
   });
 
-  it("ON-3: Skip before the design is written, for a high-risk design, needs a browser session and a fresh sign-in; the move carries the fence and a request record", async () => {
+  it("ON-3 (security review): Skip before the design is written, for a high-risk design, needs a browser session and the decide-grade sign-in (email code), whose proof is recorded; the move carries the fence and a request record", async () => {
     const w = await world({ design: designWith(["auth"]), start: false, capUsd: 10 });
     // A world held before its first round: the review is estimating at PLAN/READY, with a high-risk area.
     seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
@@ -1428,13 +1480,53 @@ describe("slice C: the design review's routes", () => {
     const url = `/v1/app/tasks/${w.taskId}/design-review/skip`;
     expect((await w.dev(OMAR, "POST", url, { requestId })).status, "a token never skips a high-risk review").toBe(403);
     const page = web(w);
-    expect((await page(OMAR, "POST", url, { requestId }, 20 * 60_000)).status, "no fresh sign-in").toBe(403);
+    const stale = await page(OMAR, "POST", url, { requestId }, 20 * 60_000);
+    expect(stale.status, "no fresh sign-in").toBe(403);
+    // REAUTH_REQUIRED, not a refusal: the page shows "Sign in again" where Skip was pressed (decision journey S1c). Who may skip is unchanged.
+    expect(stale.body).toMatchObject({ error: { code: "REAUTH_REQUIRED", reason: "decide_sign_in" } });
     expect(w.task().workflow.designReview!.decidedBy).not.toBe("person_skip");
-    const done = await page(OMAR, "POST", url, { requestId }, 0);
+    // A web session signed in just now (with GitHub) is not the decide-grade sign-in either: the decide sign-in made for this Skip, which comes back to the task page.
+    const github = await page(OMAR, "POST", url, { requestId }, 0);
+    expect(github.status).toBe(403);
+    const approvalId = signInApprovalOf(github.body);
+    expect(w.task().workflow.designReview!.decidedBy).not.toBe("person_skip");
+    const { cookie, proof } = await decideSessionFor(w.db, OMAR.developerId, approvalId);
+    expect((await w.dev(OMAR, "POST", url, { requestId })).status, "a token never skips a high-risk review").toBe(403);
+    const done = await page(OMAR, "POST", url, { requestId }, 0, cookie);
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(w.task().workflow).toMatchObject({ designReview: { decidedBy: "person_skip", skippedBy: { actorId: OMAR.developerId } } });
     expect(w.db.get(`DEVTASK#${w.taskId}`, `DESIGN_SKIP#${requestId}`)).toMatchObject({ actorId: OMAR.developerId });
+    expect(w.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === approvalId)[0]).toMatchObject({ status: "APPROVED_DONE", subject: { kind: "card_decision", cardId: `design_skip:${w.taskId}` }, decisionProof: { ...proof, method: "email_code" } });
     expect((await page(OMAR, "POST", url, { requestId }, 0)).status, "a repeat is the same answer").toBe(200);
+  });
+
+  it("security review: a HIGH cost choice is made only under the decide-grade sign-in (email code) for its card, never by a token or a fresh web session alone; its proof is recorded", async () => {
+    catalog.scale = 1000;
+    const w = await world({ capUsd: 25 });
+    seedPeople(w, [[MAYA, "member", "contributor"]]);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING", designReview: { status: "waiting_cost" } });
+    const page = web(w);
+    const shown = await cardOf(w, MAYA, "approve_spend");
+    expect(shown!.card.risk, "positive control: a costly model's estimate makes the card high").toBe("high");
+    // The card keeps its choices (decided on its task page): the press is the card's own choice action, after Open.
+    expect(shown!.card.actions[0]!.kind).toBe("open");
+    const choice = shown!.card.actions.find((action) => action.kind === "choose" && action.href.endsWith("/spend/skip"));
+    expect(choice, "the high cost card offers its choices").toBeDefined();
+    const url = choice!.href;
+    const requestId = randomUUID();
+    const before = w.task().workflow;
+    expect((await w.dev(MAYA, "POST", url, { requestId, shownDigest: shown!.digest })).status, "a token never decides a high card").toBe(403);
+    const github = await page(MAYA, "POST", url, { requestId, shownDigest: shown!.digest });
+    expect(github.status).toBe(403);
+    const approvalId = signInApprovalOf(github.body);
+    expect(w.task().workflow).toEqual(before);
+    const { cookie, proof } = await decideSessionFor(w.db, MAYA.developerId, approvalId);
+    const opened = await page(MAYA, "POST", `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest });
+    expect(opened.status, JSON.stringify(opened.body)).toBe(200);
+    const done = await page(MAYA, "POST", url, { requestId, shownDigest: shown!.digest }, 0, cookie);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", designReview: { decidedBy: "person_skip", skippedBy: { actorId: MAYA.developerId } } });
+    expect(w.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === approvalId)[0]).toMatchObject({ status: "APPROVED_DONE", subject: { kind: "card_decision", cardId: shown!.card.id }, decisionProof: { ...proof, method: "email_code" } });
   });
 
   it("ON-11: Design first and Retry are the requester's or a maintainer's, not any member's; a double tap is the same answer", async () => {

@@ -619,6 +619,19 @@ describe("the card", () => {
     expect(await hostAskItemsFor({ ...w.table, approvableProjects: async () => [], staffStep: true }, { orgId, developerId: MEMBER })).toEqual([]);
     expect(await hostAskItemsFor({ ...w.table, approvableProjects: async () => ["proj3"], staffStep: true }, { orgId, developerId: ADMIN })).toHaveLength(1);
   });
+  it("slice 2: the card opens the setup run's task page (its card there) when the run has one, else the project page; a failing lookup keeps the project page", async () => {
+    const w = world();
+    await w.ask();
+    const session = `/app/sessions/ses_${"a".repeat(20)}`;
+    const asked: string[] = [];
+    const [onTask] = await hostAskItemsFor({ ...w.table, approvableProjects: async () => [project], staffStep: true, taskPagePathOf: async (taskId) => { asked.push(taskId);return session; } }, { orgId, developerId: ADMIN });
+    expect(onTask!.openPath).toBe(session);
+    expect(asked).toEqual([onTask!.taskId]);
+    const [plain] = await hostAskItemsFor({ ...w.table, approvableProjects: async () => [project], staffStep: true, taskPagePathOf: async () => undefined }, { orgId, developerId: ADMIN });
+    expect(plain!.openPath).toBe(`/app/projects/${encodeURIComponent(project)}`);
+    const [failed] = await hostAskItemsFor({ ...w.table, approvableProjects: async () => [project], staffStep: true, taskPagePathOf: async () => { throw new Error("no table"); } }, { orgId, developerId: ADMIN });
+    expect(failed!.openPath).toBe(`/app/projects/${encodeURIComponent(project)}`);
+  });
   it("a settled ask leaves the list", async () => {
     const w = world();
     await w.ask();

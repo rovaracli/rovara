@@ -14,7 +14,7 @@ import { DESIGN_APPROVER_GROUP_WORDS, DESIGN_APPROVER_NONE_WORDS, type DesignApp
 import { designApproveItem, designContentVersion } from "../../packages/broker/src/design-review/card-source.js";
 import { markEffective } from "../../packages/broker/src/design-review/effective-setting.js";
 import { estimateDesignReviewUsd, type DesignReviewEstimate } from "../../packages/broker/src/design-review/estimate.js";
-import { designSpendChoiceHandler, designSpendGateFor, designSpendItemFor, mayChooseDesignSpend, type DesignSpendContext, type DesignSpendRequest, type DesignSpendWrite } from "../../packages/broker/src/design-review/spend-choice.js";
+import { DESIGN_CHOICE_REAUTH_MESSAGE, designSpendChoiceHandler, designSpendGateFor, designSpendItemFor, mayChooseDesignSpend, type DesignSpendContext, type DesignSpendRequest, type DesignSpendWrite } from "../../packages/broker/src/design-review/spend-choice.js";
 import type { DesignCardFacts } from "../../packages/broker/src/design-review/risk.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111";
@@ -307,10 +307,14 @@ describe("the spend choice handler (M7)", () => {
     // A low card (estimate within the low amount) needs no evidence but still the digest.
     const low = rig({ taskCapUsd: 5, estimate: priced(8), lowerTier: undefined });
     expect(await low.choose("priya", "raise_cap", { open: false })).toMatchObject({ kind: "done" });
-    // A high card (above the admin amount) needs a fresh sign-in.
+    // A high card (above the admin amount) needs a fresh sign-in: REAUTH_REQUIRED, so the page offers "Sign in again" (slice 1), never a refusal.
     const high = rig({ estimate: priced(250), lowerTier: { tier: "light", estimate: priced(6, "light") }, freshSignIn: false });
-    expect(await failure(high.choose("priya", "lower_tier", { open: true }))).toEqual({ code: "FORBIDDEN", message: "Sign in again to decide this." });
+    expect(await failure(high.choose("priya", "lower_tier", { open: true }))).toEqual({ code: "REAUTH_REQUIRED", message: DESIGN_CHOICE_REAUTH_MESSAGE });
     expect(high.writes).toEqual([]);
+    // A choice this person may not make is refused as such, even with a stale sign-in: REAUTH never hides a refusal (review fix).
+    const staleOutsider = rig({ estimate: priced(250), lowerTier: { tier: "light", estimate: priced(6, "light") }, freshSignIn: false, directory: directory({ projectMemberIds: ["own", "max", "priya", "aud"], notApproverIds: ["aud"] }) });
+    expect(await failure(staleOutsider.choose("aud", "lower_tier", { open: true }))).toEqual({ code: "FORBIDDEN", message: "You can't decide this." });
+    expect(staleOutsider.writes).toEqual([]);
     const fresh = rig({ estimate: priced(250), lowerTier: { tier: "light", estimate: priced(6, "light") }, freshSignIn: true });
     expect(await fresh.choose("priya", "lower_tier", { open: true })).toMatchObject({ kind: "done" });
     // ... and a browser: a token (an AI tool) never decides a high card, as the decisions route refuses high entirely (ON-9).

@@ -26,17 +26,18 @@ const brokerVariables = (template: Template): Record<string, unknown> => {
 };
 
 const SWITCHES = [
-  { name: "proof evidence", parameter: "ProofEvidenceEnabled", setting: "proofEvidence" as const, code: "pe", variable: "PROOF_EVIDENCE_ENABLED", key: "proofEvidence.enabled", on: proofEvidenceEnabled },
-  { name: "decision cards", parameter: "DecisionCardsEnabled", setting: "decisionCards" as const, code: "dk", variable: "DECISION_CARDS_ENABLED", key: "decisionCards.enabled", on: decisionCardsEnabled },
+  { name: "proof evidence", parameter: "ProofEvidenceEnabled", setting: "proofEvidence" as const, code: "pe", variable: "PROOF_EVIDENCE_ENABLED", key: "proofEvidence.enabled", on: proofEvidenceEnabled, deployed: "0" },
+  // Decision cards are on by default from 0.5.9 (owner decision: the decision journey); the switch stays as the operator's emergency off.
+  { name: "decision cards", parameter: "DecisionCardsEnabled", setting: "decisionCards" as const, code: "dk", variable: "DECISION_CARDS_ENABLED", key: "decisionCards.enabled", on: decisionCardsEnabled, deployed: "1" },
   // Lessons reach the agent (follow-up S3 of the wire-lessons review): apart from the Team record's flag, off by default.
-  { name: "learned lessons", parameter: "LearnedLessonsEnabled", setting: "learnedLessons" as const, code: "ll", variable: "LEARNED_LESSONS_ENABLED", key: "learnedLessons.enabled", on: learnedLessonsEnabled },
+  { name: "learned lessons", parameter: "LearnedLessonsEnabled", setting: "learnedLessons" as const, code: "ll", variable: "LEARNED_LESSONS_ENABLED", key: "learnedLessons.enabled", on: learnedLessonsEnabled, deployed: "0" },
   // Four test results (setup and test health): off by default, its own switch.
-  { name: "verify results", parameter: "VerifyResultsEnabled", setting: "verifyResults" as const, code: "vx", variable: "VERIFY_RESULTS_ENABLED", key: "verifyResults.enabled", on: verifyResultsEnabled },
+  { name: "verify results", parameter: "VerifyResultsEnabled", setting: "verifyResults" as const, code: "vx", variable: "VERIFY_RESULTS_ENABLED", key: "verifyResults.enabled", on: verifyResultsEnabled, deployed: "0" },
 ];
 
-describe.each(SWITCHES)("the $name switch", ({ parameter, setting, code, variable, key, on }) => {
-  it("is a stack parameter in a named environment, off by default, only 0 or 1", () => {
-    expect((named.toJSON() as { Parameters: Record<string, unknown> }).Parameters[parameter]).toMatchObject({ Type: "String", Default: "0", AllowedValues: ["0", "1"] });
+describe.each(SWITCHES)("the $name switch", ({ parameter, setting, code, variable, key, on, deployed }) => {
+  it("is a stack parameter in a named environment, with its deployed default, only 0 or 1", () => {
+    expect((named.toJSON() as { Parameters: Record<string, unknown> }).Parameters[parameter]).toMatchObject({ Type: "String", Default: deployed, AllowedValues: ["0", "1"] });
   });
 
   it("reaches the broker in its packed settings and adds no Lambda variable of its own", () => {
@@ -62,7 +63,7 @@ describe.each(SWITCHES)("the $name switch", ({ parameter, setting, code, variabl
   it("is set with `agentx config set`, and an upgrade keeps it", () => {
     const entry = configKey(key);
     expect(entry.target).toEqual({ kind: "stack-parameter", part: "control-plane", parameter });
-    expect(entry.defaultValue).toBe("0");
+    expect(entry.defaultValue).toBe(deployed);
     expect(entry.parse("1")).toBe("1");
     expect(() => entry.parse("true")).toThrow(`${key} must be one of 0, 1; nothing changed`);
     expect(OPERATOR_PARAMETERS["control-plane"]).toContain(parameter);

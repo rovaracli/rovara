@@ -1,5 +1,7 @@
 import { useContext, useMemo, useState } from "react";
 import { QueryClientContext } from "@tanstack/react-query";
+import { Link } from "react-router";
+import { DECISION_FOCUS_PARAM } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
 import { createDesignReviewApi } from "../../api/design-review.js";
 import { ApiError } from "../../api/errors.js";
@@ -91,7 +93,7 @@ export function RetryReview({ left, onRetry }: { left: string; onRetry: () => Pr
 }
 
 /** The tab's content from its model (separate from the task, so the tests and the page share it). */
-export function DesignTabView({ model, onRetry }: { model: DesignTabModel; onRetry?: (() => Promise<void>) | undefined }) {
+export function DesignTabView({ model, onRetry, answerCard }: { model: DesignTabModel; onRetry?: (() => Promise<void>) | undefined; /** Slice 2: the card where the open questions are answered (on this page); the tab links to it, never a dead end. */ answerCard?: string | undefined }) {
  return <section aria-label="Design review" className="rv-design">
   <p className="rv-design-line"><VisibleText text={model.classification} /></p>
   {model.reading !== undefined && <p><span className="rv-muted">Rovara's reading of the request: </span><VisibleText text={model.reading} /></p>}
@@ -116,7 +118,7 @@ export function DesignTabView({ model, onRetry }: { model: DesignTabModel; onRet
     <div><h4>The planner says</h4>{item.plannerSide === undefined ? <p>No answer.</p> : <><p>{item.plannerSide.words}</p>{item.plannerSide.note !== "" && <p><VisibleText text={item.plannerSide.note} /></p>}<Citations label="Evidence" lines={item.plannerSide.evidence} /></>}</div>
    </div>
   </li>)}</ul></section>}
-  {model.questions !== undefined && <section aria-label="Design questions"><h3>{"Design questions (" + String(model.questions.questions.length) + ")"}</h3><ol>{model.questions.questions.map(question => <Question key={question.id} question={question} />)}</ol></section>}
+  {model.questions !== undefined && <section aria-label="Design questions"><h3>{"Design questions (" + String(model.questions.questions.length) + ")"}</h3><ol>{model.questions.questions.map(question => <Question key={question.id} question={question} />)}</ol>{answerCard !== undefined && <p><Link to={{ search: "?" + DECISION_FOCUS_PARAM + "=" + encodeURIComponent(answerCard) }}>Answer them on their card</Link></p>}</section>}
   {model.rounds.map(round => <Round key={round.round} round={round} />)}
   {model.rounds.length === 0 && model.notRun === undefined && model.progress === undefined && <p className="rv-muted">No reviewer has read the design yet.</p>}
  </section>;
@@ -127,16 +129,17 @@ export function DesignTab({ task, sessionKey, retryShown = true }: { task: ReadT
  if (review === undefined) return null;
  if (review === "unreadable") return <section aria-label="Design review" className="rv-design"><p role="status">This design review can't be shown by this version of the app. Reload the page; if it stays like this, the app needs an update.</p></section>;
  const model = designTabModel(review, { note: review.note, codeLinkBase: base, designWritten: (task.workflow?.artifacts ?? []).some(artifact => artifact.type === "design"), retry: retryShown ? readDesignActions(task.designActions)?.retry : undefined });
- return model.retry === undefined ? <DesignTabView model={model} /> : <DesignTabWithRetry model={model} taskId={task.taskId} sessionKey={sessionKey} />;
+ const answerCard = review.status === "waiting_answers" ? "answer_question:" + task.taskId : undefined;
+ return model.retry === undefined ? <DesignTabView model={model} answerCard={answerCard} /> : <DesignTabWithRetry model={model} taskId={task.taskId} sessionKey={sessionKey} answerCard={answerCard} />;
 }
 
 /** The tab when the broker offered "Retry review": the press goes to the broker, then the task is read again (through the page's query cache, when it has one). */
-function DesignTabWithRetry({ model, taskId, sessionKey }: { model: DesignTabModel; taskId: string; sessionKey?: readonly unknown[] | undefined }) {
+function DesignTabWithRetry({ model, taskId, sessionKey, answerCard }: { model: DesignTabModel; taskId: string; sessionKey?: readonly unknown[] | undefined; answerCard?: string | undefined }) {
  const host = useAppHost(), query = useContext(QueryClientContext), api = useMemo(() => createDesignReviewApi(host), [host]);
  const onRetry = async (): Promise<void> => {
   const result = await api.retry(taskId, crypto.randomUUID());
   if (result.kind !== "done") throw new ApiError(409, "PENDING", "This is waiting for confirmation. Open the task to continue.");
   if (sessionKey !== undefined && query !== undefined) await query.invalidateQueries({ queryKey: [...sessionKey] });
  };
- return <DesignTabView model={model} onRetry={onRetry} />;
+ return <DesignTabView model={model} onRetry={onRetry} answerCard={answerCard} />;
 }

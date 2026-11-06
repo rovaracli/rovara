@@ -4,10 +4,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { orgMemberKey, projectMemberKey, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
+import { PER_TASK_BUDGET_USD, orgMemberKey, projectMemberKey, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
 import { developerTaskIdentity, plannerRepliesKey } from "../../packages/broker/src/developer/task-records.js";
 import { SlackPostError, chatPostMessage } from "../../packages/broker/src/aws/slack-web.js";
-import { cachedSlackPoster, createNotifierHandler, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
+import { cachedSlackPoster, createNotifierHandler, designCardUrlFor, planOpenFor, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, recordStream } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
@@ -2656,5 +2656,38 @@ describe("a spec on hold tells the owner (wire lane D, MD-1)", () => {
     expect(noticesOf(state({ status: "written" }), failed, at, "e1")).toEqual([{ id: `${taskId}:spec_hold:5`, kind: "spec_hold", taskId, at }]);
     expect(noticesOf(failed, state({ status: "failed", revision: 6 }), at, "e2")).toEqual([]);
     expect(noticesOf(undefined, state({ status: "due", revision: 1 }), at, "e3")).toEqual([]);
+  });
+});
+
+describe("decision journey slice 1: a plan-review message for a design under review links to its card (from the task record)", () => {
+  const taskId = "11111111-1111-4111-8111-111111111111", sessionId = `ses_${"a".repeat(20)}`, page = `https://agentx.example.test/review/${taskId}/task`;
+  const review = { status: "waiting_person" } as never;
+  it("the card on the task's session page when the record carries a design review at the design step", () => {
+    expect(designCardUrlFor("https://agentx.example.test", { taskId, sessionId }, { designReview: review, reviewPhase: "DESIGN" }, page))
+      .toBe(`https://agentx.example.test/app/sessions/${sessionId}?decision=approve_design%3A${taskId}`);
+    // No session on the record: the task page, still never an Approve.
+    expect(designCardUrlFor("https://agentx.example.test", { taskId }, { designReview: review, reviewPhase: "DESIGN" }, page)).toBe(page);
+  });
+  it("nothing (Approve stays) without a design review, or at another step", () => {
+    expect(designCardUrlFor("https://agentx.example.test", { taskId, sessionId }, { designReview: undefined, reviewPhase: "DESIGN" }, page)).toBeUndefined();
+    expect(designCardUrlFor("https://agentx.example.test", { taskId, sessionId }, { designReview: review, reviewPhase: "IMPLEMENTATION_PLAN" }, page)).toBeUndefined();
+  });
+});
+
+describe("decision journey slice 2: a coding plan that raises the run limit offers Open in Rovara (from the task record), to the plan review page", () => {
+  const taskId = "11111111-1111-4111-8111-111111111111", page = `https://agentx.example.test/review/${taskId}/task`;
+  const estimate = (runLimitUsd: number) => ({ lowUsd: 1, highUsd: 3, runLimitUsd, stopAtUsd: runLimitUsd, basis: "default" as const, samples: 0 });
+  const quick = { path: "QUICK" as const, reviewPhase: undefined };
+  it("the plan review page when approving raises the limit: above the task's limit, or above the per-task default when it has none", () => {
+    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6) }, quick, page)).toEqual({ url: page, why: "run_limit" });
+    expect(planOpenFor({ runEstimate: estimate(PER_TASK_BUDGET_USD + 1) }, { path: "FULL", reviewPhase: "IMPLEMENTATION_PLAN" }, page)).toEqual({ url: page, why: "run_limit" });
+  });
+  it("nothing (Approve stays) when the limit does not rise (the start's own lower limit counts), there is no estimate, the document is not the coding plan, or there is no page", () => {
+    expect(planOpenFor({ budgetUsd: 6, runEstimate: estimate(6) }, quick, page)).toBeUndefined();
+    expect(planOpenFor({ runEstimate: estimate(PER_TASK_BUDGET_USD) }, quick, page)).toBeUndefined();
+    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6), requestedRunLimitUsd: 2 }, quick, page)).toBeUndefined();
+    expect(planOpenFor({ budgetUsd: 2 }, quick, page)).toBeUndefined();
+    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6) }, { path: "FULL", reviewPhase: "REQUIREMENTS" }, page)).toBeUndefined();
+    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6) }, quick, undefined)).toBeUndefined();
   });
 });

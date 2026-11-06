@@ -179,7 +179,7 @@ it("asks for a one-line reason on a design with an open blocker, requires it, an
  const f = screenSetup(designTaskSession(designReviewFixture()), [designItem(1)]);
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
  // Medium cards need their evidence opened first.
- const summary = within(card).queryByText("Open the evidence to approve");
+ const summary = within(card).queryByText("Show the evidence");
  if (summary !== null) { const details = summary.closest("details") as HTMLDetailsElement;details.open = true;fireEvent(details, new Event("toggle"));await waitFor(() => expect(f.posts().some(request => request.path.endsWith("/evidence-opened"))).toBe(true)); }
  const approve = within(card).getByRole("button", { name: "Approve with a reason" });
  const reason = within(card).getByRole("textbox", { name: "Why approve with an open blocker?" });
@@ -209,8 +209,8 @@ it("shows the cost card's choices as the card's own actions and posts the choice
  expect(raise).toBeTruthy();
  expect(within(card).getByRole("button", { name: /^Run Light/u })).toBeTruthy();
  expect(within(card).getByRole("button", { name: "Skip design review" })).toBeTruthy();
- const summary = within(card).queryByText("Open the evidence to approve") ?? within(card).queryByText("More evidence");
- if (summary !== null && summary.textContent === "Open the evidence to approve") { const details = summary.closest("details") as HTMLDetailsElement;details.open = true;fireEvent(details, new Event("toggle"));await waitFor(() => expect(raise!.hasAttribute("disabled")).toBe(false)); }
+ const summary = within(card).queryByText("Show the evidence") ?? within(card).queryByText("More evidence");
+ if (summary !== null && summary.textContent === "Show the evidence") { const details = summary.closest("details") as HTMLDetailsElement;details.open = true;fireEvent(details, new Event("toggle"));await waitFor(() => expect(raise!.hasAttribute("disabled")).toBe(false)); }
  fireEvent.click(raise!);
  await waitFor(() => expect(f.posts().some(request => request.path === "/v1/app/tasks/" + TASK + "/design-review/spend/raise-cap")).toBe(true));
  const sent = f.posts().find(request => request.path.endsWith("/spend/raise-cap"))!.body as Record<string, unknown>;

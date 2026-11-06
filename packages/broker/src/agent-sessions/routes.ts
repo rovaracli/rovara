@@ -282,7 +282,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     if (control === "answers") return answerIntentOnSession(read, caller, sessionId, jsonBody(request));
     // Stop & redirect: the owner stops the step and gives a new instruction. The route exists only while the `rd` switch is on.
     if (control === "redirect") return redirectSession({ ...read, redirect: deps.redirect }, caller, sessionId, jsonBody(request));
-    // Rovara Code: a person presses Merge. It answers 202 with the link where they confirm it; only that confirmation merges (Plan 6 Task 19).
+    // Rovara Code: a person presses Merge. In a signed-in browser a low or medium risk change merges in place; a high one, or a token's press, gets 202 and the presser's approval card (decision journey slice 3).
     if (control === "merge") {
       const reply = await pressMerge(read, caller, sessionId, jsonBody(request), deps.approvals);
       return new StatusReply(reply.status, reply.body);

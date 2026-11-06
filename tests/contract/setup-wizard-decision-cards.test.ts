@@ -235,6 +235,10 @@ describe("confirm_env_change", () => {
       const { cards: list, digests, details } = await cards(t);
       const [card] = ofKind(list, "confirm_env_change");
       expect(card).toMatchObject({ id: `confirm_env_change:${taskId}`, risk: "medium", taskId });
+      // Slice 2: the card opens the task's own page with the card named, not the project page.
+      const sessionId = t.db.find((item) => item.taskId === taskId && typeof item.sessionId === "string" && String(item.sessionId).startsWith("ses_"))[0]?.sessionId as string | undefined;
+      expect(sessionId, "positive control: the task has a session").toBeDefined();
+      expect((card as unknown as { actions: Array<{ kind: string; href: string }> }).actions.find((action) => action.kind === "open")?.href).toBe(`/app/sessions/${sessionId!}?decision=confirm_env_change%3A${taskId}`);
       // The card says what changes for the task, value by value, not "selection" alone.
       expect(JSON.stringify(details[card!.id])).toContain("selection.fullSuiteOn: .github/** \u2192 .github/**, package.json");
       expect(ofKind((await cards(t, MAYA)).cards, "confirm_env_change")).toEqual([]);

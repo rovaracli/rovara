@@ -377,6 +377,8 @@ export interface HostItemPorts extends HostAskTable {
   staffStep: boolean;
   /** SH30 (switch `sp`): the hosts of a project its company approved through a recipe the project's setup used (`companyApprovedHostMarks`). A mark for the card only. Errors are the port's to absorb. */
   companyApproved?: ((orgId: OrgId, project: string) => Promise<ReadonlyMap<string, unknown>>) | undefined;
+  /** Decision journey slice 2: the page of the setup run's task (its session, so the card's link names the card there), or undefined to keep the project page. Errors are the port's to absorb. */
+  taskPagePathOf?: ((taskId: string) => Promise<string | undefined>) | undefined;
 }
 /**
  * The open asks the caller may decide, as card items: ONE read of the company's index of open asks (however many projects it has), then the projects the caller may approve for. At most
@@ -403,7 +405,9 @@ export async function hostAskItemsFor(ports: HostItemPorts, who: { orgId: string
       read += 1;
       const parsed = AskRowSchema.safeParse(item["ask"]);
       if (rowExpired(item, ports.now()) || !parsed.success || parsed.data.orgId !== orgId || parsed.data.state !== "open" || !allowed.has(parsed.data.project) || item["project"] !== parsed.data.project || item["host"] !== parsed.data.host) continue;
-      out.push(hostAskItem(parsed.data, { staffStep: ports.staffStep, companyApproved: (await marksOf(parsed.data.project)).has(parsed.data.host) }));
+      const ask = hostAskItem(parsed.data, { staffStep: ports.staffStep, companyApproved: (await marksOf(parsed.data.project)).has(parsed.data.host) });
+      const page = ports.taskPagePathOf === undefined ? undefined : await ports.taskPagePathOf(parsed.data.taskId).catch(() => undefined);
+      out.push(page === undefined ? ask : { ...ask, openPath: page });
     }
     start = result.LastEvaluatedKey;
     if (start === undefined || read >= SETUP_HOST_INDEX_MAX) break;

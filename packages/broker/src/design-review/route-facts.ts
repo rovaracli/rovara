@@ -6,7 +6,6 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgRoleSchema, orgPk, readDesignMeta, type DesignReason, type EditionPolicy, type OrgId, type WorkflowSnapshot } from "@agentx/contracts";
 import { loadWorkflowDocument } from "../developer/plan-artifacts.js";
-import { DeveloperSignInStore, isFreshSignIn } from "../developer/store.js";
 import { listProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
 import { readApproverRoster } from "../org/second-person-evidence.js";
 import type { DesignApproverDirectory } from "./approval.js";
@@ -81,14 +80,3 @@ export async function readLatestDesignText(workflow: Pick<WorkflowSnapshot, "art
   try { return (await loadWorkflowDocument(read, artifact, {}))?.markdown; } catch { return undefined; }
 }
 
-/**
- * Whether the caller signed in interactively within the last few minutes, by the platform's one rule (`isFreshSignIn`). The session is read from the store: a session that is not the caller's, that was revoked or that has
- * no readable authentication time is not fresh.
- */
-export async function freshSignInOf(deps: Pick<DesignFactsDeps, "documentClient" | "tableName" | "signInTableName" | "now">, caller: { developerId: string; sessionId: string }): Promise<boolean> {
-  try {
-    const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.signInTableName, nameTableName: deps.tableName, now: () => deps.now() });
-    const session = await store.getSession(caller.sessionId);
-    return session !== undefined && session.developerId === caller.developerId && session.revokedAt === undefined && isFreshSignIn(session, deps.now());
-  } catch { return false; }
-}

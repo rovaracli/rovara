@@ -6,7 +6,7 @@
 // member's role on the run's project), plus the member's LIVE org membership. The candidates stored on the record are never consulted (R68).
 // `decide` is `decideApproval` as that member, with the session's proof, under a request id derived from the session so a retry replays.
 import { createHash } from "node:crypto";
-import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, isBuiltinAgentId, stepOfLessSafeReason, trackRecordLines, type AuditProof, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, decisionTaskSessionOf, isBuiltinAgentId, stepOfLessSafeReason, trackRecordLines, type AuditProof, type OrgId } from "@agentx/contracts";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import { takeOverFacts } from "../agent-sessions/take-over.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
@@ -38,6 +38,7 @@ async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecor
       case "project_settings": return "a maintainer of this project";
       case "session_share_org": return "the person who asked, while they can still share the session";
       case "session_take_over": return "the person who asked, while they can still take the session over";
+      case "card_decision": return "the person who pressed Approve on the card";
       default: return (await approverRefusalFor(deps, record))?.who ?? "the people it was asked of";
     }
   }
@@ -75,6 +76,7 @@ const TITLES: Record<string, string> = {
   setup_item: "Approve a setup suggestion from Rovara",
   test_env: "Confirm a less-safe test environment",
   known_failing: "Confirm marking tests as already failing",
+  card_decision: "Confirm a high-risk decision on its card",
   agent_run_version: "Run an older version of an agent that is less safe than the one that runs now",
 };
 
@@ -196,7 +198,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   const subject = record.subject;
   const facts = [fact("Asked by", await nameOf(deps, record.requestedBy))];
-  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner" && subject.kind !== "pull_request_merge" && subject.kind !== "code_settings" && subject.kind !== "playbook_default_process" && subject.kind !== "setup_item" && subject.kind !== "test_env" && subject.kind !== "known_failing") {
+  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner" && subject.kind !== "pull_request_merge" && subject.kind !== "code_settings" && subject.kind !== "playbook_default_process" && subject.kind !== "setup_item" && subject.kind !== "test_env" && subject.kind !== "known_failing" && subject.kind !== "card_decision") {
     facts.push(...await agentChangeFacts(deps, record.orgId, subject));
   }
   if (subject.kind === "opt_out") {
@@ -224,6 +226,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   if (subject.kind === "setup_item") facts.push(fact("Project", subject.project), fact("Suggestion", subject.itemKind.replace("_", " ")), fact("Suggestion id", subject.itemId));
   if (subject.kind === "test_env") facts.push(fact("Project", subject.project), fact("Test environment", `digest ${prefix(subject.digest)}`), fact("Revision it replaces", subject.expectedRevision === 0 ? "none (the first)" : String(subject.expectedRevision)));
   if (subject.kind === "known_failing") facts.push(fact("Project", subject.project), fact("What failed", subject.cause.replace(/-/gu, " ")), fact("Tests to mark as already failing", `set ${prefix(subject.testSetSha256)}`));
+  if (subject.kind === "card_decision") facts.push(fact("Decision", "The high-risk card you pressed Approve on. It is decided on its card, back on the task page."));
   if (subject.kind === "playbook_default_process") facts.push(fact("Project", subject.project), fact("Process layer version it replaces", String(subject.layerVersion)), fact("Playbook revision it applies to", String(subject.expectedRevision)));
   facts.push(expires);
   return { title: changeTitleOf(subject.kind), facts, paragraphs: await changesWithRecords(deps, record) };
@@ -295,5 +298,14 @@ export function approvalDecideKind(deps: ApprovalDependencies): DecideKind {
     if (record !== undefined && record.status === "PENDING") await recordApprovalViewed(deps, record, target.developerId);
   }
 
-  return { inspect, decide, opened };
+  // A card's decide-grade sign-in (`card_decision`) comes back to the card on its task page, for the person who pressed it; any other approval is decided on its own card.
+  async function returnPath(target: DecideTarget): Promise<string | undefined> {
+    const id = ApprovalIdSchema.safeParse(target.approvalId);
+    const record = id.success ? await getAnyApproval(deps, target.orgId, id.data) : undefined;
+    if (record?.kind !== "change" || record.subject.kind !== "card_decision" || record.requestedBy !== target.developerId) return undefined;
+    const path = record.subject.returnPath;
+    return decisionTaskSessionOf(path) !== undefined && path.startsWith("/app/sessions/") && !path.includes("//") ? path : undefined;
+  }
+
+  return { inspect, decide, opened, returnPath };
 }

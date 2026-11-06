@@ -2,7 +2,7 @@
 // They have no bearer token to rely on (a token is exactly what a local assistant holds): the browser's decide session cookie, its CSRF
 // field and the cell's own Origin authorize them, all checked by `requireDecideSession`. A bearer token reaching either route gets
 // REAUTH_REQUIRED with a ticketed confirmUrl, as JSON, from the broker's usual error answer.
-import { AgentXError, agentXError } from "@agentx/contracts";
+import { AgentXError, agentXError, type OrgId } from "@agentx/contracts";
 import { confirmPage, decidedPage, forbiddenPage, notFoundPage, reauthPage, refusedPage, resultPage, type PageResponse } from "../developer/confirm-page.js";
 import { kindPrefixOf, mayDecide, type DecideKind } from "../developer/decide-kinds.js";
 import {
@@ -10,6 +10,7 @@ import {
   type DecideRequestContext, type DecisionEnd,
 } from "../developer/decide-session.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
+import { decisionCardsEnabled } from "../proof/switch.js";
 
 const APPROVE_PATH = /^\/v1\/app\/approve\/([^/]+)$/;
 const MAX_FORM_BYTES = 2_048;
@@ -35,11 +36,40 @@ export async function routeDecidePage(context: DecideRequestContext | undefined,
   if (context === undefined) throw agentXError("NOT_FOUND", "route not found");
   const approvalId = APPROVE_PATH.exec(url.pathname)?.[1];
   if (approvalId === undefined || !APPROVAL_ID_PATTERN.test(approvalId) || (request.method !== "GET" && request.method !== "POST")) return notFoundPage();
+  // Decision journey slice 3b: while the decision cards are on, the approval is decided on its card (the same checks, in the app); an old link (Slack, email) is sent there. Kept one release as this
+  // redirect; then the page goes. A POST from a page that was already open still decides here, as before.
+  // A high card's decide sign-in (`card_decision`) always goes back to its card on the task page, whether the cards are on or not (final review): it is never decided here.
+  if (request.method === "GET") {
+    const back = await cardReturnOf(context, request.headers, approvalId);
+    if (back !== undefined) return found(back);
+  }
+  if (request.method === "GET" && decisionCardsEnabled()) return found(`/app/decisions/approve_request/${approvalId}`);
   const decideRequest = { method: request.method, path: url.pathname, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }) };
   return request.method === "GET" ? showPage(context, decideRequest, approvalId, url) : decide(context, decideRequest, approvalId);
 }
 
 type DecideRequest = Parameters<typeof requireDecideSession>[1];
+
+/**
+ * Security review (2026-11-06): the decide sign-in for a HIGH card on a task page (`card_decision`) comes back to that card, not to a card-only page. Only for the browser that holds the decide session
+ * just written for this very approval, and only to the task page the record names (checked by the kind).
+ */
+/** The task-page card of a `card_decision` this person made, or undefined for any other approval. */
+async function cardDecisionReturn(context: DecideRequestContext, target: { orgId: OrgId; developerId: string; approvalId: string }): Promise<string | undefined> {
+  const prefix = kindPrefixOf(target.approvalId);
+  return (prefix === undefined ? undefined : context.kinds[prefix])?.returnPath?.(target);
+}
+
+async function cardReturnOf(context: DecideRequestContext, headers: Record<string, string | undefined>, approvalId: string): Promise<string | undefined> {
+  const cookie = cookieOf(headers, DECIDE_COOKIE);
+  if (cookie === undefined || cookie.length < 32 || cookie.length > 128) return undefined;
+  try {
+    const session = await context.store.getSession(cookie);
+    if (session === undefined || session.approvalId !== approvalId) return undefined;
+    const prefix = kindPrefixOf(approvalId);
+    return await (prefix === undefined ? undefined : context.kinds[prefix])?.returnPath?.({ orgId: session.orgId, developerId: session.developerId, approvalId });
+  } catch { return undefined; }
+}
 
 async function showPage(context: DecideRequestContext, request: DecideRequest, approvalId: string, url: URL): Promise<PageResponse> {
   let authority: Awaited<ReturnType<typeof requireDecideSession>>;
@@ -55,6 +85,9 @@ async function showPage(context: DecideRequestContext, request: DecideRequest, a
   if (inspection.status === "not_found") return notFoundPage();
   if (inspection.status === "forbidden") return forbiddenPage(`Only ${inspection.who} can decide this.`);
   if (inspection.status === "decided" || inspection.status === "expired") return decidedPage(endedWords(inspection), inspection.status);
+  // A high card's `card_decision` is decided on its card on the task page, never on this page (its Approve would spend the session and decide nothing).
+  const back = await cardDecisionReturn(context, target);
+  if (back !== undefined) return found(back);
   const cookie = cookieOf(request.headers, DECIDE_COOKIE)!;
   // The page is about to be shown to this member: that, and only that, is what "opened" means for a kind that needs the member to have read it.
   const prefix = kindPrefixOf(approvalId);
@@ -87,6 +120,7 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
     if (kind === undefined || inspection.status === "not_found") return notFoundPage();
     if (inspection.status === "forbidden") return forbiddenPage(`Only ${inspection.who} can decide this.`);
     if (inspection.status === "decided" || inspection.status === "expired") return decidedPage(endedWords(inspection), inspection.status);
+    if (await cardDecisionReturn(context, target) !== undefined) return refusedPage(409, "Nothing was decided", "Decide this on its card in the task.");
     try {
       const outcome = await kind.decide(target, decision, authority.proof);
       end = "decided";

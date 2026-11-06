@@ -81,8 +81,23 @@ export const DECISION_REASON_KINDS: readonly string[] = ["approve_design"];
 export function approveReasonProblem(itemKind: string, reason: string | undefined): string | undefined {
   return reason === undefined || DECISION_REASON_KINDS.includes(itemKind) ? undefined : DECISION_REASON_ELSEWHERE_MESSAGE;
 }
-export const DecisionApproveBodySchema = z.object({ requestId: z.string().uuid(), shownDigest: DecisionDigestSchema, tab: DecisionTabIdSchema.optional(), reason: line(DECISION_APPROVE_REASON_MAX).optional() }).strict();
+export const DecisionApproveBodySchema = z.object({
+  requestId: z.string().uuid(), shownDigest: DecisionDigestSchema, tab: DecisionTabIdSchema.optional(), reason: line(DECISION_APPROVE_REASON_MAX).optional(),
+  /** A coding plan's card only: the run limit the card showed and the person ticked (slice 2). The broker refuses an approval that would set another, and one that raises the limit without it. */
+  acknowledgedRunLimitUsd: z.number().min(0).max(100_000).optional(),
+}).strict();
 export type DecisionApproveBody = z.infer<typeof DecisionApproveBodySchema>;
+/** The card kinds that take `acknowledgedRunLimitUsd` on approve; every other kind refuses it. */
+export const DECISION_RUN_LIMIT_KINDS: readonly string[] = ["approve_plan"];
+
+/** The longest reason a Request changes carries: the workflow decision's own limit. */
+export const DECISION_CHANGES_REASON_MAX = 500;
+/**
+ * `POST /v1/app/decisions/{kind}/{subject}/request-changes` (slice 2): the document goes back to the planner with the person's reason, through the same workflow decision (REQUEST_CHANGES) Slack and the task page
+ * use, with the same authority. `shownDigest` is what the person was shown: a changed card is refused as stale.
+ */
+export const DecisionRequestChangesBodySchema = z.object({ requestId: z.string().uuid(), shownDigest: DecisionDigestSchema, reason: z.string().trim().min(1).max(DECISION_CHANGES_REASON_MAX).regex(/^[^\p{Cc}\p{Cf}]*$/u, "plain text") }).strict();
+export type DecisionRequestChangesBody = z.infer<typeof DecisionRequestChangesBodySchema>;
 
 /** What an approve or a reject answers when it was decided: the card, what was recorded and, on a card with tabs, which documents are still waiting. */
 export const DecisionAnsweredSchema = z

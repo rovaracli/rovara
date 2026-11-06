@@ -3,6 +3,8 @@
 // notifier's own queue; the queue brings each notice back, and it is posted once. Logs carry event
 // names, IDs, notice kinds and Slack error codes only: never a token, a post's text or a task's text.
 // Spec 025 E13: it also posts an admin change's Slack Confirm message, and edits it when the change ends.
+import { decisionCardUrl } from "../decisions/open-path.js";
+import { PER_TASK_BUDGET_USD, runLimitRaises } from "@agentx/contracts";
 import { chatGptFallbackText } from "../chatgpt/fallback-notice.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { createHash } from "node:crypto";
@@ -987,6 +989,30 @@ function planAutoRevisionsOf(task: DeveloperTaskRecord, workflow: WorkflowSnapsh
   return planRevisionsUsed(task.planSelfCheck, artifactType, workflow.artifacts.filter((entry) => entry.type === artifactType).length + 1);
 }
 
+/**
+ * Design review (ON-1): where a plan-review message for this task sends the person instead of an Approve, or undefined when Approve stays. A design under review is approved on its card only, so the message
+ * links to that card. The task's own record says it carries a review (a workflow only gets one while the stage is on); this Lambda has no `dr` setting to read (infra/lib/developer-task-notifier.ts).
+ */
+export function designCardUrlFor(reviewUrlBase: string | undefined, task: Pick<DeveloperTaskRecord, "taskId" | "sessionId">, workflow: Pick<WorkflowSnapshot, "designReview" | "reviewPhase">, page: string | undefined): string | undefined {
+  if (workflow.designReview === undefined || workflow.reviewPhase !== "DESIGN") return undefined;
+  return decisionCardUrl(reviewUrlBase, task, `approve_design:${task.taskId}`, page);
+}
+
+/**
+ * Slice 2 (review fix): whether a coding plan's message offers "Open in Rovara" in place of Approve because approving raises the run limit (measured as the decision does: the plan's limit, lowered to
+ * what the start asked for, against the task's limit or the per-task default); a raise is taken only with the limit acknowledged, which Slack cannot show. The link is the plan review page: this Lambda
+ * cannot read the decision-cards switch, and that page exists either way (its approval acknowledges the limit), so Slack never points to a card that is not there and never offers an Approve the
+ * decision refuses. A medium or high plan pressed from Slack is refused by the decision with the words and the card's link. Undefined: Approve stays (not the coding plan, no estimate on the record:
+ * with none the plan carried no limit to show, or no page to link).
+ */
+export function planOpenFor(task: Pick<DeveloperTaskRecord, "budgetUsd" | "runEstimate" | "requestedRunLimitUsd">, workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase">, page: string | undefined): { url: string; why: "run_limit" } | undefined {
+  if (page === undefined || (workflow.path === "FULL" && (workflow.reviewPhase === "REQUIREMENTS" || workflow.reviewPhase === "DESIGN"))) return undefined;
+  const estimate = task.runEstimate;
+  if (estimate === undefined) return undefined;
+  const proposedUsd = task.requestedRunLimitUsd === undefined ? estimate.runLimitUsd : Math.min(estimate.runLimitUsd, task.requestedRunLimitUsd);
+  return runLimitRaises(task.budgetUsd ?? PER_TASK_BUDGET_USD, proposedUsd) ? { url: page, why: "run_limit" } : undefined;
+}
+
 async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, workflow: WorkflowSnapshot, reopenedPullRequests?: ReadonlyArray<{ repositoryId: string; number: number }>): Promise<Reply | undefined> {
   // A task closed in Slack has its own closed reply; a second "closed" line would say it twice.
   if (workflow.stage === "CLOSED" && task.closedAt !== undefined) return undefined;
@@ -1015,6 +1041,10 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
       });
       if (answered !== undefined) context.commentAnswers = answered;
     }
+    const card = designCardUrlFor(deps.reviewUrlBase, task, workflow, page);
+    if (card !== undefined) context.designCardUrl = card;
+    const planOpen = planOpenFor(task, workflow, page);
+    if (planOpen !== undefined) context.planOpen = planOpen;
   } else if (workflow.state === "BLOCKED" || (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING")) {
     // Replies that came in after the plan and that no step has taken: said, with where to read them.
     context.newReplies = await newThreadReplies(deps, task);

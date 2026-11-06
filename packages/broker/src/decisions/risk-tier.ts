@@ -24,7 +24,7 @@ export type DecisionLocks = Partial<Record<DecisionKind, DecisionRisk>>;
 
 /** What each kind's rules read. Every field is plain data the projector got from a pending item; none is model text. */
 export interface TierInputs {
-  plan?: { files: readonly string[]; untestedClaims: number; costHighUsd?: number | undefined };
+  plan?: { files: readonly string[]; untestedClaims: number; costHighUsd?: number | undefined; /** The files or the checks could not be read from the plan (slice 2 review fix): at least medium. */ unread?: boolean | undefined };
   /**
    * `review` is present when the design went through design review (DR9): the tier then also reads its reasons, its `touches[]`, how the review went and what it found. Absent (a design with no review, or one
    * from before the stage): the older rule, infrastructure or sensitive paths make it medium.
@@ -95,6 +95,8 @@ export function riskTierOf(kind: DecisionKind, inputs: TierInputs, locks: Decisi
       if (plan === undefined) throw new Error("plan inputs missing");
       planRules(tally, plan.files);
       if (plan.untestedClaims > 0) tally.raise("medium", `${plural(plan.untestedClaims, "claim has", "claims have")} no planned proof.`);
+      // What a plan changes or how it is proved, when it cannot be read from the plan, is never assumed to be nothing.
+      if (plan.unread === true) tally.raise("medium", "The plan's files or the checks that prove it could not be read.");
       if ((plan.costHighUsd ?? 0) > DECISION_PLAN_COST_HIGH_USD) tally.raise("high", `Expected to cost more than $${String(DECISION_PLAN_COST_HIGH_USD)}.`);
       else if ((plan.costHighUsd ?? 0) > DECISION_PLAN_COST_MEDIUM_USD) tally.raise("medium", `Expected to cost more than $${String(DECISION_PLAN_COST_MEDIUM_USD)}.`);
       break;

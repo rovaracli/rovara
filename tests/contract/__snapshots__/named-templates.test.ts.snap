@@ -3004,7 +3004,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "0",
         "1",
       ],
-      "Default": "0",
+      "Default": "1",
       "Description": "1: decision cards are on (the card routes and the Slack card press); 0: no card route exists and a Slack card press is answered as gone (agentx config set decisionCards.enabled 1)",
       "Type": "String",
     },

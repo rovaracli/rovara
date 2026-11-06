@@ -15,6 +15,7 @@ import { prepareDeployment } from "../../packages/cli/src/deploy/commands.js";
 import { agentXError } from "@agentx/contracts";
 import { writeCustomDomain } from "../../packages/cli/src/environments/custom-domain.js";
 import { accessChanged, runUpgrade, type UpgradeDependencies } from "../../packages/cli/src/upgrade/run.js";
+import { DECISION_CARDS_ON_LINE, forcedOperatorValues } from "../../packages/cli/src/upgrade/forced-values.js";
 import { SETTINGS } from "../support/doctor-fakes.js";
 import { allStackOutputs, fakeGitHubApi, fakeRelease, memoryInitSecrets, scriptedDeployer, T0, TEST_PRIVATE_KEY } from "../support/init-fakes.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
@@ -701,5 +702,48 @@ describe("accessChanged (question 9)", () => {
 
   it("is true when the deployed template is not JSON", async () => {
     expect(await accessChanged(input("Resources:\n  ArtifactBucket:\n    Type: AWS::S3::Bucket\n"))).toBe(true);
+  });
+});
+
+describe("owner decision, 0.5.9: the upgrade turns decision cards on, once", () => {
+  const CARDS = ["BudgetMonthlyUsd", "BudgetScope", "SlackThreadTurnsPerMinute", "DecisionCardsEnabled"];
+  async function crossing(deployedCards: string, from = "0.5.8", to = "0.5.9") {
+    const h = await harness({ controlPlane: { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", CallbackSigningKey: "****", DecisionCardsEnabled: deployedCards }, loadRelease: async () => release(to, CARDS), cliVersion: to });
+    await writeEnvironmentSettings(h.store, { ...INSTALLED, version: from });
+    return h;
+  }
+  const sentCards = (h: Awaited<ReturnType<typeof harness>>) => h.deployer.requests.find((request) => request.stackName === "agentx-staging-control-plane")!.parameters.DecisionCardsEnabled;
+
+  it("from a stack with 0, deploys 1 and says so in one line, with how to turn them off", async () => {
+    const h = await crossing("0");
+    await runUpgrade(options, h.deps);
+    expect(sentCards(h)).toBe("1");
+    expect(h.lines.filter((line) => line === DECISION_CARDS_ON_LINE)).toHaveLength(1);
+    expect(DECISION_CARDS_ON_LINE).toBe("Decision cards are now on (decisionCards.enabled=1). To turn them off again: agentx config set decisionCards.enabled 0");
+  });
+
+  it("from a stack with 1, stays 1 with no line", async () => {
+    const h = await crossing("1");
+    await runUpgrade(options, h.deps);
+    expect(sentCards(h)).toBe("1");
+    expect(h.lines).not.toContain(DECISION_CARDS_ON_LINE);
+  });
+
+  it("an upgrade that starts at or after 0.5.9 never forces it again: an operator's 0 stays 0 (the force is keyed to the release it crosses)", async () => {
+    const h = await crossing("0", "0.5.9", "0.5.10");
+    await runUpgrade(options, h.deps);
+    expect(sentCards(h)).toBe("0");
+    expect(h.lines).not.toContain(DECISION_CARDS_ON_LINE);
+    expect(forcedOperatorValues("0.5.9", "0.6.0")).toEqual({});
+    expect(forcedOperatorValues("0.5.8", "0.6.0"), "an upgrade that jumps over 0.5.9 still crosses it").toEqual({ "control-plane": { DecisionCardsEnabled: "1" } });
+  });
+
+  it("--export writes the forced 1 as a value, never as UsePreviousValue, and says the same line", async () => {
+    const out = await bundleDir("agentx-upgrade-run-forced-");
+    const h = await crossing("0");
+    await runUpgrade({ ...options, exportDir: out }, h.deps);
+    const file = JSON.parse(await readFile(join(out, "parameters", "control-plane.json"), "utf8")) as Array<{ ParameterKey: string; ParameterValue?: string; UsePreviousValue?: true }>;
+    expect(file.filter((entry) => entry.ParameterKey === "DecisionCardsEnabled")).toEqual([{ ParameterKey: "DecisionCardsEnabled", ParameterValue: "1" }]);
+    expect(h.lines).toContain(DECISION_CARDS_ON_LINE);
   });
 });

@@ -3,7 +3,7 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import { designClassificationNoteOf } from "../design-review/mode.js";
 import {
-  WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
+  DECISION_LABELS, WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
   answeredMessage, formatMinutes, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isNoCodeChangedReason, isRunLimitBlockReason, workflowAnswer, NO_CODE_CHANGED_LEGACY_REASONS, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, hideEmailAddresses, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, workflowReviseOffered, type RunEstimate, type WorkflowSnapshot, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, feedbackDecidedByText,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
@@ -72,6 +72,17 @@ export interface WorkflowMessageContext {
   autoFix?: { ask?: AutoFixAsk | undefined } | undefined;
   /** T7c: the coding plan is written and held back while its must-not-change checks run on the current app; no card to approve yet. */
   planGroundingHeld?: boolean | undefined;
+  /**
+   * Design review (ON-1): the design under review is approved ONLY on its decision card, so an Approve here would be refused (`DESIGN_CARD_ONLY_MESSAGE`). Set (by the notifier, when the task carries a design review and
+   * waits on its design) to the card's address in the app, `/app/sessions/<id>?decision=approve_design:<task>`, or the task page when the session is not known: the message offers "Open in Rovara" there in
+   * place of Approve. Request changes and Close stay.
+   */
+  designCardUrl?: string | undefined;
+  /**
+   * Slice 2: this coding plan is not approved from Slack: approving it raises the run limit (a tick Slack cannot show: `run_limit`), or the plan is medium or high risk (`medium`, `high`: decided in the app,
+   * high after a recent sign-in). The message offers "Open in Rovara" to `url` (the plan review page, which exists whether or not the decision cards are on) in place of Approve.
+   */
+  planOpen?: { url: string; why: "run_limit" | "medium" | "high" } | undefined;
 }
 export interface WorkflowMessage { text: string; blocks: Array<Record<string, unknown>> }
 
@@ -471,11 +482,18 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
     : `*${capitalized(name)}${document === undefined ? "" : ` v${document.version}`} is ready for your approval.* ${workflow.candidate === undefined ? "No code has changed yet." : "The existing candidate is retained while this plan is reviewed."}`;
   const decide = (decision: "APPROVE" | "REQUEST_CHANGES") => JSON.stringify({ taskId: context.taskId, revision: workflow.revision, digest: document?.sha256, decision,
     ...(decision === "APPROVE" && context.workBreakdownDigest !== undefined ? { workBreakdownDigest: context.workBreakdownDigest } : {}) });
+  // A design under review is approved on its card only: the message links to that card ("Open in Rovara") and never offers an Approve the server refuses. A link button carries no value, so a press is not an action.
+  const planOpen = context.designCardUrl === undefined && workflowDocumentType(workflow) === "plan" ? context.planOpen : undefined;
+  const cardUrl = context.designCardUrl ?? planOpen?.url;
+  const cardOnly = cardUrl !== undefined;
+  const approve: Button = cardOnly
+    ? { type: "button", action_id: "agentx_open_decision", text: { type: "plain_text", text: DECISION_LABELS.openInRovara }, url: cardUrl, style: "primary" }
+    : exits.button("agentx_workflow_approve", `${DECISION_LABELS.approve} ${name}`, { value: decide("APPROVE"), primary: true });
   const decisions = document === undefined ? [exits.close] : needsE2ECorrection ? [
-    exits.button("agentx_workflow_changes", "Request changes", { value: decide("REQUEST_CHANGES") }), exits.close,
+    exits.button("agentx_workflow_changes", DECISION_LABELS.requestChanges, { value: decide("REQUEST_CHANGES") }), exits.close,
   ] : [
-    exits.button("agentx_workflow_approve", `Approve ${name}`, { value: decide("APPROVE"), primary: true }),
-    exits.button("agentx_workflow_changes", "Request changes", { value: decide("REQUEST_CHANGES") }),
+    approve,
+    exits.button("agentx_workflow_changes", DECISION_LABELS.requestChanges, { value: decide("REQUEST_CHANGES") }),
     exits.close,
   ];
   const tail: string[] = [];
@@ -514,7 +532,7 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
     return { text: lines.join("\n"), buttons: decisions };
   }
   // FR-036: what Approve in Slack takes. A tiny plan (FR-037) is approved in Slack as it is, so its card is unchanged.
-  const lead = structured.decisionCount > 0
+  const lead = cardOnly ? [planOpen === undefined ? `Approve the ${name} on its card in Rovara.` : planOpen.why === "run_limit" ? `Approving it raises the run limit: approve the ${name} in Rovara, where you confirm the new limit.` : `This ${name} is ${planOpen.why} risk: approve it in Rovara${planOpen.why === "high" ? " after signing in again" : ""}.`] : structured.decisionCount > 0
     ? [`Approve here uses AgentX's answers for ${plural(structured.decisionCount, "decision")} and includes the open comments (up to 25) from the task page.`]
     : structured.tiny ? [] : ["Approve here includes the open comments (up to 25) from the task page."];
   tail.unshift(...lead);

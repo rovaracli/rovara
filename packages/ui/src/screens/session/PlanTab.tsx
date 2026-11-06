@@ -11,6 +11,19 @@ import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadSession } from "./SessionHeader.js";
 import { visibleAnchor, workflowStateWords, type ReadTask, type CommentOnPart } from "./workspace-types.js";
 const Markdown = lazy(async () => ({ default: (await import("../../design/SafeMarkdown.js")).SafeMarkdown }));
+/** The element id of a decision card on the page (the same rule as `decisionElementId` in DecisionCard). */
+const cardElementId = (cardId: string): string => "decision-" + cardId.replace(/[^A-Za-z0-9_-]/gu, "-");
+/**
+ * Slice 2: "Review and approve" goes to the plan's decision card on this page (scrolled to and focused), where it is approved or sent back. Only when no such card is shown (the cards are off in this
+ * deployment) does it open the plan review page, as before.
+ */
+function reviewOnCard(taskId: string, openPage: () => void): void {
+ const card = ["approve_plan", "approve_requirements"].map(kind => document.getElementById(cardElementId(kind + ":" + taskId))).find(element => element !== null);
+ if (card === undefined || card === null) { openPage();return; }
+ card.scrollIntoView?.({ block: "center" });
+ card.setAttribute("tabindex", "-1");
+ card.focus();
+}
 /** The plan on one screen (Decisions D5): the broker built it from the plan document, so this only shows it. A plan too big for one screen says so. */
 function OneScreen({ one }: { one: NonNullable<ReadTask["planOneScreen"]> }) {
  return <section className="rv-plan-one" aria-label="Plan on one screen">
@@ -42,5 +55,5 @@ export function PlanTab({ session, task, onComment }: { session: ReadSession; ta
  // The limit changes only when the coding plan is approved: not while requirements or the design wait (QUICK has only the coding plan).
  const approvingCodingPlan = workflow.state === "WAITING" && workflow.stage === "PLAN_REVIEW" && (workflow.path === "QUICK" || workflow.reviewPhase === "IMPLEMENTATION_PLAN");
  const review = session.you.owner && workflow.state === "WAITING" && (workflow.stage === "PLAN" || workflow.stage === "PLAN_REVIEW");
- return <section aria-label="Plan evidence"><div className="rv-plan-context"><p>{workflowStateWords(workflow.state)}</p>{estimate && <><p>Estimated cost: <Money usd={estimate.lowUsd} /> to <Money usd={estimate.highUsd} /></p>{approvingCodingPlan && session.cost.runLimitUsd !== undefined && session.cost.runLimitUsd !== estimate.runLimitUsd ? <p>Current limit <Money usd={session.cost.runLimitUsd} /> → proposed limit <Money usd={estimate.runLimitUsd} /></p> : <p>Run limit: <Money usd={estimate.runLimitUsd} /></p>}{estimate.minutes && <p>{"Estimated time: " + formatMinutes(estimate.minutes.low, estimate.minutes.high) + " to a pull request."}</p>}</>}{unchecked && <p>{CRITIC_NOT_CHECKED_LINE}</p>}{review && <Button variant="primary" onClick={() => host.openExternal(host.origin + "/review/" + encodeURIComponent(task.taskId) + "/task")}>Review and approve the plan</Button>}</div>{one && <OneScreen one={one} />}{one ? <details className="rv-plan-details"><summary>Details</summary>{full}</details> : full}</section>;
+ return <section aria-label="Plan evidence"><div className="rv-plan-context"><p>{workflowStateWords(workflow.state)}</p>{estimate && <><p>Estimated cost: <Money usd={estimate.lowUsd} /> to <Money usd={estimate.highUsd} /></p>{approvingCodingPlan && session.cost.runLimitUsd !== undefined && session.cost.runLimitUsd !== estimate.runLimitUsd ? <p>Current limit <Money usd={session.cost.runLimitUsd} /> → proposed limit <Money usd={estimate.runLimitUsd} /></p> : <p>Run limit: <Money usd={estimate.runLimitUsd} /></p>}{estimate.minutes && <p>{"Estimated time: " + formatMinutes(estimate.minutes.low, estimate.minutes.high) + " to a pull request."}</p>}</>}{unchecked && <p>{CRITIC_NOT_CHECKED_LINE}</p>}{review && <Button variant="primary" onClick={() => reviewOnCard(task.taskId, () => host.openExternal(host.origin + "/review/" + encodeURIComponent(task.taskId) + "/task"))}>Review and approve the plan</Button>}</div>{one && <OneScreen one={one} />}{one ? <details className="rv-plan-details"><summary>Details</summary>{full}</details> : full}</section>;
 }

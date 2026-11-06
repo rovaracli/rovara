@@ -250,6 +250,7 @@ export * from "./learned-context.js";
 export * from "./lesson-citation.js";
 export * from "./code-identifiers.js";
 export * from "./decision-cards.js";
+export * from "./decision-focus.js";
 export * from "./decision-card-tabs.js";
 export * from "./test-environment.js";
 export * from "./service-mocks.js";

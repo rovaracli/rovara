@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
 import { createSessionActions } from "../../api/session-actions.js";
@@ -10,6 +10,7 @@ import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadSession } from "./SessionHeader.js";
+import type { ReadDecision } from "../../api/decisions.js";
 import { workspaceTask, type ReadTask } from "./workspace-types.js";
 
 const BRANCH_WORDS: Record<string, string> = { up_to_date: "Branch up to date", behind: "Branch behind its base", conflicted: "Branch conflicts with its base", unknown: "Branch not read yet" };
@@ -29,6 +30,9 @@ function reviewWords(item: Item): string {
 const RISK_WORDS = { low: "Low risk", medium: "Medium risk", high: "High risk" } as const;
 /** The level the server named; a level this build does not know is treated as medium (more careful than low, and the server decides the press). */
 const levelOf = (risk: { level: string } | undefined): "low" | "medium" | "high" | undefined => (risk === undefined ? undefined : risk.level === "low" || risk.level === "high" ? risk.level : "medium");
+const DECISIONS_KEY = ["decisions"] as const;
+/** The element id of a decision card on the page (as DecisionCard sets it). */
+const cardElementId = (cardId: string): string => "decision-" + cardId.replace(/[^A-Za-z0-9_-]/gu, "-");
 const mergedEverywhere = (task: ReadTask | undefined): boolean => task !== undefined && (task.workflow?.stage === "MERGED" || ((task.mergeTracking?.length ?? 0) > 0 && task.mergeTracking!.every(item => item.state === "merged")));
 
 /**
@@ -44,9 +48,13 @@ export function MergeSection({ session, task }: { session: ReadSession; task: Re
  useQuery({ queryKey: key, enabled: pending !== undefined, refetchInterval: 4000, queryFn: async () => acceptSessionRead(query.getQueryData<ReadSession>(key), await sessions.read(session.sessionId)) });
  const items = task.mergeTracking ?? [], merged = mergedEverywhere(task), mayPress = session.you.level !== "view" || session.you.mayMerge === true;
  const unmerged = items.filter(item => item.state !== "merged");
+ // Decision journey slice 3: one merge control. While this task's merge card is waiting on the page (the decision cards are on), the merge is decided there; this section shows the state and points to it.
+ const decisions = useSyncExternalStore(useCallback((changed: () => void) => query.getQueryCache().subscribe(changed), [query]), () => { const state = query.getQueryState<ReadDecision[]>(DECISIONS_KEY);return state?.status === "success" ? state.data : undefined; });
+ const mergeCard = decisions?.find(decision => decision.card.kind === "merge" && decision.card.status === "pending" && decision.card.taskId === task.taskId);
+ const [signIn, setSignIn] = useState(false);
  async function press() {
   if (sending.current || pending !== undefined) return;
-  sending.current = true;setBusy(true);setError(undefined);
+  sending.current = true;setBusy(true);setError(undefined);setSignIn(false);
   try {
    requestId.current ??= crypto.randomUUID();
    const result = await api.merge(session.sessionId, requestId.current, levelOf(task.merge.risk));
@@ -60,6 +68,7 @@ export function MergeSection({ session, task }: { session: ReadSession; task: Re
   } catch (failure) {
    // A refused press (the exact words of MERGE_NOT_READY) sends a fresh request the next time.
    requestId.current = undefined;
+   setSignIn(failure instanceof ApiError && failure.code === "REAUTH_REQUIRED");
    setError(failure instanceof ApiError ? failure.message : "Couldn't press Merge. Try again.");setOpen(false);
   } finally { sending.current = false;setBusy(false); }
  }
@@ -68,13 +77,15 @@ export function MergeSection({ session, task }: { session: ReadSession; task: Re
   {task.merge.risk && <div className="rv-merge-risk" aria-label="Risk"><p><strong>{RISK_WORDS[levelOf(task.merge.risk)!]}</strong></p>{task.merge.risk.reasons.length > 0 && <ul>{task.merge.risk.reasons.map(reason => <li key={reason}><VisibleText text={reason} /></li>)}</ul>}</div>}
   {done && <p role="status"><VisibleText text={done} /></p>}
   {items.length > 0 && <ul className="rv-merge-items" aria-label="Pull requests to merge">{items.map(item => <li key={item.repositoryId + "#" + String(item.number)}><span><VisibleText text={item.repositoryId + " #" + String(item.number)} /></span> <span>{item.state === "merged" ? "Merged" : item.state === "closed" ? "Closed" : item.draft ? "Draft" : checksWords(item) + ". " + reviewWords(item) + ". Head " + item.headSha.slice(0, 7) + ". " + (BRANCH_WORDS[item.branch] ?? "Branch not read yet")}{item.state === "open" && item.draft ? "" : "."}</span></li>)}</ul>}
-  {mayPress && !merged && done === undefined && <Dialog title="Press Merge?" description="Rovara merges it now, with the project's merge method." open={open} onOpenChange={value => { if (!busy) { if (value) requestId.current = crypto.randomUUID();setOpen(value); } }}
+  {mergeCard !== undefined && !merged && <p className="rv-merge-on-card">Merge it on its card at the top of this page. <Button variant="quiet" onClick={() => { const card = document.getElementById(cardElementId(mergeCard.card.id));card?.scrollIntoView?.({ block: "center" });card?.setAttribute("tabindex", "-1");card?.focus(); }}>Go to the card</Button></p>}
+  {mergeCard === undefined && mayPress && !merged && done === undefined && <Dialog title="Press Merge?" description="Rovara merges it now, with the project's merge method." open={open} onOpenChange={value => { if (!busy) { if (value) requestId.current = crypto.randomUUID();setOpen(value); } }}
    trigger={<Button variant="primary" disabled={!task.merge.ready || pending !== undefined}>Merge</Button>}>
    <ul className="rv-merge-items">{unmerged.map(item => <li key={item.repositoryId + "#" + String(item.number)}><VisibleText text={item.repositoryId + " #" + String(item.number)} /></li>)}</ul>
-   {task.merge.risk && levelOf(task.merge.risk) !== "low" && <p role="note"><strong>{RISK_WORDS[levelOf(task.merge.risk)!]}.</strong> <VisibleText text={task.merge.risk.reasons.join(" ")} /> {levelOf(task.merge.risk) === "high" ? "You will confirm on the next page, after signing in again." : "Merge anyway?"}</p>}
+   {task.merge.risk && levelOf(task.merge.risk) !== "low" && <p role="note"><strong>{RISK_WORDS[levelOf(task.merge.risk)!]}.</strong> <VisibleText text={task.merge.risk.reasons.join(" ")} /> {levelOf(task.merge.risk) === "high" ? "It is merged on its merge card on this page, after a sign-in with the email code." : "Merge anyway?"}</p>}
    <div className="rv-actions"><Button disabled={busy} onClick={() => setOpen(false)}>Not now</Button><Button variant="primary" busy={busy} onClick={() => { void press(); }}>Press Merge</Button></div>
   </Dialog>}
   {error && <p role="alert"><VisibleText text={error} /></p>}
+  {signIn && <Button onClick={() => host.signIn(host.currentPath())}>Sign in again</Button>}
   {pending && <ConfirmInBrowser<ReadSession> result={pending} subjectKey={key} isApplied={view => mergedEverywhere(workspaceTask(view))} onApplied={() => { setPending(undefined);requestId.current = undefined; }} />}
  </section>;
 }

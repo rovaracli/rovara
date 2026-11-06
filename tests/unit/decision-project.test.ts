@@ -29,10 +29,11 @@ const ITEMS: Record<DecisionKind, DecisionItem> = {
   setup_host: { ...base("hst1"), kind: "setup_host", host: "artifactory.corp.example", from: { path: "pip.conf", line: 2 }, journalN: 3, staffStep: true },
   second_review_notice: { ...base("srn1"), kind: "second_review_notice", message: "The second-opinion model your company chose no longer qualifies." },
   approve_fixture_set: { ...base("fxs1"), kind: "approve_fixture_set", dependency: "payments-api", origin: "recorded", entries: 4, faults: 1, scanClean: true, schemaSynth: false, firstFromTestAccount: false },
+  approve_request: { ...base("spr_aaaaaaaaaaaaaaaaaaaa", { openPath: "/app/decisions/approve_request/spr_aaaaaaaaaaaaaaaaaaaa" }), kind: "approve_request", prefix: "spr" },
 };
 const DEFAULT_RISK: Record<DecisionKind, DecisionRisk> = {
   approve_plan: "low", approve_requirements: "low", approve_design: "low", merge: "low", answer_question: "low", choose_checks: "low", approve_dependency: "medium", approve_e2e_plan: "medium",
-  review_feedback: "low", autofix_ask: "medium", approve_setting: "high", approve_spend: "low", approve_test_env: "medium", confirm_env_change: "medium", spec_choice: "low", fix_setup: "medium", setup_host: "medium", second_review_notice: "low", approve_fixture_set: "medium",
+  review_feedback: "low", autofix_ask: "medium", approve_setting: "high", approve_spend: "low", approve_test_env: "medium", confirm_env_change: "medium", spec_choice: "low", fix_setup: "medium", setup_host: "medium", second_review_notice: "low", approve_fixture_set: "medium", approve_request: "high",
 };
 const cardOf = (item: DecisionItem, locks = {}) => {
   const result = cardOfItem(item, locks);
@@ -116,17 +117,19 @@ describe("friction on the card", () => {
     const card = cardOf(ITEMS.approve_plan);
     expect(card.actions[0]).toEqual({ kind: "approve", label: "Approve", href: `${decisionCardPath("approve_plan:plan1")}/approve`, method: "POST" });
     expect(card.recommended.action).toBe("approve");
-    expect(card.rejectReasons.length).toBeGreaterThan(0);
+    // A document is sent back with Request changes (slice 2), so its card has no reject and no reject reasons; a kind that can be put off keeps them.
+    expect(card.rejectReasons).toEqual([]);
+    expect(cardOf(ITEMS.approve_dependency).rejectReasons.length).toBeGreaterThan(0);
   });
   it("medium keeps the evidence-first flag and still offers approve (the server enforces the open)", () => {
     const card = cardOf(ITEMS.approve_dependency);
     expect(card.friction).toEqual({ expandEvidenceFirst: true, freshSignIn: false, secondPerson: false });
     expect(card.actions.some((action) => action.kind === "approve")).toBe(true);
   });
-  it("high has NO approve action: only 'Open to decide', and a fresh sign-in is flagged (second person where asked)", () => {
+  it("high has NO approve action: only 'Open', and a fresh sign-in is flagged (second person where asked)", () => {
     const card = cardOf(ITEMS.approve_setting);
     expect(card.actions.map((action) => action.kind)).toEqual(["open"]);
-    expect(card.actions[0]?.label).toBe("Open to decide");
+    expect(card.actions[0]?.label).toBe("Open");
     expect(card.recommended.action).toBe("open");
     expect(card.friction).toEqual({ expandEvidenceFirst: true, freshSignIn: true, secondPerson: true });
     expect(cardOf({ ...(ITEMS.approve_plan), files: ["infra/x.ts"] } as DecisionItem).friction.secondPerson).toBe(false);
@@ -217,7 +220,38 @@ describe("Full path: requirements and design are one card with two tabs", () => 
   it("a high pair has no approve on the card", () => {
     const projection = projectDecisionCards([ITEMS.approve_requirements, ITEMS.approve_design], { locks: { approve_design: "high" } });
     expect(projection.cards[0]?.risk).toBe("high");
-    expect(projection.cards[0]?.actions.map((action) => action.kind)).toEqual(["open"]);
+    // Request changes stays (it never approves); Approve does not.
+    expect(projection.cards[0]?.actions.map((action) => action.kind)).toEqual(["open", "request_changes"]);
+  });
+  it("every card about a task links to that card on its task page (?decision=<card id>), whatever the kind or tier (decision journey S1a)", () => {
+    const page = `/app/sessions/ses_${"a".repeat(20)}`;
+    const high = projectDecisionCards([ITEMS.approve_design], { locks: { approve_design: "high" } }).cards[0]!;
+    expect(high.risk).toBe("high");
+    expect(high.actions.find((action) => action.kind === "open")).toEqual({ kind: "open", label: "Open", href: `${page}?decision=approve_design%3Ades1`, method: "GET" });
+    expect(DecisionCardSchema.safeParse(high).success).toBe(true);
+    for (const kind of ["approve_design", "merge", "answer_question", "spec_choice", "approve_dependency"] as const) {
+      const card = projectDecisionCards([ITEMS[kind]], { pairFullCards: false }).cards[0]!;
+      expect(card.actions.find((action) => action.kind === "open")?.href).toBe(`${page}?decision=${encodeURIComponent(card.id)}`);
+      expect(DecisionCardSchema.safeParse(card).success).toBe(true);
+    }
+    // A card about no task, or whose page is not a session page, keeps its page as it is.
+    const company = projectDecisionCards([{ ...ITEMS.second_review_notice, taskId: undefined, openPath: "/app/admin/second-review" }]).cards[0]!;
+    expect(company.actions.find((action) => action.kind === "open")?.href).toBe("/app/admin/second-review");
+    const project = projectDecisionCards([{ ...ITEMS.confirm_env_change, openPath: "/app/projects/payments" }]).cards[0]!;
+    expect(project.actions.find((action) => action.kind === "open")?.href).toBe("/app/projects/payments");
+    const noTask = projectDecisionCards([{ ...ITEMS.approve_dependency, taskId: undefined }]).cards[0]!;
+    expect(noTask.actions.find((action) => action.kind === "open")?.href).toBe(page);
+    // A confirmation page of its own (a setting's) is still what a high card with one opens.
+    const confirm = projectDecisionCards([{ ...ITEMS.approve_setting, confirmPath: "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }]).cards[0]!;
+    expect(confirm.actions.find((action) => action.kind === "open")?.href).toBe("/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa");
+  });
+  it("uses the one vocabulary on every action: Approve, Request changes, Merge, Answer, Open, Not now", () => {
+    const labels = (kind: DecisionKind) => projectDecisionCards([ITEMS[kind]], { pairFullCards: false }).cards[0]!.actions.map((action) => action.label);
+    expect(labels("approve_plan")).toEqual(["Approve", "Request changes", "Open"]);
+    expect(labels("approve_dependency")).toEqual(["Approve", "Not now", "Open"]);
+    expect(labels("merge")).toEqual(["Merge", "Not now", "Open"]);
+    expect(labels("answer_question")).toEqual(["Answer"]);
+    expect(labels("approve_setting")).toEqual(["Open"]);
   });
   it("does not merge different tasks, or when pairing is off (two separate cards)", () => {
     const other = { ...(ITEMS.approve_design), taskId: "22222222-2222-4222-8222-222222222222" } as DecisionItem;
@@ -288,9 +322,9 @@ describe("the evidence detail a medium card shows (I4)", () => {
 
 describe("a high card opens the confirmation page (I5)", () => {
   const confirm = "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa";
-  it("uses the item's confirmation page for 'Open to decide' and lists a high card without one as unconfirmed", () => {
+  it("uses the item's confirmation page for 'Open' and lists a high card without one as unconfirmed", () => {
     const withPage = projectDecisionCards([{ ...(ITEMS.approve_setting), confirmPath: confirm }]);
-    expect(withPage.cards[0]!.actions).toEqual([{ kind: "open", label: "Open to decide", href: confirm, method: "GET" }]);
+    expect(withPage.cards[0]!.actions).toEqual([{ kind: "open", label: "Open", href: confirm, method: "GET" }]);
     expect(withPage.unconfirmed).toEqual([]);
     const without = projectDecisionCards([ITEMS.approve_setting]);
     expect(without.unconfirmed).toEqual(["approve_setting:set1"]);
@@ -357,7 +391,7 @@ describe("fix_setup (setup and test health SH17)", () => {
     expect(cardOf(fix()).evidence.some((chip) => chip.label === "Failing in checks that failed before")).toBe(false);
   });
 
-  it("a company lock that raises it to high leaves only Open to decide, never an approve", () => {
+  it("a company lock that raises it to high leaves only Open, never an approve", () => {
     const card = cardOf(fix({ knownFailingTests: 3 }), { fix_setup: "high" });
     expect(card.risk).toBe("high");
     expect(card.actions.map((action) => action.kind)).toEqual(["open"]);

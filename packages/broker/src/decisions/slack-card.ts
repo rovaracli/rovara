@@ -1,10 +1,11 @@
 // Decision cards on Slack (Decisions D4): the same `DecisionCard` as Home, as Block Kit. One card, one message. The buttons follow the card's own friction, so Slack cannot be a way around it:
-//   low    Approve (one tap) and Not now, and a link to the details;
-//   medium NO approve button: "Review the evidence" is a link to the card on the web, where the evidence is opened and Approve is allowed; Not now stays one tap;
-//   high   one link, "Open to decide": the full page and its fresh sign-in. No approve and no reject here.
+//   low    Approve (one tap) and Not now, and "Open", a link to the card;
+//   medium NO approve button: "Show the evidence" is a link to the card on the web, where the evidence is opened and Approve is allowed; Not now stays one tap;
+//   high   one link, "Open": the card (or the confirmation page and its fresh sign-in). No approve and no reject here.
+// The button words are the shared table (`DECISION_LABELS`), the same as the web card's.
 // A pressed button carries only the card's id; the server re-checks everything (routes.ts), so a forged or stale press is refused there. Every word that came from a person, a plan or a repository
 // was already flattened by the projector; here it is also escaped for Slack (a mention, a link, a broadcast).
-import { hideEmailAddresses, type DecisionCard, type DecisionTab } from "@agentx/contracts";
+import { DECISION_LABELS, hideEmailAddresses, type DecisionCard, type DecisionTab } from "@agentx/contracts";
 
 export const DECISION_SLACK_APPROVE_ACTION = "rovara_decision_approve";
 export const DECISION_SLACK_REJECT_ACTION = "rovara_decision_reject";
@@ -51,15 +52,15 @@ export function slackCardMessage(card: DecisionCard, input: { cardUrl: string; /
   const canApprove = card.actions.some((action) => action.kind === "approve");
   const canReject = card.actions.some((action) => action.kind === "reject");
   if (card.risk === "high") {
-    elements.push(button(DECISION_SLACK_OPEN_ACTION, "Open to decide", { url: input.cardUrl, style: "primary", value: `${card.id}|${input.digest}` }));
+    elements.push(button(DECISION_SLACK_OPEN_ACTION, DECISION_LABELS.open, { url: input.cardUrl, style: "primary", value: `${card.id}|${input.digest}` }));
   } else if (card.risk === "low" && canApprove) {
-    elements.push(button(DECISION_SLACK_APPROVE_ACTION, "Approve", { style: "primary", value: `${card.id}|${input.digest}` }));
-    if (canReject) elements.push(button(DECISION_SLACK_REJECT_ACTION, "Not now", { value: `${card.id}|${input.digest}` }));
-    elements.push(button(DECISION_SLACK_OPEN_ACTION, "Details", { url: input.cardUrl, value: `${card.id}|${input.digest}` }));
+    elements.push(button(DECISION_SLACK_APPROVE_ACTION, card.kind === "merge" ? DECISION_LABELS.merge : DECISION_LABELS.approve, { style: "primary", value: `${card.id}|${input.digest}` }));
+    if (canReject) elements.push(button(DECISION_SLACK_REJECT_ACTION, DECISION_LABELS.notNow, { value: `${card.id}|${input.digest}` }));
+    elements.push(button(DECISION_SLACK_OPEN_ACTION, DECISION_LABELS.open, { url: input.cardUrl, value: `${card.id}|${input.digest}` }));
   } else {
     // Medium, or a low card that is answered on its own page (a question, a choice).
-    elements.push(button(DECISION_SLACK_OPEN_ACTION, card.risk === "medium" ? "Review the evidence" : "Open", { url: input.cardUrl, style: "primary", value: `${card.id}|${input.digest}` }));
-    if (canReject) elements.push(button(DECISION_SLACK_REJECT_ACTION, "Not now", { value: `${card.id}|${input.digest}` }));
+    elements.push(button(DECISION_SLACK_OPEN_ACTION, card.risk === "medium" ? DECISION_LABELS.showEvidence : DECISION_LABELS.open, { url: input.cardUrl, style: "primary", value: `${card.id}|${input.digest}` }));
+    if (canReject) elements.push(button(DECISION_SLACK_REJECT_ACTION, DECISION_LABELS.notNow, { value: `${card.id}|${input.digest}` }));
   }
   blocks.push({ type: "actions", elements });
   return { text, blocks };

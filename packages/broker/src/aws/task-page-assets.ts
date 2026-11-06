@@ -506,7 +506,8 @@ function call(method,path,body,retried){
         return readState().then(function(){return answer;});
       }
       /* Remember and Forget refusals are about that one comment: the caller shows the message and re-reads state. */
-      if(!learnPath(path)&&((answer.status===403&&answer.body.error!=="request_refused")||answer.status===404))stopAccess(false);
+      /* A decision that needs a recent sign-in ("reauth") is said on the dialog with Sign in again; the page's access is unchanged. */
+      if(!learnPath(path)&&((answer.status===403&&answer.body.error!=="request_refused"&&answer.body.error!=="reauth")||answer.status===404))stopAccess(false);
       return answer;
     });
   });
@@ -1283,9 +1284,12 @@ function openDialog(kind,button){
   sending=false;
   if(typeof dialog.showModal==="function"){if(!dialog.open)dialog.showModal();}else dialog.setAttribute("open","");
 }
-function fail(text,newer){
+function fail(text,newer,reauth){
   var error=el("decide-error");
   error.textContent=text;error.hidden=false;
+  /* Sign in again comes back to this page (the sign-in's return path is this review page). */
+  var again=el("decide-signin"),link=el("decide-signin-link");
+  if(again&&link){again.hidden=reauth!==true;link.setAttribute("href","/v1/auth/browser/authorize?return_to="+encodeURIComponent(location.pathname));}
   el("decide-status").textContent="";
   if(newer)showIt.hidden=false;
 }
@@ -1332,7 +1336,7 @@ function submit(){
       return;
     }
     sending=false;el("decide-submit").disabled=false;
-    fail(said(answer),answer.status===409);
+    fail(said(answer),answer.status===409,answer.status===403&&answer.body.error==="reauth");
   },function(){if(generation!==accessGeneration){sending=false;return;}sending=false;el("decide-submit").disabled=false;fail(COPY.unavailable,false);});
 }
 

@@ -15,7 +15,8 @@ interface Harness {
 /** `web(who, method, "/v1/app/...", body, signedInMsAgo)`: the request as that person's browser would send it. */
 export function browserRequests(h: Harness) {
   const sessions = new Map<string, string>();
-  return async (who: Developer, method: string, path: string, body?: unknown, authAgoMs = 0): Promise<Reply> => {
+  /** `extraCookie`: another cookie the browser holds (the decide session, `__Host-rovara_decide=<value>`). */
+  return async (who: Developer, method: string, path: string, body?: unknown, authAgoMs = 0, extraCookie?: string): Promise<Reply> => {
     await h.orgOf(who);
     if (h.db.get(`DEVELOPER#${who.developerId}`, "META") === undefined) {
       h.db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: who.provider, displayName: who.name, ...(who.slackUserId === undefined ? {} : { slackUserId: who.slackUserId }), firstSignInAt: "x", lastSignInAt: "x", revoked: false });
@@ -28,8 +29,8 @@ export function browserRequests(h: Harness) {
       sessions.set(key, id);
     }
     const response = await h.handler({
-      rawPath: path.replace("/v1/app/", "/v1/web/"), rawQueryString: "", routeKey: "ANY /v1/web/{proxy+}",
-      headers: { cookie: `__Host-agentx_review_session=${id}`, "sec-fetch-site": "same-origin", origin: new URL(DEV_ISSUER).origin, [APP_CSRF_HEADER]: appCsrfTokenFor(id) },
+      rawPath: path.split("?", 1)[0]!.replace("/v1/app/", "/v1/web/"), rawQueryString: path.includes("?") ? path.slice(path.indexOf("?") + 1) : "", routeKey: "ANY /v1/web/{proxy+}",
+      headers: { cookie: `__Host-agentx_review_session=${id}${extraCookie === undefined ? "" : `; ${extraCookie}`}`, "sec-fetch-site": "same-origin", origin: new URL(DEV_ISSUER).origin, [APP_CSRF_HEADER]: appCsrfTokenFor(id) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), requestContext: { requestId: "r", http: { method } },
     });
     return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
