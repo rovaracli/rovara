@@ -161,6 +161,8 @@ function refusalResponse(error: unknown): WebResponse {
   if (code === "CONFIG_INVALID" && text === PROJECT_RECORD_NEEDS_ADMIN) return json(409, { error: "changed", message: text });
   if (code === "CONFIG_INVALID") return PAGE_SAFE_MESSAGES.has(text) ? invalid(text) : json(409, { error: "changed", message: TASK_CHANGED });
   if (code === "TASK_BUSY" || code === "WORKSPACE_BUSY") return json(409, { error: "busy", message: "AgentX is busy with this task. Try again in a minute." });
+  // Decision journey slice 2: a high-risk plan needs a recent sign-in. The page says so with its words and offers "Sign in again", which comes back here; its access is not stopped (`reauth`).
+  if (code === "REAUTH_REQUIRED") return json(403, { error: "reauth", message: text });
   return json(503, { error: "unavailable", message: "AgentX couldn't do that right now. Try again shortly." });
 }
 

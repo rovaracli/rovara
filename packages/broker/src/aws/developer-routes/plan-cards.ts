@@ -85,7 +85,7 @@ async function itemOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller,
   let proposedUsd: number | undefined;
   try { proposedUsd = await planRunLimit(estimateDependencies(developerTaskRouteDependencies(deps, caller)), task); } catch { proposedUsd = estimate?.runLimitUsd; }
   // What the plan changes and how it is proved, read from the plan itself (`planFactsOf`): the tier the card shows is the one the workflow decision enforces. Unreadable: no chips, at least medium.
-  const facts = planFactsOf(loaded);
+  const facts = planFactsOf(loaded, workflow);
   return {
     ...base, kind: "approve_plan", path: workflow.path === "FULL" ? "full" : "quick", files: facts.files, claims, untestedClaims: facts.untestedClaims, ...(facts.unread ? { unread: true } : {}),
     ...(estimate === undefined ? {} : { cost: { lowUsd: estimate.lowUsd, highUsd: estimate.highUsd, ...(estimate.minutes === undefined ? {} : { minutes: estimate.minutes }) } }),

@@ -10,7 +10,7 @@ import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { getTaskDocumentView, releaseFinishedTask, resumeAfterRunLimitApproval } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
-import { RUN_LIMIT_ACK_PLACE_MESSAGE } from "../../packages/broker/src/aws/developer-tasks/decide.js";
+import { PLAN_HIGH_REAUTH_MESSAGE, RUN_LIMIT_ACK_PLACE_MESSAGE } from "../../packages/broker/src/aws/developer-tasks/decide.js";
 import { pageDecision } from "../support/page-decision.js";
 import { browserRequests } from "../support/browser-session.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
@@ -926,6 +926,22 @@ describe("approving the plan", () => {
       expect(lowCard?.risk, `positive control: the plan is low (${JSON.stringify(lowCard?.riskReasons)})`).toBe("low");
       const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${low.taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: low.plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: low.plan.digest });
       expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    });
+  });
+
+  it("review fix: a HIGH plan on the plan review page: a stale sign-in is told to sign in again (403 reauth, not 'couldn't do that'), a fresh one approves", async () => {
+    await withCards(async () => {
+      const t = await world();
+      const { taskId, plan } = await t.planned("QUICK", INFRA);
+      const proposed = (t.meta(taskId) as unknown as { runEstimate: { runLimitUsd: number } }).runEstimate.runLimitUsd;
+      const body = { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, acknowledgedRunLimitUsd: proposed, answers: [{ decisionId: "d1", optionId: "three", opened: true }] };
+      const stale = await pageDecision(t.h, MAYA, taskId, body, 20 * 60_000);
+      expect(stale.status).toBe(403);
+      expect(stale.body).toMatchObject({ error: "reauth", message: PLAN_HIGH_REAUTH_MESSAGE });
+      expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
+      const fresh = await pageDecision(t.h, MAYA, taskId, body);
+      expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+      expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "IMPLEMENT" } });
     });
   });
 

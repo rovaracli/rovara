@@ -1058,6 +1058,21 @@ describe("the deciding and commenting script", () => {
     expect(boxes[26]!.checked).toBe(true);
   });
 
+  it("slice 2: a decision that needs a recent sign-in says so on the dialog with Sign in again, which comes back to this page, and the page keeps working", async () => {
+    const words = "Sign in again to approve this. A high-risk decision needs a sign-in within the last 10 minutes.";
+    const page = boot(await pageHtml(), { storage: fakeStorage(), respond: (entry) => entry.url.endsWith("/decision") ? { status: 403, body: { error: "reauth", message: words } } : { status: 200, body: {} } });
+    expect(page.byId("decide-signin").hidden).toBe(true);
+    page.byId("decide-approve").click();
+    page.byId("decide-submit").click();
+    await page.settle();
+    expect(page.byId("decide-error").textContent).toBe(words);
+    expect(page.byId("decide-signin").hidden).toBe(false);
+    expect(page.byId("decide-signin-link").getAttribute("href")).toBe(`/v1/auth/browser/authorize?return_to=${encodeURIComponent(`/review/${taskId}/task`)}`);
+    // Not a lost access: the dialog stays and can be sent again.
+    expect(page.byId("decide-dialog").open).toBe(true);
+    expect((page.byId("decide-submit") as unknown as { disabled: boolean }).disabled).toBe(false);
+  });
+
   it("a refused decision keeps answers, drafts and exclusions and restores them on the next version where they still fit", async () => {
     const storage = fakeStorage();
     const refused = "Already approved by Priya a moment ago.";

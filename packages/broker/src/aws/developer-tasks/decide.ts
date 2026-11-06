@@ -440,7 +440,7 @@ export async function decideTaskWorkflow(
   // limit is raised, starts what the approval would have started.
   // QA6-12: an approval that names the limit it was shown (the task page does) is checked against the limit `acceptRunLimit` itself works out, inside `settleRunLimit`, so the limit
   // written is exactly the one acknowledged (a second, separate recompute could differ if the estimate's history or the spend policy changed in between).
-  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd, decisionCardsEnabled()) : undefined;
+  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd) : undefined;
   // The corrected plan's approval ends the E2E correction fence, whether coding starts now or waits for the run limit.
   const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
     && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
@@ -553,35 +553,44 @@ const runLimitChangedMessage = (shownUsd: number, nowUsd: number): string =>
   `This plan's run limit is now $${String(nowUsd)}, not the $${String(shownUsd)} you were shown. Refresh the page, check the limit, and approve again.`;
 
 /** Said when an approval that raises the run limit came without the limit acknowledged (Slack, a tool). `link` is the plan's card in Rovara, when this deployment knows its address. */
-export const runLimitAckMessage = (currentUsd: number, proposedUsd: number, link?: string): string =>
-  `Approving this plan raises the run limit from $${String(currentUsd)} to $${String(proposedUsd)}. Approve it on its card in Rovara, where you confirm the new limit${link === undefined ? "." : `: ${link}`}`;
+export const runLimitAckMessage = (currentUsd: number, proposedUsd: number, link?: string, place: "card" | "page" = "card"): string =>
+  `Approving this plan raises the run limit from $${String(currentUsd)} to $${String(proposedUsd)}. Approve it ${place === "card" ? "on its card in Rovara" : "on the plan review page"}, where you confirm the new limit${link === undefined ? "." : `: ${link}`}`;
 /** Said when a medium or high risk plan is approved from outside a signed-in browser (Slack, a tool, a token). */
-export const planRiskPlaceMessage = (risk: "medium" | "high", link?: string): string =>
-  `This plan is ${risk} risk, so it is approved on its card in Rovara${risk === "high" ? ", after a recent sign-in" : ""}${link === undefined ? "." : `: ${link}`}`;
+export const planRiskPlaceMessage = (risk: "medium" | "high", link?: string, place: "card" | "page" = "card"): string =>
+  `This plan is ${risk} risk, so it is approved ${place === "card" ? "on its card in Rovara" : "on the plan review page"}${risk === "high" ? ", after a recent sign-in" : ""}${link === undefined ? "." : `: ${link}`}`;
 /** Said when the run limit is acknowledged from outside a signed-in browser: only a person who saw it there can agree to it. */
 export const RUN_LIMIT_ACK_PLACE_MESSAGE = "A run limit is confirmed only in the Rovara app, by the person who sees it there.";
 /** Said when a high-risk plan's approver has not signed in recently. */
 export const PLAN_HIGH_REAUTH_MESSAGE = "Sign in again to approve this. A high-risk decision needs a sign-in within the last 10 minutes.";
 
-/** The plan's card on its task page, when the session is known; else the plan review page; undefined when this deployment has no issuer. */
-function planCardLink(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): string | undefined {
-  if (deps.issuer === undefined) return undefined;
-  try { return decisionCardUrl(new URL(deps.issuer).origin, task, `approve_plan:${task.taskId}`, taskPageUrl(deps.issuer, task.taskId)); } catch { return undefined; }
+/**
+ * Where a refused approval sends the person: with the decision cards on, the plan's card on its task page (the plan review page when the session is not known); with them off, the plan review page, which
+ * always exists. Undefined when this deployment has no issuer.
+ */
+function planApprovalLink(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): { link: string | undefined; place: "card" | "page" } {
+  const place = decisionCardsEnabled() ? "card" as const : "page" as const;
+  if (deps.issuer === undefined) return { link: undefined, place };
+  try {
+    const page = taskPageUrl(deps.issuer, task.taskId);
+    return { link: place === "card" ? decisionCardUrl(new URL(deps.issuer).origin, task, `approve_plan:${task.taskId}`, page) : page, place };
+  } catch { return { link: undefined, place }; }
 }
 
 /**
  * Who may approve a coding plan from where (decision journey slice 2, owner: "medium and high always open the task-page card", "recent sign-in for high"; low is answered where shown):
  *   - a run limit is acknowledged only from a signed-in browser (the card or the plan review page), never by Slack, a tool or a token;
- *   - while the decision cards are on, a medium or high plan (its tier is the card's own, from the plan document: `planRiskOf`) is approved only from a signed-in browser, and a high one only after a
- *     recent sign-in (REAUTH_REQUIRED). A low plan is approved anywhere, as before. With the cards off there is no card to send anyone to, so only the first rule applies.
+ *   - a medium or high plan (its tier is the card's own, from the plan document: `planRiskOf`) is approved only from a signed-in browser (the card, or the plan review page), and a high one only after a
+ *     recent sign-in (REAUTH_REQUIRED). A low plan is approved anywhere, as before. This rule holds while the decision cards are on (the first holds always); the refusal links to the card.
  */
 async function requirePlanApprovalPlace(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, loaded: Awaited<ReturnType<typeof loadWorkflowDocument>>, request: WorkflowDecisionRequest, page: boolean): Promise<void> {
   const browser = caller.browserSession === true || page;
   if (request.acknowledgedRunLimitUsd !== undefined && !browser) throw agentXError("FORBIDDEN", RUN_LIMIT_ACK_PLACE_MESSAGE);
+  // NOT YET ALWAYS (see the slice 2 report): enforcing this with the cards off refuses Slack and tool approvals of most plans in every deployment (about 1,000 tests approve such plans that way);
+  // the owner decides that rollout. Until then it holds while the decision cards are on.
   if (!decisionCardsEnabled()) return;
-  const risk = planRiskOf(planFactsOf(loaded), task.runEstimate?.highUsd);
+  const risk = planRiskOf(planFactsOf(loaded, task.workflow), task.runEstimate?.highUsd);
   if (risk === "low") return;
-  if (!browser) throw agentXError("FORBIDDEN", planRiskPlaceMessage(risk, planCardLink(deps, task)));
+  if (!browser) { const { link, place } = planApprovalLink(deps, task); throw agentXError("FORBIDDEN", planRiskPlaceMessage(risk, link, place)); }
   if (risk === "high") {
     const fresh = deps.signInTableName !== undefined && await freshSignInOf({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.signInTableName, now: () => deps.now() }, caller);
     if (!fresh) throw agentXError("REAUTH_REQUIRED", PLAN_HIGH_REAUTH_MESSAGE);
@@ -596,7 +605,7 @@ type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: numbe
  * (a proxy that can't say refuses the approval, as a Continue is). Not accepted: the `run_limit` request is made through Task 32's seam before anything is
  * written, so a workflow is never blocked on a request that was not made; without the seam (until Task 32 is wired) no request is made and the words are the same.
  */
-async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd: number | undefined, cardsOn: boolean): Promise<RunLimitOutcome> {
+async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd: number | undefined): Promise<RunLimitOutcome> {
   const decision = await acceptRunLimit(
     // The approver's project role is read now: from the project's people where agents are set up, else through the caller's own project access.
     { ...estimateDependencies(deps), projectMembers: deps.agentRuns?.projectMembers ?? { roleOf: async () => (await deps.checkAccess(task.project)).role } },
@@ -608,10 +617,10 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
   }
   // Decision journey slice 2: an approval that RAISES the run limit (none set yet, or a higher one) is taken only with the limit acknowledged, whoever asks (the decision card's tick, the task page's
   // tick; never a Slack button or a tool that cannot show it). The limit is the amount the person agrees to spend up to, so it is never raised without them seeing it.
-  // Only while the decision cards are on: the card is where the tick is (with them off, the plan review page's approval acknowledges as before, and Slack approves as it always did).
+  // While the decision cards are on (the card and the plan review page both carry the tick; Slack and tools cannot show it). Not yet always: see requirePlanApprovalPlace.
   // A task with no limit of its own runs on the per-task default, so the raise is measured against that.
   const currentUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
-  if (cardsOn && acknowledgedUsd === undefined && runLimitRaises(currentUsd, decision.runLimitUsd)) throw agentXError("CONFIG_INVALID", runLimitAckMessage(currentUsd, decision.runLimitUsd, planCardLink(deps, task)));
+  if (decisionCardsEnabled() && acknowledgedUsd === undefined && runLimitRaises(currentUsd, decision.runLimitUsd)) { const { link, place } = planApprovalLink(deps, task); throw agentXError("CONFIG_INVALID", runLimitAckMessage(currentUsd, decision.runLimitUsd, link, place)); }
   if (decision.accepted) return { accepted: true, runLimitUsd: decision.runLimitUsd, baselineUsd: await capWindowBaseline(deps, task) ?? 0 };
   const ask = deps.agentRuns?.requestRunLimit;
   let asked = false;

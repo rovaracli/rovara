@@ -477,7 +477,7 @@ function decideDialog(view: TaskDocumentView): string {
     + '<section id="decide-runlimit" hidden><h3 id="decide-runlimit-title">Run limit</h3><p id="decide-runlimit-text"></p>'
     + '<label id="decide-runlimit-ack-row"><input type="checkbox" id="decide-runlimit-ack"> <span id="decide-runlimit-ack-label"></span></label></section>'
     + '<label for="decide-note" id="decide-note-label">Note for AgentX (optional)</label><textarea id="decide-note" maxlength="500"></textarea>'
-    + '<p id="decide-error" class="error" role="alert" hidden></p><p id="decide-status" role="status" aria-live="polite"></p>'
+    + '<p id="decide-error" class="error" role="alert" hidden></p><p id="decide-signin" hidden><a id="decide-signin-link" href="/v1/auth/browser/authorize">Sign in again</a></p><p id="decide-status" role="status" aria-live="polite"></p>'
     + '<p class="dialog-actions"><button type="button" id="decide-submit">Approve and continue</button> <button type="button" id="decide-cancel">Cancel</button></p></dialog>';
 }
 
