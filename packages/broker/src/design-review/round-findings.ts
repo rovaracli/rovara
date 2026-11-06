@@ -83,6 +83,8 @@ export function assembleRoundFindings(input: {
   const outcomes = new Map(input.result.reviewers.map((outcome) => [outcome.role, outcome] as const));
   const reviewers: RoundReviewerState[] = [];
   const raw: RawDesignFinding[] = [];
+  // Findings a reader could not use (an invalid field, no readable text): listed with the ones the citation check drops, so the card says so.
+  const readDropped: DroppedFinding[] = [];
   for (const entry of input.binding.reviewers) {
     const outcome = outcomes.get(entry.role);
     const unused = (notUsed: NonNullable<RoundReviewerState["notUsed"]>, verifyFailure: ReviewerVerifyFailure): void => { reviewers.push({ role: entry.role, counted: false, verified: false, verifyFailure, notUsed }); };
@@ -95,6 +97,7 @@ export function assembleRoundFindings(input: {
     const read = readDesignReview(outcome.answer, entry.role, { withParaphrase: lightCriticWritesParaphrase(entry.role, input.promptIds?.get(entry.role) ?? "") });
     if (!read.ok) { unused("unreadable_output", "unreadable_output"); continue; }
     raw.push(...read.findings);
+    readDropped.push(...read.dropped);
     reviewers.push({ role: entry.role, verified: true, inputProof: verdict.inputProof, counted: true, ...(read.paraphrase === undefined ? {} : { paraphrase: read.paraphrase }) });
   }
   const cited = filterReviewerCitations(raw, input.packets, input.pins);
@@ -105,7 +108,7 @@ export function assembleRoundFindings(input: {
     const merged = mergeDesignFindings(cited.findings, input.result.merge.answer, { verifiedRoles });
     return {
       findings: merged.findings, omitted: merged.omitted, mergeSource: merged.source, ...(merged.fallback === undefined ? {} : { mergeFallback: merged.fallback }),
-      reviewers, droppedCitations: cited.droppedCitations, droppedFindings: cited.droppedFindings,
+      reviewers, droppedCitations: cited.droppedCitations, droppedFindings: [...readDropped, ...cited.droppedFindings],
     };
   } catch {
     // The merge contract throws on a caller bug (two different findings with one id). The round fails closed: nothing counts, and nothing is thrown out of the assembly.

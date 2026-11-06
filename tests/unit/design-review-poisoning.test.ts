@@ -374,7 +374,7 @@ describe("3.12 item 4: the review's mode comes from the project's setting, whate
   });
 });
 
-describe("3.12 item 3 and 9: a reviewer's own words are read through a strict block", () => {
+describe("3.12 item 3 and 9: a reviewer's own words are read through a block that is strict where it protects the review", () => {
   const block = (body: unknown, info = "rovara-design-review") => `\`\`\`${info}\n${JSON.stringify(body)}\n\`\`\``;
   const one = (over: Record<string, unknown> = {}) => ({ id: "1", severity: "blocker", section: "§3", text: "Retries have no upper bound.", citations: [{ kind: "design", section: "§3" }], ...over });
 
@@ -398,8 +398,11 @@ describe("3.12 item 3 and 9: a reviewer's own words are read through a strict bl
       expect(result.ok ? "" : result.error, JSON.stringify(extra)).toContain("unknown field");
       expect(result.ok ? "" : result.error).not.toContain("light");
     }
+    // A finding that carries a field of its own is not used at all (its other words are not read), and the block is still read: the other findings stand, and the lost one is counted.
     for (const extra of [{ tier: "light" }, { approved: true }, { suppress: true }]) {
-      expect(readDesignReview(block({ findings: [one(extra)] }), "critic").ok, JSON.stringify(extra)).toBe(false);
+      const result = readDesignReview(block({ findings: [one(extra), one({ id: "2", text: "Another real problem." })] }), "critic");
+      expect(result, JSON.stringify(extra)).toMatchObject({ ok: true, findings: [{ rawId: "critic-2" }], dropped: [{ severity: "blocker", section: "§3" }] });
+      expect(JSON.stringify(result), JSON.stringify(extra)).not.toMatch(/light|approved|suppress/);
     }
   });
 
@@ -417,9 +420,14 @@ describe("3.12 item 3 and 9: a reviewer's own words are read through a strict bl
     expect(credential.ok).toBe(true);
   });
 
-  it("an id that is not plain, a hidden character in a citation and more findings than the cap are refused", () => {
-    expect(readDesignReview(block({ findings: [one({ id: "1‮" })] }), "critic").ok).toBe(false);
-    expect(readDesignReview(block({ findings: [one({ citations: [{ kind: "source", ref: "tracker:ABC-7‮", digest: "d".repeat(64) }] })] }), "critic").ok).toBe(false);
+  it("an id that is not plain is replaced by a generated one; a hidden character in a citation drops that citation (and the finding when it was the only one); more findings than the cap are refused", () => {
+    const hostileId = readDesignReview(block({ findings: [one({ id: "1\u202e" })] }), "critic");
+    expect(hostileId).toMatchObject({ ok: true, findings: [{ rawId: "critic-f1" }] });
+    expect(JSON.stringify(hostileId)).not.toContain("\u202e");
+    const hiddenOnly = readDesignReview(block({ findings: [one({ citations: [{ kind: "source", ref: "tracker:ABC-7\u202e", digest: "d".repeat(64) }] })] }), "critic");
+    expect(hiddenOnly).toMatchObject({ ok: true, findings: [], dropped: [{ role: "critic", severity: "blocker", section: "§3" }] });
+    const hiddenOne = readDesignReview(block({ findings: [one({ citations: [{ kind: "source", ref: "tracker:ABC-7\u202e", digest: "d".repeat(64) }, { kind: "design", section: "§3" }] })] }), "critic");
+    expect(hiddenOne).toMatchObject({ ok: true, findings: [{ citations: [{ kind: "design", section: "§3" }] }] });
     expect(readDesignReview(block({ findings: Array.from({ length: 16 }, (_, index) => one({ id: String(index + 1) })) }), "critic").ok).toBe(false);
   });
 });

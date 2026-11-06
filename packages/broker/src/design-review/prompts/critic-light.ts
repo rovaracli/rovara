@@ -12,6 +12,6 @@ export const PARAPHRASE_STEP_TEXT = [
 
 export const CRITIC_LIGHT_PROMPT: ReviewPrompt = {
   id: LIGHT_CRITIC_PROMPT_ID,
-  version: 1,
+  version: 2,
   text: assemblePrompt([COMMON_RULES, CRITIC_ROLE_TEXT, DESIGN_TEMPLATE_TEXT, PARAPHRASE_STEP_TEXT, CRITIC_STEPS_TEXT, SEVERITY_TEXT, CITATION_TEXT, reviewerOutputText(true)]),
 };

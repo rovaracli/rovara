@@ -4,7 +4,7 @@ import { COMMON_RULES, CITATION_TEXT, DESIGN_TEMPLATE_TEXT, SEVERITY_TEXT, assem
 
 export const CODEBASE_PROMPT: ReviewPrompt = {
   id: "design-review-codebase",
-  version: 2,
+  version: 3,
   text: assemblePrompt([
     COMMON_RULES,
     [
