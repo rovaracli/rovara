@@ -34,9 +34,9 @@ describe("the Slack card follows the card's friction", () => {
     expect(elements[0]).toMatchObject({ action_id: DECISION_SLACK_OPEN_ACTION, url: URL_, text: { text: "Show the evidence" } });
     expect(JSON.stringify(message)).toContain("Medium risk");
   });
-  it("uses the shared words: a low merge card's one-tap button says Review and merge (it asks again before it merges)", () => {
+  it("uses the shared words: a low merge card's one-tap button says Merge", () => {
     const merge: DecisionItem = { ...base("pr1"), kind: "merge", prRisk: "low", prReasons: [], proof: { proven: 1, passed: 1, failed: 0, notTested: 0 }, reviewVerdict: "approved", ci: "passing", securityFindingsHigh: 0, fullSuitePending: false };
-    expect((elementsOf(slackCardMessage(card(merge), { cardUrl: URL_, digest: DIGEST }))[0]?.["text"] as { text: string }).text).toBe("Review and merge");
+    expect((elementsOf(slackCardMessage(card(merge), { cardUrl: URL_, digest: DIGEST }))[0]?.["text"] as { text: string }).text).toBe("Merge");
   });
   it("high: one link, Open; nothing to press that decides", () => {
     const elements = elementsOf(slackCardMessage(card(highItem), { cardUrl: URL_, digest: DIGEST }));

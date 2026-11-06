@@ -23,7 +23,7 @@ export function decisionActionPath(card: ReadDecisionCard, kind: "approve" | "re
  return action.href === expected ? expected : undefined;
 }
 /** Slice 2: the kinds whose HIGH card is approved on the card itself, on its task page, with a recent sign-in (the broker's `highOnCard`). Every other high card has no approve here. */
-export const HIGH_ON_CARD_KINDS: readonly string[] = ["approve_plan", "approve_requirements"];
+export const HIGH_ON_CARD_KINDS: readonly string[] = ["approve_plan", "approve_requirements", "merge"];
 /** A coding plan's card: whether approving raises the run limit, so the card asks for a tick (the broker refuses a raise without it). */
 export function runLimitRaise(card: ReadDecisionCard): { currentUsd: number | undefined; proposedUsd: number; raises: boolean } | undefined {
  const limit = card.runLimit;

@@ -3,7 +3,7 @@
 // part of what the person saw. A token (the CLI, an AI tool) never merges: it gets the confirmation link, which only a browser decides.
 import { describe, expect, it } from "vitest";
 import { MERGE_NOT_READY_MESSAGES as M, MergeDoneReaderSchema, MergeViewSchema, NeedsConfirmationSchema } from "../../packages/contracts/src/index.js";
-import { mergeReadiness, mergeViewOf, pressMerge, riskOfTask, type HumanApproval, type MergePullRequestFacts } from "../../packages/broker/src/rovara-code/merge.js";
+import { MERGE_HIGH_REAUTH_MESSAGE, mergeReadiness, mergeViewOf, pressMerge, riskOfTask, type HumanApproval, type MergePullRequestFacts } from "../../packages/broker/src/rovara-code/merge.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { secondOpinionUnavailable, secondReviewAcknowledgement } from "../../packages/broker/src/rovara-code/second-review.js";
@@ -178,14 +178,12 @@ describe("the risk a press has seen", () => {
     }
   });
 
-  it("never merges a HIGH risk pull request on a click: a browser press gets the confirmation page (fresh sign-in) and nothing is merged", async () => {
+  it("slice 3: a HIGH risk pull request merges in place only after a recent sign-in: without one the press is REAUTH_REQUIRED (said where it was pressed), nothing is merged and no confirmation page is made", async () => {
     const w = await ready();
     w.setWorkflow({ risk: risk("high", ["This PR changes CI configuration."]) });
-    const reply = await webPress(w, { risk: "high" });
-    expect(reply.status).toBe(202);
-    expect(reply.body).toMatchObject({ status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED" });
+    expect(await codeOf(webPress(w, { risk: "high" }))).toEqual({ code: "REAUTH_REQUIRED", message: MERGE_HIGH_REAUTH_MESSAGE });
     expect(w.github.mergeCalls).toEqual([]);
-    expect(w.db.find((item) => item.entityType === "APPROVAL").length).toBe(1);
+    expect(w.db.find((item) => item.entityType === "APPROVAL").length).toBe(0);
     // A press that did not see the risk is still refused first, as before.
     const unseen = await ready();
     unseen.setWorkflow({ risk: risk("high") });

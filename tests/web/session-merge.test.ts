@@ -3,9 +3,11 @@
 // words why Merge can't be pressed yet, and presses Merge after one question; the press answers 202 and the person confirms on Plan 3's page. Only a confirmed merge is "done".
 import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { DecisionCardsViewSchema } from "@agentx/contracts/web";
+import { projectDecisionCards, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { SessionScreen } from "../../packages/ui/src/screens/session/SessionScreen.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
@@ -53,12 +55,12 @@ function mergeSession(merge: { ready: boolean; message?: string; risk?: { level:
   return sessionFixture({ kind: "task", status: "waiting", step: "Waiting for the merge", where: { kind: "cloud" }, body: { kind: "task", task }, you: { level, owner: options.owner ?? level === "edit", following: false, actions: ["watch", "comment"], ...(options.mayMerge === undefined ? {} : { mayMerge: options.mayMerge }) } });
 }
 
-function setup(initial: ReturnType<typeof sessionFixture>, mergeReply?: (request: ApiRequest) => Promise<ApiResponse>) {
+function setup(initial: ReturnType<typeof sessionFixture>, mergeReply?: (request: ApiRequest) => Promise<ApiResponse>, decisions?: unknown) {
   let session = initial;
   const f = fakeHost(async (request) => {
     const path = request.path.split("?", 1)[0]!;
     // The decision cards are not switched on in these worlds (the route does not exist): "no cards".
-    if (path === "/v1/app/decisions") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    if (path === "/v1/app/decisions") return decisions === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } } : { status: 200, body: decisions };
     if (path.endsWith("/messages")) return { status: 200, body: { messages: [] } };
     if (path.endsWith("/events")) return { status: 200, body: { events: [] } };
     if (path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
@@ -261,7 +263,7 @@ it("a medium or high risk adds one line to the dialog and is still one click; th
     const dialog = await screen.findByRole("dialog", { name: "Press Merge?" });
     expect(dialog.textContent).toContain(`${risk.level === "high" ? "High" : "Medium"} risk`);
     expect(dialog.textContent).toContain(risk.reasons[0]);
-    expect(dialog.textContent).toContain(risk.level === "high" ? "You will confirm on the next page, after signing in again." : "Merge anyway?");
+    expect(dialog.textContent).toContain(risk.level === "high" ? "Merging needs a sign-in within the last 10 minutes." : "Merge anyway?");
     fireEvent.click(screen.getByRole("button", { name: "Press Merge" }));
     await screen.findByText("Merged payments #42.");
     expect(f.presses()).toHaveLength(1);
@@ -285,5 +287,36 @@ it("a task whose server gives no risk is pressed as the lowest level it can clai
   fireEvent.click(await screen.findByRole("button", { name: "Press Merge" }));
   await screen.findByText("Merged payments #42.");
   expect((f.presses()[0]![0].body as { risk?: string }).risk).toBeUndefined();
+  f.close();
+});
+
+// ---- decision journey slice 3: one merge control
+const mergeCardView = () => {
+  const item: DecisionItem = { kind: "merge", subjectId: TASK, taskId: TASK, project: "payments", title: "Retry failed payments", createdAt: "2026-11-06T10:00:00.000Z", contentVersion: "v1", openPath: "/app/sessions/" + SESSION_FIXTURE_ID,
+    sessionId: SESSION_FIXTURE_ID, heads: [{ repositoryId: "payments", number: 42, headSha: HEAD }], prRisk: "low", prReasons: [], proof: { proven: 1, passed: 1, failed: 0, notTested: 0 }, reviewVerdict: "approved", ci: "passing", securityFindingsHigh: 0, fullSuitePending: false };
+  const p = projectDecisionCards([item]);
+  return DecisionCardsViewSchema.parse({ cards: p.cards, total: p.cards.length, tabs: p.tabs, details: p.details, digests: p.digests, dropped: p.dropped });
+};
+
+it("slice 3: while the task's merge card waits on the page, the Merge section shows the state and points to the card; it has no second Merge button", async () => {
+  const f = setup(mergeSession({ ready: true }), undefined, mergeCardView());
+  const region = await screen.findByRole("region", { name: "Merge" });
+  expect(await within(region).findByText(/Merge it on its card at the top of this page/u)).toBeTruthy();
+  expect(within(region).queryByRole("button", { name: "Merge" })).toBeNull();
+  expect(region.textContent).toContain("Ready to merge");
+  // The card itself is the control, with the one word.
+  const card = await screen.findByRole("article", { name: "Retry failed payments" });
+  expect(within(card).getByRole("button", { name: "Merge" })).toBeTruthy();
+  f.close();
+});
+
+it("slice 3: a high-risk merge without a recent sign-in says so where it was pressed, with Sign in again", async () => {
+  const words = "Sign in again to merge this. A high-risk change needs a sign-in within the last 10 minutes.";
+  const f = setup(mergeSession({ ready: true, risk: { level: "high", reasons: ["Changes CI."] } }), async () => ({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: words } } }));
+  fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Press Merge" }));
+  expect(await screen.findByText(words)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
+  expect(f.host.signIn).toHaveBeenCalled();
   f.close();
 });

@@ -120,6 +120,8 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  // Whether this card is on its own task page. There everything is decided on the card: its link to the same page is left out (a high card that is not decided inline keeps it).
  const onItsPage = target?.kind === "internal" && decisionTaskSessionOf(target.to) !== undefined && decisionTaskSessionOf(target.to) === sessionOfPage(location.pathname);
  const here = onItsPage && card.risk !== "high";
+ // Owner decision (a), slice 3: a medium card is decided on its own page (the task page's card), never where it is merely shown (Home): there it is the card's front and "Open", nothing to press.
+ const openOnly = card.risk === "medium" && !onItsPage && target !== undefined;
  const link: ReactNode = target === undefined || here ? null : target.kind === "internal" ? <Link className="rv-decision-open" to={target.to}>{DECISION_LABELS.open}</Link> : <Button variant="quiet" onClick={() => host.openExternal(target.href)}>{DECISION_LABELS.open}</Button>;
  const swipe = card.risk === "low" && canApprove && tabs === undefined ? {
   onTouchStart: (event: TouchEvent) => { const point = event.touches[0];touch.current = point === undefined || event.touches.length !== 1 ? undefined : { x: point.clientX, y: point.clientY }; },
@@ -176,16 +178,16 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
   <p className="rv-decision-question"><VisibleText text={card.question} /></p>
   <p className="rv-decision-recommended">Recommended: <VisibleText text={card.recommended.action + ". " + card.recommended.why} /></p>
   <p className="rv-decision-next">Next: <VisibleText text={card.next.text} /></p>
-  {tabs === undefined ? <Chips chips={card.evidence} /> : <Tabs label={"Documents to approve for " + card.title} value={tab} onValueChange={value => { if (value === "requirements" || value === "design") setTab(value); }} items={tabs.map(item => ({ value: item.id, label: item.title + (item.approved ? " (approved)" : ""), content: <><Chips chips={item.evidence} />{needsEvidence && evidencePanel(item.id)}</> }))} />}
-  {tabs === undefined && needsEvidence && evidencePanel(undefined)}
-  {limitBox}
+  {tabs === undefined ? <Chips chips={card.evidence} /> : <Tabs label={"Documents to approve for " + card.title} value={tab} onValueChange={value => { if (value === "requirements" || value === "design") setTab(value); }} items={tabs.map(item => ({ value: item.id, label: item.title + (item.approved ? " (approved)" : ""), content: <><Chips chips={item.evidence} />{needsEvidence && !openOnly && evidencePanel(item.id)}</> }))} />}
+  {tabs === undefined && needsEvidence && !openOnly && evidencePanel(undefined)}
+  {!openOnly && limitBox}
   {(card.kind === "approve_plan" || card.kind === "approve_requirements") && card.status === "pending" && <p className="rv-muted rv-decision-takes">{DECISION_APPROVE_TAKES}</p>}
   {questionsBox}
   {readLink}
   {card.risk === "high" && <p className="rv-decision-high">{inline ? HIGH_RISK_NOTE : confirmPage ? "This decision is made on its own page, after you sign in again." : "This decision is made on its own page."}</p>}
   <div className="rv-decision-actions">
-   {card.risk === "high" ? <>{inline ? inlineActions : link}{designBox}</> : <>{approveButton(activeTab)}{choiceButtons}{designBox}{canReject && <details className="rv-decision-reject"><summary>{DECISION_LABELS.notNow}</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
-   {changesBox}
+   {card.risk === "high" ? <>{inline ? inlineActions : link}{designBox}</> : openOnly ? <><p className="rv-muted">Decided on its card in the task, after a look at the evidence.</p>{link}</> : <>{approveButton(activeTab)}{choiceButtons}{designBox}{canReject && <details className="rv-decision-reject"><summary>{DECISION_LABELS.notNow}</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
+   {!openOnly && changesBox}
   </div>
   {confirming && <div role="group" aria-label="Confirm merge" className="rv-decision-confirm"><p><VisibleText text={mergeQuestion(confirming.merging)} /></p>
    <div className="rv-actions"><Button variant="primary" onClick={() => { const url = confirming.url;setConfirming(undefined);setNote(<p role="status">Nothing is merged until you confirm on the next page.</p>);host.openExternal(url); }}>Confirm</Button><Button onClick={() => { setConfirming(undefined);setNote(<p role="status">Nothing was merged.</p>); }}>Cancel</Button></div></div>}

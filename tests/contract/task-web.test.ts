@@ -576,7 +576,7 @@ describe("the task page's documents, versions and history", () => {
     expect(body).toMatch(/summary:focus\{outline/);
     expect(body).toMatch(/a:focus[^{]*\{outline/);
     expect(body).toContain("You're the task owner.");
-    expect(body).toContain("Decisions are made in Slack.");
+    expect(body).toContain("Decisions are made on the task page in Rovara.");
     expect((await render({ role: "reader" })).body).toContain("You can read this task.");
     expect(body).not.toMatch(/ style="/);
   });
@@ -1208,7 +1208,7 @@ describe("deciding and commenting on the task page (slice 2)", () => {
     expect(body).toContain('<dialog id="decide-dialog" aria-labelledby="decide-title">');
     expect(body).toContain('type="radio" name="answer-d1"');
     expect(body).toContain("You're the task owner.");
-    expect(body).not.toContain("Decisions are made in Slack.");
+    expect(body).not.toContain("Decisions are made on the task page in Rovara.");
     // Nothing waiting: no bar and no dialog.
     const idle = (await render({ documents: plans(), access: owner })).body;
     expect(idle).not.toContain('class="decide-bar"');
@@ -1353,7 +1353,7 @@ describe("deciding and commenting on the task page (slice 2)", () => {
     expect(body).not.toContain('type="radio"');
     expect(body).toContain("You can read and comment on this task.");
     expect(body).toContain("Only the task owner decides; you can comment and suggest.");
-    expect(body).not.toContain("Decisions are made in Slack.");
+    expect(body).not.toContain("Decisions are made on the task page in Rovara.");
   });
 
   it("the page data island escapes script-closing text", async () => {

@@ -336,7 +336,7 @@ describe("Suite 10: page and auth", () => {
     const sam = await openTaskPage(e2e, SAM, { scripts: false });
     expect(sam.status).toBe(200);
     expect(sam.text()).toContain("You can read this task.");
-    expect(sam.text()).toContain("Decisions are made in Slack.");
+    expect(sam.text()).toContain("Decisions are made on the task page in Rovara.");
     const stateIsland = sam.document.querySelector("#agentx-page-data")!;
     expect(JSON.parse(stateIsland.textContent)).toEqual({
       taskId: e2e.taskId(), csrf: sam.jar.csrf, revision: e2e.workflow().revision, role: "commenter",

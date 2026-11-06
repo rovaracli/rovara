@@ -82,5 +82,5 @@ it("decision journey S1d: Slack's link to a card is this deployment's https task
 });
 
 it("decision journey S1e: one table of button words", () => {
-  expect(DECISION_LABELS).toMatchObject({ approve: "Approve", requestChanges: "Request changes", answer: "Answer", retry: "Retry", merge: "Review and merge", open: "Open", showEvidence: "Show the evidence", notNow: "Not now", openInRovara: "Open in Rovara", signInAgain: "Sign in again" });
+  expect(DECISION_LABELS).toMatchObject({ approve: "Approve", requestChanges: "Request changes", answer: "Answer", retry: "Retry", merge: "Merge", open: "Open", showEvidence: "Show the evidence", notNow: "Not now", openInRovara: "Open in Rovara", signInAgain: "Sign in again" });
 });

@@ -41,6 +41,8 @@ import { realtimeTokenFor, type RealtimeTokenDependencies } from "../realtime/to
 /** What the session routes need: the read dependencies, and (for a company-wide share and the decisions a caller may make) Plan 3's approvals core. */
 export interface SessionRouteDependencies extends SessionReadDependencies, Pick<SessionDiffDependencies, "diff"> {
   approvals?: ApprovalDependencies & Partial<AgentRouteDependencies>;
+  /** Decision journey slice 3: whether the caller signed in within the last 10 minutes (a high-risk merge in a browser needs it). Absent: never fresh. */
+  freshSignIn?: (() => Promise<boolean>) | undefined;
   /** What the realtime token route needs (Task 8). Without it the route answers `RUNTIME_UNAVAILABLE`. */
   realtime?: RealtimeTokenDependencies;
   /** The events API a presence notice is posted to (Task 9); without it a heartbeat is kept and nothing is posted. */
@@ -284,7 +286,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     if (control === "redirect") return redirectSession({ ...read, redirect: deps.redirect }, caller, sessionId, jsonBody(request));
     // Rovara Code: a person presses Merge. It answers 202 with the link where they confirm it; only that confirmation merges (Plan 6 Task 19).
     if (control === "merge") {
-      const reply = await pressMerge(read, caller, sessionId, jsonBody(request), deps.approvals);
+      const reply = await pressMerge(read, caller, sessionId, jsonBody(request), deps.approvals, { ...(deps.freshSignIn === undefined ? {} : { freshSignIn: deps.freshSignIn }) });
       return new StatusReply(reply.status, reply.body);
     }
     // Rovara Code: a task that ended Answered, followed by a new task that makes the change anyway (202, like the app's start).

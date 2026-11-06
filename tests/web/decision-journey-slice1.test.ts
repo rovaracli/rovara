@@ -102,13 +102,13 @@ it("S1a: Home's merge card opens its card on the task page, and the task page ma
  const f = home({ status: 200, body: viewOf([mergeItem]) });
  const needsYou = await screen.findByRole("list", { name: "Decisions waiting for you" });
  expect(within(needsYou).getByRole("link", { name: "Open" }).getAttribute("href")).toBe(SESSION_PATH + "?decision=merge%3Apr1");
- expect(within(needsYou).getByRole("button", { name: "Review and merge" })).toBeTruthy();
+ expect(within(needsYou).getByRole("button", { name: "Merge" })).toBeTruthy();
  f.close();
  const page = taskPage([mergeItem], "?decision=merge%3Apr1");
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
  expect(card.getAttribute("data-focused")).toBe("true");
  expect(within(card).queryByRole("link", { name: "Open" })).toBeNull();
- expect(within(card).getByRole("button", { name: "Review and merge" })).toBeTruthy();
+ expect(within(card).getByRole("button", { name: "Merge" })).toBeTruthy();
  page.close();
 });
 

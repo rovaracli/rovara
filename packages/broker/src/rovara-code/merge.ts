@@ -311,6 +311,8 @@ export function mergeViewFromReadiness(readiness: Readiness): MergeView {
 // ---- pressing Merge
 
 const UNAVAILABLE = "Merging isn't available right now.";
+/** What a high-risk merge says when the presser has not signed in recently. */
+export const MERGE_HIGH_REAUTH_MESSAGE = "Sign in again to merge this. A high-risk change needs a sign-in within the last 10 minutes.";
 /** A code host that does not offer `merge` (the port's `merge` is optional): Rovara never merges there, a person does on the host. */
 const HOST_WILL_NOT_MERGE = "Rovara can't merge on this repository's code host. Merge it there.";
 const changeText = (repository: string, number: number, method: string): string => `Merge ${repository} pull request ${String(number)} (${method})`;
@@ -340,7 +342,7 @@ export type MergePressReply = { status: 200; body: MergeDone } | { status: 202; 
 export async function pressMerge(
   deps: SessionShareDependencies, caller: ShareCaller, sessionId: string, rawBody: unknown, approvals: ApprovalDependencies | undefined,
   /** The head of each pull request the person was SHOWN (a decision card carries them). When given, the press is refused unless exactly those heads are what would be merged now. */
-  options: { expectedHeads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }> } = {},
+  options: { expectedHeads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }>; /** Decision journey slice 3: whether the presser signed in within the last 10 minutes (a high-risk merge in a browser needs it). Absent: never. */ freshSignIn?: (() => Promise<boolean>) | undefined } = {},
 ): Promise<MergePressReply> {
   const { requestId, risk: seen } = parsePressBody(rawBody);
   const host = approvals?.codeMerge;
@@ -390,10 +392,11 @@ export async function pressMerge(
   // What the person saw in the dialog has to be what is true now: a medium or high risk is part of the click, and a risk that changed since is a new question.
   const current = riskOfTask(tracked.workflow, items).level;
   if (caller.browserSession === true && (seen ?? "low") !== current) throw agentXError("MERGE_NOT_READY", M.riskChanged(current));
-  // Owner decision 2026-10-30: a HIGH-risk change never merges on a click. Even a browser session decides it on the confirmation page, with a fresh sign-in (below, as for a token).
-  // WEB-1 (owner, 2026-11-02): a press that carries the heads a decision card showed (`expectedHeads`) is a card press, and a card press NEVER merges at once, at any risk level: it makes the same pending change
-  // a token press makes (202 and the confirmation link), which is the two steps Slack uses. Only the task page's own Merge button, which asks first in its own dialog, merges on one request.
-  if (caller.browserSession === true && current !== "high" && options.expectedHeads === undefined) {
+  // Decision journey slice 3 (owner: one merge control, checks inside the card, no separate confirmation page; this replaces the 2026-10-30 and WEB-1 rules): a person in a signed-in browser merges in place,
+  // from the merge card or the Merge button alike. Low and medium merge on the press; HIGH needs a sign-in within the last 10 minutes (REAUTH_REQUIRED otherwise, said on the card with Sign in again).
+  // A token (the CLI, an AI tool) or a Slack press still never merges: it makes the pending change below, decided by the presser in the app.
+  if (caller.browserSession === true) {
+    if (current === "high" && !(options.freshSignIn !== undefined && await options.freshSignIn())) throw agentXError("REAUTH_REQUIRED", MERGE_HIGH_REAUTH_MESSAGE);
     const merged = await mergeTask(approvals, host, tracked, subject, { decidedBy: caller.developerId, occurrence: requestId });
     return { status: 200, body: { status: "MERGED", pullRequests: merged } };
   }

@@ -20,8 +20,8 @@ it("links an existing task session from the task page and omits the link for leg
  const path = "/review/" + taskId + "/task";
  const response = await web({ method: "GET", path, requestId: "task-link", headers: { cookie: "__Host-agentx_review_session=11111111-1111-4111-8111-111111111111" } }, new URL(path, "https://cell.example"));
  expect(response.statusCode).toBe(200);
- if (exists) expect(response.body).toContain('href="/s/' + id + '">Back to the session</a>');
- else expect(response.body).not.toContain("Back to the session");
+ if (exists) expect(response.body).toContain('href="/s/' + id + '">Open this task in Rovara: its decisions are on cards there</a>');
+ else expect(response.body).not.toContain("Open this task in Rovara: its decisions are on cards there");
  }
 });
 
@@ -29,5 +29,5 @@ it("never turns an invalid session id into a task-page link", async () => {
  const caller = sessionWorld().caller(PRIYA), path = "/review/" + taskId + "/task";
  const web = createTaskWeb({ authenticateSession: async () => caller, getTaskDocumentView: async () => ({ ...view, sessionId: '"><script>alert(1)</script>' }) });
  const response = await web({ method: "GET", path, requestId: "task-link", headers: { cookie: "__Host-agentx_review_session=11111111-1111-4111-8111-111111111111" } }, new URL(path, "https://cell.example"));
- expect(response.body.includes("Back to the session")).toBe(false);
+ expect(response.body.includes("Open this task in Rovara: its decisions are on cards there")).toBe(false);
 });
