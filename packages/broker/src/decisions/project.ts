@@ -8,7 +8,7 @@
 //   - a Full-path requirements and design pair is ONE card with two tabs that still records two approvals (owner Q1).
 // Anything an item says in words (a title, a question, a path) is flattened to plain text and cut; fixed words come from this file.
 import {
-  DECISION_REJECT_REASONS, DESIGN_SOURCE_ONLY_LABEL, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
+  DECISION_FOCUS_PARAM, DECISION_REJECT_REASONS, DESIGN_SOURCE_ONLY_LABEL, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
   type CardAction, type DecisionCard, type DecisionKind, type DecisionDetailGroup, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip,
 } from "@agentx/contracts";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks, type TierInputs, type TierResult } from "./risk-tier.js";
@@ -307,7 +307,9 @@ function tierInputsOf(item: DecisionItem): TierInputs {
 
 function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { actions: CardAction[]; recommended: CardAction["kind"] } {
   const base = decisionCardPath(cardId);
-  const open: CardAction = { kind: "open", label: risk === "high" ? "Open to decide" : "Open the details", href: risk === "high" ? item.confirmPath ?? item.openPath : item.openPath, method: "GET" };
+  // A high-risk design is decided on the task's own page, on the card there (the inline Approve): the link names that card, so the page scrolls to it and marks it. Never a link to a page that shows the same link.
+  const anchored = risk === "high" && item.kind === "approve_design" && item.confirmPath === undefined && !item.openPath.includes("?") ? `${item.openPath}?${DECISION_FOCUS_PARAM}=${encodeURIComponent(cardId)}` : undefined;
+  const open: CardAction = { kind: "open", label: risk === "high" ? "Open to decide" : "Open the details", href: risk === "high" ? item.confirmPath ?? (anchored !== undefined && isSafeRelativePath(anchored) ? anchored : item.openPath) : item.openPath, method: "GET" };
   if (risk === "high") return { actions: [open], recommended: "open" };
   // A question or a checks choice is answered on its own page: the card only opens it (an answer or a choice is a POST of that page, never a link).
   if (item.kind === "answer_question") return { actions: [{ ...open, label: "Answer" }], recommended: "open" };

@@ -190,6 +190,7 @@ const ROWS: readonly Row[] = [
   ["design-review/template-store.ts", "storeDesignTemplate", "principal", ".ownerKey"],
   // DR7 slice C: "the requester" of a design (the person who asked for the task, a fixed fact of the record) as the approval rules compare it: the requester may not be the second person on a high-risk design. A taker is not the requester.
   ["aws/developer-routes/design-review.ts", "approvePortsOf>context", "history", ".developerId"],
+  ["aws/developer-routes/design-review.ts", "confirmationCard", "history", ".developerId"],
   ["aws/developer-routes/design-review.ts", "spendContextOf", "history", ".developerId"],
   ["aws/developer-routes/design-review.ts", "answersPortsOf>context", "history", ".developerId"],
   ["aws/developer-routes/design-review.ts", "resumePortsOf>context", "history", ".developerId"],

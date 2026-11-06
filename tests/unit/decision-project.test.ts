@@ -219,6 +219,17 @@ describe("Full path: requirements and design are one card with two tabs", () => 
     expect(projection.cards[0]?.risk).toBe("high");
     expect(projection.cards[0]?.actions.map((action) => action.kind)).toEqual(["open"]);
   });
+  it("a high design on its own links to its card on the task page (the open link names the card), a low or medium one to the page", () => {
+    const high = projectDecisionCards([ITEMS.approve_design], { locks: { approve_design: "high" } }).cards[0]!;
+    expect(high.risk).toBe("high");
+    expect(high.actions.find((action) => action.kind === "open")?.href).toBe(`/app/sessions/ses_${"a".repeat(20)}?decision=approve_design%3Ades1`);
+    expect(DecisionCardSchema.safeParse(high).success).toBe(true);
+    const low = projectDecisionCards([ITEMS.approve_design]).cards[0]!;
+    expect(low.actions.find((action) => action.kind === "open")?.href).toBe(`/app/sessions/ses_${"a".repeat(20)}`);
+    // A confirmation page of its own (a setting's) is still what a high card with one opens.
+    const confirm = projectDecisionCards([{ ...ITEMS.approve_setting, confirmPath: "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }]).cards[0]!;
+    expect(confirm.actions.find((action) => action.kind === "open")?.href).toBe("/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa");
+  });
   it("does not merge different tasks, or when pairing is off (two separate cards)", () => {
     const other = { ...(ITEMS.approve_design), taskId: "22222222-2222-4222-8222-222222222222" } as DecisionItem;
     expect(projectDecisionCards([ITEMS.approve_requirements, other]).cards).toHaveLength(2);

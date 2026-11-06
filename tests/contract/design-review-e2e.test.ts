@@ -1004,10 +1004,21 @@ describe("slice C: the design review's routes", () => {
     const read = await page(OMAR, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`);
     expect(read.status).toBe(200);
     const digest = read.body.digest as string;
+    // The card's link names the card on the task page (never the same page with no way to decide), and the page's read says who may press Approve: the approver, not the requester, not a token.
+    expect(shown!.card.actions.find((action) => action.kind === "open")!.href).toContain(`?decision=${encodeURIComponent(shown!.card.id)}`);
+    expect(shown!.digest, "the page's read and the card list show the same digest").toBe(digest);
+    expect(read.body).toMatchObject({ mayApprove: true });
+    const requesterRead = await page(MAYA, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`);
+    expect(requesterRead.body).toMatchObject({ mayApprove: false });
+    expect(typeof requesterRead.body.approverName, "the requester is told who can decide").toBe("string");
+    expect((await w.dev(OMAR, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`)).body, "a token never decides it").toMatchObject({ mayApprove: false });
     const press = (who: Developer, authAgoMs: number, body: Record<string, unknown> = {}) => page(who, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: digest, reason: "Reviewed the open blocker with the team.", ...body }, authAgoMs);
     expect((await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: digest, reason: "x" })).status, "a token never decides it").toBe(403);
     expect((await press(MAYA, 0)).status, "the requester is not the second person").toBe(403);
-    expect((await press(OMAR, 20 * 60_000)).status, "no fresh sign-in").toBe(403);
+    const stale = await press(OMAR, 20 * 60_000);
+    expect(stale.status, "no fresh sign-in").toBe(403);
+    expect(JSON.stringify(stale.body), "a browser without a recent sign-in is told to sign in again, not that it may not decide").toContain("REAUTH_REQUIRED");
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
     expect((await press(OMAR, 0, { reason: undefined })).status, "an open blocker needs a reason").toBe(400);
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
     const done = await press(OMAR, 0);

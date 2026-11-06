@@ -3,7 +3,7 @@
 // `POST /v1/app/tasks/{taskId}/design-review/spend/{choice}`. The setting uses the existing playbook routes (`GET` and `PUT /v1/app/projects/{p}/playbook`). Nothing here decides who may do what: the
 // broker re-checks the caller on every press, and the page only shows what the task view's `designActions` said.
 import { useMemo } from "react";
-import { ProjectOverviewProjectSchema, ProjectPlaybookResponseReaderSchema, ProjectPlaybookResponseSchema, type DefaultProcess, type DesignReviewSetting, type ProjectPlaybookResponse } from "@agentx/contracts/web";
+import { DecisionDigestSchema, ProjectOverviewProjectSchema, ProjectPlaybookResponseReaderSchema, ProjectPlaybookResponseSchema, type DefaultProcess, type DesignReviewSetting, type ProjectPlaybookResponse } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient, type SendResult } from "./client.js";
 import { ApiError } from "./errors.js";
@@ -32,6 +32,19 @@ const exactPlaybook = { parse(value: unknown): ProjectPlaybookResponse {
 } };
 const AnyAnswer = { parse: (value: unknown): unknown => value };
 
+/** What the server says about approving a high-risk design now: the digest of the card as it shows it, whether THIS person may press Approve, and (when not) who can. */
+export interface DesignApprovalRead { digest: string; mayApprove: boolean; approverName?: string | undefined }
+const ApprovalRead = { parse(value: unknown): DesignApprovalRead {
+ const body = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+ const digest = DecisionDigestSchema.parse(body.digest);
+ if (typeof body.mayApprove !== "boolean") throw new Error("unreadable");
+ return { digest, mayApprove: body.mayApprove, ...(typeof body.approverName === "string" && body.approverName !== "" ? { approverName: body.approverName } : {}) };
+} };
+const ApprovedAnswer = { parse(value: unknown): { outcome: "approved" } {
+ if (typeof value !== "object" || value === null || (value as { outcome?: unknown }).outcome !== "approved") throw new Error("unreadable");
+ return { outcome: "approved" };
+} };
+
 export function createDesignReviewApi(host: AppHost) {
  const api = createApiClient(host), project = (name: string) => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(name));
  return {
@@ -41,6 +54,16 @@ export function createDesignReviewApi(host: AppHost) {
   skip: (taskId: string, requestId: string): Promise<SendResult<unknown>> => api.send("POST", taskPath(taskId) + "/skip", { requestId }, AnyAnswer, { retry: "never" }),
   /** "Retry review": the same design reviewed again after a review that did not run (`POST .../design-review/retry`). The broker applies the rule again and refuses what it no longer allows. */
   retry: (taskId: string, requestId: string): Promise<SendResult<unknown>> => api.send("POST", taskPath(taskId) + "/retry", { requestId }, AnyAnswer, { retry: "never" }),
+  /** A high-risk design's approval, read for the task page's card: the card's digest as the server shows it now, and whether this person may approve it (`GET .../design-review/approve`, a project member only). */
+  readApproval: (taskId: string): Promise<DesignApprovalRead> => api.get(taskPath(taskId) + "/approve", ApprovalRead, undefined, { retry: "never" }),
+  /**
+   * The press: `shownDigest` is what the person was shown, `reason` the one line an open blocker asks for. The broker applies the handler's rules (who, a sign-in within the last 10 minutes, the reason): a browser
+   * without a recent sign-in gets REAUTH_REQUIRED (an ApiError the card shows with "Sign in again"), a changed design CHANGE_STALE. Never a token's call.
+   */
+  async approveHighRisk(taskId: string, requestId: string, shownDigest: string, reason?: string): Promise<void> {
+   const result = await api.send("POST", taskPath(taskId) + "/approve", { requestId, shownDigest, ...(reason === undefined ? {} : { reason }) }, ApprovedAnswer, { retry: "never" });
+   if (result.kind !== "done") throw new ApiError(409, "PENDING", "This isn't finished. Reload the task to continue.");
+  },
   /** One choice on the cost card. `shownDigest` is what the person was shown: a changed card is refused as stale. */
   async chooseSpend(decision: ReadDecision, action: ReadDecisionCard["actions"][number], requestId: string): Promise<void> {
    const target = spendChoiceOf(decision.card, action);

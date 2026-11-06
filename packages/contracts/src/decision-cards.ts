@@ -185,6 +185,8 @@ export const DecisionCardReaderSchema = forwardReader(DecisionCardSchema);
 
 /** The most cards one read returns; `total` is how many the person has now. */
 export const DECISION_CARDS_MAX = 50;
+/** The query parameter a link to a task page uses to name the decision card on it (`?decision=<card id>`): the page scrolls to that card and marks it. */
+export const DECISION_FOCUS_PARAM = "decision";
 export const DecisionCardsResponseSchema = z.object({ cards: z.array(DecisionCardSchema).max(DECISION_CARDS_MAX), total: z.number().int().min(0) }).strict();
 export type DecisionCardsResponse = z.infer<typeof DecisionCardsResponseSchema>;
 export const DecisionCardsResponseReaderSchema = forwardReader(DecisionCardsResponseSchema);

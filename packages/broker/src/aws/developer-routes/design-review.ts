@@ -123,7 +123,11 @@ async function approveItemOf(env: Env, loaded: Loaded, touches: readonly DesignR
   });
 }
 
-function approvePortsOf(env: Env): DesignApprovePorts<DeveloperCaller> {
+/** What the confirmation page's press says when the approver's sign-in is not recent enough: a browser answers REAUTH_REQUIRED (the page shows "Sign in again" on the card), never "You can't decide this.". */
+export const DESIGN_APPROVE_REAUTH_MESSAGE = "Sign in again to approve this design. A high-risk design needs a sign-in within the last 10 minutes.";
+const PAGE_REAUTH = "reauth";
+
+function approvePortsOf(env: Env, page = false): DesignApprovePorts<DeveloperCaller> {
   return {
     async context(caller, item) {
       const loaded = item.taskId === undefined ? undefined : await loadDesignTask(env, item.taskId);
@@ -135,7 +139,8 @@ function approvePortsOf(env: Env): DesignApprovePorts<DeveloperCaller> {
     locks: async () => ({}),
     store: decisionStoreOf(env),
     nowMs: () => env.deps.now(),
-    confirmUrl: () => undefined,
+    // The decision cards' performer has no confirmation page for a design (undefined: refused). The task page's press (`page`) asks for the sign-in itself: `approveOnPage` turns this marker into REAUTH_REQUIRED.
+    confirmUrl: () => (page ? PAGE_REAUTH : undefined),
     async commit(caller, write) {
       const loaded = write.taskId === undefined ? undefined : await loadDesignTask(env, write.taskId);
       if (loaded === undefined) return "stale";
@@ -575,15 +580,19 @@ async function approveOnPage(env: Env, taskId: string, body: { requestId: string
   const digest = projection.digests[card?.id ?? ""];
   if (card === undefined || digest === undefined) throw agentXError("NOT_FOUND", GONE);
   if (body.shownDigest !== digest) throw agentXError("CHANGE_STALE", DECISION_REFUSALS.stale.message);
-  const outcome = await designApproveHandler(approvePortsOf(env)).approve(env.caller, { card, item, requestId: body.requestId, shown: { cardId: card.id, digest }, ...(body.reason === undefined ? {} : { reason: body.reason }) });
+  const outcome = await designApproveHandler(approvePortsOf(env, true)).approve(env.caller, { card, item, requestId: body.requestId, shown: { cardId: card.id, digest }, ...(body.reason === undefined ? {} : { reason: body.reason }) });
   if (outcome.kind === "done") return new StatusReply(200, { cardId: card.id, outcome: "approved" });
-  if (outcome.kind === "needs_confirmation") return new StatusReply(202, { cardId: card.id, outcome: "needs_confirmation", confirmUrl: outcome.confirmUrl });
+  // The only confirmation a design has is a fresh sign-in (an approver without one): the person signs in again and presses once more. No confirmation page exists for it, so there is no 202 with a link.
+  if (outcome.kind === "needs_confirmation") throw agentXError("REAUTH_REQUIRED", DESIGN_APPROVE_REAUTH_MESSAGE);
   const refusal = DECISION_REFUSALS[outcome.reason];
   throw agentXError(refusal.code, refusal.message);
 }
 
-/** The confirmation page's read: the card as the server shows it now and its digest, for a project member only (anyone else gets "no longer waiting"). The press is `approveOnPage`. */
-async function confirmationCard(env: Env, taskId: string): Promise<{ card: unknown; digest: string }> {
+/**
+ * The confirmation page's read: the card as the server shows it now and its digest, for a project member only (anyone else gets "no longer waiting"), and whether THIS person may press Approve (`mayApprove`: the
+ * handler's own rule with the sign-in and the reason set aside, which the press asks for; a token never may) and, when not, who can (`approverName`, a high-risk design's first named approver). The press is `approveOnPage`.
+ */
+async function confirmationCard(env: Env, taskId: string): Promise<{ card: unknown; digest: string; mayApprove: boolean; approverName?: string }> {
   const loaded = await loadDesignTask(env, taskId);
   if (loaded === undefined) throw agentXError("NOT_FOUND", GONE);
   const facts = await factsOf(env, loaded);
@@ -592,8 +601,16 @@ async function confirmationCard(env: Env, taskId: string): Promise<{ card: unkno
   const projection = item === undefined ? undefined : projectDecisionCards([item], { locks: {}, pairFullCards: false });
   const card = projection?.cards[0];
   const digest = projection?.digests[card?.id ?? ""];
-  if (projection === undefined || card === undefined || digest === undefined) throw agentXError("NOT_FOUND", GONE);
-  return { card, digest };
+  if (projection === undefined || card === undefined || digest === undefined || item === undefined || item.kind !== "approve_design") throw agentXError("NOT_FOUND", GONE);
+  const verdict = decideDesignApproval({
+    tier: card.risk, requesterId: loaded.task.developerId, approverId: env.caller.developerId, nowMs: env.deps.now(), setting: facts.setting, edition: facts.edition, directory: facts.directory,
+    freshSignIn: true, openBlockers: item.review?.blockers.length ?? 0, blockerReason: "x",
+  });
+  const mayApprove = env.caller.browserSession === true && verdict.ok;
+  if (mayApprove || card.risk !== "high") return { card, digest, mayApprove };
+  const approvers = highRiskApprovers(facts.setting, facts.directory, facts.edition);
+  const named = approvers.ok && approvers.ids[0] !== undefined ? (await signInStoreOf(env.deps).getDeveloper(approvers.ids[0]).catch(() => undefined))?.displayName : undefined;
+  return { card, digest, mayApprove, ...(named === undefined || named === "" ? {} : { approverName: plainOneLine(named, DESIGN_ACTIONS_NAME_MAX) }) };
 }
 
 // ---- the routes
