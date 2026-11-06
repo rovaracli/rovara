@@ -2,16 +2,16 @@
 // Pure: it reads no store and calls no model. The caller gives it the models the resolver chose (reviewers and the merge step resolve through the existing `plan_check` stage; there is no `design_review`
 // stage) and a price lookup over the catalog.
 //
-//   estimate = tier reviewers x (packet tokens in + 4k out) x the reviewer model's catalog price
+//   estimate = tier reviewers x (packet tokens x the role's turn factor in, less the cache-read share, + 15k out) x the reviewer model's catalog price
 //            + the merge step (a model, except in Light where the merge is code only)
 //            + the planner's runs (about 40k in / 8k out each): per round, one run that may ask and one that resolves after the answers, except in the last round, which does not ask (B2-M1)
 //   for 2 rounds (Q7).
 //
-// A reviewer review is priced by `estimateSecondReviewUsd`, the same function the second-review picker uses, so the two never disagree.
+// The merge step and the planner are priced by `estimateSecondReviewUsd`, the same function the second-review picker uses. Reviewers use `estimateReviewerUsd` below (their own measured turns, output and cache share).
 // NO PRICE MEANS "COST UNAVAILABLE": a model the catalog has no price for is never guessed at (How we work 5.3). The review then needs one tap from the requester (an `approve_spend` card, low risk).
 // Customer pays (owner 2026-11-03): this file only describes a cost; nothing here spends or mints a key.
 import { DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_TIERS, addDesignUsd, designReviewCapRoom, type DesignReviewTier, type ModelIdentifier, type ReviewerRole } from "@agentx/contracts";
-import { SECOND_REVIEW_TYPICAL_REVIEW_TOKENS, estimateSecondReviewUsd, type SecondReviewPrice } from "../rovara-code/second-review-picker.js";
+import { estimateSecondReviewUsd, type SecondReviewPrice } from "../rovara-code/second-review-picker.js";
 
 /** The reviewers each tier runs per round (3.4). Zoom-out and Critic B are priced in every round of Thorough: the estimate may be high, never low. */
 export const TIER_REVIEWERS: Readonly<Record<DesignReviewTier, readonly ReviewerRole[]>> = {
@@ -19,11 +19,31 @@ export const TIER_REVIEWERS: Readonly<Record<DesignReviewTier, readonly Reviewer
   standard: ["comprehension", "critic", "codebase"],
   thorough: ["comprehension", "critic", "codebase", "zoom_out", "critic_b"],
 };
+// Calibrated from one round (task 88e0e88d, 2026-11-06, haiku-4-5 standard); re-check after 3-5 rounds (register item FU3-RECHECK).
+// The round: packet about 9.0k tokens; comprehension in 42,596 / out 15,101, critic in 206,579 / out 19,175, codebase in 287,413 / out 8,763; $0.444 measured against $0.126 estimated.
 /**
- * Reviewers that read code or search with tools re-send the whole context on every tool turn, so what they read is a multiple of the packet (M4). Comprehension reads the packet alone (one call). The factors are
- * deliberately round and high: the estimate may be high, never low. DR-FU2/FU3 replace them with measured turns from staging spend logs; until then they are named and tested, not guessed again in place.
+ * What a reviewer reads, as a multiple of the packet (M4): the whole context is sent again on every tool turn. These are the MEASURED input tokens of the round, in packet-equivalents, rounded up:
+ * 42.6k / 9.0k = 4.7 (comprehension), 206.6k / 9.0k = 22.9 (critic), 287.4k / 9.0k = 31.9 (codebase). Cache savings are NOT in these numbers: they are applied once, to the price (`REVIEWER_CACHE_READ_SHARE`).
+ * Roles not seen yet are mapped by whether they read the repository: Critic B runs the Critic's text (critic); Zoom-out must search the repository before it claims something is missing or new (critic);
+ * Comprehension reads the design and its sources only (never the repository), so it is the smallest.
  */
-export const ROLE_INPUT_TURN_FACTOR: Readonly<Record<ReviewerRole, number>> = { comprehension: 1, critic: 2, codebase: 3, zoom_out: 2, critic_b: 2 };
+export const ROLE_INPUT_TURN_FACTOR: Readonly<Record<ReviewerRole, number>> = { comprehension: 5, critic: 23, codebase: 32, zoom_out: 23, critic_b: 23 };
+/** What a reviewer writes (tokens out), per run. Measured: 15,101 / 19,175 / 8,763, mean about 14.4k. Comprehension uses no tools and still wrote 15.1k, so one value serves every role. */
+export const REVIEWER_OUTPUT_TOKENS = 15_000;
+/**
+ * The share of a reviewer's input tokens billed at the model's cache-read price (the rest at the full input price). Measured: the three reviewers' input cost was $0.2075 against $0.5903 at full price,
+ * which is 70% of the tokens at one tenth of the price. It applies ONLY to a model whose catalog price has a cache-read price (`cacheReadUsdPerMTok`); a model without one is priced at the full input price, so
+ * the estimate for it is high, never low.
+ */
+export const REVIEWER_CACHE_READ_SHARE = 0.7;
+
+/** One reviewer run of one role: its input is the packet times its turn factor, a share of which is billed at the cache-read price when the model has one (never otherwise). */
+export function estimateReviewerUsd(price: SecondReviewPrice, role: ReviewerRole, packetTokens: number): number {
+  const inputTokens = packetTokens * ROLE_INPUT_TURN_FACTOR[role];
+  const cached = price.cacheReadUsdPerMTok !== undefined ? Math.min(price.cacheReadUsdPerMTok, price.inputUsdPerMTok) : undefined;
+  const inputUsdPerMTok = cached === undefined ? price.inputUsdPerMTok : price.inputUsdPerMTok * (1 - REVIEWER_CACHE_READ_SHARE) + cached * REVIEWER_CACHE_READ_SHARE;
+  return estimateSecondReviewUsd({ inputUsdPerMTok, outputUsdPerMTok: price.outputUsdPerMTok }, { input: inputTokens, maxOutput: REVIEWER_OUTPUT_TOKENS });
+}
 
 /** The reviewers one round of a tier runs. Zoom-out runs only AFTER round 1, on what changed (3.4), so round 1 of Thorough is four reviewers and round 2 is five. */
 export function reviewersForRound(tier: DesignReviewTier, round: 1 | 2): readonly ReviewerRole[] {
@@ -33,8 +53,6 @@ export function reviewersForRound(tier: DesignReviewTier, round: 1 | 2): readonl
 /** Light merges in code only: no model runs and nothing is priced. */
 export const TIER_HAS_MERGE_MODEL: Readonly<Record<DesignReviewTier, boolean>> = { light: false, standard: true, thorough: true };
 
-/** What a reviewer writes (tokens out): the same 4k as a second review. */
-export const REVIEWER_OUTPUT_TOKENS = SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.output;
 /** A planner revision (3.4): about 40k in and 8k out per run. */
 export const PLANNER_REVISION_TOKENS = { input: 40_000, output: 8_000 } as const;
 /**
@@ -88,7 +106,10 @@ export function estimateDesignReviewUsd(input: DesignReviewEstimateInput): Desig
   const priceOf = (model: ModelIdentifier | undefined): SecondReviewPrice | undefined => {
     if (model === undefined) return undefined;
     const price = input.price(model);
-    return price !== undefined && Number.isFinite(price.inputUsdPerMTok) && Number.isFinite(price.outputUsdPerMTok) && price.inputUsdPerMTok >= 0 && price.outputUsdPerMTok >= 0 ? price : undefined;
+    if (price === undefined || !Number.isFinite(price.inputUsdPerMTok) || !Number.isFinite(price.outputUsdPerMTok) || price.inputUsdPerMTok < 0 || price.outputUsdPerMTok < 0) return undefined;
+    // A cache-read price that is not a usable number is dropped, not trusted: the model is then priced at the full input price.
+    const { cacheReadUsdPerMTok, ...rest } = price;
+    return cacheReadUsdPerMTok !== undefined && Number.isFinite(cacheReadUsdPerMTok) && cacheReadUsdPerMTok >= 0 ? price : rest;
   };
   const reviewerPrice = priceOf(input.models.reviewer);
   const mergePrice = TIER_HAS_MERGE_MODEL[input.tier] ? priceOf(input.models.merge ?? input.models.reviewer) : undefined;
@@ -100,7 +121,7 @@ export function estimateDesignReviewUsd(input: DesignReviewEstimateInput): Desig
   if (plannerPrice === undefined) missing.push("planner");
   if (missing.length > 0 || reviewerPrice === undefined || plannerPrice === undefined || (TIER_HAS_MERGE_MODEL[input.tier] && mergePrice === undefined)) return { kind: "unavailable", tier: input.tier, missing };
   // Every reviewer of the tier is priced in every round (Zoom-out too: high, never low), each at its role's turn factor.
-  const perRound = TIER_REVIEWERS[input.tier].reduce((sum, role) => sum + estimateSecondReviewUsd(reviewerPrice, { input: packet * ROLE_INPUT_TURN_FACTOR[role], maxOutput: REVIEWER_OUTPUT_TOKENS }), 0);
+  const perRound = TIER_REVIEWERS[input.tier].reduce((sum, role) => sum + estimateReviewerUsd(reviewerPrice, role, packet), 0);
   const reviewersUsd = micro(perRound * rounds);
   const mergeUsd = mergePrice === undefined ? 0 : micro(estimateSecondReviewUsd(mergePrice, { input: MERGE_TOKENS.designInput + MERGE_TOKENS.perReviewerInput * reviewers, maxOutput: MERGE_TOKENS.output }) * rounds);
   const plannerUsd = micro(estimateSecondReviewUsd(plannerPrice, { input: PLANNER_REVISION_TOKENS.input, maxOutput: PLANNER_REVISION_TOKENS.output }) * plannerRunsFor(rounds));

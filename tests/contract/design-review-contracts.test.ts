@@ -136,6 +136,16 @@ describe("design review contracts", () => {
     expect(DesignQuestionSchema.safeParse({ ...question, options: [question.options[0]] }).success).toBe(false);
   });
 
+  it("FU3: a round may carry the estimate it was started on; a round recorded before the field still reads, and a bad estimate is refused", () => {
+    const round = { round: 1, designDigest: digest, reviewers: [run], findings: [finding], resolutions: [] };
+    const review = { decidedBy: "auto", reasons: ["new_api"], status: "done", tier: "standard", spentUsd: 0.444, rounds: [round] };
+    expect(WorkflowDesignReviewSchema.parse(review).rounds[0]).not.toHaveProperty("estimateUsd");
+    expect(WorkflowDesignReviewSchema.parse({ ...review, rounds: [{ ...round, estimateUsd: 0.95 }] }).rounds[0]!.estimateUsd).toBe(0.95);
+    expect(WorkflowDesignReviewSchema.safeParse({ ...review, rounds: [{ ...round, estimateUsd: -1 }] }).success).toBe(false);
+    expect(WorkflowDesignReviewSchema.safeParse({ ...review, rounds: [{ ...round, estimateUsd: "0.95" }] }).success).toBe(false);
+    expect(WorkflowDesignReviewSchema.safeParse({ ...review, rounds: [{ ...round, estimate: 1 }] }).success).toBe(false);
+  });
+
   it("is browser-safe: the web entry exports the same schemas", () => {
     expect(web.WorkflowDesignReviewSchema).toBe(WorkflowDesignReviewSchema);
     expect(web.DesignReviewSettingSchema).toBe(DesignReviewSettingSchema);

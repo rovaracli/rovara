@@ -976,6 +976,28 @@ describe("minors", () => {
     expect(() => startDesignReview(revised, { expectedRevision: revised.revision, now: NOW })).toThrow(/no price/);
   });
 
+  it("FU3: the round keeps the estimate it started on, though the review's own is cleared when the round resolves; round 2 gets its own", () => {
+    const round1 = submitRound(started(designSubmitted(), { estimateUsd: 6 }), [finding("f1", "blocker", "Retries have no limit.")]);
+    expect(round1.designReview!.rounds[0]!.estimateUsd).toBe(6);
+    const revised = resolve(planner(round1), [fixed("f1")], artifact("design", 2));
+    expect(revised.designReview!.estimateUsd).toBeUndefined();
+    expect(revised.designReview!.rounds[0]!.estimateUsd).toBe(6);
+    const round2 = submitRound(started(revised, { estimateUsd: 3 }), [finding("g1", "major", "Another gap.", ["critic"], "§4")]);
+    expect(round2.designReview!.rounds.map((entry) => entry.estimateUsd)).toEqual([6, 3]);
+    // Ending the review clears the review's estimate (as before) and leaves the rounds' copies.
+    const ended = closeDesignReview(planner(round2), { expectedRevision: planner(round2).revision, outcome: "finished", now: LATER });
+    expect(ended.designReview!.estimateUsd).toBeUndefined();
+    expect(ended.designReview!.rounds.map((entry) => entry.estimateUsd)).toEqual([6, 3]);
+  });
+
+  it("FU3: a review with no estimate (it ran unpriced) records a round with none", () => {
+    const live = started(designSubmitted());
+    const { estimateUsd: _cleared, ...unpriced } = live.designReview!;
+    void _cleared;
+    const round = submitRound({ ...live, designReview: unpriced }, [finding("f1", "major", "Retries have no limit.")]);
+    expect(round.designReview!.rounds[0]).not.toHaveProperty("estimateUsd");
+  });
+
   it("m6: a Full task in the implementation-plan phase can't switch design review on", () => {
     const stuck = { ...planReady({ path: "FULL" }), reviewPhase: "IMPLEMENTATION_PLAN" as const };
     expect(() => on(stuck)).toThrow(/ready to plan/);

@@ -474,6 +474,8 @@ export function submitDesignReview(
     round: roundNumber, designDigest: input.designDigest, reviewers: runs.data, findings, resolutions: carried,
     ...(oscillation.length === 0 ? {} : { oscillation }), ...(mergeModel?.success === true ? { mergeModel: mergeModel.data } : {}),
     ...((input.droppedFindings ?? []).length === 0 ? {} : { droppedFindings: input.droppedFindings }),
+    // The review's estimate at this round's start is kept on the round: the review's own is cleared when the round resolves.
+    ...(review.estimateUsd === undefined ? {} : { estimateUsd: review.estimateUsd }),
   });
   if (!round.success) throw fail("the design review result is invalid");
   const spentUsd = addUsd(addUsd(review.spentUsd, runs.data.reduce((sum, run) => addUsd(sum, run.costUsd), 0)), mergeCost);

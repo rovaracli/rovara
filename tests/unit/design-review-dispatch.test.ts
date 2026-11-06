@@ -437,7 +437,8 @@ describe("the preparation of a round", () => {
 
   it("prices the REAL packet: a bigger packet costs more, and round 2 prices one round, not two", async () => {
     const small = await prepareDesignReviewRound(inputs(ports().value, { design: "# Design\n## 3. Proposed design\nR1.\n" }), resolved);
-    const big = await prepareDesignReviewRound(inputs(ports().value, { design: `# Design\n## 3. Proposed design\nR1.\n${"x".repeat(200_000)}\n` }), resolved);
+    // A 200 KB design is about 50k tokens: at the calibrated turn factors (FU3) that is over the default cap, so this round has a high cap and the task has room.
+    const big = await prepareDesignReviewRound(inputs(ports({ taskRoomUsd: async () => 1_000 }).value, { capUsd: 100, design: `# Design\n## 3. Proposed design\nR1.\n${"x".repeat(200_000)}\n` }), resolved);
     expect(big.estimateUsd!).toBeGreaterThan(small.estimateUsd!);
     // Round 2: the review has one round recorded; the estimate is for the one round still to run.
     const round2 = await prepareDesignReviewRound(inputs(ports().value, { design: "# Design\n## 3. Proposed design\nR1.\n", workflow: roundTwoWorkflow() }), resolved);

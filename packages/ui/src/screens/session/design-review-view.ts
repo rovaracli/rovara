@@ -103,6 +103,11 @@ export interface FindingLine {
 export interface SectionGroup { section: string; findings: FindingLine[] }
 export interface RoundLine {
   round: number; designVersion: string; reviewers: ReviewerLine[]; verifiedCount: number; groups: SectionGroup[]; findingCount: number; unresolved: number;
+  /**
+   * What the round was estimated at when it started (for the rounds then still to run: round 1 of two covers both) against what its reviewers cost. The merge step's and the planner's spend is in the review's
+   * total, not here. An old record has no estimate: "not available".
+   */
+  cost: { estimate: string; reviewersSpent: string };
 }
 
 const SEVERITY_ORDER = { blocker: 0, major: 1, nit: 2 } as const;
@@ -141,6 +146,7 @@ export function roundLine(review: DesignReviewView, round: DesignReviewRound, co
   return {
     round: round.round, designVersion: round.designDigest.slice(0, 8), reviewers: round.reviewers.map(reviewerLine), verifiedCount: round.reviewers.filter((run) => run.verified).length, groups,
     findingCount: lines.length, unresolved: lines.filter((line) => line.resolution === undefined).length,
+    cost: { estimate: usdWords(round.estimateUsd), reviewersSpent: usdWords(round.reviewers.reduce((sum, run) => sum + run.costUsd, 0)) },
   };
 }
 
@@ -243,6 +249,11 @@ export interface DesignTabModel {
 /** Shown while the review is switched on but the planner has not written the design yet (a Full task still in its requirements, or writing the design): there is no cost to work out yet. */
 export const AWAITING_DESIGN_WORDS = "Waiting for the design";
 
+/** The review's own estimate is cleared when a round resolves or the review ends, so a finished review shows the estimate its first round started on (the one made for the whole review). */
+function finishedEstimate(review: Pick<DesignReviewView, "status" | "rounds">): number | undefined {
+  return review.status === "done" || review.status === "stopped_at_cap" ? review.rounds[0]?.estimateUsd : undefined;
+}
+
 /**
  * What the Design tab shows, all of it. `note` is Understand's one-line reading, when the page has it. `designWritten` is whether the task has a design document yet (the caller reads the task's artifacts):
  * a review that is "estimating" with no rounds and no design is waiting for its first design, not working out a cost.
@@ -261,7 +272,7 @@ export function designTabModel(review: DesignReviewView, options: { note?: strin
     classification: classificationLine(review),
     reading: note === undefined || note === "" ? undefined : note,
     statusWords: review.status === "estimating" && review.rounds.length === 0 && options.designWritten === false ? AWAITING_DESIGN_WORDS : STATUS_WORDS[review.status], tierWords: TIER_WORDS[review.tier],
-    cost: { estimate: usdWords(review.estimateUsd), spent: usdWords(review.spentUsd), limit: review.capUsd === undefined ? "not set" : usdWords(review.capUsd) },
+    cost: { estimate: usdWords(review.estimateUsd ?? finishedEstimate(review)), spent: usdWords(review.spentUsd), limit: review.capUsd === undefined ? "not set" : usdWords(review.capUsd) },
     notRun: review.status === "not_run" && review.notRunReason !== undefined ? NOT_RUN_WORDS[review.notRunReason] : review.status === "stopped_at_cap" ? "Design review stopped because it reached the cost limit." : undefined,
     retry: retryOffer(options.retry),
     progress: review.status === "running" ? `Design review, round ${String(Math.min(review.rounds.length + 1, 2))} of 2: reviewers reading the design.` : undefined,

@@ -214,7 +214,7 @@ const canonicalModel = (model: unknown): string => JSON.stringify([(model as { p
 
 describe("a Full task's design review, from the dispatch to the person's card", () => {
   it("runs 2 rounds with 3 reviewers each, one question card and a revised design, and ends on approve_design with measured spend and everything released", async () => {
-    const w = await world();
+    const w = await world({ budgetUsd: 50 });
     // ---- round 1: the dispatch started it.
     const [first] = w.operations();
     expect(first, "the dispatch created the design review's operation").toBeDefined();
@@ -314,6 +314,11 @@ describe("a Full task's design review, from the dispatch to the person's card", 
     expect(review(w).rounds[1]!.designDigest).toBe(design2.sha256);
     expect(review(w).spentUsd).toBeCloseTo(1.0 + 0.7, 6);
     expect(review(w).approvals).toBeUndefined();
+    // FU3: each round keeps the estimate it started on (round 1 for both rounds, round 2 for itself, so it is the smaller).
+    const [roundOneEstimate, roundTwoEstimate] = review(w).rounds.map((round) => round.estimateUsd);
+    expect(roundOneEstimate).toBeGreaterThan(0);
+    expect(roundTwoEstimate).toBeGreaterThan(0);
+    expect(roundTwoEstimate!).toBeLessThan(roundOneEstimate!);
   });
 });
 
@@ -389,12 +394,13 @@ describe("what the broker checks about the packets and the pins itself", () => {
 
 describe("how a round ends short of a result", () => {
   it("stops at the cost cap when the measured spend takes the total past it, and starts no second round", async () => {
-    const w = await world({ capUsd: 2 });
+    // The cap is just over the calibrated estimate (about $3.54 for two rounds, FU3) so the round starts; the task's own limit is raised for the same reason.
+    const w = await world({ capUsd: 4, budgetUsd: 50 });
     const operationId = String(w.operations()[0]!.id);
-    // The merge step is not reached: the reviewers alone spend 2.1 against the 2 cap.
-    await runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.7 }, comprehension: { spentUsd: 0.7 }, codebase: { spentUsd: 0.7 } }, { skipMerge: true });
+    // The merge step is not reached: the reviewers alone spend 4.2 against the 4 cap.
+    await runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 1.4 }, comprehension: { spentUsd: 1.4 }, codebase: { spentUsd: 1.4 } }, { skipMerge: true });
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "stopped_at_cap" } });
-    expect(review(w).spentUsd).toBeCloseTo(2.1, 6);
+    expect(review(w).spentUsd).toBeCloseTo(4.2, 6);
     expect(review(w).rounds[0]!.resolutions).toEqual([]);
     await w.sweep();
     expect(w.operations()).toHaveLength(1);
@@ -533,7 +539,7 @@ describe("the other ends a round has", () => {
 
 /** A world stopped right after round 1 was recorded with one blocker, with the planner's resolve run started. */
 async function afterRoundOne() {
-  const w = await world();
+  const w = await world({ budgetUsd: 50 });
   const operationId = String(w.operations()[0]!.id);
   await runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 });
   const findingId = review(w).rounds[0]!.findings[0]!.id;
