@@ -38,10 +38,12 @@ import { seedDesignReviewCompany } from "../support/design-review-company.js";
 import { projectPlaybookKey } from "../../packages/contracts/src/index.js";
 
 // A test can take the catalog's price away from every model (a source whose models are not on the list): "cost unavailable", the unpriced path.
-const catalog = vi.hoisted(() => ({ unpriced: false }));
+// `scale` multiplies every list price (a costly model), for a high cost card.
+const catalog = vi.hoisted(() => ({ unpriced: false, scale: 1 }));
 vi.mock("@agentx/model-runtime/catalog", async (importOriginal) => {
   const actual = await importOriginal<typeof CatalogModule>();
-  return { ...actual, listPricesPerMillion: (model: Parameters<typeof actual.listPricesPerMillion>[0]) => (catalog.unpriced ? undefined : actual.listPricesPerMillion(model)) };
+  const scaled = (prices: ReturnType<typeof actual.listPricesPerMillion>) => (prices === undefined || catalog.scale === 1 ? prices : Object.fromEntries(Object.entries(prices).map(([key, value]) => [key, typeof value === "number" ? value * catalog.scale : value])) as typeof prices);
+  return { ...actual, listPricesPerMillion: (model: Parameters<typeof actual.listPricesPerMillion>[0]) => (catalog.unpriced ? undefined : scaled(actual.listPricesPerMillion(model))) };
 });
 
 /** A third person of the company (a maintainer or a plain contributor, as a test seeds them). */
@@ -53,8 +55,8 @@ const LATER = "2026-11-03T12:05:00.000Z";
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
 // The switch is read at every step (B2-m3): the world's company allows design review (default mode Auto) unless a test takes it off.
-beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); catalog.unpriced = false; });
-afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); catalog.unpriced = false; });
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); catalog.unpriced = false; catalog.scale = 1; });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); catalog.unpriced = false; catalog.scale = 1; });
 
 const REQUIREMENTS = "# Requirements\n\nR1: A payment that times out is retried once.\nR2: A payment is never charged twice.\n";
 const DESIGN_V1 = "# Design\n\n## 1. Problem and goal\nR1 and R2.\n\n## 3. Proposed design\n### 3.1 Retry\nR1: retry a timed-out payment once. R2: use the payment id as the idempotency key.\n";
@@ -1445,7 +1447,7 @@ describe("slice C: the design review's routes", () => {
     expect((await w.dev(MAYA, "POST", `/v1/app/tasks/${w.taskId}/design-review/skip`, skipBody)).status).toBe(200);
   });
 
-  it("ON-3: Skip before the design is written, for a high-risk design, needs a browser session and a fresh sign-in; the move carries the fence and a request record", async () => {
+  it("ON-3 (security review): Skip before the design is written, for a high-risk design, needs a browser session and the decide-grade sign-in (email code), whose proof is recorded; the move carries the fence and a request record", async () => {
     const w = await world({ design: designWith(["auth"]), start: false, capUsd: 10 });
     // A world held before its first round: the review is estimating at PLAN/READY, with a high-risk area.
     seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
@@ -1459,13 +1461,46 @@ describe("slice C: the design review's routes", () => {
     const stale = await page(OMAR, "POST", url, { requestId }, 20 * 60_000);
     expect(stale.status, "no fresh sign-in").toBe(403);
     // REAUTH_REQUIRED, not a refusal: the page shows "Sign in again" where Skip was pressed (decision journey S1c). Who may skip is unchanged.
-    expect(stale.body).toMatchObject({ error: { code: "REAUTH_REQUIRED", message: "Sign in again to skip this design review. A high-risk design needs a sign-in within the last 10 minutes." } });
+    expect(stale.body).toMatchObject({ error: { code: "REAUTH_REQUIRED", reason: "decide_sign_in" } });
     expect(w.task().workflow.designReview!.decidedBy).not.toBe("person_skip");
-    const done = await page(OMAR, "POST", url, { requestId }, 0);
+    // A web session signed in just now (with GitHub) is not the decide-grade sign-in either: the decide sign-in made for this Skip, which comes back to the task page.
+    const github = await page(OMAR, "POST", url, { requestId }, 0);
+    expect(github.status).toBe(403);
+    const approvalId = signInApprovalOf(github.body);
+    expect(w.task().workflow.designReview!.decidedBy).not.toBe("person_skip");
+    const { cookie, proof } = await decideSessionFor(w.db, OMAR.developerId, approvalId);
+    expect((await w.dev(OMAR, "POST", url, { requestId })).status, "a token never skips a high-risk review").toBe(403);
+    const done = await page(OMAR, "POST", url, { requestId }, 0, cookie);
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(w.task().workflow).toMatchObject({ designReview: { decidedBy: "person_skip", skippedBy: { actorId: OMAR.developerId } } });
     expect(w.db.get(`DEVTASK#${w.taskId}`, `DESIGN_SKIP#${requestId}`)).toMatchObject({ actorId: OMAR.developerId });
+    expect(w.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === approvalId)[0]).toMatchObject({ status: "APPROVED_DONE", subject: { kind: "card_decision", cardId: `design_skip:${w.taskId}` }, decisionProof: { ...proof, method: "email_code" } });
     expect((await page(OMAR, "POST", url, { requestId }, 0)).status, "a repeat is the same answer").toBe(200);
+  });
+
+  it("security review: a HIGH cost choice is made only under the decide-grade sign-in (email code) for its card, never by a token or a fresh web session alone; its proof is recorded", async () => {
+    catalog.scale = 1000;
+    const w = await world({ capUsd: 25 });
+    seedPeople(w, [[MAYA, "member", "contributor"]]);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING", designReview: { status: "waiting_cost" } });
+    const page = web(w);
+    const shown = await cardOf(w, MAYA, "approve_spend");
+    expect(shown!.card.risk, "positive control: a costly model's estimate makes the card high").toBe("high");
+    const url = `/v1/app/tasks/${w.taskId}/design-review/skip`;
+    const requestId = randomUUID();
+    const before = w.task().workflow;
+    expect((await w.dev(MAYA, "POST", url, { requestId, shownDigest: shown!.digest })).status, "a token never decides a high card").toBe(403);
+    const github = await page(MAYA, "POST", url, { requestId, shownDigest: shown!.digest });
+    expect(github.status).toBe(403);
+    const approvalId = signInApprovalOf(github.body);
+    expect(w.task().workflow).toEqual(before);
+    const { cookie, proof } = await decideSessionFor(w.db, MAYA.developerId, approvalId);
+    const opened = await page(MAYA, "POST", `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest });
+    expect(opened.status, JSON.stringify(opened.body)).toBe(200);
+    const done = await page(MAYA, "POST", url, { requestId, shownDigest: shown!.digest }, 0, cookie);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", designReview: { decidedBy: "person_skip", skippedBy: { actorId: MAYA.developerId } } });
+    expect(w.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === approvalId)[0]).toMatchObject({ status: "APPROVED_DONE", subject: { kind: "card_decision", cardId: shown!.card.id }, decisionProof: { ...proof, method: "email_code" } });
   });
 
   it("ON-11: Design first and Retry are the requester's or a maintainer's, not any member's; a double tap is the same answer", async () => {

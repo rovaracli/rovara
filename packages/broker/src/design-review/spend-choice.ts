@@ -46,7 +46,7 @@ export interface DesignSpendContext {
   touches: readonly DesignReason[];
   directory: DesignApproverDirectory;
   edition: EditionPolicy | undefined;
-  /** The person signed in freshly for this decision (the session), needed only when the card is high. */
+  /** The person decides under the decide-grade sign-in for this card (`withCardDecideGrade`, never the web session's freshness), needed only when the card is high. */
   freshSignIn: boolean;
   /** The request came from a live browser session (never a token), which a high card also needs (ON-9). */
   browserSession?: boolean | undefined;

@@ -156,7 +156,8 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
     // Slice 3: a high merge too (its press makes the pending change, decided on its approval card with the decide-grade sign-in).
     highOnCard: new Set(["approve_plan", "approve_requirements", "merge", "approve_request"]),
     // Security review: an outside approval's evidence is opened first (as a medium card's), and opening it is what the kind records as its page having been read.
-    evidenceFirstOnHigh: new Set(["approve_request"]),
+    // A high design cost card too: its choices (the design review's spend routes) need its evidence opened, which nothing could record for a high card before.
+    evidenceFirstOnHigh: new Set(["approve_request", "approve_spend"]),
     onEvidenceOpened: async (who, subject) => { if (subject.item.kind === "approve_request") await outsideEvidenceOpened(outsideKinds, who, subject.item.subjectId); },
     store: dynamoDecisionStore({ ...table, now: deps.now }),
     now: deps.now,

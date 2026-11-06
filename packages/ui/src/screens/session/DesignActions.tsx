@@ -23,7 +23,7 @@ export function designActionsModel(task: ReadTask): { line: string | undefined; 
 /** The strip above the task's work: the line, the hint on a Quick plan, and the buttons. Each press asks the broker, which works out again whether this person may; a refusal is shown in its words. */
 export function DesignActions({ task, sessionKey }: { task: ReadTask; sessionKey: readonly unknown[] }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createDesignReviewApi(host), [host]);
- const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [message, setMessage] = useState<string>(), [confirmSkip, setConfirmSkip] = useState(false), [signIn, setSignIn] = useState(false);
+ const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [message, setMessage] = useState<string>(), [confirmSkip, setConfirmSkip] = useState(false), [signIn, setSignIn] = useState<false | { url?: string }>(false);
  const { line, actions } = designActionsModel(task);
  if (line === undefined && actions === undefined) return null;
  async function press(kind: "first" | "skip" | "retry") {
@@ -35,8 +35,8 @@ export function DesignActions({ task, sessionKey }: { task: ReadTask; sessionKey
    setConfirmSkip(false);setMessage(kind === "first" ? "Asked for design review first. Rovara reviews the design before it builds." : kind === "retry" ? "Asked for the design review again." : "Design review skipped.");
    await query.invalidateQueries({ queryKey: [...sessionKey] });
   } catch (failure) {
-   // A high-risk Skip without a recent sign-in: said here, with "Sign in again" that comes back to this page (the same inline pattern as the decision card).
-   setSignIn(failure instanceof ApiError && failure.code === "REAUTH_REQUIRED");
+   // A high-risk Skip without the decide-grade sign-in: said here, with "Sign in again" that runs the decide sign-in the broker made for it and comes back to this page (the decision card's pattern).
+   setSignIn(failure instanceof ApiError && failure.code === "REAUTH_REQUIRED" ? (failure.signInUrl === undefined ? {} : { url: failure.signInUrl }) : false);
    setError(failure instanceof ApiError ? failure.message : "Couldn't do that. Try again.");
   }
   finally { setBusy(false); }
@@ -54,7 +54,7 @@ export function DesignActions({ task, sessionKey }: { task: ReadTask; sessionKey
   {confirmSkip && <div role="group" aria-label="Confirm skipping design review"><p>Skip design review for this task? The design goes to a person without fresh-context reviewers reading it first.</p><div className="rv-actions"><Button variant="primary" busy={busy} onClick={() => { void press("skip"); }}>Skip design review</Button><Button disabled={busy} onClick={() => setConfirmSkip(false)}>Keep it</Button></div></div>}
   {message !== undefined && <p role="status">{message}</p>}
   {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
-  {signIn && <Button onClick={() => host.signIn(host.currentPath())}>{DECISION_LABELS.signInAgain}</Button>}
+  {signIn && (signIn.url !== undefined ? <a className="rv-button rv-button-secondary" href={signIn.url}>{DECISION_LABELS.signInAgain}</a> : <Button onClick={() => host.signIn(host.currentPath())}>{DECISION_LABELS.signInAgain}</Button>)}
  </section>;
 }
 
