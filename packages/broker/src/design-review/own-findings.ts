@@ -2,7 +2,7 @@
 //   - A blocker for every approved requirement id that appears in no §3 subsection ("Each requirement id must appear in at least one §3 subsection").
 //   - A major "too long: split the work" for a design over 24 KB.
 // They carry `origin: "rovara"`: they name no reviewer and no raw finding, and cite the design section they are about. Pure and bounded.
-import { DESIGN_FINDING_TEXT_MAX_CHARS, DESIGN_SECTIONS, DESIGN_TEXT_MAX_BYTES, DESIGN_REVIEW_FINDINGS_MAX, designFindingFingerprint, type DesignFinding, type DroppedFinding } from "@agentx/contracts";
+import { DESIGN_FINDING_TEXT_MAX_CHARS, DESIGN_LOST_FINDING_ID_PREFIX, DESIGN_SECTIONS, DESIGN_TEXT_MAX_BYTES, DESIGN_REVIEW_FINDINGS_MAX, designFindingFingerprint, type DesignFinding, type DroppedFinding } from "@agentx/contracts";
 
 /** At most this many requirements get a finding each; any more are listed in one finding, so a design that covers nothing cannot fill the card. */
 export const OWN_FINDINGS_PER_REQUIREMENT_MAX = 12;
@@ -104,11 +104,11 @@ export function lostBlockerFindings(input: { dropped: readonly DroppedFinding[];
     const count = input.dropped.filter((entry) => entry.severity === "blocker" && entry.section === section).length;
     if (count === 0) continue;
     const who = count === 1 ? "A reviewer's blocking finding" : `${String(count)} blocking findings from reviewers`;
-    findings.push(ownFinding(`rovara-lost-${section.slice(1)}`, "blocker", section, `${who} about ${section} could not be read (a field was not valid, or no citation held), so it is not shown here. Have the design reviewed again before approving, or approve with a reason.`));
+    findings.push(ownFinding(`${DESIGN_LOST_FINDING_ID_PREFIX}${section.slice(1)}`, "blocker", section, `${who} about ${section} could not be read (a field was not valid, or no citation held), so it is not shown here. Have the design reviewed again before approving, or approve with a reason.`));
   }
   if (input.unreadableMaybeBlockers > 0) {
     const who = input.unreadableMaybeBlockers === 1 ? "A reviewer's finding" : `${String(input.unreadableMaybeBlockers)} findings from reviewers`;
-    findings.push(ownFinding("rovara-lost-unread", "blocker", "§3", `${who} with no readable severity or section could not be read, and may have been a blocker. Have the design reviewed again before approving, or approve with a reason.`));
+    findings.push(ownFinding(`${DESIGN_LOST_FINDING_ID_PREFIX}unread`, "blocker", "§3", `${who} with no readable severity or section could not be read, and may have been a blocker. Have the design reviewed again before approving, or approve with a reason.`));
   }
   return findings;
 }

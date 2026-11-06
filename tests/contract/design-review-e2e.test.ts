@@ -503,8 +503,8 @@ describe("the other ends a round has", () => {
     const round = review(w).rounds[0]!;
     expect(round.droppedFindings).toEqual([{ role: "codebase", severity: "blocker", section: "§2" }]);
     expect(round.unreadableFindings).toBe(1);
-    const own = round.findings.filter((finding) => finding.origin === "rovara" && finding.id.startsWith("rovara-lost-"));
-    expect(own.map((finding) => [finding.id, finding.severity, finding.section])).toEqual([["rovara-lost-2", "blocker", "§2"], ["rovara-lost-unread", "blocker", "§3"]]);
+    const own = round.findings.filter((finding) => finding.origin === "rovara" && finding.id.startsWith("rovara~lost-"));
+    expect(own.map((finding) => [finding.id, finding.severity, finding.section])).toEqual([["rovara~lost-2", "blocker", "§2"], ["rovara~lost-unread", "blocker", "§3"]]);
     expect(designCardFactsOf(review(w), []).blockers.map((entry) => entry.section)).toEqual(expect.arrayContaining(["§2", "§3"]));
     expect(JSON.stringify(w.task().workflow)).not.toContain("SECRET-INJECTED-WORDS");
   });

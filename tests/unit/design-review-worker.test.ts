@@ -11,7 +11,7 @@ import {
 import { buildReviewerPacket, type PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import { WorkerReportSchema, verifyReviewerReport } from "../../packages/broker/src/design-review/verify.js";
 import { assembleRoundFindings } from "../../packages/broker/src/design-review/round-findings.js";
-import { lostBlockerFindings, withOwnFindings } from "../../packages/broker/src/design-review/own-findings.js";
+import { lostBlockerFindings, ownDesignFindings, withOwnFindings } from "../../packages/broker/src/design-review/own-findings.js";
 import { designCardFactsOf } from "../../packages/broker/src/design-review/card-source.js";
 import { decideDesignApproval } from "../../packages/broker/src/design-review/approval.js";
 import { designApprovalProofLine } from "../../packages/broker/src/design-review/approve-handler.js";
@@ -335,6 +335,42 @@ describe("runDesignReview: unreadable blocks", () => {
     }
   });
 
+  it("a retry that says less never wins: with fewer usable blockers than the first read's blockers (usable, dropped or maybe) the first answer stays", async () => {
+    const { binding, deliveries } = await setup(["critic"], false);
+    const blockerAnswer = (extra: unknown[]) => block([finding("1", { severity: "blocker" }), ...extra]);
+    const cases: Array<[string, string, string]> = [
+      ["a usable blocker plus junk, retried to nothing", blockerAnswer([{ nonsense: true }]), block([])],
+      ["a usable blocker plus junk, retried to a nit", blockerAnswer([{ nonsense: true }]), block([finding("9", { severity: "nit" })])],
+      ["a lost blocker plus a nit, retried to the nit only", block([finding("1", { severity: "blocker", citations: [] }), finding("2", { severity: "nit" })]), block([finding("2", { severity: "nit" })])],
+      ["an unreadable severity plus a nit, retried to the nit only", block([finding("1", { severity: "urgent" }), finding("2", { severity: "nit" })]), block([finding("2", { severity: "nit" })])],
+    ];
+    for (const [name, first, second] of cases) {
+      const { ports } = fakePorts({ answers: { "slot-critic": [first, second] } }, deliveries);
+      const result = await runDesignReview(binding, ports);
+      expect(result.reviewers[0], name).toMatchObject({ status: "answered", retried: true, answer: first });
+    }
+    // the other direction: a retry that keeps the blocker and fixes the loss does win
+    const lostFirst = block([finding("1", { severity: "blocker", citations: [] }), finding("2", { severity: "nit" })]);
+    const fixedSecond = block([finding("1", { severity: "blocker" }), finding("2", { severity: "nit" })]);
+    const { ports } = fakePorts({ answers: { "slot-critic": [lostFirst, fixedSecond] } }, deliveries);
+    const result = await runDesignReview(binding, ports);
+    expect(result.reviewers[0]).toMatchObject({ retried: true, answer: fixedSecond });
+    expect(result.droppedFindings).toEqual([]);
+    // and one that turns a blocker into a nit with the same loss does not
+    const { ports: softened } = fakePorts({ answers: { "slot-critic": [lostFirst, block([finding("1", { severity: "nit" }), finding("2", { severity: "nit" })])] } }, deliveries);
+    expect((await runDesignReview(binding, softened)).reviewers[0]).toMatchObject({ answer: lostFirst });
+  });
+
+  it("the worker does not send the reader's own citation drops (an old control plane would refuse a new reason)", async () => {
+    const { binding, deliveries } = await setup(["critic"], false);
+    const sources = Array.from({ length: 7 }, (_, index) => ({ kind: "code", repo: "demo", path: `src/f${String(index)}.ts`, startLine: 1, endLine: 2, anchor: "x", commit: "a".repeat(40) }));
+    const { ports } = fakePorts({ answers: { "slot-critic": [block([finding("1", { citations: sources })])] } }, deliveries);
+    const result = await runDesignReview(binding, ports);
+    expect(result.reviewers[0]).toMatchObject({ status: "answered" });
+    expect(result.droppedCitations.map((entry) => entry.reason)).not.toContain("over_limit");
+    expect(DesignReviewWorkerResultSchema.safeParse(result).success).toBe(true);
+  });
+
   it("a reviewer whose findings were all lost, both times, gave no result: it is not a clean review", async () => {
     const { binding, deliveries } = await setup(["critic"], false);
     const allLost = block([finding("1", { severity: "blocker", citations: [] })]);
@@ -602,8 +638,11 @@ describe("broker side: assembleRoundFindings, fix round 2 (N1, N3, N5)", () => {
     const out = assembleRoundFindings({ binding: made.binding, result: made.result, verification: made.verification, packets: made.packets, pins: {} });
     expect(out.reviewers.map((r) => [r.role, r.counted, r.notUsed])).toEqual([["critic", false, "worker_flagged"], ["codebase", true, undefined]]);
     expect(out.findings.flatMap((f) => f.rawIds)).toEqual(["codebase-3"]);
-    // the worker already refused this reviewer, so the broker does not read its answer: the reviewer is simply not counted (the card shows the coverage), nothing else is recorded
-    expect(out.droppedFindings).toEqual([]);
+    // the worker refused this reviewer, so nothing else of its answer is used, but the broker reads it once more for the blockers it lost: they stay visible
+    expect(out.droppedFindings).toEqual([{ rawId: "~critic-dropped-1", role: "critic", severity: "blocker", section: "§3", reason: "no_valid_citation" }]);
+    expect(out.readDroppedFindings).toEqual(out.droppedFindings);
+    expect(out.unreadableFindings).toBe(1);
+    expect(out.unreadableMaybeBlockers).toBe(1);
     // the broker reading a stored answer the worker did not retry (an older worker) reaches the same decision
     const stored = { ...made.result, reviewers: made.result.reviewers.map((r) => (r.role === "critic" ? { ...r, status: "answered" as const, failure: undefined, answer: lostAnswer } : r)) };
     const reread = assembleRoundFindings({ binding: made.binding, result: stored, verification: made.verification, packets: made.packets, pins: {} });
@@ -621,7 +660,7 @@ describe("broker side: assembleRoundFindings, fix round 2 (N1, N3, N5)", () => {
     const out = assembleRoundFindings({ binding: made.binding, result: made.result, verification: made.verification, packets: made.packets, pins: {} });
     expect(out.reviewers.every((r) => r.counted)).toBe(true);
     const own = lostBlockerFindings({ dropped: out.readDroppedFindings, unreadableMaybeBlockers: out.unreadableMaybeBlockers });
-    expect(own.map((f) => [f.id, f.severity, f.section, f.origin])).toEqual([["rovara-lost-5", "blocker", "§5", "rovara"], ["rovara-lost-unread", "blocker", "§3", "rovara"]]);
+    expect(own.map((f) => [f.id, f.severity, f.section, f.origin])).toEqual([["rovara~lost-5", "blocker", "§5", "rovara"], ["rovara~lost-unread", "blocker", "§3", "rovara"]]);
     expect(own.map((f) => f.text).join(" ")).not.toMatch(/Critical|Problem/);
     const merged = withOwnFindings(out.findings, own);
     const hex = (seed: string) => seed.repeat(64).slice(0, 64);
@@ -639,6 +678,34 @@ describe("broker side: assembleRoundFindings, fix round 2 (N1, N3, N5)", () => {
     // control: the same round with nothing lost has no blocker, so the lost-blocker path is what raised them
     const clean = assembleRoundFindings({ binding: made.binding, result: (await round(["critic", "codebase"], { "slot-critic": [block([finding("1")])], "slot-codebase": [block([finding("4")])] })).result, verification: made.verification, packets: made.packets, pins: {} });
     expect(lostBlockerFindings({ dropped: clean.readDroppedFindings, unreadableMaybeBlockers: clean.unreadableMaybeBlockers })).toEqual([]);
+  });
+
+  it("a reviewer whose ONLY blocker was made unreadable still leaves an open blocker: the 2-of-3 round is not approvable without a reason", async () => {
+    const hostile = block([{ id: "1", severity: "blocker", section: "§3", text: "The auth check is missing.", citations: [{ kind: "design", section: "§12" }] }]);
+    const made = await round(["comprehension", "critic", "codebase"], { "slot-comprehension": [block([finding("1")], { proposes: "a", today: "b" })], "slot-critic": [hostile, hostile], "slot-codebase": [block([finding("2")])] });
+    const out = assembleRoundFindings({ binding: made.binding, result: made.result, verification: made.verification, packets: made.packets, pins: {} });
+    expect(out.reviewers.map((r) => [r.role, r.counted])).toEqual([["comprehension", true], ["critic", false], ["codebase", true]]);
+    expect(out.readDroppedFindings).toEqual([{ rawId: "~critic-dropped-1", role: "critic", severity: "blocker", section: "§3", reason: "no_valid_citation" }]);
+    const own = lostBlockerFindings({ dropped: out.readDroppedFindings, unreadableMaybeBlockers: out.unreadableMaybeBlockers });
+    expect(own.map((f) => f.id)).toEqual(["rovara~lost-3"]);
+    const hex = (seed: string) => seed.repeat(64).slice(0, 64);
+    const runOf = (role: "comprehension" | "critic" | "codebase", verified: boolean) => ({ role, promptId: "p", promptVersion: 1, promptDigest: hex("a"), model: { provider: "anthropic", modelId: "m" }, sourceId: "s", sessionId: `ses-${role}`, modelKeyId: "k", packetDigest: hex("b"), packet: [], filesRead: [], verified, ...(verified ? { inputProof: "digest_only" as const } : { verifyFailure: "unreadable_output" as const }), tokensIn: 1, tokensOut: 1, costUsd: 0.1, startedAt: "2026-11-03T10:00:00.000Z", endedAt: "2026-11-03T10:01:00.000Z" });
+    const stored = DesignReviewRoundSchema.parse({ round: 1, designDigest: hex("c"), reviewers: [runOf("comprehension", true), runOf("critic", false), runOf("codebase", true)], findings: withOwnFindings(out.findings, own).findings, resolutions: [] });
+    const facts = designCardFactsOf({ decidedBy: "auto", reasons: [], status: "done", tier: "standard", spentUsd: 0.5, rounds: [stored] }, []);
+    expect(facts.reviewers).toEqual({ planned: 3, verified: 2 });
+    expect(facts.blockers).toHaveLength(1);
+    const directory = { people: { complete: true, membershipVersion: 1, ownerIds: ["max"], eligibleIds: ["max"], lastEligibleLossAtMs: null }, projectMemberIds: ["max", "priya"], notApproverIds: [] };
+    const decide = (blockerReason?: string) => decideDesignApproval({ tier: "medium", requesterId: "priya", approverId: "priya", nowMs: Date.parse("2026-11-03T12:00:00Z"), setting: DESIGN_REVIEW_DEFAULT_SETTING, edition: editionPolicy("enterprise"), directory, freshSignIn: true, openBlockers: facts.blockers.length, blockerReason });
+    expect(decide()).toEqual({ ok: false, code: "reason_required" });
+    expect(decide("Checked the auth path by hand")).toMatchObject({ ok: true });
+  });
+
+  it("a requirement id that looks like a lost-finding id cannot clash with it", () => {
+    const requirement = ownDesignFindings({ design: "## 3. Proposed design\nNothing here.", requirementIds: ["lost-3"] });
+    const lost = lostBlockerFindings({ dropped: [{ rawId: "~critic-dropped-1", role: "critic", severity: "blocker", section: "§3", reason: "no_valid_citation" }], unreadableMaybeBlockers: 0 });
+    expect(requirement[0]!.id).toBe("rovara-lost-3");
+    expect(lost[0]!.id).toBe("rovara~lost-3");
+    expect(new Set([...requirement, ...lost].map((f) => f.id)).size).toBe(2);
   });
 
   it("N5: a verified reviewer whose answer is missing or unreadable is not verified, and the round has no verified reviewer", async () => {

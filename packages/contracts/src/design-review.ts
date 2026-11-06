@@ -194,6 +194,9 @@ export const RawFindingRecordSchema = z.object({
 }).strict();
 export type RawFindingRecord = z.infer<typeof RawFindingRecordSchema>;
 
+/** The id prefix of the broker's own finding for a reviewer finding that could not be read (own-findings.ts). A requirement id (letters, digits, . _ -) can never make an id with this "~", so no other own finding can clash with it. */
+export const DESIGN_LOST_FINDING_ID_PREFIX = "rovara~lost-";
+
 export const DesignFindingSchema = z.object({
   id: z.string().min(1).max(64),
   severity: z.enum(DESIGN_FINDING_SEVERITIES),

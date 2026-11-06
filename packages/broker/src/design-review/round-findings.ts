@@ -101,7 +101,16 @@ export function assembleRoundFindings(input: {
     if (outcome === undefined || verdict === undefined) { unused("no_answer", "unreadable_output"); continue; }
     if (!verdict.verified) { unused(verdict.failure, verdict.failure); continue; }
     // The worker's own signals may only lower the result, never raise it (N1): a reviewer it flagged (a timeout, a mismatch, a stopped stage) is not counted even if an answer and a report exist.
-    if (outcome.status !== "answered" || outcome.failure !== undefined) { unused("worker_flagged", "unreadable_output"); continue; }
+    if (outcome.status !== "answered" || outcome.failure !== undefined) {
+      // A reviewer the worker found unreadable (every finding lost, even after the retry) is not counted, but its answer is read ONCE MORE for one purpose: the blockers it lost. Those become open blockers of the
+      // broker's own, so a hostile or mistaken answer cannot make a blocker disappear by making it unreadable. This can only lower the result: nothing else of that answer is used.
+      if (outcome.failure === "unreadable" && outcome.answer !== undefined) {
+        const lost = readDesignReview(outcome.answer, entry.role, { withParaphrase: lightCriticWritesParaphrase(entry.role, input.promptIds?.get(entry.role) ?? "") });
+        if (lost.ok) { readDropped.push(...lost.dropped); unreadableFindings += lost.unusable; unreadableMaybeBlockers += lost.unusableMaybeBlocker; }
+      }
+      unused("worker_flagged", "unreadable_output");
+      continue;
+    }
     if (outcome.answer === undefined) { unused("no_answer", "unreadable_output"); continue; }
     const read = readDesignReview(outcome.answer, entry.role, { withParaphrase: lightCriticWritesParaphrase(entry.role, input.promptIds?.get(entry.role) ?? "") });
     if (!read.ok) { unused("unreadable_output", "unreadable_output"); continue; }

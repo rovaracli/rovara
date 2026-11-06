@@ -2,7 +2,7 @@
 // and the guarantee that with design review OFF nothing changed (the plan check's own tests live in rovara-code-critic.test.ts and stay green).
 import { describe, expect, it } from "vitest";
 import {
-  DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_EARLIER_MAX, DESIGN_REVIEW_EARLIER_MAX_BYTES, DESIGN_REVIEW_REARMS_MAX, WorkflowSnapshotSchema, blockWorkflow, closeParkedDesignReview, designReviewCapRoom,
+  DESIGN_LOST_FINDING_ID_PREFIX, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_EARLIER_MAX, DESIGN_REVIEW_EARLIER_MAX_BYTES, DESIGN_REVIEW_REARMS_MAX, WorkflowSnapshotSchema, blockWorkflow, closeParkedDesignReview, designReviewCapRoom,
   lowerDesignReviewTier, parkDesignReview, skipDesignReview, raiseDesignReviewCap, rearmedDesignReview, resumeBlockedDesignReview, resumeParkedDesignReview, retryDesignReviewNotRun, designReviewRetryOffer, answerDesignQuestions, askDesignQuestions, closeDesignReview, closePlanCritique, createWorkflowSnapshot, decideWorkflow, designFindingFingerprint,
   designReviewDisagreements, designReviewRevisionsUsed, enableDesignReview, holdDesignReviewForCost, resolveDesignReview, retryDesignReview, startDesignReview, submitDesignReview, submitPlanCritique,
   submitWorkflowArtifact, workflowIsDesignReviewing, type WorkflowProgram, type WorkflowSnapshot,
@@ -288,6 +288,16 @@ describe("the planner's resolution", () => {
     const workflow = roundOne([finding("f1", "blocker", "a"), finding("f2", "nit", "b"), finding("f3", "major", "c")]);
     const next = resolve(workflow, [{ ...fixed("f1"), settled: true }, { findingId: "f2", action: "declined", note: "Style.", settled: false }, { ...contested("f3"), settled: false }], artifact("design", 2));
     expect(next.designReview!.rounds[0]!.resolutions.map((resolution) => [resolution.findingId, resolution.settled])).toEqual([["f1", false], ["f2", true], ["f3", true]]);
+  });
+
+  it("refuses to contest a finding the reader could not show (the broker's own rovara~lost-N); a fix still settles it", () => {
+    const lost = { ...finding(`${DESIGN_LOST_FINDING_ID_PREFIX}3`, "blocker", "A reviewer's blocking finding about §3 could not be read.", []), origin: "rovara", rawIds: [] };
+    const round = roundOne([lost]);
+    expect(() => resolve(round, [contested(lost.id)])).toThrow(/could not be read cannot be contested/);
+    expect(() => resolve(round, [fixed(lost.id)], artifact("design", 2))).not.toThrow();
+    // a requirement finding of the broker's own can still be contested: only the unreadable-finding ids are refused
+    const requirement = { ...finding("rovara-lost-3", "blocker", "Requirement lost-3 appears in no section.", []), origin: "rovara", rawIds: [] };
+    expect(() => resolve(roundOne([requirement]), [contested(requirement.id)])).not.toThrow();
   });
 
   it("refuses to contest a comprehension finding, or to decline anything but a nit", () => {
