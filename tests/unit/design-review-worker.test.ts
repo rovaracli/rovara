@@ -5,14 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  DESIGN_REVIEW_WORKER_FEATURE, DesignReviewBindingSchema, DesignReviewWorkerResultSchema, PacketDeliverySchema, READ_ONLY_TOOLS, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema,
+  DESIGN_REVIEW_WORKER_FEATURE, DESIGN_REVIEW_DEFAULT_SETTING, DesignReviewBindingSchema, DesignReviewRoundSchema, DesignReviewWorkerResultSchema, editionPolicy, PacketDeliverySchema, READ_ONLY_TOOLS, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema,
   LIGHT_CRITIC_PROMPT_ID, MODEL_NOT_ENABLED_CODE, modelFailureCodeOf, packetDigestOf, reviewerMessagesOf, type DesignReviewBinding, type DesignReviewTier, type ReviewerRole, type WorkerInvocation,
 } from "@agentx/contracts";
 import { buildReviewerPacket, type PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import { WorkerReportSchema, verifyReviewerReport } from "../../packages/broker/src/design-review/verify.js";
 import { assembleRoundFindings } from "../../packages/broker/src/design-review/round-findings.js";
+import { lostBlockerFindings, withOwnFindings } from "../../packages/broker/src/design-review/own-findings.js";
+import { designCardFactsOf } from "../../packages/broker/src/design-review/card-source.js";
+import { decideDesignApproval } from "../../packages/broker/src/design-review/approval.js";
+import { designApprovalProofLine } from "../../packages/broker/src/design-review/approve-handler.js";
+import { riskTierOf } from "../../packages/broker/src/decisions/risk-tier.js";
 import { STAGING_COMPREHENSION_ANSWER, STAGING_CRITIC_ANSWER } from "../support/design-review-staging-answers.js";
-import { designReviewRetryPrompt, mergeMaterialOf, modelKeyIdOf, runDesignReview, sentDigestOf, type DesignReviewPorts, type DesignReviewSession, type OpenDesignReviewSession } from "../../packages/worker/src/design-review.js";
+import { DESIGN_REVIEW_LOST_FINDINGS_PROBLEM, designReviewRetryPrompt, mergeMaterialOf, modelKeyIdOf, runDesignReview, sentDigestOf, type DesignReviewPorts, type DesignReviewSession, type OpenDesignReviewSession } from "../../packages/worker/src/design-review.js";
 import { createReviewSessionOpener, designReviewBindingOf, runDesignReviewOperation, slotRuntimeFor } from "../../packages/worker/src/design-review-sessions.js";
 import { failedTurn } from "../../packages/worker/src/session-events.js";
 import { OperationJournal, createWorkerServerState, handleWorkerRequest } from "../../packages/worker/src/index.js";
@@ -294,16 +299,52 @@ describe("runDesignReview: unreadable blocks", () => {
     expect(result.reviewers[0]).toMatchObject({ status: "answered", retried: true });
   });
 
-  it("a block with a too-long id, a subsection citation and one bad finding is read on the first try: no retry, the good findings stand, the bad one is recorded as dropped", async () => {
+  it("a block with only a too-long id and a subsection citation is read on the first try: no retry, the finding stands", async () => {
     const { binding, deliveries } = await setup(["critic"], false);
     const long = finding("this-id-is-a-whole-sentence-and-far-too-long", { citations: [{ kind: "design", section: "§3.1" }] });
-    const bad = finding("2", { severity: "blocker", citations: [] });
-    const { ports, opened } = fakePorts({ answers: { "slot-critic": [block([long, bad])] } }, deliveries);
+    const { ports, opened } = fakePorts({ answers: { "slot-critic": [block([long])] } }, deliveries);
     const result = await runDesignReview(binding, ports);
     expect(opened[0]!.prompts).toHaveLength(1);
     expect(result.reviewers[0]).toMatchObject({ status: "answered", retried: false });
     expect(result.findings.flatMap((f) => f.rawIds)).toEqual(["critic-f1"]);
-    expect(result.droppedFindings).toEqual([{ rawId: "critic-dropped-2", role: "critic", severity: "blocker", section: "§3", reason: "no_valid_citation" }]);
+  });
+
+  it("a readable block that lost a finding is asked again once with the fixed rules, and the better answer is the one kept and stored", async () => {
+    const { binding, deliveries } = await setup(["critic"], false);
+    const lost = finding("2", { severity: "blocker", citations: [] });
+    const first = block([finding("1"), lost]);
+    const second = block([finding("1"), finding("2", { severity: "blocker" })]);
+    const { ports, opened } = fakePorts({ answers: { "slot-critic": [first, second] } }, deliveries);
+    const result = await runDesignReview(binding, ports);
+    expect(opened[0]!.prompts[1]).toBe(designReviewRetryPrompt(DESIGN_REVIEW_LOST_FINDINGS_PROBLEM));
+    expect(result.reviewers[0]).toMatchObject({ status: "answered", retried: true, answer: second });
+    expect(result.findings.flatMap((f) => f.rawIds).sort()).toEqual(["critic-1", "critic-2"]);
+    expect(result.droppedFindings).toEqual([]);
+  });
+
+  it("when the second answer is worse, the first answer and its read are kept (the broker reads only the stored answer)", async () => {
+    const { binding, deliveries } = await setup(["critic"], false);
+    const first = block([finding("1"), finding("2", { severity: "blocker", citations: [] })]);
+    for (const worse of ["no block at all", block([finding("1", { citations: [] }), finding("2", { severity: "blocker", citations: [] })])]) {
+      const { ports, opened } = fakePorts({ answers: { "slot-critic": [first, worse] } }, deliveries);
+      const result = await runDesignReview(binding, ports);
+      expect(opened[0]!.prompts).toHaveLength(2);
+      expect(result.reviewers[0], worse).toMatchObject({ status: "answered", retried: true, answer: first });
+      expect(result.findings.flatMap((f) => f.rawIds), worse).toEqual(["critic-1"]);
+      expect(result.droppedFindings, worse).toEqual([{ rawId: "~critic-dropped-2", role: "critic", severity: "blocker", section: "§3", reason: "no_valid_citation" }]);
+    }
+  });
+
+  it("a reviewer whose findings were all lost, both times, gave no result: it is not a clean review", async () => {
+    const { binding, deliveries } = await setup(["critic"], false);
+    const allLost = block([finding("1", { severity: "blocker", citations: [] })]);
+    const { ports } = fakePorts({ answers: { "slot-critic": [allLost, allLost] } }, deliveries);
+    const result = await runDesignReview(binding, ports);
+    expect(result.reviewers[0]).toMatchObject({ status: "no_result", failure: "unreadable", retried: true });
+    expect(result.findings).toEqual([]);
+    // the same answer with a real empty list is still a valid "found nothing"
+    const empty = fakePorts({ answers: { "slot-critic": [block([])] } }, deliveries);
+    expect((await runDesignReview(binding, empty.ports)).reviewers[0]).toMatchObject({ status: "answered", retried: false });
   });
 });
 
@@ -547,11 +588,57 @@ describe("broker side: assembleRoundFindings, fix round 2 (N1, N3, N5)", () => {
 
   it("a finding the reader could not use is listed with the dropped findings, by role, severity and section, and the reviewer still counts", async () => {
     const lost = finding("2", { severity: "blocker", section: "§5.1", citations: [] });
-    const made = await round(["critic", "codebase"], { "slot-critic": [block([finding("1"), lost])], "slot-codebase": [block([finding("3")])] });
+    const lostAnswer = block([finding("1"), lost]);
+    const made = await round(["critic", "codebase"], { "slot-critic": [lostAnswer, lostAnswer], "slot-codebase": [block([finding("3")])] });
     const out = assembleRoundFindings({ binding: made.binding, result: made.result, verification: made.verification, packets: made.packets, pins: {} });
     expect(out.reviewers.map((r) => r.counted)).toEqual([true, true]);
-    expect(out.droppedFindings).toEqual([{ rawId: "critic-dropped-2", role: "critic", severity: "blocker", section: "§5", reason: "no_valid_citation" }]);
+    expect(out.droppedFindings).toEqual([{ rawId: "~critic-dropped-2", role: "critic", severity: "blocker", section: "§5", reason: "no_valid_citation" }]);
     expect(out.findings.flatMap((f) => f.rawIds).sort()).toEqual(["codebase-3", "critic-1"]);
+  });
+
+  it("a reviewer whose findings were ALL lost is not counted as a clean review, and the loss is counted on the round", async () => {
+    const lostAnswer = block([finding("1", { severity: "blocker", citations: [] }), finding("2", { severity: "high" })]);
+    const made = await round(["critic", "codebase"], { "slot-critic": [lostAnswer, lostAnswer], "slot-codebase": [block([finding("3")])] });
+    const out = assembleRoundFindings({ binding: made.binding, result: made.result, verification: made.verification, packets: made.packets, pins: {} });
+    expect(out.reviewers.map((r) => [r.role, r.counted, r.notUsed])).toEqual([["critic", false, "worker_flagged"], ["codebase", true, undefined]]);
+    expect(out.findings.flatMap((f) => f.rawIds)).toEqual(["codebase-3"]);
+    // the worker already refused this reviewer, so the broker does not read its answer: the reviewer is simply not counted (the card shows the coverage), nothing else is recorded
+    expect(out.droppedFindings).toEqual([]);
+    // the broker reading a stored answer the worker did not retry (an older worker) reaches the same decision
+    const stored = { ...made.result, reviewers: made.result.reviewers.map((r) => (r.role === "critic" ? { ...r, status: "answered" as const, failure: undefined, answer: lostAnswer } : r)) };
+    const reread = assembleRoundFindings({ binding: made.binding, result: stored, verification: made.verification, packets: made.packets, pins: {} });
+    expect(reread.reviewers[0]).toMatchObject({ counted: false, notUsed: "unreadable_output" });
+    expect(reread.findings.flatMap((f) => f.rawIds)).toEqual(["codebase-3"]);
+    expect(reread.droppedFindings).toEqual([{ rawId: "~critic-dropped-1", role: "critic", severity: "blocker", section: "§3", reason: "no_valid_citation" }]);
+    expect(reread.readDroppedFindings).toEqual(reread.droppedFindings);
+    expect(reread.unreadableFindings).toBe(1);
+    expect(reread.unreadableMaybeBlockers).toBe(1);
+  });
+
+  it("a blocker that was lost becomes an open blocker on the card: no clean review, and approving needs a reason", async () => {
+    const lost = block([finding("1"), finding("2", { severity: "blocker", section: "§5.2", citations: [] }), finding("3", { severity: "Critical" })]);
+    const made = await round(["critic", "codebase"], { "slot-critic": [lost, lost], "slot-codebase": [block([finding("4")])] });
+    const out = assembleRoundFindings({ binding: made.binding, result: made.result, verification: made.verification, packets: made.packets, pins: {} });
+    expect(out.reviewers.every((r) => r.counted)).toBe(true);
+    const own = lostBlockerFindings({ dropped: out.readDroppedFindings, unreadableMaybeBlockers: out.unreadableMaybeBlockers });
+    expect(own.map((f) => [f.id, f.severity, f.section, f.origin])).toEqual([["rovara-lost-5", "blocker", "§5", "rovara"], ["rovara-lost-unread", "blocker", "§3", "rovara"]]);
+    expect(own.map((f) => f.text).join(" ")).not.toMatch(/Critical|Problem/);
+    const merged = withOwnFindings(out.findings, own);
+    const hex = (seed: string) => seed.repeat(64).slice(0, 64);
+    const runOf = (role: "critic" | "codebase") => ({ role, promptId: "p", promptVersion: 1, promptDigest: hex("a"), model: { provider: "anthropic", modelId: "m" }, sourceId: "s", sessionId: `ses-${role}`, modelKeyId: "k", packetDigest: hex("b"), packet: [], filesRead: [], verified: true, inputProof: "digest_only" as const, tokensIn: 1, tokensOut: 1, costUsd: 0.1, startedAt: "2026-11-03T10:00:00.000Z", endedAt: "2026-11-03T10:01:00.000Z" });
+    const stored = DesignReviewRoundSchema.parse({ round: 1, designDigest: hex("c"), reviewers: [runOf("critic"), runOf("codebase")], findings: merged.findings, resolutions: [], droppedFindings: out.droppedFindings.map((d) => ({ role: d.role, severity: d.severity, section: d.section })), unreadableFindings: out.unreadableFindings });
+    const review = { decidedBy: "auto" as const, reasons: [], status: "done" as const, tier: "standard" as const, spentUsd: 0.5, rounds: [stored] };
+    const facts = designCardFactsOf(review, []);
+    expect(facts.blockers).toHaveLength(2);
+    expect(riskTierOf("approve_design", { design: { files: ["src/a.ts"], review: facts } }, {}).reasons).toContain("2 blockers are still open.");
+    const directory = { people: { complete: true, membershipVersion: 1, ownerIds: ["max"], eligibleIds: ["max"], lastEligibleLossAtMs: null }, projectMemberIds: ["max", "priya"], notApproverIds: [] };
+    const decide = (blockerReason?: string) => decideDesignApproval({ tier: "medium", requesterId: "priya", approverId: "priya", nowMs: Date.parse("2026-11-03T12:00:00Z"), setting: DESIGN_REVIEW_DEFAULT_SETTING, edition: editionPolicy("enterprise"), directory, freshSignIn: true, openBlockers: facts.blockers.length, blockerReason });
+    expect(decide()).toEqual({ ok: false, code: "reason_required" });
+    expect(decide("Reviewed by hand")).toMatchObject({ ok: true, proofReason: "Reviewed by hand" });
+    expect(designApprovalProofLine(facts.blockers.length, "Reviewed by hand")).toContain("2 open blockers");
+    // control: the same round with nothing lost has no blocker, so the lost-blocker path is what raised them
+    const clean = assembleRoundFindings({ binding: made.binding, result: (await round(["critic", "codebase"], { "slot-critic": [block([finding("1")])], "slot-codebase": [block([finding("4")])] })).result, verification: made.verification, packets: made.packets, pins: {} });
+    expect(lostBlockerFindings({ dropped: clean.readDroppedFindings, unreadableMaybeBlockers: clean.unreadableMaybeBlockers })).toEqual([]);
   });
 
   it("N5: a verified reviewer whose answer is missing or unreadable is not verified, and the round has no verified reviewer", async () => {

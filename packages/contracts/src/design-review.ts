@@ -286,6 +286,8 @@ export const DesignReviewRoundSchema = z.object({
   mergeModel: DesignModelRefSchema.optional(),
   /** The reviewers' findings that were left out because no citation held (broker-made, never the worker's list). Absent in a round recorded before this field. */
   droppedFindings: z.array(DroppedDesignFindingSchema).max(DESIGN_DROPPED_FINDINGS_MAX).optional(),
+  /** How many findings a reader could not use at all (no readable severity or section, not an object): a count only, there is nothing else to keep. Absent when none, and in a round recorded before this field. */
+  unreadableFindings: z.number().int().min(1).max(DESIGN_DROPPED_FINDINGS_MAX).optional(),
 }).strict();
 export type DesignReviewRound = z.infer<typeof DesignReviewRoundSchema>;
 

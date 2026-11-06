@@ -398,10 +398,10 @@ describe("3.12 item 3 and 9: a reviewer's own words are read through a block tha
       expect(result.ok ? "" : result.error, JSON.stringify(extra)).toContain("unknown field");
       expect(result.ok ? "" : result.error).not.toContain("light");
     }
-    // A finding that carries a field of its own is not used at all (its other words are not read), and the block is still read: the other findings stand, and the lost one is counted.
+    // A field the reader does not know is never read: the finding keeps its own fields, and nothing planted reaches the result.
     for (const extra of [{ tier: "light" }, { approved: true }, { suppress: true }]) {
       const result = readDesignReview(block({ findings: [one(extra), one({ id: "2", text: "Another real problem." })] }), "critic");
-      expect(result, JSON.stringify(extra)).toMatchObject({ ok: true, findings: [{ rawId: "critic-2" }], dropped: [{ severity: "blocker", section: "§3" }] });
+      expect(result, JSON.stringify(extra)).toMatchObject({ ok: true, findings: [{ rawId: "critic-1", severity: "blocker" }, { rawId: "critic-2" }], dropped: [], unusable: 0 });
       expect(JSON.stringify(result), JSON.stringify(extra)).not.toMatch(/light|approved|suppress/);
     }
   });

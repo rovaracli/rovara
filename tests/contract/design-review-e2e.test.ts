@@ -18,6 +18,7 @@ import { readSlotPacket } from "../../packages/broker/src/design-review/packet-s
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { parkDesignReview } from "../../packages/contracts/src/index.js";
+import { designCardFactsOf } from "../../packages/broker/src/design-review/card-source.js";
 import { DEV_ISSUER, MAYA, OMAR, seedMembership, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { designWaitArmOf } from "../../packages/broker/src/design-review/wait-rows.js";
 import { designWaitSweepDepsOf } from "../../packages/broker/src/design-review/wait-wiring.js";
@@ -491,6 +492,21 @@ describe("the other ends a round has", () => {
     expect(again).toMatchObject({ status: "ACCEPTED" });
     expect(canonicalModel(again!.model)).not.toBe(canonicalModel(failed!.model));
     expect(DesignReviewBindingSchema.parse(again!.designReview).reviewers[0]!.model).toMatchObject(again!.model as object);
+  });
+
+  it("a blocker the reader could not use becomes an open blocker of the broker's own on the record, with fixed words; the words and the unreadable ones are counted, never kept", async () => {
+    const w = await world();
+    const operationId = String(w.operations()[0]!.id);
+    const unreadable = { id: "1", severity: "blocker", section: "§2", text: "SECRET-INJECTED-WORDS the auth middleware is missing.", citations: [{ kind: "design", section: "§9" }] };
+    const noSeverity = { id: "2", severity: "urgent", section: "§2", text: "SECRET-INJECTED-WORDS again.", citations: [{ kind: "design", section: "§2" }] };
+    await runWorker(w, operationId, { codebase: { findings: [unreadable, noSeverity, blocker("3", "Every retry is logged twice.")] }, critic: { findings: [blocker("1", "Retries have no upper bound.")] } });
+    const round = review(w).rounds[0]!;
+    expect(round.droppedFindings).toEqual([{ role: "codebase", severity: "blocker", section: "§2" }]);
+    expect(round.unreadableFindings).toBe(1);
+    const own = round.findings.filter((finding) => finding.origin === "rovara" && finding.id.startsWith("rovara-lost-"));
+    expect(own.map((finding) => [finding.id, finding.severity, finding.section])).toEqual([["rovara-lost-2", "blocker", "§2"], ["rovara-lost-unread", "blocker", "§3"]]);
+    expect(designCardFactsOf(review(w), []).blockers.map((entry) => entry.section)).toEqual(expect.arrayContaining(["§2", "§3"]));
+    expect(JSON.stringify(w.task().workflow)).not.toContain("SECRET-INJECTED-WORDS");
   });
 
   it("leaves a dropped finding on the record, blocker included, and never the words of one that was dropped for want of a citation", async () => {

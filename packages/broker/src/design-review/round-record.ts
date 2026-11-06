@@ -18,7 +18,7 @@ import {
 import type { OperationRecord, StateTable } from "../aws/cancellation.js";
 import { recordedReviewerCost } from "./estimate.js";
 import { bindingMergeProblem } from "./merge-binding.js";
-import { ownDesignFindings, withOwnFindings } from "./own-findings.js";
+import { lostBlockerFindings, ownDesignFindings, withOwnFindings } from "./own-findings.js";
 import { estimateInputTokens } from "./packet.js";
 import { packetDeleteItems, readSlotPacket, removeSlotPackets } from "./packet-store.js";
 import { reviewerPromptFor, promptRecord } from "./prompts/index.js";
@@ -182,7 +182,11 @@ export async function recordDesignReviewRound(ports: RoundRecordPorts, input: Ro
   });
 
   // The broker's own findings are added; a reviewer finding that says the same thing is folded into them (N6, in withOwnFindings): the same fingerprint twice in one round would make the move refuse the whole result.
-  const merged = withOwnFindings(assembled.findings, ownDesignFindings({ design: input.design.text, requirementIds: requirementIdsOf(input.requirementsText) }));
+  const merged = withOwnFindings(assembled.findings, [
+    ...ownDesignFindings({ design: input.design.text, requirementIds: requirementIdsOf(input.requirementsText) }),
+    // A blocker a reader could not show is an open blocker of its own, so it cannot become a clean review (own-findings.ts).
+    ...lostBlockerFindings({ dropped: assembled.readDroppedFindings, unreadableMaybeBlockers: assembled.unreadableMaybeBlockers }),
+  ]);
 
   const stateOf = new Map<ReviewerRole, RoundReviewerState>(assembled.reviewers.map((state) => [state.role, state] as const));
   let runs: ReviewerRun[];
@@ -222,6 +226,7 @@ export async function recordDesignReviewRound(ports: RoundRecordPorts, input: Ro
         ...(stoppedAtCap ? { stoppedAtCap: true as const } : {}),
         // What was left out for want of a citation, with the blockers among it: the broker's own list, never the worker's.
         droppedFindings: assembled.droppedFindings.map((dropped) => ({ role: dropped.role, severity: dropped.severity, section: dropped.section })),
+        unreadableFindings: assembled.unreadableFindings,
         now: input.now,
       });
     } catch (error) {

@@ -29,7 +29,7 @@
 // parsed with the strict DR1 schemas, and code (never a model) decides the fingerprint of a finding, whether a resolution is settled, and where the workflow goes next.
 import { z } from "zod";
 import {
-  DESIGN_REVIEW_APPROVALS_MAX, DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_FINDINGS_MAX, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS, DESIGN_REVIEW_NOT_RUN_REASONS, DESIGN_REVIEW_PARK_AFTER_MS, DESIGN_REVIEW_QUESTIONS_MAX,
+  DESIGN_DROPPED_FINDINGS_MAX, DESIGN_REVIEW_APPROVALS_MAX, DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_FINDINGS_MAX, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS, DESIGN_REVIEW_NOT_RUN_REASONS, DESIGN_REVIEW_PARK_AFTER_MS, DESIGN_REVIEW_QUESTIONS_MAX,
   DESIGN_REVIEW_RETRIES_MAX, DESIGN_REVIEW_REVISIONS_MAX, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_TIERS, DESIGN_REASONS_MAX, DESIGN_NOTE_MAX, DesignAnswerSchema, DesignFindingSchema,
   DesignModelRefSchema, DesignQuestionSchema, designFindingFingerprint, DesignReasonSchema, DesignReviewActorSchema, DesignReviewRoundSchema, DesignReviewTierSchema, FindingResolutionSchema, ReviewerRunSchema,
   WorkflowDesignReviewSchema,
@@ -413,7 +413,7 @@ export function submitDesignReview(
   currentInput: unknown,
   input: {
     expectedRevision: number; designDigest: string; reviewers: readonly unknown[]; findings: readonly unknown[]; mergeModel?: unknown; mergeCostUsd?: number;
-    undoesEarlierFix?: readonly { findingId: string; earlierFindingId: string }[]; stoppedAtCap?: true; droppedFindings?: readonly unknown[]; now: string;
+    undoesEarlierFix?: readonly { findingId: string; earlierFindingId: string }[]; stoppedAtCap?: true; droppedFindings?: readonly unknown[]; unreadableFindings?: number; now: string;
   },
 ): WorkflowSnapshot {
   const { current, review } = located(currentInput, input.expectedRevision, { stage: "PLAN_CRITIQUE", states: ["RUNNING"], statuses: ["running"] });
@@ -474,6 +474,7 @@ export function submitDesignReview(
     round: roundNumber, designDigest: input.designDigest, reviewers: runs.data, findings, resolutions: carried,
     ...(oscillation.length === 0 ? {} : { oscillation }), ...(mergeModel?.success === true ? { mergeModel: mergeModel.data } : {}),
     ...((input.droppedFindings ?? []).length === 0 ? {} : { droppedFindings: input.droppedFindings }),
+    ...(input.unreadableFindings === undefined || input.unreadableFindings <= 0 ? {} : { unreadableFindings: Math.min(input.unreadableFindings, DESIGN_DROPPED_FINDINGS_MAX) }),
   });
   if (!round.success) throw fail("the design review result is invalid");
   const spentUsd = addUsd(addUsd(review.spentUsd, runs.data.reduce((sum, run) => addUsd(sum, run.costUsd), 0)), mergeCost);
