@@ -27,6 +27,30 @@ it("says the status, tier, and the estimate against what was spent", () => {
  expect(designTabModel(designReviewFixture({ estimateUsd: undefined })).cost.estimate).toBe("not available");
 });
 
+it("FU3: each round shows what it was estimated at and what its reviewers spent; a finished review keeps its estimate, a running one shows the current one, an old record says not available", () => {
+ const base = designReviewFixture();
+ const withEstimate = (estimateUsd: number | undefined) => designReviewFixture({ estimateUsd: undefined, rounds: [{ ...base.rounds[0]!, ...(estimateUsd === undefined ? {} : { estimateUsd }) }] });
+ // The review's own estimate is cleared on a finished review; the round's copy is shown (the three runs cost $0.32 each).
+ const finished = designTabModel(withEstimate(0.95));
+ expect(finished.rounds[0]!.cost).toEqual({ estimate: "$0.95", reviewersSpent: "$0.96" });
+ expect(finished.cost.estimate).toBe("$0.95");
+ // A review that never ran (a not_run record that still has a round) keeps the estimate too.
+ expect(designTabModel(designReviewFixture({ status: "not_run", notRunReason: "worker_failed", estimateUsd: undefined, rounds: [{ ...base.rounds[0]!, estimateUsd: 0.95 }] })).cost.estimate).toBe("$0.95");
+ // A record from before the field has no estimate to show.
+ const old = designTabModel(withEstimate(undefined));
+ expect(old.rounds[0]!.cost).toEqual({ estimate: "not available", reviewersSpent: "$0.96" });
+ expect(old.cost.estimate).toBe("not available");
+ // A running round shows the review's current estimate, and the earlier round keeps its own.
+ const running = designTabModel(designReviewFixture({ status: "running", estimateUsd: 0.5, rounds: [{ ...base.rounds[0]!, estimateUsd: 0.95 }] }));
+ expect(running.cost.estimate).toBe("$0.50");
+ expect(running.rounds[0]!.cost.estimate).toBe("$0.95");
+ // Round 2 is priced afresh: between rounds the review has no estimate yet, and round 1's is not shown as if it were round 2's.
+ expect(designTabModel(designReviewFixture({ status: "estimating", estimateUsd: undefined, rounds: [{ ...base.rounds[0]!, estimateUsd: 0.95 }] })).cost.estimate).toBe("not available");
+ const shown = render(h(DesignTabView, { model: finished }));
+ expect(screen.getByText("Estimated $0.95 for the rest of the review (all steps); reviewers spent $0.96 this round.")).toBeTruthy();
+ shown.unmount();
+});
+
 it("words each reviewer's proof with the fixed sentence and never claims the proxy confirmed unless it did", () => {
  const review = designReviewFixture(), [comprehension, critic, codebase] = review.rounds[0]!.reviewers;
  expect(reviewerLine(critic!).proof).toBe(inputProofSentence("digest_only"));

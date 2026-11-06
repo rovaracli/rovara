@@ -93,8 +93,8 @@ async function world(options: { slack?: boolean; modelAccess?: boolean; budgetUs
   const planner = active();
   const task = () => harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot; ownerKey: string; orgId: string };
   const base = task().workflow;
-  // The task's own run limit (the harness gives $2): a test about the review's cap, not the task's limit, gives the task more.
-  if (options.budgetUsd !== undefined) harness.db.set({ ...task(), budgetUsd: options.budgetUsd });
+  // The task's own run limit (the harness gives $2): a test about the review's cap, not the task's limit, gives the task more. The calibrated reviewer estimate (FU3) is above $2 for one round, so every world has room unless a test sets its own.
+  harness.db.set({ ...task(), budgetUsd: options.budgetUsd ?? 50 });
   const store = (name: string, text: string): WorkflowArtifact => {
     const objectKey = `private/${task().ownerKey}/${workspaceId}/${taskId}/${name}`;
     harness.s3.objects.set(objectKey, text);
@@ -315,6 +315,11 @@ describe("a Full task's design review, from the dispatch to the person's card", 
     expect(review(w).rounds[1]!.designDigest).toBe(design2.sha256);
     expect(review(w).spentUsd).toBeCloseTo(1.0 + 0.7, 6);
     expect(review(w).approvals).toBeUndefined();
+    // FU3: each round keeps the estimate it started on (round 1 for both rounds, round 2 for itself, so it is the smaller).
+    const [roundOneEstimate, roundTwoEstimate] = review(w).rounds.map((round) => round.estimateUsd);
+    expect(roundOneEstimate).toBeGreaterThan(0);
+    expect(roundTwoEstimate).toBeGreaterThan(0);
+    expect(roundTwoEstimate!).toBeLessThan(roundOneEstimate!);
   });
 });
 
@@ -390,12 +395,13 @@ describe("what the broker checks about the packets and the pins itself", () => {
 
 describe("how a round ends short of a result", () => {
   it("stops at the cost cap when the measured spend takes the total past it, and starts no second round", async () => {
-    const w = await world({ capUsd: 2 });
+    // The cap is just over the calibrated estimate (about $6.39 for two rounds, FU3) so the round starts.
+    const w = await world({ capUsd: 7 });
     const operationId = String(w.operations()[0]!.id);
-    // The merge step is not reached: the reviewers alone spend 2.1 against the 2 cap.
-    await runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.7 }, comprehension: { spentUsd: 0.7 }, codebase: { spentUsd: 0.7 } }, { skipMerge: true });
+    // The merge step is not reached: the reviewers alone spend 7.2 against the 7 cap.
+    await runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 2.4 }, comprehension: { spentUsd: 2.4 }, codebase: { spentUsd: 2.4 } }, { skipMerge: true });
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "stopped_at_cap" } });
-    expect(review(w).spentUsd).toBeCloseTo(2.1, 6);
+    expect(review(w).spentUsd).toBeCloseTo(7.2, 6);
     expect(review(w).rounds[0]!.resolutions).toEqual([]);
     await w.sweep();
     expect(w.operations()).toHaveLength(1);
@@ -1192,7 +1198,7 @@ describe("slice C: the design review's routes", () => {
   });
 
   it("the Retry of a review that did not run is one tap for a project member, once", async () => {
-    const w = await world({ capUsd: 5 });
+    const w = await world({ capUsd: 8 });
     await runWorker(w, String(w.operations()[0]!.id), {}, { failure: { error: "the run failed" } });
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "not_run" } });
     seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "viewer"]]);
@@ -1432,7 +1438,7 @@ describe("slice C: the design review's routes", () => {
   });
 
   it("ON-11: Design first and Retry are the requester's or a maintainer's, not any member's; a double tap is the same answer", async () => {
-    const w = await world({ capUsd: 5 });
+    const w = await world({ capUsd: 8 });
     await runWorker(w, String(w.operations()[0]!.id), {}, { failure: { error: "the run failed" } });
     await web(w)(PRIYA_ID, "GET", "/v1/app/decisions");
     seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "contributor"], [PRIYA_ID, "member", "maintainer"]]);

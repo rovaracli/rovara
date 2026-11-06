@@ -112,7 +112,7 @@ export async function prepareDesignReviewRound(input: RoundInputs, resolved: Des
     const plannerSelection = await ports.plannerModel?.(task);
     const plannerModel: ModelIdentifier = plannerSelection === undefined ? reviewerModel : { provider: plannerSelection.provider, modelId: plannerSelection.modelId };
     const roundsLeft = (DESIGN_REVIEW_ROUNDS_MAX - review.rounds.length) as 1 | 2;
-    const estimateFor = (tier: DesignReviewTier, packetTokens: number): DesignReviewEstimate => estimateDesignReviewUsd({ tier, models: { reviewer: reviewerModel, merge: reviewerModel, planner: plannerModel }, price: ports.price, packetTokens, rounds: roundsLeft });
+    const estimateFor = (tier: DesignReviewTier, packetTokens: number): DesignReviewEstimate => estimateDesignReviewUsd({ tier, models: { reviewer: reviewerModel, merge: reviewerModel, planner: plannerModel }, price: ports.price, packetTokens, rounds: roundsLeft, reviewerCaches: resolved.sourceId === "rovara" });
     const capCeilingUsd = await ports.capCeilingUsd(task.orgId);
     const lower = nextLowerTier(review.tier);
     const gateFor = (packetTokens: number) => gateDesignReviewCost({

@@ -154,16 +154,21 @@ export const designApproveHandlerFor = (deps: DeveloperRouteDependencies, caller
 
 // ---- the spend card
 
-async function modelsOf(env: Env, task: DeveloperTaskRecord): Promise<{ reviewer: ModelIdentifier | undefined; planner: ModelIdentifier | undefined }> {
+async function modelsOf(env: Env, task: DeveloperTaskRecord): Promise<{ reviewer: ModelIdentifier | undefined; planner: ModelIdentifier | undefined; reviewerCaches: boolean }> {
   const response = await env.deps.documentClient.send(new QueryCommand({
     TableName: env.deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": `WORKSPACE#${task.workspaceId}`, ":prefix": "OPERATION#" }, ConsistentRead: true,
   })).catch(() => ({ Items: [] })) as { Items?: Array<Record<string, unknown>> };
+  const operationOf = (mode: string) => (response.Items ?? []).filter((item) => item["workflowMode"] === mode).sort((left, right) => String(left["createdAt"]).localeCompare(String(right["createdAt"]))).at(-1);
   const latest = (mode: string) => {
-    const model = ModelSelectionSchema.safeParse((response.Items ?? []).filter((item) => item["workflowMode"] === mode).sort((left, right) => String(left["createdAt"]).localeCompare(String(right["createdAt"]))).at(-1)?.["model"]);
+    const model = ModelSelectionSchema.safeParse(operationOf(mode)?.["model"]);
     return model.success ? { provider: model.data.provider, modelId: model.data.modelId } : undefined;
   };
   const planner = latest("PLAN");
-  return { reviewer: latest("PLAN_CRITIQUE") ?? planner, planner };
+  // The reviewers' source is the one that served the operation the model was read from: no route is Rovara's metered catalog, a route names its source. Nothing found: not known, so no cache discount.
+  const reviewerOperation = latest("PLAN_CRITIQUE") !== undefined ? operationOf("PLAN_CRITIQUE") : planner !== undefined ? operationOf("PLAN") : undefined;
+  const route = reviewerOperation?.["modelRoute"] as { sourceId?: unknown } | undefined;
+  const reviewerCaches = reviewerOperation !== undefined && (route === undefined || route.sourceId === "rovara");
+  return { reviewer: latest("PLAN_CRITIQUE") ?? planner, planner, reviewerCaches };
 }
 
 async function spendContextOf(env: Env, caller: DecisionCaller, loaded: Loaded): Promise<DesignSpendContext | undefined> {
@@ -173,7 +178,7 @@ async function spendContextOf(env: Env, caller: DecisionCaller, loaded: Loaded):
   if (review === undefined || ports === undefined || review.status !== "waiting_cost" || workflow.stage !== "PLAN_CRITIQUE" || workflow.state !== "WAITING") return undefined;
   const facts = await factsOf(env, loaded);
   const models = await modelsOf(env, task);
-  const estimates = spendEstimatesOf({ review, reviewerModel: models.reviewer, plannerModel: models.planner, price: ports.price });
+  const estimates = spendEstimatesOf({ review, reviewerModel: models.reviewer, plannerModel: models.planner, price: ports.price, reviewerCaches: models.reviewerCaches });
   return {
     taskId: task.taskId, requesterId: task.developerId, tier: review.tier, setting: facts.setting, taskCapUsd: review.capUsd ?? facts.setting.capUsdPerTask, spentUsd: review.spentUsd,
     capCeilingUsd: await ports.capCeilingUsd(caller.orgId), estimate: estimates.estimate, lowerTier: estimates.lowerTier, reasons: review.reasons, touches: facts.touches, directory: facts.directory, edition: facts.edition,

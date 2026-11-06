@@ -63,7 +63,8 @@ export async function designWorld(options: { tier?: DesignReviewTier; capUsd?: n
   workflow = decideWorkflow(workflow, { requestId: "22222222-2222-4222-8222-222222222222", expectedRevision: workflow.revision, decision: "APPROVE", reason: "ok", artifactDigest: requirements.sha256 },
     { actorId: owner, role: "TASK_OWNER" }, { now: LATER, allowedSkipStages: [] });
   workflow = WorkflowSnapshotSchema.parse(submitWorkflowArtifact(running(workflow), { expectedRevision: workflow.revision + 1, artifact: design, now: NOW }));
-  harness.db.set({ ...task(), workflow });
+  // The harness gives the task $2; the calibrated reviewer estimate (FU3) is above that for one round, so the task gets room (these tests are about the review, not the task limit).
+  harness.db.set({ ...task(), workflow, budgetUsd: 50 });
   harness.db.set((workflowDispatchItem("state", taskId, workflow.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, new Date().toISOString()) as { Put: { Item: Record<string, unknown> } }).Put.Item);
   // The planner's own run ends (its result is late), which frees the workspace and runs the task's due rows: the design review starts.
   await harness.finish(workspaceId, planner, "SUCCEEDED");

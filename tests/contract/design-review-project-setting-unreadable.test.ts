@@ -269,7 +269,7 @@ describe("writes: a setting is validated before it is stored, and a write rests 
     await write(playbookDeps(w), undefined);
     const events = w.audit.recordedBy("playbook.design_review_changed");
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ actor: { kind: "member", id: MAX }, facts: { revision: 3, mode: "never", tier: "standard", allowSkip: true, capCents: 1000, approverKind: "maintainers", approverCount: 0 } });
+    expect(events[0]).toMatchObject({ actor: { kind: "member", id: MAX }, facts: { revision: 3, mode: "never", tier: "standard", allowSkip: true, capCents: 1500, approverKind: "maintainers", approverCount: 0 } });
     expect(JSON.stringify(events[0])).not.toContain(SECRET);
     // Positive controls: a readable setting carried over unchanged, and no setting at all, record no design review event.
     const same = world();

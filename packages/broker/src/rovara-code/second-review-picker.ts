@@ -15,7 +15,8 @@ export const SECOND_REVIEW_TYPICAL_REVIEW_TOKENS = { input: 60_000, output: 4_00
 export const SECOND_REVIEW_SUGGESTIONS_MAX = 3;
 
 /** A catalog price per million tokens. */
-export interface SecondReviewPrice { inputUsdPerMTok: number; outputUsdPerMTok: number }
+/** `cacheReadUsdPerMTok` and `cacheWriteUsdPerMTok` are set only when the catalog lists them (design review reviewers use it; the second-review estimate ignores it). */
+export interface SecondReviewPrice { inputUsdPerMTok: number; outputUsdPerMTok: number; cacheReadUsdPerMTok?: number | undefined; cacheWriteUsdPerMTok?: number | undefined }
 
 /** The estimated cost of one review from a catalog price and the typical review size. */
 export function estimateSecondReviewUsd(price: SecondReviewPrice, tokens: { input: number; maxOutput: number }): number {

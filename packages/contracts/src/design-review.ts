@@ -60,9 +60,9 @@ export const DesignReviewSettingSchema = z.object({
 }).strict();
 export type DesignReviewSetting = z.infer<typeof DesignReviewSettingSchema>;
 
-/** Owner decisions 2026-11-03: auto, Standard (3 reviewers), Skip allowed, $10 per task, maintainers approve high-risk designs. */
+/** Owner decisions 2026-11-03: auto, Standard (3 reviewers), Skip allowed, maintainers approve high-risk designs. Cost limit per task $15 (owner 2026-11-06, raised from $10 after FU3 made estimates honest; review spend stays inside the task run limit). Stored settings keep their own value. */
 export const DESIGN_REVIEW_DEFAULT_SETTING: Readonly<DesignReviewSetting> = Object.freeze({
-  mode: "auto", tier: "standard", allowSkip: true, capUsdPerTask: 10, highRiskApprover: Object.freeze({ kind: "maintainers" as const }),
+  mode: "auto", tier: "standard", allowSkip: true, capUsdPerTask: 15, highRiskApprover: Object.freeze({ kind: "maintainers" as const }),
 });
 
 /** Owner Q7: at most 2 review rounds and 2 planner revisions per design. */
@@ -291,6 +291,12 @@ export const DesignReviewRoundSchema = z.object({
   droppedFindings: z.array(DroppedDesignFindingSchema).max(DESIGN_DROPPED_FINDINGS_MAX).optional(),
   /** How many findings a reader could not use at all (no readable severity or section, not an object): a count only, there is nothing else to keep. Absent when none, and in a round recorded before this field. */
   unreadableFindings: z.number().int().min(1).max(DESIGN_DROPPED_FINDINGS_MAX).optional(),
+  /**
+   * What the review's estimate was when this round was recorded: the estimate made at the round's start, for the rounds then still to run (round 1 of two covers both, round 2 only itself). The review's own
+   * `estimateUsd` is cleared when the round resolves (round 2 is priced afresh), so this copy is what lets a finished review show "estimated $x, spent $y". Absent in a round recorded before this field, and
+   * when the round ran unpriced.
+   */
+  estimateUsd: Usd.optional(),
 }).strict();
 export type DesignReviewRound = z.infer<typeof DesignReviewRoundSchema>;
 

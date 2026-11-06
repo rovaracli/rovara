@@ -74,7 +74,8 @@ async function world(options: { learned?: Set<string> } = {}) {
   workflow = decideWorkflow(workflow, { requestId: "22222222-2222-4222-8222-222222222222", expectedRevision: workflow.revision, decision: "APPROVE", reason: "ok", artifactDigest: requirements.sha256 },
     { actorId: base.ownerId, role: "TASK_OWNER" }, { now: LATER, allowedSkipStages: [] });
   workflow = WorkflowSnapshotSchema.parse(submitWorkflowArtifact(running(workflow), { expectedRevision: workflow.revision + 1, artifact: design, now: NOW }));
-  harness.db.set({ ...task(), workflow });
+  // The harness gives the task $2; the calibrated reviewer estimate (FU3) is above that for one round, so the task gets room (the test is about keys, not the task limit).
+  harness.db.set({ ...task(), workflow, budgetUsd: 50 });
   harness.db.set((workflowDispatchItem("state", taskId, workflow.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, new Date().toISOString()) as { Put: { Item: Record<string, unknown> } }).Put.Item);
   await harness.finish(workspaceId, planner, "SUCCEEDED");
   const operations = () => harness.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === workspaceId && item.workflowMode === "PLAN_CRITIQUE");

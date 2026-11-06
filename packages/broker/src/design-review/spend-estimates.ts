@@ -11,7 +11,7 @@ export interface SpendEstimates { estimate: DesignReviewEstimate; lowerTier?: { 
 const PACKET_TOKENS_MAX = 5_000_000;
 
 /** The estimate the review held on, and the next lower tier's at the same packet size. */
-export function spendEstimatesOf(input: { review: Pick<WorkflowDesignReview, "tier" | "estimateUsd" | "rounds">; reviewerModel: ModelIdentifier | undefined; plannerModel: ModelIdentifier | undefined; price: PriceLookup }): SpendEstimates {
+export function spendEstimatesOf(input: { review: Pick<WorkflowDesignReview, "tier" | "estimateUsd" | "rounds">; reviewerModel: ModelIdentifier | undefined; plannerModel: ModelIdentifier | undefined; price: PriceLookup; /** The reviewers run on Rovara's own route (the same flag the round start passes); absent: not known, so no cache discount. */ reviewerCaches?: boolean | undefined }): SpendEstimates {
   const { review } = input;
   const rounds = (DESIGN_REVIEW_ROUNDS_MAX - review.rounds.length) as 1 | 2;
   if (review.estimateUsd === undefined) return { estimate: { kind: "unavailable", tier: review.tier, missing: [] } };
@@ -19,7 +19,7 @@ export function spendEstimatesOf(input: { review: Pick<WorkflowDesignReview, "ti
   const lower = nextLowerTier(review.tier);
   if (lower === undefined || input.reviewerModel === undefined) return { estimate: stored };
   const models = { reviewer: input.reviewerModel, merge: input.reviewerModel, planner: input.plannerModel ?? input.reviewerModel };
-  const at = (tier: DesignReviewTier, packetTokens: number): DesignReviewEstimate => estimateDesignReviewUsd({ tier, models, price: input.price, packetTokens, rounds });
+  const at = (tier: DesignReviewTier, packetTokens: number): DesignReviewEstimate => estimateDesignReviewUsd({ tier, models, price: input.price, packetTokens, rounds, reviewerCaches: input.reviewerCaches });
   const priced = (value: DesignReviewEstimate): number | undefined => (value.kind === "priced" ? value.usd : undefined);
   // The estimate rises with the packet: find the size whose estimate is the stored one (to a cent).
   let low = 1, high = PACKET_TOKENS_MAX;

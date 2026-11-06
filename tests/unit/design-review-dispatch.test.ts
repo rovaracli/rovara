@@ -368,6 +368,18 @@ describe("the preparation of a round", () => {
     expect(slotOf(2, "zoom_out")).toBe("r2-zoom_out");
   });
 
+  it("FU3: the cache discount is for Rovara's own route only: the same Bedrock model through a customer's own source is estimated at full input price", async () => {
+    const bedrock = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5" };
+    const cachePrice = () => ({ inputUsdPerMTok: 1.1, outputUsdPerMTok: 5.5, cacheReadUsdPerMTok: 0.11, cacheWriteUsdPerMTok: 1.375 });
+    const estimateVia = async (sourceId: string) => (await prepareDesignReviewRound(inputs(ports({ price: cachePrice, taskRoomUsd: async () => 1_000 }).value, { capUsd: 100 }), { ...resolved, model: bedrock, sourceId })).estimateUsd!;
+    const own = await estimateVia("customer-bedrock");
+    const rovara = await estimateVia("rovara");
+    expect(rovara).toBeLessThan(own);
+    // The same model on Rovara's route with no cache price is the customer-route figure: the discount is the only difference.
+    const noCache = (await prepareDesignReviewRound(inputs(ports({ price: () => ({ inputUsdPerMTok: 1.1, outputUsdPerMTok: 5.5 }), taskRoomUsd: async () => 1_000 }).value, { capUsd: 100 }), { ...resolved, model: bedrock })).estimateUsd!;
+    expect(own).toBeCloseTo(noCache, 6);
+  });
+
   it("B2-M1: the review's room is held back for BOTH planner runs of a round that may ask (3 for two rounds), not one per round: the reviewers' ceilings add up to the cap less that", async () => {
     const p = ports({ taskRoomUsd: async () => 100 });
     await prepareDesignReviewRound(inputs(p.value, { capUsd: 10 }), resolved);
@@ -437,7 +449,8 @@ describe("the preparation of a round", () => {
 
   it("prices the REAL packet: a bigger packet costs more, and round 2 prices one round, not two", async () => {
     const small = await prepareDesignReviewRound(inputs(ports().value, { design: "# Design\n## 3. Proposed design\nR1.\n" }), resolved);
-    const big = await prepareDesignReviewRound(inputs(ports().value, { design: `# Design\n## 3. Proposed design\nR1.\n${"x".repeat(200_000)}\n` }), resolved);
+    // A 200 KB design is about 50k tokens: at the calibrated turn factors (FU3) that is over the default cap, so this round has a high cap and the task has room.
+    const big = await prepareDesignReviewRound(inputs(ports({ taskRoomUsd: async () => 1_000 }).value, { capUsd: 100, design: `# Design\n## 3. Proposed design\nR1.\n${"x".repeat(200_000)}\n` }), resolved);
     expect(big.estimateUsd!).toBeGreaterThan(small.estimateUsd!);
     // Round 2: the review has one round recorded; the estimate is for the one round still to run.
     const round2 = await prepareDesignReviewRound(inputs(ports().value, { design: "# Design\n## 3. Proposed design\nR1.\n", workflow: roundTwoWorkflow() }), resolved);
