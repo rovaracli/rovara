@@ -52,9 +52,9 @@ it("a high-risk design card shows Approve on the task page itself, with the note
  const f = taskPage([high], { read: mayApprove(high), approve: () => ({ status: 200, body: { cardId: "approve_design:design1", outcome: "approved" } }) });
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
  expect(card.getAttribute("data-risk")).toBe("high");
- const approve = await within(card).findByRole("button", { name: "Approve design" });
+ const approve = await within(card).findByRole("button", { name: "Approve" });
  expect(within(card).getByText("High risk: approving needs a recent sign-in.")).toBeTruthy();
- expect(within(card).queryByRole("link", { name: "Open to decide" })).toBeNull();
+ expect(within(card).queryByRole("link", { name: "Open" })).toBeNull();
  expect(within(card).queryByText(/on its own page/)).toBeNull();
  f.close();
  expect(approve).toBeTruthy();
@@ -63,9 +63,9 @@ it("a high-risk design card shows Approve on the task page itself, with the note
 it("pressing Approve reads the card from the server, then posts with the digest that was shown, once", async () => {
  const f = taskPage([high], { read: mayApprove(high), approve: () => ({ status: 200, body: { cardId: "approve_design:design1", outcome: "approved" } }) });
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
- await within(card).findByRole("button", { name: "Approve design" });
+ await within(card).findByRole("button", { name: "Approve" });
  const readsBefore = f.calls("GET").length;
- fireEvent.click(within(card).getByRole("button", { name: "Approve design" }));
+ fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
  await within(card).findByText("Approved. Rovara goes on from here.");
  expect(f.calls("GET").length).toBe(readsBefore + 1);
  expect(f.calls("POST")).toHaveLength(1);
@@ -80,21 +80,21 @@ it("pressing Approve reads the card from the server, then posts with the digest 
  f.close();
 });
 
-it("a missing recent sign-in is said on the same card with 'Sign in again to approve', and the second press approves", async () => {
+it("a missing recent sign-in is said on the same card with 'Sign in again', and the second press approves", async () => {
  let signedIn = false;
  const f = taskPage([high], { read: mayApprove(high), approve: () => signedIn ? { status: 200, body: { cardId: "approve_design:design1", outcome: "approved" } } : { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to approve this design. A high-risk design needs a sign-in within the last 10 minutes." } } } });
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
- fireEvent.click(await within(card).findByRole("button", { name: "Approve design" }));
+ fireEvent.click(await within(card).findByRole("button", { name: "Approve" }));
  expect((await within(card).findByRole("alert")).textContent).toContain("Sign in again to approve this design");
  expect(within(card).queryByText("Approved. Rovara goes on from here.")).toBeNull();
- fireEvent.click(within(card).getByRole("button", { name: "Sign in again to approve" }));
+ fireEvent.click(within(card).getByRole("button", { name: "Sign in again" }));
  expect(f.host.signIn).toHaveBeenCalledWith("/app/live");
  // Back from signing in: the person presses Approve once more.
  signedIn = true;
- fireEvent.click(within(card).getByRole("button", { name: "Approve design" }));
+ fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
  await within(card).findByText("Approved. Rovara goes on from here.");
  expect(f.calls("POST")).toHaveLength(2);
- expect(within(card).queryByRole("button", { name: "Sign in again to approve" })).toBeNull();
+ expect(within(card).queryByRole("button", { name: "Sign in again" })).toBeNull();
  f.close();
 });
 
@@ -102,9 +102,9 @@ it("a card that changed while the person looked is not approved: 'This changed w
  let digest = digestOf(high);
  const f = taskPage([high], { read: () => ({ status: 200, body: { card: {}, digest, mayApprove: true } }), approve: () => ({ status: 200, body: { outcome: "approved" } }) });
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
- await within(card).findByRole("button", { name: "Approve design" });
+ await within(card).findByRole("button", { name: "Approve" });
  digest = "f".repeat(64);
- fireEvent.click(within(card).getByRole("button", { name: "Approve design" }));
+ fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
  expect((await within(card).findByRole("alert")).textContent).toContain("This changed while you were looking");
  expect(f.calls("POST")).toHaveLength(0);
  f.close();
@@ -113,7 +113,7 @@ it("a card that changed while the person looked is not approved: 'This changed w
 it("a stale answer from the server on the press says the same", async () => {
  const f = taskPage([high], { read: mayApprove(high), approve: () => ({ status: 409, body: { error: { code: "CHANGE_STALE", message: "This changed while you were looking. Reload to see the latest." } } }) });
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
- fireEvent.click(await within(card).findByRole("button", { name: "Approve design" }));
+ fireEvent.click(await within(card).findByRole("button", { name: "Approve" }));
  expect((await within(card).findByRole("alert")).textContent).toContain("This changed while you were looking");
  expect(f.calls("POST")).toHaveLength(1);
  f.close();
@@ -123,7 +123,7 @@ it("an open blocker asks for the one-line reason on the inline Approve and sends
  const withBlocker = design(["auth"], 1);
  const f = taskPage([withBlocker], { read: mayApprove(withBlocker), approve: () => ({ status: 200, body: { outcome: "approved" } }) });
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
- const approve = await within(card).findByRole("button", { name: "Approve design with a reason" });
+ const approve = await within(card).findByRole("button", { name: "Approve with a reason" });
  expect(approve.hasAttribute("disabled")).toBe(true);
  fireEvent.change(within(card).getByRole("textbox", { name: "Why approve with an open blocker?" }), { target: { value: "Known gap, fixed next week" } });
  await waitFor(() => expect(approve.hasAttribute("disabled")).toBe(false));
@@ -138,7 +138,7 @@ it("someone who may not approve sees who can, and no Approve", async () => {
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
  await within(card).findByText("Priya Shah can approve this design.");
  expect(within(card).queryByRole("button", { name: /^Approve/ })).toBeNull();
- expect(within(card).queryByRole("link", { name: "Open to decide" })).toBeNull();
+ expect(within(card).queryByRole("link", { name: "Open" })).toBeNull();
  expect(f.calls("POST")).toHaveLength(0);
  f.close();
  const nobody = taskPage([high], { read: () => ({ status: 200, body: { card: {}, digest: digestOf(high), mayApprove: false } }), approve: () => ({ status: 403, body: {} }) });
@@ -152,7 +152,8 @@ it("a medium design card on the task page is unchanged: Approve after the eviden
  const card = await screen.findByRole("article", { name: "Retry failed payments" });
  expect(card.getAttribute("data-risk")).toBe("medium");
  expect(within(card).getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(true);
- expect(within(card).queryByRole("button", { name: "Approve design" })).toBeNull();
+ // One Approve only: the card's own, after the evidence (no inline high-risk one).
+ expect(within(card).getAllByRole("button", { name: "Approve" })).toHaveLength(1);
  expect(within(card).queryByText(/High risk/)).toBeNull();
  expect(f.calls("GET")).toHaveLength(0);
  f.close();
@@ -162,7 +163,7 @@ it("Home's high-risk design card links to the card on the task page, and the tas
  const home = fakeHost(async request => request.path === "/v1/app/decisions" ? { status: 200, body: viewOf([high]) } : { status: 200, body: { cards: [], total: 0 } });
  const query = createQueryClient();
  const ui = renderUi(h(AppHostProvider, { host: home.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
- const link = await screen.findByRole("link", { name: "Open to decide" });
+ const link = await screen.findByRole("link", { name: "Open" });
  const href = link.getAttribute("href")!;
  expect(href).toBe(SESSION_PATH + "?decision=approve_design%3Adesign1");
  // Home does not approve: only the link.

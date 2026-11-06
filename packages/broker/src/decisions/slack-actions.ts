@@ -30,7 +30,7 @@ export const DECISION_SLACK_TEXT = Object.freeze({
   rejected: "Noted. Not now.",
   openFirst: "Open the evidence on the web first, then approve it there.",
   changed: "This changed since the message was posted. Open it on the web to see the current version.",
-  openToDecide: "This one is decided on its own page. Use Open to decide.",
+  openToDecide: "This one is decided on its card in Rovara. Use Open.",
   gone: "This decision is no longer waiting for you.",
   unknownPerson: "I couldn't tell who you are in Rovara. Link your Slack account to Rovara on the web, then try again.",
   failed: "I couldn't record that. Open the decision on the web and try again.",

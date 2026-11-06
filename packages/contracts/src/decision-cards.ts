@@ -4,7 +4,7 @@
 //
 // What the schema itself guarantees (so no projector or client can build a card that breaks the rules):
 //   - the risk tier is one of three words and decides the friction: low is one tap, medium keeps Approve disabled until the evidence was opened, high has NO approve action on the card at all
-//     ("Open to decide" goes to the full page and its fresh sign-in);
+//     ("Open" goes to the card on its task page, decided there with a recent sign-in, or to a confirmation page);
 //   - nothing can be bulk-approved: there is no bulk field, no bulk body and every shape is strict;
 //   - a high-risk card is never answered by a standing rule;
 //   - a company lock raises a tier and never lowers it (`raiseRisk`).
@@ -185,8 +185,6 @@ export const DecisionCardReaderSchema = forwardReader(DecisionCardSchema);
 
 /** The most cards one read returns; `total` is how many the person has now. */
 export const DECISION_CARDS_MAX = 50;
-/** The query parameter a link to a task page uses to name the decision card on it (`?decision=<card id>`): the page scrolls to that card and marks it. */
-export const DECISION_FOCUS_PARAM = "decision";
 export const DecisionCardsResponseSchema = z.object({ cards: z.array(DecisionCardSchema).max(DECISION_CARDS_MAX), total: z.number().int().min(0) }).strict();
 export type DecisionCardsResponse = z.infer<typeof DecisionCardsResponseSchema>;
 export const DecisionCardsResponseReaderSchema = forwardReader(DecisionCardsResponseSchema);

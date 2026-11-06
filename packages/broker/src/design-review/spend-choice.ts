@@ -22,6 +22,8 @@ import type { EffectiveDesignReviewSetting } from "./effective-setting.js";
 import { gateDesignReviewCost, type DesignReviewCapGate, type DesignReviewEstimate, type DesignSpendChoice } from "./estimate.js";
 import { designSpendAmountUsd, designSpendCardItem } from "./spend-card.js";
 
+/** What a high-risk cost choice (Skip included) says when the person's sign-in is not recent enough. */
+export const DESIGN_CHOICE_REAUTH_MESSAGE = "Sign in again to decide this. A high-risk decision needs a sign-in within the last 10 minutes.";
 export type DesignSpendChoiceName = DesignSpendChoice["choice"];
 
 /** The broker's record of the task and its gate, read fresh for this request. Nothing in it comes from the request body. */
@@ -166,7 +168,8 @@ export function designSpendChoiceHandler<C extends DecisionCaller>(ports: Design
     const risk = riskTierOf("approve_spend", { spend: { amountUsd: designSpendAmountUsd(gate, context.taskCapUsd, context.spentUsd) } }, locks).risk;
     // High: a fresh sign-in AND a browser session. A token (an AI tool) never decides a high card, as the decisions route refuses high entirely (ON-9).
     if (risk === "high" && context.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
-    if (risk === "high" && !context.freshSignIn) throw agentXError("FORBIDDEN", "Sign in again to decide this.");
+    // A sign-in that is not recent asks for a new one (REAUTH_REQUIRED: the page shows "Sign in again" where the choice was pressed); who may choose is decided above and does not change.
+    if (risk === "high" && !context.freshSignIn) throw agentXError("REAUTH_REQUIRED", DESIGN_CHOICE_REAUTH_MESSAGE);
     if (risk === "medium" || card.friction.expandEvidenceFirst) {
       const opened = await ports.store.evidenceOpenedAt({ ...who, cardId }, digest);
       if (opened === undefined) throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);

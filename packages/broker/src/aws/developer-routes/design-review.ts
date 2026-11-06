@@ -126,6 +126,8 @@ async function approveItemOf(env: Env, loaded: Loaded, touches: readonly DesignR
 /** What the confirmation page's press says when the approver's sign-in is not recent enough: a browser answers REAUTH_REQUIRED (the page shows "Sign in again" on the card), never "You can't decide this.". */
 export const DESIGN_APPROVE_REAUTH_MESSAGE = "Sign in again to approve this design. A high-risk design needs a sign-in within the last 10 minutes.";
 const PAGE_REAUTH = "reauth";
+/** What Skip of a high-risk design review says when the person's sign-in is not recent enough (REAUTH_REQUIRED). */
+export const DESIGN_SKIP_REAUTH_MESSAGE = "Sign in again to skip this design review. A high-risk design needs a sign-in within the last 10 minutes.";
 
 function approvePortsOf(env: Env, page = false): DesignApprovePorts<DeveloperCaller> {
   return {
@@ -516,7 +518,8 @@ async function skip(env: Env, taskId: string, requestId: string, shownDigest: st
   // Before the design is written, a skip of a design review with a high-risk area is a high decision: a live browser session and a fresh sign-in, never a token.
   if (isHighRiskDesign([...review.reasons, ...facts.touches])) {
     if (env.caller.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
-    if (!(await freshSignInOf(env.facts, env.caller))) throw agentXError("FORBIDDEN", "Sign in again to decide this.");
+    // A sign-in that is not recent is REAUTH_REQUIRED (the page shows "Sign in again" where Skip was pressed), never a refusal: who may skip is decided above and does not change.
+    if (!(await freshSignInOf(env.facts, env.caller))) throw agentXError("REAUTH_REQUIRED", DESIGN_SKIP_REAUTH_MESSAGE);
   }
   let commit;
   try { commit = designSpendCommitItems({ tableName: env.deps.tableName, taskId, workflow, write: { actorId: env.caller.developerId, applied: { choice: "skip" } }, now: nowIso(env) }); } catch (error) {

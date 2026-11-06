@@ -1104,14 +1104,15 @@ describe("slice C: the design review's routes", () => {
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { decidedBy: "person_skip", skippedBy: { actorId: OMAR.developerId }, status: "not_run" } });
   });
 
-  it("QA6-02: the design card's Open the details goes to a page the app has: the task's session, else its project, never /app/tasks/<id>", async () => {
+  it("QA6-02: the design card's Open goes to a page the app has: the card on the task's session page, else its project, never /app/tasks/<id>", async () => {
     const w = await openBlockerCard();
     seedPeople(w, [[MAYA, "member", "contributor"]]);
     const openOf = async () => (await cardOf(w, MAYA, "approve_design"))!.card.actions.find((action) => action.kind === "open")!;
     // The task's own session, read from its record (no session read needed).
     const sessionId = (w.task() as { sessionId?: string }).sessionId;
     expect(sessionId, "positive control: the started task has a session").toMatch(/^ses_[0-9a-z]{20}$/u);
-    expect((await openOf()).href).toBe(`/app/sessions/${sessionId}`);
+    // The link names the card, so the task page scrolls to it (decision journey S1a).
+    expect((await openOf()).href).toBe(`/app/sessions/${sessionId}?decision=approve_design%3A${w.taskId}`);
     // A task with no session: its project's page.
     const bare: Record<string, unknown> = { ...w.task() };
     delete bare["sessionId"];
@@ -1417,7 +1418,10 @@ describe("slice C: the design review's routes", () => {
     const url = `/v1/app/tasks/${w.taskId}/design-review/skip`;
     expect((await w.dev(OMAR, "POST", url, { requestId })).status, "a token never skips a high-risk review").toBe(403);
     const page = web(w);
-    expect((await page(OMAR, "POST", url, { requestId }, 20 * 60_000)).status, "no fresh sign-in").toBe(403);
+    const stale = await page(OMAR, "POST", url, { requestId }, 20 * 60_000);
+    expect(stale.status, "no fresh sign-in").toBe(403);
+    // REAUTH_REQUIRED, not a refusal: the page shows "Sign in again" where Skip was pressed (decision journey S1c). Who may skip is unchanged.
+    expect(stale.body).toMatchObject({ error: { code: "REAUTH_REQUIRED", message: "Sign in again to skip this design review. A high-risk design needs a sign-in within the last 10 minutes." } });
     expect(w.task().workflow.designReview!.decidedBy).not.toBe("person_skip");
     const done = await page(OMAR, "POST", url, { requestId }, 0);
     expect(done.status, JSON.stringify(done.body)).toBe(200);

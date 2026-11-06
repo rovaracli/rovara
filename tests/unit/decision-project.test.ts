@@ -123,10 +123,10 @@ describe("friction on the card", () => {
     expect(card.friction).toEqual({ expandEvidenceFirst: true, freshSignIn: false, secondPerson: false });
     expect(card.actions.some((action) => action.kind === "approve")).toBe(true);
   });
-  it("high has NO approve action: only 'Open to decide', and a fresh sign-in is flagged (second person where asked)", () => {
+  it("high has NO approve action: only 'Open', and a fresh sign-in is flagged (second person where asked)", () => {
     const card = cardOf(ITEMS.approve_setting);
     expect(card.actions.map((action) => action.kind)).toEqual(["open"]);
-    expect(card.actions[0]?.label).toBe("Open to decide");
+    expect(card.actions[0]?.label).toBe("Open");
     expect(card.recommended.action).toBe("open");
     expect(card.friction).toEqual({ expandEvidenceFirst: true, freshSignIn: true, secondPerson: true });
     expect(cardOf({ ...(ITEMS.approve_plan), files: ["infra/x.ts"] } as DecisionItem).friction.secondPerson).toBe(false);
@@ -219,16 +219,34 @@ describe("Full path: requirements and design are one card with two tabs", () => 
     expect(projection.cards[0]?.risk).toBe("high");
     expect(projection.cards[0]?.actions.map((action) => action.kind)).toEqual(["open"]);
   });
-  it("a high design on its own links to its card on the task page (the open link names the card), a low or medium one to the page", () => {
+  it("every card about a task links to that card on its task page (?decision=<card id>), whatever the kind or tier (decision journey S1a)", () => {
+    const page = `/app/sessions/ses_${"a".repeat(20)}`;
     const high = projectDecisionCards([ITEMS.approve_design], { locks: { approve_design: "high" } }).cards[0]!;
     expect(high.risk).toBe("high");
-    expect(high.actions.find((action) => action.kind === "open")?.href).toBe(`/app/sessions/ses_${"a".repeat(20)}?decision=approve_design%3Ades1`);
+    expect(high.actions.find((action) => action.kind === "open")).toEqual({ kind: "open", label: "Open", href: `${page}?decision=approve_design%3Ades1`, method: "GET" });
     expect(DecisionCardSchema.safeParse(high).success).toBe(true);
-    const low = projectDecisionCards([ITEMS.approve_design]).cards[0]!;
-    expect(low.actions.find((action) => action.kind === "open")?.href).toBe(`/app/sessions/ses_${"a".repeat(20)}`);
+    for (const kind of ["approve_design", "merge", "answer_question", "spec_choice", "approve_dependency"] as const) {
+      const card = projectDecisionCards([ITEMS[kind]], { pairFullCards: false }).cards[0]!;
+      expect(card.actions.find((action) => action.kind === "open")?.href).toBe(`${page}?decision=${encodeURIComponent(card.id)}`);
+      expect(DecisionCardSchema.safeParse(card).success).toBe(true);
+    }
+    // A card about no task, or whose page is not a session page, keeps its page as it is.
+    const company = projectDecisionCards([{ ...ITEMS.second_review_notice, taskId: undefined, openPath: "/app/admin/second-review" }]).cards[0]!;
+    expect(company.actions.find((action) => action.kind === "open")?.href).toBe("/app/admin/second-review");
+    const project = projectDecisionCards([{ ...ITEMS.confirm_env_change, openPath: "/app/projects/payments" }]).cards[0]!;
+    expect(project.actions.find((action) => action.kind === "open")?.href).toBe("/app/projects/payments");
+    const noTask = projectDecisionCards([{ ...ITEMS.approve_dependency, taskId: undefined }]).cards[0]!;
+    expect(noTask.actions.find((action) => action.kind === "open")?.href).toBe(page);
     // A confirmation page of its own (a setting's) is still what a high card with one opens.
     const confirm = projectDecisionCards([{ ...ITEMS.approve_setting, confirmPath: "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }]).cards[0]!;
     expect(confirm.actions.find((action) => action.kind === "open")?.href).toBe("/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa");
+  });
+  it("uses the one vocabulary on every action: Approve, Merge, Answer, Open, Not now", () => {
+    const labels = (kind: DecisionKind) => projectDecisionCards([ITEMS[kind]], { pairFullCards: false }).cards[0]!.actions.map((action) => action.label);
+    expect(labels("approve_plan")).toEqual(["Approve", "Not now", "Open"]);
+    expect(labels("merge")).toEqual(["Merge", "Not now", "Open"]);
+    expect(labels("answer_question")).toEqual(["Answer"]);
+    expect(labels("approve_setting")).toEqual(["Open"]);
   });
   it("does not merge different tasks, or when pairing is off (two separate cards)", () => {
     const other = { ...(ITEMS.approve_design), taskId: "22222222-2222-4222-8222-222222222222" } as DecisionItem;
@@ -299,9 +317,9 @@ describe("the evidence detail a medium card shows (I4)", () => {
 
 describe("a high card opens the confirmation page (I5)", () => {
   const confirm = "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa";
-  it("uses the item's confirmation page for 'Open to decide' and lists a high card without one as unconfirmed", () => {
+  it("uses the item's confirmation page for 'Open' and lists a high card without one as unconfirmed", () => {
     const withPage = projectDecisionCards([{ ...(ITEMS.approve_setting), confirmPath: confirm }]);
-    expect(withPage.cards[0]!.actions).toEqual([{ kind: "open", label: "Open to decide", href: confirm, method: "GET" }]);
+    expect(withPage.cards[0]!.actions).toEqual([{ kind: "open", label: "Open", href: confirm, method: "GET" }]);
     expect(withPage.unconfirmed).toEqual([]);
     const without = projectDecisionCards([ITEMS.approve_setting]);
     expect(without.unconfirmed).toEqual(["approve_setting:set1"]);
@@ -368,7 +386,7 @@ describe("fix_setup (setup and test health SH17)", () => {
     expect(cardOf(fix()).evidence.some((chip) => chip.label === "Failing in checks that failed before")).toBe(false);
   });
 
-  it("a company lock that raises it to high leaves only Open to decide, never an approve", () => {
+  it("a company lock that raises it to high leaves only Open, never an approve", () => {
     const card = cardOf(fix({ knownFailingTests: 3 }), { fix_setup: "high" });
     expect(card.risk).toBe("high");
     expect(card.actions.map((action) => action.kind)).toEqual(["open"]);

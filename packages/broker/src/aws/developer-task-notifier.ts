@@ -3,6 +3,7 @@
 // notifier's own queue; the queue brings each notice back, and it is posted once. Logs carry event
 // names, IDs, notice kinds and Slack error codes only: never a token, a post's text or a task's text.
 // Spec 025 E13: it also posts an admin change's Slack Confirm message, and edits it when the change ends.
+import { decisionCardUrl } from "../decisions/open-path.js";
 import { chatGptFallbackText } from "../chatgpt/fallback-notice.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { createHash } from "node:crypto";
@@ -1014,6 +1015,12 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
         return undefined;
       });
       if (answered !== undefined) context.commentAnswers = answered;
+    }
+    // Design review (ON-1): a design under review is approved on its card only, so the message links to that card in place of an Approve the server would refuse. The task's own record says it carries a
+    // review (a workflow only gets one while the stage is on); this Lambda has no `dr` setting to read (infra/lib/developer-task-notifier.ts).
+    if (workflow.designReview !== undefined && workflow.reviewPhase === "DESIGN") {
+      const card = decisionCardUrl(deps.reviewUrlBase, task, `approve_design:${task.taskId}`, page);
+      if (card !== undefined) context.designCardUrl = card;
     }
   } else if (workflow.state === "BLOCKED" || (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING")) {
     // Replies that came in after the plan and that no step has taken: said, with where to read them.

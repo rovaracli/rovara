@@ -28,6 +28,7 @@
   "packages/contracts/src/connectors.ts",
   "packages/contracts/src/decision-card-tabs.ts",
   "packages/contracts/src/decision-cards.ts",
+  "packages/contracts/src/decision-focus.ts",
   "packages/contracts/src/design-review-citation-links.ts",
   "packages/contracts/src/design-review-state.ts",
   "packages/contracts/src/design-review-words.ts",

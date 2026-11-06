@@ -867,3 +867,26 @@ describe("the words for checks that are running (LIVEFIX-1 item 4)", () => {
     expect(say({ decisions: [review] })).toBe(first);
   });
 });
+
+describe("decision journey slice 1: a design under review links to its card, never an Approve the server refuses", () => {
+  const cardUrl = "https://cell.example/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_design%3A" + taskId;
+  const design = (structured?: Record<string, unknown>, extra: Record<string, unknown> = {}) => workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING", { path: "FULL", reviewPhase: "DESIGN", artifacts: [{ ...plan, type: "design" }] }),
+    ...(structured === undefined ? { documentSummary: ["The design."] } : { structured: { claims: ["A claim."], claimCount: 1, decisionCount: 2, tiny: false, ...structured } }), designCardUrl: cardUrl, ...extra })!;
+  for (const [name, message] of [["markdown", () => design()], ["structured", () => design({})]] as const) {
+    it(`${name}: Open in Rovara goes to the card; Request changes and Close stay; no Approve`, () => {
+      const shown = message();
+      const elements = (shown.blocks.find((block) => block.type === "actions") as { elements: Array<Record<string, unknown>> }).elements;
+      const opened = elements.find((element) => element["action_id"] === "agentx_open_decision");
+      expect(opened).toMatchObject({ type: "button", text: { type: "plain_text", text: "Open in Rovara" }, url: cardUrl, style: "primary" });
+      // A link button carries no value, so Slack's report of its press is not an action.
+      expect(opened).not.toHaveProperty("value");
+      expect(elements.map((element) => element["action_id"])).not.toContain("agentx_workflow_approve");
+      expect(elements.map((element) => element["action_id"])).toEqual(expect.arrayContaining(["agentx_workflow_changes", "agentx_workflow_close"]));
+      expect(shown.text).not.toContain("Approve here");
+    });
+  }
+  it("without a card address the message is as before (Approve design)", () => {
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING", { path: "FULL", reviewPhase: "DESIGN", artifacts: [{ ...plan, type: "design" }] }), documentSummary: ["The design."] })!;
+    expect(buttonsOf(shown.blocks).map((button) => [button.action_id, button.text.text])).toContainEqual(["agentx_workflow_approve", "Approve design"]);
+  });
+});

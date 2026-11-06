@@ -3,7 +3,8 @@
 import { expect, it } from "vitest";
 import { matchRoutes } from "react-router";
 import { appRoutes } from "../../packages/ui/src/routes.js";
-import { taskOpenPath, sessionOpenPath } from "../../packages/broker/src/decisions/open-path.js";
+import { decisionFocusPath, decisionTaskSessionOf, DECISION_LABELS } from "@agentx/contracts";
+import { decisionCardUrl, taskOpenPath, sessionOpenPath } from "../../packages/broker/src/decisions/open-path.js";
 import { specChoiceItemOf } from "../../packages/broker/src/spec/decision-item.js";
 import { hostAskItem, type SetupHostAsk } from "../../packages/broker/src/rovara-code/setup-host-ask.js";
 import { isSafeRelativePath } from "../../packages/broker/src/decisions/text.js";
@@ -55,4 +56,31 @@ it("a website request's card opens the project page, where Allowed websites is, 
   const item = hostAskItem(ask, { staffStep: true });
   expect(item.openPath).toBe("/app/projects/payments");
   expect(appHasPage(item.openPath)).toBe(true);
+});
+
+it("decision journey S1a: a link to a card is its task page with ?decision=<card id>, a page the app has; anything else is left as it is", () => {
+  const focused = decisionFocusPath(sessionOpenPath(SESSION), `approve_design:${TASK}`);
+  expect(focused).toBe(`/app/sessions/${SESSION}?decision=approve_design%3A${TASK}`);
+  expect(isSafeRelativePath(focused)).toBe(true);
+  expect(appHasPage(focused)).toBe(true);
+  expect(decisionTaskSessionOf(focused)).toBe(SESSION);
+  expect(decisionTaskSessionOf(sessionOpenPath(SESSION))).toBe(SESSION);
+  expect(decisionTaskSessionOf("/app/projects/payments")).toBeUndefined();
+  // Only a bare task session page is anchored, and only with a real card id.
+  for (const [path, card] of [["/app/projects/payments", `merge:${TASK}`], [`${sessionOpenPath(SESSION)}?x=1`, `merge:${TASK}`], [sessionOpenPath(SESSION), "not a card"], ["/app/sessions/crn_aaaaaaaaaaaaaaaaaaaa", `merge:${TASK}`]] as const) {
+    expect(decisionFocusPath(path, card)).toBe(path);
+  }
+});
+
+it("decision journey S1d: Slack's link to a card is this deployment's https task page with the card named, else the fallback", () => {
+  const fallback = `https://cell.example/review/${TASK}/task`;
+  expect(decisionCardUrl("https://cell.example", { sessionId: SESSION }, `approve_design:${TASK}`, fallback)).toBe(`https://cell.example/app/sessions/${SESSION}?decision=approve_design%3A${TASK}`);
+  expect(decisionCardUrl("https://cell.example/base/", { sessionId: SESSION }, `approve_design:${TASK}`, fallback)).toBe(`https://cell.example/app/sessions/${SESSION}?decision=approve_design%3A${TASK}`);
+  for (const [origin, task] of [[undefined, { sessionId: SESSION }], ["https://cell.example", {}], ["http://cell.example", { sessionId: SESSION }], ["https://u:p@cell.example", { sessionId: SESSION }], ["https://cell.example", { sessionId: "nope" }], ["not a url", { sessionId: SESSION }]] as const) {
+    expect(decisionCardUrl(origin, task, `approve_design:${TASK}`, fallback)).toBe(fallback);
+  }
+});
+
+it("decision journey S1e: one table of button words", () => {
+  expect(DECISION_LABELS).toMatchObject({ approve: "Approve", requestChanges: "Request changes", answer: "Answer", retry: "Retry", merge: "Merge", open: "Open", showEvidence: "Show the evidence", notNow: "Not now", openInRovara: "Open in Rovara", signInAgain: "Sign in again" });
 });

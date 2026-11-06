@@ -17,10 +17,10 @@ const URL_ = "https://app.example.com/s/ses_aaaaaaaaaaaaaaaaaaaa";
 const elementsOf = (message: ReturnType<typeof slackCardMessage>) => (message.blocks.find((block) => block["type"] === "actions") as { elements: Array<Record<string, unknown>> } | undefined)?.elements ?? [];
 
 describe("the Slack card follows the card's friction", () => {
-  it("low: Approve in one tap, Not now, and a Details link", () => {
+  it("low: Approve in one tap, Not now, and an Open link", () => {
     const elements = elementsOf(slackCardMessage(card(lowItem), { cardUrl: URL_, digest: DIGEST }));
     expect(elements.map((element) => [element["action_id"], (element["text"] as { text: string }).text, element["url"]])).toEqual([
-      [DECISION_SLACK_APPROVE_ACTION, "Approve", undefined], [DECISION_SLACK_REJECT_ACTION, "Not now", undefined], [DECISION_SLACK_OPEN_ACTION, "Details", URL_],
+      [DECISION_SLACK_APPROVE_ACTION, "Approve", undefined], [DECISION_SLACK_REJECT_ACTION, "Not now", undefined], [DECISION_SLACK_OPEN_ACTION, "Open", URL_],
     ]);
     expect(elements[0]?.["value"]).toBe(`approve_plan:plan1|${DIGEST}`);
   });
@@ -28,14 +28,18 @@ describe("the Slack card follows the card's friction", () => {
     const message = slackCardMessage(card(mediumItem), { cardUrl: URL_, digest: DIGEST });
     const elements = elementsOf(message);
     expect(elements.some((element) => element["action_id"] === DECISION_SLACK_APPROVE_ACTION)).toBe(false);
-    expect(elements[0]).toMatchObject({ action_id: DECISION_SLACK_OPEN_ACTION, url: URL_ });
+    expect(elements[0]).toMatchObject({ action_id: DECISION_SLACK_OPEN_ACTION, url: URL_, text: { text: "Show the evidence" } });
     expect(JSON.stringify(message)).toContain("Medium risk");
   });
-  it("high: one link, Open to decide; nothing to press that decides", () => {
+  it("uses the shared words: a low merge card's one-tap button says Merge", () => {
+    const merge: DecisionItem = { ...base("pr1"), kind: "merge", prRisk: "low", prReasons: [], proof: { proven: 1, passed: 1, failed: 0, notTested: 0 }, reviewVerdict: "approved", ci: "passing", securityFindingsHigh: 0, fullSuitePending: false };
+    expect((elementsOf(slackCardMessage(card(merge), { cardUrl: URL_, digest: DIGEST }))[0]?.["text"] as { text: string }).text).toBe("Merge");
+  });
+  it("high: one link, Open; nothing to press that decides", () => {
     const elements = elementsOf(slackCardMessage(card(highItem), { cardUrl: URL_, digest: DIGEST }));
     expect(elements).toHaveLength(1);
     expect(elements[0]).toMatchObject({ action_id: DECISION_SLACK_OPEN_ACTION, url: URL_ });
-    expect((elements[0]?.["text"] as { text: string }).text).toBe("Open to decide");
+    expect((elements[0]?.["text"] as { text: string }).text).toBe("Open");
   });
   it("never claims a fresh sign-in for a high card without a confirmation page; says it only for one that opens it", () => {
     const without = JSON.stringify(slackCardMessage(card(highItem), { cardUrl: URL_, digest: DIGEST }).blocks);

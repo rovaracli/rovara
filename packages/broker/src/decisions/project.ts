@@ -1,14 +1,14 @@
 // Decision cards (Decisions D1): the projector. PURE: pending items in, cards out. A card is a projection of an item that exists today (a workflow gate, an approval, a spend request, a
 // question, an autofix ask), never a new state machine. It reads no store and no clock, so the same items and locks always give the same cards. The rules it enforces on every card:
 //   - the tier comes from `riskTierOf` alone (deterministic, never lowered, never below the kind's floor);
-//   - low: Approve is one tap. medium: the card says the evidence must be opened first (the server enforces it, routes.ts). high: NO approve action, only "Open to decide";
+//   - low: Approve is one tap. medium: the card says the evidence must be opened first (the server enforces it, routes.ts). high: NO approve action, only "Open" (the card on its task page, or the confirmation page);
 //   - an approve is a POST to this server's own card route and every link is a same-origin relative path (an item with an unsafe open path is dropped, never shown);
 //   - nothing is bulk: one card has at most one approve, and there is no field or route that approves several;
 //   - a standing rule may have answered a card, never a high one (the rule is ignored and the card stays pending);
 //   - a Full-path requirements and design pair is ONE card with two tabs that still records two approvals (owner Q1).
 // Anything an item says in words (a title, a question, a path) is flattened to plain text and cut; fixed words come from this file.
 import {
-  DECISION_FOCUS_PARAM, DECISION_REJECT_REASONS, DESIGN_SOURCE_ONLY_LABEL, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
+  DECISION_LABELS, DECISION_REJECT_REASONS, decisionFocusPath, DESIGN_SOURCE_ONLY_LABEL, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
   type CardAction, type DecisionCard, type DecisionKind, type DecisionDetailGroup, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip,
 } from "@agentx/contracts";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks, type TierInputs, type TierResult } from "./risk-tier.js";
@@ -307,12 +307,14 @@ function tierInputsOf(item: DecisionItem): TierInputs {
 
 function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { actions: CardAction[]; recommended: CardAction["kind"] } {
   const base = decisionCardPath(cardId);
-  // A high-risk design is decided on the task's own page, on the card there (the inline Approve): the link names that card, so the page scrolls to it and marks it. Never a link to a page that shows the same link.
-  const anchored = risk === "high" && item.kind === "approve_design" && item.confirmPath === undefined && !item.openPath.includes("?") ? `${item.openPath}?${DECISION_FOCUS_PARAM}=${encodeURIComponent(cardId)}` : undefined;
-  const open: CardAction = { kind: "open", label: risk === "high" ? "Open to decide" : "Open the details", href: risk === "high" ? item.confirmPath ?? (anchored !== undefined && isSafeRelativePath(anchored) ? anchored : item.openPath) : item.openPath, method: "GET" };
+  // Every link to a decision lands on its card: a card about a task whose page is its session opens `/app/sessions/<id>?decision=<card id>`, and the task page scrolls to that card and marks it (S1a).
+  // A high card with a confirmation page still opens that page (its fresh sign-in); one without opens its card on the task page, where it is decided inline. Never a link to a page that shows the same link.
+  const focused = item.taskId === undefined ? item.openPath : decisionFocusPath(item.openPath, cardId);
+  const page = isSafeRelativePath(focused) ? focused : item.openPath;
+  const open: CardAction = { kind: "open", label: DECISION_LABELS.open, href: risk === "high" ? item.confirmPath ?? page : page, method: "GET" };
   if (risk === "high") return { actions: [open], recommended: "open" };
   // A question or a checks choice is answered on its own page: the card only opens it (an answer or a choice is a POST of that page, never a link).
-  if (item.kind === "answer_question") return { actions: [{ ...open, label: "Answer" }], recommended: "open" };
+  if (item.kind === "answer_question") return { actions: [{ ...open, label: DECISION_LABELS.answer }], recommended: "open" };
   if (item.kind === "choose_checks") return { actions: [{ ...open, label: "Choose checks" }], recommended: "open" };
   // A held spec is answered on the task page (its buttons are POSTs of that page): the card only opens it.
   if (item.kind === "spec_choice") return { actions: [{ ...open, label: "Choose" }], recommended: "open" };
@@ -322,20 +324,20 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   // the server's friction. "Mark as known failing" is the card's one approve (medium: the evidence is opened first, and the tests it marks are the broker's own record, never the request's); "Not now" puts
   // the card away until the cause comes back. Recommended is to look first.
   if (item.kind === "fix_setup") {
-    const reject: CardAction = { kind: "reject", label: "Not now", href: `${base}/reject`, method: "POST" };
+    const reject: CardAction = { kind: "reject", label: DECISION_LABELS.notNow, href: `${base}/reject`, method: "POST" };
     const mark: CardAction = { kind: "approve", label: "Mark as known failing", href: `${base}/approve`, method: "POST" };
     return { actions: item.knownFailingTests > 0 ? [{ ...open, label: "Open the setup" }, reject, mark] : [{ ...open, label: "Open the setup" }, reject], recommended: "open" };
   }
   // A design review's cost gate (DR8): the choices the gate allowed are the card's actions. None allowed: the card only opens the page.
   if (item.kind === "approve_spend" && item.design !== undefined) {
     const choices: CardAction[] = item.design.choices.slice(0, 3).map((choice) => ({ kind: "choose", label: plainLine(choice.label, 60), href: choice.href, method: "POST" }));
-    return choices.length === 0 ? { actions: [{ ...open, label: "Open the details" }], recommended: "open" } : { actions: [...choices, { ...open, label: "Open the details" }], recommended: "choose" };
+    return choices.length === 0 ? { actions: [open], recommended: "open" } : { actions: [...choices, open], recommended: "choose" };
   }
   if (!APPROVABLE.has(item.kind)) return { actions: [open], recommended: "open" };
   // A design with an open blocker is never a one-tap approve (owner Q8): the action says a reason goes with it, the approve body takes `reason`, and the handler refuses an approval without one.
   const openBlockers = item.kind === "approve_design" ? item.review?.blockers.length ?? 0 : 0;
-  const approve: CardAction = { kind: "approve", label: openBlockers > 0 ? "Approve with a reason" : "Approve", href: `${base}/approve`, method: "POST" };
-  const reject: CardAction = { kind: "reject", label: "Not now", href: `${base}/reject`, method: "POST" };
+  const approve: CardAction = { kind: "approve", label: openBlockers > 0 ? DECISION_LABELS.approveWithReason : item.kind === "merge" ? DECISION_LABELS.merge : DECISION_LABELS.approve, href: `${base}/approve`, method: "POST" };
+  const reject: CardAction = { kind: "reject", label: DECISION_LABELS.notNow, href: `${base}/reject`, method: "POST" };
   // The recommendation follows the evidence: something failed, or a blocker is open, so look first.
   const look = openBlockers > 0 || (item.kind === "merge" && (item.proof.failed > 0 || item.ci === "failing"));
   return look ? { actions: [open, reject, approve], recommended: "open" } : { actions: [approve, reject, open], recommended: "approve" };
@@ -408,7 +410,8 @@ function pairCards(requirements: Subject, design: Subject): { card: DecisionCard
   const high = risk === "high";
   const actions = base.actions.filter((action) => action.kind === "open" || (action.kind === "approve" && !high) || (action.kind === "reject" && !high)).slice(0, 4);
   const confirm = requirements.item.confirmPath ?? design.item.confirmPath;
-  const shown: CardAction[] = high ? [{ kind: "open", label: "Open to decide", href: confirm ?? requirements.item.openPath, method: "GET" }] : actions;
+  const page = base.actions.find((action) => action.kind === "open")?.href ?? requirements.item.openPath;
+  const shown: CardAction[] = high ? [{ kind: "open", label: DECISION_LABELS.open, href: confirm ?? page, method: "GET" }] : actions;
   const merged = DecisionCardSchema.safeParse({
     ...base,
     title: plainLine(requirements.item.title, 80),
