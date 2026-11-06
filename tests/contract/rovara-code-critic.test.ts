@@ -624,7 +624,7 @@ describe("a version 2 plan goes to the plan check", () => {
     expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toEqual([]);
     for (let phase = 0; phase < 2; phase += 1) {
       const workflow = t.meta(taskId).workflow;
-      expect((await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256, acknowledgedRunLimitUsd: (t.meta(taskId) as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd })).status).toBe(200);
+      expect((await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256 })).status).toBe(200);
       await t.finishPlanning(workspaceId);
       if (phase === 0) expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toEqual([]);
     }
@@ -705,7 +705,7 @@ describe("the plan check's result", () => {
     expect(record.workflow.outcome).toBeUndefined();
     expect(t.byMode(workspaceId, "IMPLEMENT")).toEqual([]);
     // The person's approval then goes to coding, not back to the check.
-    const decision = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record.workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record.workflow.artifacts.at(-1)!.sha256, acknowledgedRunLimitUsd: (t.meta(taskId) as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd });
+    const decision = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record.workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record.workflow.artifacts.at(-1)!.sha256 });
     expect(decision.status, JSON.stringify(decision.body)).toBe(200);
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
     expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
@@ -906,7 +906,7 @@ describe("the automatic revision never asks for money", () => {
     expect(text).toContain("Problem: No limit on retries.");
     expect(text).not.toContain("I revised the plan once");
     // The person's approval then goes to coding as ever.
-    const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record.workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record.workflow.artifacts.at(-1)!.sha256, acknowledgedRunLimitUsd: (t.meta(taskId) as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd });
+    const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record.workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record.workflow.artifacts.at(-1)!.sha256 });
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   });
 

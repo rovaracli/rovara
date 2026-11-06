@@ -235,7 +235,8 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     if (!body.success) return ISSUE(body.error);
     const earlier = await deps.store.findDecision(who, body.data.requestId);
     if (earlier !== undefined) {
-      if (earlier.outcome !== "rejected" || earlier.cardId !== cardId || earlier.reason !== CHANGES_REASON) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
+      // The same rule as approve: the record names the acting document's card (a pair's tab records its document's own card, with the tab).
+      if (earlier.outcome !== "rejected" || earlier.reason !== CHANGES_REASON || (earlier.cardId !== cardId && earlier.tab === undefined)) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
       return new StatusReply(200, answerOfRecord(earlier));
     }
     const pending = pendingCard(await project(deps, caller), cardId);

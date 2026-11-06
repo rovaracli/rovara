@@ -381,7 +381,7 @@ async function world(options: { live?: boolean; orgs?: boolean } = {}) {
     return { ...run, digest: document.sha256 };
   };
   const decide = (who: Developer, taskId: string, body: Record<string, unknown>) =>
-    h.dev(who, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: meta(taskId).workflow.revision, ...(body["decision"] === "APPROVE" ? { acknowledgedRunLimitUsd: (meta(taskId) as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd } : {}), ...body });
+    h.dev(who, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: meta(taskId).workflow.revision, ...body });
   const sessionRecord = (sessionId: string) => h.db.get(agentSessionKey(TEST_ORG, sessionId, "META")) as Record<string, unknown> & { summary: { status: string; step?: string } };
   const events = (sessionId: string) => h.db.find((item) => item.pk === agentSessionKey(TEST_ORG, sessionId, "META").pk && String(item.sk).startsWith("EVENT#")).map((item) => String(item.text));
   const milestones = (taskId: string) => h.db.find((item) => item.pk === `DEVTASK#${taskId}` && String(item.sk).startsWith("CODE_MILESTONE#answered"));

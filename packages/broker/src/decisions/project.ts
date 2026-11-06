@@ -57,12 +57,16 @@ export type DecisionItem =
     kind: "approve_plan"; path: "quick" | "full"; files: readonly string[]; claims: number; untestedClaims: number; cost?: Cost | undefined; tooBig?: boolean | undefined;
     /** Slice 2: the run limit approving sets (`proposedUsd`) and the one the task has now (`currentUsd`, absent: none). The card shows it and, when it raises the limit, asks for a tick. */
     runLimit?: { currentUsd?: number | undefined; proposedUsd: number } | undefined;
+    /** Slice 2 review fix: the files or the checks could not be read from the plan. The card shows neither chip and is at least medium (risk-tier). */
+    unread?: boolean | undefined;
   })
   | (ItemBase & { kind: "approve_requirements"; claims: number })
   | (ItemBase & {
     kind: "approve_design"; files: readonly string[];
     /** The design went through design review (DR9, `design-review/card-source.ts`): the tier reads its reasons and touches, and the card shows the reviewers, blockers, disagreements and cost. Absent: the older card. */
     review?: DesignCardFacts | undefined;
+    /** Slice 2 review fix: false for a person who sees the card but is not the task's owner (a maintainer, the design approver): the workflow decision sends a document back for its owner only, so they get no Request changes. */
+    changesAllowed?: boolean | undefined;
   })
   | (ItemBase & { kind: "merge"; sessionId?: string | undefined; /** The head of each pull request the person is shown; the press is refused if any moved. Required: a merge card without it is not pressed. */ heads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }> | undefined; /** The pull requests a press would merge and the branch each goes into, for the "Merge #N into <branch>?" question; read from tracking, never from model text. */ targets?: ReadonlyArray<{ repositoryId: string; number: number; baseBranch: string }> | undefined; prRisk: DecisionRisk; prReasons: readonly string[]; proof: ProofCounts; reviewVerdict: "approved" | "concerns" | "none"; ci: "passing" | "failing" | "pending"; securityFindingsHigh: number; fullSuitePending: boolean })
   | (ItemBase & {
@@ -168,12 +172,15 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
         next: `${money === undefined ? "Rovara builds the change and opens a pull request" : `Builds in ${item.cost?.minutes === undefined ? "a few minutes" : `${String(item.cost.minutes.low)} to ${String(item.cost.minutes.high)} minutes`}, ${money}, and opens a pull request`}.`,
         ...(item.cost === undefined ? {} : { costUsd: item.cost.highUsd }),
         ...(item.cost?.minutes === undefined ? {} : { minutes: item.cost.minutes.high }),
+        // A plan whose files or checks could not be read shows neither chip: never "0 files" or "every claim has a check" for something unknown.
         evidence: [
-          chip("other", "Files", plural(item.files.length, "file", "files"), item.files.length > 25 ? "warning" : "good"),
-          chip("test_proof", "Planned proof", item.untestedClaims === 0 ? "every claim has a check" : `${plural(item.untestedClaims, "claim", "claims")} with none`, item.untestedClaims === 0 ? "good" : "warning"),
+          ...(item.unread === true ? [] : [
+            chip("other", "Files", plural(item.files.length, "file", "files"), item.files.length > 25 ? "warning" : "good"),
+            chip("test_proof", "Planned proof", item.untestedClaims === 0 ? "every claim has a check" : `${plural(item.untestedClaims, "claim", "claims")} with none`, item.untestedClaims === 0 ? "good" : "warning"),
+          ]),
           ...(item.tooBig === true ? [chip("other", "Size", "too big for one screen", "warning")] : []),
         ],
-        why: item.untestedClaims === 0 ? "Every claim in the plan has a planned check." : "Some claims have no planned check; look before you approve.",
+        why: item.unread === true ? "The plan does not say what it changes or how it is proved; read it before you approve." : item.untestedClaims === 0 ? "Every claim in the plan has a planned check." : "Some claims have no planned check; look before you approve.",
       };
     }
     case "approve_requirements":
@@ -298,7 +305,7 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
 
 function tierInputsOf(item: DecisionItem): TierInputs {
   switch (item.kind) {
-    case "approve_plan": return { plan: { files: item.files, untestedClaims: item.untestedClaims, costHighUsd: item.cost?.highUsd } };
+    case "approve_plan": return { plan: { files: item.files, untestedClaims: item.untestedClaims, costHighUsd: item.cost?.highUsd, ...(item.unread === true ? { unread: true } : {}) } };
     case "approve_design": return { design: { files: item.files, ...(item.review === undefined ? {} : { review: item.review }) } };
     case "merge": return { merge: { prRisk: item.prRisk, prReasons: item.prReasons, failedChecks: item.proof.failed, untestedClaims: item.proof.notTested, securityFindingsHigh: item.securityFindingsHigh, fullSuitePending: item.fullSuitePending, ciFailing: item.ci === "failing" } };
     case "approve_dependency": return { dependency: { newInstallScripts: item.newInstallScripts } };
@@ -315,7 +322,8 @@ function tierInputsOf(item: DecisionItem): TierInputs {
 function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { actions: CardAction[]; recommended: CardAction["kind"] } {
   const base = decisionCardPath(cardId);
   // Slice 2: a document to approve (requirements, a coding plan, a design) can always be sent back with a reason, on its card: never "Not now", which decided nothing.
-  const changes: CardAction | undefined = DOCUMENT_KINDS.has(item.kind) ? { kind: "request_changes", label: DECISION_LABELS.requestChanges, href: `${base}/request-changes`, method: "POST" } : undefined;
+  const changes: CardAction | undefined = DOCUMENT_KINDS.has(item.kind) && !(item.kind === "approve_design" && item.changesAllowed === false)
+    ? { kind: "request_changes", label: DECISION_LABELS.requestChanges, href: `${base}/request-changes`, method: "POST" } : undefined;
   // Every link to a decision lands on its card: a card about a task whose page is its session opens `/app/sessions/<id>?decision=<card id>`, and the task page scrolls to that card and marks it (S1a).
   // A high card with a confirmation page still opens that page (its fresh sign-in); one without opens its card on the task page, where it is decided inline. Never a link to a page that shows the same link.
   const focused = item.taskId === undefined ? item.openPath : decisionFocusPath(item.openPath, cardId);
@@ -346,10 +354,12 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   // A design with an open blocker is never a one-tap approve (owner Q8): the action says a reason goes with it, the approve body takes `reason`, and the handler refuses an approval without one.
   const openBlockers = item.kind === "approve_design" ? item.review?.blockers.length ?? 0 : 0;
   const approve: CardAction = { kind: "approve", label: openBlockers > 0 ? DECISION_LABELS.approveWithReason : item.kind === "merge" ? DECISION_LABELS.merge : DECISION_LABELS.approve, href: `${base}/approve`, method: "POST" };
-  const reject: CardAction = changes ?? { kind: "reject", label: DECISION_LABELS.notNow, href: `${base}/reject`, method: "POST" };
+  // A document is never put off ("Not now" decided nothing): its owner sends it back; anyone else only approves (if they may) or opens it.
+  const reject: CardAction | undefined = changes ?? (DOCUMENT_KINDS.has(item.kind) ? undefined : { kind: "reject", label: DECISION_LABELS.notNow, href: `${base}/reject`, method: "POST" });
   // The recommendation follows the evidence: something failed, or a blocker is open, so look first.
   const look = openBlockers > 0 || (item.kind === "merge" && (item.proof.failed > 0 || item.ci === "failing"));
-  return look ? { actions: [open, reject, approve], recommended: "open" } : { actions: [approve, reject, open], recommended: "approve" };
+  const present = (actions: Array<CardAction | undefined>): CardAction[] => actions.filter((action): action is CardAction => action !== undefined);
+  return look ? { actions: present([open, reject, approve]), recommended: "open" } : { actions: present([approve, reject, open]), recommended: "approve" };
 }
 
 const REJECTABLE_REASONS: readonly DecisionRejectReason[] = DECISION_REJECT_REASONS;

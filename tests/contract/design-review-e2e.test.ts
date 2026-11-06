@@ -1005,6 +1005,12 @@ describe("slice C: the design review's routes", () => {
     expect((await w.dev(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: "f".repeat(64), reason: "Bound the retries." })).status).toBe(409);
     expect((await w.dev(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: shown!.digest, reason: " " })).status).toBe(400);
     expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+    // Someone who is not the task's owner (a maintainer who may approve it) sees no Request changes: the workflow decision sends a document back for its owner only.
+    const other = await cardOf(w, OMAR, "approve_design");
+    expect(other, "positive control: the maintainer sees the card").toBeDefined();
+    expect(other!.card.actions.map((action) => action.kind)).not.toContain("request_changes");
+    expect(other!.card.actions.map((action) => action.kind)).not.toContain("reject");
+    expect((await w.dev(OMAR, "POST", path, { requestId: randomUUID(), shownDigest: other!.digest, reason: "Bound the retries." })).status).toBe(404);
     const sent = await w.dev(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: shown!.digest, reason: "Bound the retries." });
     expect(sent.status, JSON.stringify(sent.body)).toBe(200);
     const workflow = w.task().workflow as { stage: string; decisions: Array<{ decision: string; reason: string }> };

@@ -117,10 +117,13 @@ async function approveItemOf(env: Env, loaded: Loaded, touches: readonly DesignR
   const { task, workflow } = loaded;
   const design = workflow.artifacts.filter((artifact) => artifact.type === "design").at(-1);
   if (!waitingOnDesign(workflow) || design === undefined || workflow.designReview === undefined) return undefined;
-  return designApproveItem({
+  const item = designApproveItem({
     subjectId: task.taskId, taskId: task.taskId, project: task.project, title: task.title, createdAt: workflow.updatedAt ?? nowIso(env), openPath: await sessionPathOf(env, task),
     contentVersion: design.sha256, files: await filesOf(env, workflow), review: designCardFactsOf(workflow.designReview, touches),
   });
+  // Slice 2 review fix: only the task's (effective) owner sends the design back, as the workflow decision allows; an approver or a maintainer gets no Request changes. Worked out here, so every
+  // projection of this card for this person (the list, the confirmation read, the press) is the same card with the same digest.
+  return item === undefined || item.kind !== "approve_design" ? item : { ...item, changesAllowed: tryEffectiveTaskOwner(task)?.developerId === env.caller.developerId };
 }
 
 /** What the confirmation page's press says when the approver's sign-in is not recent enough: a browser answers REAUTH_REQUIRED (the page shows "Sign in again" on the card), never "You can't decide this.". */

@@ -738,7 +738,7 @@ describe("a refusal at dispatch is final and tells the owner", () => {
     const plan = "# Plan\n\n1. Fix retry handling.\n2. Add a regression test.\n";
     await finishPlanningWithMarkdown(t, run.workspaceId, String(run.planning.id), plan);
     const approved = await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/workflow/decision`, {
-      requestId: randomUUID(), expectedRevision: (run.meta().workflow as unknown as { revision: number }).revision, decision: "APPROVE", reason: "Approved", artifactDigest: createHash("sha256").update(plan).digest("hex"), acknowledgedRunLimitUsd: (run.meta() as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd,
+      requestId: randomUUID(), expectedRevision: (run.meta().workflow as unknown as { revision: number }).revision, decision: "APPROVE", reason: "Approved", artifactDigest: createHash("sha256").update(plan).digest("hex"),
     });
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     const implementing = t.operations(run.workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;

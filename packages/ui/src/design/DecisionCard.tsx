@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode, type TouchEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "react-router";
-import { DECISION_LABELS, DECISION_REJECT_REASONS, decisionTaskSessionOf, type DecisionRejectReason, type DecisionTabId } from "@agentx/contracts/web";
+import { DECISION_APPROVE_TAKES, DECISION_LABELS, DECISION_REJECT_REASONS, decisionTaskSessionOf, type DecisionRejectReason, type DecisionTabId } from "@agentx/contracts/web";
 import { useAppHost } from "../host.js";
 import { ApiError } from "../api/errors.js";
 import { HIGH_ON_CARD_KINDS, decisionOpenTarget, mayApproveHere, runLimitRaise, type DecisionResult, type ReadDecision } from "../api/decisions.js";
@@ -179,6 +179,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
   {tabs === undefined ? <Chips chips={card.evidence} /> : <Tabs label={"Documents to approve for " + card.title} value={tab} onValueChange={value => { if (value === "requirements" || value === "design") setTab(value); }} items={tabs.map(item => ({ value: item.id, label: item.title + (item.approved ? " (approved)" : ""), content: <><Chips chips={item.evidence} />{needsEvidence && evidencePanel(item.id)}</> }))} />}
   {tabs === undefined && needsEvidence && evidencePanel(undefined)}
   {limitBox}
+  {(card.kind === "approve_plan" || card.kind === "approve_requirements") && card.status === "pending" && <p className="rv-muted rv-decision-takes">{DECISION_APPROVE_TAKES}</p>}
   {questionsBox}
   {readLink}
   {card.risk === "high" && <p className="rv-decision-high">{inline ? HIGH_RISK_NOTE : confirmPage ? "This decision is made on its own page, after you sign in again." : "This decision is made on its own page."}</p>}

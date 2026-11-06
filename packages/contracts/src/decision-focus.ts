@@ -27,6 +27,9 @@ export const DECISION_LABELS = {
   signInAgain: "Sign in again",
 } as const;
 
+/** Shown next to Approve on a requirements or coding plan card, at every risk (slice 2): what an Approve on the card takes, as Slack's Approve does. */
+export const DECISION_APPROVE_TAKES = "Approving here takes Rovara's recommended answer to each decision in the document and the open comments (up to 25). To answer them yourself, use the plan review page.";
+
 const TASK_PAGE = /^\/app\/sessions\/(ses_[0-9a-z]{20})(?:\?|$)/u;
 /** The task page with one card on it, focused: `<sessionPath>?decision=<card id>`. Only a bare task session page path (`/app/sessions/ses_...`, no query) is anchored; anything else is answered unchanged. */
 export function decisionFocusPath(openPath: string, cardId: string): string {

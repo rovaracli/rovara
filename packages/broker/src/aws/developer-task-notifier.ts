@@ -4,7 +4,7 @@
 // names, IDs, notice kinds and Slack error codes only: never a token, a post's text or a task's text.
 // Spec 025 E13: it also posts an admin change's Slack Confirm message, and edits it when the change ends.
 import { decisionCardUrl } from "../decisions/open-path.js";
-import { runLimitRaises } from "@agentx/contracts";
+import { PER_TASK_BUDGET_USD, runLimitRaises } from "@agentx/contracts";
 import { chatGptFallbackText } from "../chatgpt/fallback-notice.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { createHash } from "node:crypto";
@@ -999,13 +999,18 @@ export function designCardUrlFor(reviewUrlBase: string | undefined, task: Pick<D
 }
 
 /**
- * Slice 2: where a coding plan's message sends the person instead of an Approve when approving raises the run limit (no limit yet, or a higher one): its card, where the new limit is ticked. A Slack Approve
- * of such a plan is refused by the workflow decision, so it is never offered. Undefined when Approve stays (no estimate on the record: the decision says why if it is refused).
+ * Slice 2 (review fix): whether a coding plan's message offers "Open in Rovara" in place of Approve because approving raises the run limit (measured as the decision does: the plan's limit, lowered to
+ * what the start asked for, against the task's limit or the per-task default); a raise is taken only with the limit acknowledged, which Slack cannot show. The link is the plan review page: this Lambda
+ * cannot read the decision-cards switch, and that page exists either way (its approval acknowledges the limit), so Slack never points to a card that is not there and never offers an Approve the
+ * decision refuses. A medium or high plan pressed from Slack is refused by the decision with the words and the card's link. Undefined: Approve stays (not the coding plan, no estimate on the record:
+ * with none the plan carried no limit to show, or no page to link).
  */
-export function runLimitCardUrlFor(reviewUrlBase: string | undefined, task: Pick<DeveloperTaskRecord, "taskId" | "sessionId" | "budgetUsd" | "runEstimate">, workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase">, page: string | undefined): string | undefined {
-  if (workflow.path === "FULL" && (workflow.reviewPhase === "REQUIREMENTS" || workflow.reviewPhase === "DESIGN")) return undefined;
-  if (task.runEstimate === undefined || !runLimitRaises(task.budgetUsd, task.runEstimate.runLimitUsd)) return undefined;
-  return decisionCardUrl(reviewUrlBase, task, `approve_plan:${task.taskId}`, page);
+export function planOpenFor(task: Pick<DeveloperTaskRecord, "budgetUsd" | "runEstimate" | "requestedRunLimitUsd">, workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase">, page: string | undefined): { url: string; why: "run_limit" } | undefined {
+  if (page === undefined || (workflow.path === "FULL" && (workflow.reviewPhase === "REQUIREMENTS" || workflow.reviewPhase === "DESIGN"))) return undefined;
+  const estimate = task.runEstimate;
+  if (estimate === undefined) return undefined;
+  const proposedUsd = task.requestedRunLimitUsd === undefined ? estimate.runLimitUsd : Math.min(estimate.runLimitUsd, task.requestedRunLimitUsd);
+  return runLimitRaises(task.budgetUsd ?? PER_TASK_BUDGET_USD, proposedUsd) ? { url: page, why: "run_limit" } : undefined;
 }
 
 async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, workflow: WorkflowSnapshot, reopenedPullRequests?: ReadonlyArray<{ repositoryId: string; number: number }>): Promise<Reply | undefined> {
@@ -1038,8 +1043,8 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
     }
     const card = designCardUrlFor(deps.reviewUrlBase, task, workflow, page);
     if (card !== undefined) context.designCardUrl = card;
-    const planCard = runLimitCardUrlFor(deps.reviewUrlBase, task, workflow, page);
-    if (planCard !== undefined) context.runLimitCardUrl = planCard;
+    const planOpen = planOpenFor(task, workflow, page);
+    if (planOpen !== undefined) context.planOpen = planOpen;
   } else if (workflow.state === "BLOCKED" || (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING")) {
     // Replies that came in after the plan and that no step has taken: said, with where to read them.
     context.newReplies = await newThreadReplies(deps, task);

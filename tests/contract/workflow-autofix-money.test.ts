@@ -59,7 +59,7 @@ async function blockedOnFindings(installed: Installed, options: { fixSource?: "c
   const planning = operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN")!;
   await finishPlanningWithMarkdown(harness, workspaceId, String(planning.id), plan);
   const digest = createHash("sha256").update(plan).digest("hex");
-  await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: taskOf(harness, taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest, acknowledgedRunLimitUsd: (taskOf(harness, taskId) as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd });
+  await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: taskOf(harness, taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
   const approvedWindow = taskOf(harness, taskId).budgetBaselineUsd;
   // Plan 6's own fix rounds carry their source (the pull request already exists); #408 must stay out of them.
   if (options.fixSource !== undefined) harness.db.set({ ...taskOf(harness, taskId), workflow: { ...taskOf(harness, taskId).workflow, fixSource: options.fixSource } });

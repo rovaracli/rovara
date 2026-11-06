@@ -441,8 +441,6 @@ async function finishPlanning(broker: DeveloperBroker, taskId: string, workspace
 const decide = (broker: DeveloperBroker, taskId: string, plan: { digest: string; revision: number }, decision: "APPROVE" | "REQUEST_CHANGES", reason: string) =>
   broker.harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, {
     requestId: randomUUID(), expectedRevision: plan.revision, decision, reason, artifactDigest: plan.digest,
-    // The run limit approving sets, as the task page shows and the person ticks (slice 2: a raise is never approved without it).
-    ...(decision === "APPROVE" ? { acknowledgedRunLimitUsd: (broker.harness.db.get(`DEVTASK#${taskId}`, "META") as { runEstimate?: { runLimitUsd?: number } } | undefined)?.runEstimate?.runLimitUsd } : {}),
   });
 
 const REQUIRED_CHECK = { id: "required-1", label: "npm test", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 } };

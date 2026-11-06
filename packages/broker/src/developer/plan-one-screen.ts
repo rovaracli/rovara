@@ -55,6 +55,14 @@ export function planFiles(plan: PlanDocument): string[] {
   return out;
 }
 
+/** The paths a plan's text names (a Markdown plan has no structure to read them from). */
+export function pathsIn(text: string): string[] {
+  return [...new Set((text.match(PATH_TOKEN) ?? []).map((value) => flat(value).replace(/^\.\//u, "")).filter((path) => path !== ""))];
+}
+/** How many top-level claims no check or scenario proves ("not planned"): the same reading as the one-screen plan's proof line. */
+export function planUntestedClaims(plan: PlanDocument): number {
+  return plan.claims.filter((claim) => proofKind(plan, claim) === "not_planned").length;
+}
 function descendantIds(claim: PlanClaim): string[] {
   return [claim.id, ...(claim.children ?? []).flatMap(descendantIds)];
 }

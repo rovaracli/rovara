@@ -7,8 +7,9 @@
 //   request changes   the workflow decision's REQUEST_CHANGES with the person's reason, for requirements, a coding plan and a design alike (a design's Approve stays the design review's).
 // The requirements and design pair card (project.ts `pairCards`) forms only when both documents wait at once; today's Full flow asks for them one after the other, so this source never yields both.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, planClaimCount, taskGraphDigest, type WorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
-import { isE2EPlanCorrectionBlockReason, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { DECISION_APPROVE_TAKES, PER_TASK_BUDGET_USD, agentXError, planClaimCount, taskGraphDigest, type WorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
+import { isE2EPlanCorrectionBlockReason, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { planFactsOf } from "../../decisions/plan-risk.js";
 import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { taskOpenPath } from "../../decisions/open-path.js";
 import type { DecisionItem } from "../../decisions/project.js";
@@ -28,7 +29,7 @@ type DocumentType = "requirements" | "plan" | "design";
 /** What a Request changes or an Approve of a design is refused with when the card's sign-in is not recent (high only). */
 export const PLAN_CARD_REAUTH_MESSAGE = "Sign in again to approve this. A high-risk decision needs a sign-in within the last 10 minutes.";
 /** Said on the card about what an Approve here takes (as Slack's Approve does): the plan's recommended answers and the open comments. */
-const TAKES = "Approving here takes Rovara's recommended answer to each decision in the plan and the open comments (up to 25). To answer them yourself, use the plan review page.";
+const TAKES = DECISION_APPROVE_TAKES;
 
 /** The document a task waits on, by the workflow's own fields. */
 export function waitingDocument(workflow: Pick<WorkflowSnapshot, "stage" | "state" | "path" | "reviewPhase">): DocumentType | undefined {
@@ -67,7 +68,8 @@ const reader = (deps: DeveloperRouteDependencies, caller: DeveloperCaller) => {
 /** The card item for one task, or undefined when it waits on nothing a card here decides. */
 async function itemOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord): Promise<DecisionItem | undefined> {
   const workflow = task.workflow;
-  if (workflow === undefined || task.orgId !== caller.orgId || task.closedAt !== undefined) return undefined;
+  // The task's owner now (after a take-over, the taker, whose own task index lists it): the workflow decision is theirs.
+  if (workflow === undefined || task.orgId !== caller.orgId || task.closedAt !== undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) return undefined;
   const type = waitingDocument(workflow);
   if (type === undefined || type === "design" || isE2EPlanCorrectionBlockReason(workflow.blockReason)) return undefined;
   const artifact = latestOf(workflow, type);
@@ -82,10 +84,13 @@ async function itemOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller,
   const estimate = task.runEstimate;
   let proposedUsd: number | undefined;
   try { proposedUsd = await planRunLimit(estimateDependencies(developerTaskRouteDependencies(deps, caller)), task); } catch { proposedUsd = estimate?.runLimitUsd; }
+  // What the plan changes and how it is proved, read from the plan itself (`planFactsOf`): the tier the card shows is the one the workflow decision enforces. Unreadable: no chips, at least medium.
+  const facts = planFactsOf(loaded);
   return {
-    ...base, kind: "approve_plan", path: workflow.path === "FULL" ? "full" : "quick", files: [], claims, untestedClaims: 0,
+    ...base, kind: "approve_plan", path: workflow.path === "FULL" ? "full" : "quick", files: facts.files, claims, untestedClaims: facts.untestedClaims, ...(facts.unread ? { unread: true } : {}),
     ...(estimate === undefined ? {} : { cost: { lowUsd: estimate.lowUsd, highUsd: estimate.highUsd, ...(estimate.minutes === undefined ? {} : { minutes: estimate.minutes }) } }),
-    ...(proposedUsd === undefined ? {} : { runLimit: { proposedUsd, ...(task.budgetUsd === undefined ? {} : { currentUsd: task.budgetUsd }) } }),
+    // A task with no limit of its own runs on the per-task default: that is its current limit.
+    ...(proposedUsd === undefined ? {} : { runLimit: { proposedUsd, currentUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD } }),
     details: [{ title: "What Approve takes", lines: [TAKES] }],
   };
 }

@@ -128,3 +128,13 @@ it("S2e: the Plan tab's Review and approve goes to the plan's card on this page,
  expect(f.host.openExternal).not.toHaveBeenCalled();
  f.close();
 });
+
+it("review fix: what Approve takes is said next to Approve on a requirements and a plan card, at low risk too", async () => {
+ for (const item of [{ ...base(), kind: "approve_requirements", claims: 3 } as DecisionItem, plan()]) {
+  expect(projectDecisionCards([item]).cards[0]!.risk, "positive control: low").toBe("low");
+  const f = taskPage([item]);
+  const card = await cardOn();
+  expect(within(card).getByText(/takes Rovara's recommended answer to each decision/u)).toBeTruthy();
+  f.close();
+ }
+});
