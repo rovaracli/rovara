@@ -8,6 +8,7 @@ import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { hasTaskEndHandlers, registerTaskEndHandler, registerTaskPauseHandler, onTaskEnded, onTaskPaused, type TaskEndHost } from "../../packages/broker/src/agents/task-end.js";
 import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/agent-sessions/task-handlers.js";
+import { uninstallTicketUpdates } from "../../packages/broker/src/aws/broker/ticket-updates-wiring.js";
 import { setChainShares } from "../../packages/broker/src/chains/access.js";
 import { STARTER_CHAIN_DEFINITION, type ChainRouteDependencies } from "../../packages/broker/src/chains/routes.js";
 import { taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
@@ -2270,11 +2271,14 @@ describe("POST /v1/app/chains/{id}/runs", () => {
   });
 
   it("is listening for a step's end only where the broker is asked to, and then finishes the run when Plan 3 tells it a step ended", async () => {
-    // Plan 5's session handlers are registered by any broker with agents set up; this test is about the chain runner's, so they are taken off before each look.
+    // Plan 5's session handlers are registered by any broker with agents set up, and slice 5's ticket updates end handler by any broker with developer sign-in; this test is about the chain
+    // runner's, so they are taken off before each look.
     unregisterAgentSessionTaskHandlers();
+    uninstallTicketUpdates();
     expect(hasTaskEndHandlers()).toBe(false);
     await routeSetup(false);
     unregisterAgentSessionTaskHandlers();
+    uninstallTicketUpdates();
     expect(hasTaskEndHandlers()).toBe(false);
     const { h, world, publishStarter } = await routeSetup(true);
     expect(hasTaskEndHandlers()).toBe(true);
