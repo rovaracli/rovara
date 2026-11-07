@@ -1,6 +1,7 @@
 import { previewTaskStartStop } from "../org/task-stop-start-preview.js";
 import { routeNotificationPrefs } from "../notifications/prefs-routes.js";
 import { routeTaskFindings } from "./developer-routes/task-findings.js";
+import { routeTaskPageActions } from "./developer-routes/task-page-actions.js";
 import { DECIDE_COOKIE, cookieOf } from "../developer/decide-session.js";
 import { getTaskStopEnrollment, reviewTaskStopEnrollment, writeTaskStopEnrollment } from "../org/task-stop-enrollment.js";
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
@@ -588,7 +589,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (secondReviewAck !== null && request.method === "POST") return new StatusReply(200, await acknowledgeSecondReview(developerTaskRouteDependencies(deps, caller), caller, secondReviewAck[1]!, jsonBody(request)));
   const notifyReply = await routeNotificationPrefs(deps, caller, request, url);
   if (notifyReply !== undefined) return notifyReply;
-  const findingsReply = await routeTaskFindings(deps, caller, request, url);
+  const findingsReply = await routeTaskFindings(deps, caller, request, url) ?? await routeTaskPageActions(deps, caller, request, url);
   if (findingsReply !== undefined) return findingsReply;
   const secondReviewReply = await routeSecondReview(deps, caller, request, url);
   if (secondReviewReply !== undefined) return secondReviewReply;

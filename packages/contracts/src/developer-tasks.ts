@@ -187,6 +187,15 @@ export const DeveloperTaskViewSchema = z.object({
   testing: TestingViewSchema.optional(),
   /** Design review (DR11, version 2 only): the Design first and Skip buttons for the person reading, decided by the broker. Absent when design review is not offered for the task. */
   designActions: DesignActionsViewSchema.optional().catch(undefined),
+  /**
+   * OWNER DECISION 7 (version 2 only, full reads only): what the old review page offered on a task that stopped, now on the task page: Retry the browser and API checks (a blocked round a retry can fix),
+   * Revise the plan (coding stopped for the owner's live message) and a held spec's choices. Each says whether THIS reader may press it; the routes check again. Fixed words from the broker only.
+   */
+  pageActions: z.object({
+    checksRetry: z.object({ canRetry: z.boolean() }).strict().optional(),
+    revisePlan: z.object({ canRevise: z.boolean() }).strict().optional(),
+    specHold: z.object({ title: z.string().min(1).max(120), message: z.string().min(1).max(600), choices: z.array(z.enum(["retry", "continue", "keep", "replan"])).max(4), canChoose: z.boolean() }).strict().optional(),
+  }).strict().optional().catch(undefined),
   /** Decisions D5 (version 2 only): the coding plan under review on one screen (about 1,500 characters), derived from the plan document with no model call. Absent when there is no readable plan. */
   planOneScreen: PlanOneScreenSchema.optional(),
   /**

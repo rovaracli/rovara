@@ -96,6 +96,8 @@ export interface DeveloperTaskRouteDependencies {
   designReview?: DesignReviewRoundPorts;
   /** Design review (DR11): the Design first and Skip buttons for the caller these dependencies were built for; undefined when design review is not offered. Absent: the view carries none. */
   designActions?: (task: DeveloperTaskRecord) => Promise<DesignActionsView | undefined>;
+  /** OWNER DECISION 7: the checks retry, Revise the plan and spec-hold offers for the caller these dependencies were built for (task-page.ts#taskPageActionsFor). Absent: the view carries none. */
+  pageActions?: (task: DeveloperTaskRecord) => Promise<DeveloperTaskView["pageActions"]>;
   /** The commit the base branch of one of the task's pull requests is at now (Plan 6 Task 17: the commit Rovara merges into the branch). Throws when GitHub cannot say. */
   currentBaseCommit?(task: DeveloperTaskRecord, pullRequest: { repositoryId: string; number: number }): Promise<string>;
   /** How far Rovara may go on its own with the task now: the stricter of its frozen recipe and the company's limit, read each time (`suggest` when it cannot be read). Checked before each paid step of a round Rovara decided itself (Plan 6 Task 16). */
