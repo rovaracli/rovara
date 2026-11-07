@@ -113,11 +113,29 @@ describe("Stop and Retry are offered only where they apply (item 6)", () => {
       expect(actions).not.toContain("steer");
       expect(actions).toContain("watch");
     }
-    // A run that ended cancelled while its task stays open is not Closed: it can still be retried.
+    // Review I5: a run that ended cancelled reads Closed (never "Needs you"), and can still be retried.
     const cancelled = taskStatusOf({ workflow: undefined, closed: false, sessionStatus: "cancelled" });
-    expect(cancelled.state).toBe("needs_you");
+    expect(cancelled).toMatchObject({ state: "closed", retryable: true });
     expect(sessionActionsFor(editor, { status: "cancelled", display: cancelled })).toContain("retry");
     // Positive control: a blocked workflow still offers Stop and Retry.
     expect(sessionActionsFor(editor, { status: "needs_person", workflowBlocked: true, display: { state: "needs_you", reason: "x" } })).toEqual(expect.arrayContaining(["stop", "retry"]));
+  });
+});
+
+describe("review fixes: nothing that waits on nobody reads Needs you (I4, I5)", () => {
+  it("reads a plain task whose run finished as Finished its run, not Needs you", () => {
+    const finished = taskStatusOf({ workflow: undefined, closed: false, sessionStatus: "waiting" });
+    expect(finished.state).toBe("finished_run");
+    expect(said(finished)).toBe("Finished its run");
+    expect(taskStatusFromSession({ status: "waiting" }).state).toBe("finished_run");
+  });
+
+  it("reads an ended session (every step ran, or a cancelled run) as Closed, never Needs you", () => {
+    const passed = taskStatusOf({ workflow: wf({ stage: "CLOSED", state: "COMPLETE", outcome: "PASSED" }), closed: false, sessionStatus: "cancelled" });
+    expect(passed.state).toBe("closed");
+    expect(passed.next).toBe("Close the task when you are done with the changes.");
+    expect(taskStatusOf({ workflow: undefined, closed: false, sessionStatus: "cancelled" }).state).toBe("closed");
+    // A task its owner closed is never retryable.
+    expect(taskStatusOf({ workflow: undefined, closed: true, sessionStatus: "cancelled" }).retryable).toBeUndefined();
   });
 });

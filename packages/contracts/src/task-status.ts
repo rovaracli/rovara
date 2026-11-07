@@ -5,6 +5,8 @@ import { z } from "zod";
 /** The states, in the order a task moves through them. `needs_you` and `failed` always carry a reason sentence. */
 export const TASK_STATUS_STATES = [
   "understanding", "planning", "reviewing_design", "building", "checking", "needs_you", "paused_budget", "ready_to_merge", "merged", "closed", "failed",
+  // Review I4: a task with no workflow whose run finished waits for its owner's next request; that is not a block, so it is not "Needs you".
+  "finished_run",
 ] as const;
 export type TaskStatusState = (typeof TASK_STATUS_STATES)[number];
 
@@ -21,6 +23,7 @@ export const TASK_STATUS_WORDS: Record<TaskStatusState, string> = {
   merged: "Merged",
   closed: "Closed",
   failed: "Failed",
+  finished_run: "Finished its run",
 };
 
 /** The states that are over: nothing more happens on the task. */
@@ -41,6 +44,8 @@ export const TaskStatusSchema = z.object({
   reason: line(TASK_STATUS_REASON_MAX).optional(),
   next: line(TASK_STATUS_NEXT_MAX).optional(),
   nextOthers: line(TASK_STATUS_NEXT_MAX).optional(),
+  /** Set on a Closed that a run's own end made (a cancelled or failed run of an open task): the session can still be retried. Absent on a task its owner closed and on a merge. */
+  retryable: z.literal(true).optional(),
 }).strict();
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
@@ -94,7 +99,7 @@ export function taskStatusFromSession(summary: { status: string; lastRunFailed?:
     case "running": return { state: "building" };
     case "needs_person": return { state: "needs_you", reason: "a person needs to decide what happens next" };
     case "paused": return { state: "paused_budget", reason: "it reached its spending limit" };
-    case "waiting": return summary.lastRunFailed === true ? { state: "failed", reason: "the last run stopped with an error", next: "Retry it, or close the task." } : { state: "needs_you", reason: "it is waiting for your next instruction" };
+    case "waiting": return summary.lastRunFailed === true ? { state: "failed", reason: "the last run stopped with an error", next: "Retry it, or close the task." } : { state: "finished_run", next: "Send more work, or close the task." };
     case "stopped": return { state: "needs_you", reason: "it was stopped before it finished", next: "Retry it, or close the task." };
     case "succeeded": return { state: "closed" };
     case "failed": return { state: "failed", reason: "the run stopped with an error" };

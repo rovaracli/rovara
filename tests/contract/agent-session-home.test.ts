@@ -994,4 +994,26 @@ describe("UX2 slice 2: Home is the ONE needs-you list with ONE count", () => {
     expect(failing.needsYou).toBe(failing.total);
     expect(w.logs.some((entry) => entry["event"] === "home.decisions_unreadable" && !JSON.stringify(entry).includes("boom"))).toBe(true);
   });
+
+  it("review I4: a plain task whose run finished (waiting for its owner's next request) is not a blocked card", async () => {
+    const w = world();
+    const finished = w.own({ status: "waiting", title: "Finished run" });
+    withDisplay(w, finished.sessionId, { state: "finished_run", next: "Send more work, or close the task." });
+    // Even a summary that (wrongly) says needs_you for a plain waiting session gets no blocked card: "never a plain waiting".
+    const odd = w.own({ status: "waiting", title: "Odd one" });
+    withDisplay(w, odd.sessionId, { state: "needs_you", reason: "it is waiting" });
+    const ids = await w.ids(PRIYA);
+    expect(ids).not.toContain(`blocked:${finished.sessionId}`);
+    expect(ids).not.toContain(`blocked:${odd.sessionId}`);
+  });
+
+  it("review M3: an owner who is an org admin is told they can raise the paused limit themselves", async () => {
+    const w = world();
+    w.member(ORG_A, PRIYA, "admin");
+    const paused = w.own({ status: "paused", title: "Big refactor" });
+    const task = w.db.get(taskKey(paused.taskId)) as Item;
+    w.db.set({ ...task, budgetPause: { scope: { kind: "project", project: "web" }, at: T0 } });
+    const card = (await w.home(PRIYA)).cards.find((entry) => entry.cardId === `paused:${paused.sessionId}`);
+    expect(card?.reason).toBe("Paused: needs more budget. It reached the project's budget. Next: You can raise the limit: open the budget request and decide.");
+  });
 });

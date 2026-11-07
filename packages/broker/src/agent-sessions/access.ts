@@ -415,7 +415,8 @@ export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" 
   /** UX2 slice 2 item 6: the summary's status in the one status model. Merged or Closed reads as closed here too: Stop, Retry and steering are not offered where they don't apply. */ display?: unknown }): SessionAction[] {
   if (access.level === "none") return [];
   const shown = TaskStatusSchema.safeParse(state.display);
-  if (shown.success && (shown.data.state === "merged" || shown.data.state === "closed")) state = { ...state, closed: true };
+  // A run that ended by itself (cancelled) reads Closed but can still be retried (`retryable`); a merge or a task its owner closed cannot.
+  if (shown.success && (shown.data.state === "merged" || (shown.data.state === "closed" && shown.data.retryable !== true))) state = { ...state, closed: true };
   // Share stays for an edit-level person: a closed task is still a record worth showing someone, and sharing it starts no work (the share route has its own checks).
   if (state.closed === true) return !access.owner && access.projectRole === "viewer" ? ["watch"] : ["watch", "comment", ...(atLeast(access.level, "edit") ? ["share" as const] : [])];
   if (!access.owner && access.projectRole === "viewer") return ["watch"];

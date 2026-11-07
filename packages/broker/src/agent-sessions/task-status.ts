@@ -50,7 +50,8 @@ export function taskStatusOf(input: TaskStatusInput): TaskStatus {
   if (workflow.stage === "MERGED") return status("merged", undefined, "Nothing; this task is complete.");
   if (workflow.outcome === "ANSWERED") return status("closed", "Answered: no code change was needed", "Nothing; no code change was needed.");
   if (!closed && workflow.stage === "CLOSED" && workflow.state === "COMPLETE" && workflow.outcome === "PASSED") {
-    return status("needs_you", "every step finished and the changes wait in the task's workspace", "Close the task when you are done with the changes.");
+    // Review I5: the session has ended (every step ran), so it is never "Needs you"; the next step still says the changes wait for the close.
+    return status("closed", "every step finished and the changes wait in the task's workspace", "Close the task when you are done with the changes.");
   }
   if (closed || workflow.stage === "CLOSED") return status("closed", undefined, "Nothing; this task is closed.");
   if (input.failedPrepare === true) return status("failed", "the repository could not be prepared for the task", "Close the task and start it again.");
@@ -81,6 +82,7 @@ function plainTaskStatus(input: TaskStatusInput): TaskStatus {
   if (base.state === "failed") return status("failed", failureCause(input.failureCategory), input.sessionStatus === "failed" ? "Retry it from the task page, or start a new task." : "Retry it, or close the task.");
   if (input.sessionStatus === "needs_person") return status("needs_you", "an approval is waiting", "The approver decides on their card in Rovara.");
   // A run that was cancelled while the task stays open is not Closed: it stopped before it finished, and can be retried or closed.
-  if (input.sessionStatus === "cancelled") return status("needs_you", "the run was cancelled before it finished", "Retry it, or close the task.");
+  // Review I5: a run that was cancelled has ended its session: Closed, never "Needs you"; it can still be retried (`retryable`).
+  if (input.sessionStatus === "cancelled") return { ...status("closed", "the run was cancelled before it finished", "Retry it, or close the task."), retryable: true };
   return base;
 }

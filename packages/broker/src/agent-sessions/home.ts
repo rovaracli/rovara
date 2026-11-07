@@ -485,7 +485,8 @@ const blockedSource: HomeCardSource = {
   async list(deps, _caller, context) {
     return (await context.ownSessions()).flatMap((own): HomeSourceCard[] => {
       const { session } = own;
-      if (session.endedAt !== undefined || session.summary.status === "paused" || session.summary.lastRunFailed === true) return [];
+      // Review I4: never a plain "waiting" (a run that finished and waits for its owner's next request, a pull request, a failure: each has its own card or none).
+      if (session.endedAt !== undefined || session.summary.status === "paused" || session.summary.status === "waiting" || session.summary.lastRunFailed === true) return [];
       // The summary's own status-model words when it has them; an older summary counts only when it reads as needing a person or stopped (never a plain "waiting", which a pull request or a failure card covers).
       const stored = TaskStatusSchema.safeParse((session.summary as { display?: unknown }).display);
       if (stored.success ? stored.data.state !== "needs_you" : session.summary.status !== "needs_person" && session.summary.status !== "stopped") return [];
@@ -513,8 +514,10 @@ const pausedSource: HomeCardSource = {
       const pause = task?.["budgetPause"] as { scope?: { kind?: unknown } } | undefined;
       const scopeKind = typeof pause?.scope?.kind === "string" ? pause.scope.kind : undefined;
       const text = `${TASK_STATUS_WORDS.paused_budget}. It reached ${budgetScopeName(scopeKind)}`;
+      // Review M3: an org owner or admin may raise any limit (`budgetRaisers`), so the owner who is one is told they can raise it themselves.
+      const mayRaise = context.orgRole === "owner" || context.orgRole === "admin";
       return [{
-        cardId: `paused:${session.sessionId}`, kind: "paused", title: session.title, reason: needsYouReason(text, budgetPauseNext(scopeKind, false, session.summary.pendingApprovals > 0)), sessionId: session.sessionId, at: session.updatedAt,
+        cardId: `paused:${session.sessionId}`, kind: "paused", title: session.title, reason: needsYouReason(text, budgetPauseNext(scopeKind, mayRaise, session.summary.pendingApprovals > 0)), sessionId: session.sessionId, at: session.updatedAt,
         ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}),
         buttons: [openSession(deps, session.sessionId, "Open task")],
       }];
