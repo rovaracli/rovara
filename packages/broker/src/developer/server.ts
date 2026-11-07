@@ -290,11 +290,12 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     return configured ? methods : methods.filter((method) => method !== "saml");
   };
   /**
-   * UX1: the methods the browser sign-in page offers. On Rovara Cloud (no single org) a Slack or company sign-in can neither create nor join a company
-   * (NO_ORG_ON_INSTALL_MESSAGE), so the page leaves them out instead of offering a button that always ends in a refusal.
+   * UX1: the methods the browser sign-in page offers. On Rovara Cloud (no single org) a company sign-in can neither create nor join a company
+   * (NO_ORG_ON_INSTALL_MESSAGE), so the page leaves it out. Slack stays (OWNER DECISION 13, SLACK-SIGNIN-KEEP): it signs in a person whose Slack account is
+   * linked to an account with a company; anyone else gets `method_unavailable`.
    */
   const browserSignInMethods = (methods: DeveloperSignInMethod[]): DeveloperSignInMethod[] =>
-    deps.singleOrgId === undefined && config.cloud !== undefined ? methods.filter((method) => method !== "slack" && method !== "oidc") : methods;
+    deps.singleOrgId === undefined && config.cloud !== undefined ? methods.filter((method) => method !== "oidc") : methods;
   const provider = (method: DeveloperSignInMethod): SignInProvider => {
     // Every flow that talks to a provider (sign-in, join, link, decide) comes through here: an edition that has no such method never reaches it.
     if (!methodAllowedByEdition(deps.editionPolicy, method)) throw new ProviderNotConfiguredError(`${methodLabel(method)} sign-in is not available in this edition`);

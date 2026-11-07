@@ -757,9 +757,9 @@ export class DeveloperSignInStore {
               // Project AI commits pin method marks, not each identity mark. Every unlink must set #method atomically; review that fence if this changes.
               TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META },
               // The Slack link's one-per-account marker goes with the link.
-              UpdateExpression: `SET #identity = :at, #unlinked = :at, #method = :at${link.provider === "slack" || link.provider === "github" ? " REMOVE #slackLinked" : ""}`,
+              UpdateExpression: `SET #identity = :at, #unlinked = :at, #method = :at${link.provider === "slack" || link.provider === "github" ? " REMOVE #linkedMarker" : ""}`,
               ConditionExpression: "attribute_exists(pk)",
-              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider), ...(link.provider === "slack" ? { "#slackLinked": SLACK_LINKED_ATTRIBUTE } : link.provider === "github" ? { "#slackLinked": GITHUB_LINKED_ATTRIBUTE } : {}) },
+              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider), ...(link.provider === "slack" ? { "#linkedMarker": SLACK_LINKED_ATTRIBUTE } : link.provider === "github" ? { "#linkedMarker": GITHUB_LINKED_ATTRIBUTE } : {}) },
               ExpressionAttributeValues: { ":at": at },
             } },
             // An identity merged in by rule 1b is keyed to the developer that was merged away. Unlinked, it starts that developer again
@@ -817,6 +817,7 @@ export class DeveloperSignInStore {
       ...(input.login === undefined ? {} : { login: input.login }),
       linkedAt: at, lastSignInAt: at, relinkedBy: developerId, relinkedAt: at, relinkedWith: input.by.method,
     };
+    const marker = input.provider === "slack" ? SLACK_LINKED_ATTRIBUTE : input.provider === "github" ? GITHUB_LINKED_ATTRIBUTE : undefined;
     const TableName = this.input.tableName;
     const event = await this.identityEvent("linked", { identityKey, developerId, provider: input.provider, at });
     try {
@@ -825,10 +826,11 @@ export class DeveloperSignInStore {
           { Update: {
             TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META },
             // A Slack link comes back with its one-per-account marker, and only while the account has no other Slack link.
-            UpdateExpression: `SET #ended = :at${input.provider === "slack" ? ", #slackLinked = :identityKey" : ""} REMOVE #unlinked`,
-            ConditionExpression: input.provider === "slack" ? "attribute_exists(pk) AND attribute_not_exists(#slackLinked)" : "attribute_exists(pk)",
-            ExpressionAttributeNames: { "#ended": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), ...(input.provider === "slack" ? { "#slackLinked": SLACK_LINKED_ATTRIBUTE } : {}) },
-            ExpressionAttributeValues: { ":at": at, ...(input.provider === "slack" ? { ":identityKey": identityKey } : {}) },
+            // A Slack or GitHub link comes back with its one-per-account marker (UX1 review M2), and only while the account has no other link of it.
+            UpdateExpression: `SET #ended = :at${marker === undefined ? "" : ", #linkedMarker = :identityKey"} REMOVE #unlinked`,
+            ConditionExpression: marker === undefined ? "attribute_exists(pk)" : "attribute_exists(pk) AND attribute_not_exists(#linkedMarker)",
+            ExpressionAttributeNames: { "#ended": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), ...(marker === undefined ? {} : { "#linkedMarker": marker }) },
+            ExpressionAttributeValues: { ":at": at, ...(marker === undefined ? {} : { ":identityKey": identityKey }) },
           } },
           { Put: {
             TableName, Item: { ...signInIdentityKey(identityKey), ...body },
@@ -909,9 +911,9 @@ export class DeveloperSignInStore {
       await this.input.documentClient.send(new TransactWriteCommand({
         TransactItems: [
           // The account is still there, not revoked and not merged away, and holds no link of this provider yet: the marker is what makes two simultaneous links end with one.
-          { Update: { TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #slackLinked = :identityKey",
-            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedInto) AND (attribute_not_exists(revoked) OR revoked = :no) AND attribute_not_exists(#slackLinked)",
-            ExpressionAttributeNames: { "#slackLinked": marker }, ExpressionAttributeValues: { ":no": false, ":identityKey": identityKey } } },
+          { Update: { TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #linkedMarker = :identityKey",
+            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedInto) AND (attribute_not_exists(revoked) OR revoked = :no) AND attribute_not_exists(#linkedMarker)",
+            ExpressionAttributeNames: { "#linkedMarker": marker }, ExpressionAttributeValues: { ":no": false, ":identityKey": identityKey } } },
           ...items,
           ...this.pendingFor(event),
         ],

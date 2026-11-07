@@ -33,6 +33,7 @@ import { clearOrgEgress } from "../../org/egress-domains.js";
 import { releaseOrgModelSources } from "../../model-sources/release.js";
 import { archiveOrgProjects } from "../../org/project-archive.js";
 import { cloudJoinBase, inviteUrl } from "../../org/invite-url.js";
+import { methodAllowedByEdition } from "../../developer/edition-methods.js";
 import { parseCreateProjectBody } from "../../org/cloud-projects.js";
 import { createProjectFromMetaRoute } from "../../org/create-from-meta.js";
 import { isCreateFromMetaBody } from "@agentx/contracts";
@@ -122,7 +123,8 @@ export async function getAppMe(deps: DeveloperRouteDependencies, caller: Develop
     org: { orgId: org.orgId, name: org.name, plan: org.plan, nameIsDefault: org.nameIsDefault ?? org.createdBy !== "system", ...(!trialAvailable(deps.editionPolicy) || orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },
     identities: await store.identitiesOf(caller.developerId),
     // UX1: what the account menu and the GitHub step may offer to link: the method is on here (the server checks again when a link starts).
-    linkable: { slack: deps.developer.methods.slack === true, github: deps.developer.methods.github === true },
+    // UX1 review M4: the same edition gate the link start applies (methodAllowedByEdition), so an edition without a method never offers it.
+    linkable: { slack: deps.developer.methods.slack === true && methodAllowedByEdition(deps.editionPolicy, "slack"), github: deps.developer.methods.github === true && methodAllowedByEdition(deps.editionPolicy, "github") },
   };
 }
 

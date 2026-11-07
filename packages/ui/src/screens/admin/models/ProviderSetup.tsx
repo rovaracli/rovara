@@ -70,7 +70,7 @@ function AddProvider({ kinds, onAdded }: { kinds: ReadonlyArray<Exclude<Kind, "e
  const changed = (set: (value: string) => void) => (event: { target: { value: string } }) => { set(event.target.value);setRequestId(crypto.randomUUID()); };
  return <form className="rv-provider-add" onSubmit={event => { event.preventDefault();void add(); }}><h3>Add a provider</h3>
   <Select label="Provider" value={kind} onValueChange={value => { setKind(value as Exclude<Kind, "endpoint">);setRequestId(crypto.randomUUID()); }} options={kinds.map(value => ({ value, label: PROVIDER_NAMES[value] }))} />
-  <TextField label="Name" hint="What your team sees, for example Acme Anthropic." value={label} maxLength={80} onChange={changed(setLabel)} />
+  <TextField label="Name" hint="What your team sees, for example Acme Anthropic." value={label} maxLength={64} onChange={changed(setLabel)} />
   <TextField label="Model ID" hint="The model's ID at the provider." value={model} maxLength={200} autoComplete="off" spellCheck={false} onChange={changed(setModel)} />
   {bedrock ? <><TextField label="Role ARN" hint="An IAM role in your AWS account that Rovara may assume. After adding, the page shows the trust policy to give it." value={roleArn} autoComplete="off" spellCheck={false} onChange={changed(setRoleArn)} /><TextField label="AWS Region" hint="For example us-east-1." value={region} autoComplete="off" spellCheck={false} onChange={changed(setRegion)} /></>
    : <TextField label="API key" type="password" hint="Sent once to be stored securely. Rovara never shows it again." value={key} autoComplete="new-password" spellCheck={false} onChange={event => { setKey(event.target.value); }} />}

@@ -10,7 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { AgentXError, FRESH_SIGN_IN_SECONDS, ReviewedInviteCreateBodySchema, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { createReviewedOrganizationInvite, inviteCreateBodyHash } from "../../packages/broker/src/org/invite-creation.js";
-import { inviteEmailText, sendInviteEmail } from "../../packages/broker/src/org/invite-email.js";
+import { INVITE_EMAILS_PER_ORG_PER_DAY, inviteEmailText, sendInviteEmail } from "../../packages/broker/src/org/invite-email.js";
 import { listOrganizationInvites } from "../../packages/broker/src/org/invite-directory.js";
 import { createDeveloperIdentityHandler, type HttpResult } from "../../packages/broker/src/developer/server.js";
 import { GITHUB_LINK_HAS_ONE, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
@@ -91,7 +91,7 @@ describe("the sign-in server moves an invite opened on the API's own address to 
 describe("invites can be emailed through the existing notice sender only", () => {
   const A = "org_aaaaaaaaaaaaaaaaaaaa", who = "a".repeat(64);
   function fixture(notice?: { fail?: boolean; from?: string }) {
-    const db = new FakeDynamoDb(), nowMs = Date.parse("2026-11-07T12:00:00Z"), now = () => nowMs;
+    const db = new FakeDynamoDb();let nowMs = Date.parse("2026-11-07T12:00:00Z");const now = () => nowMs;
     db.set({ ...orgMemberKey(A, who), orgId: A, developerId: who, role: "owner" });db.set({ ...developerOrgKey(who), orgId: A, role: "owner" });db.set({ ...orgMetaKey(A), orgId: A, name: "Acme", plan: "team" });
     const capture = capturingAuditDeps({ db, now }), store = new OrgStore({ documentClient: db, tableName: "state", now, audit: capture.audit });
     const send = vi.fn(async () => { if (notice?.fail === true) throw Object.assign(new Error("refused"), { name: "MessageRejected" });return {}; });
@@ -100,7 +100,7 @@ describe("invites can be emailed through the existing notice sender only", () =>
       developer: { issuer: "https://cell.example/v1/auth", env: "test", signInTableName: "signin", methods: { cloud: true, slack: false, oidc: false }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) },
       ...(notice === undefined ? {} : { ownerNotice: { ses: { send } as never, from: notice.from ?? "Rovara <notices@cell.example>", log: (entry: Record<string, unknown>) => logs.push(entry) } }) } as unknown as DeveloperRouteDependencies;
     const caller = { orgId: A, developerId: who, orgRole: "owner", name: "Maya Chen", amr: "cloud", sessionId: "fixture" } as DeveloperCaller;
-    return { db, deps, caller, send, logs };
+    return { db, deps, caller, send, logs, advance: (ms: number) => { nowMs += ms; } };
   }
 
   it("emails the link once, to the invite's own address, from the configured notice sender, and still returns the link", async () => {
@@ -112,7 +112,9 @@ describe("invites can be emailed through the existing notice sender only", () =>
     const input = (f.send.mock.calls[0] as unknown as [{ input: { FromEmailAddress: string; Destination: { ToAddresses: string[] }; Content: { Simple: { Subject: { Data: string }; Body: { Text: { Data: string } } } } } }])[0].input;
     expect(input.FromEmailAddress).toBe("Rovara <notices@cell.example>");
     expect(input.Destination.ToAddresses).toEqual(["bea@example.test"]);
-    expect(input.Content.Simple.Subject.Data).toBe("Maya Chen invited you to join Acme on Rovara");
+    // UX1 review I2: a fixed subject; the company's chosen names appear only in the body, in quotes.
+    expect(input.Content.Simple.Subject.Data).toBe("You're invited to join a company on Rovara");
+    expect(input.Content.Simple.Body.Text.Data).toMatch(/^"Maya Chen" invited you to join the company "Acme" on Rovara as a member\./);
     expect(input.Content.Simple.Body.Text.Data).toContain(result.inviteUrl);
     // No address, name or link in the logs.
     expect(JSON.stringify(f.logs)).not.toMatch(/bea@|Maya|invite=/i);
@@ -151,8 +153,37 @@ describe("invites can be emailed through the existing notice sender only", () =>
     const f = fixture();
     await expect(createReviewedOrganizationInvite(f.deps, { ...f.caller, developerId: "c".repeat(64) }, { requestId: randomUUID(), role: "member", email: "bea@example.test", sendEmail: true })).rejects.toBeInstanceOf(AgentXError);
     expect(f.send).not.toHaveBeenCalled();
-    expect(inviteEmailText({ to: "x", orgName: "Acme\nBcc: evil", inviterName: "Maya\r\n", role: "admin", inviteUrl: "https://cell.example/join#invite=t", expiresAt: "2026-11-14T12:00:00Z" })).toMatch(/^Maya invited you to join Acme Bcc: evil on Rovara as an admin\./);
+    expect(inviteEmailText({ to: "x", orgName: "Acme\nBcc: evil", inviterName: "Maya\r\n", role: "admin", inviteUrl: "https://cell.example/join#invite=t", expiresAt: "2026-11-14T12:00:00Z" })).toMatch(/^"Maya" invited you to join the company "Acme Bcc: evil" on Rovara as an admin\./);
     expect(await sendInviteEmail(undefined, { to: "x@example.test", orgName: "A", inviterName: "B", role: "member", inviteUrl: "u", expiresAt: "2026-11-14T12:00:00Z" })).toBe("not_set_up");
+  });
+
+  it("caps invite email: once per address per day, and at most 50 a day per company; past either the link is still returned and nothing is sent", async () => {
+    const f = fixture({});
+    // Four seconds apart, so the creation rate limit (20 a minute) never answers first; all inside one UTC day.
+    const make = (email: string) => { f.advance(4_000);return createReviewedOrganizationInvite(f.deps, f.caller, { requestId: randomUUID(), role: "member", email, sendEmail: true }) as Promise<{ inviteUrl: string; email: string }>; };
+    expect((await make("bea@example.test")).email).toBe("sent");
+    const again = await make("BEA@example.test");
+    expect(again.email).toBe("limited");expect(again.inviteUrl).toContain("/join#invite=");
+    expect(f.send).toHaveBeenCalledTimes(1);
+    for (let index = 1; index < INVITE_EMAILS_PER_ORG_PER_DAY; index += 1) expect((await make(`person${index}@example.test`)).email).toBe("sent");
+    expect(f.send).toHaveBeenCalledTimes(INVITE_EMAILS_PER_ORG_PER_DAY);
+    const over = await make("one-more@example.test");
+    expect(over.email).toBe("limited");expect(over.inviteUrl).toContain("/join#invite=");
+    expect(f.send).toHaveBeenCalledTimes(INVITE_EMAILS_PER_ORG_PER_DAY);
+    // The next UTC day the address may be emailed again.
+    f.advance(86_400_000);
+    expect((await make("bea@example.test")).email).toBe("sent");
+    // The counters never hold an address.
+    expect(JSON.stringify(f.db.find((row) => String(row.pk).includes("INVITE_EMAIL")))).not.toContain("@example.test");
+  });
+
+  it("keeps a company name that carries a link in quotes in the body and out of the subject", async () => {
+    const f = fixture({});
+    f.db.set({ ...orgMetaKey(A), orgId: A, name: "Acme Payroll - verify your account at evil.example", plan: "team" });
+    await createReviewedOrganizationInvite(f.deps, f.caller, { requestId: randomUUID(), role: "member", email: "bea@example.test", sendEmail: true });
+    const input = (f.send.mock.calls[0] as unknown as [{ input: { Content: { Simple: { Subject: { Data: string }; Body: { Text: { Data: string } } } } } }])[0].input;
+    expect(input.Content.Simple.Subject.Data).not.toContain("evil.example");
+    expect(input.Content.Simple.Body.Text.Data).toContain('the company "Acme Payroll - verify your account at evil.example" on Rovara');
   });
 
   it("tells the invites screen whether email is set up here", async () => {
@@ -206,16 +237,40 @@ describe("sign-up never creates a company silently (OWNER DECISION 5)", () => {
 });
 
 describe("the Cloud sign-in page offers only methods that can work there", () => {
-  it("leaves Slack and company sign-in off the browser page on Cloud, and keeps them on a single-org install", async () => {
+  // OWNER DECISION 13 (SLACK-SIGNIN-KEEP): Slack stays on the Cloud page, because it signs in anyone whose Slack account is linked; company sign-in goes.
+  it("keeps Slack on the Cloud browser page and leaves company sign-in off it", async () => {
     const cloud = identityHarness({ cloud: {}, oidcUsers: [], singleOrg: false });
-    const page = await cloud.http(httpEvent("GET", "/v1/auth/browser/authorize?return_to=%2Fapp"));
-    // One method left: straight to it, no chooser with a Slack button.
-    expect(page.statusCode).toBe(302);
-    expect(page.body).not.toContain("Sign in with Slack");
-    const single = identityHarness({ cloud: {}, oidcUsers: [] });
-    const chooser = await single.http(httpEvent("GET", "/v1/auth/browser/authorize?return_to=%2Fapp"));
+    const chooser = await cloud.http(httpEvent("GET", "/v1/auth/browser/authorize?return_to=%2Fapp"));
     expect(chooser.statusCode).toBe(200);
     expect(chooser.body).toContain("Sign in with Slack");
+    expect(chooser.body).not.toContain("method=oidc");
+  });
+
+  it("signs a person in by Slack on Cloud when that Slack account is linked to their account, and says method_unavailable otherwise", async () => {
+    vi.useFakeTimers({ now: T0, toFake: ["Date"] });
+    try {
+      const priya: FakeOidcUser = { sub: "priya-slack-ux1", name: "Priya", email: "priya@acme.dev", email_verified: true };
+      const h = identityHarness({ cloud: {}, oidcUsers: [priya], slackUsers: [{ userId: "U0LINKED001", name: "Priya", email: "priya@acme.dev", emailVerified: true }, { userId: "U0STRANGER1", name: "Sam", email: "sam@else.dev", emailVerified: true }], singleOrg: false, sharedTable: true });
+      const account = ownerKeyForSubject(OIDC_ISSUER, priya.sub);
+      await h.deps.store.upsertDeveloper({ developerId: account, provider: "cloud", issuer: OIDC_ISSUER, subject: priya.sub, displayName: "Priya" });
+      const orgId = await h.orgs.createOrgWithOwner({ name: "Acme", developerId: account });
+      const linked = await h.deps.store.linkSlackIdentity({ developerId: account, identityKey: ownerKeyForSubject("https://slack.com", "U0LINKED001"), subject: "U0LINKED001", issuer: "https://slack.com", by: { method: "cloud" }, belongsToCompany: false });
+      expect(linked).toMatchObject({ ok: true });
+      const viaSlack = async (userId: string) => {
+        const chooser = await h.http(httpEvent("GET", "/v1/auth/browser/authorize?return_to=%2Fapp"));
+        const pkce = chooser.cookies!.find((value) => value.startsWith("__Host-agentx_review_pkce="))!.split(";")[0]!;
+        const link = /href="([^"]*method=slack)"/.exec(chooser.body)![1]!.replaceAll("&amp;", "&");
+        const toSlack = await h.http({ ...httpEvent("GET", link), headers: { cookie: pkce } });
+        return h.http({ ...httpEvent("GET", h.slack.approve(toSlack.headers.location!, userId)), headers: { cookie: pkce } });
+      };
+      const done = await viaSlack("U0LINKED001");
+      expect(done.headers.location).toBe("/app");
+      expect(done.cookies?.some((value) => value.startsWith(`${SESSION_COOKIE}=`))).toBe(true);
+      expect(await h.orgs.orgForDeveloper(account)).toEqual({ orgId, role: "owner" });
+      const stranger = await viaSlack("U0STRANGER1");
+      expect(stranger.headers.location).toBe("/app/signed-out?reason=method_unavailable");
+      expect(stranger.cookies?.some((value) => value.startsWith(`${SESSION_COOKIE}=`))).toBe(false);
+    } finally { vi.useRealTimers(); }
   });
 });
 
@@ -303,6 +358,22 @@ describe("linking a GitHub account from the web app, for any sign-in method", ()
     expect(cli).toMatchObject({ ok: false, error: "reauth" });
   });
 
+  // UX1 review M2: a GitHub account removed earlier comes back with the one-per-account marker, so a second link racing it loses with has_one.
+  it("relinks a removed GitHub account with its marker, and a second GitHub account then loses with has_one", async () => {
+    const w = await world();
+    const first = await start(w);
+    expect(outcome(await finish(w, first.authorizeUrl!, 9001)).value).toBe("linked");
+    const key = ownerKeyForSubject(GITHUB_ISSUER, "9001");
+    await w.h.deps.store.unlinkIdentity({ developerId: w.account, sessionId: w.sessionId, provider: "github" });
+    expect(w.h.db.get(signInIdentityKey(key))?.unlinkedFrom).toBe(w.account);
+    expect(w.h.db.get(`DEVELOPER#${w.account}`, "META")?.githubLinkedIdentity).toBeUndefined();
+    const again = await start(w);
+    expect(outcome(await finish(w, again.authorizeUrl!, 9001)).value).toBe("linked");
+    expect(w.h.db.get(`DEVELOPER#${w.account}`, "META")?.githubLinkedIdentity).toBe(key);
+    const other = ownerKeyForSubject(GITHUB_ISSUER, "9002");
+    expect(await w.h.deps.store.linkGithubIdentity({ developerId: w.account, identityKey: other, subject: "9002", issuer: GITHUB_ISSUER, by: { method: "cloud" }, belongsToCompany: false })).toEqual({ ok: false, reason: "has_one" });
+  });
+
   it("returns to the account menu by default, and accepts only the two fixed return paths", async () => {
     const w = await world();
     const started = await start(w, { browser: true });
@@ -327,6 +398,15 @@ describe("the broker side of linking from the web", () => {
       expect.objectContaining({ provider: "github", browser: true, returnTo: "/app" }),
       expect.not.objectContaining({ browser: true }),
     ]);
+  });
+
+  it("offers no link of a method the edition does not allow (the same check the link start applies)", async () => {
+    const A = "org_aaaaaaaaaaaaaaaaaaaa";
+    const deps = { orgs: { getOrg: async () => ({ orgId: A, name: "Acme", plan: "team", createdBy: "x" }) }, documentClient: new FakeDynamoDb(), tableName: "state", now: () => T0,
+      editionPolicy: { features: { publicSignInMethods: false, sso: true } },
+      developer: { signInTableName: "signin", methods: { slack: true, oidc: true, cloud: true, github: true } } } as unknown as DeveloperRouteDependencies;
+    const me = await getAppMe(deps, { orgId: A, developerId: "a".repeat(64), orgRole: "owner", name: "Maya" } as DeveloperCaller);
+    expect(me.linkable).toEqual({ slack: false, github: false });
   });
 
   it("says on /me which methods can be linked here", async () => {
