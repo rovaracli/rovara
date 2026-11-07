@@ -101,6 +101,8 @@ instead: give it a one-line header comment when you next edit it.
 | Proof and evidence (`pe`) | `packages/broker/src/proof/`, wired in `packages/broker/src/aws/broker/evidence-wiring.ts` |
 | Decision cards (`dk`) | `packages/broker/src/decisions/` |
 | Chains and triggers | `packages/broker/src/chains/`, `packages/broker/src/triggers/` |
+| Intake: tickets that start tasks (Jira, Linear, GitHub issues) | `packages/broker/src/intake/` (engine `packages/broker/src/intake/engine.ts#ingestIntake`; who a Jira or Linear account is, only through the company's tracker links: `packages/broker/src/intake/identity.ts#trackerAccountResolvers`; routes, including "Not this one" and the ticket updates settings: `packages/broker/src/intake/routes.ts#routeIntakeRequest`; Home cards for waiting tickets and failing watched sources: `packages/broker/src/intake/home-source.ts`; watched Jira and Linear sources read through the company's connection: `packages/broker/src/triggers/intake-searches.ts#intakeSearchesOf`; the project screen's section: `packages/ui/src/screens/project/TicketsSection.tsx`, calls in `packages/ui/src/api/intake.ts`) |
+| Ticket updates: write-back to the ticket that started a task (owner decision 6) | `packages/broker/src/ticket-updates/` (the milestone handler `packages/broker/src/ticket-updates/handler.ts#sendTicketUpdate`; the Linear, Jira and GitHub writers `packages/broker/src/ticket-updates/trackers.ts#ticketTrackersOf`; the started, plan-ready and closed moments `packages/broker/src/ticket-updates/moments.ts`; settings and write access `packages/broker/src/ticket-updates/settings.ts`; wiring `packages/broker/src/aws/broker/ticket-updates-wiring.ts#installTicketUpdates`; contracts `packages/contracts/src/ticket-updates.ts`) |
 | Agent sessions (live, stop, redirect, ask) | `packages/broker/src/agent-sessions/` |
 | Plug-ins: code hosts and check runners | `packages/broker/src/plugins/`, registered in `packages/broker/src/aws/broker/plugin-wiring.ts#createBrokerPlugins` |
 | Audit | `packages/broker/src/audit/` |
@@ -303,6 +305,7 @@ No single test lists every broker read.
 | `terminal-and-github-events.ts` | queued first tasks, terminal results, GitHub workflow events, merge recovery. |
 | `terminal-result.ts` | recording a task's terminal result and the stop, end and close notices. |
 | `thread-workspaces.ts` | closing workspaces, admitting Slack work, thread workspaces and their preparation. |
+| `ticket-updates-wiring.ts` | Slice 5 "Outside tools" (owner decision 6): the broker's wiring of ticket updates: the milestone and task end handlers registered once at start, and the plan-ready moment after a worker's result. |
 | `workflow-e2e-verification.ts` | verifying workflow E2E evidence, authority checks and presentations. |
 | `workflow-items.ts` | retries, evidence jobs and the items each completed workflow step writes. |
 | `workspace-preparation.ts` | workspace preparation, Slack identities, shared threads and Slack bindings. |
