@@ -1,15 +1,15 @@
-// The task page's JSON API: same origin, the CSRF header matching its cookie, the session, JSON only and strict bodies.
-// The actor always comes from the session, and a reader who may not see the task cannot tell it exists.
+// The task page's JSON API: OWNER DECISION 7 makes the page read-only, so every write it made is refused (410) with where the task is decided now; its reads, and the one write Slack's People flow
+// links to (a People request's confirmation: same origin, the CSRF header matching its cookie, the session, JSON only and a strict body), answer as before. A reader who may not see the task cannot tell it exists.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { TaskComment } from "@agentx/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
-import { TASK_PAGE_API, createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
+import { TASK_PAGE_API, TASK_PAGE_READ_ONLY_MESSAGE, createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
 import { DEV_ISSUER, MAYA, OMAR, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { pagePlan } from "../support/page-tasks.js";
 import { planAnswer } from "../support/plan-documents.js";
 import { SLACK_CHANNEL } from "../support/slack-broker.js";
+import { cardDecision } from "../support/card-decision.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const ORIGIN = new URL(DEV_ISSUER).origin;
@@ -21,7 +21,6 @@ const cookies = (csrf: string | null = CSRF) => `__Host-agentx_review_session=${
 
 function fakeDeps(overrides: Partial<TaskWebApiDependencies> = {}): TaskWebApiDependencies & { calls: Array<{ name: string; caller: DeveloperCaller; input?: unknown }> } {
   const calls: Array<{ name: string; caller: DeveloperCaller; input?: unknown }> = [];
-  const record = (name: string) => async (who: DeveloperCaller, _taskId: string, input?: unknown) => { calls.push({ name, caller: who, input }); return { ok: true } as never; };
   return {
     calls,
     origin: DEV_ISSUER,
@@ -29,16 +28,15 @@ function fakeDeps(overrides: Partial<TaskWebApiDependencies> = {}): TaskWebApiDe
     taskState: async (who) => { calls.push({ name: "state", caller: who }); return { revision: 4, waiting: true, stage: "Coding plan", documents: [{ anchor: "coding-plan", version: 1 }], commentSeq: 2,
       canRead: true, canComment: true, canSuggest: true, canDecide: true, canAsk: true, canManagePeople: false, canTakeOwnership: false }; },
     listComments: async (who) => { calls.push({ name: "comments", caller: who }); return { comments: [] }; },
-    createComment: record("createComment"),
-    editComment: record("editComment"),
-    deleteComment: record("deleteComment"),
-    setSuggestion: record("setSuggestion"),
-    decide: async (who, _taskId, input) => { calls.push({ name: "decide", caller: who, input }); return { revision: 5 }; },
+    getPeopleRequest: async (who, _taskId, requestId) => { calls.push({ name: "peopleRequest", caller: who, input: requestId }); return { status: "PENDING", requestId, confirmationUrl: "https://x.example/c", expiresAt: "2026-11-07T10:00:00.000Z" }; },
+    confirmPeopleRequest: async (who, _taskId, requestId) => { calls.push({ name: "confirm", caller: who, input: requestId }); return { status: "COMMITTED", view: {} as never }; },
+    taskPagePath: async () => "/app/sessions/ses_0123456789abcdefghij",
     ...overrides,
   };
 }
 
 const commentBody = { requestId: randomUUID(), document: "plan", version: 1, target: { kind: "claim", id: "2.1" }, text: "Above reads better.", ask: false };
+const PEOPLE_REQUEST = "33333333-3333-4333-8333-333333333333";
 
 function post(path: string, body: unknown, headers: Record<string, string | undefined> = {}): AdaptedHttpRequest {
   return {
@@ -48,46 +46,13 @@ function post(path: string, body: unknown, headers: Record<string, string | unde
 }
 const get = (path: string, cookie: string = cookies()): AdaptedHttpRequest => ({ method: "GET", path, requestId: "r", headers: { cookie } });
 const api = (suffix: string) => `/review/${taskId}/task/api/${suffix}`;
+const confirmPath = api(`people/requests/${PEOPLE_REQUEST}/confirm`);
 const call = async (deps: TaskWebApiDependencies, request: AdaptedHttpRequest) => {
   const response = await createTaskWebApi(deps)(request, new URL(`${ORIGIN}${request.path}`));
   return { ...response, json: JSON.parse(response.body) as Record<string, unknown> };
 };
 
-describe("task page API", () => {
-  describe("retrying a blocked application round", () => {
-    const retry = (extra: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision: 4, ...extra });
-
-    it("is its own path, and reaches only the retry with the session's caller and the strict body", async () => {
-      expect(TASK_PAGE_API.test(api("retry"))).toBe(true);
-      const deps = fakeDeps({ retryApplicationRound: async (who, _taskId, input) => { (deps.calls).push({ name: "retry", caller: who, input }); return { revision: 5 }; } });
-      const body = retry();
-      const answer = await call(deps, post(api("retry"), body));
-      expect(answer.statusCode).toBe(200);
-      expect(answer.json).toEqual({ revision: 5 });
-      expect(deps.calls.filter((entry) => entry.name !== "state")).toEqual([{ name: "retry", caller, input: body }]);
-    });
-
-    it("refuses anything but exactly a request ID and a revision, a missing CSRF header and another origin, and is not found without the dependency", async () => {
-      const deps = fakeDeps({ retryApplicationRound: async () => ({ revision: 5 }) });
-      for (const bad of [retry({ instructions: "x" }), retry({ actorId: "x" }), { requestId: randomUUID() }, { expectedRevision: 4 }, retry({ expectedRevision: 0 }), retry({ requestId: "nope" })]) {
-        expect((await call(deps, post(api("retry"), bad))).statusCode, JSON.stringify(bad)).toBe(400);
-      }
-      expect((await call(deps, post(api("retry"), retry(), { origin: "https://evil.example" }))).statusCode).toBe(403);
-      expect((await call(deps, post(api("retry"), retry(), { "x-agentx-csrf": undefined }))).statusCode).toBe(403);
-      expect((await call(deps, { ...get(api("retry")), method: "GET" })).statusCode).toBe(405);
-      expect((await call(fakeDeps(), post(api("retry"), retry()))).statusCode).toBe(404);
-    });
-
-    it("answers a refusal the way a decision's is: a non-owner as 403, a changed task as 409", async () => {
-      const owners = fakeDeps({ retryApplicationRound: async () => { throw Object.assign(new Error("FORBIDDEN: Only owners retry."), { code: "FORBIDDEN", pageReason: "owners_only" }); } });
-      expect((await call(owners, post(api("retry"), retry()))).statusCode).toBe(403);
-      const changed = fakeDeps({ retryApplicationRound: async () => { throw Object.assign(new Error("IDEMPOTENCY_CONFLICT: This task changed. Refresh the page and try again."), { code: "IDEMPOTENCY_CONFLICT" }); } });
-      const answer = await call(changed, post(api("retry"), retry()));
-      expect(answer.statusCode).toBe(409);
-      expect(answer.json).toMatchObject({ error: "changed", message: "This task changed. Refresh the page and try again." });
-    });
-  });
-
+describe("task page API (OWNER DECISION 7: read-only)", () => {
   it("matches only its own paths", () => {
     expect(TASK_PAGE_API.test(api("state"))).toBe(true);
     expect(TASK_PAGE_API.test(api(`comments/${randomUUID()}/edit`))).toBe(true);
@@ -96,92 +61,70 @@ describe("task page API", () => {
     expect(TASK_PAGE_API.test(`/review/${taskId}/api/decision`)).toBe(false);
   });
 
-  it("an edit or a delete reaches that comment's edit or delete, never the decision", async () => {
-    const deps = fakeDeps();
+  it("refuses every write the page used to make with 410, the words and the task page's path, calls nothing, and logs only its code", async () => {
+    const logged: Array<Record<string, string>> = [];
+    const deps = fakeDeps({ log: (entry) => { logged.push(entry); } });
     const id = randomUUID();
-    expect((await call(deps, post(api(`comments/${id}/edit`), { rev: 1, text: "Better words." }))).statusCode).toBe(200);
-    expect((await call(deps, post(api(`comments/${id}/delete`), { rev: 2 }))).statusCode).toBe(200);
-    expect(deps.calls.map((entry) => [entry.name, entry.input])).toEqual([
-      ["editComment", { commentId: id, rev: 1, text: "Better words." }],
-      ["deleteComment", { commentId: id, rev: 2 }],
-    ]);
+    const writes: Array<[string, unknown]> = [
+      ["decision", { requestId: randomUUID(), expectedRevision: 4, artifactDigest: "a".repeat(64), decision: "APPROVE", answers: [], includedCommentIds: [] }],
+      ["comments", commentBody], [`comments/${id}/edit`, { rev: 1, text: "x" }], [`comments/${id}/delete`, { rev: 1 }], [`comments/${id}/remember`, {}], [`comments/${id}/forget`, {}],
+      ["suggestions", { document: "plan", decisionId: "d1", optionId: "above" }], ["retry", { requestId: randomUUID(), expectedRevision: 4 }], ["revise-plan", { requestId: randomUUID(), expectedRevision: 4 }],
+      ["spec/retry", { requestId: randomUUID(), expectedRevision: 4 }], ["people/role", { requestId: randomUUID(), expectedPeopleRevision: 1, personId: randomUUID(), role: "viewer" }],
+      ["people/take-ownership", { requestId: randomUUID(), expectedPeopleRevision: 1 }],
+    ];
+    for (const [suffix, body] of writes) {
+      for (const request of [post(api(suffix), body), post(api(suffix), "{not json"), post(api(suffix), body, { origin: "https://evil.example" })]) {
+        const answer = await call(deps, request);
+        expect(answer.statusCode, suffix).toBe(410);
+        expect(answer.json, suffix).toEqual({ error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE, taskPage: "/app/sessions/ses_0123456789abcdefghij" });
+      }
+    }
+    expect(deps.calls).toEqual([]);
+    expect(logged.every((entry) => entry["code"] === "READ_ONLY" && entry["event"] === "task_page.refused")).toBe(true);
+    expect(JSON.stringify(logged)).not.toMatch(/Above reads better|Maya/);
+    // A signed-out request is told to sign in, before anything else; methods are still enforced.
+    expect((await call(deps, post(api("comments"), commentBody, { cookie: undefined }))).statusCode).toBe(401);
+    expect((await call(deps, { ...get(api("state")), method: "POST", headers: post(api("state"), {}).headers })).statusCode).toBe(405);
+    expect((await call(deps, { ...get(api("decision")), method: "PUT" })).statusCode).toBe(405);
+    // Someone the task's path cannot be given to hears the same refusal without it.
+    const unknown = await call(fakeDeps({ taskPagePath: async () => { throw Object.assign(new Error("no"), { code: "TASK_NOT_FOUND" }); } }), post(api("decision"), {}));
+    expect(unknown.json).toEqual({ error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE });
   });
 
-  it("every POST needs same origin, the CSRF header and its cookie", async () => {
+  it("the one write left, a People request's confirmation, needs same origin, the CSRF header and its cookie", async () => {
     const deps = fakeDeps();
-    const refused = [
-      post(api("comments"), commentBody, { "x-agentx-csrf": undefined }),
-      post(api("comments"), commentBody, { "x-agentx-csrf": "d".repeat(43) }),
-      post(api("comments"), commentBody, { cookie: cookies(null) }),
-      post(api("comments"), commentBody, { cookie: cookies("short"), "x-agentx-csrf": "short" }),
-      post(api("comments"), commentBody, { origin: undefined }),
-      post(api("comments"), commentBody, { origin: "null" }),
-      post(api("comments"), commentBody, { origin: "https://evil.example" }),
-      post(api("decision"), {}, { origin: "https://evil.example" }),
-    ];
-    for (const request of refused) {
+    const body = { requestId: PEOPLE_REQUEST };
+    for (const request of [
+      post(confirmPath, body, { "x-agentx-csrf": undefined }), post(confirmPath, body, { "x-agentx-csrf": "d".repeat(43) }), post(confirmPath, body, { cookie: cookies(null) }),
+      post(confirmPath, body, { cookie: cookies("short"), "x-agentx-csrf": "short" }), post(confirmPath, body, { origin: undefined }), post(confirmPath, body, { origin: "null" }), post(confirmPath, body, { origin: "https://evil.example" }),
+    ]) {
       const answer = await call(deps, request);
       expect(answer.statusCode).toBe(403);
       expect(answer.json).toEqual({ error: "request_refused" });
     }
     expect(deps.calls).toEqual([]);
-    const accepted = await call(deps, post(api("comments"), commentBody));
-    expect(accepted.statusCode).toBe(201);
-    // A signed-out request is told to sign in, before anything else.
-    const signedOut = await call(deps, post(api("comments"), commentBody, { cookie: undefined }));
-    expect(signedOut.statusCode).toBe(401);
-    expect(signedOut.json).toEqual({ error: "sign_in_required" });
-    // Reads are GET only and writes POST only.
-    expect((await call(deps, { ...get(api("state")), method: "POST", headers: post(api("state"), {}).headers })).statusCode).toBe(405);
-    expect((await call(deps, get(api("comments/" + randomUUID() + "/edit")))).statusCode).toBe(405);
-    expect((await call(deps, { ...get(api("decision")), method: "PUT" })).statusCode).toBe(405);
+    const accepted = await call(deps, post(confirmPath, body));
+    expect(accepted.statusCode).toBe(200);
+    expect(deps.calls.map((entry) => [entry.name, entry.caller, entry.input])).toEqual([["peopleRequest", caller, PEOPLE_REQUEST], ["confirm", caller, PEOPLE_REQUEST]]);
   });
 
-  it("JSON only, at most 16 KB, strict fields", async () => {
+  it("the confirmation takes JSON only, at most 16 KB, and a body naming exactly its own request", async () => {
     const deps = fakeDeps();
-    const plain = await call(deps, post(api("comments"), commentBody, { "content-type": "text/plain" }));
-    expect(plain.statusCode).toBe(400);
-    expect(plain.json.error).toBe("invalid_request");
-    const form = await call(deps, post(api("comments"), commentBody, { "content-type": "application/x-www-form-urlencoded" }));
-    expect(form.statusCode).toBe(400);
-    expect((await call(deps, post(api("comments"), commentBody, { "content-type": "application/json; charset=utf-8" }))).statusCode).toBe(201);
-    const big = await call(deps, post(api("comments"), { ...commentBody, text: "x".repeat(16_400) }));
-    expect(big.statusCode).toBe(400);
-    expect((await call(deps, post(api("comments"), "{not json"))).statusCode).toBe(400);
-    for (const extra of [{ author: "someone" }, { actorId: "x" }, { role: "owner" }]) {
-      const answer = await call(deps, post(api("comments"), { ...commentBody, ...extra }));
-      expect(answer.statusCode).toBe(400);
-      expect(answer.json.error).toBe("invalid_request");
-    }
-    const decision = { requestId: randomUUID(), expectedRevision: 4, artifactDigest: "a".repeat(64), decision: "APPROVE", answers: [], includedCommentIds: [] };
-    expect((await call(deps, post(api("decision"), { ...decision, actorId: "x" }))).statusCode).toBe(400);
-    expect((await call(deps, post(api("decision"), { ...decision, decision: "SKIP" }))).statusCode).toBe(400);
-    expect((await call(deps, post(api("decision"), { ...decision, includedCommentIds: Array.from({ length: 26 }, () => randomUUID()) }))).statusCode).toBe(400);
-    expect((await call(deps, post(api("decision"), { ...decision, note: "n".repeat(501) }))).statusCode).toBe(400);
-    expect((await call(deps, post(api("decision"), decision))).statusCode).toBe(200);
-    expect(deps.calls.filter((entry) => entry.name === "decide")).toHaveLength(1);
+    expect((await call(deps, post(confirmPath, { requestId: PEOPLE_REQUEST }, { "content-type": "text/plain" }))).statusCode).toBe(400);
+    expect((await call(deps, post(confirmPath, "{not json"))).statusCode).toBe(400);
+    expect((await call(deps, post(confirmPath, { requestId: PEOPLE_REQUEST, pad: "x".repeat(16_400) }))).statusCode).toBe(400);
+    expect((await call(deps, post(confirmPath, { requestId: randomUUID() }))).statusCode).toBe(400);
+    expect((await call(deps, post(confirmPath, { requestId: PEOPLE_REQUEST, role: "owner" }))).statusCode).toBe(400);
+    expect(deps.calls).toEqual([]);
   });
 
-  it("maps each refusal to its status and sentence", async () => {
-    const thrower = (error: Record<string, unknown>) => fakeDeps({ createComment: async () => { throw Object.assign(new Error("refused"), error); } });
-    const cases: Array<[Record<string, unknown>, number, string, string | undefined]> = [
-      [{ code: "CONFIG_INVALID", pageReason: "too_long", message: "Keep comments under 2,000 characters." }, 400, "invalid_request", "Keep comments under 2,000 characters."],
-      [{ code: "TASK_BUSY", pageReason: "slow_down", message: "You've posted a lot in the last 10 minutes. Try again in a few minutes." }, 429, "slow_down", "You've posted a lot in the last 10 minutes. Try again in a few minutes."],
-      [{ code: "IDEMPOTENCY_CONFLICT", pageReason: "locked", message: "Sent with a decision, so it can't be changed." }, 409, "changed", "Sent with a decision, so it can't be changed."],
-      [{ code: "CONFIG_INVALID", pageReason: "thread_full", message: "This thread has 20 replies, the most it can hold." }, 409, "full", "This thread has 20 replies, the most it can hold."],
-      [{ code: "FORBIDDEN", pageReason: "not_yours", message: "Only the person who wrote a comment can change it." }, 403, "not_allowed", "Only the person who wrote a comment can change it."],
-      [{ code: "IDEMPOTENCY_CONFLICT", pageReason: "comment_changed", message: "A comment you included was edited or deleted. Check the list and send again." }, 409, "changed", "A comment you included was edited or deleted. Check the list and send again."],
-      [{ code: "TASK_NOT_FOUND" }, 404, "not_found", "You don't have access to this task."],
-      [{ code: "TASK_ACCESS_DENIED", owners: ["Maya"] }, 404, "not_found", "You don't have access to this task."],
-      [{ code: "SOMETHING_ELSE", message: "workflow revision digest" }, 503, "unavailable", undefined],
-    ];
-    for (const [error, status, code, message] of cases) {
-      const answer = await call(thrower(error), post(api("comments"), commentBody));
-      expect(answer.statusCode, code).toBe(status);
-      expect(answer.json.error).toBe(code);
-      if (message !== undefined) expect(answer.json.message).toBe(message);
-      expect(answer.body).not.toMatch(/workflow|revision|digest|Maya/);
-    }
+  it("maps a confirmation's refusal to its status: a hidden task as not found, anything else as unavailable", async () => {
+    const thrower = (error: Record<string, unknown>) => fakeDeps({ confirmPeopleRequest: async () => { throw Object.assign(new Error("refused"), error); } });
+    const hidden = await call(thrower({ code: "TASK_NOT_FOUND" }), post(confirmPath, { requestId: PEOPLE_REQUEST }));
+    expect([hidden.statusCode, hidden.json]).toEqual([404, { error: "not_found", message: "You don't have access to this task." }]);
+    const other = await call(thrower({ code: "SOMETHING_ELSE", message: "workflow revision digest" }), post(confirmPath, { requestId: PEOPLE_REQUEST }));
+    expect(other.statusCode).toBe(503);
+    expect(other.body).not.toMatch(/workflow|revision|digest/);
   });
 
   it("state refreshes the CSRF cookie and carries no comment text", async () => {
@@ -206,7 +149,7 @@ describe("task page API through the broker", () => {
 
   /** A shared task whose structured coding plan v1 waits for Maya; Lee is in the channel, Nia and Omar are not. */
   async function sharedTask(onMembership: () => void = () => undefined) {
-    const harness = await createSingleAnswerPlanBroker({ channelMembers: async (request) => (onMembership(), {
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {} }, channelMembers: async (request) => (onMembership(), {
       ok: true, memberOf: request.slackUserId === MAYA.slackUserId || request.slackUserId === LEE.slackUserId ? request.channelIds.filter((id) => id === SLACK_CHANNEL) : [],
     }) });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Retry failed payments", client: "test", shareToChannel: true, workflow: true, workflowPath: "QUICK" });
@@ -249,42 +192,20 @@ describe("task page API through the broker", () => {
     return { harness, id, sha256, revision, send, decision };
   }
 
-  it("the actor comes from the session, never the body", async () => {
+  it("OWNER DECISION 7: a teammate's comment and suggestion, and anyone's decision, are refused on the page and store nothing; the owner decides on the card", async () => {
     const t = await sharedTask();
-    const answer = await t.send(LEE, "POST", `/review/${t.id}/task/api/comments`, { ...commentBody, requestId: randomUUID() });
-    expect(answer.statusCode, answer.body).toBe(201);
-    expect((answer.json.comment as { author: unknown }).author).toEqual({ kind: "person", name: "Lee Park", owner: false, you: true });
-    const stored = t.harness.db.find((item) => item.entityType === "TASK_COMMENT") as unknown as TaskComment[];
-    expect(stored).toHaveLength(1);
-    expect(stored[0]!.author).toMatchObject({ kind: "person", developerId: LEE.developerId, name: "Lee Park", owner: false });
-    // A field naming someone else is refused outright.
-    const forged = await t.send(LEE, "POST", `/review/${t.id}/task/api/comments`, { ...commentBody, requestId: randomUUID(), author: { kind: "agentx" } });
-    expect(forged.statusCode).toBe(400);
-    // The listing names no IDs, only who wrote it and whether it is the reader.
-    const listed = await t.send(MAYA, "GET", `/review/${t.id}/task/api/comments`);
-    expect(listed.statusCode).toBe(200);
-    expect(listed.body).not.toContain(LEE.developerId);
-    expect((listed.json.comments as Array<{ author: unknown; text: string }>)[0]).toMatchObject({ author: { kind: "person", name: "Lee Park", owner: false, you: false }, text: "Above reads better." });
-  });
-
-  it("the comment listing carries the suggestions that still apply, by name, so the page can refresh them", async () => {
-    const t = await sharedTask();
-    const set = await t.send(LEE, "POST", `/review/${t.id}/task/api/suggestions`, { document: "plan", decisionId: "d1", optionId: "above" });
-    expect(set.statusCode, set.body).toBe(200);
-    const listed = await t.send(MAYA, "GET", `/review/${t.id}/task/api/comments`);
-    expect(listed.statusCode).toBe(200);
-    expect(listed.json.suggestions).toEqual([{ document: "plan", decisionId: "d1", optionId: "above", name: "Lee Park", you: false }]);
-    expect(listed.body).not.toContain(LEE.developerId);
-    const mine = await t.send(LEE, "GET", `/review/${t.id}/task/api/comments`);
-    expect((mine.json.suggestions as Array<{ you: boolean }>)[0]!.you).toBe(true);
-  });
-
-  it("a commenter cannot decide", async () => {
-    const t = await sharedTask();
-    const answer = await t.send(LEE, "POST", `/review/${t.id}/task/api/decision`, t.decision());
-    expect(answer.statusCode).toBe(403);
-    expect(answer.json).toEqual({ error: "owners_only", message: "Only owners decide." });
+    const comment = await t.send(LEE, "POST", `/review/${t.id}/task/api/comments`, { ...commentBody, requestId: randomUUID() });
+    expect(comment.statusCode, comment.body).toBe(410);
+    const suggestion = await t.send(LEE, "POST", `/review/${t.id}/task/api/suggestions`, { document: "plan", decisionId: "d1", optionId: "above" });
+    expect(suggestion.statusCode).toBe(410);
+    for (const who of [LEE, MAYA]) expect((await t.send(who, "POST", `/review/${t.id}/task/api/decision`, t.decision())).statusCode).toBe(410);
+    expect(t.harness.db.find((item) => item.entityType === "TASK_COMMENT" || String(item.sk).startsWith("SUGGEST#"))).toEqual([]);
     expect((t.harness.db.get(`DEVTASK#${t.id}`, "META") as { workflow: { revision: number } }).workflow.revision).toBe(t.revision);
+    // The teammate has no card to decide it; the owner's card decides it, through the one workflow decision.
+    expect((await cardDecision(t.harness, LEE, t.id)).status).toBe(404);
+    const owner = await cardDecision(t.harness, MAYA, t.id, { answers: [{ decisionId: "d1", optionId: "above", opened: true }] });
+    expect(owner.status, JSON.stringify(owner.body)).toBe(200);
+    expect((t.harness.db.get(`DEVTASK#${t.id}`, "META") as { workflow: { revision: number; decisions: Array<{ decision: string; actorRole: string }> } }).workflow.decisions.at(-1)).toMatchObject({ decision: "APPROVE", actorRole: "TASK_OWNER" });
   });
 
   it("a reader without access cannot tell a task exists", async () => {
@@ -294,27 +215,13 @@ describe("task page API through the broker", () => {
       for (const [method, suffix, body] of [["GET", "state", undefined], ["GET", "comments", undefined], ["POST", "comments", { ...commentBody, requestId: randomUUID() }], ["POST", "decision", t.decision()]] as const) {
         const real = await t.send(who, method, `/review/${t.id}/task/api/${suffix}`, body);
         const none = await t.send(who, method, `/review/${missing}/task/api/${suffix}`, body);
-        expect(real.statusCode, `${who.name} ${suffix}`).toBe(404);
+        // A read is the not found a missing task gets; a write is the read-only refusal, without the task page's path (OWNER DECISION 7): the same for a real task and a missing one.
+        expect(real.statusCode, `${who.name} ${suffix}`).toBe(method === "GET" ? 404 : 410);
         expect(real.body).toBe(none.body);
-        expect(real.json).toEqual({ error: "not_found", message: "You don't have access to this task." });
+        expect(real.json).toEqual(method === "GET" ? { error: "not_found", message: "You don't have access to this task." } : { error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE });
         expect(real.body).not.toContain("Maya");
       }
     }
-  });
-
-  it("a stale decision answers 409 with the refusal sentence", async () => {
-    const t = await sharedTask();
-    const first = await t.send(MAYA, "POST", `/review/${t.id}/task/api/decision`, t.decision({ decision: "REQUEST_CHANGES", note: "Shorter, please." }));
-    expect(first.statusCode, first.body).toBe(200);
-    expect(first.json.revision).toBeGreaterThan(t.revision);
-    const second = await t.send(MAYA, "POST", `/review/${t.id}/task/api/decision`, t.decision({ decision: "REQUEST_CHANGES", note: "Again." }));
-    expect(second.statusCode).toBe(409);
-    expect(second.json).toEqual({ error: "changed", message: "Changes were already requested by Maya Chen a moment ago." });
-    // Request changes with nothing to say is refused with the page's own sentence.
-    const t2 = await sharedTask();
-    const empty = await t2.send(MAYA, "POST", `/review/${t2.id}/task/api/decision`, t2.decision({ decision: "REQUEST_CHANGES" }));
-    expect(empty.statusCode).toBe(400);
-    expect(empty.json).toEqual({ error: "invalid_request", message: "Include at least one comment or write a note." });
   });
 
   it("state answers the owner and a teammate with the CSRF token", async () => {
@@ -328,21 +235,18 @@ describe("task page API through the broker", () => {
     }
   });
 
-  it("the page itself shows the owner's answer controls and a teammate's comment, with the data the script reads", async () => {
+  it("the page itself is read-only for the owner and a teammate: no answer controls or data island; the owner is sent to the task page", async () => {
     const t = await sharedTask();
-    const posted = await t.send(LEE, "POST", `/review/${t.id}/task/api/comments`, { ...commentBody, requestId: randomUUID(), text: "Above <b>reads</b> better." });
-    expect(posted.statusCode).toBe(201);
     const owner = await t.send(MAYA, "GET", `/review/${t.id}/task`);
     expect(owner.statusCode).toBe(200);
-    expect(owner.body).toContain('type="radio" name="answer-d1"');
+    expect(owner.body).not.toContain('type="radio"');
+    expect(owner.body).not.toContain('id="agentx-page-data"');
     expect(owner.body).toContain('class="decide-bar"');
-    expect(owner.body).toContain("Above &lt;b&gt;reads&lt;/b&gt; better.");
-    const island = JSON.parse(/<script type="application\/json" id="agentx-page-data">([\s\S]*?)<\/script>/.exec(owner.body)![1]!) as { current: { version: number; artifactDigest: string; openCommentIds: string[] }; commentSeq: number; revision: number };
-    expect(island).toMatchObject({ revision: t.revision, commentSeq: 1, current: { version: 1, artifactDigest: t.sha256, openCommentIds: [(posted.json.comment as { id: string }).id] } });
+    expect(owner.body).toMatch(/Decide on the task/u);
+    expect(owner.headers["set-cookie"]).toBeUndefined();
     const teammate = await t.send(LEE, "GET", `/review/${t.id}/task`);
     expect(teammate.body).toContain("Only owners decide.");
-    expect(teammate.body).not.toContain('type="radio"');
-    expect(teammate.body).toContain("You can read and comment on this task.");
+    expect(teammate.body).toContain("You can read this task.");
   });
 
   it("through the AI tool API a teammate cannot decide either, and hears the answer a missing task gets", async () => {

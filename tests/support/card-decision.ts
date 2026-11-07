@@ -52,6 +52,9 @@ export async function cardDecision(h: CardHarness, who: Developer, taskId: strin
 /** A write to the old review page's API (`/review/<task>/task/api/<endpoint>`), as its script sent it: the review cookie and its CSRF pair. OWNER DECISION 7: the page is read-only, so this answers 410. */
 export async function reviewPagePost(h: CardHarness, who: Developer, taskId: string, endpoint: string, body: Record<string, unknown> = {}): Promise<{ status: number; body: Record<string, unknown> }> {
   await h.orgOf(who);
+  if (h.db.get(`DEVELOPER#${who.developerId}`, "META") === undefined) {
+    h.db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: who.provider, displayName: who.name, ...(who.slackUserId === undefined ? {} : { slackUserId: who.slackUserId }), firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+  }
   const id = randomUUID();
   h.db.set({ pk: `SESSION#${id}`, sk: "META", sessionId: id, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 600, reviewExpiresAt: Math.floor(Date.now() / 1000) + 600, authTime: new Date().toISOString() });
   const response = await h.handler({
