@@ -159,6 +159,23 @@ describe("Suite 10c: the plan panel on the task page (OWNER DECISION 18)", () =>
     expect(e2e.workflow().decisions).toEqual([]);
   }, 120_000);
 
+  it("a task of another company answers every panel route exactly as a missing task, even for the person who started it, and nothing is written", async () => {
+    const { e2e, web } = await waitingPlan();
+    const meta = e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")!;
+    e2e.db.set({ ...meta, orgId: "org_zzzzzzzzzzzzzzzzzzzz" });
+    for (const [method, path, body] of [["GET", "documents/plan", undefined], ["POST", "comments", commentBody({ kind: "document" }, "Hello.")],
+      ["POST", `comments/${randomUUID()}/edit`, { rev: 1, text: "x" }], ["POST", `comments/${randomUUID()}/delete`, { rev: 1 }],
+      ["POST", "suggestions", { document: "plan", decisionId: "d1", optionId: "above" }], ["GET", "workflow/feedback", undefined]] as const) {
+      for (const who of [OWNER, SAM]) {
+        const real = await web(who, method, `${base(e2e)}/${path}`, body);
+        const none = await web(who, method, `/v1/app/tasks/${randomUUID()}/${path}`, body);
+        expect([real.status, real.body], `${who.name} ${path}`).toEqual([none.status, none.body]);
+        expect(real.status, path).toBeGreaterThanOrEqual(400);
+      }
+    }
+    expect(peopleComments(e2e)).toEqual([]);
+  }, 120_000);
+
   it("suggestions and their limits: a teammate suggests, the owner can't, and a flood of suggestions or comments is refused until ten minutes pass", async () => {
     const { e2e, web } = await waitingPlan();
     const owners = await web(OWNER, "POST", `${base(e2e)}/suggestions`, { document: "plan", decisionId: "d1", optionId: "above" });
