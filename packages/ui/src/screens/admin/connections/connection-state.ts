@@ -37,13 +37,14 @@ export function providerSummary(sources: readonly ProviderSource[], available: r
     : { state: "attention", why: `${broken.map(source => source.label).join(", ")} didn't pass its check.`, fix: "Open it and read what the provider said." };
 }
 
-export interface RegistryConnection { connectionId: string; type: string; label: string; hasCredential: boolean; updatedAt: string; createdBy?: string | undefined; createdAt?: string | undefined; lastCheck?: { ok: boolean; at: string } | undefined; access?: string | undefined; identity?: "service" | "personal" | undefined }
+export interface RegistryConnection { connectionId: string; type: string; label: string; hasCredential: boolean; updatedAt: string; createdBy?: string | undefined; createdAt?: string | undefined; lastCheck?: { ok: boolean; at: string } | undefined; /** Whether Rovara can write ticket updates back (Linear and Jira): `needs_write_access` when the connection is read only. */ ticketUpdates?: string | undefined; access?: string | undefined; identity?: "service" | "personal" | undefined }
 
 /** One saved connection: its own state, from what is stored, with the cause of a failed check when this page session has just run it. */
 export function connectionSummary(connection: RegistryConnection, lastMessage: string | undefined): CardSummary {
   if (connection.type !== "cloudwatch" && !connection.hasCredential) return { state: "attention", why: "No key is saved for this connection.", fix: "Remove it and add it again with its key." };
   if (connection.lastCheck === undefined) return { state: "attention", why: "It has never been checked.", fix: "Press Check it works." };
   if (!connection.lastCheck.ok) return { state: "attention", why: lastMessage === undefined ? "Its last check failed." : `Its last check failed: ${lastMessage}.`, fix: lastMessage === undefined ? "Press Check it works to see why." : "Fix that, then press Check it works again." };
+  if ((connection.type === "linear" || connection.type === "jira") && connection.ticketUpdates === "needs_write_access") return { state: "attention", why: "Its last check passed, but Rovara can't write ticket updates: this connection is read only.", fix: "Remove it and add it again with read and write access." };
   return { state: "connected", why: "Its last check passed." };
 }
 

@@ -53,6 +53,8 @@ it("summarises each connection in words, with the cause and the fix when it need
  expect(refused.state).toBe("attention");expect(refused.why).toMatch(/Linear refused/);
  expect(connectionSummary({ ...linear, hasCredential: false }, undefined)).toMatchObject({ state: "attention", why: "No key is saved for this connection." });
  expect(connectionSummary({ ...linear, type: "cloudwatch", hasCredential: false, lastCheck: { ok: true, at: "x" } }, undefined)).toMatchObject({ state: "connected" });
+ const readOnlyTracker = connectionSummary({ ...linear, ticketUpdates: "needs_write_access" }, undefined);
+ expect(readOnlyTracker.state).toBe("attention");expect(readOnlyTracker.why).toMatch(/can't write ticket updates/);expect(connectionSummary({ ...linear, type: "sentry", ticketUpdates: "needs_write_access" }, undefined).state).toBe("connected");
  expect(groupSummary([], {}, "Jira")).toMatchObject({ state: "not_connected" });
  expect(groupSummary([linear, { ...linear, connectionId: "con_bbbbbbbbbbbbbbbbbbbb", lastCheck: { ok: false, at: "x" } }], {}, "Linear").state).toBe("attention");
  expect(providerSummary([], ["anthropic"], new Set()).state).toBe("not_connected");
