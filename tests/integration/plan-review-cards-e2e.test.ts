@@ -76,7 +76,7 @@ function seedComment(e2e: WorkflowE2E, who: PageReader, text: string, target: Re
     author: { kind: "person", developerId: who.developerId, slackUserId: who.slackUserId, name: who.name, owner: who === OWNER }, text, createdAt: new Date().toISOString(), rev: 1 });
   return commentId;
 }
-const asDeveloper = (who: PageReader): Developer => ({ developerId: who.developerId, name: who.name, provider: "slack", sessionId: `s-${who.developerId.slice(0, 8)}`, slackUserId: who.slackUserId });
+const asDeveloper = (who: PageReader): Developer => ({ developerId: who.developerId, name: who.name, provider: "slack", sessionId: `s-${who.developerId.slice(0, 8)}`, ...(who.slackUserId === undefined ? {} : { slackUserId: who.slackUserId }) });
 /** The plan's decision card on the task page, pressed by `who`'s browser (OWNER DECISION 7: the review page is read-only). */
 const onCard = (e2e: WorkflowE2E, who: PageReader, body: Parameters<typeof cardDecision>[3] = {}) => cardDecision({ db: e2e.db, handler: e2e.handler, orgOf: async () => undefined }, asDeveloper(who), e2e.taskId(), body);
 /** A write to the old review page's API from `who`'s browser. */

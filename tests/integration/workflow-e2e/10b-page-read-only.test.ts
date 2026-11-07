@@ -84,7 +84,7 @@ describe("Suite 10b: the read-only page, decision cards on", () => {
     beforeEach(() => { process.env.DECISION_CARDS_ENABLED = "1"; });
     afterEach(() => { if (cards === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = cards; });
     const withCards = async (work: () => Promise<void>) => { await work(); };
-    const asDeveloper = (who: PageReader): Developer => ({ developerId: who.developerId, name: who.name, provider: "slack", sessionId: `s-${who.developerId.slice(0, 8)}`, slackUserId: who.slackUserId });
+    const asDeveloper = (who: PageReader): Developer => ({ developerId: who.developerId, name: who.name, provider: "slack", sessionId: `s-${who.developerId.slice(0, 8)}`, ...(who.slackUserId === undefined ? {} : { slackUserId: who.slackUserId }) });
     const shim = (e2e: WorkflowE2E) => ({ db: e2e.db, handler: e2e.handler, orgOf: async () => undefined });
 
     it("10.1 a revoked sign-in reads nothing and writes nothing: the page asks to sign in again and its API answers 401", async () => {

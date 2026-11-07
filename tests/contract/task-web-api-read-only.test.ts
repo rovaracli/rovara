@@ -32,6 +32,11 @@ function fakeDeps(overrides: Partial<TaskWebApiDependencies> = {}): TaskWebApiDe
     confirmPeopleRequest: async (who, _taskId, requestId) => { calls.push({ name: "confirm", caller: who, input: requestId }); return { status: "COMMITTED", view: {} as never }; },
     taskPagePath: async () => "/app/sessions/ses_0123456789abcdefghij",
     readOnly: true,
+    createComment: async (who, _taskId, input) => { calls.push({ name: "createComment", caller: who, input }); return { comment: {} as never }; },
+    editComment: async (who, _taskId, input) => { calls.push({ name: "editComment", caller: who, input }); return { comment: {} as never }; },
+    deleteComment: async (who, _taskId, input) => { calls.push({ name: "deleteComment", caller: who, input }); return { comment: {} as never }; },
+    setSuggestion: async (who, _taskId, input) => { calls.push({ name: "setSuggestion", caller: who, input }); return {}; },
+    decide: async (who, _taskId, input) => { calls.push({ name: "decide", caller: who, input }); return { revision: 5 }; },
     ...overrides,
   };
 }

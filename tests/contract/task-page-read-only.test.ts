@@ -133,7 +133,7 @@ type Page = ReturnType<typeof boot>;
 const posts = (page: Page, path: string) => page.sent.filter((entry) => entry.method === "POST" && entry.url.endsWith(path));
 
 describe("the review page with the decision cards on (OWNER DECISION 7 and 17)", () => {
-  const readers = [["an owner who may decide", owner], ["a teammate who may comment and suggest", commenter], ["a reader", { role: "reader" as const, canComment: false, canSuggest: false, canDecide: false, canAsk: false }]] as const;
+  const readers: Array<[string, NonNullable<TaskDocumentView["access"]>]> = [["an owner who may decide", owner], ["a teammate who may comment and suggest", commenter], ["a reader", { role: "viewer", canComment: false, canSuggest: false, canDecide: false, canAsk: false }]];
   for (const [who, access] of readers) {
     it(`OWNER DECISION 17: serves ${who} a page that decides nothing (no answer, Approve, retry, revise or spec control, the script told it may not decide) and keeps its comment controls`, async () => {
       const html = await pageHtml({ access, applicationRetry: { canRetry: true }, reviseOffer: { canRevise: true }, specHold: { title: "Spec on hold", message: "The spec could not be written.", choices: ["retry", "continue"], canChoose: true } });
