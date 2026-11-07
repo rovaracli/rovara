@@ -12,7 +12,8 @@ export const SLACK_LINK_MESSAGES: Readonly<Record<string, string>> = {
  linked: "Your Slack account is linked. Mention Rovara in Slack to start work.",
  cancelled: "Linking was cancelled. Nothing changed.",
  wrong_browser: "That link has to be finished in the browser where you started it. Start again from here.",
- wrong_team: "That Slack account is in a different workspace than the one connected to your company. Nothing changed.",
+ wrong_team: "That Slack account is in a different workspace than the one connected to your company. Sign in to Slack with your company's workspace, then try again. Nothing changed.",
+ no_workspace: "Your company hasn't connected a Slack workspace to Rovara yet, so there's nothing to link to. Ask a company owner to contact Rovara support to connect it, then link your account here.",
  taken: "That Slack account already belongs to another Rovara account, so it can't be linked here. Nothing changed.",
  has_one: "A Slack account is already linked to your account. Remove it first to link another.",
  reauth: "For safety, sign in again, then link your Slack account.",
@@ -32,6 +33,8 @@ export function SlackLink({ outcome }: { outcome?: string | undefined }) {
  const me = useQuery({ queryKey: ["me"], queryFn: () => createApiClient(host).get("/v1/app/me", AppMeResponseReaderSchema), refetchOnMount: "always" });
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [notice, setNotice] = useState(outcome === undefined ? undefined : SLACK_LINK_MESSAGES[outcome]);
  const linked = me.data?.identities.some(identity => identity.provider === "slack") === true;
+ // UX1: where Slack sign-in is off here there is nothing to link (an existing link can still be removed).
+ if (me.data?.linkable?.slack === false && !linked) return null;
  async function start() {
   setBusy(true);setError(undefined);setNotice(undefined);
   try {
