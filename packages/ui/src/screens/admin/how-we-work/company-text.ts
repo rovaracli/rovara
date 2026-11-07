@@ -73,3 +73,8 @@ export const KF_POLICY = {
  RETRY: "Try again",
 } as const;
 export const kfExpiresText = (iso: string): string => `The request expires at ${new Date(iso).toISOString().slice(0, 16).replace("T", " ")} UTC.`;
+
+// UX3: how the page saves. Each section has its own Save (or applies at once); a section with a draft says so, and the page warns before you leave it.
+export const SAVE_MODEL_NOTE = "Each section below saves on its own: the model defaults and the rules use their own Save button, and a switch or a request button applies as soon as you press it.";
+export const UNSAVED_MODELS = "Not saved yet. Review changes shows which projects would change first.";
+export const APPLIES_AT_ONCE = "The buttons in this section apply as soon as you press them. There is nothing else to save.";

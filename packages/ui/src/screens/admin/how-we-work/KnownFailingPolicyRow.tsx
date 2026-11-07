@@ -5,7 +5,7 @@ import { knownFailingPolicyKey, useKnownFailingApi, useKnownFailingPolicy } from
 import { useAppHost } from "../../../host.js";
 import { Button } from "../../../design/Button.js";
 import { VisibleText } from "../../../design/VisibleText.js";
-import { KF_POLICY as T, kfExpiresText } from "./company-text.js";
+import { APPLIES_AT_ONCE, KF_POLICY as T, kfExpiresText } from "./company-text.js";
 import "./how-we-work.css";
 
 type Answer = Awaited<ReturnType<ReturnType<typeof useKnownFailingApi>["setPolicy"]>>;
@@ -42,6 +42,7 @@ export function KnownFailingPolicyRow() {
  return <section aria-label={T.HEADING} className="rv-hww-company-card rv-hww-suggestions" aria-busy={busy}><h2>{T.HEADING}</h2>
   <p>Now: <strong>{state.alwaysTwoPeople ? T.LABEL_ON : T.LABEL_OFF}</strong></p>
   <p className="rv-muted">{T.HELP}</p>
+  <p className="rv-muted">{APPLIES_AT_ONCE}</p>
   <p className="rv-muted">{state.alwaysTwoPeople ? T.STATE_ON : T.STATE_OFF}</p>
   {state.pendingLoosening && <p role="status">{pending === undefined ? T.PENDING_HIDDEN : pending.proposedByYou ? T.PENDING_MINE : T.PENDING_OTHER}</p>}
   {pending !== undefined && <p className="rv-muted">{kfExpiresText(pending.expiresAt)}</p>}

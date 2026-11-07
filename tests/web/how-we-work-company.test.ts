@@ -539,3 +539,46 @@ describe("accessibility", () => {
   await act(async () => { await expectNoAxeViolations(f.container); });
  });
 });
+
+describe("UX3: one Save per section, and unsaved changes", () => {
+ it("saves the model defaults with one press, without reviewing first, and says so while there is something unsaved", async () => {
+  const f = await open();
+  const saveButton = () => screen.getByRole<HTMLButtonElement>("button", { name: "Save company defaults" });
+  expect(saveButton().disabled).toBe(true);expect(screen.queryByText("You have unsaved changes")).toBeNull();
+  fireEvent.change(effort("Build"), { target: { value: "high" } });
+  expect(saveButton().disabled).toBe(false);
+  expect(screen.getByText("You have unsaved changes").closest("p")!.textContent).toContain("Company model defaults");
+  fireEvent.click(saveButton());
+  await screen.findByText("Saved. New tasks use these defaults; running tasks keep theirs.");
+  expect(f.puts()).toHaveLength(1);expect(f.previews()).toHaveLength(0);
+  await waitFor(() => expect(screen.queryByText("You have unsaved changes")).toBeNull());
+ });
+ it("warns before leaving the page with unsaved changes: Stay keeps the page and the draft, Leave goes", async () => {
+  const f = await open();
+  fireEvent.change(effort("Build"), { target: { value: "high" } });
+  await act(async () => { void f.router.navigate("/app/admin/people"); });
+  const dialog = await screen.findByRole("dialog", { name: "Leave without saving?" });
+  expect(f.router.state.location.pathname).toBe("/app/admin/how-we-work");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Stay and keep editing" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Leave without saving?" })).toBeNull());
+  expect(f.router.state.location.pathname).toBe("/app/admin/how-we-work");expect(effort("Build").value).toBe("high");
+  await act(async () => { void f.router.navigate("/app/admin/people"); });
+  fireEvent.click(await screen.findByRole("button", { name: "Leave without saving" }));
+  await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/admin/people"));
+ });
+ it("leaves without a warning when nothing is unsaved, and warns the browser (closing the tab) only while something is", async () => {
+  const f = await open();
+  const original = effort("Build").value;
+  const quiet = new Event("beforeunload", { cancelable: true });window.dispatchEvent(quiet);expect(quiet.defaultPrevented).toBe(false);
+  fireEvent.change(effort("Build"), { target: { value: "high" } });
+  const loud = new Event("beforeunload", { cancelable: true });window.dispatchEvent(loud);expect(loud.defaultPrevented).toBe(true);
+  fireEvent.change(effort("Build"), { target: { value: original } });
+  const after = new Event("beforeunload", { cancelable: true });window.dispatchEvent(after);expect(after.defaultPrevented).toBe(false);
+  await act(async () => { await f.router.navigate("/app/admin/people"); });
+  expect(screen.queryByRole("dialog", { name: "Leave without saving?" })).toBeNull();expect(f.router.state.location.pathname).toBe("/app/admin/people");
+ });
+ it("says which sections apply at once and which save with their own button", async () => {
+  await open();
+  expect(screen.getByText(/Each section below saves on its own/)).toBeTruthy();
+ });
+});

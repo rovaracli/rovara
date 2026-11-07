@@ -10,6 +10,7 @@ import { Skeleton } from "../../../design/Skeleton.js";
 import { Switch } from "../../../design/Switch.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
+import { useReportUnsaved } from "./unsaved.js";
 import "./how-we-work.css";
 
 const T = {
@@ -20,6 +21,7 @@ const T = {
  DESIGN_FIRST_NOTE: "Projects set to Off can still ask for a design review on a single task with Design first.",
  PROJECTS_HELP: "Once design review is allowed, each project's maintainers turn it on (Auto or Always) or off on the project's own How we work page. Projects start Off.",
  RULES_HEADING: "Rules every project must follow",
+ RULES_SAVE_NOTE: "The switch above applies as soon as you press it. The rules below are saved together with Save rules.",
  RULES_HELP: "A project can be stricter than these, never looser. A rule you set here also applies to projects that already chose something looser. These rules never stop a project's maintainers turning their own project off.",
  MIN_TIER: "Tier at least", NO_SKIP: "Nobody can skip design review", CAP: "Highest cost limit per task (USD)", CAP_HINT: "Leave empty for no ceiling.", GROUP: "Group that approves high-risk designs (Enterprise)",
  SAVE: "Save rules", SAVED: "Saved. New design reviews use these settings; running ones keep theirs.", SAVED_ON: "Design review is allowed in this company.", SAVED_OFF: "Design review is turned off for every project.",
@@ -54,6 +56,8 @@ export default function DesignReviewCompanyRow() {
  const api = useDesignReviewCompanyApi(), client = useQueryClient(), host = useAppHost(), sending = useRef(false);
  const read = useQuery({ queryKey: designReviewCompanyKey, queryFn: () => api.state(), retry: false, refetchOnWindowFocus: false });
  const [busy, setBusy] = useState(false), [message, setMessage] = useState<Message>(), [edit, setEdit] = useState<Draft>();
+ const rulesDirty = edit !== undefined && read.data !== undefined && !read.data.unreadable && read.data.lock.tierAtLeast !== "unknown" && !sameDraft(edit, draftOf(read.data as DesignReviewCompanyState));
+ useReportUnsaved("design-review", "Design review rules", rulesDirty);
  if (read.error instanceof ApiError && (read.error.status === 404 || read.error.status === 403)) return null;
  async function run(where: Message["where"], write: () => Promise<{ status: string }>, done: (status: string) => string) {
   if (sending.current) return;
@@ -90,6 +94,7 @@ export default function DesignReviewCompanyRow() {
    <p className="rv-muted">{T.PROJECTS_HELP}</p>
    <h3>{T.RULES_HEADING}</h3>
    <p className="rv-muted">{T.RULES_HELP}</p>
+   <p className="rv-muted">{T.RULES_SAVE_NOTE}</p>
    <Select label={T.MIN_TIER} value={current.tier} options={MIN_TIER_OPTIONS} disabled={busy} onValueChange={value => patch({ tier: value })} />
    <Switch label={T.NO_SKIP} checked={current.noSkip} disabled={busy} onCheckedChange={checked => patch({ noSkip: checked })} />
    <TextField label={T.CAP} type="number" inputMode="decimal" min={DESIGN_REVIEW_CAP_MIN_USD} max={DESIGN_REVIEW_CAP_MAX_USD} step={0.5} value={current.cap} hint={T.CAP_HINT} {...(parsed.ok ? {} : { error: parsed.cap })} disabled={busy} onChange={event => patch({ cap: event.target.value })} />

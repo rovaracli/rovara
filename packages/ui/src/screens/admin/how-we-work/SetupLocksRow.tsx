@@ -9,6 +9,7 @@ import { Switch } from "../../../design/Switch.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { LimitFields } from "../../setup/LimitFields.js";
 import { LIMIT_SHORT, SETUP_LOCKS as T, expiresText, limitField, limitShown, sameSetting, settingOfFields } from "../../setup/limits-text.js";
+import { useReportUnsaved } from "./unsaved.js";
 import "./how-we-work.css";
 
 type Message = { kind: "status"; text: string } | { kind: "alert"; text: string; signIn?: boolean };
@@ -80,6 +81,7 @@ function Editor({ locks, busy, api, onSave, onCancel }: { locks: ReadableLocks; 
  const { setting, problems } = settingOfFields(fields, locks.maxima);
  const changedLimits = !sameSetting(setting, locks.limits), changedOff = off !== locks.setupAgentOff;
  const hints = Object.fromEntries(SETUP_LIMIT_NAMES.map(name => [name, `${limitShown(name, locks.defaults[name])} by default, at most ${limitShown(name, locks.maxima[name])}. Leave it empty for no company cap.`])) as Record<SetupLimitName, string>;
+ useReportUnsaved("setup-locks", "Setup locks", changedLimits || changedOff);
  const body = { expectedRevision: locks.revision, ...(changedLimits ? { limits: setting } : {}), ...(changedOff ? { setupAgentOff: off } : {}) };
  return <fieldset className="rv-hww-company-review" disabled={busy}><legend>{T.EDIT}</legend>
   <Switch label={T.TURN_OFF} checked={off} disabled={busy} onCheckedChange={setOff} />
