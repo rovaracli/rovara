@@ -46,7 +46,7 @@ import { logDeveloperEvent } from "../../developer/log.js";
 import { confirmationReply } from "../../agent-sessions/shares.js";
 import { latestRevision } from "../../org/project-settings.js";
 import {
-  approveTestEnvironment, clearEditedProposal, isSetupRunProposal, proposalIsSetupRun, proposeTestEnvironment, readApprovedTestEnvironment, readEditedProposal, readProposal, readProposalSources, readTestEnvProveReport, recordTestEnvProveReport,
+  approveTestEnvironment, clearEditedProposal, isSetupRunProposal, proposalIsSetupRun, proposalSeedTrust, proposeTestEnvironment, TEST_ENV_PROPOSAL_TTL_MS, readApprovedTestEnvironment, readEditedProposal, readProposal, readProposalSources, readTestEnvProveReport, recordTestEnvProveReport,
   secondPersonFromRecords, testEnvRequestId, type TestEnvDeps,
 } from "../../org/test-environment.js";
 import { testEnvChangeLines } from "../../org/test-env-diff.js";
@@ -59,6 +59,7 @@ import { lookIsStale, readOwnSettingsWrite } from "../../test-env/own-settings-w
 import { TEST_ENV_REFUSAL_WORDS, commandsNotRun } from "../../test-env/prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { testServicesEnabled } from "../../test-env/test-services-switch.js";
+import { lockLookSeeds, lockedLookOf, recordLockedLook, seedRisksOf } from "../../test-env/seed-lock.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { projectRoleForRoute } from "./project-members.js";
@@ -175,6 +176,13 @@ async function shownProposal(deps: DeveloperRouteDependencies, project: ProjectV
   if (candidate === undefined) return undefined;
   const digest = testEnvDigest(candidate);
   if (digest === approvedDigest) return undefined;
+  // SEED-RISK-1: the look's proposal as the broker stored it, with the seed locks it put on (the candidate recomputed from the draft has none).
+  const locked = await lockedLookOf(store, { orgId: project.orgId, project: project.name, lookDigest: digest, nowMs: deps.now() }).catch(() => undefined);
+  if (locked !== undefined && locked !== digest) {
+    if (locked === approvedDigest) return undefined;
+    const body = await readProposal(store, project.orgId, project.name, locked).catch(() => undefined);
+    if (body !== undefined) return { body, digest: locked, source: "setup" };
+  }
   return await readProposal(store, project.orgId, project.name, digest) === undefined ? undefined : { body: candidate, digest, source: "setup" };
 }
 
@@ -194,10 +202,12 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
   let proposal: TestEnvironmentState["proposal"];
   if (shown !== undefined) {
     const report = await readTestEnvProveReport(store, project.orgId, project.name, shown.digest);
-    const lessSafe = testEnvLessSafeChanges(approved?.environment, shown.body);
-    const risk = lessSafe.length > 0 ? "high" : testEnvApprovalRisk(shown.body);
+    const { valueSources, origin, seedChecks } = await readProposalSources(store, project.orgId, project.name, shown.digest);
+    // SEED-RISK-1: only the broker's own seed checks on the proposal item can make a seed command medium.
+    const trust = await proposalSeedTrust(store, project.orgId, project.name, shown.digest, shown.body);
+    const lessSafe = testEnvLessSafeChanges(approved?.environment, shown.body, trust);
+    const risk = lessSafe.length > 0 ? "high" : testEnvApprovalRisk(shown.body, trust);
     const candidate = await candidateStateOf(deps, project.orgId, project.name, shown.digest, latest.definition);
-    const { valueSources, origin } = await readProposalSources(store, project.orgId, project.name, shown.digest);
     // TS-UX-1 item 2: a passed check proves the proposal with no press. A read keeps nothing: it shows the report derived from the check now (the approval keeps it).
     const kept = testEnvIsProved(report, shown.digest, shown.body);
     const derived = !kept && candidate.setup.status === "ready" ? await deriveCandidateProve(deps, project.orgId, project.name, shown.body, latest.definition) : undefined;
@@ -216,6 +226,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
       needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || candidate.check?.origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
       approval,
       dependencySeeds: dependencySeedsOf(shown.body),
+      seedRisks: seedRisksOf(seedChecks, shown.body),
       commandsNotInSettings: commandsNotRun(shown.body, latest.definition),
       check: checkOf(candidate.setup),
     };
@@ -289,7 +300,12 @@ async function proposeFromLook(deps: DeveloperRouteDependencies, caller: Develop
   const approved = await readApprovedTestEnvironment(store, caller.orgId, name);
   const candidate = mergeDraftWithApproved(draft.draft.environment, approved?.environment);
   if (candidate === undefined) throw refuse("not_provable");
-  const proposed = await proposeTestEnvironment(store, { orgId: caller.orgId, project: name, proposedBy: caller.developerId, role, body: candidate, valueSources: draft.draft.valueSources });
+  // SEED-RISK-1: the broker locks the seed commands the detectors found, from the repository as the code host gives it (never the worker's word); one it cannot lock stays HIGH.
+  const locked = await lockLookSeeds(candidate, draft.draft.seedCommands, deps.seedRepoSources, { orgId: caller.orgId, project: name });
+  const proposed = await proposeTestEnvironment(store, { orgId: caller.orgId, project: name, proposedBy: caller.developerId, role, body: locked.body, valueSources: draft.draft.valueSources, seedChecks: locked.checks });
+  // Always written (also when nothing was locked), so a look whose seeds can no longer be locked never keeps showing an older locked proposal.
+  const lookDigest = testEnvDigest(candidate);
+  await recordLockedLook(store, { orgId: caller.orgId, project: name, lookDigest, lockedDigest: proposed.digest, expiresAtMs: deps.now() + TEST_ENV_PROPOSAL_TTL_MS });
   // Going back to what Rovara found: an earlier edit no longer stands in front of it.
   await clearEditedProposal(store, caller.orgId, name);
   logDeveloperEvent({ event: "developer.test_env_proposed", orgId: caller.orgId, project: name, digest: proposed.digest, lessSafe: String(proposed.lessSafe.length) });
@@ -399,7 +415,7 @@ export async function routeTestEnvironment(
     if (proposal === undefined) throw refuse("no_proposal");
     const current = await readApprovedTestEnvironment(store, caller.orgId, name);
     if ((current?.revision ?? 0) !== parsed.data.expectedRevision) throw agentXError("CHANGE_STALE", "someone changed the test environment; reload and review again");
-    const lessSafe = testEnvLessSafeChanges(current?.environment, proposal);
+    const lessSafe = testEnvLessSafeChanges(current?.environment, proposal, await proposalSeedTrust(store, caller.orgId, name, parsed.data.digest, proposal));
     if (lessSafe.length === 0) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.secondPersonNotNeeded);
     if (!await provedFromCheck(deps, caller.orgId, name, parsed.data.digest, proposal)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.provedFirst);
     if (deps.agents === undefined) throw agentXError("RUNTIME_UNAVAILABLE", TEST_ENV_EDIT_WORDS.unavailable);
@@ -441,11 +457,12 @@ export async function approveChecked(
       seedFileHashes = again.candidate?.usage?.seedFiles;
       // TS-UX-1 item 2: no Prove press: the passed check's report is kept here when none is yet (the approval reads the kept one).
       if (!testEnvIsProved(await readTestEnvProveReport(store, caller.orgId, name, input.digest), input.digest, proposal)) await recordTestEnvProveReport(store, { orgId: caller.orgId, project: name, report: again.report });
-      const lessSafe = testEnvLessSafeChanges(current?.environment, proposal);
+      const trust = await proposalSeedTrust(store, caller.orgId, name, input.digest, proposal);
+      const lessSafe = testEnvLessSafeChanges(current?.environment, proposal, trust);
       // A proposal a setup RUN made (the agent ran commands) is approved only by a person who signed in just now, in a browser, as a less-safe change is.
       const setupRun = again.candidate?.origin === "setup_run" || await proposalIsSetupRun(store, caller.orgId, name, input.digest);
       setupRunMark = setupRun;
-      if (lessSafe.length > 0 || testEnvApprovalRisk(proposal) === "high" || setupRun) approvedBySignedInAtMs = await requireFreshSignIn(deps, caller);
+      if (lessSafe.length > 0 || testEnvApprovalRisk(proposal, trust) === "high" || setupRun) approvedBySignedInAtMs = await requireFreshSignIn(deps, caller);
       if (lessSafe.length > 0 && deps.agents !== undefined) {
         approval = await confirmedTestEnvApproval(deps.agents, { orgId: caller.orgId, project: name, digest: input.digest, expectedRevision: input.expectedRevision, askedBy: caller.developerId });
       }

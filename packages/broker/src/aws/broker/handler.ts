@@ -9,6 +9,7 @@ import { decisionCardsEnabled } from "../../proof/switch.js";
 import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-press.js";
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
 import { diagnosisDefaultBranchFileRoute, handleDiagnosisServiceRoute, installDiagnosisService } from "./diagnosis-service.js";
+import { seedRepoSourcesRoute } from "./seed-lock-wiring.js";
 import { requireStaffRouteAllowed } from "./staff-routes.js";
 import { routeSecondReviewEvidence } from "./second-review-evidence-routes.js";
 import { isSlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
@@ -187,6 +188,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           }),
           // DG-1 S2: "Apply this change" checks a proposed dev container file against the default branch's head (wiring: the three GitHub reads, one line).
           ...diagnosisDefaultBranchFileRoute(dependencies),
+          // SEED-RISK-1: the broker's own seed locks read the repositories from GitHub.
+          ...seedRepoSourcesRoute(dependencies),
           // Design review: the round's ports for the owner's Retry (a pure object; nothing is read until a round starts).
           designReview: designReviewPortsOf(dependencies),
           // Closing an org clears its connections whether or not the agent routes are set up (Task 12b).

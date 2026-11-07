@@ -73,6 +73,7 @@ import type { SessionTakeOverDependencies } from "../../agent-sessions/take-over
 import type { OrgConnectionStore } from "../../connections/store.js";
 import type { SsoStores } from "../../developer/sso-sign-in.js";
 import type { IdentityNoticeDependencies } from "../../developer/identity-notice.js";
+import type { SeedRepoSources } from "../../test-env/seed-lock.js";
 
 /** How long the close spends asking running sessions to stop; the rest are stopped by the model-key mint and the dispatch guard. */
 export const CLOSE_STOP_BUDGET_MS = 8_000;
@@ -138,6 +139,8 @@ export interface DeveloperApiConfiguration {
 export interface DeveloperRouteDependencies {
   /** Test services (slice 1): the release's signed service image catalog (`serviceCatalogSourceOf`). The setup draft's dependency candidates become proposed dependencies only with it; without it none are proposed. */
   serviceCatalog?: ServiceCatalogSource;
+  /** SEED-RISK-1: the project's repositories as the code host gives them at their default branch's head, for the broker's own seed locks (`lockLookSeeds`). Absent: no seed command is locked, every one is HIGH. */
+  seedRepoSources?: SeedRepoSources;
   /** Saved project images: the registry (store, sessions, ECR), only where the install's `sv` switch is on and it was installed. Without it the project's Environment panel routes do not exist. */
   savedEnv?: SavedEnvDeps;
   /** Test services, slice 3: the fixture store on its real ports, made for one request with the production deny list that request reads (the project's). Only where the install has the fixture key; without it the fixture routes do not exist. */
