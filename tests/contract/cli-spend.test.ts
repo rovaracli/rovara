@@ -277,7 +277,9 @@ describe("agentx task continue-as-task and ask-run-limit", () => {
     expect(await h.run(["task", "continue-as-task", TASK])).toBe(0);
     expect(h.calls).toEqual([{ method: "POST", path: `/v1/app/tasks/${TASK}/continue-as-task`, query: "", body: { requestId: expect.stringMatching(UUID) as string } }]);
     expect(h.stdout()).toContain(TASK);
-    expect(h.stdout()).toContain("RUNNING");
+    // UX2 slice 2 (e6e8aebc1): the CLI says the status model's word, never the raw code.
+    expect(h.stdout()).toContain("(Building)");
+    expect(h.stdout()).not.toContain("RUNNING");
     expect(h.stdout()).toContain("normal task");
   });
 

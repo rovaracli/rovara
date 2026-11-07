@@ -12,7 +12,7 @@ describe("AgentX executable command surface", () => {
     expect(program.commands.find((command) => command.name() === "org")?.commands.find((command) => command.name() === "comment-triggers")?.commands.map((command) => command.name())).toEqual(["list"]);
     expect(subcommands(program, "connections")).toEqual(["list", "add", "remove", "check"]);
     // Plan 5, Task 23: a session is shown, followed, commented on, told, stopped, retried, taken over and shared from the command line.
-    expect(subcommands(program, "session")).toEqual(["show", "follow", "unfollow", "comment", "tell", "answer", "stop", "retry", "take-over", "share", "merge", "link"]);
+    expect(subcommands(program, "session")).toEqual(["start", "show", "follow", "unfollow", "comment", "tell", "answer", "stop", "retry", "take-over", "share", "merge", "link"]);
     expect(subcommands(program, "github")).toEqual(["oauth", "connect", "list", "disconnect"]);
 
     const admin = program.commands.find((command) => command.name() === "admin");
