@@ -100,6 +100,8 @@ function agentSelection(input: Record<string, unknown>, text: string): { agent?:
 
 const TaskShape = {
   task_id: z.string(), title: z.string(), project: z.string(), status: DeveloperTaskStatusSchema,
+  session: z.string().optional().describe("the task's session ID, for agentx_get_session and the other session tools"),
+  session_url: z.string().optional().describe("the task's page in the Rovara web app; give it to the person to follow or decide the task there"),
   failure: z.object({ category: z.string(), stage: z.string().optional(), message: z.string() }).optional(),
   starting_revision: z.number(), client: z.string(), shared: z.boolean(), share_mode: z.string().nullable(),
   share_reason: z.string().optional(), share_mode_reason: z.string().optional(),
@@ -152,6 +154,12 @@ const TaskShape = {
 const ActionShape = { ...TaskShape, request_id: z.string() };
 const RETRY = "If the call fails or times out, send your own request_id, or repeat the call unchanged: an identical call within 15 minutes is taken as the same request";
 
+/** Slice 5: the task's session and its web link, when the server gave them (a link only when it is a plain https address). */
+function taskSessionOutput(task: { sessionId?: string | undefined; sessionUrl?: string | undefined }): { session?: string; session_url?: string } {
+  const url = typeof task.sessionUrl === "string" && /^https:\/\/[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+$/u.test(task.sessionUrl) ? task.sessionUrl : undefined;
+  return { ...(typeof task.sessionId === "string" ? { session: task.sessionId } : {}), ...(url === undefined ? {} : { session_url: url }) };
+}
+
 /** The one place a wire view (camelCase) becomes a tool output (snake_case). */
 function taskOutput(shown: DeveloperTaskClientView, timedOut?: boolean): Record<string, unknown> {
   const task = knownTaskView(shown);
@@ -177,6 +185,7 @@ function taskOutput(shown: DeveloperTaskClientView, timedOut?: boolean): Record<
     }));
   return {
     task_id: task.taskId, title: task.title, project: task.project, status: task.status,
+    ...taskSessionOutput(task),
     ...(task.failure === undefined ? {} : { failure: task.failure }),
     starting_revision: task.startingRevision, client: task.client,
     shared: task.shared, share_mode: task.share?.mode ?? null,
@@ -419,7 +428,8 @@ function taskText(task: DeveloperTaskClientView, timedOut?: boolean): string {
   const failure = task.failure === undefined ? "" : ` (${task.failure.category}: ${task.failure.message})`;
   const waited = timedOut === true ? " The wait ended first; the task keeps running." : "";
   const summary = task.summary === undefined ? "" : ` Summary: ${task.summary}`;
-  return `Task ${task.taskId} "${task.title}" on ${task.project} is ${task.status}${failure}.${waited}${shareText(task)} ${nextFor(task)}${summary}`;
+  const link = taskSessionOutput(task).session_url;
+  return `Task ${task.taskId} "${task.title}" on ${task.project} is ${task.status}${failure}.${waited}${shareText(task)} ${nextFor(task)}${summary}${link === undefined ? "" : ` Open it in Rovara: ${link}`}`;
 }
 
 function instructions(value: unknown): string {
@@ -615,10 +625,61 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
     },
   },
   {
+    name: "agentx_start",
+    title: "Start work in Rovara",
+    description:
+      `Starts work on a project, one tool for every kind of start. By default Rovara Code takes the instructions as a task. Set workflow_path (quick or full) for the human-gated plan-first workflow, agent for another agent's task, or run_agent with agent to start an agent run (its version may be draft). Write complete instructions: the remote worker gets them exactly as written and cannot see this conversation. It answers at once with the task ID, its session and its session_url, the page to give the person; set wait_seconds (up to 600) to wait for a small task. ${RETRY}, so no second task starts. agentx_start_task, agentx_start_workflow and agentx_run_agent are aliases of this tool for one release.`,
+    inputSchema: {
+      project: z.string().min(1).max(200).describe("the project's exact name, from agentx_list_projects"),
+      instructions: instructionsInput,
+      title: z.string().max(120).optional().describe("a short title, at most 120 characters; the first line of the instructions when left out"),
+      workflow_path: z.enum(["quick", "full"]).optional().describe("the plan-first workflow: quick asks once for the coding plan; full asks separately for requirements, design, and coding steps"),
+      agent: agentInput,
+      run_agent: z.boolean().optional().describe("start an agent run of agent (needs agent) instead of a task; false by default"),
+      input: runInputInput,
+      share_to_channel: z.boolean().optional().describe("post the task in the project's Slack channel; false by default"),
+      share_mode: z.enum(["view", "continue"]).optional(),
+      channel: z.string().min(1).max(80).optional().describe("which bound channel to share in, by name or ID; needed only when the project has several"),
+      wait_seconds: waitInput(0).optional().describe("seconds to wait for the task to end, 0 to 600; 0 (answer at once) by default"),
+      request_id: requestIdInput,
+    },
+    outputSchema: ActionShape,
+    async handler(context, input, call) {
+      const text = instructions(input.instructions);
+      const agent = input.agent as { agent_id: string; version?: number | "draft" } | undefined;
+      const wait = (input.wait_seconds as number | undefined) ?? 0;
+      if (input.run_agent === true) {
+        if (agent === undefined) throw new ToolError("INVALID_REQUEST", "run_agent: name the agent to run in agent");
+        if (input.workflow_path !== undefined || input.share_to_channel !== undefined || input.share_mode !== undefined || input.channel !== undefined || input.title !== undefined) {
+          throw new ToolError("INVALID_REQUEST", "run_agent: an agent run takes project, instructions, agent, input and wait_seconds only");
+        }
+        const given = input.input as { context?: RunInput["context"] } | undefined;
+        const runInput: RunInput = { text, ...(given?.context === undefined ? {} : { context: given.context }) };
+        if (!RunInputSchema.safeParse(runInput).success) throw new ToolError("INVALID_REQUEST", "input: the text or context is too long or not valid");
+        const id = requestIdFor(context, call, input, ["agentx_start", "run_agent", agent.agent_id, input.project, text, optional(given?.context), optional(agent.version)]);
+        const task = await context.client.runAgent(agent.agent_id, { requestId: id, project: input.project as string, ...(agent.version === undefined ? {} : { version: agent.version }), input: runInput });
+        return afterAction(context, call, "agentx_start", task, wait, id);
+      }
+      const workflowPath = input.workflow_path === undefined ? undefined : input.workflow_path === "full" ? "FULL" as const : "QUICK" as const;
+      const id = requestIdFor(context, call, input, ["agentx_start", input.project, text, optional(workflowPath), optional(input.title), optional(input.share_to_channel), optional(input.share_mode), optional(input.channel), optional(input.agent), optional(input.input)]);
+      const task = await context.client.startTask({
+        ...agentSelection(input, text),
+        requestId: id, project: input.project as string, instructions: text,
+        ...(workflowPath === undefined ? {} : { workflow: true as const, workflowPath }),
+        ...(input.title === undefined ? {} : { title: input.title as string }),
+        ...(context.clientName === undefined ? {} : { client: context.clientName.slice(0, 200) }),
+        ...(input.share_to_channel === undefined ? {} : { shareToChannel: input.share_to_channel as boolean }),
+        ...(input.share_mode === undefined ? {} : { shareMode: input.share_mode as "view" | "continue" }),
+        ...(input.channel === undefined ? {} : { channel: input.channel as string }),
+      });
+      return afterAction(context, call, "agentx_start", task, wait, id);
+    },
+  },
+  {
     name: "agentx_start_task",
     title: "Hand a coding task to AgentX",
     description:
-      `Hands a coding task to AgentX, which runs it in a private remote workspace on the project's repositories. The task is private to you unless you share it, or the project requires sharing. Write complete instructions: the remote worker gets them exactly as written and cannot see this conversation. By default it answers at once with a task ID while the task runs; then check it with agentx_get_task or wait with agentx_wait_for_task. To wait for a small task in the same call, set wait_seconds (up to 600); if the wait ends first, the result says timed_out and the task keeps running. ${RETRY}, so no second task starts; to run the same instructions again as new work, send a new request_id. When the task ends, open a pull request with agentx_open_pull_request or send more work with agentx_continue_task, and close it with agentx_close_task when done, since each open task counts against your limit.`,
+      `Alias of agentx_start (kept for one release; use agentx_start). Hands a coding task to AgentX, which runs it in a private remote workspace on the project's repositories. The task is private to you unless you share it, or the project requires sharing. Write complete instructions: the remote worker gets them exactly as written and cannot see this conversation. By default it answers at once with a task ID while the task runs; then check it with agentx_get_task or wait with agentx_wait_for_task. To wait for a small task in the same call, set wait_seconds (up to 600); if the wait ends first, the result says timed_out and the task keeps running. ${RETRY}, so no second task starts; to run the same instructions again as new work, send a new request_id. When the task ends, open a pull request with agentx_open_pull_request or send more work with agentx_continue_task, and close it with agentx_close_task when done, since each open task counts against your limit.`,
     inputSchema: {
       project: z.string().min(1).max(200).describe("the project's exact name, from agentx_list_projects"),
       instructions: instructionsInput,
@@ -654,7 +715,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
   {
     name: "agentx_start_workflow",
     title: "Start a human-gated AgentX delivery workflow",
-    description: "Starts a native AgentX task-to-PR workflow. AgentX first inspects the request with read-only tools and saves a plan. The task owner reviews the complete plan and approves its exact digest and workflow revision with agentx_decide_workflow before implementation. Interrupted planning can be retried with agentx_retry_workflow. After implementation, AgentX blocks before PR publication until candidate-bound verification and review are qualified. Use agentx_start_task for the existing task flow.",
+    description: "Alias of agentx_start (kept for one release; use agentx_start). Starts a native AgentX task-to-PR workflow. AgentX first inspects the request with read-only tools and saves a plan. The task owner reviews the complete plan and approves its exact digest and workflow revision with agentx_decide_workflow before implementation. Interrupted planning can be retried with agentx_retry_workflow. After implementation, AgentX blocks before PR publication until candidate-bound verification and review are qualified. Use agentx_start_task for the existing task flow.",
     inputSchema: {
       project: z.string().min(1).max(200).describe("the project's exact name, from agentx_list_projects"),
       instructions: instructionsInput,
@@ -756,7 +817,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       status: DeveloperTaskStatusSchema.optional().describe("only tasks with this status"),
       limit: z.number().int().min(1).max(DEVELOPER_TASK_LIST_MAX).optional().describe("how many tasks to show, 1 to 50; 20 by default"),
     },
-    outputSchema: { tasks: z.array(z.object({ task_id: z.string(), title: z.string(), project: z.string(), status: z.string(), created_at: z.string(), updated_at: z.string().describe("when the latest request on this task started; share changes do not move it"), shared: z.boolean() })) },
+    outputSchema: { tasks: z.array(z.object({ task_id: z.string(), title: z.string(), project: z.string(), status: z.string(), created_at: z.string(), updated_at: z.string().describe("when the latest request on this task started; share changes do not move it"), shared: z.boolean(), session: z.string().optional().describe("the task's session ID"), session_url: z.string().optional().describe("the task's page in the Rovara web app") })) },
     async handler(context, input) {
       const tasks = await context.client.listTasks({
         limit: (input.limit as number | undefined) ?? DEVELOPER_TASK_LIST_DEFAULT,
@@ -764,8 +825,8 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
         ...(input.status === undefined ? {} : { status: input.status as DeveloperTaskClientView["status"] }),
       });
       return {
-        structured: { tasks: tasks.map((task) => ({ task_id: task.taskId, title: task.title, project: task.project, status: task.status, created_at: task.createdAt, updated_at: task.updatedAt, shared: task.shared })) },
-        text: tasks.length === 0 ? "You have no AgentX tasks that match." : tasks.map((task) => `${task.taskId} ${task.status} ${task.project}: ${task.title}`).join("\n"),
+        structured: { tasks: tasks.map((task) => ({ task_id: task.taskId, title: task.title, project: task.project, status: task.status, created_at: task.createdAt, updated_at: task.updatedAt, shared: task.shared, ...taskSessionOutput(task) })) },
+        text: tasks.length === 0 ? "You have no AgentX tasks that match." : tasks.map((task) => `${task.taskId} ${task.status} ${task.project}: ${task.title}${taskSessionOutput(task).session_url === undefined ? "" : ` ${taskSessionOutput(task).session_url!}`}`).join("\n"),
       };
     },
   },
@@ -1297,7 +1358,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
   {
     name: "agentx_run_agent",
     title: "Run an AgentX agent",
-    description: `Starts a run of an agent on a project; the run is a task, checked with agentx_get_task and waited for with agentx_wait_for_task. input is what the agent is asked, exactly as written; it cannot see this conversation. version draft runs the owner's draft as a test run. If the agent wants to make a change that needs a person's approval, the task waits; agentx_list_approvals shows it and gives the person the link to decide it. ${RETRY}.`,
+    description: `Alias of agentx_start (kept for one release; use agentx_start). Starts a run of an agent on a project; the run is a task, checked with agentx_get_task and waited for with agentx_wait_for_task. input is what the agent is asked, exactly as written; it cannot see this conversation. version draft runs the owner's draft as a test run. If the agent wants to make a change that needs a person's approval, the task waits; agentx_list_approvals shows it and gives the person the link to decide it. ${RETRY}.`,
     inputSchema: {
       agent_id: z.string().min(1).max(100).describe("the agent's ID, from agentx_list_agents"),
       project: z.string().min(1).max(200).describe("the project's exact name, from agentx_list_projects"),
