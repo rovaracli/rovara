@@ -1580,13 +1580,19 @@ export async function deliverAttentionDm(deps: NotifierDependencies, notice: Not
   const key = { pk: "NOTIFY_DM", sk };
   const row = await getItem<Record<string, unknown>>(deps, key);
   if (row === undefined || row.entityType !== "TASK_ATTENTION_DM") return "invalid";
+  // Review N3: a claim that was never finished (the process died between the claim and the post) expires like the other DM kinds' claims: it is marked UNKNOWN and never posted again.
+  if (row.status === "SENDING") {
+    if (typeof row.claimUntil === "number" && row.claimUntil >= deps.now()) return "claimed";
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :unknown", ConditionExpression: "#status = :sending", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":unknown": "UNKNOWN", ":sending": "SENDING" } })).catch(() => undefined);
+    return "unknown";
+  }
   if (row.status !== "PENDING") return "already_sent";
   if (typeof row.slackUserId !== "string" || !SLACK_USER_ID.test(row.slackUserId) || typeof row.text !== "string" || row.text === "" || row.text.length > ATTENTION_DM_TEXT_MAX) return "invalid";
   // Review M1: the row is claimed (PENDING to SENDING) before the post, so a redelivered or a concurrent notice posts once: whoever loses the claim posts nothing.
   try {
     await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sending", ConditionExpression: "#status = :pending",
-      ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sending": "SENDING", ":pending": "PENDING" },
+      TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sending, claimUntil = :until", ConditionExpression: "#status = :pending",
+      ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sending": "SENDING", ":pending": "PENDING", ":until": deps.now() + 30_000 },
     }));
   } catch (error) {
     if (error instanceof Error && error.name === "ConditionalCheckFailedException") return "already_sent";
@@ -1597,13 +1603,13 @@ export async function deliverAttentionDm(deps: NotifierDependencies, notice: Not
   } catch (error) {
     // The post did not happen: give the row back, so the notice's retry can send it.
     await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :pending", ConditionExpression: "#status = :sending",
+      TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :pending REMOVE claimUntil", ConditionExpression: "#status = :sending",
       ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sending": "SENDING", ":pending": "PENDING" },
     })).catch(() => undefined);
     throw error;
   }
   await deps.documentClient.send(new UpdateCommand({
-    TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sent", ConditionExpression: "#status = :sending",
+    TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sent REMOVE claimUntil", ConditionExpression: "#status = :sending",
     ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sent": "SENT", ":sending": "SENDING" },
   })).catch(() => undefined);
   return "sent";

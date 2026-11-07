@@ -262,11 +262,59 @@ describe("review fixes", () => {
     await deliverAttention(t.deps());
     const sk = String(t.dms()[0]!["sk"]);
     const posts: unknown[] = [];
-    const deps = { documentClient: t.w.db, tableName: "state", post: async (input: unknown) => { posts.push(input);return { ts: "1.1" }; } } as never;
+    const deps = { documentClient: t.w.db, tableName: "state", now: () => T0, post: async (input: unknown) => { posts.push(input);return { ts: "1.1" }; } } as never;
     const notice = { id: `attention_dm:${sk}`, kind: "attention_dm" as const, at: new Date(T0).toISOString(), attentionKey: sk };
     expect(await Promise.all([deliverAttentionDm(deps, notice), deliverAttentionDm(deps, notice)])).toEqual(expect.arrayContaining(["sent", "already_sent"]));
     expect(await deliverAttentionDm(deps, notice)).toBe("already_sent");
     expect(posts).toHaveLength(1);
     expect(t.dms()[0]).toMatchObject({ status: "SENT" });
+  });
+
+  it("N1: people whose every channel waits for a retry take no place: with 45 of them, a healthy person is told in the same sweep", async () => {
+    const t = setup();
+    for (let n = 0; n < 45; n += 1) {
+      const id = `${String(n).padStart(2, "0")}${"0".repeat(62)}`;
+      t.readers.add(id);t.people[id] = { email: `p${String(n)}@example.com` };
+      t.w.db.set({ pk: `NOTIFY_SENT#${ORG_A}`, sk: `DEV#${id}`, entityType: "NOTIFY_SENT", orgId: ORG_A, developerId: id, lastAt: 0, emailFailures: 2, emailRetryAt: T0 + 3_600_000, waitUntil: T0 + 3_600_000 });
+      t.w.db.set({ pk: "NOTIFY_PENDING", sk: `${ORG_A}#${id}#${t.seeded.sessionId}#needs_you`, entityType: "NOTIFY_PENDING", orgId: ORG_A, developerId: id, sessionId: t.seeded.sessionId, kind: "needs_you", at: new Date(T0 - 60_000).toISOString() });
+    }
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
+    await deliverAttention(t.deps());
+    expect(t.sent.map((mail) => mail.to)).toEqual([["priya@example.com"]]);
+  });
+
+  it("N1: a person whose only channel failed is marked as waiting until its retry", async () => {
+    const t = setup();
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
+    await deliverAttention(t.deps({ email: { ses: { send: async () => { throw Object.assign(new Error("x"), { name: "MessageRejected" }); } }, from: "x@example.com" } }));
+    expect(t.w.db.get({ pk: `NOTIFY_SENT#${ORG_A}`, sk: `DEV#${PRIYA}` })).toMatchObject({ emailFailures: 1, waitUntil: T0 + ATTENTION_RETRY_BASE_MS });
+  });
+
+  it("N2: an email SES accepted is never sent again when its sent-mark fails to write", async () => {
+    const t = setup();
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
+    t.w.db.injectFault({ command: "UpdateCommand", match: (input) => String(input["UpdateExpression"]).startsWith("SET emailSent"), error: { name: "ProvisionedThroughputExceededException" }, times: 5 });
+    expect(await deliverAttention(t.deps())).toMatchObject({ emails: 1 });
+    t.w.clock.now += NOTIFY_BATCH_MINUTES * 60_000 + 1;
+    await deliverAttention(t.deps());
+    expect(t.sent).toHaveLength(1);
+  });
+
+  it("N3: a direct-message claim that was never finished expires and is never posted (a live one is left alone)", async () => {
+    const t = setup();
+    t.people[PRIYA] = { slackUserId: "U0PRIYA01" };
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
+    await deliverAttention(t.deps());
+    const row = t.dms()[0]!;
+    const posts: unknown[] = [];
+    let now = T0;
+    const deps = { documentClient: t.w.db, tableName: "state", now: () => now, post: async (input: unknown) => { posts.push(input);return { ts: "1.1" }; } } as never;
+    const notice = { id: `attention_dm:${String(row["sk"])}`, kind: "attention_dm" as const, at: new Date(T0).toISOString(), attentionKey: String(row["sk"]) };
+    t.w.db.set({ ...row, status: "SENDING", claimUntil: T0 + 30_000 });
+    expect(await deliverAttentionDm(deps, notice)).toBe("claimed");
+    now = T0 + 31_000;
+    expect(await deliverAttentionDm(deps, notice)).toBe("unknown");
+    expect(await deliverAttentionDm(deps, notice)).toBe("already_sent");
+    expect(posts).toHaveLength(0);
   });
 });

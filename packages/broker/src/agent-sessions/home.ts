@@ -631,7 +631,7 @@ const ranked = (cards: readonly HomeSourceCard[]): HomeSourceCard[] => [...cards
  */
 export async function homeCards(deps: HomeDependencies, caller: HomeCaller): Promise<HomeResponse> {
   const [{ cards, dismissed }, decisions] = await Promise.all([collect(deps, caller), pendingDecisionsOf(deps, caller)]);
-  const shown = ranked(withoutDecided(cards.filter((card) => !(isDismissible(card.kind) && dismissed.get(card.cardId) === occurrenceOf(card))), decisions ?? []));
+  const shown = ranked(withoutRestating(withoutDecided(cards.filter((card) => !(isDismissible(card.kind) && dismissed.get(card.cardId) === occurrenceOf(card))), decisions ?? []), decisions ?? []));
   const answer = shown.slice(0, HOME_CARDS_MAX).map(({ blocksRunningSession: _blocks, occurrence: _occurrence, taskId: _taskId, ...card }) => card); // eslint-disable-line @typescript-eslint/no-unused-vars -- the ranking hint, the occurrence and the task are not part of the answer
   // Without the decision cards wired (cards off, or an older wiring) the one count is Home's own: `needsYou` is left out and readers use `total`.
   return { cards: answer, total: shown.length, ...(deps.pendingDecisions === undefined ? {} : { needsYou: shown.length + (decisions?.length ?? 0) }) };
@@ -646,6 +646,21 @@ async function pendingDecisionsOf(deps: HomeDependencies, caller: HomeCaller): P
     logOf(deps)({ event: "home.decisions_unreadable", error: error instanceof Error ? error.name : "unknown" });
     return undefined;
   }
+}
+
+/**
+ * Review M2: a blocked or paused card only says what another card already asks when the same task has a pending decision card (a run-limit approval, a merge, a spec choice, a budget request on
+ * its own card) or another Home card the caller decides (an approval, a budget request, a plan, a pull request, a question). Then it is left out, of the list and of the count, so one task never
+ * reads as two things that need you.
+ */
+export function withoutRestating(cards: readonly HomeSourceCard[], decisions: readonly PendingDecisionRef[]): HomeSourceCard[] {
+  const decidedTasks = new Set(decisions.flatMap((decision) => (decision.taskId === undefined ? [] : [decision.taskId])));
+  const askedSessions = new Set(cards.filter((card) => card.kind !== "blocked" && card.kind !== "paused" && card.kind !== "failure").flatMap((card) => (card.sessionId === undefined ? [] : [card.sessionId])));
+  return cards.filter((card) => {
+    if (card.kind !== "blocked" && card.kind !== "paused") return true;
+    if (card.taskId !== undefined && decidedTasks.has(card.taskId)) return false;
+    return card.sessionId === undefined || !askedSessions.has(card.sessionId);
+  });
 }
 
 /** The decision card kinds that hold the decision each older Home card kind asks for (the web app's `one-card.ts` rule, on the server). */

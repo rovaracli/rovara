@@ -196,12 +196,14 @@ function pendingRowOf(item: Item, nowSeconds: number): PendingRow | undefined {
   // A row past its expiry is not delivered (the table deletes expired items late).
   const expires = item[INDEX_EXPIRY_ATTRIBUTE];
   if (typeof expires === "number" && expires <= nowSeconds) return undefined;
-  const done: Partial<Record<Channel, true>> = { ...(item["emailSent"] === true ? { email: true as const } : {}), ...(item["slackSent"] === true ? { slack: true as const } : {}) };
+  // Review N2: a channel claimed for a send counts as sent (at most once): the claim is written before the send, so a lost mark after an accepted send never sends it again.
+  const sentBy = (c: Channel) => item[`${c}Sent`] === true || typeof item[`${c}Claimed`] === "number";
+  const done: Partial<Record<Channel, true>> = { ...(sentBy("email") ? { email: true as const } : {}), ...(sentBy("slack") ? { slack: true as const } : {}) };
   return { key: { pk: PENDING_PK, sk }, orgId: orgId, developerId, sessionId, kind: kind as AttentionKind, at, done };
 }
 
 /** One person's channel state: when it last sent anything, and per channel how many tries failed in a row and when it may try again. */
-interface SentMarker { lastAt: number; failures: Partial<Record<Channel, number>>; retryAt: Partial<Record<Channel, number>> }
+interface SentMarker { lastAt: number; failures: Partial<Record<Channel, number>>; retryAt: Partial<Record<Channel, number>>; /** Review N1: every channel owed to this person waits for a retry until then; they take no place before it. */ waitUntil?: number | undefined }
 function markerOf(item: Item | undefined): SentMarker {
   const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
   const failures: Partial<Record<Channel, number>> = {}, retryAt: Partial<Record<Channel, number>> = {};
@@ -210,7 +212,8 @@ function markerOf(item: Item | undefined): SentMarker {
     if (f !== undefined) failures[channel] = f;
     if (r !== undefined) retryAt[channel] = r;
   }
-  return { lastAt: number(item?.["lastAt"]) ?? 0, failures, retryAt };
+  const waitUntil = number(item?.["waitUntil"]);
+  return { lastAt: number(item?.["lastAt"]) ?? 0, failures, retryAt, ...(waitUntil === undefined ? {} : { waitUntil }) };
 }
 
 /** A marker's per-channel failure counts and retry times, as the row's attributes. */
@@ -263,6 +266,8 @@ export async function deliverAttention(deps: AttentionDeliveryDependencies, budg
     const { orgId, developerId } = rows[0]!;
     const marker = markerOf((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: sentKey(orgId, developerId), ConsistentRead: true })) as { Item?: Item }).Item);
     if (nowMs - marker.lastAt < NOTIFY_BATCH_MINUTES * 60_000) continue;
+    // Review N1: someone whose every owed channel is waiting for a retry is not due either, so they never take a place from someone who can be told now.
+    if ((marker.waitUntil ?? 0) > nowMs) continue;
     due.push({ rows: [...rows].sort((a, b) => a.at.localeCompare(b.at)), marker });
   }
   due.sort((a, b) => a.rows[0]!.at.localeCompare(b.rows[0]!.at));
@@ -297,12 +302,22 @@ export async function deliverAttention(deps: AttentionDeliveryDependencies, budg
     const channel = prefs.channel ?? defaultNotifyChannel(slackUserId !== undefined);
     const goes = effectiveNotify({ channel, slackLinked: slackUserId !== undefined, emailAvailable, emailUnsubscribed: prefs.emailUnsubscribed === true });
     const chosen = (["email", "slack"] as const).filter((c) => goes[c]);
-    let sentSomething = false;
+    let sentSomething = false, attempted = false;
     const nextMarker: SentMarker = { lastAt: marker.lastAt, failures: { ...marker.failures }, retryAt: { ...marker.retryAt } };
+    const setOn = async (rows: ReadonlyArray<{ row: PendingRow }>, expression: string, values: Record<string, unknown>) => {
+      for (const { row } of rows) {
+        await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: row.key, UpdateExpression: expression, ConditionExpression: "attribute_exists(pk) AND #at = :at", ExpressionAttributeNames: { "#at": "at" }, ExpressionAttributeValues: { ":at": row.at, ...values } }))
+          .catch((error: unknown) => { if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error; });
+      }
+    };
     for (const c of chosen) {
       const owed = current.filter(({ row }) => row.done[c] !== true);
       if (owed.length === 0) continue;
       if ((nextMarker.retryAt[c] ?? 0) > nowMs) continue;
+      attempted = true;
+      // Review N2: claim before the send. A claim that cannot be written sends nothing (this channel is tried again later).
+      try { await setOn(owed, `SET ${c}Claimed = :now`, { ":now": nowMs }); }
+      catch (error) { log({ event: "attention.claim_failed", channel: c, error: error instanceof Error ? error.name : "unknown" });continue; }
       const lines = [...new Map(owed.map(({ row, line }) => [row.sessionId, line])).values()];
       const shown = lines.slice(0, NOTIFY_ITEMS_MAX), more = lines.length - shown.length;
       let ok = false;
@@ -335,21 +350,25 @@ export async function deliverAttention(deps: AttentionDeliveryDependencies, budg
       const failures = ok ? 0 : (nextMarker.failures[c] ?? 0) + 1;
       const gaveUp = !ok && failures >= ATTENTION_CHANNEL_TRIES_MAX;
       if (ok || gaveUp) {
-        // What this channel sent (or gave up on) is marked on each row, so it is never sent again by this channel.
-        for (const { row } of owed) {
-          await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: row.key, UpdateExpression: `SET ${c}Sent = :yes`, ConditionExpression: "attribute_exists(pk) AND #at = :at", ExpressionAttributeNames: { "#at": "at" }, ExpressionAttributeValues: { ":yes": true, ":at": row.at } }))
-            .catch((error: unknown) => { if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error; });
-          row.done[c] = true;
-        }
+        // What this channel sent (or gave up on) is marked on each row. The claim already keeps it from being sent again, so a mark that fails is only logged.
+        await setOn(owed, `SET ${c}Sent = :yes`, { ":yes": true }).catch((error: unknown) => log({ event: "attention.mark_failed", channel: c, error: error instanceof Error ? error.name : "unknown" }));
+        for (const { row } of owed) row.done[c] = true;
+      } else {
+        // Not sent: the claim is given back, so the retry sends it. If even that fails, it is never sent twice: at most once, logged.
+        await setOn(owed, `REMOVE ${c}Claimed`, {}).catch((error: unknown) => log({ event: "attention.unclaim_failed", channel: c, error: error instanceof Error ? error.name : "unknown" }));
       }
       if (ok) { sentSomething = true;delete nextMarker.failures[c];delete nextMarker.retryAt[c]; }
       else if (gaveUp) { outcome.gaveUp += 1;delete nextMarker.failures[c];delete nextMarker.retryAt[c];log({ event: "attention.channel_gave_up", channel: c }); }
       else { outcome.failed += 1;nextMarker.failures[c] = failures;nextMarker.retryAt[c] = nowMs + ATTENTION_RETRY_BASE_MS * 2 ** (failures - 1); }
     }
     if (sentSomething) { outcome.people += 1;nextMarker.lastAt = nowMs; }
+    // Review N1: when every channel still owed waits for a retry, the person is not due again before the first of them.
+    const waiting = chosen.filter((c) => current.some(({ row }) => row.done[c] !== true)).map((c) => nextMarker.retryAt[c]);
+    if (!sentSomething && waiting.length > 0 && waiting.every((at) => at !== undefined && at > nowMs)) nextMarker.waitUntil = Math.min(...(waiting as number[]));
+    if (!attempted) taken -= 1;
     await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: {
       ...sentKey(orgId, developerId), entityType: "NOTIFY_SENT", orgId, developerId, lastAt: nextMarker.lastAt,
-      ...channelFieldsOf(nextMarker),
+      ...channelFieldsOf(nextMarker), ...(nextMarker.waitUntil === undefined ? {} : { waitUntil: nextMarker.waitUntil }),
       [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + 86_400,
     } }));
     // A row goes once every chosen channel has it (with no channel that can reach the person, Home still lists it and the row goes).

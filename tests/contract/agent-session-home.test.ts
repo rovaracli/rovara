@@ -1016,4 +1016,16 @@ describe("UX2 slice 2: Home is the ONE needs-you list with ONE count", () => {
     const card = (await w.home(PRIYA)).cards.find((entry) => entry.cardId === `paused:${paused.sessionId}`);
     expect(card?.reason).toBe("Paused: needs more budget. It reached the project's budget. Next: You can raise the limit: open the budget request and decide.");
   });
+
+  it("review M2: a blocked or paused card is left out (list and count) when the same task's decision is already on another card", async () => {
+    const w = world();
+    const blocked = w.own({ status: "needs_person", stage: "IMPLEMENT", state: "BLOCKED", workflowBlocked: true, title: "Run limit" });
+    const other = w.own({ status: "needs_person", stage: "VERIFY", state: "BLOCKED", workflowBlocked: true, title: "Checks" });
+    const decisions = async () => [{ cardId: `approve_request:spr_x`, kind: "approve_request", taskId: blocked.taskId }];
+    const answer = await w.home(PRIYA, ORG_A, { pendingDecisions: decisions });
+    const ids = answer.cards.map((card) => card.cardId);
+    expect(ids).not.toContain(`blocked:${blocked.sessionId}`);
+    expect(ids).toContain(`blocked:${other.sessionId}`);
+    expect(answer.needsYou).toBe(answer.cards.length + 1);
+  });
 });
