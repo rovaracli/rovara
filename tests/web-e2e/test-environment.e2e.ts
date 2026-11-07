@@ -5,7 +5,7 @@ import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
 test("a maintainer checks it works and approves the test environment from the Setup step, one press each",async({page,context,request,baseURL})=>{
  await request.post("/__mock/scenario",{data:{name:"onboarding"}});await page.route("https://github.com/apps/rovara/installations/new",async route=>route.fulfill({response:await route.fetch({url:baseURL!+"/__mock/github-landing"})}));await context.clearCookies();await page.goto("/app/signup");
- await page.getByRole("button",{name:"Sign up or sign in"}).click();await expect(page.getByRole("heading",{name:"Sign in to the mock cell"})).toBeVisible();await page.getByRole("button",{name:"Sign in",exact:true}).click();
+ await page.getByRole("button",{name:"Create a company"}).click();await expect(page.getByRole("heading",{name:"Sign in to the mock cell"})).toBeVisible();await page.getByRole("button",{name:"Sign in",exact:true}).click();
  await page.getByLabel("Company name").fill("Acme");await page.getByRole("button",{name:"Continue",exact:true}).click();await expect(page.getByRole("heading",{name:"Connect GitHub",exact:true})).toBeVisible();
  await page.getByRole("button",{name:"Connect GitHub",exact:true}).click();await expect(page.getByRole("heading",{name:"Choose repositories"})).toBeVisible();await page.getByLabel("acme/payments").check();await page.getByLabel("Project name",{exact:true}).fill("payments");await page.getByRole("button",{name:"Create project"}).click();
  const section=page.getByRole("region",{name:"Test environment"});

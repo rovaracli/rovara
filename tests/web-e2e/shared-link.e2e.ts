@@ -10,7 +10,7 @@ for (const expired of [false, true]) test(expired ? "returns an expired shared-l
 test("ends a refused sign-in once without returning to the shared link", async ({ page, context, request }) => {
  await request.post("/__mock/scenario", { data: { name: "workspace" } });await context.clearCookies();await request.post("/__mock/auth", { data: { refused: true } });
  await page.goto(link);await expect(page).toHaveURL(/\/app\/signed-out\?reason=removed$/);
- await expect(page.getByText("Your access to this organization ended.", { exact: true })).toBeVisible();
+ await expect(page.getByText("Your access to this company ended.", { exact: true })).toBeVisible();
  const reads = await (await request.get("/__mock/requests")).json() as Array<{ path: string }>;
  expect(reads.filter(row => row.path === "/v1/auth/browser/authorize")).toHaveLength(1);
 });
