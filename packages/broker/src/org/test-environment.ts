@@ -36,6 +36,7 @@ import {
   type TestEnvLessSafeField,
   type TestEnvironment,
   type TestEnvironmentBody,
+  type TestEnvSeedTrust,
   catalogEntryById, type VerifiedCatalog,
 } from "@agentx/contracts";
 import { auditOccurrence, auditProjectTestEnvChanged } from "../audit/events.js";
@@ -49,6 +50,7 @@ import { approvedFixturesOf, recordsOf, type FixtureStoreFactory } from "../test
 import { refuseDependenciesWithDevcontainer } from "../test-env/devcontainer-check.js";
 import { SEED_COMMAND_PROBLEM_WORDS, dependencySeedCommands, seedCommandProblem } from "../test-env/refused-command.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
+import { parseSeedChecks, seedTrustOf, type SeedCheck } from "../test-env/seed-lock.js";
 import { DynamoSoleOwnerSwitch } from "../lessons/dynamo-settings.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 
@@ -216,7 +218,7 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
 /** The contract's less-safe fields (pre-prod, shared, preview, video, traces, schema-synth, a raised budget, a moved target, a shortened deny list): any of them needs a second person. */
 export type TestEnvChangeFlag = TestEnvLessSafeField;
 
-const changeFlags = (previous: TestEnvironmentBody | undefined, next: TestEnvironmentBody): TestEnvChangeFlag[] => testEnvLessSafeChanges(previous, next);
+const changeFlags = (previous: TestEnvironmentBody | undefined, next: TestEnvironmentBody, trust?: TestEnvSeedTrust): TestEnvChangeFlag[] => testEnvLessSafeChanges(previous, next, trust);
 
 
 export type ProposalOrigin = "setup_run";
@@ -229,7 +231,9 @@ export interface ProposedTestEnvironment { digest: string; risk: DecisionRisk; l
  */
 export async function proposeTestEnvironment(
   deps: TestEnvDeps,
-  input: { orgId: OrgId; project: string; proposedBy: string; role: ProjectRole | undefined; body: unknown; valueSources?: unknown; /** Where the proposal came from: `setup_run` marks it as a setup run's. The mark stays on the record (proposing the same body again does not take it away). */ origin?: ProposalOrigin },
+  input: { orgId: OrgId; project: string; proposedBy: string; role: ProjectRole | undefined; body: unknown; valueSources?: unknown; /** Where the proposal came from: `setup_run` marks it as a setup run's. The mark stays on the record (proposing the same body again does not take it away). */ origin?: ProposalOrigin;
+    /** SEED-RISK-1: the BROKER's own check of each seed command (`lockLookSeeds`), given only by the look's propose. Absent: every seed command of the proposal is HIGH. */
+    seedChecks?: readonly SeedCheck[] },
 ): Promise<ProposedTestEnvironment> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can propose a test environment");
   const body = parseBody(input.body);
@@ -248,13 +252,15 @@ export async function proposeTestEnvironment(
         Item: {
           ...proposalKey(input.orgId, input.project, digest), entityType: "TEST_ENV_PROPOSAL", orgId: input.orgId, project: input.project, digest, proposedBy: input.proposedBy,
           proposedAt: new Date(now).toISOString(), environment: body, ...(input.valueSources === undefined ? {} : { valueSources: input.valueSources }), ...(origin === undefined ? {} : { origin }),
+          ...(input.seedChecks === undefined || input.seedChecks.length === 0 ? {} : { seedChecks: input.seedChecks }),
           [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + TEST_ENV_PROPOSAL_TTL_MS) / 1000),
         },
       },
     }],
   }));
-  const lessSafe = changeFlags(previous?.environment, body);
-  return { digest, risk: lessSafe.length > 0 ? "high" : testEnvApprovalRisk(body), lessSafe };
+  const trust = seedTrustOf(parseSeedChecks(input.seedChecks), body);
+  const lessSafe = changeFlags(previous?.environment, body, trust);
+  return { digest, risk: lessSafe.length > 0 ? "high" : testEnvApprovalRisk(body, trust), lessSafe };
 }
 
 /** Reads a stored proposal's body, checking that it still hashes to its own key. Undefined when there is none or it has expired. */
@@ -269,11 +275,22 @@ export async function readProposal(deps: TestEnvDeps, orgId: OrgId, project: str
 }
 
 /** The value sources a proposal was stored with (where each value came from) and who proposed it. Empty for a proposal that has none (an edit by a person). Never throws on a damaged field: it reads as none. */
-export async function readProposalSources(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<{ valueSources: Array<{ field: string; source: unknown }>; proposedBy: string | undefined; origin: ProposalOrigin | undefined }> {
+export async function readProposalSources(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<{ valueSources: Array<{ field: string; source: unknown }>; proposedBy: string | undefined; origin: ProposalOrigin | undefined; /** SEED-RISK-1: the broker's own seed checks (none: every seed HIGH). */ seedChecks: SeedCheck[] }> {
   const item = await read(deps, proposalKey(orgId, project, digest));
   const sources = item?.valueSources;
   const valueSources = Array.isArray(sources) ? sources.filter((entry): entry is { field: string; source: unknown } => typeof entry === "object" && entry !== null && typeof (entry as { field?: unknown }).field === "string") : [];
-  return { valueSources, proposedBy: typeof item?.proposedBy === "string" ? item.proposedBy : undefined, origin: item?.origin === "setup_run" ? "setup_run" : undefined };
+  return { valueSources, proposedBy: typeof item?.proposedBy === "string" ? item.proposedBy : undefined, origin: item?.origin === "setup_run" ? "setup_run" : undefined, seedChecks: item?.digest === digest && item?.orgId === orgId && item?.project === project ? parseSeedChecks(item?.seedChecks) : [] };
+}
+
+/**
+ * SEED-RISK-1: the seeds of a stored proposal's body the broker verified (its own checks, on the proposal item, for exactly those seeds). Any failure to read is none: every seed command HIGH.
+ */
+export async function proposalSeedTrust(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string, body: TestEnvironmentBody): Promise<TestEnvSeedTrust> {
+  try {
+    return seedTrustOf((await readProposalSources(deps, orgId, project, digest)).seedChecks, body);
+  } catch {
+    return {};
+  }
 }
 
 /** Whether any value source is one a setup RUN adds (a worked command, a company recipe, a person's value in the run). A second signal beside the proposal's own mark. */
@@ -420,13 +437,15 @@ export async function approveTestEnvironment(
   await refuseDependenciesNotAvailable(deps, input.orgId, input.project, body, current?.environment);
   if ((current?.revision ?? 0) !== input.expectedRevision) throw stale("someone changed the test environment; reload and review again");
 
-  const lessSafe = changeFlags(current?.environment, body);
+  // SEED-RISK-1: a seed the broker itself verified (detected unchanged, only on the sealed test database) is not less safe; the checks are read from the proposal item here, never from the caller.
+  const trust = await proposalSeedTrust(deps, input.orgId, input.project, input.digest, body);
+  const lessSafe = changeFlags(current?.environment, body, trust);
   const now = deps.now();
   const fresh = (at: number | undefined): boolean => at !== undefined && Number.isFinite(at) && at <= now && now - at <= TEST_ENV_FRESH_SIGN_IN_MS;
   // A high-risk card (anything less safe, or a tier above the sandbox) needs the person pressing approve to have signed in just now too.
   // A proposal a setup RUN made counts the same: its commands were worked out by running things, so the approver signs in just now (defence in depth: the route asks for it too).
   const setupRun = input.setupRun === true || await proposalIsSetupRun(deps, input.orgId, input.project, input.digest);
-  if ((lessSafe.length > 0 || setupRun || testEnvApprovalRisk(body) === "high") && !fresh(input.approvedBySignedInAtMs)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
+  if ((lessSafe.length > 0 || setupRun || testEnvApprovalRisk(body, trust) === "high") && !fresh(input.approvedBySignedInAtMs)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
   let second: { check: SecondPersonCheck; approverId: string; signedInAtMs: number; sessionRef: string } | undefined;
   if (lessSafe.length > 0) {
     const approval = input.approval;

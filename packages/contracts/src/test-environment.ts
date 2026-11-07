@@ -15,7 +15,7 @@ import { CheckKindSchema, EVIDENCE_SELECTION_METHODS } from "./evidence.js";
 import { GitBranchNameSchema } from "./git-branch.js";
 import { ProjectCommandSchema, RelativeWorkspacePathSchema } from "./project.js";
 import { SetupDraftSchema } from "./rovara-code.js";
-import { TestEnvDependenciesSchema, testEnvDependencyApprovalRisk, testEnvDependencyLessSafeChanges } from "./test-env-dependency.js";
+import { TestEnvDependenciesSchema, seedTargetsOnlySealedTestDb, testEnvDependencyApprovalRisk, testEnvDependencyLessSafeChanges, testEnvSeedSignature, type TestEnvSeedTrust } from "./test-env-dependency.js";
 import { TestEnvValueSourceSchema } from "./test-env-value-source.js";
 import { hostOfUrl, prodDenyMatchesArn, prodDenyMatchesHost, prodDenyMatchesPool } from "./test-environment-prod-deny.js";
 import { sha256Hex } from "./web-hash.js";
@@ -332,7 +332,7 @@ export function cronRunsPerWeek(cron: string): number {
  * The less-safe fields this change turns on, against the approved environment before it (none: the first proposal, where every less-safe field it has is a change). A field already on and unchanged is
  * not a change; a raised round budget is. Pure and deterministic, so the card and the server agree.
  */
-export function testEnvLessSafeChanges(previous: TestEnvironmentBody | undefined, next: TestEnvironmentBody): TestEnvLessSafeField[] {
+export function testEnvLessSafeChanges(previous: TestEnvironmentBody | undefined, next: TestEnvironmentBody, trust?: TestEnvSeedTrust): TestEnvLessSafeField[] {
   const before = previous === undefined ? new Set<TestEnvLessSafeField>() : lessSafeSet(previous);
   const changed = [...lessSafeSet(next)].filter((field) => !before.has(field));
   if (previous !== undefined && next.roundBudgetMin > previous.roundBudgetMin) changed.push("round_budget_raised");
@@ -353,16 +353,35 @@ export function testEnvLessSafeChanges(previous: TestEnvironmentBody | undefined
   // Test services: the less-safe uses a dependency list turns on (a test account, a project image, a substitute image, excluded tests), by value, so a moved or added use is a change and a removed one is not.
   // Nothing is added for a body without dependencies, so every result for one is what it was.
   if (next.dependencies !== undefined && next.dependencies.length > 0) {
-    for (const field of testEnvDependencyLessSafeChanges(previous?.dependencies, next.dependencies)) if (!changed.includes(field)) changed.push(field);
+    for (const field of testEnvDependencyLessSafeChanges(previous?.dependencies, next.dependencies, undefined, sealedVerifiedSeeds(next, trust))) if (!changed.includes(field)) changed.push(field);
   }
   return changed.sort((a, b) => TEST_ENV_LESS_SAFE_FIELDS.indexOf(a) - TEST_ENV_LESS_SAFE_FIELDS.indexOf(b));
 }
 
+/**
+ * SEED-RISK-1: of the seeds the caller says the broker verified, the ones that still count here: a LOCKED command seed of a dependency of THIS body whose every target is the sealed test database
+ * (`seedTargetsOnlySealedTestDb`). Undefined (nothing verified) when there is no trust: every seed command is then counted, as before.
+ */
+export function sealedVerifiedSeeds(body: TestEnvironmentBody, trust: TestEnvSeedTrust | undefined): Set<string> | undefined {
+  const verified = trust?.verifiedSeeds;
+  if (verified === undefined || verified.size === 0) return undefined;
+  const kept = new Set<string>();
+  for (const dependency of body.dependencies ?? []) {
+    if (!seedTargetsOnlySealedTestDb(body, dependency.id)) continue;
+    for (const seed of dependency.seeds) {
+      if (!("command" in seed) || seed.lock === undefined) continue;
+      const signature = testEnvSeedSignature(dependency.id, seed);
+      if (verified.has(signature)) kept.add(signature);
+    }
+  }
+  return kept;
+}
+
 /** The risk of the `approve_test_env` card: medium; high when the environment adds pre-prod access, a shared environment, tier 2, or video or traces. Deterministic: no model output sets it. */
-export function testEnvApprovalRisk(env: TestEnvironmentBody): DecisionRisk {
+export function testEnvApprovalRisk(env: TestEnvironmentBody, trust?: TestEnvSeedTrust): DecisionRisk {
   const set = lessSafeSet(env);
   // A dependency backed by a test account, a project image, a company-approved image, or run with excluded tests is high too (`testEnvDependencyApprovalRisk`); real software from the catalog is medium.
-  const dependencyRisk = env.dependencies === undefined || env.dependencies.length === 0 ? "medium" : testEnvDependencyApprovalRisk(env.dependencies);
+  const dependencyRisk = env.dependencies === undefined || env.dependencies.length === 0 ? "medium" : testEnvDependencyApprovalRisk(env.dependencies, sealedVerifiedSeeds(env, trust));
   return set.has("preprod") || set.has("shared") || set.has("preview") || set.has("video") || set.has("traces") || env.tier !== "sandbox" || dependencyRisk === "high" ? "high" : "medium";
 }
 

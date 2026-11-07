@@ -292,6 +292,7 @@ No single test lists every broker read.
 | `saved-env-rebuild.ts` | Saved project images (SV wiring): starting the rebuild job. |
 | `saved-env-sweep.ts` | Saved project images (SV wiring): settling the end of a rebuild. |
 | `saved-env-triggers.ts` | Saved project images (SV wiring): what makes the registry look at a project, and what starts the job it queues. |
+| `seed-lock-wiring.ts` | SEED-RISK-1: the code host's side of the broker's seed locks (`test-env/seed-lock.ts`): the default branch's head, one tree listing and file reads, GitHub only. |
 | `scope-helpers.ts` | environment, organisation and GitHub scope helpers, egress decisions, connection stores. |
 | `second-review-evidence-routes.ts` | Second review (lane cr-settings, switch `cr`): the writers of the evidence that lets a model block. |
 | `setup-pins.ts` | P1 (su): the broker pins the commit a setup run reads. |

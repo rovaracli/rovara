@@ -34,7 +34,7 @@ import { constants as fsConstants, readFileSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import {
-  CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName,
+  CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName,
   type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskAwsResource, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
@@ -61,6 +61,7 @@ import { emulatorLedgerPort, type EmulatorLedgerPort } from "./emulator-ledger.j
 import { EmulatorSeedError, SEEDED_AWS_SERVICES, readAwsResourcesFromIac, seedEmulator } from "./service-seed-aws.js";
 import { SeedError, createResetHooks, resetForNextCheck, seedRun, type ResetDependency, type SeedPorts } from "./service-reset.js";
 import { SeedFileError, loadSeedFile, readSeedFile, seedFileDigest } from "./service-seed-file.js";
+import { seedLockHoldsInCheckout } from "./service-seed-lock.js";
 import { createFixtureDelivery, type FixtureDelivery, type FixtureSetCallback } from "./fixture-delivery.js";
 import { fakeUsagePort, type FakeUsagePort } from "./fake-usage.js";
 import {
@@ -905,7 +906,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       // The seeds, in the working sandbox (attached, with the run's variables), one dependency at a time so a failure names its dependency.
       const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), ...(input.signal === undefined ? [] : [input.signal])]);
       const workingSeeds: SeedPorts = seedPorts((command, signal) => executionFor(SANDBOX_TARGET, { sandbox: input.sandbox }).runCommand(command, signal),
-        seedFileApplier({ docker, rootPath: root, repositoryPaths: input.repositoryPaths, items: working, helpers: workSession.helpers, log, onLoaded: noteSeedFile }));
+        seedFileApplier({ docker, rootPath: root, repositoryPaths: input.repositoryPaths, items: working, helpers: workSession.helpers, log, onLoaded: noteSeedFile }), root, input.repositoryPaths);
       for (const item of working) {
         try {
           await seedRun(countResets(workSession).session, [dependencyOf(item, workSession, files, runId)], workingSeeds, seedSignal);
@@ -1012,7 +1013,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
 
       // The seeds run INSIDE the round, in the sealed sandbox, from the candidate code: the agent's own migrations are applied, and the helpers hold nothing but what the seeds made.
       const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), signal]);
-      const roundSeeds = seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal), applyFixture);
+      const roundSeeds = seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal), applyFixture, root, input.repositoryPaths);
       for (const item of resolved) {
         try {
           await seedRun(state.counted, state.resetDeps.filter((dependency) => dependency.id === item.plan.id), roundSeeds, seedSignal);
@@ -1095,7 +1096,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
           if (open === undefined || open.runners === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed check round is not open, so no check was run");
           const runners = open.runners;
           try {
-            await resetForNextCheck(open.counted, open.resetDeps, seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal), open.applyFixture), signal);
+            await resetForNextCheck(open.counted, open.resetDeps, seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal), open.applyFixture, root, input.repositoryPaths), signal);
           } catch (error) {
             for (const id of ids) failures.set(id, "reset_failed");
             throw error;
@@ -1125,13 +1126,15 @@ function seedStartFailureOf(error: unknown): "seed_failed" | "seed_changed" | "s
 }
 
 /** The seeds' ports: a command runs where the caller says; a seed FILE is loaded by `applyFixture` (TS-UX-1 item 9, `service-seed-file.ts`), which the caller binds to the phase's own helpers. */
-function seedPorts(runCommand: (command: Parameters<SeedPorts["runCommand"]>[0], signal: AbortSignal) => Promise<{ exitCode: number | null; timedOut?: boolean | undefined }>, applyFixture: SeedPorts["applyFixture"]): SeedPorts {
+function seedPorts(runCommand: (command: Parameters<SeedPorts["runCommand"]>[0], signal: AbortSignal) => Promise<{ exitCode: number | null; timedOut?: boolean | undefined }>, applyFixture: SeedPorts["applyFixture"], rootPath: string, repositoryPaths: readonly string[]): SeedPorts {
   return {
     runCommand: async (command, signal) => {
       const result = await runCommand(command, signal);
       return { exitCode: result.exitCode, timedOut: result.timedOut === true };
     },
     applyFixture,
+    // SEED-RISK-1: a locked seed's script is hashed again from the workspace (the candidate tree as it is now) before each run; a difference refuses it.
+    lockHolds: (command, lock) => seedLockHoldsInCheckout(rootPath, repositoryPaths, command, lock),
   };
 }
 
@@ -1223,12 +1226,12 @@ export async function startTaskTestServices(input: StartTaskTestServicesInput): 
 }
 
 /** The features this worker adds to /ping for test services: the plan feature only when the worker has a test-services configuration (a worker without one would only refuse such a plan). */
-export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env, shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE | typeof TEST_SERVICES_FILE_SEED_FEATURE> {
+export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env, shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE | typeof TEST_SERVICES_FILE_SEED_FEATURE | typeof TEST_SERVICES_SEED_LOCK_FEATURE> {
   if (testServicesConfigFromEnvironment(environment, undefined, undefined) === undefined) return [];
   if (notPulledRepositories(environment) === "all") return [];
   // Slice 3: a worker whose image carries the catalog's fake server (a helper that runs from the worker's own image) can run a plan with a fake; it needs no image pulled.
-  // TS-UX-1 item 9: every worker with test services loads a seed file (service-seed-file.ts).
-  const features: Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE | typeof TEST_SERVICES_FILE_SEED_FEATURE> = [TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE];
+  // TS-UX-1 item 9: every worker with test services loads a seed file (service-seed-file.ts). SEED-RISK-1: and checks a locked seed command's script before it runs it (service-seed-lock.ts).
+  const features: Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE | typeof TEST_SERVICES_FILE_SEED_FEATURE | typeof TEST_SERVICES_SEED_LOCK_FEATURE> = [TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE];
   if (emulatorImagePrepulled(shipped, environment)) features.push(TEST_SERVICES_AWS_PLAN_FEATURE);
   if (fakeServerBaked(shipped)) features.push(TEST_SERVICES_FAKE_PLAN_FEATURE);
   return features;

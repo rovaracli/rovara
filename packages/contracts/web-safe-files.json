@@ -83,6 +83,7 @@
   "packages/contracts/src/reviewed-project-archive.ts",
   "packages/contracts/src/reviewed-project-restore.ts",
   "packages/contracts/src/rovara-code.ts",
+  "packages/contracts/src/seed-script-lock.ts",
   "packages/contracts/src/session-views.ts",
   "packages/contracts/src/setup-agent-web.ts",
   "packages/contracts/src/setup-proposal.ts",

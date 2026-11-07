@@ -28,6 +28,7 @@ import {
   TEST_SERVICES_AWS_PLAN_FEATURE,
   TEST_SERVICES_FAKE_PLAN_FEATURE,
   TEST_SERVICES_FILE_SEED_FEATURE,
+  TEST_SERVICES_SEED_LOCK_FEATURE,
   TEST_SERVICES_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
   PREPARE_SAVED_ENV_FEATURE,
@@ -478,6 +479,10 @@ async function forWorkerFeatures(
   }
   // TS-UX-1 item 9: a plan with a seed FILE needs a worker that loads one: an older one would fail the seed.
   if ((invocation.kind === "task" ? invocation.payload.testEnvironment?.dependencies : invocation.kind === "prepare" ? invocation.payload.testServices?.dependencies : undefined)?.some((dependency) => dependency.seeds.some((seed) => "fixturePath" in seed)) === true && !features.includes(TEST_SERVICES_FILE_SEED_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // SEED-RISK-1: a plan with a LOCKED seed command needs a worker that checks the lock before it runs the seed: an older one would refuse the plan's shape, or run a changed script unchecked.
+  if ((invocation.kind === "task" ? invocation.payload.testEnvironment?.dependencies : invocation.kind === "prepare" ? invocation.payload.testServices?.dependencies : undefined)?.some((dependency) => dependency.seeds.some((seed) => "command" in seed && seed.lock !== undefined)) === true && !features.includes(TEST_SERVICES_SEED_LOCK_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.
