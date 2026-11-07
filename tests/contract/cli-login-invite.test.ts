@@ -34,17 +34,25 @@ describe("parseInviteLink", () => {
     expect(parseInviteLink(`${CELL}/v1/auth/join#invite=${TOKEN}`)).toEqual({ token: TOKEN, cellUrl: CELL });
     expect(parseInviteLink(`${CELL}/prod/v1/auth/join?invite=${TOKEN}`)).toEqual({ token: TOKEN, cellUrl: `${CELL}/prod` });
   });
-  // UX1: a cloud cell's own invite page, <app origin>/join, names that origin as the cell (never as the directory); rovara.dev alone is the directory.
-  it("reads another https host's /join as that cell, never as the directory", () => {
-    expect(parseInviteLink(`https://evil.example/join#invite=${TOKEN}`)).toEqual({ token: TOKEN, cellUrl: "https://evil.example" });
-    expect(parseInviteLink(`https://www.rovara.dev/join#invite=${TOKEN}`)).toEqual({ token: TOKEN, cellUrl: "https://www.rovara.dev" });
-    expect(parseInviteLink(`https://rovara.dev.evil.example/join#invite=${TOKEN}`)).toEqual({ token: TOKEN, cellUrl: "https://rovara.dev.evil.example" });
+  // UX1 review I1: a cloud cell's own invite page, <app origin>/join, is read as that cell only when the CLI already knows the cell (a saved login, or
+  // the URL given); every other host's /join stays refused, look-alikes of a known cell included.
+  it("reads a known cell's own /join as that cell, never as the directory, and nothing else", () => {
+    const known = ["https://staging.rovara.dev", "https://abc.example/prod"];
+    expect(parseInviteLink(`https://staging.rovara.dev/join#invite=${TOKEN}`, known)).toEqual({ token: TOKEN, cellUrl: "https://staging.rovara.dev" });
+    expect(parseInviteLink(`https://abc.example/join#invite=${TOKEN}`, known)).toEqual({ token: TOKEN, cellUrl: "https://abc.example" });
+    for (const link of [`https://evil.example/join#invite=${TOKEN}`, `https://staging.rovara.dev.evil.example/join#invite=${TOKEN}`, `https://www.staging.rovara.dev/join#invite=${TOKEN}`, `https://staging.rovara.dev:8443/join#invite=${TOKEN}`]) {
+      expect(() => parseInviteLink(link, known), link).toThrow("CONFIG_INVALID: that is not a Rovara invite link");
+    }
+    expect(() => parseInviteLink(`https://staging.rovara.dev/join#invite=${TOKEN}`, ["http://staging.rovara.dev", "not a url"])).toThrow("CONFIG_INVALID: that is not a Rovara invite link");
   });
   it("accepts a bare token with neither", () => {
     expect(parseInviteLink(TOKEN)).toEqual({ token: TOKEN });
   });
   it.each([
+    ["another host's /join", `https://evil.example/join#invite=${TOKEN}`],
+    ["a subdomain of rovara.dev", `https://www.rovara.dev/join#invite=${TOKEN}`],
     ["rovara.dev with another port", `https://rovara.dev:8443/join#invite=${TOKEN}`],
+    ["rovara.dev with a look-alike host", `https://rovara.dev.evil.example/join#invite=${TOKEN}`],
     ["rovara.dev with credentials", `https://rovara.dev@evil.example/join#invite=${TOKEN}`],
     ["plain http", `http://rovara.dev/join#invite=${TOKEN}`],
     ["plain http cell", `http://abc.example/v1/auth/join?invite=${TOKEN}`],
@@ -216,6 +224,17 @@ describe("agentx login --invite", () => {
     expect(w.authorizeUrls[0]!.searchParams.get("invite")).toBe(TOKEN);
   });
 
+  // UX1 review I1: a cell's own <origin>/join link works when the person names that cell (or has signed in to it before), and is refused otherwise.
+  it("follows a cell's own /join link only to a cell it was given", async () => {
+    const w = await world();
+    expect(await w.run(["login", CELL, "--invite", `${CELL}/join#invite=${TOKEN}`, "--yes"])).toBe(0);
+    expect(w.authorizeUrls[0]!.searchParams.get("invite")).toBe(TOKEN);
+    const stranger = await world();
+    expect(await stranger.run(["login", "--invite", `${CELL}/join#invite=${TOKEN}`])).not.toBe(0);
+    expect(stranger.err.join("")).toContain("that is not a Rovara invite link");
+    expect(stranger.requests).toEqual([]);
+  });
+
   it("an explicit URL wins over the link's cell, and a bare token needs one", async () => {
     const other = "https://zzz.execute-api.eu-west-1.amazonaws.com";
     const w = await world({ cell: other });
@@ -233,8 +252,7 @@ describe("agentx login --invite", () => {
 
   it("refuses a link that is not a Rovara invite before reaching anyone", async () => {
     const w = await world();
-    // UX1: another host's /join is now read as that cell (it is asked before any browser opens); a path that is no join page is refused outright.
-    expect(await w.run(["login", "--invite", `https://evil.example/other#invite=${TOKEN}`])).not.toBe(0);
+    expect(await w.run(["login", "--invite", `https://evil.example/join#invite=${TOKEN}`])).not.toBe(0);
     expect(w.err.join("")).toContain("[CONFIG_INVALID]: that is not a Rovara invite link");
     expect(w.requests).toEqual([]);
   });

@@ -49,7 +49,7 @@ import { loadProjectConfig } from "./config.js";
 import { checkDeveloperProject, projectCheckText } from "./developer/project-check.js";
 import { projectCodeSettings } from "./developer/code-settings.js";
 import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
-import { resolveDeveloperEnvironment } from "./developer/config.js";
+import { readDeveloperConfig, resolveDeveloperEnvironment } from "./developer/config.js";
 import {
   assertNewFile, auditLogQuery, auditLogText, auditPageUrl, developerExportTransport, exportAuditFile, exportRange, fetchAuditRecords, jsonSafe, verifyAuditExport,
   type AuditLogFlags, type AuditRuntime,
@@ -372,7 +372,9 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       let url = explicitUrl;
       let invite: string | undefined;
       if (options.invite !== undefined) {
-        const parsed = parseInviteLink(options.invite);
+        // UX1 review I1: a cell's own <origin>/join link is followed only to a cell this computer already signs in to, or the URL given here.
+        const saved = await readDeveloperConfig(home).then((config) => Object.values(config.environments).map((entry) => entry.url), () => [] as string[]);
+        const parsed = parseInviteLink(options.invite, [...saved, ...(explicitUrl === undefined ? [] : [explicitUrl])]);
         invite = parsed.token;
         const chosen = explicitUrl ?? await resolveInviteCell(parsed, services.fetchImplementation);
         let base: URL;
