@@ -126,31 +126,66 @@ describe("who made the act, from the tracker's own history", () => {
   });
 });
 
-describe("Jira's word on a webhook's actor (review I1)", () => {
-  const candidate = (accountId: string, url = "https://acme.atlassian.net/browse/PAY-12") => ({ orgId: ORG, externalRef: { system: "jira", id: "PAY-12", url }, actor: { kind: "person" as const, accountId }, act: { kind: "label" as const, value: "rovara" } });
-  const log = (accountId: string) => ({ changelog: { histories: [{ created: "2026-11-07T09:00:00.000+0000", author: { accountId, accountType: "atlassian" }, items: [{ field: "labels", fromString: "", toString: "rovara" }] }] } });
-
-  it("confirms the person only when the issue's own change log, read through the company's connection for that site, names them", async () => {
-    const { deps } = await connections([{ id: "con_jira0000000000000001", type: "jira" }]);
+describe("Jira's word on a webhook's actor (review I1, I1-R)", () => {
+  const NOW_MS = Date.parse("2026-11-07T10:00:00.000Z");
+  const eventAt = "2026-11-07T09:59:00.000Z";
+  const candidate = (accountId: string, over: Record<string, unknown> = {}) => ({
+    orgId: ORG, externalRef: { system: "jira", id: "PAY-12", url: "https://acme.atlassian.net/browse/PAY-12" }, actor: { kind: "person" as const, accountId },
+    act: { kind: "label" as const, value: "rovara" }, eventId: "jira:issue:10042:labeled:rovara:7001", occurredAt: eventAt, ...over,
+  });
+  const change = (id: string, created: string, accountId: string, items = [{ field: "labels", fromString: "", toString: "rovara" }]) => ({ id, created, author: { accountId, accountType: "atlassian" }, items });
+  /** A Jira site: the change log in pages of `pageSize`, and the issue's labels now. */
+  function jira(changes: unknown[], labels: string[] = ["rovara"], pageSize = 100) {
     const urls: string[] = [];
-    const fetch = vi.fn(async (url: string) => { urls.push(url); return Response.json(log("acct-dana")); });
-    const confirm = jiraActorConfirmer({ deps, fetch: fetch as never });
-    expect(await confirm(candidate("acct-dana"))).toBe("person");
-    expect(urls[0]).toBe("https://acme.atlassian.net/rest/api/3/issue/PAY-12?fields=labels,assignee&expand=changelog");
-    // A forged body naming someone else: Jira says it was Dana.
-    expect(await confirm(candidate("acct-admin"))).toBe("unverified");
+    const fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      const parsed = new URL(url);
+      if (parsed.pathname.endsWith("/changelog")) {
+        const start = Number(parsed.searchParams.get("startAt") ?? "0");
+        const values = changes.slice(start, start + pageSize);
+        return Response.json({ values, startAt: start, isLast: start + pageSize >= changes.length });
+      }
+      return Response.json({ fields: { labels } });
+    });
+    return { fetch, urls };
+  }
+  const confirmerFor = async (site: ReturnType<typeof jira>) => jiraActorConfirmer({ deps: (await connections([{ id: "con_jira0000000000000001", type: "jira" }])).deps, fetch: site.fetch as never, now: () => NOW_MS });
+
+  it("confirms the person when the event's own change (by id, near the event's time) was theirs and the label is on the issue now, reading every page", async () => {
+    const changes = [...Array.from({ length: 150 }, (_, n) => change(String(6000 + n), "2026-11-01T09:00:00.000+0000", "acct-eve", [{ field: "status", fromString: "a", toString: "b" }])), change("7001", "2026-11-07T09:59:02.000+0000", "acct-dana")];
+    const site = jira(changes, ["rovara"], 100);
+    expect(await (await confirmerFor(site))(candidate("acct-dana"))).toBe("person");
+    expect(site.urls.filter((url) => url.includes("/changelog"))).toEqual([
+      "https://acme.atlassian.net/rest/api/3/issue/PAY-12/changelog?startAt=0&maxResults=100", "https://acme.atlassian.net/rest/api/3/issue/PAY-12/changelog?startAt=100&maxResults=100",
+    ]);
+  });
+
+  it("is unverified for a replay of a past admin label-add with a fresh time, and the start never happens", async () => {
+    // The admin really added the label, a week ago, as change 7001. The replayed body carries that change's key with today's time.
+    const site = jira([change("7001", "2026-10-31T08:00:00.000+0000", "acct-admin")]);
+    expect(await (await confirmerFor(site))(candidate("acct-admin"))).toBe("unverified");
+  });
+
+  it("is unverified for a forged body naming someone else, an event outside the age window, a change id Jira does not have, or a label taken off since", async () => {
+    const real = [change("7001", "2026-11-07T09:59:02.000+0000", "acct-dana")];
+    expect(await (await confirmerFor(jira(real)))(candidate("acct-admin"))).toBe("unverified");
+    expect(await (await confirmerFor(jira(real)))(candidate("acct-dana", { occurredAt: "2026-11-01T09:59:00.000Z" }))).toBe("unverified");
+    expect(await (await confirmerFor(jira(real)))(candidate("acct-dana", { eventId: "jira:issue:10042:labeled:rovara:9999" }))).toBe("unverified");
+    expect(await (await confirmerFor(jira(real)))(candidate("acct-dana", { eventId: "jira:issue:10042:labeled:rovara:not-a-change" }))).toBe("unverified");
+    expect(await (await confirmerFor(jira(real, [])))(candidate("acct-dana"))).toBe("unverified");
   });
 
   it("is unverified with no connection for the ticket's site, a link outside Atlassian, a failed read, or no act", async () => {
     const none = await connections([]);
-    expect(await jiraActorConfirmer({ deps: none.deps, fetch: vi.fn() as never })(candidate("acct-dana"))).toBe("unverified");
+    expect(await jiraActorConfirmer({ deps: none.deps, fetch: vi.fn() as never, now: () => NOW_MS })(candidate("acct-dana"))).toBe("unverified");
     const { deps } = await connections([{ id: "con_jira0000000000000001", type: "jira" }]);
     const never = vi.fn();
-    expect(await jiraActorConfirmer({ deps, fetch: never as never })(candidate("acct-dana", "https://other.atlassian.net/browse/PAY-12"))).toBe("unverified");
-    expect(await jiraActorConfirmer({ deps, fetch: never as never })(candidate("acct-dana", "https://evil.example/browse/PAY-12"))).toBe("unverified");
+    const confirm = jiraActorConfirmer({ deps, fetch: never as never, now: () => NOW_MS });
+    expect(await confirm(candidate("acct-dana", { externalRef: { system: "jira", id: "PAY-12", url: "https://other.atlassian.net/browse/PAY-12" } }))).toBe("unverified");
+    expect(await confirm(candidate("acct-dana", { externalRef: { system: "jira", id: "PAY-12", url: "https://evil.example/browse/PAY-12" } }))).toBe("unverified");
     expect(never).not.toHaveBeenCalled();
-    expect(await jiraActorConfirmer({ deps, fetch: vi.fn(async () => new Response("{}", { status: 500 })) })(candidate("acct-dana"))).toBe("unverified");
+    expect(await jiraActorConfirmer({ deps, fetch: vi.fn(async () => new Response("{}", { status: 500 })), now: () => NOW_MS })(candidate("acct-dana"))).toBe("unverified");
     expect(await jiraActorConfirmer({ deps: undefined })(candidate("acct-dana"))).toBe("unverified");
-    expect(await jiraActorConfirmer({ deps, fetch: vi.fn() as never })({ ...candidate("acct-dana"), act: undefined })).toBe("unverified");
+    expect(await confirm({ ...candidate("acct-dana"), act: undefined })).toBe("unverified");
   });
 });

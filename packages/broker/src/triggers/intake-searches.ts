@@ -7,6 +7,7 @@
 import { INTAKE_TITLE_MAX, type OrgId } from "@agentx/contracts";
 import { LINEAR_GRAPHQL, OrgConnectionStore, readConnection, readConnectionSecret, type OrgConnectionDeps, type OrgConnectionRecord } from "../connections/store.js";
 import type { IntakeCandidate } from "../intake/engine.js";
+import { outsideEventWindow } from "./ingress.js";
 import { IntakeSearchError, intakeSearchFor, type IntakeSearch, type IntakeSearchItem } from "./poll-intake.js";
 
 const RESPONSE_MAX_BYTES = 2_000_000;
@@ -79,19 +80,33 @@ export function jiraActorOf(histories: readonly unknown[], act: { kind: "label" 
   return undefined;
 }
 
+/** How far a change's own time may be from the event's time and still be that event's change. */
+export const JIRA_CONFIRM_SKEW_MS = 5 * 60_000;
+/** The most change-log pages (100 entries each) read to find the event's change. */
+export const JIRA_CHANGELOG_PAGES_MAX = 10;
+
 /**
- * Slice 5 review I1: the tracker's own word on who made a Jira webhook's act. A webhook body is signed only with the hook's secret, which the people who made the hook have seen, so its `user`
- * is not believed alone: the issue's change log is read again through the company's OWN Jira connection for the ticket's site, and the act is a person's only when the newest change that made
- * it was made by that same account. No connection, a failed read or another author: `unverified` (the ticket waits).
+ * Slice 5 review I1 and I1-R: the tracker's own word on who made a Jira webhook's act. A webhook body is signed only with the hook's secret, which the people who made the hook have seen, so its
+ * `user` is not believed alone. Through the company's OWN Jira connection for the ticket's site, the confirmer checks, all of:
+ *   - the event is inside the age window (`outsideEventWindow`), and its change id (the last part of the event's key) names a change in the issue's paginated change log (bounded pages);
+ *   - that change made the act (added the label, or set that assignee), was made by that same `atlassian` account, and happened within `JIRA_CONFIRM_SKEW_MS` of the event's time;
+ *   - the label is on the issue NOW (or the issue is assigned to that account now).
+ * So a replay of an old, real label-add (a fresh timestamp on an old change) is `unverified`. No connection, a failed read or any mismatch: `unverified` (the ticket waits).
  */
-export function jiraActorConfirmer(input: { deps: OrgConnectionDeps | undefined; fetch?: typeof fetch }) {
+export function jiraActorConfirmer(input: { deps: OrgConnectionDeps | undefined; fetch?: typeof fetch; now?: () => number }) {
   const fetchImpl = input.fetch ?? fetch;
-  return async (candidate: Pick<IntakeCandidate, "orgId" | "externalRef" | "actor" | "act">): Promise<"person" | "rovara" | "unverified"> => {
+  const now = input.now ?? Date.now;
+  return async (candidate: Pick<IntakeCandidate, "orgId" | "externalRef" | "actor" | "act" | "eventId" | "occurredAt">): Promise<"person" | "rovara" | "unverified"> => {
     const accountId = candidate.actor?.accountId;
-    if (input.deps === undefined || candidate.actor?.kind !== "person" || accountId === undefined || candidate.act === undefined) return "unverified";
+    const act = candidate.act;
+    if (input.deps === undefined || candidate.actor?.kind !== "person" || accountId === undefined || act === undefined) return "unverified";
+    const changeId = candidate.eventId?.split(":").at(-1);
+    const eventAt = Date.parse(candidate.occurredAt ?? "");
+    if (changeId === undefined || !/^[1-9][0-9]{0,18}$/u.test(changeId) || !Number.isFinite(eventAt) || outsideEventWindow(new Date(eventAt).toISOString(), now()) !== undefined) return "unverified";
     let site: string;
     try { const url = new URL(candidate.externalRef.url); if (url.protocol !== "https:" || !/\.atlassian\.net$/u.test(url.hostname)) return "unverified"; site = `https://${url.hostname}`; } catch { return "unverified"; }
-    if (!/^[A-Z][A-Z0-9_]{0,30}-[1-9][0-9]{0,9}$/u.test(candidate.externalRef.id)) return "unverified";
+    const key = candidate.externalRef.id;
+    if (!/^[A-Z][A-Z0-9_]{0,30}-[1-9][0-9]{0,9}$/u.test(key)) return "unverified";
     try {
       const connections = (await new OrgConnectionStore({ ...input.deps }).list(candidate.orgId)).filter((entry) => entry.type === "jira" && entry.hasSecret === true);
       for (const entry of connections) {
@@ -99,12 +114,27 @@ export function jiraActorConfirmer(input: { deps: OrgConnectionDeps | undefined;
         if (record === undefined || record.orgId !== candidate.orgId || (record as { siteUrl?: string }).siteUrl !== site) continue;
         const secret = await readConnectionSecret(input.deps, candidate.orgId, record).catch(() => undefined);
         if (secret === undefined || !("apiToken" in secret) || !("email" in secret)) continue;
-        const response = await fetchImpl(`${site}/rest/api/3/issue/${encodeURIComponent(candidate.externalRef.id)}?fields=labels,assignee&expand=changelog`, {
+        const get = async (path: string): Promise<Record<string, unknown>> => rec(await readCapped(await fetchImpl(`${site}${path}`, {
           headers: { authorization: `Basic ${Buffer.from(`${secret.email}:${secret.apiToken}`).toString("base64")}`, accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(10_000),
-        });
-        const actor = jiraActorOf(arr(rec(rec(await readCapped(response))["changelog"])["histories"]), candidate.act);
-        if (actor?.kind === "person" && actor.accountId === accountId) return "person";
-        return "unverified";
+        })));
+        const issue = encodeURIComponent(key);
+        // The event's own change, from the paginated change log (bounded).
+        let change: Record<string, unknown> | undefined;
+        for (let page = 0, startAt = 0; page < JIRA_CHANGELOG_PAGES_MAX && change === undefined; page += 1) {
+          const answer = await get(`/rest/api/3/issue/${issue}/changelog?startAt=${String(startAt)}&maxResults=100`);
+          const values = arr(answer["values"]).map(rec);
+          change = values.find((value) => (typeof value["id"] === "string" || typeof value["id"] === "number" ? String(value["id"]) : "") === changeId);
+          if (answer["isLast"] === true || values.length === 0) break;
+          startAt += values.length;
+        }
+        if (change === undefined) return "unverified";
+        const actor = jiraActorOf([change], act);
+        const createdAt = Date.parse(str(change["created"]) ?? "");
+        if (actor?.kind !== "person" || actor.accountId !== accountId || !Number.isFinite(createdAt) || Math.abs(createdAt - eventAt) > JIRA_CONFIRM_SKEW_MS) return "unverified";
+        // The act still stands now: the label is on the issue, or the issue is assigned to that account.
+        const fields = rec((await get(`/rest/api/3/issue/${issue}?fields=labels,assignee`))["fields"]);
+        const stands = act.kind === "label" ? arr(fields["labels"]).includes(act.value) : str(rec(fields["assignee"])["accountId"]) === act.value;
+        return stands ? "person" : "unverified";
       }
       return "unverified";
     } catch {
