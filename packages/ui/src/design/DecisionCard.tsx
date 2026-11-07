@@ -4,7 +4,8 @@ import { Link, useLocation } from "react-router";
 import { DECISION_APPROVE_TAKES, DECISION_LABELS, DECISION_REJECT_REASONS, decisionTaskSessionOf, type DecisionRejectReason, type DecisionTabId } from "@agentx/contracts/web";
 import { useAppHost } from "../host.js";
 import { ApiError } from "../api/errors.js";
-import { HIGH_ON_CARD_KINDS, decisionOpenTarget, mayApproveHere, runLimitRaise, type DecisionResult, type ReadDecision } from "../api/decisions.js";
+import { HIGH_ON_CARD_KINDS, decisionOpenTarget, mayApproveHere, runLimitRaise, type DecisionResult, type PlanDecisionFields, type ReadDecision } from "../api/decisions.js";
+import { usePlanChoices } from "./PlanChoices.js";
 import { spendChoiceOf, type DesignApprovalRead } from "../api/design-review.js";
 import { APPROVE_REASON_HINT, cleanApproveReason, openBlockersOnCard } from "./design-review-card.js";
 import { Button } from "./Button.js";
@@ -30,9 +31,9 @@ export interface DecisionCardActions {
  /** Records on the server that the evidence of what was SHOWN (the decision's digest) was opened; resolves when it is recorded. */
  onOpenEvidence(tab?: DecisionTabId): Promise<void>;
  /** `reason` is the one plain line an approve_design card with an open blocker asks for (owner Q8); it is sent only there. `acknowledgedRunLimitUsd` is a coding plan's ticked run limit (slice 2). */
- onApprove(tab?: DecisionTabId, reason?: string, acknowledgedRunLimitUsd?: number): Promise<DecisionResult>;
- /** Slice 2: send the document back with the person's reason (requirements, a coding plan, a design). Absent: the card offers no Request changes. */
- onRequestChanges?(reason: string): Promise<DecisionResult>;
+ onApprove(tab?: DecisionTabId, reason?: string, acknowledgedRunLimitUsd?: number, /** OWNER DECISION 7: a requirements or coding plan card's answers, checks, comments and note. */ plan?: PlanDecisionFields): Promise<DecisionResult>;
+ /** Slice 2: send the document back with the person's reason (requirements, a coding plan, a design). Absent: the card offers no Request changes. OWNER DECISION 7: with the open comments the person kept ticked. */
+ onRequestChanges?(reason: string, includedCommentIds?: string[]): Promise<DecisionResult>;
  /** Slice 2: the design questions, answered on their card (the answer_question card on the task page), and Keep waiting for a parked review. */
  questions?: { items: ReadonlyArray<{ id: string; unclear: string; why: string; recommended: string; options: ReadonlyArray<{ id: string; label: string; consequence: string }> }>; parked: boolean; submit(answers: ReadonlyArray<{ questionId: string; optionId?: string; text?: string }>): Promise<void>; resume?(): Promise<void> };
  onReject(reason: DecisionRejectReason): Promise<DecisionResult>;
@@ -46,12 +47,13 @@ export interface DecisionCardActions {
   * On the task page, a HIGH-risk approve_design card is decided on the card itself (the inline Approve), not on another page: `read` asks the server whether this person may and what the card's digest is now,
   * `approve` presses it with the digest that was shown. Absent where the card only links to the task (Home): the link goes to this card on the task page.
   */
- highRisk?: { read(): Promise<DesignApprovalRead>; approve(shownDigest: string, reason?: string, acknowledgedRunLimitUsd?: number): Promise<void | DecisionResult> };
+ highRisk?: { read(): Promise<DesignApprovalRead>; approve(shownDigest: string, reason?: string, acknowledgedRunLimitUsd?: number, plan?: PlanDecisionFields): Promise<void | DecisionResult> };
  /** Slice 3b: Decline an outside approval on its card (with the same recent sign-in). */
  decline?(): Promise<void>;
 }
 
 const HIGH_RISK_NOTE = "High risk: approving needs a recent sign-in.";
+const NO_CHOICES = { questions: [], optionalChecks: [], openComments: [] };
 const CHANGED_WORDS = "This changed while you were looking. The card has the latest; check it and approve again.";
 /** One plain line of at most `max` characters: what a reason field sends (the broker refuses control characters). */
 const plainReason = (text: string, max = 500): string => text.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim().slice(0, max);
@@ -78,6 +80,9 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  const touch = useRef<{ x: number; y: number } | undefined>(undefined), article = useRef<HTMLElement>(null), [signIn, setSignIn] = useState<false | { url?: string }>(false);
  const [ticked, setTicked] = useState(false), [changes, setChanges] = useState(""), [answers, setAnswers] = useState<Record<string, { optionId?: string; text: string }>>({});
  useEffect(() => { if (focused) article.current?.scrollIntoView?.({ block: "center" }); }, [focused]);
+ // OWNER DECISION 7: a requirements or coding plan card carries the document's questions, optional checks, open comments and a note (the old review page's dialog), shown where the card is decided.
+ const planKind = card.kind === "approve_plan" || card.kind === "approve_requirements";
+ const plan = usePlanChoices(String(card.id), planKind ? decision.choices ?? NO_CHOICES : undefined);
  const inline = (card.kind === "approve_design" || HIGH_ON_CARD_KINDS.includes(card.kind)) && card.risk === "high" && actions.highRisk !== undefined;
  // A coding plan's run limit: shown on the card, and a raise is ticked here before Approve (the broker refuses a raise without it).
  const limit = runLimitRaise(card), limitBlocked = limit?.raises === true && !ticked, ack = limit?.proposedUsd;
@@ -115,13 +120,14 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  /** An approve_design card with an open blocker asks for one plain line before it approves (owner Q8). On a card with tabs the line belongs to the design tab. */
  const blockers = (which: DecisionTabId | undefined) => card.kind === "approve_design" || which === "design" ? openBlockersOnCard(which === undefined ? card.evidence : tabs?.find(item => item.id === which)?.evidence ?? card.evidence) : 0;
  const reasonOf = (which: DecisionTabId | undefined) => blockers(which) > 0 ? cleanApproveReason(reason) : undefined;
- const approve = (which: DecisionTabId | undefined) => run(async () => { settle(await actions.onApprove(which, reasonOf(which), ack)); });
+ const planFields = (): PlanDecisionFields | undefined => (planShown ? plan.fields() : undefined);
+ const approve = (which: DecisionTabId | undefined) => run(async () => { const result = await actions.onApprove(which, reasonOf(which), ack, planFields());if (result.kind === "decided") plan.reset();settle(result); });
  /** The inline Approve of a high-risk design: read what the server shows now, stop if it is not what this person was shown, then press with that digest. A missing recent sign-in is said on the card, with a way to sign in again. */
  const approveInline = () => run(async () => {
   const high = actions.highRisk!;
   const now = await high.read();
   if (now.digest !== digest) { setOpened({});actions.onStale();setError(CHANGED_WORDS);return; }
-  const result = await high.approve(digest, reasonOf(undefined), ack);
+  const result = await high.approve(digest, reasonOf(undefined), ack, planFields());
   // A high merge goes on as its approval card, decided there with the decide-grade sign-in.
   if (result !== undefined && result.kind === "needs_confirmation") { settle(result);return; }
   setNote(<p role="status">Approved. Rovara goes on from here.</p>);
@@ -129,6 +135,8 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  // Whether this card is on its own task page. There everything is decided on the card: its link to the same page is left out (a high card that is not decided inline keeps it).
  const onItsPage = target?.kind === "internal" && decisionTaskSessionOf(target.to) !== undefined && decisionTaskSessionOf(target.to) === sessionOfPage(location.pathname);
  const here = onItsPage && (card.risk !== "high" || highSpendHere);
+ // The choices are made where the card is decided: on its task page (a low card on Home approves with AgentX's answers and the open comments, as Slack's Approve does).
+ const planShown = planKind && onItsPage && card.status === "pending";
  // Owner decision (a), slice 3: a medium card is decided on its own page (the task page's card), never where it is merely shown (Home): there it is the card's front and "Open", nothing to press.
  const openOnly = card.risk === "medium" && !onItsPage && target !== undefined;
  const link: ReactNode = target === undefined || here ? null : target.kind === "internal" ? <Link className="rv-decision-open" to={target.to}>{DECISION_LABELS.open}</Link> : <Button variant="quiet" onClick={() => host.openExternal(target.href)}>{DECISION_LABELS.open}</Button>;
@@ -168,7 +176,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  const changesReason = plainReason(changes);
  const changesBox = changesShown && <details className="rv-decision-changes"><summary>{DECISION_LABELS.requestChanges}</summary>
   <label htmlFor={"changes-" + card.id}>What should change?</label><textarea id={"changes-" + card.id} maxLength={500} value={changes} onChange={event => setChanges(event.target.value)} />
-  <Button busy={busy} disabled={changesReason === ""} onClick={() => { void run(async () => { const result = await actions.onRequestChanges!(changesReason);if (result.kind === "decided") { setChanges("");setNote(<p role="status">Sent back with your reason. Rovara revises it.</p>); } else settle(result); }); }}>{DECISION_LABELS.requestChanges}</Button>
+  <Button busy={busy} disabled={changesReason === ""} onClick={() => { void run(async () => { const result = await actions.onRequestChanges!(changesReason, planShown ? plan.commentIds() : undefined);if (result.kind === "decided") { setChanges("");plan.reset();setNote(<p role="status">Sent back with your reason. Rovara revises it.</p>); } else settle(result); }); }}>{DECISION_LABELS.requestChanges}</Button>
  </details>;
  const documentTab = onItsPage ? DOCUMENT_TAB[card.kind] : undefined;
  const readLink = documentTab !== undefined && <Link className="rv-decision-read" to={{ search: location.search, hash: documentTab.hash }}>{documentTab.words}</Link>;
@@ -190,6 +198,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
   {tabs === undefined ? <Chips chips={card.evidence} /> : <Tabs label={"Documents to approve for " + card.title} value={tab} onValueChange={value => { if (value === "requirements" || value === "design") setTab(value); }} items={tabs.map(item => ({ value: item.id, label: item.title + (item.approved ? " (approved)" : ""), content: <><Chips chips={item.evidence} />{needsEvidence && !openOnly && evidencePanel(item.id)}</> }))} />}
   {tabs === undefined && needsEvidence && !openOnly && evidencePanel(undefined)}
   {!openOnly && limitBox}
+  {planShown && plan.element}
   {(card.kind === "approve_plan" || card.kind === "approve_requirements") && card.status === "pending" && <p className="rv-muted rv-decision-takes">{DECISION_APPROVE_TAKES}</p>}
   {questionsBox}
   {readLink}

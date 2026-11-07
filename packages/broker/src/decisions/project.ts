@@ -8,8 +8,8 @@
 //   - a Full-path requirements and design pair is ONE card with two tabs that still records two approvals (owner Q1).
 // Anything an item says in words (a title, a question, a path) is flattened to plain text and cut; fixed words come from this file.
 import {
-  DECISION_LABELS, DECISION_REJECT_REASONS, decisionFocusPath, DESIGN_SOURCE_ONLY_LABEL, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
-  type CardAction, type DecisionCard, type DecisionKind, type DecisionDetailGroup, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip,
+  DECISION_LABELS, DECISION_REJECT_REASONS, decisionFocusPath, DESIGN_SOURCE_ONLY_LABEL, DecisionCardIdSchema, DecisionCardSchema, DecisionPlanChoicesSchema, DecisionTabsSchema, decisionFriction, canonicalJson,
+  type CardAction, type DecisionPlanChoices, type DecisionCard, type DecisionKind, type DecisionDetailGroup, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip,
 } from "@agentx/contracts";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks, type TierInputs, type TierResult } from "./risk-tier.js";
 import { reviewCoverage, type DesignCardFacts } from "../design-review/risk.js";
@@ -59,8 +59,10 @@ export type DecisionItem =
     runLimit?: { currentUsd?: number | undefined; proposedUsd: number } | undefined;
     /** Slice 2 review fix: the files or the checks could not be read from the plan. The card shows neither chip and is at least medium (risk-tier). */
     unread?: boolean | undefined;
+    /** OWNER DECISION 7: the plan's questions, optional checks and open comments, decided on the card (plan-cards.ts). */
+    choices?: DecisionPlanChoices | undefined;
   })
-  | (ItemBase & { kind: "approve_requirements"; claims: number })
+  | (ItemBase & { kind: "approve_requirements"; claims: number; /** OWNER DECISION 7: the requirements' questions and open comments. */ choices?: DecisionPlanChoices | undefined })
   | (ItemBase & {
     kind: "approve_design"; files: readonly string[];
     /** The design went through design review (DR9, `design-review/card-source.ts`): the tier reads its reasons and touches, and the card shows the reviewers, blockers, disagreements and cost. Absent: the older card. */
@@ -135,6 +137,8 @@ export interface Projection {
   details: Record<string, DecisionDetailGroup[]>;
   /** The digest of what is shown now, by card id: card, tabs, details and content versions. */
   digests: Record<string, string>;
+  /** OWNER DECISION 7: the choices of the requirements and coding plan cards that have any, by card id (in the digest: a new comment or question is a changed card). */
+  choices: Record<string, DecisionPlanChoices>;
   /** High-risk cards whose source gave no confirmation page: no fresh sign-in is claimed or enforced for them (owner decision pending). */
   unconfirmed: string[];
   /** Items left out because they could not become a safe card (a bad id or path, a missing input), counted, never described. */
@@ -507,14 +511,27 @@ export function projectDecisionCards(items: readonly DecisionItem[], options: Pr
       digests[pair.card.id] = cardDigest(pair.card, pair.tabs, detailsOf(pair.card.id), [first.item.contentVersion, second.item.contentVersion]);
     }
   }
+  const choices: Record<string, DecisionPlanChoices> = {};
   for (const entry of built) {
     if (merged.has(entry.card.id)) continue;
     cards.push(entry.card);
     subjects[entry.card.id] = entry;
     details[entry.card.id] = detailsOfItem(entry.item, entry.card);
-    digests[entry.card.id] = cardDigest(entry.card, undefined, detailsOf(entry.card.id), [entry.item.contentVersion]);
+    const chosen = choicesOfItem(entry.item, entry.card);
+    if (chosen !== undefined) choices[entry.card.id] = chosen;
+    // A card without choices keeps the digest it had; one with choices adds them, so the person approves the questions, checks and comments they were shown.
+    digests[entry.card.id] = cardDigest(entry.card, undefined, detailsOf(entry.card.id), chosen === undefined ? [entry.item.contentVersion] : [entry.item.contentVersion, canonicalJson(chosen)]);
   }
   cards.sort((a, b) => RISK_RANK[a.risk] - RISK_RANK[b.risk] || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
   const unconfirmed = cards.filter((card) => card.risk === "high" && card.status === "pending" && !(card.actions.find((action) => action.kind === "open")?.href ?? "").startsWith("/v1/app/approve/")).map((card) => card.id);
-  return { cards, tabs, tabSubjects, subjects, details, digests, unconfirmed, dropped };
+  return { cards, tabs, tabSubjects, subjects, details, digests, choices, unconfirmed, dropped };
+}
+
+/** A pending requirements or coding plan card's choices, when it has any and they are a valid shape; anything else has none (the person can still approve with AgentX's answers). */
+function choicesOfItem(item: DecisionItem, card: DecisionCard): DecisionPlanChoices | undefined {
+  if ((item.kind !== "approve_plan" && item.kind !== "approve_requirements") || item.choices === undefined || card.status !== "pending") return undefined;
+  const parsed = DecisionPlanChoicesSchema.safeParse(item.choices);
+  if (!parsed.success) return undefined;
+  const { questions, optionalChecks, openComments } = parsed.data;
+  return questions.length === 0 && optionalChecks.length === 0 && openComments.length === 0 ? undefined : parsed.data;
 }

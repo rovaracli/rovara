@@ -32,6 +32,48 @@ export type DecisionDetailGroup = z.infer<typeof DecisionDetailGroupSchema>;
 export const DECISION_DETAIL_GROUPS_MAX = 12;
 export const DecisionDetailGroupsSchema = z.array(DecisionDetailGroupSchema).max(DECISION_DETAIL_GROUPS_MAX);
 
+/** The most comments one decision includes and the longest note: the workflow decision's own limits (`DECISION_COMMENTS_MAX`, `PAGE_NOTE_MAX_CHARS` in task-comments.ts, which is not browser-safe). */
+export const DECISION_PLAN_COMMENTS_MAX = 25;
+export const DECISION_PLAN_NOTE_MAX = 500;
+export const DECISION_PLAN_QUESTIONS_MAX = 20;
+export const DECISION_PLAN_CHECKS_MAX = 20;
+/** OWNER DECISION 7: the card kinds that carry the document's own choices (its questions, the optional checks, the open comments, a note), as the old review page sent them with a decision. */
+export const DECISION_PLAN_CHOICE_KINDS: readonly string[] = ["approve_plan", "approve_requirements"];
+/** The card kinds whose Approve chooses optional checks: the coding plan only (the workflow decision's rule). */
+export const DECISION_OPTIONAL_CHECK_KINDS: readonly string[] = ["approve_plan"];
+
+/** One answer to a question of the document: the option chosen and whether the person opened the question (the old page's `opened`). */
+export const DecisionPlanAnswerSchema = z.object({ decisionId: z.string().min(1).max(4), optionId: z.string().min(1).max(31), opened: z.boolean() }).strict();
+export type DecisionPlanAnswer = z.infer<typeof DecisionPlanAnswerSchema>;
+const planAnswers = z.array(DecisionPlanAnswerSchema).max(DECISION_PLAN_QUESTIONS_MAX).refine((answers) => new Set(answers.map((answer) => answer.decisionId)).size === answers.length, "each question once");
+const commentIds = z.array(z.string().uuid()).max(DECISION_PLAN_COMMENTS_MAX).refine((ids) => new Set(ids).size === ids.length, "each comment once");
+
+/**
+ * OWNER DECISION 7: what a requirements or coding plan card offers beside Approve and Request changes, read from the document the card was drawn from (its questions, each with the options and AgentX's
+ * recommendation), the task's optional checks (the coding plan only) and the person comments still open on the document. The workflow decision checks every answer, check and comment again.
+ */
+export const DecisionPlanChoicesSchema = z.object({
+  questions: z.array(z.object({
+    id: z.string().min(1).max(4), question: line(500), recommended: z.string().min(1).max(31),
+    options: z.array(z.object({ id: z.string().min(1).max(31), label: line(300) }).strict()).min(1).max(12),
+    /** The suggestions people who may comment made on this question (on the old review page or in Slack), with their names, for the owner who decides. */
+    suggested: z.array(z.object({ optionId: z.string().min(1).max(31), name: line(80) }).strict()).max(10).optional(),
+  }).strict()).max(DECISION_PLAN_QUESTIONS_MAX),
+  optionalChecks: z.array(z.object({ id: z.string().min(1).max(64), label: line(200), selected: z.boolean() }).strict()).max(DECISION_PLAN_CHECKS_MAX),
+  openComments: z.array(z.object({ id: z.string().uuid(), excerpt: line(200) }).strict()).max(DECISION_PLAN_COMMENTS_MAX),
+}).strict();
+export type DecisionPlanChoices = z.infer<typeof DecisionPlanChoicesSchema>;
+
+/** Why an approve body's plan fields are refused for a card of this kind, or undefined (as `approveReasonProblem`: never dropped, never smuggled onto another kind). */
+export function planChoicesProblem(itemKind: string, body: { answers?: unknown; selectedOptionalCheckIds?: unknown; includedCommentIds?: unknown; note?: unknown }): string | undefined {
+  const field = (["answers", "selectedOptionalCheckIds", "includedCommentIds", "note"] as const).find((key) => body[key] !== undefined);
+  if (field === undefined) return undefined;
+  if (!DECISION_PLAN_CHOICE_KINDS.includes(itemKind)) return `${field}: this card takes no ${field}`;
+  if (body.selectedOptionalCheckIds !== undefined && !DECISION_OPTIONAL_CHECK_KINDS.includes(itemKind)) return "selectedOptionalCheckIds: only a coding plan has optional checks";
+  return undefined;
+}
+
+
 /**
  * `GET /v1/app/decisions`: the cards, the tabs of the cards that have them, the evidence detail of each, and a `digests` entry per card: the digest of what the server is showing NOW (the card,
  * its tabs and the content version behind it: the document version, the pull request head). A client sends it back as `shownDigest` with `evidence-opened` and `approve`, so a person can only
@@ -47,9 +89,11 @@ export const DecisionCardsViewSchema = z
     dropped: z.number().int().min(0).max(100_000),
     /** High-risk cards whose source gave no confirmation page: they open the item's own page and make no fresh-sign-in claim. A source should supply one; this makes a missing one visible. */
     unconfirmed: z.array(DecisionCardIdSchema).max(DECISION_CARDS_MAX).optional(),
+    /** OWNER DECISION 7: the questions, optional checks and open comments of the requirements and coding plan cards that have any (`DecisionPlanChoicesSchema`). */
+    choices: z.record(DecisionCardIdSchema, DecisionPlanChoicesSchema).optional(),
   })
   .strict()
-  .refine((view) => [...Object.keys(view.tabs), ...Object.keys(view.details)].every((id) => view.cards.some((card) => card.id === id)), { message: "tabs and details belong to listed cards", path: ["tabs"] })
+  .refine((view) => [...Object.keys(view.tabs), ...Object.keys(view.details), ...Object.keys(view.choices ?? {})].every((id) => view.cards.some((card) => card.id === id)), { message: "tabs and details belong to listed cards", path: ["tabs"] })
   .refine((view) => view.cards.every((card) => view.digests[card.id] !== undefined), { message: "every card has a digest", path: ["digests"] });
 export type DecisionCardsView = z.infer<typeof DecisionCardsViewSchema>;
 
@@ -60,6 +104,7 @@ export type DecisionCardsView = z.infer<typeof DecisionCardsViewSchema>;
 export const DecisionCardsViewReaderSchema = z.looseObject({
   cards: z.array(DecisionCardReaderSchema).max(DECISION_CARDS_MAX), total: z.number().int().min(0),
   tabs: z.record(z.string(), z.unknown()).optional(), details: z.record(z.string(), z.unknown()).optional(), digests: z.record(z.string(), z.unknown()).optional(), dropped: z.number().int().min(0).optional(),
+  choices: z.record(z.string(), z.unknown()).optional(),
 });
 
 /** `POST .../evidence-opened`: the digest the person was shown. */
@@ -85,6 +130,14 @@ export const DecisionApproveBodySchema = z.object({
   requestId: z.string().uuid(), shownDigest: DecisionDigestSchema, tab: DecisionTabIdSchema.optional(), reason: line(DECISION_APPROVE_REASON_MAX).optional(),
   /** A coding plan's card only: the run limit the card showed and the person ticked (slice 2). The broker refuses an approval that would set another, and one that raises the limit without it. */
   acknowledgedRunLimitUsd: z.number().min(0).max(100_000).optional(),
+  /** OWNER DECISION 7 (requirements and coding plan cards only): the person's answers to the document's questions (an unanswered one takes AgentX's answer). */
+  answers: planAnswers.optional(),
+  /** OWNER DECISION 7 (coding plan only): the optional checks to run. Absent: the plan's own selection. */
+  selectedOptionalCheckIds: z.array(z.string().min(1).max(64)).max(DECISION_PLAN_CHECKS_MAX).refine((ids) => new Set(ids).size === ids.length, "each check once").optional(),
+  /** OWNER DECISION 7: the open comments sent with the approval. Absent: the open comments, oldest first, as Slack's Approve takes them. */
+  includedCommentIds: commentIds.optional(),
+  /** OWNER DECISION 7: a free note for AgentX, sent with the approval. */
+  note: z.string().trim().min(1).max(DECISION_PLAN_NOTE_MAX).regex(/^[^\p{Cf}\u0000-\u0009\u000b-\u001f\u007f-\u009f]*$/u, "plain text (line breaks are kept)").optional(),
 }).strict();
 export type DecisionApproveBody = z.infer<typeof DecisionApproveBodySchema>;
 /** The card kinds that take `acknowledgedRunLimitUsd` on approve; every other kind refuses it. */
@@ -96,7 +149,11 @@ export const DECISION_CHANGES_REASON_MAX = 500;
  * `POST /v1/app/decisions/{kind}/{subject}/request-changes` (slice 2): the document goes back to the planner with the person's reason, through the same workflow decision (REQUEST_CHANGES) Slack and the task page
  * use, with the same authority. `shownDigest` is what the person was shown: a changed card is refused as stale.
  */
-export const DecisionRequestChangesBodySchema = z.object({ requestId: z.string().uuid(), shownDigest: DecisionDigestSchema, reason: z.string().trim().min(1).max(DECISION_CHANGES_REASON_MAX).regex(/^[^\p{Cc}\p{Cf}]*$/u, "plain text") }).strict();
+export const DecisionRequestChangesBodySchema = z.object({
+  requestId: z.string().uuid(), shownDigest: DecisionDigestSchema, reason: z.string().trim().min(1).max(DECISION_CHANGES_REASON_MAX).regex(/^[^\p{Cc}\p{Cf}]*$/u, "plain text"),
+  /** OWNER DECISION 7 (requirements and coding plan cards only): the open comments sent back with the reason (the review comments). Absent: none, as Slack's Request changes. */
+  includedCommentIds: commentIds.optional(),
+}).strict();
 export type DecisionRequestChangesBody = z.infer<typeof DecisionRequestChangesBodySchema>;
 
 /** What an approve or a reject answers when it was decided: the card, what was recorded and, on a card with tabs, which documents are still waiting. */

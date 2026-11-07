@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { DECISION_FOCUS_PARAM } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
-import { HIGH_ON_CARD_KINDS, createDecisionsApi, useDecisions, type ReadDecision } from "../../api/decisions.js";
+import { HIGH_ON_CARD_KINDS, createDecisionsApi, useDecisions, type PlanDecisionFields, type ReadDecision } from "../../api/decisions.js";
 import { DecisionCard, type DecisionCardActions } from "../../design/DecisionCard.js";
 import { createDesignReviewApi } from "../../api/design-review.js";
 import { ApiError } from "../../api/errors.js";
@@ -21,9 +21,9 @@ export function useDecisionActions() {
  const refresh = async () => { await Promise.all([query.invalidateQueries({ queryKey: ["decisions"] }), query.invalidateQueries({ queryKey: ["home"] })]); };
  return (decision: ReadDecision) => ({
   onOpenEvidence: async (tab?: Parameters<typeof api.evidenceOpened>[1]) => { await api.evidenceOpened(decision, tab); },
-  onApprove: async (tab?: Parameters<typeof api.approve>[1], reason?: string, acknowledgedRunLimitUsd?: number) => { const result = await api.approve(decision, tab, reason, acknowledgedRunLimitUsd);await refresh();return result; },
-  // Slice 2: Request changes on a document's card; the task is read again too (its step moved).
-  onRequestChanges: async (reason: string) => { const result = await api.requestChanges(decision, reason);await Promise.all([refresh(), query.invalidateQueries({ queryKey: ["session"] })]);return result; },
+  onApprove: async (tab?: Parameters<typeof api.approve>[1], reason?: string, acknowledgedRunLimitUsd?: number, plan?: PlanDecisionFields) => { const result = await api.approve(decision, tab, reason, acknowledgedRunLimitUsd, plan);await refresh();return result; },
+  // Slice 2: Request changes on a document's card; the task is read again too (its step moved). OWNER DECISION 7: with the review comments the person kept ticked.
+  onRequestChanges: async (reason: string, includedCommentIds?: string[]) => { const result = await api.requestChanges(decision, reason, includedCommentIds);await Promise.all([refresh(), query.invalidateQueries({ queryKey: ["session"] })]);return result; },
   // A choice on a design review's cost card: the card's own action, through the design review route (the broker re-checks who may choose it).
   onChoose: async (action: ReadDecision["card"]["actions"][number]) => { await designApi.chooseSpend(decision, action, crypto.randomUUID());await refresh(); },
   onReject: async (reason: Parameters<typeof api.reject>[1]) => { const result = await api.reject(decision, reason);await refresh();return result; },
@@ -47,7 +47,7 @@ function useInlineApprove() {
   };
   if (HIGH_ON_CARD_KINDS.includes(decision.card.kind) && taskId !== undefined) return { highRisk: {
    read: async () => ({ digest: decision.digest, mayApprove: true }),
-   approve: async (shownDigest, _reason, acknowledgedRunLimitUsd) => { const result = await decisionsApi.approveHighOnCard(decision, shownDigest, acknowledgedRunLimitUsd);await reread();return result; },
+   approve: async (shownDigest, _reason, acknowledgedRunLimitUsd, plan) => { const result = await decisionsApi.approveHighOnCard(decision, shownDigest, acknowledgedRunLimitUsd, plan);await reread();return result; },
   } };
   if (decision.card.kind !== "approve_design" || taskId === undefined) return {};
   return { highRisk: {
