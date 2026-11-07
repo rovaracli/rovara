@@ -37,7 +37,8 @@ export async function testEnvironmentMock({ url, method, json, record }: MockExc
   if (method !== "POST") return false;
   if (action === "/propose") { phase = "proposed"; json(200, state()); return true; }
   // TE-2: the proposal's own check runs first, on a fresh workspace, with nothing added to the project's settings.
-  if (action === "/check") { checked = true; record({ checked: true }); json(202, state()); return true; }
+  // TS-UX-1 item 2: one "Check it works" press proposes (no digest) and checks; a passed check reads as proved, with no Prove press.
+  if (action === "/check") { checked = true; phase = "proved"; record({ checked: true }); json(202, state()); return true; }
   if (action === "/prove") {
     if (!checked) { json(400, { error: { code: "CONFIG_INVALID", message: "Run the check of this test environment first: it runs the proposed commands on a fresh workspace, before any of them is added to the project's settings." } }); return true; }
     phase = "proved"; json(200, state()); return true;

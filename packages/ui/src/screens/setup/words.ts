@@ -21,7 +21,7 @@ export const VERDICT_WORDS = {
 
 export const CONFIRM_WORDS = {
   rule: "Using this setup saves it as a proposal in the test environment below; it does not change the project's settings. You approve it there, after a passing proof.",
-  next: "Saved as a proposal. In the test environment below, run its check, prove it, then approve it with a fresh sign-in; approving adds the commands to the settings.",
+  next: "Saved as a proposal. In the test environment below, press Check it works, then Approve with a fresh sign-in; approving adds the commands to the settings.",
   checking: "Rovara is still checking where each suggestion came from.",
   leftOut: { unverified: "left out: it does not match the code", refused_command: "left out: it downloads and runs code, or holds a secret", not_a_command_item: "left out: not a command", too_many: "left out: too many commands", invalid_command: "left out: it could not be read as a command" },
 } as const;

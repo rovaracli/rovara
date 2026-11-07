@@ -134,7 +134,7 @@ it("Use this setup: an item that does not match the code cannot be ticked; the r
   fireEvent.click(within(card).getByRole("button", { name: "Use this setup" }));
   await waitFor(() => expect(posts(f, "/setup-agent/confirm")).toHaveLength(1));
   expect(posts(f, "/setup-agent/confirm")[0]!.body).toMatchObject({ expectedRevision: 2, itemIds: ["setup-web"] });
-  expect(await within(card).findByText(/Saved as a proposal\. In the test environment below, run its check, prove it, then approve it with a fresh sign-in/u)).toBeTruthy();
+  expect(await within(card).findByText(/Saved as a proposal\. In the test environment below, press Check it works, then Approve with a fresh sign-in/u)).toBeTruthy();
   // Nothing was applied by it: no settings save, no setup check, no draft apply.
   expect(f.request.mock.calls.map(([r]) => r).filter((r) => r.method !== "GET" && !r.path.endsWith("/setup-agent/confirm"))).toEqual([]);
   await expectNoAxeViolations(section);
