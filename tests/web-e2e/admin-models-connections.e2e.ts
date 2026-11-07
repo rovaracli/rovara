@@ -16,7 +16,7 @@ test.beforeEach(async ({ context, request, baseURL, page }) => {
 });
 for (const theme of ["light", "dark"] as const) test(`read-only lane C journeys and accessibility in ${theme}`, async ({ page }) => {
  const mutations: string[] = [];page.on("request", r => { if (r.url().includes("/v1/web/") && r.method() !== "GET") mutations.push(r.method()); });
- for (const [path, title] of [["models/sources", "AI models"], ["models/available", "Available models"], ["models/steps", "Code step models"], ["connections", "Connections"], ["waiting", "Waiting for people"]]) {
+ for (const [path, title] of [["models/sources", "AI models"], ["models/available", "Available models"], ["connections", "Connections"], ["waiting", "Waiting for people"]]) {
   await page.goto("/app/admin/" + path);await expect(page.getByRole("heading", { name: title!, exact: true })).toBeVisible();await expect(page.getByRole("progressbar")).toHaveCount(0);await checkA11y(page, { theme });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   if (theme === "light") await evidenceShot(page, { path: ".superpowers/sdd/codex/c1-" + path!.replaceAll("/", "-") + ".png" });

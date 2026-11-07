@@ -13,8 +13,8 @@ const sent = async (request: APIRequestContext) => await (await request.get("/__
 
 test("an admin follows the link from AI models, reviews a change page by page, saves it, and sees the answer", async ({ page, request }) => {
  await page.setViewportSize({ width: 1280, height: 900 });
- await page.goto("/app/admin/models/steps");
- await page.getByRole("link", { name: "Set company defaults and locks in How we work" }).click();
+ await page.goto("/app/admin/models/sources");
+ await page.getByRole("link", { name: "Step models (in How we work)" }).click();
  await expect(page.getByRole("heading", { name: "How we work (company)", exact: true })).toBeFocused();
  const build = page.getByRole("region", { name: "Build" }), review = page.getByRole("region", { name: "Review (code and security)" });
  await expect(build.getByText("anthropic/claude-sonnet-4-6")).toBeVisible();

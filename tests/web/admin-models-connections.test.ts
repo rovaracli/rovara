@@ -42,7 +42,7 @@ const bodies: Record<string, unknown> = {
  "/v1/app/spend-requests": { spendRequests: [] },
 };
 function area(path: string) { return mount({ path, respond: async r => ({ status: 200, body: bodies[r.path] ?? (r.path === "/v1/app/me" ? AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] }) : {}) }) }); }
-for (const [path, title, content] of [["models/sources", "AI models", "Company source"], ["models/available", "Available models", "sample-model"], ["models/steps", "Code step models", "Effective model unavailable"], ["connections?open=linear", "Connections", "Tracker"], ["waiting", "Waiting for people", "Approval"]] as const) it(`opens ${path} read-only with safe projected data`, async () => {
+for (const [path, title, content] of [["models/sources", "AI models", "Company source"], ["models/available", "Available models", "sample-model"], ["connections?open=linear", "Connections", "Tracker"], ["waiting", "Waiting for people", "Approval"]] as const) it(`opens ${path} read-only with safe projected data`, async () => {
  const f = area("/app/admin/" + path);await screen.findByRole("heading", { name: title });await screen.findAllByText(content, { exact: false });
  expect(f.container.textContent).not.toContain("synthetic-private-value");expect(f.container.textContent).not.toContain("private-suffix");expect(f.container.querySelector('a[href*="evil.example"]')).toBeNull();
  expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);expect(JSON.stringify(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] }))).not.toContain("synthetic-private-value");f.close();
@@ -136,7 +136,7 @@ const credentialSourceNames={anthropic:"Anthropic",openai:"OpenAI",openrouter:"O
 type CredentialSourceKind=keyof typeof credentialSourceNames;
 const providerSetupNames={anthropic:"Anthropic",openai:"OpenAI",openrouter:"OpenRouter",bedrock:"Amazon Bedrock (your AWS account)",endpoint:"Your own model gateway"};
 function permittedSourcesText(configured:boolean,kind:CredentialSourceKind){return [
- "AI models","Company source configuration does not verify access to a model.","Model sources","·","Available models","·","Code step models",
+ "AI models","Company source configuration does not verify access to a model.","Model sources","·","Available models","·","Step models (in How we work)",
  // UX3: provider setup moved to the Connections page; this page links there.
  "To add, check or remove an AI provider, use","Connections",". Here you choose the order they are tried in.",
  "Company providers","Company sources","Source","Provider","Credential","Models","Model access","Company source",credentialSourceNames[kind],kind==="bedrock"?"External setup · Unverified":configured?"Configured":"Not configured","1 configured · verified usable count unavailable","Unverified",

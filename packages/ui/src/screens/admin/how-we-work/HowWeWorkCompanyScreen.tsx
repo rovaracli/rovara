@@ -37,7 +37,7 @@ export function HowWeWorkCompanyScreen() {
  const [notice, setNotice] = useState<Notice>(), { role } = useAdminContext();
  const reread = async (): Promise<boolean> => !(await read.refetch()).isError;
  return <section><PageHeader focusOnMount title={T.PAGE_TITLE} description={T.PAGE_NOTE} />
-  <p><Link to="/app/admin/models/steps">Back to AI models</Link></p>
+  <p><Link to="/app/admin/models/sources">Back to AI models</Link></p>
   <LearningSuggestionsRow />
   <KnownFailingPolicyRow />
   <SetupRecipesLink />

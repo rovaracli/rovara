@@ -49,11 +49,14 @@ const review = async () => { fireEvent.click(screen.getByRole("button", { name: 
 const save = async () => { await review();fireEvent.click(await screen.findByRole("button", { name: "Save company defaults" })); };
 
 describe("the link from AI & connections", () => {
- it("is on the Code step models tab and leads to the company page", async () => {
-  mount({ path: "/app/admin/models/steps" });
-  const link = await screen.findByRole("link", { name: "Set company defaults and locks in How we work" });
+ it("is on the AI models page, and the old Code step models address goes to the company page", async () => {
+  mount({ path: "/app/admin/models/sources" });
+  const link = await screen.findByRole("link", { name: "Step models (in How we work)" });
   expect(link.getAttribute("href")).toBe("/app/admin/how-we-work");
-  expect(await screen.findByText("Effective step choices, policy scope, selection reasons and approved fallbacks cannot be verified in this view yet.")).toBeTruthy();
+ });
+ it("redirects the retired Code step models address", async () => {
+  mount({ path: "/app/admin/models/steps" });
+  expect(await screen.findByRole("heading", { name: "How we work (company)" })).toBeTruthy();
  });
 });
 
