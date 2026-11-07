@@ -215,6 +215,8 @@ function NightlyLine({ nightly }: { nightly: Proposal["environment"]["nightly"] 
 /** What failed in the check, why, and what fixes it (TS-UX-1 item 2): the failing step as the server named it, the cause in plain words, and the fix, with the setup agent where it helps. */
 export function checkFailureOf(failedStep: string | undefined): { cause: string; fix: string; agent: boolean } {
   const step = failedStep ?? "";
+  // Review I3: the seed file's content is bound to the approval; a changed file is not loaded.
+  if (/changed since the test environment was approved/iu.test(step)) return { cause: "The test data file changed since the test environment was approved, so it was not loaded.", fix: "Check it works with the file as it is now, then approve the test environment again.", agent: false };
   if (/seed/iu.test(step) && /test service/iu.test(step)) return { cause: "The test data did not load into the test database.", fix: "Check the test data below: a command must succeed against an empty database, and a file must be plain SQL that loads into one. Fix it, then check again.", agent: false };
   if (/test service/iu.test(step)) return { cause: "A service the tests use did not start.", fix: "Check again. If it fails again, an administrator can see why on the machines' health.", agent: false };
   if (step.startsWith("test")) return { cause: "The tests ran on a fresh copy of your default branch and failed.", fix: "If they need a service that is not listed above, add it; otherwise fix the tests in your repository. Then check again.", agent: true };

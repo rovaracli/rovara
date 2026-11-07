@@ -17,7 +17,7 @@ import type { ApprovedFixture } from "./fixture-lookup.js";
  */
 export const TEST_SERVICES_MIN_CATALOG_REVISION = 3;
 
-export const DEPENDENCY_PLAN_REFUSALS = ["no_catalog", "catalog_too_old", "not_available_yet", "not_in_catalog", "not_in_edition", "retired", "not_pinned", "not_allowed", "too_many", "invalid", "fixture_not_approved"] as const;
+export const DEPENDENCY_PLAN_REFUSALS = ["no_catalog", "catalog_too_old", "not_available_yet", "not_in_catalog", "not_in_edition", "retired", "not_pinned", "not_allowed", "too_many", "invalid", "fixture_not_approved", "seed_file_unbound"] as const;
 export type DependencyPlanRefusal = (typeof DEPENDENCY_PLAN_REFUSALS)[number];
 /** What a person reads when a run cannot start its dependencies. Fixed words: no catalog id, digest or error text of any kind. */
 export const DEPENDENCY_PLAN_REFUSAL_WORDS: Record<DependencyPlanRefusal, string> = {
@@ -32,7 +32,11 @@ export const DEPENDENCY_PLAN_REFUSAL_WORDS: Record<DependencyPlanRefusal, string
   too_many: "This project asks for more test services than a run starts.",
   invalid: "The plan for this project's test services could not be built.",
   fixture_not_approved: "A fake this project asks for has no approved set of answers.",
+  seed_file_unbound: "The test data file of this project's test environment is not bound to its approval. Check it works and approve the test environment again.",
 };
+
+/** Review I3: the seed files an approval bound, by dependency and path, with the sha256 its check loaded. */
+export type SeedFileHashes = ReadonlyArray<{ id: string; path: string; sha256: string }>;
 
 export type DependencyPlanResult = { ok: true; dependencies: TaskDependencyPlan[] } | { ok: false; reason: DependencyPlanRefusal };
 
@@ -193,7 +197,7 @@ function planOne(dependency: TestEnvDependency, catalog: VerifiedCatalog, editio
 /**
  * The pinned plans of every dependency of an approved environment, or the first reason one cannot be started. `catalog` is what `serviceCatalogSourceOf` loaded (undefined: it could not be). Never throws.
  */
-export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; catalog: VerifiedCatalog | undefined; edition: "public" | "enterprise"; projectId?: string; minCatalogRevision?: number; /** The approved fixture sets of the task's organisation, by digest (`approvedFixturesOf`). Absent: no set is approved, so every fake is refused. */ fixtures?: ReadonlyMap<string, ApprovedFixture> }): DependencyPlanResult {
+export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; catalog: VerifiedCatalog | undefined; edition: "public" | "enterprise"; projectId?: string; minCatalogRevision?: number; /** The approved fixture sets of the task's organisation, by digest (`approvedFixturesOf`). Absent: no set is approved, so every fake is refused. */ fixtures?: ReadonlyMap<string, ApprovedFixture>; /** Review I3: the plan is of an APPROVED environment, so every file seed carries the sha256 its approval bound (one with none is refused). Absent for a candidate check: the worker reports what it loaded. */ approvedSeedFiles?: SeedFileHashes }): DependencyPlanResult {
   try {
     const dependencies = input.body.dependencies ?? [];
     if (dependencies.length > TASK_DEPENDENCY_PLAN_MAX) return { ok: false, reason: "too_many" };
@@ -207,7 +211,9 @@ export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; catalo
     for (const dependency of dependencies) {
       const one = planOne(dependency, input.catalog, input.edition, input.projectId ?? "", input.body.prodDeny, input.fixtures ?? new Map());
       if (!one.ok) return one;
-      const parsed = TaskDependencyPlanSchema.safeParse(one.plan);
+      const bound = boundSeeds((one.plan as { seeds: TaskDependencyPlan["seeds"] }).seeds, dependency.id, input.approvedSeedFiles);
+      if (bound === undefined) return { ok: false, reason: "seed_file_unbound" };
+      const parsed = TaskDependencyPlanSchema.safeParse({ ...(one.plan as object), seeds: bound });
       if (!parsed.success) return { ok: false, reason: "invalid" };
       plans.push(parsed.data);
     }
@@ -218,6 +224,19 @@ export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; catalo
   } catch {
     return { ok: false, reason: "invalid" };
   }
+}
+
+/** A plan's seeds with each file seed bound to its approved sha256 (`approved` given), or as they are (a candidate check). Undefined when an approved file seed has no bound sha256. */
+function boundSeeds(seeds: TaskDependencyPlan["seeds"], dependencyId: string, approved: SeedFileHashes | undefined): TaskDependencyPlan["seeds"] | undefined {
+  if (approved === undefined) return seeds;
+  const out: TaskDependencyPlan["seeds"] = [];
+  for (const seed of seeds) {
+    if ("command" in seed) { out.push(seed); continue; }
+    const hash = approved.find((entry) => entry.id === dependencyId && entry.path === seed.fixturePath)?.sha256;
+    if (hash === undefined) return undefined;
+    out.push({ fixturePath: seed.fixturePath, sha256: hash });
+  }
+  return out;
 }
 
 // ---- the signed catalog the release ships

@@ -10,7 +10,7 @@
 import { EDITION_ENV_VAR, agentXError, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvTaskPlan } from "@agentx/contracts";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, taskDependencyPlansOf, type ServiceCatalogSource } from "./dependency-plan.js";
 import { lastNightlyFailures } from "./nightly.js";
-import type { TestEnvDeps } from "../org/test-environment.js";
+import { readApprovedSeedFiles, type TestEnvDeps } from "../org/test-environment.js";
 import { selectionFieldsAreSafe } from "./prove-from-setup-check.js";
 import { readTestEnvPin, usableTestEnvironment } from "./usable.js";
 import { testEnvironmentEnabled } from "./switch.js";
@@ -70,7 +70,9 @@ async function planOf(
     if (await projectUsesDevcontainer(deps, input.orgId, input.project)) throw agentXError("RUNTIME_UNAVAILABLE", DEPENDENCIES_WITH_DEVCONTAINER_WORDS);
     const catalog = await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined);
     const fixtures = await approvedFixturesOf(recordsOf(deps.fixtureStore), input.orgId, input.project, body);
-    const planned = taskDependencyPlansOf({ body, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: input.project, fixtures });
+    // Review I3: the seed files as the approval bound them (a file seed with no bound content is refused: approve again).
+    const approvedSeedFiles = await readApprovedSeedFiles(deps, input.orgId, input.project, found.environment.revision);
+    const planned = taskDependencyPlansOf({ body, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: input.project, fixtures, approvedSeedFiles });
     if (!planned.ok) throw agentXError("RUNTIME_UNAVAILABLE", DEPENDENCY_PLAN_REFUSAL_WORDS[planned.reason]);
     dependencies = planned.dependencies;
   }

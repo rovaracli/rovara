@@ -431,12 +431,14 @@ export async function approveChecked(
   let approvedBySignedInAtMs: number | undefined;
   let approval: Awaited<ReturnType<typeof confirmedTestEnvApproval>>;
   let setupRunMark = false;
+  let seedFileHashes: ReadonlyArray<{ id: string; path: string; sha256: string }> | undefined;
   if (current === undefined || testEnvDigest(current.environment) !== input.digest) {
     const proposal = await readProposal(store, caller.orgId, name, input.digest);
     if (proposal !== undefined) {
       // TE-2: the proof is the proposal's own candidate check, read again now (a check that failed or went out of date since the Prove stops the approval before anything is written).
       const again = await deriveProve(deps, caller.orgId, name, proposal);
       if (!again.ok) throw refuse(again.refusal);
+      seedFileHashes = again.candidate?.usage?.seedFiles;
       // TS-UX-1 item 2: no Prove press: the passed check's report is kept here when none is yet (the approval reads the kept one).
       if (!testEnvIsProved(await readTestEnvProveReport(store, caller.orgId, name, input.digest), input.digest, proposal)) await recordTestEnvProveReport(store, { orgId: caller.orgId, project: name, report: again.report });
       const lessSafe = testEnvLessSafeChanges(current?.environment, proposal);
@@ -451,6 +453,8 @@ export async function approveChecked(
   }
   const approvedNow = await approveTestEnvironment(testEnvApprovalStoreOf(deps), {
     orgId: caller.orgId, project: name, digest: input.digest, expectedRevision: input.expectedRevision, requestId: input.requestId, approvedBy: caller.developerId, role,
+    // Review I3: the seed files' content the proposal's own check loaded is what is approved.
+    ...(seedFileHashes === undefined ? {} : { seedFileHashes }),
     ...(approval === undefined ? {} : { approval }), ...(approvedBySignedInAtMs === undefined ? {} : { approvedBySignedInAtMs }), ...(setupRunMark ? { setupRun: true } : {}),
   });
   logDeveloperEvent({ event: "developer.test_env_approved", orgId: caller.orgId, project: name, revision: String(approvedNow.revision), replayed: String(approvedNow.replayed) });

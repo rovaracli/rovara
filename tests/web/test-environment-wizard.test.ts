@@ -212,6 +212,12 @@ it("runs the proposal's own check, shows it running and shows how a failed one f
   expect(seedAlert.textContent).toContain("The test data did not load into the test database.");
   expect(seedAlert.textContent).toContain("a file must be plain SQL that loads into one");
   seedFailed.close();
+  // Review I3: a seed file changed after approval asks for a fresh approval.
+  const changed = setup({ read: { status: 200, body: state({ proposal: { ...PROPOSAL, check: { status: "failed", failedStep: "setup: A test service's seed file changed since the test environment was approved; check it works and approve it again" } } }) } });
+  const changedAlert = await within(await section()).findByRole("alert");
+  expect(changedAlert.textContent).toContain("The test data file changed since the test environment was approved");
+  expect(changedAlert.textContent).toContain("approve the test environment again");
+  changed.close();
 });
 
 it("S2: when an approved command is not in the settings, offers the check of the approved environment first, then writes exactly the approved commands, and loads the saved settings", async () => {

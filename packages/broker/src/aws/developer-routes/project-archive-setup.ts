@@ -1,6 +1,6 @@
 import { candidateDependencyPlan } from "../../test-env/candidate-plan.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
-import { readApprovedTestEnvironment } from "../../org/test-environment.js";
+import { readApprovedSeedFiles, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { WorkingBranchNameSchema } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { randomUUID } from "node:crypto";
@@ -238,7 +238,7 @@ async function approvedTestServicesOf(deps: DeveloperRouteDependencies, orgId: O
   if (!testEnvironmentEnabled()) return undefined;
   const approved = await readApprovedTestEnvironment({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name).catch(() => undefined);
   if (approved === undefined || (approved.environment.dependencies?.length ?? 0) === 0) return undefined;
-  const plan = await candidateDependencyPlan(deps, approved.environment, { orgId, project: name }).catch(() => undefined);
+  const plan = await candidateDependencyPlan(deps, approved.environment, { orgId, project: name }, process.env, await readApprovedSeedFiles({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name, approved.revision)).catch(() => undefined);
   return plan === undefined ? undefined : { plan, prodDeny: approved.environment.prodDeny };
 }
 

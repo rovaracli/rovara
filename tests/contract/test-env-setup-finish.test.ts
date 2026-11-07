@@ -203,3 +203,54 @@ describe("item 1: the second person's confirmation is a card on the same screen"
     });
   });
 });
+
+describe("review I3 (SEED-FILE-LOCK): a seed file's content is bound to the approval", () => {
+  const withFileSeed = (): TestEnvironmentBody => draftBody({ dependencies: [{ ...postgres, seeds: [{ fixturePath: "repo/web/db/seeds/users.sql" }] }], repos: withPostgres().repos });
+  const SHA = "5".repeat(64);
+  async function proposedAndChecked(t: Bench, usage: Record<string, unknown> | undefined): Promise<string> {
+    const { proposeTestEnvironment } = await import("../../packages/broker/src/org/test-environment.js");
+    const { candidateCheckKey } = await import("../../packages/broker/src/org/test-env-candidate.js");
+    const proposed = await proposeTestEnvironment({ documentClient: t.db, tableName: "state", now: () => Date.now() }, { orgId: TEST_ORG, project: NAME, proposedBy: OMAR.developerId, role: "maintainer", body: withFileSeed() });
+    t.candidatePassed(proposed.digest);
+    if (usage !== undefined) {
+      const key = candidateCheckKey(TEST_ORG, NAME, proposed.digest, 1);
+      t.db.set({ ...(t.db.get(key) as Record<string, unknown>), usage });
+    }
+    return proposed.digest;
+  }
+  const usageWith = (seedFiles: unknown[]) => ({ schemaVersion: 1, dependencies: [{ id: "postgres", started: true, healthy: true, startMs: 800, resetCount: 0 }], unknownCalls: { domains: [], otherCount: 0 }, seedFiles });
+
+  it("the approval keeps the sha256 the check loaded, and a plan of the approved environment carries it", async () => {
+    const t = await benchWithCatalog();
+    process.env.TEST_SERVICES_ENABLED = "1";
+    await withSwitch("1", async () => {
+      const digest = await proposedAndChecked(t, usageWith([{ id: "postgres", path: "repo/web/db/seeds/users.sql", sha256: SHA }]));
+      const approved = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      const { readApprovedSeedFiles } = await import("../../packages/broker/src/org/test-environment.js");
+      expect(await readApprovedSeedFiles({ documentClient: t.db, tableName: "state", now: () => Date.now() }, TEST_ORG, NAME, 1)).toEqual([{ id: "postgres", path: "repo/web/db/seeds/users.sql", sha256: SHA }]);
+      // The project's own check (an approved environment) sends the bound content.
+      const sent = (await startProjectCheck(t))["testServices"] as { dependencies: Array<{ seeds: unknown[] }> };
+      expect(sent.dependencies[0]!.seeds).toEqual([{ fixturePath: "repo/web/db/seeds/users.sql", sha256: SHA }]);
+    });
+  });
+  it("is refused when the check did not load the file (nothing to bind), and an approved environment with an unbound file seed plans nothing", async () => {
+    const t = await benchWithCatalog();
+    process.env.TEST_SERVICES_ENABLED = "1";
+    await withSwitch("1", async () => {
+      // A check that started Postgres but reports no seed file loaded (an older worker, or the load did not happen).
+      const { seedFiles: _none, ...noFiles } = usageWith([]);
+      void _none;
+      const digest = await proposedAndChecked(t, noFiles);
+      const refused = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+      expect(refused.status).toBe(400);
+      expect((refused.body.error as { message: string }).message).toContain("did not load this test environment's test data file");
+      expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toEqual([]);
+    });
+    const { taskDependencyPlansOf } = await import("../../packages/broker/src/test-env/dependency-plan.js");
+    const catalog = verifiedCatalog(pinnedCatalog());
+    expect(taskDependencyPlansOf({ body: withFileSeed(), catalog, edition: "public", projectId: NAME, approvedSeedFiles: [] })).toEqual({ ok: false, reason: "seed_file_unbound" });
+    const candidate = taskDependencyPlansOf({ body: withFileSeed(), catalog, edition: "public", projectId: NAME });
+    expect(candidate.ok && candidate.dependencies[0]!.seeds).toEqual([{ fixturePath: "repo/web/db/seeds/users.sql" }]);
+  });
+});

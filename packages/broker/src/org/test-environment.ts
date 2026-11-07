@@ -396,7 +396,7 @@ export interface ApprovedTestEnvironment { revision: number; digest: string; les
  */
 export async function approveTestEnvironment(
   deps: TestEnvDeps,
-  input: { orgId: OrgId; project: string; digest: string; expectedRevision: number; requestId: string; approvedBy: string; role: ProjectRole | undefined; approval?: LessSafeApproval; approvedBySignedInAtMs?: number; /** The caller knows the proposal is a setup run's from another record (the candidate check's mark): the fresh sign-in is asked for whatever the proposal item says now. */ setupRun?: boolean },
+  input: { orgId: OrgId; project: string; digest: string; expectedRevision: number; requestId: string; approvedBy: string; role: ProjectRole | undefined; approval?: LessSafeApproval; approvedBySignedInAtMs?: number; /** The caller knows the proposal is a setup run's from another record (the candidate check's mark): the fresh sign-in is asked for whatever the proposal item says now. */ setupRun?: boolean; /** Review I3: the sha256 of each seed file the proposal's check loaded, bound to the approval. Required for every file seed. */ seedFileHashes?: ReadonlyArray<{ id: string; path: string; sha256: string }> },
 ): Promise<ApprovedTestEnvironment> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can approve a test environment");
   if (!DIGEST.test(input.digest) || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.requestId.length < 8 || input.requestId.length > 100) throw invalid("the approval is not well formed");
@@ -412,6 +412,9 @@ export async function approveTestEnvironment(
   const proveItem = await read(deps, proveKey(input.orgId, input.project, input.digest));
   const prove = proveItem === undefined ? undefined : TestEnvProveReportSchema.safeParse(proveItem.report);
   if (!testEnvIsProved(prove?.success === true ? prove.data : undefined, input.digest, body)) throw invalid("prove this environment (boot, smoke test and a full run) before approving it");
+  // Review I3 (SEED-FILE-LOCK): every seed file is approved as the content its check loaded; one the check did not load is not approved.
+  const seedFiles = boundSeedFilesOf(body, input.seedFileHashes);
+  if (seedFiles === undefined) throw invalid(SEED_FILE_UNCHECKED);
   refuseProduction(body, current?.environment);
   refuseRecordingOnShared(body);
   await refuseDependenciesNotAvailable(deps, input.orgId, input.project, body, current?.environment);
@@ -457,7 +460,7 @@ export async function approveTestEnvironment(
         TableName: deps.tableName,
         Item: {
           ...revisionKey(input.orgId, input.project, revision), entityType: "TEST_ENV_REVISION", orgId: input.orgId, project: input.project, revision, approvedAt, approvedBy: input.approvedBy,
-          digest: input.digest, requestId: input.requestId, lessSafe, environment: body,
+          digest: input.digest, requestId: input.requestId, lessSafe, environment: body, ...(seedFiles.length === 0 ? {} : { seedFiles }),
           ...(second === undefined ? {} : { secondApprover: { id: second.approverId, mode: second.check.mode, signedInAt: new Date(second.signedInAtMs).toISOString(), membershipVersion: second.check.membershipVersion } }),
         },
         ConditionExpression: "attribute_not_exists(pk)",
@@ -478,6 +481,34 @@ export async function approveTestEnvironment(
   }
   if (event !== undefined) await flushAuditEvents(deps, [event]);
   return { revision, digest: input.digest, lessSafe, replayed: false };
+}
+
+/** What an approval says when a seed file's content was not loaded by the proposal's check. */
+export const SEED_FILE_UNCHECKED = "The check did not load this test environment's test data file, so its content can't be approved. Check it works again, then approve.";
+
+/** Review I3: the bound hashes for every file seed of the body, or undefined when one has none. Only the body's own file seeds are kept (a hash for anything else is dropped). */
+export function boundSeedFilesOf(body: TestEnvironmentBody, hashes: ReadonlyArray<{ id: string; path: string; sha256: string }> | undefined): Array<{ id: string; path: string; sha256: string }> | undefined {
+  const out: Array<{ id: string; path: string; sha256: string }> = [];
+  for (const dependency of body.dependencies ?? []) {
+    for (const seed of dependency.seeds) {
+      if (!("fixturePath" in seed)) continue;
+      const hash = hashes?.find((entry) => entry.id === dependency.id && entry.path === seed.fixturePath && /^[a-f0-9]{64}$/u.test(entry.sha256));
+      if (hash === undefined) return undefined;
+      if (!out.some((entry) => entry.id === hash.id && entry.path === hash.path)) out.push({ id: hash.id, path: hash.path, sha256: hash.sha256 });
+    }
+  }
+  return out;
+}
+
+/** Review I3: the seed file hashes an approved revision bound (empty for a revision with no file seed, or one written before the binding: its file seeds then plan as unbound and are refused). */
+export async function readApprovedSeedFiles(deps: TestEnvDeps, orgId: OrgId, project: string, revision: number): Promise<Array<{ id: string; path: string; sha256: string }>> {
+  const item = await read(deps, revisionKey(orgId, project, revision));
+  const list = item?.seedFiles;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((entry: unknown) => {
+    const { id, path, sha256 } = (entry ?? {}) as { id?: unknown; path?: unknown; sha256?: unknown };
+    return typeof id === "string" && typeof path === "string" && typeof sha256 === "string" && /^[a-f0-9]{64}$/u.test(sha256) ? [{ id, path, sha256 }] : [];
+  }).slice(0, 16);
 }
 
 /** A short stable id for a request that has none of its own (a card's approve button): the digest, the revision it looked at and who pressed it. */
