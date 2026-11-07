@@ -69,7 +69,8 @@ describe("OWNER DECISION 7: a plan's choices on its decision card", () => {
     expect(DecisionApproveBodySchema.safeParse({ ...base, answers: [{ decisionId: "d1", optionId: "five", opened: true }, { decisionId: "d1", optionId: "three", opened: true }] }).success, "each question once").toBe(false);
     // The plan fields belong to the requirements and coding plan cards only, optional checks to the coding plan only: refused, never dropped.
     expect(planChoicesProblem("merge", { note: "x" })).toBe("note: this card takes no note");
-    expect(planChoicesProblem("approve_design", { includedCommentIds: [] })).toBe("includedCommentIds: this card takes no includedCommentIds");
+    expect(planChoicesProblem("approve_design_reviewed", { includedCommentIds: [] })).toBe("includedCommentIds: this card takes no includedCommentIds");
+    expect(planChoicesProblem("approve_design", { includedCommentIds: [], note: "x" }), "a design without design review takes them").toBeUndefined();
     expect(planChoicesProblem("approve_requirements", { selectedOptionalCheckIds: ["lint"] })).toBe("selectedOptionalCheckIds: only a coding plan has optional checks");
     expect(planChoicesProblem("approve_plan", { answers: [], selectedOptionalCheckIds: [], includedCommentIds: [], note: "x" })).toBeUndefined();
     expect(planChoicesProblem("merge", {})).toBeUndefined();
@@ -145,5 +146,25 @@ describe("OWNER DECISION 7: a plan's choices on its decision card", () => {
     const approved = await t.press(taskId, "approve", { note: "Requirements look right." });
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     expect(t.meta(taskId).workflow.decisions.at(-1)).toMatchObject({ decision: "APPROVE", reason: "Requirements look right." });
+  });
+
+  it("a design without design review is a card too: its comments are sent with Approve, through the one workflow decision", async () => {
+    const t = await world();
+    const taskId = await t.planned("FULL");
+    expect((await t.press(taskId, "approve", {})).status).toBe(200);
+    // The planner writes the design next: a document of its own (a decision names its document by digest).
+    const workspaceId = String(t.meta(taskId).workspaceId);
+    const planning = String(t.h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION" && item.workflowMode === "PLAN" && item.status !== "SUCCEEDED").at(-1)?.id);
+    await t.h.artifact(workspaceId, planning, "plan.md", planAnswer(planDocument({ title: "Retry failed payments: design" })));
+    await t.h.finish(workspaceId, planning, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", reviewPhase: "DESIGN" });
+    const kept = t.comment(taskId, "Keep the retry queue as it is.");
+    const shown = (await t.cardOf(taskId))!;
+    expect(shown.card.kind).toBe("approve_design");
+    expect(shown.choices?.openComments).toEqual([{ id: kept, excerpt: "Keep the retry queue as it is." }]);
+    expect((await t.press(taskId, "approve", { selectedOptionalCheckIds: ["lint"] })).status, "a design has no optional checks").toBe(400);
+    const approved = await t.press(taskId, "approve", { includedCommentIds: [kept], note: "Good design." });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(t.meta(taskId).workflow.decisions.at(-1)).toMatchObject({ decision: "APPROVE", reason: "Good design.", commentsIncluded: 1 });
   });
 });

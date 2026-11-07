@@ -238,7 +238,8 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     if (body.data.shownDigest !== pending.digest) throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);
     const acting = actingSubject(pending, body.data.tab);
     // A reason belongs to a design approved with an open blocker and nowhere else: the body is refused before any friction step or anything is performed, never dropped.
-    const reasonProblem = approveReasonProblem(acting.item.kind, body.data.reason) ?? planChoicesProblem(acting.item.kind, body.data);
+    // A design under design review is approved by its review's own handler, which takes none of the plan fields: they are refused there, never dropped.
+    const reasonProblem = approveReasonProblem(acting.item.kind, body.data.reason) ?? planChoicesProblem(acting.item.kind === "approve_design" && acting.item.review !== undefined ? "approve_design_reviewed" : acting.item.kind, body.data);
     if (reasonProblem !== undefined) throw agentXError("CONFIG_INVALID", reasonProblem);
     if (body.data.acknowledgedRunLimitUsd !== undefined && !DECISION_RUN_LIMIT_KINDS.includes(acting.item.kind)) throw agentXError("CONFIG_INVALID", "acknowledgedRunLimitUsd: this card sets no run limit");
     let openedAt: string | undefined;
@@ -273,7 +274,7 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     // A card with tabs sends back the first document still waiting.
     const tab = tabs === undefined ? undefined : tabsPending(tabs)[0];
     const acting = actingSubject(pending, tab);
-    const commentsProblem = planChoicesProblem(acting.item.kind, { includedCommentIds: body.data.includedCommentIds });
+    const commentsProblem = planChoicesProblem(acting.item.kind === "approve_design" && acting.item.review !== undefined ? "approve_design_reviewed" : acting.item.kind, { includedCommentIds: body.data.includedCommentIds });
     if (commentsProblem !== undefined) throw agentXError("CONFIG_INVALID", commentsProblem);
     const outcome = await deps.performer.requestChanges(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, reason: body.data.reason, tab, ...(body.data.includedCommentIds === undefined ? {} : { plan: { includedCommentIds: body.data.includedCommentIds } }) });
     const notDecided = outcomeReply(cardId, outcome);

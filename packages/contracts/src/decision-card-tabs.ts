@@ -38,7 +38,7 @@ export const DECISION_PLAN_NOTE_MAX = 500;
 export const DECISION_PLAN_QUESTIONS_MAX = 20;
 export const DECISION_PLAN_CHECKS_MAX = 20;
 /** OWNER DECISION 7: the card kinds that carry the document's own choices (its questions, the optional checks, the open comments, a note), as the old review page sent them with a decision. */
-export const DECISION_PLAN_CHOICE_KINDS: readonly string[] = ["approve_plan", "approve_requirements"];
+export const DECISION_PLAN_CHOICE_KINDS: readonly string[] = ["approve_plan", "approve_requirements", "approve_design"];
 /** The card kinds whose Approve chooses optional checks: the coding plan only (the workflow decision's rule). */
 export const DECISION_OPTIONAL_CHECK_KINDS: readonly string[] = ["approve_plan"];
 

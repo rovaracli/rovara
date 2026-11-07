@@ -70,7 +70,8 @@ async function itemOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller,
   // The task's owner now (after a take-over, the taker, whose own task index lists it): the workflow decision is theirs.
   if (workflow === undefined || task.orgId !== caller.orgId || task.closedAt !== undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) return undefined;
   const type = waitingDocument(workflow);
-  if (type === undefined || type === "design" || isE2EPlanCorrectionBlockReason(workflow.blockReason)) return undefined;
+  // A design under design review waits on that review's card (design-review.ts); a design without one is decided here (OWNER DECISION 7: the old review page was its browser place).
+  if (type === undefined || (type === "design" && workflow.designReview !== undefined) || isE2EPlanCorrectionBlockReason(workflow.blockReason)) return undefined;
   const artifact = latestOf(workflow, type);
   if (artifact === undefined) return undefined;
   const loaded = await loadWorkflowDocument(reader(deps, caller), artifact, {}).catch(() => undefined);
@@ -81,6 +82,7 @@ async function itemOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller,
     openPath: await taskPagePathOf(deps, caller.orgId, task), contentVersion: artifact.sha256,
   };
   if (type === "requirements") return { ...base, kind: "approve_requirements", claims, ...(choices === undefined ? {} : { choices }) };
+  if (type === "design") return { ...base, kind: "approve_design", files: planFactsOf(loaded, workflow).files, ...(choices === undefined ? {} : { choices }) };
   const estimate = task.runEstimate;
   let proposedUsd: number | undefined;
   try { proposedUsd = await planRunLimit(estimateDependencies(developerTaskRouteDependencies(deps, caller)), task); } catch { proposedUsd = estimate?.runLimitUsd; }
@@ -118,7 +120,7 @@ function workBreakdownLines(plan: PlanDocument): string[] {
  * OWNER DECISION 7 items 1, 3 and 9: what the card offers beside Approve: the document's questions (with the suggestions people made on this version), the coding plan's optional checks, and the person comments
  * still open on the document (what the old review page offered). Read-only: the workflow decision checks every answer, check and comment again when the card is pressed. Undefined when nothing can be read.
  */
-async function choicesOf(deps: DeveloperRouteDependencies, task: DeveloperTaskRecord, type: "requirements" | "plan", artifact: WorkflowArtifact, plan: PlanDocument | undefined): Promise<DecisionPlanChoices | undefined> {
+async function choicesOf(deps: DeveloperRouteDependencies, task: DeveloperTaskRecord, type: DocumentType, artifact: WorkflowArtifact, plan: PlanDocument | undefined): Promise<DecisionPlanChoices | undefined> {
   try {
     const [comments, suggestions] = await Promise.all([listTaskComments(deps, task.taskId), plan === undefined ? Promise.resolve([]) : listSuggestions(deps, task.taskId)]);
     const questions = (plan?.decisions ?? []).slice(0, DECISION_PLAN_QUESTIONS_MAX).map((decision) => {

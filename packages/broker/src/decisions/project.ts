@@ -69,6 +69,8 @@ export type DecisionItem =
     review?: DesignCardFacts | undefined;
     /** Slice 2 review fix: false for a person who sees the card but is not the task's owner (a maintainer, the design approver): the workflow decision sends a document back for its owner only, so they get no Request changes. */
     changesAllowed?: boolean | undefined;
+    /** OWNER DECISION 7: a design WITHOUT design review (plan-cards.ts): its questions and open comments. A reviewed design never carries them. */
+    choices?: DecisionPlanChoices | undefined;
   })
   | (ItemBase & { kind: "merge"; sessionId?: string | undefined; /** The head of each pull request the person is shown; the press is refused if any moved. Required: a merge card without it is not pressed. */ heads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }> | undefined; /** The pull requests a press would merge and the branch each goes into, for the "Merge #N into <branch>?" question; read from tracking, never from model text. */ targets?: ReadonlyArray<{ repositoryId: string; number: number; baseBranch: string }> | undefined; prRisk: DecisionRisk; prReasons: readonly string[]; proof: ProofCounts; reviewVerdict: "approved" | "concerns" | "none"; ci: "passing" | "failing" | "pending"; securityFindingsHigh: number; fullSuitePending: boolean })
   | (ItemBase & {
@@ -529,7 +531,7 @@ export function projectDecisionCards(items: readonly DecisionItem[], options: Pr
 
 /** A pending requirements or coding plan card's choices, when it has any and they are a valid shape; anything else has none (the person can still approve with AgentX's answers). */
 function choicesOfItem(item: DecisionItem, card: DecisionCard): DecisionPlanChoices | undefined {
-  if ((item.kind !== "approve_plan" && item.kind !== "approve_requirements") || item.choices === undefined || card.status !== "pending") return undefined;
+  if ((item.kind !== "approve_plan" && item.kind !== "approve_requirements" && !(item.kind === "approve_design" && item.review === undefined)) || item.choices === undefined || card.status !== "pending") return undefined;
   const parsed = DecisionPlanChoicesSchema.safeParse(item.choices);
   if (!parsed.success) return undefined;
   const { questions, optionalChecks, openComments } = parsed.data;

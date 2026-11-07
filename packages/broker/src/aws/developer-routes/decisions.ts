@@ -23,7 +23,7 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { projectAllows } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { AgentSessionStore } from "../../agent-sessions/store.js";
-import { createDecisionPerformer, envChangeHandler, fixSetupHandler, mergeHandler, testEnvHandler } from "../../decisions/performer.js";
+import { createDecisionPerformer, envChangeHandler, fixSetupHandler, mergeHandler, testEnvHandler, type KindHandler } from "../../decisions/performer.js";
 import { dismissFixSetup, fixSetupItemsFor, markKnownFailing } from "../../test-env/fix-setup.js";
 import { answerEnvChange, approveTestEnvItemsFor, envChangeItemsFor } from "../../decisions/test-env-source.js";
 import { liveTestEnvCard } from "../../org/test-env-approval.js";
@@ -151,7 +151,11 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
         dismiss: (who, item) => dismissFixSetup(fixSetupPorts, who, item),
       }),
       // Design review (`dr`): approving a design goes through `designApproveHandler`, which refuses a task that carries no design review. Not registered while `dr` is off: the kind stays page-decided.
-      ...(designReviewEnabled(env) ? { approve_design: { ...designApproveHandlerFor(deps, caller), requestChanges: (who: DeveloperCaller, input: Parameters<typeof requestChanges>[2]) => requestChanges(deps, who, input) } } : {}),
+      // OWNER DECISION 7: a design WITHOUT design review is approved on its card through the one workflow decision (as its requirements and coding plan are); one under review keeps its review's own handler.
+      approve_design: designReviewEnabled(env) ? {
+        approve: (who: DeveloperCaller, input: Parameters<KindHandler<DeveloperCaller>["approve"]>[1]) => input.item.kind === "approve_design" && input.item.review === undefined ? planCardHandler(deps, caller, request.decideCookie).approve(who, input) : designApproveHandlerFor(deps, caller).approve(who, input),
+        requestChanges: (who: DeveloperCaller, input: Parameters<typeof requestChanges>[2]) => requestChanges(deps, who, input),
+      } : planCardHandler(deps, caller, request.decideCookie),
       approve_plan: planCardHandler(deps, caller, request.decideCookie),
       approve_request: outsideCardHandler(deps, outsideKinds, { cookie: request.decideCookie, store: new DecideStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: () => deps.now() }), now: () => deps.now() }),
       approve_requirements: planCardHandler(deps, caller, request.decideCookie),

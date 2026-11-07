@@ -81,7 +81,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  const [ticked, setTicked] = useState(false), [changes, setChanges] = useState(""), [answers, setAnswers] = useState<Record<string, { optionId?: string; text: string }>>({});
  useEffect(() => { if (focused) article.current?.scrollIntoView?.({ block: "center" }); }, [focused]);
  // OWNER DECISION 7: a requirements or coding plan card carries the document's questions, optional checks, open comments and a note (the old review page's dialog), shown where the card is decided.
- const planKind = card.kind === "approve_plan" || card.kind === "approve_requirements";
+ const planKind = card.kind === "approve_plan" || card.kind === "approve_requirements" || (card.kind === "approve_design" && decision.choices !== undefined);
  const plan = usePlanChoices(String(card.id), planKind ? decision.choices ?? NO_CHOICES : undefined);
  const inline = (card.kind === "approve_design" || HIGH_ON_CARD_KINDS.includes(card.kind)) && card.risk === "high" && actions.highRisk !== undefined;
  // A coding plan's run limit: shown on the card, and a raise is ticked here before Approve (the broker refuses a raise without it).
