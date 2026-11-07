@@ -3,7 +3,7 @@
 // post is authorized by a cookie only the callback's browser holds, plus the cell's own Origin.
 import { agentXError } from "@agentx/contracts";
 import {
-  clearedConnectCookie, completeGithubConnect, confirmGithubConnect, connectCookie, GITHUB_CONNECT_COOKIE,
+  clearedConnectCookie, completeGithubConnect, connectReturnTo, confirmGithubConnect, connectCookie, GITHUB_CONNECT_COOKIE,
   type ConnectOutcome, type GithubConnectionDependencies,
 } from "../org/github-connection.js";
 import { githubConnectPage } from "../org/github-connect-page.js";
@@ -29,7 +29,9 @@ export async function routeGithubInstall(deps: GithubConnectionDependencies | un
       deps.log?.({ event: "github.connect_callback_failed", error: error instanceof Error ? error.name : "unknown" });
       return { outcome: "expired" };
     });
+    const returnTo = await connectReturnTo(deps, { state: url.searchParams.get("state") });
     const page = githubConnectPage(result.outcome, {
+      returnTo,
       ...(result.accountLogin === undefined ? {} : { accountLogin: result.accountLogin }),
       ...(result.orgName === undefined ? {} : { orgName: result.orgName }),
       ...(result.connectId === undefined ? {} : { connectId: result.connectId }),
@@ -43,8 +45,11 @@ export async function routeGithubInstall(deps: GithubConnectionDependencies | un
     const decision = form.get("decision");
     const connect = form.get("connect");
     if ((decision !== "connect" && decision !== "cancel") || connect === null) throw agentXError("CONFIG_INVALID", "the confirmation form is incomplete");
+    // Read before the confirm spends the state: the page after it goes back to where the person started.
+    const returnTo = await connectReturnTo(deps, { hash: connect });
     const result = await confirmGithubConnect(deps, { connect, decision }, parseCookie(request.headers, GITHUB_CONNECT_COOKIE), request.headers.origin);
     const page = githubConnectPage(result.outcome, {
+      returnTo,
       ...(result.accountLogin === undefined ? {} : { accountLogin: result.accountLogin }),
       ...(result.orgName === undefined ? {} : { orgName: result.orgName }),
     });

@@ -18,7 +18,8 @@ export function createOnboardingApi(host: AppHost) {
  me:()=>api.get("/v1/app/me",AppMeResponseReaderSchema), members:()=>api.get("/v1/app/org/members",AppOrgMembersResponseReaderSchema),
  rename:async(body:ReturnType<typeof RenameOrganizationBodySchema.parse>)=>completed(await api.send("PATCH","/v1/app/org",RenameOrganizationBodySchema.parse(body),RenameOrganizationResponseSchema)),
  installations:()=>api.get("/v1/app/github/installations",GithubInstallationsResponseReaderSchema),
- connect:async()=>completed(await api.send("POST","/v1/app/github/connect",{},GithubConnectResponseReaderSchema)),
+ // UX3: a connect started from the Connections page says so, so the pages at its end go back there (a fixed choice; onboarding when left out).
+ connect:async(returnTo?:"/app/onboard"|"/app/admin/connections")=>completed(await api.send("POST","/v1/app/github/connect",returnTo==="/app/admin/connections"?{returnTo}:{},GithubConnectResponseReaderSchema)),
  repositories:(installation:number)=>api.get("/v1/app/github/repositories?"+new URLSearchParams({installation:String(installation)}).toString(),GithubRepositoriesResponseReaderSchema),
  create:async(body:ReturnType<typeof CreateProjectBodySchema.parse>)=>completed(await api.send("POST","/v1/app/projects",CreateProjectBodySchema.parse(body),CloudProjectCreatedResponseReaderSchema)),
  createFromMeta:async(body:ReturnType<typeof CreateProjectFromMetaBodySchema.parse>)=>completed(await api.send("POST","/v1/app/projects",CreateProjectFromMetaBodySchema.parse(body),CloudProjectCreatedResponseReaderSchema)),
