@@ -340,7 +340,7 @@ const MEMBER = actor(B, SB, "Bailey Member");
 const OTHER = actor(C, SC, "Casey Other");
 
 const task = (overrides: Partial<DeveloperTaskRecord> = {}): DeveloperTaskRecord => ({
-  pk: `DEVTASK#${TASK_ID}`, sk: "META", entityType: "DEVELOPER_TASK", taskId: TASK_ID,
+  pk: `DEVTASK#${TASK_ID}`, sk: "META", entityType: "DEVELOPER_TASK", taskId: TASK_ID, orgId: TEST_ORG,
   developerId: A, provider: "slack", developerName: OWNER.name, slackUserId: SA,
   client: "slack", project: "payments", title: "Payments", workspaceId: "workspace",
   ownerKey: "f".repeat(64), conversationId: "conversation", startingRevision: 1,

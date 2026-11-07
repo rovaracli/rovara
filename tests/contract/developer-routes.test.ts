@@ -599,7 +599,7 @@ describe("D2 task-person route dependencies", () => {
   const taskId = "11111111-1111-4111-8111-111111111111";
   const nativeDeveloperId = developerIdForSlackUser("U0MAYA001");
   const task = {
-    pk: `DEVTASK#${taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId,
+    pk: `DEVTASK#${taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId, orgId: TEST_ORG,
     developerId: nativeDeveloperId, provider: "slack", developerName: "Maya Chen", slackUserId: "U0MAYA001",
     project: "payments-api", share: { teamId: "T0TEAM1", channelId: "C0PAY0001" },
   } as DeveloperTaskRecord;
