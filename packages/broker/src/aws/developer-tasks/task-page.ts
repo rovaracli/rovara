@@ -804,7 +804,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   // QA6-03: while a design is under review its approval is only on its decision card; the page points to the card instead of offering a button the server refuses.
   const designCardOnly = designCardOnlyApplies({ canDecide: permissions?.canDecide === true, waitingKind: deciding.waiting?.kind, workflow });
   const stage = taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task), noChangeHasThread(task.share));
-  const stageWords = designCardOnly ? { status: stage.status, nextStep: "Approve the design or request changes on its decision card in Rovara." } : stage;
+  const stageWords = designCardOnly ? { status: stage.status, nextStep: "Approve the design on its decision card in Rovara, or request changes here." } : stage;
   return {
     taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...stageWords,
     ...(e2eResults === undefined ? {} : { e2eResults }),

@@ -1,5 +1,5 @@
-// Approving a coding plan that has a work breakdown: on its decision card (OWNER DECISION 7; the old review page is read-only) the server works the digest out from the document the card was drawn
-// from and hands it to the one decision path Slack and MCP use, which checks that it binds the exact ordered plan; a caller that sends a digest (the AI tool) is checked the same way. A refusal says why.
+// Approving a coding plan that has a work breakdown from the task page: the page sends the breakdown's digest, the API accepts it and hands it to the one decision path
+// Slack and MCP use, and the server alone checks that it binds the exact ordered plan. A refusal says why, and leaves a safe log line.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
@@ -9,12 +9,11 @@ import { TASK_PAGE_DECIDING_SCRIPT } from "../../packages/broker/src/aws/task-pa
 import { PageDecisionInputSchema, createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
 import { DEV_ISSUER, MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
-import { browserRequests } from "../support/browser-session.js";
-import { cardDecision } from "../support/card-decision.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const ORIGIN = new URL(DEV_ISSUER).origin;
 const CSRF = "c".repeat(43);
+const GENERIC = "AgentX couldn't do that right now. Try again shortly.";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -28,25 +27,45 @@ describe("the decision body", () => {
     }
   });
 
-  it("OWNER DECISION 7: the old page's decision is refused (410) before its body is read, and the refusal logs only its code, route and task", async () => {
+  it("reaches the decide dependency with the digest, and a refusal logs only its code, route and task", async () => {
     const taskId = randomUUID();
     const caller: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member", developerId: "d".repeat(64), sessionId: "s1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001", email: "maya@example.com" };
+    const seen: unknown[] = [];
+    const logged: Array<Record<string, unknown>> = [];
+    const deps = { origin: DEV_ISSUER, authenticateSession: async () => caller, log: (entry: Record<string, unknown>) => { logged.push(entry); },
+      decide: async (_who: DeveloperCaller, _id: string, input: unknown) => { seen.push(input); throw Object.assign(new Error("CONFIG_INVALID: Maya Chen maya@example.com secret-token"), { code: "CONFIG_INVALID" }); },
+    } as unknown as TaskWebApiDependencies;
+    const request: AdaptedHttpRequest = { method: "POST", path: `/review/${taskId}/task/api/decision`, requestId: "r",
+      body: JSON.stringify({ ...body, workBreakdownDigest: "b".repeat(64), note: "private note text" }),
+      headers: { origin: ORIGIN, cookie: `__Host-agentx_review_session=s1; __Host-agentx_review_csrf=${CSRF}`, "x-agentx-csrf": CSRF, "content-type": "application/json" } };
+    const answer = await createTaskWebApi(deps)(request, new URL(`${ORIGIN}${request.path}`));
+    expect(answer.statusCode).toBe(409);
+    expect(seen).toEqual([expect.objectContaining({ workBreakdownDigest: "b".repeat(64) })]);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ event: "task_page.refused", route: "decision", taskId, code: "CONFIG_INVALID" });
+    expect(JSON.stringify(logged)).not.toMatch(/Maya|maya@|secret-token|private note|bbbbbbbb/);
+  });
+
+  it("logs a body the schema refuses by its code and the names of the fields, never the values", async () => {
+    const taskId = randomUUID();
+    const caller: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member", developerId: "d".repeat(64), sessionId: "s1", amr: "slack", name: "Maya Chen" };
     const logged: Array<Record<string, unknown>> = [];
     const deps = { origin: DEV_ISSUER, authenticateSession: async () => caller, log: (entry: Record<string, unknown>) => { logged.push(entry); } } as unknown as TaskWebApiDependencies;
     const request: AdaptedHttpRequest = { method: "POST", path: `/review/${taskId}/task/api/decision`, requestId: "r",
-      body: JSON.stringify({ ...body, workBreakdownDigest: "b".repeat(64), note: "private note text", surprise: "value-that-must-not-leak" }),
+      body: JSON.stringify({ ...body, note: "private note text", surprise: "value-that-must-not-leak" }),
       headers: { origin: ORIGIN, cookie: `__Host-agentx_review_session=s1; __Host-agentx_review_csrf=${CSRF}`, "x-agentx-csrf": CSRF, "content-type": "application/json" } };
     const answer = await createTaskWebApi(deps)(request, new URL(`${ORIGIN}${request.path}`));
-    expect(answer.statusCode).toBe(410);
-    expect(logged).toEqual([expect.objectContaining({ event: "task_page.refused", route: "decision", taskId, code: "READ_ONLY" })]);
-    expect(JSON.stringify(logged)).not.toMatch(/Maya|maya@|private note|value-that-must-not-leak|bbbbbbbb/);
+    expect(answer.statusCode).toBe(400);
+    expect((JSON.parse(answer.body) as { message?: string }).message).toEqual(expect.stringContaining("Refresh"));
+    expect(logged).toEqual([expect.objectContaining({ event: "task_page.refused", route: "decision", taskId, code: "INVALID_REQUEST" })]);
+    expect(JSON.stringify(logged)).not.toMatch(/private note|value-that-must-not-leak/);
   });
 });
 
-describe("approving a coding plan with a work breakdown on its card (OWNER DECISION 7: the old page is read-only)", () => {
+describe("approving a coding plan with a work breakdown from the page", () => {
   /** A Quick task whose coding plan carries an ordered work breakdown, waiting for Maya. */
   async function breakdownTask(withBreakdown = true) {
-    const harness = await createSingleAnswerPlanBroker({ developerExtra: { workflowDependenciesEnabled: true }, brokerExtra: { agents: {} } });
+    const harness = await createSingleAnswerPlanBroker({ developerExtra: { workflowDependenciesEnabled: true } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Implement the ordered change", client: "test", workflow: true, workflowPath: "QUICK" });
     const id = (started.body.task as { taskId: string }).taskId;
     const workspaceId = (harness.db.get(`DEVTASK#${id}`, "META") as { workspaceId: string }).workspaceId;
@@ -78,62 +97,54 @@ describe("approving a coding plan with a work breakdown on its card (OWNER DECIS
       return { status: response.statusCode, json: JSON.parse(response.body) as Record<string, unknown> & { message?: string; error?: string } };
     };
     const decision = (extra: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision: revision, artifactDigest: sha256, decision: "APPROVE", answers: [{ decisionId: "d1", optionId: "three", opened: false }], includedCommentIds: [], ...extra });
-    /** The token's door (`/v1/dev/.../workflow/decision`, as the MCP tool posts it), which takes a digest from its caller. */
-    const token = (extra: Record<string, unknown> = {}) => harness.dev(MAYA, "POST", `/v1/dev/tasks/${id}/workflow/decision`, { requestId: randomUUID(), expectedRevision: revision, decision: "APPROVE", reason: "Approved", artifactDigest: sha256, ...extra });
-    const card = (body: Parameters<typeof cardDecision>[3] = {}) => cardDecision(harness, MAYA, id, body);
-    return { harness, id, graph, digest: withBreakdown ? taskGraphDigest(graph) : undefined, revision, workflow, send, decision, operations, token, card };
+    return { harness, id, graph, digest: withBreakdown ? taskGraphDigest(graph) : undefined, revision, workflow, send, decision, operations };
   }
 
-  it("approves on the card with the plan's own digest, worked out by the server from the document shown, and records it on the approval", async () => {
+  it("approves with the plan's own digest and records it on the approval", async () => {
     const t = await breakdownTask();
-    const answer = await t.card({ answers: [{ decisionId: "d1", optionId: "five", opened: true }] });
-    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    const answer = await t.send("decision", t.decision({ workBreakdownDigest: t.digest }));
+    expect(answer.status, JSON.stringify(answer.json)).toBe(200);
     expect(t.workflow().revision).toBeGreaterThan(t.revision);
     expect(t.workflow().decisions.at(-1)).toMatchObject({ decision: "APPROVE", workBreakdownDigest: t.digest });
     expect(t.operations().some((item) => item.workflowMode === "IMPLEMENT")).toBe(true);
   });
 
-  it("the card lists the parts of the work breakdown its Approve binds to", async () => {
+  it("refuses a wrong digest in words the page can show, and approves nothing", async () => {
     const t = await breakdownTask();
-    const before = process.env.DECISION_CARDS_ENABLED;
-    process.env.DECISION_CARDS_ENABLED = "1";
-    try {
-      const list = await browserRequests(t.harness)(MAYA, "GET", "/v1/app/decisions");
-      expect(((list.body.details ?? {}) as Record<string, Array<{ title: string; lines: string[] }>>)[`approve_plan:${t.id}`]).toEqual(expect.arrayContaining([{ title: "Work breakdown", lines: ["1. Implement first", "2. Implement second"] }]));
-    } finally { if (before === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = before; }
-  });
-
-  it("refuses a wrong digest from a caller that sends one (the AI tool's door) in words, and approves nothing", async () => {
-    const t = await breakdownTask();
-    const answer = await t.token({ workBreakdownDigest: "0".repeat(64) });
-    expect(answer.status).toBeGreaterThanOrEqual(400);
-    expect(JSON.stringify(answer.body)).toMatch(/work breakdown changed/i);
+    const answer = await t.send("decision", t.decision({ workBreakdownDigest: "0".repeat(64) }));
+    expect(answer.status).toBe(409);
+    expect(answer.json.message).toMatch(/work breakdown changed/i);
+    expect(answer.json.message).not.toBe(GENERIC);
     expect(t.workflow().revision).toBe(t.revision);
     expect(t.workflow().decisions.some((entry) => entry.decision === "APPROVE")).toBe(false);
     expect(t.operations().some((item) => item.workflowMode === "IMPLEMENT")).toBe(false);
   });
 
-  it("refuses a missing digest on a plan with a breakdown from that door, and approves nothing", async () => {
+  it("refuses a missing digest on a plan with a breakdown, says what to do, and approves nothing", async () => {
     const t = await breakdownTask();
-    const answer = await t.token();
+    const answer = await t.send("decision", t.decision());
     expect(answer.status).toBeGreaterThanOrEqual(400);
-    expect(JSON.stringify(answer.body)).toMatch(/work breakdown/i);
+    expect(answer.json.message).toMatch(/work breakdown/i);
+    expect(answer.json.message).toMatch(/refresh/i);
+    expect(answer.json.message).not.toBe(GENERIC);
     expect(t.workflow().revision).toBe(t.revision);
     expect(t.operations().some((item) => item.workflowMode === "IMPLEMENT")).toBe(false);
   });
 
-  it("the old page's decision is refused and approves nothing, whatever digest it carries", async () => {
+  it("logs the refusal with its code, task and route and none of the request", async () => {
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
     const t = await breakdownTask();
-    const answer = await t.send("decision", t.decision({ workBreakdownDigest: t.digest }));
-    expect(answer.status).toBe(410);
-    expect(answer.json).toMatchObject({ error: "read_only" });
-    expect(t.workflow().revision).toBe(t.revision);
+    await t.send("decision", t.decision({ workBreakdownDigest: "0".repeat(64), note: "private note text" }));
+    const refusal = lines.map((line) => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } }).filter((entry) => entry.event === "task_page.refused");
+    expect(refusal).toEqual([expect.objectContaining({ component: "broker", route: "decision", taskId: t.id, code: "CONFIG_INVALID" })]);
+    expect(lines.join("\n")).not.toMatch(/private note|maya@|Maya Chen|cookie|csrf/i);
   });
 
-  it("still requests changes on the card without a digest", async () => {
+  it("still requests changes without a digest", async () => {
     const t = await breakdownTask();
-    const answer = await t.card({ decision: "REQUEST_CHANGES", reason: "Split the second part." });
-    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    const answer = await t.send("decision", t.decision({ decision: "REQUEST_CHANGES", note: "Split the second part." }));
+    expect(answer.status, JSON.stringify(answer.json)).toBe(200);
     expect(t.workflow().decisions.at(-1)).toMatchObject({ decision: "REQUEST_CHANGES" });
   });
 
@@ -143,13 +154,13 @@ describe("approving a coding plan with a work breakdown on its card (OWNER DECIS
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
   });
 
-  it("approves a plan with no breakdown on the card as before, and a digest on it is refused at the AI tool's door", async () => {
+  it("approves a plan with no breakdown as before, and refuses a digest on it", async () => {
     const t = await breakdownTask(false);
-    const stray = await t.token({ workBreakdownDigest: "0".repeat(64) });
+    const stray = await t.send("decision", t.decision({ workBreakdownDigest: "0".repeat(64) }));
     expect(stray.status).toBeGreaterThanOrEqual(400);
-    expect(JSON.stringify(stray.body)).toMatch(/no work breakdown/i);
-    const answer = await t.card();
-    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    expect(stray.json.message).toMatch(/no work breakdown/i);
+    const answer = await t.send("decision", t.decision());
+    expect(answer.status, JSON.stringify(answer.json)).toBe(200);
     expect(t.workflow().revision).toBeGreaterThan(t.revision);
   });
 });

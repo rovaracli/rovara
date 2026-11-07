@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { rememberTaskComment } from "../../packages/broker/src/learning/capture-comment.js";
 import { LEARNING_PATH, routeLearning } from "../../packages/broker/src/learning/routes.js";
-import { TASK_PAGE_API, TASK_PAGE_READ_ONLY_MESSAGE, createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
+import { TASK_PAGE_API, createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
@@ -18,7 +18,7 @@ const taskId = "11111111-1111-4111-8111-111111111111";
 const commentId = "33333333-3333-4333-8333-333333333333";
 const caller: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: "d".repeat(64), sessionId: SESSION_ID, amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
 
-describe("task page API: Remember and Forget paths (OWNER DECISION 7: the page is read-only)", () => {
+describe("task page API: Remember and Forget paths", () => {
   const cookies = `__Host-agentx_review_session=${SESSION_ID}; __Host-agentx_review_csrf=${CSRF}`;
   const post = (path: string, body: unknown, headers: Record<string, string | undefined> = {}): AdaptedHttpRequest => ({
     method: "POST", path, requestId: "r", body: typeof body === "string" ? body : JSON.stringify(body),
@@ -26,29 +26,68 @@ describe("task page API: Remember and Forget paths (OWNER DECISION 7: the page i
   });
   const rememberPath = `/review/${taskId}/task/api/comments/${commentId}/remember`;
   const forgetPath = `/review/${taskId}/task/api/comments/${commentId}/forget`;
+  function deps(overrides: Partial<TaskWebApiDependencies> = {}) {
+    const calls: Array<{ name: string; who: DeveloperCaller; taskId: string; commentId: string }> = [];
+    const base = {
+      origin: DEV_ISSUER, authenticateSession: async (id: string) => (id === SESSION_ID ? caller : undefined),
+      rememberComment: async (who: DeveloperCaller, task: string, comment: string) => { calls.push({ name: "remember", who, taskId: task, commentId: comment }); return { correction: { id: "c1", standing: "member" as const, stage: "plan" } }; },
+      forgetComment: async (who: DeveloperCaller, task: string, comment: string) => { calls.push({ name: "forget", who, taskId: task, commentId: comment }); return { forgotten: true as const }; },
+    } as unknown as TaskWebApiDependencies;
+    return { calls, deps: { ...base, ...overrides } };
+  }
   const run = async (d: TaskWebApiDependencies, request: AdaptedHttpRequest) => {
     const response = await createTaskWebApi(d)(request, new URL(`${ORIGIN}${request.path}`));
     return { ...response, json: JSON.parse(response.body) as Record<string, unknown> };
   };
 
-  it("the paths still belong to the task page API, so the PR feedback page never answers them", () => {
+  it("the paths belong to the task page API", () => {
     expect(TASK_PAGE_API.test(rememberPath)).toBe(true);
     expect(TASK_PAGE_API.test(forgetPath)).toBe(true);
     expect(TASK_PAGE_API.test(`/review/${taskId}/task/api/comments/${commentId}/other`)).toBe(false);
   });
 
-  it("refuses Remember and Forget on the old page with 410 and where the task is decided now, before any body is read; a signed-out caller is still 401", async () => {
-    const taskPagePath = vi.fn(async () => "/app/sessions/ses_0123456789abcdefghij");
-    const d = { origin: DEV_ISSUER, authenticateSession: async (id: string) => (id === SESSION_ID ? caller : undefined), taskPagePath } as unknown as TaskWebApiDependencies;
-    for (const path of [rememberPath, forgetPath]) {
-      for (const body of [{}, { standing: "member" }, "{"]) {
-        const refused = await run(d, post(path, body));
-        expect(refused.statusCode).toBe(410);
-        expect(refused.json).toEqual({ error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE, taskPage: "/app/sessions/ses_0123456789abcdefghij" });
-      }
-    }
-    expect(taskPagePath).toHaveBeenCalledWith(caller, taskId);
+  it("Remember and Forget reach the dependency with the session's caller, the task and the comment", async () => {
+    const { calls, deps: d } = deps();
+    const remembered = await run(d, post(rememberPath, {}));
+    expect(remembered.statusCode).toBe(200);
+    expect(remembered.json).toEqual({ correction: { id: "c1", standing: "member", stage: "plan" } });
+    const forgotten = await run(d, post(forgetPath, {}));
+    expect(forgotten.json).toEqual({ forgotten: true });
+    expect(calls).toEqual([{ name: "remember", who: caller, taskId, commentId }, { name: "forget", who: caller, taskId, commentId }]);
+  });
+
+  it.each([
+    ["standing", { standing: "member" }], ["author", { author: "x" }], ["stage", { stage: "build" }], ["text", { text: "Use the helper" }], ["an array", []], ["not JSON", "{"],
+  ])("I3: %s in the body is refused and nothing is called", async (_label, body) => {
+    const { calls, deps: d } = deps();
+    for (const path of [rememberPath, forgetPath]) expect((await run(d, post(path, body))).statusCode).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  it("needs the same origin, the CSRF header and a session, and answers 405 to a GET", async () => {
+    const { calls, deps: d } = deps();
+    expect((await run(d, post(rememberPath, {}, { origin: "https://evil.example" }))).statusCode).toBe(403);
+    expect((await run(d, post(rememberPath, {}, { "x-agentx-csrf": "d".repeat(43) }))).statusCode).toBe(403);
     expect((await run(d, post(rememberPath, {}, { cookie: "" }))).statusCode).toBe(401);
+    expect((await run(d, { method: "GET", path: rememberPath, requestId: "r", headers: { cookie: cookies } })).statusCode).toBe(405);
+    expect(calls).toEqual([]);
+  });
+
+  it("is not found where the dependency is not wired", async () => {
+    const { rememberComment: _remember, forgetComment: _forget, ...unwired } = deps().deps; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
+    const d: TaskWebApiDependencies = unwired;
+    expect((await run(d, post(rememberPath, {}))).statusCode).toBe(404);
+    expect((await run(d, post(forgetPath, {}))).statusCode).toBe(404);
+  });
+
+  it("answers a refusal in the page's words", async () => {
+    const refuse = (pageReason: string, code: string) => async () => { throw Object.assign(new Error("no"), { code, pageReason }); };
+    const forbidden = await run(deps({ rememberComment: refuse("not_allowed", "FORBIDDEN") }).deps, post(rememberPath, {}));
+    expect([forbidden.statusCode, forbidden.json.error]).toEqual([403, "not_allowed"]);
+    const slow = await run(deps({ rememberComment: refuse("slow_down", "TASK_BUSY") }).deps, post(rememberPath, {}));
+    expect(slow.statusCode).toBe(429);
+    const hidden = await run(deps({ forgetComment: refuse("", "TASK_NOT_FOUND") }).deps, post(forgetPath, {}));
+    expect(hidden.statusCode).toBe(404);
   });
 });
 

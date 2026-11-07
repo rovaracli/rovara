@@ -235,9 +235,8 @@ describe("publication of a project whose catalog row predates latestRevision", (
       headers: { origin: new URL(DEV_ISSUER).origin, cookie: `__Host-agentx_review_session=s; __Host-agentx_review_csrf=${csrf}`, "x-agentx-csrf": csrf, "content-type": "application/json" },
       body: JSON.stringify({ requestId: randomUUID(), expectedRevision: 1, artifactDigest: "a".repeat(64), decision: "APPROVE", answers: [], includedCommentIds: [] }) },
     new URL(`${new URL(DEV_ISSUER).origin}/review/${taskId}/task/api/decision`));
-    // OWNER DECISION 7: the review page is read-only; its decision is refused before anything runs (the task page's card says the broker's own words).
-    expect(web.statusCode).toBe(410);
-    expect(JSON.parse(web.body)).toMatchObject({ error: "read_only" });
+    expect(web.statusCode).toBe(409);
+    expect(JSON.parse(web.body)).toEqual({ error: "changed", message: NEEDS_ADMIN });
   });
 
   describe("a cancelled publication acceptance", () => {

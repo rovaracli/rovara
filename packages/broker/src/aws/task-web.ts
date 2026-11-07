@@ -4,7 +4,7 @@ import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 // requests and its history. GET only, no forms, and one small script (by nonce) that opens and scrolls to a deep
 // link and, while the page is open, asks this origin's `/task/status` whether the task moved on. Every value is escaped; model and reviewer text is plain text in the page, so a link in it is never a link.
 import { randomBytes } from "node:crypto";
-import { NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, noChangeFindingsFrom, type NoChangeFindings, SessionIdSchema, containsEmailAddress, redactText, withoutEmailAddresses, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
+import { NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, noChangeFindingsFrom, type NoChangeFindings, SessionIdSchema, containsEmailAddress, redactText, withoutEmailAddresses, taskGraphDigest, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
 import { renderE2EScenarioRowsHtml } from "../e2e-presentation.js";
 import type { TaskRole } from "../developer/task-access.js";
 import type { TaskPeopleView } from "../developer/task-people.js";
@@ -111,6 +111,8 @@ export interface TaskDocumentView {
 }
 
 export interface TaskWebDependencies {
+  /** OWNER DECISION 7: true while the decision cards are on: the page is read-only (no data island, deciding script, form or button; "Decide on the task" links the task page). Off: it decides as before. */
+  readOnly?: boolean;
   /** Resolves an opaque session ID against the revocable developer sign-in store on every request. */
   authenticateSession(sessionId: string): Promise<DeveloperCaller | undefined>;
   /** Must load the task through the broker and refuse (TASK_NOT_FOUND) a reader who may not see it. */
@@ -345,9 +347,50 @@ const scriptJson = (value: unknown): string => JSON.stringify(value).replace(/[<
   "<": "\\u003c", ">": "\\u003e", "&": "\\u0026", "\u2028": "\\u2028", "\u2029": "\\u2029",
 })[character]!);
 
+const KIND_ANCHOR: Record<TaskDocumentKind, PlanAnchor> = { requirements: "requirements", design: "design", "coding plan": "coding-plan" };
 const KIND_LABEL: Record<TaskDocumentKind, string> = { requirements: "Requirements", design: "Design", "coding plan": "Coding plan" };
 
-/** The task's page in Rovara, where everything this page used to decide is decided now (OWNER DECISION 7); undefined for a task with no session. */
+/** The waiting document, when it is a structured one on the page. */
+function waitingDocument(view: TaskDocumentView): Extract<TaskDocumentEntry, { format: "structured" }> | undefined {
+  const waiting = view.waiting;
+  if (waiting === undefined) return undefined;
+  const found = view.documents.find((document) => document.kind === waiting.kind && document.version === waiting.version);
+  return found?.format === "structured" ? found : undefined;
+}
+
+/** What the page's script reads (spec 061 slice 2): who the reader is to the task, and the waiting document's decisions. Model text is redacted. */
+function pageData(view: TaskDocumentView, csrf: string): Record<string, unknown> {
+  const access = view.access!;
+  const waiting = view.waiting;
+  const structured = waitingDocument(view);
+  const planKind = waiting === undefined ? undefined : ANCHORS.find((entry) => entry.kind === waiting.kind)?.planKind;
+  const current = waiting === undefined ? undefined : {
+    anchor: KIND_ANCHOR[waiting.kind], label: KIND_LABEL[waiting.kind], version: waiting.version, artifactDigest: waiting.artifactDigest,
+    ...(structured?.plan.workBreakdown === undefined ? {} : { workBreakdownDigest: taskGraphDigest(structured.plan.workBreakdown) }),
+    decisions: (structured?.plan.decisions ?? []).map((decision) => ({
+      id: decision.id, question: redactText(decision.question), recommended: decision.recommended, options: decision.options.map((option) => option.id),
+      labels: Object.fromEntries(decision.options.map((option) => [option.id, redactText(option.label)])),
+    })),
+    openCommentIds: (view.pageComments ?? []).filter((comment) => comment.author.kind === "person" && !comment.deleted && !comment.sent
+      && comment.document === planKind && comment.version <= waiting.version).map((comment) => comment.id),
+    optionalChecks: waiting.kind === "coding plan" ? (view.optionalChecks ?? []).map((check) => ({ id: check.id, label: redactText(check.label), selected: check.selected })) : [],
+    // QA6-12: the confirmation says what the limit is now and what approving sets it to (numbers only).
+    ...(waiting.kind === "coding plan" && view.runLimit !== undefined && Number.isFinite(view.runLimit.proposedUsd)
+      ? { runLimit: { proposedUsd: view.runLimit.proposedUsd, ...(view.runLimit.currentUsd !== undefined && Number.isFinite(view.runLimit.currentUsd) ? { currentUsd: view.runLimit.currentUsd } : {}) } } : {}),
+  };
+  return {
+    taskId: view.taskId, csrf, revision: view.revision ?? 0, role: access.role, canDecide: access.canDecide, canComment: access.canComment,
+    canSuggest: access.canSuggest, canAsk: access.canAsk, canRead: true, canManagePeople: view.canManagePeople === true,
+    canTakeOwnership: view.canTakeOwnership === true, ...(view.peopleRevision === undefined ? {} : { peopleRevision: view.peopleRevision }),
+    ...(view.askAvailable === undefined ? {} : { askAvailable: view.askAvailable }),
+    ...(current === undefined ? {} : { current }), commentSeq: view.commentSeq ?? 0,
+    ...(view.applicationRetry?.canRetry === true ? { canRetry: true } : {}),
+    ...(view.reviseOffer?.canRevise === true ? { canRevise: true } : {}),
+    ...(view.specHold?.canChoose === true ? { canSpecChoose: true } : {}),
+  };
+}
+
+/** The task's page in Rovara, where everything this page used to decide is decided while the cards are on (OWNER DECISION 7); undefined for a task with no session. */
 function taskPageHref(view: TaskDocumentView): string | undefined {
   return SessionIdSchema.safeParse(view.sessionId).success ? `/app/sessions/${view.sessionId!}` : undefined;
 }
@@ -358,13 +401,26 @@ function decideOnTask(view: TaskDocumentView, id: string): string {
   return href === undefined ? "Decide on the task in Rovara, or in the task's Slack thread" : `<a id="${id}" href="${escapeHtml(href)}">Decide on the task</a>`;
 }
 
-/** The bar at the bottom of the page while a document waits: where the owner decides it now (read-only page, OWNER DECISION 7), or who decides. */
-function decideBar(view: TaskDocumentView): string {
+/** The bar at the bottom of the page while a document waits: the owner's answer count and buttons (on with the script), or who decides. Read-only: where the owner decides it now. */
+function decideBar(view: TaskDocumentView, readOnly = false): string {
   if (view.waiting === undefined || view.access === undefined) return "";
   if (!view.access.canDecide) return '<div class="decide-bar" role="region" aria-label="Decide"><p>Only owners decide.</p></div>';
+  if (readOnly) {
+    const label = `${KIND_LABEL[view.waiting.kind].toLowerCase()} v${view.waiting.version}`;
+    return '<div class="decide-bar" role="region" aria-label="Decide">'
+      + `<p>${decideOnTask(view, "decide-on-task")}: approve ${escapeHtml(label)}, answer its questions or request changes on its card there.</p></div>`;
+  }
+  const count = waitingDocument(view)?.plan.decisions.length ?? 0;
+  // The buttons act on the waiting document, whichever one the reader has open, so each names it.
   const name = `${KIND_LABEL[view.waiting.kind].toLowerCase()} v${view.waiting.version}`;
+  // Without the script the count is only a note; the script turns it into the "Next decision" control, or says all are answered.
   return '<div class="decide-bar" role="region" aria-label="Decide">'
-    + `<p>${decideOnTask(view, "decide-on-task")}: approve ${escapeHtml(name)}, answer its questions or request changes on its card there.</p></div>`;
+    + `<p><button type="button" id="decide-next" hidden></button><span id="decide-count" role="status">${count === 0 ? "" : `${count} to answer`}</span></p>`
+    + (view.designCardOnly === undefined
+      ? `<button type="button" id="decide-approve" hidden>Approve ${escapeHtml(name)}</button> `
+      // The button stays (hidden, never shown: the page's script finds it) so the bar's wiring is unchanged; the link is what the owner uses.
+      : `<button type="button" id="decide-approve" data-card-only hidden>Approve ${escapeHtml(name)}</button><a id="decide-approve-card" href="${escapeHtml(view.designCardOnly.href)}">Approve on the decision card</a> `)
+    + `<button type="button" id="decide-request-changes" hidden>Request changes to ${escapeHtml(name)}</button></div>`;
 }
 
 /** What Rovara did by itself and why it asks, in the blocked step's place on the page. */
@@ -388,43 +444,73 @@ function noChangeSection(view: TaskDocumentView): string {
 }
 
 /** The retry of a blocked browser and API round: the owner's button (on with the script, as the decide buttons are) or who may press it. */
-function applicationRetrySection(view: TaskDocumentView): string {
+function applicationRetrySection(view: TaskDocumentView, readOnly = false): string {
   if (view.applicationRetry === undefined) return "";
   return '<section id="application-retry" aria-label="Browser and API checks"><h2>Browser and API checks</h2>'
-    + (view.applicationRetry.canRetry
+    + (view.applicationRetry.canRetry && readOnly
       ? `<p>One retry approves the plan again against what is ready now and runs the checks again. ${decideOnTask(view, "retry-on-task")} to retry them.</p>`
+      : view.applicationRetry.canRetry
+      ? '<p>One retry approves the plan again against what is ready now and runs the checks again.</p>'
+        + '<p><button type="button" id="retry-application" hidden>Retry the browser and API checks</button> <span id="retry-status" role="status" aria-live="polite"></span></p>'
+        + '<p id="retry-error" class="error" role="alert" hidden></p>'
       : '<p class="muted">Only the task owner can retry these checks.</p>')
     + "</section>";
 }
 
 /** Live steer: Revise the plan for a coding step that stopped for the owner's live message: the owner's button (on with the script, as the decide buttons are) or who may press it. */
-function revisePlanSection(view: TaskDocumentView): string {
+function revisePlanSection(view: TaskDocumentView, readOnly = false): string {
   if (view.reviseOffer === undefined) return "";
   return '<section id="revise-plan" aria-label="Revise the plan"><h2>Revise the plan</h2>'
-    + (view.reviseOffer.canRevise
+    + (view.reviseOffer.canRevise && readOnly
       ? "<p>Rovara plans again with the change your live message asked for, and you approve the revised plan before coding continues. Retry coding, in the task's Slack thread, builds the approved plan without that change instead.</p>"
         + `<p>${decideOnTask(view, "revise-on-task")} to revise the plan.</p>`
+      : view.reviseOffer.canRevise
+      ? "<p>Rovara plans again with the change your live message asked for, and you approve the revised plan before coding continues. Retry coding, in the task's Slack thread, builds the approved plan without that change instead.</p>"
+        + '<p><button type="button" id="revise-plan-button" hidden>Revise the plan</button> <span id="revise-status" role="status" aria-live="polite"></span></p>'
+        + '<p id="revise-error" class="error" role="alert" hidden></p>'
       : '<p class="muted">Only the task owner can revise the plan.</p>')
     + "</section>";
 }
 
+/** The labels of the owner's choices on a held spec (fixed words). */
+const SPEC_CHOICE_LABELS = { retry: "Try again", continue: "Continue without the spec", keep: "Keep the changes", replan: "Re-plan" } as const;
+
 /** Wire lane D (MD-1): a spec on hold: what the broker says, and the owner's buttons (on with the script, as the decide buttons are) or who may press them. */
-function specHoldSection(view: TaskDocumentView): string {
+function specHoldSection(view: TaskDocumentView, readOnly = false): string {
   const hold = view.specHold;
   if (hold === undefined) return "";
   return `<section id="spec-hold" aria-label="Spec on hold"><h2>${escapeHtml(hold.title)}</h2><p>${escapeHtml(hold.message)}</p>`
-    + (hold.canChoose
+    + (hold.canChoose && readOnly
       ? `<p>${decideOnTask(view, "spec-on-task")} to choose what happens to the spec.</p>`
+      : hold.canChoose
+      ? "<p>" + hold.choices.map((choice) => `<button type="button" id="spec-choice-${choice}" hidden>${SPEC_CHOICE_LABELS[choice]}</button>`).join(" ")
+        + ' <span id="spec-status" role="status" aria-live="polite"></span></p><p id="spec-error" class="error" role="alert" hidden></p>'
       : '<p class="muted">Only the task owner can choose what happens to the spec.</p>')
     + "</section>";
 }
 
+/** The one confirmation dialog; the page's script fills it with text only. */
+function decideDialog(view: TaskDocumentView): string {
+  if (view.waiting === undefined || view.access?.canDecide !== true) return "";
+  const section = (id: string, heading: string, extra = "") => `<section id="${id}" hidden><h3 id="${id}-title">${heading}</h3><ul id="${id}-list"></ul>${extra}</section>`;
+  return '<dialog id="decide-dialog" aria-labelledby="decide-title"><h2 id="decide-title"></h2>'
+    + section("decide-changed", "Your answers that differ from AgentX's")
+    + section("decide-unanswered", "Not answered yet, so AgentX's answer is used")
+    + section("decide-comments", "Comments to send", '<p id="decide-cap" class="muted" hidden>You can send up to 25 comments at a time; the rest stay open for the next version.</p>')
+    + section("decide-checks", "Optional checks")
+    // QA6-12: what approving a coding plan does to the run limit, and (when it raises it) the person's explicit say-so. The script fills the words.
+    + '<section id="decide-runlimit" hidden><h3 id="decide-runlimit-title">Run limit</h3><p id="decide-runlimit-text"></p>'
+    + '<label id="decide-runlimit-ack-row"><input type="checkbox" id="decide-runlimit-ack"> <span id="decide-runlimit-ack-label"></span></label></section>'
+    + '<label for="decide-note" id="decide-note-label">Note for AgentX (optional)</label><textarea id="decide-note" maxlength="500"></textarea>'
+    + '<p id="decide-error" class="error" role="alert" hidden></p><p id="decide-signin" hidden><a id="decide-signin-link" href="/v1/auth/browser/authorize">Sign in again</a></p><p id="decide-status" role="status" aria-live="polite"></p>'
+    + '<p class="dialog-actions"><button type="button" id="decide-submit">Approve and continue</button> <button type="button" id="decide-cancel">Cancel</button></p></dialog>';
+}
+
 /**
- * OWNER DECISION 7: the page is read-only. Everything it decided (a document's approval with its answers, checks, comments and note, Request changes, the checks retry, Revise the plan, a held spec's choices,
- * People roles, comments, suggestions, Remember) is on the task's page in Rovara or in Slack. The documents and People list are drawn as for someone who may only read; the bar and the stopped-task sections link
- * the task page for whoever could act.
+ * OWNER DECISION 7 (the cards on): the page is read-only. Everything it decided (a document's approval with its answers, checks, comments and note, Request changes, the checks retry, Revise the plan, a held
+ * spec's choices, People roles, comments, suggestions, Remember) is on the task page in Rovara or in Slack. The documents and People list are drawn as for someone who may only read.
  */
-function readOnly(view: TaskDocumentView): TaskDocumentView {
+function readOnlyView(view: TaskDocumentView): TaskDocumentView {
   return {
     ...view,
     ...(view.access === undefined ? {} : { access: { ...view.access, canComment: false, canSuggest: false, canAsk: false, canDecide: false } }),
@@ -433,8 +519,8 @@ function readOnly(view: TaskDocumentView): TaskDocumentView {
   };
 }
 
-async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequest): Promise<string> {
-  const shown = readOnly(view);
+async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequest, csrf?: string, readOnly = false): Promise<string> {
+  const shown = readOnly ? readOnlyView(view) : view;
   const unverified = (view.unverified ?? []).map((kind) => `<p><strong>The saved ${escapeHtml(kind)} couldn't be verified, so it isn't shown.</strong></p>`).join("");
   const noDocuments = view.documents.length === 0 && unverified === "" ? "<p class=\"muted\">No document has been written yet.</p>" : "";
   const documents = await documentsHtml(shown, request);
@@ -475,9 +561,12 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
       return `<li><time datetime="${escapeHtml(entry.at)}">${escapeHtml(historyTime(entry.at))}</time> ${linked ? `<a href="${escapeHtml(entry.link)}">${text}</a>` : text}</li>`;
     }).join("")}</ol>`;
   const owns = view.access === undefined ? view.role === "owner" : view.access.role === "owner";
-  const role = owns ? "You're the task owner." : "You can read this task.";
-  // Read-only (OWNER DECISION 7): comments, suggestions and decisions are made on the task's page in Rovara.
-  const slackOnly = '<p class="muted">This page is read only. Decisions, comments and suggestions are made on the task page in Rovara.</p>';
+  const role = owns ? "You're the task owner." : view.access?.canComment === true && !readOnly ? "You can read and comment on this task." : "You can read this task.";
+  const slackOnly = readOnly ? '<p class="muted">This page is read only. Decisions, comments and suggestions are made on the task page in Rovara.</p>'
+    : view.access?.canDecide === true ? ""
+    : view.access?.canComment === true ? `<p class="muted">${view.access.canSuggest ? "Only the task owner decides; you can comment and suggest." : "Only the task owner decides; you can comment."}</p>`
+    : '<p class="muted">Decisions are made on the task page in Rovara.</p>';
+  const island = readOnly || csrf === undefined || view.access === undefined ? "" : `<script type="application/json" id="agentx-page-data">${scriptJson(pageData(view, csrf))}</script>`;
   // Hidden until the script sees the task moved on; without scripts it never shows and the page reads as before.
   const movedOn = `<div id="moved-on" class="moved-on" role="status" hidden data-version="${escapeHtml(view.revision ?? 0)}" data-stage="${escapeHtml(view.stage)}"`
     + ` data-check="/review/${escapeHtml(view.taskId)}/task/status"><p>This task has moved on. Refresh to see the latest.</p>`
@@ -494,16 +583,17 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
     + (view.e2eResults === undefined ? "" : renderE2EScenarioRowsHtml(view.e2eResults, { artifactPath: (sha256) => `/review/${encodeURIComponent(view.taskId)}/task/api/e2e/artifacts/${sha256}` }))
     + noChangeSection(view)
     + autofixSection(view)
-    + applicationRetrySection(view)
-    + revisePlanSection(view)
-    + specHoldSection(view)
+    + applicationRetrySection(view, readOnly)
+    + revisePlanSection(view, readOnly)
+    + specHoldSection(view, readOnly)
     + `<section id="findings" aria-label="Review findings"><h2>Review findings</h2>${findings}</section>`
     + `<section id="pull-requests" aria-label="Pull requests"><h2>Pull requests</h2>${pullRequests}</section>`
     // "People unavailable" only for a task that HAS a People list this page could not read (`peopleRevision` is set from the stored list). A task with none (started on the web, or task people off) has no panel to be unavailable (QA6-03).
     + (shown.people !== undefined ? renderTaskPeoplePanel(view.taskId, shown.people) : view.peopleRevision !== undefined ? renderTaskPeopleUnavailable() : "")
     + `<section id="history" aria-label="History"><h2>History</h2>${historyHtml}</section>`
-    // Read-only: only the reading script (deep links and the "moved on" check, GET only); no data island and no deciding script.
-    + `${decideBar(view)}</main><script nonce="${nonce}">${TASK_PAGE_SCRIPT}</script></body></html>`;
+    + `${decideBar(view, readOnly)}</main>${readOnly ? "" : decideDialog(view)}${island}<script nonce="${nonce}">${TASK_PAGE_SCRIPT}</script>`
+    // The deciding and commenting script comes with the data island: only for someone who can comment or decide.
+    + `${island === "" ? "" : `<script nonce="${nonce}">${TASK_PAGE_DECIDING_SCRIPT}</script>`}</body></html>`;
 }
 
 function confirmationPage(taskId: string, csrf: string, capabilities: { peopleRevision?: number; canManagePeople: boolean; canTakeOwnership: boolean }, content: string): WebResponse {
@@ -625,8 +715,14 @@ export function createTaskWeb(deps: TaskWebDependencies): (request: AdaptedHttpR
         } catch { /* A complete People read is optional presentation; authority stays in the page projection. */ }
       }
       const nonce = randomBytes(18).toString("base64url");
-      // Read-only (OWNER DECISION 7): no CSRF cookie, because nothing on this page writes.
-      return htmlResponse(200, await page(view, nonce, pageRequest(url)), nonce);
+      // Someone who can comment or decide gets the CSRF cookie the page's API checks; a valid one is kept as it is.
+      // Read-only (OWNER DECISION 7, the cards on): no CSRF cookie, because nothing on the page writes.
+      const acts = view.access !== undefined && deps.readOnly !== true;
+      const current = parseCookie(request.headers, CSRF_COOKIE);
+      const csrf = !acts ? undefined : isCsrfToken(current) ? current : randomBytes(32).toString("base64url");
+      const response = htmlResponse(200, await page(view, nonce, pageRequest(url), csrf, deps.readOnly === true), nonce);
+      if (csrf !== undefined) response.headers["set-cookie"] = csrfCookie(csrf);
+      return response;
     } catch (error) {
       const code = String((error as { code?: unknown })?.code);
       // Only a reader the broker found eligible is told whom to ask; with no name to give, the answer is the generic one.

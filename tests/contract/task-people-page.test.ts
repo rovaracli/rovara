@@ -84,17 +84,9 @@ describe("private task People page adapters", () => {
     const view = listed.json as unknown as TaskPeopleView;
     const target = view.people.find((entry) => entry.name === "Lee Park")!;
     const roleRequestId = randomUUID();
-    // OWNER DECISION 7: the review page is read-only, so its own role change is refused; a role is proposed through the task's People route (the one Slack's flow and the MCP tool use),
-    // and the person confirms it on the confirmation page that route links to.
-    expect((await routed("POST", "/api/people/role", { requestId: roleRequestId, expectedPeopleRevision: view.revision, personId: target.personId, role: "owner" })).statusCode).toBe(410);
-    const propose = async (who: Developer, body: Record<string, unknown>) => {
-      harness.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
-      const answer = await harness.dev(who, "POST", `/v1/dev/tasks/${realTaskId}/people/role`, body);
-      return { status: answer.status, change: answer.body.change as { status?: string; confirmationUrl?: string } | undefined };
-    };
-    const proposed = await propose(creator, { requestId: roleRequestId, expectedPeopleRevision: view.revision, personId: target.personId, role: "owner" });
-    expect(proposed.status, JSON.stringify(proposed.change)).toBe(200);
-    expect(proposed.change).toMatchObject({ status: "PENDING", confirmationUrl: expect.stringContaining(`/review/${realTaskId}/task/people/confirm/${roleRequestId}`) as unknown });
+    const proposed = await routed("POST", "/api/people/role", { requestId: roleRequestId, expectedPeopleRevision: view.revision,
+      personId: target.personId, role: "owner" });
+    expect(proposed.statusCode, proposed.body).toBe(202);
     const before = harness.db.find((item) => item.entityType === "TASK_PEOPLE_EVENT").length;
     const review = await routed("GET", `/people/confirm/${roleRequestId}`);
     expect(review.statusCode, review.body).toBe(200);
@@ -107,7 +99,6 @@ describe("private task People page adapters", () => {
     expect(harness.db.find((item) => item.entityType === "TASK_PEOPLE_EVENT")[0]).toMatchObject({ actorDeveloperId: creator.developerId });
     const targetDeveloperId = developerIdForSlackUser(targetSlackUserId);
     const targetSessionId = randomUUID();
-    const lee: Developer = { developerId: targetDeveloperId, name: "Lee Park", provider: "slack", sessionId: randomUUID(), slackUserId: targetSlackUserId };
     harness.db.set({ pk: `DEVELOPER#${targetDeveloperId}`, sk: "META", developerId: targetDeveloperId, provider: "slack", displayName: "Lee Park",
       slackUserId: targetSlackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
     harness.db.set({ pk: `SESSION#${targetSessionId}`, sk: "META", sessionId: targetSessionId, developerId: targetDeveloperId, amr: "slack",
@@ -116,14 +107,14 @@ describe("private task People page adapters", () => {
     const coOwnerView = (await routed("GET", "/api/people", undefined, targetSessionId)).json as unknown as TaskPeopleView;
     const creatorPerson = coOwnerView.people.find((entry) => entry.you === false && entry.name === creator.name)!;
     const pendingCreatorRequestId = randomUUID();
-    expect((await propose(creator, { requestId: pendingCreatorRequestId, expectedPeopleRevision: coOwnerView.revision,
-      personId: target.personId, role: "viewer" })).change?.status).toBe("PENDING");
+    expect((await routed("POST", "/api/people/role", { requestId: pendingCreatorRequestId, expectedPeopleRevision: coOwnerView.revision,
+      personId: target.personId, role: "viewer" })).statusCode).toBe(202);
     const beforeForeignConfirm = harness.db.find((item) => item.entityType === "TASK_PEOPLE_EVENT").length;
     expect((await routed("POST", `/api/people/requests/${pendingCreatorRequestId}/confirm`, { requestId: pendingCreatorRequestId }, targetSessionId)).statusCode).toBe(404);
     expect(harness.db.find((item) => item.entityType === "TASK_PEOPLE_EVENT")).toHaveLength(beforeForeignConfirm);
     const coOwnerRequestId = randomUUID();
-    expect((await propose(lee, { requestId: coOwnerRequestId, expectedPeopleRevision: coOwnerView.revision,
-      personId: creatorPerson.personId, role: "viewer" })).change?.status).toBe("PENDING");
+    expect((await routed("POST", "/api/people/role", { requestId: coOwnerRequestId, expectedPeopleRevision: coOwnerView.revision,
+      personId: creatorPerson.personId, role: "viewer" }, targetSessionId)).statusCode).toBe(202);
     expect((await routed("POST", `/api/people/requests/${coOwnerRequestId}/confirm`, { requestId: coOwnerRequestId }, targetSessionId)).statusCode).toBe(200);
     expect((harness.db.get(`DEVTASK#${realTaskId}`, "META") as { developerId: string }).developerId).toBe(creator.developerId);
     expect((await routed("POST", `/api/people/requests/${pendingCreatorRequestId}/confirm`, { requestId: pendingCreatorRequestId })).statusCode).toBe(404);
@@ -169,22 +160,27 @@ describe("private task People page adapters", () => {
       origin, authenticateSession: async () => caller,
       taskState: async () => ({ revision: 4, waiting: true, stage: "Coding plan", documents: [], commentSeq: 0,
         peopleRevision: 7, canRead: true, canComment: true, canSuggest: true, canDecide: true, canAsk: true, canManagePeople: true, canTakeOwnership: false }),
-      listComments: async () => ({ comments: [] }),
+      listComments: async () => ({ comments: [] }), createComment: async () => ({ comment: {} as never }),
+      editComment: async () => ({ comment: {} as never }), deleteComment: async () => ({ comment: {} as never }),
+      setSuggestion: async () => undefined, decide: async () => ({ revision: 5 }),
     };
     const api = createTaskWebApi({
       ...baseDependencies,
       getPeople: async (who) => (calls.push({ name: "get", who: who.developerId }), people),
+      proposePeopleRole: async (who, _task, value) => (calls.push({ name: "role", who: who.developerId, value }), pending),
+      proposeOwnership: async () => committed,
       getPeopleRequest: async () => committed,
       confirmPeopleRequest: async (who, _task, value) => (calls.push({ name: "confirm", who: who.developerId, value }), committed),
     });
     const call = async (method: string, suffix: string, body?: unknown) => api(request(method, `/review/${taskId}/task/api/${suffix}`, body), new URL(`${origin}/review/${taskId}/task/api/${suffix}`));
     expect(JSON.parse((await call("GET", "people")).body)).toEqual(people);
-    // OWNER DECISION 7: the page's own role change is refused (read-only); its confirmation still answers.
-    expect((await call("POST", "people/role", { requestId, expectedPeopleRevision: 7, personId, role: "viewer" })).statusCode).toBe(410);
+    expect((await call("POST", "people/role", { requestId, expectedPeopleRevision: 7, personId, role: "viewer" })).statusCode).toBe(202);
     expect((await call("POST", `people/requests/${requestId}/confirm`, { requestId: randomUUID() })).statusCode).toBe(400);
     expect((await call("POST", `people/requests/${requestId}/confirm`, { requestId })).statusCode).toBe(200);
-    // An already committed request is answered from its receipt; nothing else is called.
-    expect(calls).toEqual([{ name: "get", who: caller.developerId }]);
+    expect(calls).toEqual([
+      { name: "get", who: caller.developerId },
+      { name: "role", who: caller.developerId, value: { requestId, expectedPeopleRevision: 7, personId, role: "viewer" } },
+    ]);
 
     const pendingCalls: string[] = [];
     const pendingApi = createTaskWebApi({ ...baseDependencies,
@@ -211,9 +207,7 @@ describe("private task People page adapters", () => {
     const page = await web(request("GET", `/review/${taskId}/task`), new URL(`${origin}/review/${taskId}/task`));
     expect(page.body).toContain('id="task-people"');
     expect(page.body).toContain("Lee &lt;script&gt;");
-    // Read-only (OWNER DECISION 7): the list reads, with no role control or take-over to press.
-    expect(page.body).not.toContain("<form");
-    expect(page.body).not.toContain("Review role change");
+    expect(page.body).toContain("Add people in Slack");
     const confirmation = await web(request("GET", `/review/${taskId}/task/people/confirm/${requestId}`), new URL(`${origin}/review/${taskId}/task/people/confirm/${requestId}`));
     expect(confirmation.statusCode).toBe(200);
     expect(confirmation.body).toContain("Review People change");

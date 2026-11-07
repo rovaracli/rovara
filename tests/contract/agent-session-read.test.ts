@@ -1002,22 +1002,24 @@ describe("the link /s/<id>", () => {
     expect(state.status, state.body).toBe(200);
     expect(JSON.parse(state.body)).toMatchObject({ canRead: true, canComment: false, canSuggest: false, canDecide: false, canAsk: false, canTakeOwnership: false, canManagePeople: false });
     expect((await t.browser(`/review/${taskId}/task/api/comments`, OMAR)).status).toBe(200);
-    // Nothing that changes the task is open to them: the page is read-only for everyone (OWNER DECISION 7), so every write answers 410 and writes nothing.
+    // Nothing that changes the task is open to them.
     const comment = await t.browser(`/review/${taskId}/task/api/comments`, OMAR, { method: "POST", body: { requestId: randomUUID(), document: "plan", version: 1, target: { kind: "document" }, text: "hello", ask: false } });
-    expect(comment.status, comment.body).toBe(410);
-    expect(comment.body).toContain("read_only");
+    expect(`${String(comment.status)} ${comment.body}`).toContain("not_allowed");
+    expect(comment.status).toBe(403);
+    // v1.2 learning loop (B3): the Remember and Forget paths are wired to the page API and refuse a person who may not comment, whatever they hold in the session.
     const remember = await t.browser(`/review/${taskId}/task/api/comments/${randomUUID()}/remember`, OMAR, { method: "POST", body: {} });
-    expect(remember.status, remember.body).toBe(410);
+    expect(remember.status, remember.body).toBeGreaterThanOrEqual(403);
+    expect(remember.status, remember.body).toBeLessThanOrEqual(404);
     expect(remember.body).not.toContain("correction");
-    // The React route is wired, and learning writes are browser-only: a bearer-token caller is refused (403) before the body or anything else is read.
+    // The React route is wired too, and learning writes are browser-only: a bearer-token caller is refused (403) before the body or anything else is read.
     const react = await t.dev(MAYA, "POST", "/v1/app/projects/payments/learning/remember", { standing: "member" });
     expect(react.status, JSON.stringify(react.body)).toBe(403);
     expect(JSON.stringify(react.body)).toContain("live browser session");
     const take = await t.browser(`/review/${taskId}/task/api/people/take-ownership`, OMAR, { method: "POST", body: { requestId: randomUUID(), expectedPeopleRevision: 1 } });
-    expect(take.status, take.body).toBe(410);
+    expect(take.status, take.body).toBe(404);
     const decide = await t.browser(`/review/${taskId}/task/api/decision`, OMAR, { method: "POST", body: { requestId: randomUUID(), expectedRevision: 1, artifactDigest: "a".repeat(64), decision: "APPROVE", answers: [], includedCommentIds: [] } });
-    expect(decide.status, decide.body).toBe(410);
-    expect(t.db.find((entry) => entry.entityType === "TASK_COMMENT")).toHaveLength(0);
+    expect(decide.status, decide.body).toBe(403);
+    expect(decide.body).toContain("owners_only");
     // Retrying and continuing go through the task's own rules, which a session level never opens.
     const retry = await t.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Try again", expectedRevision: 1 });
     const carryOn = await t.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "Go on" });

@@ -6,7 +6,7 @@ import { WorkflowSnapshotSchema, canonicalPlanJson, createCandidateManifest, cre
 import { designCardOnlyApplies, taskPageStage } from "../../packages/broker/src/aws/developer-tasks/task-page.js";
 import { claimAnchor } from "../../packages/broker/src/aws/plan-page/render-plan.js";
 import { createTaskWeb, type TaskDocumentEntry, type TaskDocumentKind, type TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
-import { TASK_PAGE_SCRIPT, TASK_PAGE_STYLE } from "../../packages/broker/src/aws/task-page-assets.js";
+import { TASK_PAGE_DECIDING_SCRIPT, TASK_PAGE_SCRIPT, TASK_PAGE_STYLE } from "../../packages/broker/src/aws/task-page-assets.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, registerRevision, type Developer } from "../support/developer-task-broker.js";
 import { planDocument } from "../support/plan-documents.js";
@@ -576,7 +576,7 @@ describe("the task page's documents, versions and history", () => {
     expect(body).toMatch(/summary:focus\{outline/);
     expect(body).toMatch(/a:focus[^{]*\{outline/);
     expect(body).toContain("You're the task owner.");
-    expect(body).toContain("This page is read only. Decisions, comments and suggestions are made on the task page in Rovara.");
+    expect(body).toContain("Decisions are made on the task page in Rovara.");
     expect((await render({ role: "reader" })).body).toContain("You can read this task.");
     expect(body).not.toMatch(/ style="/);
   });
@@ -1103,8 +1103,7 @@ describe("the task page through the broker", () => {
       expect(owner.body).toMatch(/Coding plan v2 · approved/);
       expect(owner.body).not.toMatch(/thread repl/i);
       const reader = await open(TEAMMATE);
-      // OWNER DECISION 7: the page is read-only, so a teammate reads it (they comment on the task page in Rovara).
-      expect(reader.body).toContain("You can read this task.");
+      expect(reader.body).toContain("You can read and comment on this task.");
       expect(owner.body).toContain("You're the task owner.");
     });
 
@@ -1152,10 +1151,19 @@ describe("the task page and its API (slice 2)", () => {
     expect(posted.statusCode).toBe(405);
   });
 
-  it("OWNER DECISION 7: the read-only page sets no CSRF cookie for anyone, since nothing on it writes", async () => {
-    for (const reader of [access, { role: "commenter" as const, canComment: true, canSuggest: true, canDecide: false, canAsk: true }, undefined]) {
-      expect((await render(reader === undefined ? {} : { access: reader })).headers["set-cookie"]).toBeUndefined();
-    }
+  it("the page sets the CSRF cookie only for someone who can act", async () => {
+    const owner = await render({ access });
+    expect(owner.headers["set-cookie"]).toMatch(/^__Host-agentx_review_csrf=[A-Za-z0-9_-]{32,64}; Secure; HttpOnly; SameSite=Lax; Path=\/; Max-Age=900$/);
+    const commenter = await render({ access: { role: "commenter", canComment: true, canSuggest: true, canDecide: false, canAsk: true } });
+    expect(commenter.headers["set-cookie"]).toContain("__Host-agentx_review_csrf=");
+    const closed = await render({ access: { role: "owner", canComment: false, canSuggest: false, canDecide: false, canAsk: false } });
+    expect(closed.headers["set-cookie"]).toContain("__Host-agentx_review_csrf=");
+    expect((await render({})).headers["set-cookie"]).toBeUndefined();
+    // A valid cookie already there is kept, not replaced.
+    const csrf = "k".repeat(43);
+    const web = createTaskWeb({ authenticateSession: async () => caller, getTaskDocumentView: async () => ({ ...view, access }) });
+    const again = await web(request(`/review/${taskId}/task`, `${SESSION}; __Host-agentx_review_csrf=${csrf}`), pageUrl);
+    expect(again.headers["set-cookie"]).toBe(`__Host-agentx_review_csrf=${csrf}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=900`);
   });
 
   it("sends its API paths to the API, signed in or not", async () => {
@@ -1187,34 +1195,66 @@ describe("deciding and commenting on the task page (slice 2)", () => {
     documents: plans(), waiting: { kind: "coding plan", version: 2, artifactDigest: digest }, revision: 7, commentSeq: 3, access: owner, ...extra,
   });
 
-  it("OWNER DECISION 7: the owner sees the bar on the waiting document only, linking the task page; nothing on the page decides", async () => {
-    const { body } = await deciding({ sessionId: "ses_0123456789abcdefghij" });
+  it("the owner sees the sticky bar on the waiting document only", async () => {
+    const { body } = await deciding();
     expect(count(body, /class="decide-bar"/g)).toBe(1);
     const bar = body.slice(body.indexOf('<div class="decide-bar"'));
-    expect(bar).toMatch(/^<div class="decide-bar" role="region" aria-label="Decide"><p><a id="decide-on-task" href="\/app\/sessions\/ses_0123456789abcdefghij">Decide on the task<\/a>: approve coding plan v2, answer its questions or request changes on its card there.<\/p><\/div>/);
+    expect(bar).toMatch(/^<div class="decide-bar" role="region" aria-label="Decide">/);
+    expect(bar).toContain("1 to answer");
+    expect(bar).toMatch(/<button type="button" id="decide-approve"[^>]*hidden>Approve coding plan v2<\/button>/);
+    expect(bar).toMatch(/<button type="button" id="decide-request-changes"[^>]*hidden>Request changes to coding plan v2<\/button>/);
+    // The bar sits with the current coding plan, not the earlier version.
     expect(body.indexOf('class="decide-bar"')).toBeGreaterThan(body.indexOf('id="coding-plan-v2"'));
-    expect(body).not.toContain('id="decide-dialog"');
-    expect(body).not.toContain('type="radio"');
-    expect(body).not.toContain("<button type=\"button\" id=\"decide-");
+    expect(body).toContain('<dialog id="decide-dialog" aria-labelledby="decide-title">');
+    expect(body).toContain('type="radio" name="answer-d1"');
     expect(body).toContain("You're the task owner.");
-    // A task with no session says where else it is decided, with no link.
-    expect((await deciding()).body).toContain("Decide on the task in Rovara, or in the task's Slack thread: approve coding plan v2");
-    // Nothing waiting: no bar.
+    expect(body).not.toContain("Decisions are made on the task page in Rovara.");
+    // Nothing waiting: no bar and no dialog.
     const idle = (await render({ documents: plans(), access: owner })).body;
     expect(idle).not.toContain('class="decide-bar"');
+    expect(idle).not.toContain('id="decide-dialog"');
+    expect(idle).not.toContain('type="radio"');
   });
 
-  it("the bar names the document waiting, whichever document is open", async () => {
+  it("the bar's buttons name the document they act on, whichever document is open", async () => {
     const requirements = structuredDoc("requirements", 1, planDocument({ claims: [{ id: "1", text: "Retries happen." }], decisions: [] }), { approved: true });
     const design = structuredDoc("design", 1, planDocument({ claims: [{ id: "1", text: "Retries wait." }], decisions: [] }), { approved: true });
     const codingPlan = structuredDoc("coding plan", 1, planDocument({ claims: [{ id: "1", text: "Edit retry.ts." }], decisions: [] }));
     const opened = await renderAt("?doc=design", { documents: [requirements, design, codingPlan], waiting: { kind: "coding plan", version: 1, artifactDigest: digest }, revision: 7, commentSeq: 3, access: owner });
-    expect(opened.body.slice(opened.body.indexOf('<div class="decide-bar"'))).toContain("approve coding plan v1");
+    const bar = opened.body.slice(opened.body.indexOf('<div class="decide-bar"'));
+    expect(bar).toMatch(/id="decide-approve"[^>]*hidden>Approve coding plan v1<\/button>/);
+    expect(bar).toMatch(/id="decide-request-changes"[^>]*hidden>Request changes to coding plan v1<\/button>/);
+    // No decisions to answer: nothing to count (the script shows no control and no note).
+    expect(bar).toContain('<button type="button" id="decide-next" hidden></button><span id="decide-count" role="status"></span>');
+    // A waiting design is named the same way.
     const waitingDesign = await render({ documents: [requirements, { ...design, approved: false }], waiting: { kind: "design", version: 1, artifactDigest: digest }, access: owner });
-    expect(waitingDesign.body).toContain("approve design v1");
+    expect(waitingDesign.body).toMatch(/id="decide-approve"[^>]*hidden>Approve design v1<\/button>/);
+    expect(waitingDesign.body).toMatch(/id="decide-request-changes"[^>]*hidden>Request changes to design v1<\/button>/);
   });
 
-  it("the card-only wording applies only to a reader who may decide, on a design under review with the stage on", () => {
+  // QA6-03: a design under review is approved only on its decision card; the page must not offer a button the server refuses.
+  it("a design under review links to its decision card instead of an Approve button, and keeps Request changes", async () => {
+    const requirements = structuredDoc("requirements", 1, planDocument({ claims: [{ id: "1", text: "Retries happen." }], decisions: [] }), { approved: true });
+    const design = structuredDoc("design", 1, planDocument({ claims: [{ id: "1", text: "Retries wait." }], decisions: [] }));
+    const codingPlan = structuredDoc("coding plan", 1, planDocument({ claims: [{ id: "1", text: "Edit retry.ts." }], decisions: [] }));
+    const waitingDesign = { documents: [requirements, design], waiting: { kind: "design" as const, version: 1, artifactDigest: digest }, access: owner };
+    const carded = await render({ ...waitingDesign, designCardOnly: { href: "/app" } });
+    expect(carded.body).toContain('<a id="decide-approve-card" href="/app">Approve on the decision card</a>');
+    // The approve button is never shown: it stays hidden and the script keeps it so.
+    expect(carded.body).toMatch(/id="decide-approve" data-card-only hidden>Approve design v1<\/button>/);
+    expect(carded.body).toMatch(/id="decide-request-changes"[^>]*hidden>Request changes to design v1<\/button>/);
+    expect(TASK_PAGE_DECIDING_SCRIPT).toContain('bar.approve.hidden=bar.approve.hasAttribute("data-card-only")');
+    // Positive control: without the flag the plain button is there and no link.
+    const plainPage = await render(waitingDesign);
+    expect(plainPage.body).toMatch(/id="decide-approve"[^>]*hidden>Approve design v1<\/button>/);
+    expect(plainPage.body).not.toContain("decide-approve-card");
+    expect(plainPage.body).not.toMatch(/<button[^>]*data-card-only/);
+    // A coding plan is never carded.
+    const plan = await render({ documents: [requirements, codingPlan], waiting: { kind: "coding plan", version: 1, artifactDigest: digest }, access: owner });
+    expect(plan.body).not.toContain("decide-approve-card");
+  });
+
+  it("the card-only wording applies only to a reader who may decide, on a design under review with the stage on", async () => {
     const base = createWorkflowSnapshot({ taskId, ownerId: "a".repeat(64), now: "2026-11-05T10:00:00.000Z" });
     const review = { status: "done" } as never;
     const underReview = WorkflowSnapshotSchema.parse({ ...base, stage: "PLAN_REVIEW", state: "WAITING", reviewPhase: "DESIGN" });
@@ -1230,6 +1270,12 @@ describe("deciding and commenting on the task page (slice 2)", () => {
     expect(applies({ waitingKind: "coding plan" }), "a coding plan").toBe(false);
     expect(applies({ waitingKind: "requirements" }), "requirements").toBe(false);
     expect(applies({ waitingKind: undefined }), "nothing waiting").toBe(false);
+    // Not applying means the page shows the ordinary Approve button and no link.
+    const requirements = structuredDoc("requirements", 1, planDocument({ claims: [{ id: "1", text: "Retries happen." }], decisions: [] }), { approved: true });
+    const design = structuredDoc("design", 1, planDocument({ claims: [{ id: "1", text: "Retries wait." }], decisions: [] }));
+    const page = await render({ documents: [requirements, design], waiting: { kind: "design", version: 1, artifactDigest: digest }, access: owner });
+    expect(page.body).toMatch(/id="decide-approve"[^>]*hidden>Approve design v1<\/button>/);
+    expect(page.body).not.toContain("decide-approve-card");
   });
 
   it("says 'People unavailable' only for a task that has a People list it could not read", async () => {
@@ -1298,25 +1344,35 @@ describe("deciding and commenting on the task page (slice 2)", () => {
     });
   });
 
-  it("others see Only owners decide, and the page tells everyone it is read only", async () => {
+  it("others see Only owners decide", async () => {
     const { body } = await deciding({ access: commenter });
     const bar = body.slice(body.indexOf('<div class="decide-bar"'));
     expect(bar).toContain("Only owners decide.");
-    expect(body).not.toContain('id="decide-on-task"');
+    expect(body).not.toContain('id="decide-approve"');
+    expect(body).not.toContain('id="decide-dialog"');
     expect(body).not.toContain('type="radio"');
-    expect(body).toContain("You can read this task.");
-    expect(body).toContain("This page is read only. Decisions, comments and suggestions are made on the task page in Rovara.");
+    expect(body).toContain("You can read and comment on this task.");
+    expect(body).toContain("Only the task owner decides; you can comment and suggest.");
+    expect(body).not.toContain("Decisions are made on the task page in Rovara.");
   });
 
-  it("OWNER DECISION 7: no reader gets a data island or the deciding script; only the reading script runs, by the page's nonce", async () => {
+  it("the page data island escapes script-closing text", async () => {
     const answer = await deciding({ documents: plans("Close </script><script>alert(1)</script> here?"), title: "</script><!--" });
-    expect(answer.body).not.toContain('id="agentx-page-data"');
-    expect(answer.body).not.toMatch(/<\/script><script>alert/u);
+    const island = /<script type="application\/json" id="agentx-page-data">([\s\S]*?)<\/script>/.exec(answer.body);
+    expect(island).not.toBeNull();
+    expect(island![1]).not.toMatch(/<\/script|<!--|<script/i);
+    const data = JSON.parse(island![1]!) as { taskId: string; csrf: string; revision: number; role: string; canDecide: boolean; commentSeq: number; current: { anchor: string; version: number; artifactDigest: string; decisions: Array<{ question: string; recommended: string; options: string[]; labels: Record<string, string> }> } };
+    expect(data).toMatchObject({ taskId, revision: 7, role: "owner", canDecide: true, commentSeq: 3, current: { anchor: "coding-plan", version: 2, artifactDigest: digest } });
+    expect(data.current.decisions[0]).toMatchObject({ question: "Close </script><script>alert(1)</script> here?", recommended: "three", options: ["three", "five"], labels: { three: "Three times", five: "Five times" } });
+    expect(answer.headers["set-cookie"]).toContain(`__Host-agentx_review_csrf=${data.csrf};`);
+    // Only the nonce'd script runs: the data island is not a script the page executes.
     const nonce = /<script nonce="([^"]+)">/.exec(answer.body)![1]!;
-    expect(answer.body.match(/<script nonce=/g)).toHaveLength(1);
-    expect(answer.body).toContain(`<script nonce="${nonce}">${TASK_PAGE_SCRIPT}</script>`);
+    // Two scripts by the page's nonce (reading, then deciding and commenting); the data island is not one of them.
+    expect(answer.body.match(/<script nonce=/g)).toHaveLength(2);
+    expect(answer.body.match(new RegExp(`<script nonce="${nonce}">`, "g"))).toHaveLength(2);
     expect(answer.headers["content-security-policy"]).toContain(`script-src 'nonce-${nonce}'`);
-    expect(answer.headers["set-cookie"]).toBeUndefined();
+    // A reader who can do nothing gets no island.
+    expect((await render({ documents: plans() })).body).not.toContain('id="agentx-page-data"');
   });
 
   it("every new string avoids the banned words", async () => {
@@ -1334,13 +1390,16 @@ describe("deciding and commenting on the task page (slice 2)", () => {
     }
   });
 
-  it("a Markdown document shows its whole-document comments (the ones a decision sends), with no thread controls for anyone", async () => {
+  it("a Markdown document takes whole-document comments, so the ones a decision sends are on the page", async () => {
     const onDocument = { id: "00000000-0000-4000-8000-000000000009", document: "plan" as const, version: 2, target: { kind: "document" as const }, author: { kind: "person" as const, name: "Sam", owner: false, you: false }, text: "Shorter, please.", createdAt: "2026-10-11T10:00:00.000Z", edited: false, deleted: false, sent: false, rev: 1 };
-    for (const reader of [commenter, owner, undefined]) {
-      const { body } = await render({ ...(reader === undefined ? {} : { access: reader }), pageComments: [onDocument] });
-      expect(body).not.toContain('class="comment-open"');
-      if (reader !== undefined) expect(body.slice(body.indexOf('id="coding-plan-v2"'))).toContain(`id="comment-${onDocument.id}"`);
-    }
+    const { body } = await render({ access: commenter, pageComments: [onDocument] });
+    const current = body.slice(body.indexOf('id="coding-plan-v2"'));
+    expect(current).toContain("<h3>Comments on this document</h3>");
+    expect(current).toContain('data-comments="document"');
+    expect(current).toContain(`id="comment-${onDocument.id}"`);
+    expect(current).toMatch(/<button type="button" class="comment-open" data-target="document"[^>]*hidden>Comment<\/button>/);
+    // A reader who cannot comment sees no thread controls.
+    expect((await render({ pageComments: [onDocument] })).body).not.toContain('class="comment-open"');
   });
 
   it("phone layout rules: sticky bar, 2.75rem controls, full-screen dialog under 35rem", async () => {
