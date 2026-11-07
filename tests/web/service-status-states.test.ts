@@ -2,7 +2,7 @@
 import { createElement as h } from "react";
 import { expect, it } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { AdminRouter } from "./support/admin-router.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -12,7 +12,7 @@ const unknown = (reason: string): Check[] => (["web", "api"] as const).map(kind 
 const body = (checks: Check[], configured = true) => ({ orgId, source: "stored_runtime_qualification", configured, checkedAt, checks });
 async function mount(respond: () => Promise<{ status: number; body: unknown }>, kind?: "web" | "api") {
  const { ServiceStatusContent } = await import("../../packages/ui/src/screens/admin/health/ServiceStatusScreen.js"), f = fakeHost(respond);
- const view = renderUi(h(MemoryRouter, { children: h(AppHostProvider, { host: f.host, children: h(ServiceStatusContent, { orgId, ...(kind === undefined ? {} : { kind }), enabled: true }) }) }));
+ const view = renderUi(h(AdminRouter, { children: h(AppHostProvider, { host: f.host, children: h(ServiceStatusContent, { orgId, ...(kind === undefined ? {} : { kind }), enabled: true }) }) }));
  return { f, view };
 }
 const states = [
