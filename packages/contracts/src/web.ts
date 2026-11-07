@@ -59,7 +59,7 @@ export { OrgInvitePublicIdSchema, AppOrgInviteStatusSchema } from "./developer-w
 export { OrgIdSchema } from "./org.js";
 
 // Lane A: safe reviewed invite creation receipts.
-export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema } from "./invite-creation.js";
+export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema, InviteEmailOutcomeSchema } from "./invite-creation.js";
 
 // Lane A: strict read-only monthly base budget settings.
 export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
@@ -163,3 +163,4 @@ export { AskStatusReaderSchema, type AskStatus } from "./live-ask.js";
 export { DiagnosisStatusReaderSchema, DIAGNOSIS_ANSWER_LABEL, DIAGNOSIS_NO_PROVIDER_MESSAGE, DiagnosisIdSchema } from "./live-diagnosis.js";
 
 export * from "./task-stop-start-preview.js";
+export { SIGNED_OUT_REASONS, isSignedOutReason, type SignedOutReason } from "./sign-in-reasons.js";

@@ -767,6 +767,15 @@ export class OrgStore {
     return items;
   }
 
+  /** UX1: whether any Slack workspace is connected to the org (its reverse items, which `bindSlackTeam` writes in the org's own partition). One item read at most. */
+  async hasSlackTeam(orgId: OrgId): Promise<boolean> {
+    const page = await this.input.documentClient.send(new QueryCommand({
+      TableName: this.input.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: { ":pk": orgPk(orgId), ":prefix": "SLACK_TEAM#" }, ConsistentRead: true, Limit: 1,
+    })) as { Items?: unknown[] };
+    return (page.Items ?? []).length > 0;
+  }
+
   async orgForSlackTeam(teamId: string): Promise<OrgId | undefined> {
     const item = await this.get(slackTeamOrgKey(teamId));
     return item === undefined ? undefined : (item.orgId as OrgId);

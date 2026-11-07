@@ -23,7 +23,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  // RULING Q9: identity linking/unlinking stays in the CLI fresh-session flow; a browser may read /me. Release 0.4.16: and set its own display name (PUT /me/name, which
  // authenticateWebRequest guards with the cookie, the Origin and the CSRF token like every browser write).
  // The one exception (owner, 2026-11-05): a signed-in web user links their own Slack account, and removes that link (never another method).
- if (family === "me") return (read && relative === "me") || (method === "PUT" && relative === "me/name") || ((method === "POST" || method === "DELETE") && relative === "me/identities/slack");
+ // UX1 (owner-approved platform UX, slice 1): and links their own GitHub account (any sign-in method), finished in the same browser; removing it stays in the CLI.
+ if (family === "me") return (read && relative === "me") || (method === "PUT" && relative === "me/name") || ((method === "POST" || method === "DELETE") && relative === "me/identities/slack") || (method === "POST" && relative === "me/identities/github");
  if (family === "approvals" || family === "devices") return read && !relative.endsWith("/decide");
  if (family === "spend-requests") return relative === "spend-requests" && (read || method === "POST");
  return true;

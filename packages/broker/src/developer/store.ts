@@ -41,7 +41,11 @@ export interface AuthRequestRecord { id: string; clientRedirectUri: string; clie
   /** The Slack link, started from the web app: its callback must come from a browser that holds the session `linkSessionId` (its session cookie), or nothing is linked. */
   linkBrowser?: true;
   /** Plan 2, Task 8b: the CLI's fresh sign-in (for changing sign-in methods); the provider is asked to have the person sign in again where it can. */
-  fresh?: boolean }
+  fresh?: boolean;
+  /** UX1 (OWNER DECISION 5): the browser sign-in came from "Create a company"; only then may a new person's sign-in create one. */
+  createCompany?: true;
+  /** UX1: where a browser GitHub link returns the person (a fixed choice). */
+  linkReturnTo?: "/app" | "/app/onboard" }
 /** How a join ended (Plan 2, Task 5). Only "joined" used the invite. */
 export type JoinOutcome = "joined" | "ALREADY_IN_ORG" | "INVITE_WRONG_EMAIL" | "INVITE_INVALID";
 /**
@@ -199,6 +203,11 @@ export const RELINK_OWN_ACCOUNT = "that sign-in has since started its own accoun
 export const RELINK_ALREADY = "that sign-in is already part of your account";
 /** The account record's marker of its one Slack link (the identity key), written in the link's own transaction and removed by the unlink. */
 export const SLACK_LINKED_ATTRIBUTE = "slackLinkedIdentity";
+/** UX1: the same one-per-account marker for a GitHub account linked from the web app, so two simultaneous links end with one. */
+export const GITHUB_LINKED_ATTRIBUTE = "githubLinkedIdentity";
+export const GITHUB_LINK_HAS_ONE = "a GitHub account is already linked to your account";
+/** UX1: why a Slack account cannot be linked yet: the company has no Slack workspace connected (the next step is the operator's). */
+export const SLACK_NO_WORKSPACE_MESSAGE = "Your company hasn't connected a Slack workspace to Rovara yet, so there is no workspace to link your Slack account to. Ask a company owner to contact Rovara support to connect your Slack workspace, then link your account here.";
 /** Refusals of linking a Slack account to a web account, in the person's words. */
 export const SLACK_LINK_TAKEN = "that Slack account already belongs to another Rovara account, so it can't be linked to this one";
 export const SLACK_LINK_HAS_ONE = "a Slack account is already linked to your account; remove it first to link another";
@@ -748,9 +757,9 @@ export class DeveloperSignInStore {
               // Project AI commits pin method marks, not each identity mark. Every unlink must set #method atomically; review that fence if this changes.
               TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META },
               // The Slack link's one-per-account marker goes with the link.
-              UpdateExpression: `SET #identity = :at, #unlinked = :at, #method = :at${link.provider === "slack" ? " REMOVE #slackLinked" : ""}`,
+              UpdateExpression: `SET #identity = :at, #unlinked = :at, #method = :at${link.provider === "slack" || link.provider === "github" ? " REMOVE #slackLinked" : ""}`,
               ConditionExpression: "attribute_exists(pk)",
-              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider), ...(link.provider === "slack" ? { "#slackLinked": SLACK_LINKED_ATTRIBUTE } : {}) },
+              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider), ...(link.provider === "slack" ? { "#slackLinked": SLACK_LINKED_ATTRIBUTE } : link.provider === "github" ? { "#slackLinked": GITHUB_LINKED_ATTRIBUTE } : {}) },
               ExpressionAttributeValues: { ":at": at },
             } },
             // An identity merged in by rule 1b is keyed to the developer that was merged away. Unlinked, it starts that developer again
@@ -850,16 +859,31 @@ export class DeveloperSignInStore {
    * the identity again after unlinking it (the tombstone is relinked, as for any removed method).
    */
   async linkSlackIdentity(input: { developerId: string; identityKey: string; subject: string; issuer: string; email?: string; by: { method: DeveloperSignInMethod }; belongsToCompany: boolean }): Promise<{ ok: true; created: boolean } | { ok: false; reason: "taken" | "has_one" | "changed" }> {
+    return this.linkVerifiedIdentity("slack", input);
+  }
+
+  /**
+   * UX1: links a GitHub account (verified at GitHub just now, by the caller) to the web account `developerId`, by the same rules as `linkSlackIdentity`: never an
+   * account that is someone else's (linked to another account, unlinked from another, or its own developer holds a company or was merged elsewhere), one GitHub
+   * account per account, and the GitHub account's own developer (if it signed in once and holds no company) is merged in.
+   */
+  async linkGithubIdentity(input: { developerId: string; identityKey: string; subject: string; issuer: string; email?: string; login?: string; by: { method: DeveloperSignInMethod }; belongsToCompany: boolean }): Promise<{ ok: true; created: boolean } | { ok: false; reason: "taken" | "has_one" | "changed" }> {
+    return this.linkVerifiedIdentity("github", input);
+  }
+
+  private async linkVerifiedIdentity(provider: "slack" | "github", input: { developerId: string; identityKey: string; subject: string; issuer: string; email?: string; login?: string; by: { method: DeveloperSignInMethod }; belongsToCompany: boolean }): Promise<{ ok: true; created: boolean } | { ok: false; reason: "taken" | "has_one" | "changed" }> {
     const { developerId, identityKey } = input;
+    const marker = provider === "slack" ? SLACK_LINKED_ATTRIBUTE : GITHUB_LINKED_ATTRIBUTE;
+    const login = provider === "github" && input.login !== undefined ? { login: input.login } : {};
     if (identityKey === developerId) return { ok: false, reason: "taken" };
     const [current, duplicate, account, held] = await Promise.all([this.getIdentityLink(identityKey), this.getDeveloper(identityKey), this.getDeveloper(developerId), this.activeIdentityItems(developerId)]);
     if (account === undefined || account.revoked || account.mergedInto !== undefined) return { ok: false, reason: "changed" };
     if (current !== undefined && isActiveLink(current, identityKey) && current.developerId === developerId) return { ok: true, created: false };
-    if (held.some((link) => link.provider === "slack")) return { ok: false, reason: "has_one" };
+    if (held.some((link) => link.provider === provider)) return { ok: false, reason: "has_one" };
     if (current !== undefined && !isActiveLink(current, identityKey)) {
       // Removed from an account earlier: only that account takes it back (relink); it never moves to another.
       try {
-        await this.relinkIdentity({ identityKey, developerId, provider: "slack", issuer: input.issuer, subject: input.subject, ...(input.email === undefined ? {} : { email: input.email }), by: input.by });
+        await this.relinkIdentity({ identityKey, developerId, provider, issuer: input.issuer, subject: input.subject, ...(input.email === undefined ? {} : { email: input.email }), ...login, by: input.by });
       } catch (error) {
         if (!conditionFailedOrRefused(error)) throw error;
         return { ok: false, reason: "taken" };
@@ -871,11 +895,11 @@ export class DeveloperSignInStore {
     if (input.belongsToCompany || duplicate?.revoked === true || (duplicate?.mergedInto !== undefined && duplicate.mergedInto !== developerId)) return { ok: false, reason: "taken" };
     const at = this.iso();
     const TableName = this.input.tableName;
-    const event = await this.identityEvent("linked", { identityKey, developerId, provider: "slack", at });
+    const event = await this.identityEvent("linked", { identityKey, developerId, provider, at });
     const items: SignInTransactItem[] = duplicate !== undefined
       ? this.mergeItems({ duplicate, duplicateIdentityKey: identityKey, survivorId: developerId, at, ...(current === undefined ? {} : { link: current }), ...(input.email === undefined ? {} : { email: input.email }) })
       : (() => {
-        const body = { entityType: "IDENTITY_LINK", developerId, provider: "slack" as const, issuer: input.issuer, subject: input.subject, ...(input.email === undefined ? {} : { email: input.email }), linkedAt: at, lastSignInAt: at };
+        const body = { entityType: "IDENTITY_LINK", developerId, provider, issuer: input.issuer, subject: input.subject, ...(input.email === undefined ? {} : { email: input.email }), ...login, linkedAt: at, lastSignInAt: at };
         return [
           { Put: { TableName, Item: { ...signInIdentityKey(identityKey), ...body }, ConditionExpression: "attribute_not_exists(pk)" } },
           { Put: { TableName, Item: { ...developerIdentityKey(developerId, identityKey), ...body } } },
@@ -884,10 +908,10 @@ export class DeveloperSignInStore {
     try {
       await this.input.documentClient.send(new TransactWriteCommand({
         TransactItems: [
-          // The account is still there, not revoked and not merged away, and holds no Slack link yet: the marker is what makes two simultaneous links end with one.
+          // The account is still there, not revoked and not merged away, and holds no link of this provider yet: the marker is what makes two simultaneous links end with one.
           { Update: { TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #slackLinked = :identityKey",
             ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedInto) AND (attribute_not_exists(revoked) OR revoked = :no) AND attribute_not_exists(#slackLinked)",
-            ExpressionAttributeNames: { "#slackLinked": SLACK_LINKED_ATTRIBUTE }, ExpressionAttributeValues: { ":no": false, ":identityKey": identityKey } } },
+            ExpressionAttributeNames: { "#slackLinked": marker }, ExpressionAttributeValues: { ":no": false, ":identityKey": identityKey } } },
           ...items,
           ...this.pendingFor(event),
         ],
@@ -899,7 +923,7 @@ export class DeveloperSignInStore {
       if (now !== undefined && isActiveLink(now, identityKey) && now.developerId === developerId) return { ok: true, created: false };
       if (now !== undefined && now.developerId !== identityKey) return { ok: false, reason: "taken" };
       // The account's marker is there: another Slack link won the race.
-      if (typeof (await this.get<Record<string, unknown>>(`DEVELOPER#${developerId}`))?.[SLACK_LINKED_ATTRIBUTE] === "string") return { ok: false, reason: "has_one" };
+      if (typeof (await this.get<Record<string, unknown>>(`DEVELOPER#${developerId}`))?.[marker] === "string") return { ok: false, reason: "has_one" };
       return { ok: false, reason: "changed" };
     }
     await this.flush(event);

@@ -32,7 +32,7 @@ import {
 import { clearOrgEgress } from "../../org/egress-domains.js";
 import { releaseOrgModelSources } from "../../model-sources/release.js";
 import { archiveOrgProjects } from "../../org/project-archive.js";
-import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../../org/invite-url.js";
+import { cloudJoinBase, inviteUrl } from "../../org/invite-url.js";
 import { parseCreateProjectBody } from "../../org/cloud-projects.js";
 import { createProjectFromMetaRoute } from "../../org/create-from-meta.js";
 import { isCreateFromMetaBody } from "@agentx/contracts";
@@ -121,6 +121,8 @@ export async function getAppMe(deps: DeveloperRouteDependencies, caller: Develop
     developer: { id: caller.developerId, name: caller.name, ...(caller.email === undefined ? {} : { email: caller.email }), orgRole: caller.orgRole, nameChosen: caller.nameChosen === true },
     org: { orgId: org.orgId, name: org.name, plan: org.plan, nameIsDefault: org.nameIsDefault ?? org.createdBy !== "system", ...(!trialAvailable(deps.editionPolicy) || orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },
     identities: await store.identitiesOf(caller.developerId),
+    // UX1: what the account menu and the GitHub step may offer to link: the method is on here (the server checks again when a link starts).
+    linkable: { slack: deps.developer.methods.slack === true, github: deps.developer.methods.github === true },
   };
 }
 
@@ -164,13 +166,17 @@ export async function unlinkAppIdentity(deps: DeveloperRouteDependencies, caller
  * developer and the session are the verified token's (`caller`), never anything the request carries; the session must be fresh. The answer
  * is the sign-in link to open, which links the identity back only to this developer.
  */
-export async function startAppIdentityLink(deps: DeveloperRouteDependencies, caller: DeveloperCaller, provider: string): Promise<StartIdentityLinkAppResponse> {
+export async function startAppIdentityLink(deps: DeveloperRouteDependencies, caller: DeveloperCaller, provider: string, body?: unknown): Promise<StartIdentityLinkAppResponse> {
   const method = UnlinkableSignInMethodSchema.safeParse(provider);
   if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to add back: cloud or github (a Slack account is linked in the web app)");
   // Linking a Slack account is for a signed-in web user: the link is finished in the browser that holds the session (the CLI cannot).
   if (method.data === "slack" && caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session to link your Slack account.");
   if (deps.developer.startIdentityLink === undefined) throw agentXError("NOT_FOUND", "adding a sign-in method back is not set up in this deployment");
-  const answer = await deps.developer.startIdentityLink({ kind: "start-identity-link", developerId: caller.developerId, sessionId: caller.sessionId, provider: method.data, ...(method.data === "slack" ? { browser: true as const } : {}) });
+  // UX1: from a live browser session, GitHub is linked to this account (any sign-in method), finished in this browser; from the CLI it stays "add a removed method back".
+  const browserGithub = method.data === "github" && caller.browserSession === true;
+  const returnTo = typeof body === "object" && body !== null && (body as { returnTo?: unknown }).returnTo === "/app/onboard" ? "/app/onboard" as const : "/app" as const;
+  const answer = await deps.developer.startIdentityLink({ kind: "start-identity-link", developerId: caller.developerId, sessionId: caller.sessionId, provider: method.data,
+    ...(method.data === "slack" || browserGithub ? { browser: true as const } : {}), ...(browserGithub ? { returnTo } : {}) });
   if (!answer.ok) {
     if (answer.error === "reauth") throw agentXError("REAUTH_REQUIRED", answer.message);
     if (answer.error === "refused") throw agentXError("CONFIG_INVALID", answer.message);
@@ -210,7 +216,7 @@ export async function createOrganizationInvite(deps: DeveloperRouteDependencies,
   // A cloud install shares the web app's link, with the token in the fragment so a static host never receives it. A private install's
   // link points at its own cell, which reads the token server-side, so it keeps the query.
   return { inviteUrl: deps.cloud === true
-    ? inviteUrl(`${deps.developer.webOrigin ?? DEFAULT_ROVARA_WEB_ORIGIN}/join`, token, "fragment")
+    ? inviteUrl(cloudJoinBase(deps.developer.issuer), token, "fragment")
     : inviteUrl(`${deps.developer.issuer}/join`, token, "query") };
 }
 

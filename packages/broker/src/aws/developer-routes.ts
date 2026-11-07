@@ -777,7 +777,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "PUT" && url.pathname === "/v1/app/me/name") return setMyName(deps, caller, jsonBody(request));
   const identityRoute = /^\/v1\/app\/me\/identities\/([a-z]{1,16})$/.exec(url.pathname);
   if (identityRoute !== null && request.method === "DELETE") return unlinkAppIdentity(deps, caller, identityRoute[1]!);
-  if (identityRoute !== null && request.method === "POST") return startAppIdentityLink(deps, caller, identityRoute[1]!);
+  if (identityRoute !== null && request.method === "POST") return startAppIdentityLink(deps, caller, identityRoute[1]!, jsonBody(request));
   // Member removal (v1.1): a preview of what moves and what ends, the removal with a receipt per request id, and its status.
   const removalPreview = /^\/v1\/app\/org\/members\/([a-f0-9]{64})\/removal-preview$/.exec(url.pathname);
   if (removalPreview !== null && request.method === "GET") return previewMemberRemoval(deps, caller, removalPreview[1]!, url);

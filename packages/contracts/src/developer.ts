@@ -462,6 +462,8 @@ export const StartIdentityLinkRequestSchema = z.object({
   kind: z.literal("start-identity-link"), developerId: z.string().regex(/^[a-f0-9]{64}$/), sessionId: SessionIdSchema, provider: UnlinkableSignInMethodSchema,
   /** The web app started it, from a live browser session: the link then has to be finished in the browser that holds that session. The Slack link is made only this way. */
   browser: z.literal(true).optional(),
+  /** UX1: where a browser link of GitHub sends the person back (the account menu, or the onboarding step it was started from). Fixed choices only. */
+  returnTo: z.enum(["/app", "/app/onboard"]).optional(),
 }).strict();
 export type StartIdentityLinkRequest = z.infer<typeof StartIdentityLinkRequestSchema>;
 export type StartIdentityLinkResponse = { ok: true; authorizeUrl: string } | { ok: false; error: "refused" | "reauth"; message: string } | { ok: false; error: "invalid_request" | "unavailable" };

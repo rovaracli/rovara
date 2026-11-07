@@ -72,6 +72,12 @@ async function joinAs(h: Harness, token: string, user: FakeOidcUser, options: { 
   return { started, callback, done, doneUrl: location };
 }
 
+/** UX1: a join that worked ends in the app: a redirect to the welcome page on the sign-in server's own origin, with the join cookie cleared and nothing else set. */
+function expectLanded(done: HttpResult | undefined) {
+  expect(done?.statusCode).toBe(302);
+  expect(done!.headers.location).toBe(`${new URL(ISSUER).origin}/app/welcome?joined=1`);
+  expect(done!.cookies).toEqual([`${JOIN_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`]);
+}
 const everything = (h: Harness) => JSON.stringify([...h.db.find(() => true), ...h.state.find(() => true)]);
 const personItems = (h: Harness, id: string) => ({
   pointer: h.state.get(developerOrgKey(id)),
@@ -90,8 +96,10 @@ describe("GET /v1/auth/join", () => {
     expect(page.title).toBe("Join Acme on Rovara");
     expect(page.paragraphs).toEqual([
       "Maya Chen invited you to join Acme as a member.",
-      `Using the terminal? Run: agentx login --invite ${ISSUER}/join?invite=${token}`,
+      // UX1: a browser page shows no terminal command (the CLI reads the JSON form of this address).
+      "Sign in on the next page to join. No new company is created.",
     ]);
+    expect(response.body).not.toContain("agentx");
     expect(page.labels).toEqual(["Join Acme"]);
     expect(page.hrefs).toEqual([`${ISSUER}/join/start?invite=${token}`]);
     expect(response.headers["content-security-policy"]).toBe("default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'");
@@ -105,7 +113,7 @@ describe("GET /v1/auth/join", () => {
     const token = await inviteTo(h, orgId, { role: "admin", email: "priya@acme.dev" });
     h.db.delete({ pk: `DEVELOPER#${OWNER}`, sk: "META" });
     const page = copy(await get(h, `/v1/auth/join?invite=${token}`));
-    expect(page.paragraphs.slice(0, 2)).toEqual(["Someone invited you to join Acme as an admin.", "This invite is for p•••@acme.dev."]);
+    expect(page.paragraphs.slice(0, 2)).toEqual(["Someone invited you to join Acme as an admin.", "This invite is for p•••@acme.dev. Sign in with that address on the next page to join."]);
   });
 
   it("answers 410 for an expired invite", async () => {
@@ -115,7 +123,7 @@ describe("GET /v1/auth/join", () => {
     h.tick(61_000);
     const response = await get(h, `/v1/auth/join?invite=${token}`);
     expect(response.statusCode).toBe(410);
-    expect(copy(response)).toMatchObject({ title: "This invite has expired", paragraphs: ["Ask Maya Chen to send you a new invite."], hrefs: [] });
+    expect(copy(response)).toMatchObject({ title: "This invite has expired", paragraphs: ["Invites last seven days. Ask Maya Chen to send you a new invite from Administration, Invites."], hrefs: ["/app/signup"], labels: ["Go to Rovara"] });
   });
 
   it("answers 410 for a used invite", async () => {
@@ -125,14 +133,14 @@ describe("GET /v1/auth/join", () => {
     await h.orgs.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "c".repeat(64) });
     const response = await get(h, `/v1/auth/join?invite=${token}`);
     expect(response.statusCode).toBe(410);
-    expect(copy(response)).toMatchObject({ title: "This invite was already used", paragraphs: ["Ask Maya Chen for a new invite if you still need one."], hrefs: [] });
+    expect(copy(response)).toMatchObject({ title: "This invite was already used", paragraphs: ["Each invite works once. If you already joined, open Rovara and sign in. Otherwise ask Maya Chen for a new invite."], hrefs: ["/app"], labels: ["Open Rovara"] });
   });
 
   it.each([["an unknown token", "A".repeat(43)], ["a malformed one", "short"], ["none at all", ""]])("answers 404 for %s", async (_name, token) => {
     const h = identityHarness({ cloud: {}, oidcUsers: [] });
     const response = await get(h, token === "" ? "/v1/auth/join" : `/v1/auth/join?invite=${token}`);
     expect(response.statusCode).toBe(404);
-    expect(copy(response)).toMatchObject({ title: "This invite link isn't valid", paragraphs: ["Check that you copied the whole link, or ask for a new invite."], hrefs: [] });
+    expect(copy(response)).toMatchObject({ title: "This invite link isn't valid", paragraphs: ["Check that you copied the whole link, or ask the person who invited you for a new invite."], hrefs: ["/app/signup"], labels: ["Go to Rovara"] });
   });
 
   it("escapes an org named with markup, in the title, the copy and the button", async () => {
@@ -213,11 +221,8 @@ describe("the join sign-in", () => {
     expect(started.setCookie).toMatch(new RegExp(`^${JOIN_COOKIE}=[A-Za-z0-9_-]{43}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=600$`));
     expect(callback.statusCode).toBe(302);
     expect(callback.headers.location).toMatch(new RegExp(`^${ISSUER}/join/done\\?request=[A-Za-z0-9_-]+$`));
-    expect(done?.statusCode).toBe(200);
-    expect(copy(done!)).toMatchObject({
-      title: "You joined Acme",
-      paragraphs: ["You're now a member of Acme.", `Using the terminal? Run: agentx login ${API}`],
-    });
+    // UX1: the person who joined lands in the app at once, on the same origin as the join's sign-in cookie; the join cookie is spent.
+    expectLanded(done);
     expect(h.state.get(orgInviteKey(sha256Hex(token)))).toMatchObject({ acceptedBy: idOf(bea) });
     expect(h.state.get(orgInviteKey(sha256Hex(token)))?.acceptedAt).toBeDefined();
     expect(await h.orgs.orgForDeveloper(idOf(bea))).toEqual({ orgId, role: "member" });
@@ -225,9 +230,6 @@ describe("the join sign-in", () => {
     expect(personItems(h, idOf(bea)).sessions.filter(item => String(item.pk).startsWith("CODE#"))).toHaveLength(0);
     const sessionCookie = callback.cookies?.find(value => value.startsWith("__Host-agentx_review_session="));
     expect(sessionCookie).toMatch(/; Secure; HttpOnly; SameSite=Lax; Path=\/; Max-Age=2592000$/);
-    expect(copy(done!).hrefs).toContain("/app/welcome?joined=1");
-    expect(copy(done!).labels).toContain("Open Rovara");
-    expect(done!.cookies ?? []).toEqual([]);
   });
 
   it("with several sign-in methods shows the chooser (with the cookie set) and still joins", async () => {
@@ -240,7 +242,7 @@ describe("the join sign-in", () => {
     expect(copy(chooser).title).toBe("Sign in to Rovara");
     expect(copy(chooser).labels).toEqual(["Sign in with Slack", "Sign in with Rovara"]);
     const { done } = await joinAs(h, token, bea);
-    expect(copy(done!).paragraphs[0]).toBe("You're now an admin of Acme.");
+    expectLanded(done);
     expect(await h.orgs.orgForDeveloper(idOf(bea))).toEqual({ orgId, role: "admin" });
   });
 
@@ -266,9 +268,12 @@ describe("the join sign-in", () => {
     expect(copy(done!)).toMatchObject({
       title: "You're already in Bea's team",
       paragraphs: [
-        "For now, a person can belong to one Rovara organization. To join Acme, sign in with a different email address, or ask an owner of Bea's team to remove you.",
-        "If Bea's team is a team you made by mistake and no one else is in it, leave it from your account menu in Rovara, then open this invite again.",
+        "A person belongs to one Rovara company at a time. You can keep using Bea's team, or leave it and then open this invite again to join Acme.",
+        "If you are the last owner of Bea's team, leaving closes it. The invite stays valid until it expires.",
       ],
+      // UX1: a clear choice, not a dead end: keep the company, or open the account menu on its Leave step.
+      labels: ["Keep using Bea's team", "Leave Bea's team to join Acme"],
+      hrefs: [`${new URL(API).origin}/app`, `${new URL(API).origin}/app?account=leave`],
     });
     expect(h.state.get(orgInviteKey(sha256Hex(token)))?.acceptedAt).toBeUndefined();
     expect(await h.orgs.orgForDeveloper(idOf(bea))).toEqual({ orgId: own, role: "owner" });
@@ -282,7 +287,7 @@ describe("the join sign-in", () => {
     const orgsBefore = h.state.find((item) => item.entityType === "ORG").length;
     const { done } = await joinAs(h, token, dana);
     expect(done?.statusCode).toBe(200);
-    expect(copy(done!)).toMatchObject({ title: "This invite is for a different email", paragraphs: ["It was sent to a•••@x.dev. Sign in with that address, or ask Maya Chen for an invite to yours."] });
+    expect(copy(done!)).toMatchObject({ title: "This invite is for a different email", paragraphs: ["It was sent to a•••@x.dev. Open the invite again and sign in with that address, or ask Maya Chen for an invite to yours."], labels: ["Go to Rovara"] });
     expect(h.state.get(orgInviteKey(sha256Hex(token)))?.acceptedAt).toBeUndefined();
     const items = personItems(h, idOf(dana));
     expect(items.pointer).toBeUndefined();
@@ -301,7 +306,7 @@ describe("the join sign-in", () => {
     const right = await inviteTo(h, orgId, { email: "b@x.dev", role: "admin" });
     expect(copy((await joinAs(h, wrong, dana)).done!).title).toBe("This invite is for a different email");
     const second = await joinAs(h, right, dana);
-    expect(copy(second.done!).title).toBe("You joined Acme");
+    expectLanded(second.done);
     expect(await h.orgs.orgForDeveloper(idOf(dana))).toEqual({ orgId, role: "admin" });
     expect(h.state.get(orgInviteKey(sha256Hex(wrong)))?.acceptedAt).toBeUndefined();
   });
@@ -314,7 +319,7 @@ describe("the join sign-in", () => {
     await h.orgs.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "c".repeat(64) });
     const callback = await get(h, h.oidc.approve(started.providerUrl, bea.sub), started.cookie);
     const done = await get(h, new URL(callback.headers.location!, API).pathname + new URL(callback.headers.location!, API).search, started.cookie);
-    expect(copy(done)).toMatchObject({ title: "This invite can no longer be used", paragraphs: ["Ask Maya Chen for a new invite."] });
+    expect(copy(done)).toMatchObject({ title: "This invite can no longer be used", paragraphs: ["It expired, was revoked or was already used. Ask Maya Chen for a new invite."] });
     expect(personItems(h, idOf(bea)).pointer).toBeUndefined();
     expect(personItems(h, idOf(bea)).members).toHaveLength(0);
   });
@@ -336,7 +341,7 @@ describe("the join sign-in", () => {
     const orgsBefore = h.state.find((item) => item.entityType === "ORG").length;
     const { done } = await joinAs(h, token, bea, { between: () => h.tick(61_000) });
     expect(copy(done!).title).toBe("This invite can no longer be used");
-    expect(copy(done!).paragraphs).toEqual(["Ask Maya Chen for a new invite."]);
+    expect(copy(done!).paragraphs).toEqual(["It expired, was revoked or was already used. Ask Maya Chen for a new invite."]);
     expect(h.state.find((item) => item.entityType === "ORG")).toHaveLength(orgsBefore);
     expect(personItems(h, idOf(bea)).pointer).toBeUndefined();
   });
@@ -368,7 +373,7 @@ describe("GET /v1/auth/join/done", () => {
     const result = await joinAs(h, token, bea);
     return { h, ...result, path: new URL(result.doneUrl!, API).pathname + new URL(result.doneUrl!, API).search };
   }
-  const refused = { title: "This page belongs to another browser", paragraphs: ["Open the invite link again."] };
+  const refused = { title: "This page belongs to another browser", paragraphs: ["Open the invite link again in this browser to finish joining."] };
 
   it("is 400 without the join cookie, with only the review cookie, and with another browser's verifier", async () => {
     const { h, path, started } = await joined();
@@ -377,7 +382,8 @@ describe("GET /v1/auth/join/done", () => {
       expect(response.statusCode, String(cookie)).toBe(400);
       expect(copy(response), String(cookie)).toMatchObject(refused);
     }
-    expect((await get(h, path, started.cookie)).statusCode).toBe(200);
+    // The browser that started it lands in the app (UX1).
+    expect((await get(h, path, started.cookie)).statusCode).toBe(302);
   });
 
   it("is the same 400 for an unknown or malformed request id", async () => {
@@ -475,9 +481,11 @@ describe("the invite link a cell hands out", () => {
     expect(link).toMatch(new RegExp(`^${DEV_ISSUER}/join\\?invite=[A-Za-z0-9_-]{43}$`));
   });
 
-  it("points a cloud install's link at the web origin, with the token in the fragment", async () => {
-    expect(await inviteLink({}, { cloud: true })).toMatch(/^https:\/\/rovara\.dev\/join#invite=[A-Za-z0-9_-]{43}$/);
-    expect(await inviteLink({ developerExtra: { webOrigin: "http://localhost:3000" } }, { cloud: true })).toMatch(/^http:\/\/localhost:3000\/join#invite=/);
+  // UX1: the app's own origin serves /join, so a cloud link no longer depends on the rovara.dev forwarder or the web origin setting.
+  it("points a cloud install's link at the app's own origin, with the token in the fragment", async () => {
+    const origin = new URL(DEV_ISSUER).origin.replaceAll(".", "\\.");
+    expect(await inviteLink({}, { cloud: true })).toMatch(new RegExp(`^${origin}/join#invite=[A-Za-z0-9_-]{43}$`));
+    expect(await inviteLink({ developerExtra: { webOrigin: "http://localhost:3000" } }, { cloud: true })).toMatch(new RegExp(`^${origin}/join#invite=`));
   });
 });
 
