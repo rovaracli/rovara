@@ -33,12 +33,11 @@ const FILES: Record<string, string> = { "package.json": JSON.stringify({ scripts
 function sources(files: Record<string, string> = FILES, options: { failRead?: boolean; failAll?: boolean } = {}): SeedRepoSources & { reads: string[] } {
   const reads: string[] = [];
   const entries = Object.keys(files).map((path) => ({ path, mode: "100644", type: "blob" }));
-  const fn = (async () => {
+  const fn: SeedRepoSources = async () => {
     if (options.failAll === true) throw new Error("GitHub is down");
     return [{ path: "repo/web", branch: "main", commit: "c".repeat(40), readerAt: (directory: string) => treeReader(entries, directory, async (path) => { reads.push(path); if (options.failRead === true) throw new Error("HTTP 502"); return files[path]; }) }];
-  }) as SeedRepoSources & { reads: string[] };
-  fn.reads = reads;
-  return fn;
+  };
+  return Object.assign(fn, { reads });
 }
 
 function bench() {
