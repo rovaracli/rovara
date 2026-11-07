@@ -97,6 +97,8 @@ export interface Detection {
   setupCommands: Array<Located<ProjectCommand>>;
   /** Commands that fill a database (a `seed` script in package.json). Never setup: the draft routes them to the database dependency's seed when one is found (TS-UX-1). Absent when none. */
   seedCommands?: Array<Located<ProjectCommand>>;
+  /** SQL files of test data (seed-files.ts), repository-relative. Offered as the database dependency's file seed, preferred over a command (TS-UX-1 item 9). Absent when none. */
+  seedFiles?: Array<Located<string>>;
   checks: Array<Located<DetectedCheck>>;
   services: Array<Located<DetectedService>>;
   iac: Array<Located<DetectedIac>>;

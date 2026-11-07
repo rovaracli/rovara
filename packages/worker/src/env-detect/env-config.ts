@@ -182,8 +182,42 @@ function readPrismaSchema(path: string, text: string, out: DependencyCandidate[]
   if (family !== undefined) add(out, family, path, lineOf(text, datasource.index + (provider?.index ?? 0)), name === undefined ? {} : { envNames: [name] });
 }
 
+// ---- ORM and migration tool configs (knex, sequelize, typeorm, drizzle): the database they name. Only the dialect word is read; a connection string or password never is.
+
+/** The dialect words the tools use, as the family a test service starts. SQLite and the rest run in-process or are not offered: no candidate. */
+const ORM_DIALECTS: Readonly<Record<string, string>> = { pg: "postgres", postgres: "postgres", postgresql: "postgres", "pg-native": "postgres", mysql: "mysql", mysql2: "mysql", mariadb: "mariadb", mongodb: "mongodb" };
+/** Each tool's config file and the key that names its dialect (`client` in a knexfile, `dialect` for sequelize and drizzle, `type` for typeorm, drizzle's older `driver`). */
+const ORM_CONFIGS: ReadonlyArray<{ file: RegExp; keys: readonly string[] }> = [
+  { file: /(?:^|\/)knexfile\.(?:[cm]?js|ts)$/u, keys: ["client"] },
+  { file: /(?:^|\/)(?:\.sequelizerc|config\/(?:config|database)\.(?:json|[cm]?js|ts))$/u, keys: ["dialect"] },
+  { file: /(?:^|\/)(?:ormconfig\.(?:json|[cm]?js|ts|ya?ml)|data-source\.(?:[cm]?js|ts))$/u, keys: ["type"] },
+  { file: /(?:^|\/)drizzle\.config\.(?:[cm]?js|ts|json)$/u, keys: ["dialect", "driver"] },
+];
+const ORM_CONFIG_MAX_FILES = 8;
+
+/** The databases ORM and migration tool configs name, each cited at the line of its dialect key. Bounded (8 files); a file that names none gives none. */
+export async function ormConfigCandidates(repo: Pick<Parameters<Detector>[0]["repo"], "paths" | "read">): Promise<DependencyCandidate[]> {
+  const found: DependencyCandidate[] = [];
+  const paths = repo.paths.filter((path) => !DEPENDENCY_SKIP_DIRS.test(path) && ORM_CONFIGS.some((config) => config.file.test(path))).slice(0, ORM_CONFIG_MAX_FILES);
+  for (const path of paths) {
+    const text = await repo.read(path);
+    if (text === undefined) continue;
+    const config = ORM_CONFIGS.find((item) => item.file.test(path))!;
+    const clean = withoutComments(text, false);
+    for (const key of config.keys) {
+      // `client: 'pg'`, `"dialect": "postgres"`, `type: postgres` (YAML): the key, then one quoted or bare word.
+      const pattern = new RegExp(`(?:^|[\\s{,])["']?${key}["']?\\s{0,40}[:=]\\s{0,40}["'\`]?([a-z][a-z0-9-]{1,20})["'\`]?`, "gu");
+      for (const match of clean.matchAll(pattern)) {
+        const family = Object.hasOwn(ORM_DIALECTS, match[1]!) ? ORM_DIALECTS[match[1]!] : undefined;
+        if (family !== undefined) found.push(candidate(family, "used", { path, line: lineOf(clean, match.index) }, { seenBy: ["orm"] }));
+      }
+    }
+  }
+  return mergeCandidates(found);
+}
+
 export const detectEnvConfig: Detector = async ({ repo }) => {
-  const prismaFound: DependencyCandidate[] = [];
+  const prismaFound: DependencyCandidate[] = [...await ormConfigCandidates(repo)];
   for (const path of repo.paths.filter((candidate) => /(?:^|\/)schema\.prisma$/u.test(candidate) && !DEPENDENCY_SKIP_DIRS.test(candidate)).slice(0, 4)) {
     const text = await repo.read(path);
     if (text !== undefined) readPrismaSchema(path, text, prismaFound);
