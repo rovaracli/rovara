@@ -1208,7 +1208,8 @@ async function feedbackReviewNotification(deps: NotifierDependencies, task: Deve
 
 /** OWNER DECISION 7: where the PR feedback card's details link goes: the task's page in Rovara (its decisions, findings and next step); a task with no session keeps the feedback review page. */
 export function feedbackDetailPath(task: { taskId: string; sessionId?: string | undefined }): string {
-  return SessionIdSchema.safeParse(task.sessionId).success ? `/app/sessions/${encodeURIComponent(task.sessionId!)}` : `/review/${encodeURIComponent(task.taskId)}`;
+  // OWNER DECISION 18 (review M6): the task page's feedback view, where the review is read and decided.
+  return SessionIdSchema.safeParse(task.sessionId).success ? `/app/sessions/${encodeURIComponent(task.sessionId!)}?view=feedback` : `/review/${encodeURIComponent(task.taskId)}`;
 }
 
 /**

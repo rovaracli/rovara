@@ -232,8 +232,23 @@ describe("task page API through the broker, with the decision cards on", () => {
     }
   });
 
-  it("the page decides nothing for the owner (no answer controls, the bar links the task page) and keeps a teammate's comment controls", async () => {
+  it("OWNER DECISION 18: the page forwards a reader to the task page with the document's panel open; nobody else learns where it is", async () => {
     const t = await sharedTask();
+    const sessionId = String((t.harness.db.get(`DEVTASK#${t.id}`, "META") as { sessionId?: string }).sessionId);
+    for (const who of [MAYA, LEE]) {
+      const forwarded = await t.send(who, "GET", `/review/${t.id}/task`);
+      expect([forwarded.statusCode, forwarded.headers.location], who.name).toEqual([302, `/app/sessions/${sessionId}?doc=plan`]);
+    }
+    const outsider = await t.send(NIA, "GET", `/review/${t.id}/task`);
+    expect(outsider.statusCode).toBe(404);
+    expect(outsider.headers.location).toBeUndefined();
+  });
+
+  it("a task with no task page in Rovara keeps the read-only page: it decides nothing for the owner (no answer controls, the bar links the task page) and keeps a teammate's comment controls", async () => {
+    const t = await sharedTask();
+    const { sessionId: _session, ...meta } = t.harness.db.get(`DEVTASK#${t.id}`, "META") as Record<string, unknown>;
+    void _session;
+    t.harness.db.set(meta as never);
     const owner = await t.send(MAYA, "GET", `/review/${t.id}/task`);
     expect(owner.statusCode).toBe(200);
     expect(owner.body).not.toContain('type="radio"');

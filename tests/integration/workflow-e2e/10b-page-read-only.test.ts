@@ -101,13 +101,9 @@ describe("Suite 10b: the read-only page, decision cards on", () => {
 
     it("10.2 who sees what: the owner is sent to the task page to decide, a teammate reads and comments, anyone else can't tell the task exists, and nobody decides here", async () => {
       const e2e = await waitingPlan();
-      const owner = await openTaskPage(e2e, OWNER, { search: "?doc=coding-plan", scripts: false });
-      expect(owner.text()).toContain("You're the task owner.");
-      expect(owner.text()).toContain("Decide on the task");
-      const sam = await openTaskPage(e2e, SAM, { search: "?doc=coding-plan", scripts: false });
-      expect(sam.text()).toContain("You can read and comment on this task.");
-      expect(sam.text()).toContain("Only owners decide.");
-      for (const tab of [owner, sam]) expect(tab.document.querySelectorAll("button").filter((button) => !button.hidden && button.closest("[hidden]") === null)).toEqual([]);
+      // OWNER DECISION 18: the page forwards everyone who may read it to the task page, with the coding plan's panel open.
+      // (Where it forwards, and that only a known document reaches the location, is 10c-plan-panel.test.ts.)
+      for (const who of [OWNER, SAM]) expect((await openTaskPage(e2e, who, { search: "?doc=coding-plan", scripts: false })).status, who.name).toBe(302);
       const outsider = await openTaskPage(e2e, OMAR_OIDC, { search: "?doc=coding-plan", scripts: false });
       expect(outsider.status).toBeGreaterThanOrEqual(400);
       expect(outsider.html).not.toContain("Show a retry banner");
@@ -130,12 +126,8 @@ describe("Suite 10b: the read-only page, decision cards on", () => {
       await e2e.click("agentx_workflow_close");
       if (e2e.slack.views.length > views) await e2e.submitView();
       await e2e.settle();
-      for (const who of [OWNER, SAM]) {
-        const tab = await openTaskPage(e2e, who, { search: "?doc=coding-plan", scripts: false });
-        expect(tab.status).toBe(200);
-        expect(tab.document.querySelectorAll("button").filter((button) => !button.hidden && button.closest("[hidden]") === null)).toEqual([]);
-        expect(tab.document.querySelector(".comment-open")).toBeNull();
-      }
+      // OWNER DECISION 18: a finished task's old link forwards to its task page too (nothing is decided there either).
+      for (const who of [OWNER, SAM]) expect((await openTaskPage(e2e, who, { search: "?doc=coding-plan", scripts: false })).status, who.name).toBe(302);
     }, 120_000);
 
     it("the owner approves on the card with two comments on the plan; the coder gets the owner's answer and both comments, and the read-only page shows them sent", async () => {
@@ -157,8 +149,9 @@ describe("Suite 10b: the read-only page, decision cards on", () => {
         expect(implement).toContain("> Above reads better on a phone.");
         expect(implement).toContain("> Keep the banner copy short.");
         expect(codingRuns(e2e)).toHaveLength(1);
-        const sam = await openTaskPage(e2e, SAM, { search: "?doc=coding-plan", scripts: false });
-        expect(sam.document.querySelectorAll(".comment-sent").length).toBeGreaterThan(0);
+        // The panel's comment list shows both sent with the approval.
+        const listed = await (await import("../../support/browser-session.js")).browserRequests(shim(e2e))(asDeveloper(SAM), "GET", `/v1/app/tasks/${e2e.taskId()}/comments`);
+        expect((listed.body.comments as Array<{ sent: boolean }>).map((comment) => comment.sent)).toEqual([true, true]);
       });
     }, 120_000);
   });

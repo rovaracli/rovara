@@ -42,7 +42,14 @@ export interface FeedbackReviewWebDependencies {
   /** The implementation must re-read and conditionally update the task through the broker. */
   submitWorkflowFeedbackDecision(caller: DeveloperCaller, taskId: string, input: z.infer<typeof DecisionSchema>): Promise<unknown>;
   now(): number;
+  /**
+   * OWNER DECISION 18 (set only while the decision cards are on): the task's page in Rovara for a reader who may read the task (refusing anyone else). The page's GET then forwards there with the
+   * feedback view open; its API is unchanged.
+   */
+  taskPagePath?(caller: DeveloperCaller, taskId: string): Promise<string | undefined>;
 }
+
+const TASK_PAGE_PATH = /^\/app\/sessions\/ses_[0-9a-z]{20}$/u;
 
 export interface FeedbackReviewWebResponse { statusCode: number; headers: Record<string, string>; body: string }
 
@@ -181,6 +188,14 @@ export function createFeedbackReviewWeb(deps: FeedbackReviewWebDependencies) {
     }
     if (endpoint !== undefined && request.method !== "GET") return safeResponse(405, { error: "method_not_allowed" });
     try {
+      if (endpoint === undefined && request.method === "GET" && deps.taskPagePath !== undefined) {
+        // Nothing the request said goes into the location: the session path of its fixed shape and the fixed view name only.
+        const taskPage = await deps.taskPagePath(caller, taskId.toLowerCase());
+        if (taskPage !== undefined && TASK_PAGE_PATH.test(taskPage)) {
+          const redirect = safeResponse(302, "");
+          return { ...redirect, headers: { ...redirect.headers, location: `${taskPage}?view=feedback` } };
+        }
+      }
       const review = await deps.getWorkflowFeedbackReview(caller, taskId);
       if (endpoint === "api") return safeResponse(200, review);
       const currentCsrf = parseCookie(request.headers, CSRF_COOKIE);
