@@ -24,7 +24,7 @@ test("shows the answer of an Answered task, then makes the change anyway with th
  await page.getByRole("button", { name: "Make a change anyway" }).focus();await expect(page.getByRole("button", { name: "Make a change anyway" })).toBeFocused();
  await page.keyboard.press("Enter");
  await expect(page).toHaveURL(new RegExp("/app/sessions/" + next + "$"));
- await expect(page.getByText("Working")).toBeVisible();
+ await expect(page.getByText("Building").first()).toBeVisible();
  const posts = ((await (await request.get("/__mock/requests")).json()) as Array<{ method: string; path: string; body?: unknown }>).filter(row => row.method === "POST" && row.path.endsWith("/change-anyway"));
  expect(posts).toHaveLength(1);
  expect(posts[0]!.path).toBe("/v1/web/sessions/" + id + "/change-anyway");
@@ -42,6 +42,6 @@ test("shows a viewer the answer and no button, and an ordinary task nothing new"
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
  await request.post("/__mock/session-state", { data: { ...answeredSession({ answered: false }), sessionId: id } });
  await page.reload();
- await expect(page.getByText("Working")).toBeVisible();
+ await expect(page.getByText("Building").first()).toBeVisible();
  await expect(page.getByRole("region", { name: "Rovara's answer" })).toHaveCount(0);
 });
