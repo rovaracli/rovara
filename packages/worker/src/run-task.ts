@@ -3,7 +3,7 @@ import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SpecDraft, type SpecReviewResult, type SetupProposal, type SetupRunSummary, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
-import { testEnvDraftResult, withoutRoutedSeeds } from "./test-env-detect.js";
+import { testEnvDraftResult } from "./test-env-detect.js";
 import { applyTestEnvironmentPlan } from "./verification/test-env-plan.js";
 import { DIAGNOSIS_RETRY_PROMPT, cutDiagnosisAnswer, diagnosisInstructions, holdsJsonObject } from "./diagnosis.js";
 import { readSpecWriteAnswer, specWriteInstructions, specWriteRetryPrompt } from "./spec-write.js";
@@ -1415,8 +1415,8 @@ async function runTask(
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SETUP_DRAFT" });
         const detected = invocation.payload.testEnvDetect === true ? await testEnvDraftResult({ rootPath: canonicalRoot, repositories: manifest.repositories, setupProposal: read.proposal, ...(invocation.payload.testEnvRecipes === undefined ? {} : { recipes: invocation.payload.testEnvRecipes }) }) : {};
-        // TS-UX-1: a seed or migration the draft routed to the database dependency's seed is not a setup command of the proposal either.
-        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupProposal: withoutRoutedSeeds(read.proposal, detected.testEnvironmentDraft), ...detected };
+        // TS-UX-1: the setup proposal keeps every command. A seed or migration leaves it only in the BROKER, and only once a database dependency has taken it as its seed (the worker cannot know whether one will be proposed).
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupProposal: read.proposal, ...detected };
       } else if (specBinding !== undefined) {
         let read = readSpecWriteAnswer(finalText ?? "", specBinding);
         // An answer that can't be read gets one more try in the same session, with what is wrong with it; whichever comes last is what is reported.

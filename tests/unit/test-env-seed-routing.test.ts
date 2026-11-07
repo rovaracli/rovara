@@ -1,8 +1,8 @@
 // TS-UX-1 (0.5.10): the broker attaches the draft's seed commands to the database dependency it proposes (never to setup), refuses an unsafe one, says so when there is no database to hold it, and the less-safe
 // reading (a second person, high risk) follows from the seed, as it always did.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, formatCommandLine, testEnvLessSafeChanges, testEnvApprovalRisk, type TestEnvironmentBody } from "@agentx/contracts";
-import { SEED_NO_DATABASE_NOTE, SEED_OFFERED_NOTE, SEED_REFUSED_NOTE } from "../../packages/broker/src/test-env/seed-routing.js";
+import { TestEnvironmentBodySchema, formatCommandLine, testEnvLessSafeChanges, testEnvApprovalRisk, type SetupProposal, type TestEnvironmentBody } from "@agentx/contracts";
+import { SEED_LEFT_OUT_OF_SETUP_NOTE, SEED_NO_DATABASE_NOTE, SEED_OFFERED_NOTE, SEED_REFUSED_NOTE, withoutRoutedSeeds } from "../../packages/broker/src/test-env/seed-routing.js";
 import { sanitizeTestEnvDraft } from "../../packages/broker/src/test-env/draft.js";
 import { pinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 
@@ -58,5 +58,84 @@ describe("seed commands in a draft", () => {
     const off = sanitizeTestEnvDraft(draftOf([postgres], [seed("npm", ["run", "seed"])]), { env: { TEST_ENVIRONMENT_ENABLED: "1" } })!;
     expect("seedCommands" in off).toBe(false);
     expect(off.environment.dependencies).toBeUndefined();
+  });
+});
+
+// I-1: a seed or migration leaves SETUP only once a database dependency has actually taken it. The worker reports it as a seed and leaves it in setup; the broker takes out exactly the commands the dependency took.
+describe("setup keeps a seed command unless a dependency took it", () => {
+  const MIGRATE = cmd("npx", ["prisma", "migrate", "deploy"]);
+  const withSetup = (setup: unknown[], repos?: number): TestEnvironmentBody => {
+    const base = body();
+    return TestEnvironmentBodySchema.parse({ ...base, repos: [{ ...base.repos[0]!, setupCommands: setup }, ...(repos === 2 ? [{ repositoryId: "other", setupCommands: [{ ...MIGRATE, cwd: "other" }], checks: [{ id: "other-unit", label: "Other", command: { ...cmd("npm", ["test"]), cwd: "other" }, kind: "test" }] }] : [])] });
+  };
+  const draftWith = (setup: unknown[], candidates: unknown[], seeds: unknown[], extra: Record<string, unknown> = {}) => ({
+    ...draftOf(candidates, seeds), environment: withSetup(setup, extra.repos as number | undefined),
+    valueSources: setup.map((_, at) => ({ field: `repos[0].setupCommands[${String(at)}]`, source: "model" })),
+  });
+  const lines = (draft: { environment: TestEnvironmentBody }, repo = 0) => draft.environment.repos[repo]!.setupCommands.map(formatCommandLine);
+  const SETUP = [cmd("npm", ["ci"]), MIGRATE, cmd("npm", ["run", "build"])];
+
+  it("takes the migrate step out of setup when Postgres took it as its seed, and the value sources of the later commands follow their commands", () => {
+    const draft = sanitizeTestEnvDraft(draftWith(SETUP, [postgres], [seed("npx", ["prisma", "migrate", "deploy"])]), options)!;
+    expect(draft.environment.dependencies!.find((item) => item.family === "postgres")!.seeds).toHaveLength(1);
+    expect(lines(draft)).toEqual(["npm ci", "npm run build"]);
+    expect(draft.valueSources.map((item) => item.field)).toEqual(["repos[0].setupCommands[0]", "repos[0].setupCommands[1]"]);
+  });
+  it("keeps the migrate step in setup when test services are off (the seed is dropped, so nothing took it)", () => {
+    const draft = sanitizeTestEnvDraft(draftWith(SETUP, [postgres], [seed("npx", ["prisma", "migrate", "deploy"])]), { env: { TEST_ENVIRONMENT_ENABLED: "1" } })!;
+    expect(lines(draft)).toEqual(["npm ci", "npx prisma migrate deploy", "npm run build"]);
+    expect(draft.valueSources).toHaveLength(3);
+    expect(draft.notes).not.toContain(SEED_OFFERED_NOTE);
+  });
+  it("keeps it in setup when no database could be proposed (a Django or SQLite project: the code names DATABASE_URL, but only a cache could be backed), and the note does not claim otherwise", () => {
+    const draft = sanitizeTestEnvDraft(draftWith([cmd("pip", ["install", "-r", "requirements.txt"]), cmd("python", ["manage.py", "migrate"])], [redis], [seed("python", ["manage.py", "migrate"])]), options)!;
+    expect(lines(draft)).toEqual(["pip install -r requirements.txt", "python manage.py migrate"]);
+    expect(draft.notes).toContain(SEED_NO_DATABASE_NOTE);
+    expect(draft.notes).not.toContain(SEED_OFFERED_NOTE);
+    expect(SEED_NO_DATABASE_NOTE).toMatch(/stays where it was found/u);
+  });
+  it("keeps a seed that was refused in setup, and takes out only the one the dependency took", () => {
+    const refused = seed("npm", ["run", "seed"], { NODE_OPTIONS: "--require x" });
+    const draft = sanitizeTestEnvDraft(draftWith([cmd("npm", ["ci"]), MIGRATE, cmd("npm", ["run", "seed"])], [postgres], [seed("npx", ["prisma", "migrate", "deploy"]), refused]), options)!;
+    expect(lines(draft)).toEqual(["npm ci", "npm run seed"]);
+    expect(draft.notes).toContain(SEED_REFUSED_NOTE);
+  });
+  it("takes out only the routed command of the repository it came from, not the same-looking command of another", () => {
+    const draft = sanitizeTestEnvDraft(draftWith([cmd("npm", ["ci"]), MIGRATE], [postgres], [seed("npx", ["prisma", "migrate", "deploy"])], { repos: 2 }), options)!;
+    expect(lines(draft, 0)).toEqual(["npm ci"]);
+    expect(lines(draft, 1)).toEqual(["npx prisma migrate deploy"]);
+  });
+  it("is attached when the draft is read from what was stored (the worker's draft is never changed by the broker's write)", () => {
+    const written = sanitizeTestEnvDraft(draftWith(SETUP, [postgres], [seed("npx", ["prisma", "migrate", "deploy"])]), { env: ON })!;
+    expect(lines(written)).toEqual(["npm ci", "npx prisma migrate deploy", "npm run build"]);
+    const read = sanitizeTestEnvDraft(written, options)!;
+    expect(lines(read)).toEqual(["npm ci", "npm run build"]);
+  });
+});
+
+describe("withoutRoutedSeeds (the setup proposal)", () => {
+  const proposal = (...commands: string[][]) => ({
+    basedOnRevision: 3, notes: "",
+    setup: commands.map((list, at) => ({ id: `setup-${String(at)}`, value: { repo: "svc", commands: list }, from: [], confidence: "high", risk: "safe" })),
+    tests: [], flaggedCommands: [],
+  }) as unknown as SetupProposal;
+  const taken = [cmd("npx", ["prisma", "migrate", "deploy"])];
+
+  it("takes out exactly the lines that were routed, and says so once", () => {
+    const original = proposal(["npm ci", "npx prisma migrate deploy", "npm run db:seed"]);
+    const stripped = withoutRoutedSeeds(original, taken);
+    expect(stripped.setup[0]!.value.commands).toEqual(["npm ci", "npm run db:seed"]);
+    expect(stripped.notes).toContain(SEED_LEFT_OUT_OF_SETUP_NOTE);
+    expect(withoutRoutedSeeds(stripped, taken)).toBe(stripped);
+  });
+  it("leaves the proposal alone, and says nothing, when nothing was routed or no line is a routed one", () => {
+    const original = proposal(["npm ci", "npx prisma migrate deploy"]);
+    expect(withoutRoutedSeeds(original, [])).toBe(original);
+    const other = withoutRoutedSeeds(original, [cmd("npm", ["run", "seed"])]);
+    expect(other).toBe(original);
+    expect(other.notes).not.toContain(SEED_LEFT_OUT_OF_SETUP_NOTE);
+  });
+  it("removes an item that is left with no command", () => {
+    expect(withoutRoutedSeeds(proposal(["npx prisma migrate deploy"], ["npm ci"]), taken).setup.map((item) => item.value.commands)).toEqual([["npm ci"]]);
   });
 });

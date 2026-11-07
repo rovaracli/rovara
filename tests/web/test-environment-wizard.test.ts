@@ -316,25 +316,38 @@ it("offers a maintainer 'Share as company recipe' under the approved environment
 const DB = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", found: [{ path: "src/db.ts", line: 2 }], usedBy: ["integration"], backing: { kind: "local", catalogId: "postgres@16", config: {} },
   connect: { env: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], hostAliases: ["postgres"] }, seeds: [], reset: "fresh_per_round" };
 
-it("has a plain field per dependency for the data command: it sends the line as typed, and the answer shows it", async () => {
-  const withDb = { ...PROPOSAL, environment: { ...ENVIRONMENT, dependencies: [DB] }, dependencySeeds: [{ id: "postgres", name: "Postgres" }] };
-  const seeded = { ...withDb, digest: "b".repeat(64), source: "edited", risk: "high", lessSafe: ["dependency_seed"], needs: { freshSignIn: true, secondPerson: true }, dependencySeeds: [{ id: "postgres", name: "Postgres", command: "npm run seed" }] };
+it("has a plain field per dependency for the data commands: every command is shown, one per line, and what is typed is sent line by line", async () => {
+  const withDb = { ...PROPOSAL, environment: { ...ENVIRONMENT, dependencies: [DB] }, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: [] }] };
+  const seeded = { ...withDb, digest: "b".repeat(64), source: "edited", risk: "high", lessSafe: ["dependency_seed"], needs: { freshSignIn: true, secondPerson: true }, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: ["npx prisma migrate deploy", "npm run seed"] }] };
   const f = setup({ read: { status: 200, body: state({ proposal: withDb }) }, answers: { "/seed": { status: 200, body: state({ proposal: seeded }) } } });
   const region = await section();
-  const field = within(region).getByLabelText<HTMLInputElement>("Fill Postgres with test data");
+  const field = within(region).getByLabelText<HTMLTextAreaElement>("Fill Postgres with test data");
   expect(within(region).getByText(/never in setup/)).toBeTruthy();
-  expect(within(region).getByRole<HTMLButtonElement>("button", { name: "Save the test data command" }).disabled).toBe(true);
-  fireEvent.change(field, { target: { value: "npm run seed" } });
-  fireEvent.click(within(region).getByRole("button", { name: "Save the test data command" }));
+  expect(within(region).getByRole<HTMLButtonElement>("button", { name: "Save the test data commands" }).disabled).toBe(true);
+  fireEvent.change(field, { target: { value: "npx prisma migrate deploy\n\n  npm run seed  \n" } });
+  fireEvent.click(within(region).getByRole("button", { name: "Save the test data commands" }));
   await waitFor(() => expect(posts(f, "/test-environment/seed")).toHaveLength(1));
-  expect(posts(f, "/test-environment/seed")[0]!.body).toEqual({ digest: DIGEST, dependencyId: "postgres", command: "npm run seed" });
-  await waitFor(() => expect(within(region).getByLabelText<HTMLInputElement>("Fill Postgres with test data").value).toBe("npm run seed"));
+  expect(posts(f, "/test-environment/seed")[0]!.body).toEqual({ digest: DIGEST, dependencyId: "postgres", commands: ["npx prisma migrate deploy", "npm run seed"] });
+  // I-2: the answer lists both commands, in order, so none runs unseen.
+  await waitFor(() => expect(within(region).getByLabelText<HTMLTextAreaElement>("Fill Postgres with test data").value).toBe("npx prisma migrate deploy\nnpm run seed"));
+  f.close();
+});
+
+it("shows every command a dependency already has, and clearing the field sends an empty list", async () => {
+  const two = { ...PROPOSAL, source: "edited", risk: "high", lessSafe: ["dependency_seed"], needs: { freshSignIn: true, secondPerson: true }, environment: { ...ENVIRONMENT, dependencies: [DB] }, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: ["npx prisma migrate deploy", "npm run seed"] }] };
+  const f = setup({ read: { status: 200, body: state({ proposal: two }) }, answers: { "/seed": { status: 200, body: state({ proposal: { ...two, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: [] }] } }) } } });
+  const region = await section();
+  expect(within(region).getByLabelText<HTMLTextAreaElement>("Fill Postgres with test data").value).toBe("npx prisma migrate deploy\nnpm run seed");
+  fireEvent.change(within(region).getByLabelText("Fill Postgres with test data"), { target: { value: "  \n" } });
+  fireEvent.click(within(region).getByRole("button", { name: "Save the test data commands" }));
+  await waitFor(() => expect(posts(f, "/test-environment/seed")).toHaveLength(1));
+  expect(posts(f, "/test-environment/seed")[0]!.body).toEqual({ digest: DIGEST, dependencyId: "postgres", commands: [] });
   f.close();
 });
 
 it("says before Approve why a seed makes it high tier, who must approve, and offers the sign-in right there when it is refused", async () => {
   const seeded = { ...PROPOSAL, source: "edited", risk: "high", lessSafe: ["dependency_seed"], needs: { freshSignIn: true, secondPerson: true }, proved: true, proveSteps: [{ step: "setup", status: "passed" }],
-    approval: { status: "approved" }, check: { status: "ready" }, dependencySeeds: [{ id: "postgres", name: "Postgres", command: "npm run seed" }], environment: { ...ENVIRONMENT, dependencies: [{ ...DB, seeds: [{ command: command("npm", ["run", "seed"], 900) }] }] } };
+    approval: { status: "approved" }, check: { status: "ready" }, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: ["npm run seed"] }], environment: { ...ENVIRONMENT, dependencies: [{ ...DB, seeds: [{ command: command("npm", ["run", "seed"], 900) }] }] } };
   const f = setup({ read: { status: 200, body: state({ proposal: seeded }) }, answers: { "/approve": { status: 401, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to approve this change." } } } } });
   const region = await section();
   expect(within(region).getByText("A seed command runs against the test database, so a second person, or a fresh sign-in if you're the only owner, must approve.")).toBeTruthy();

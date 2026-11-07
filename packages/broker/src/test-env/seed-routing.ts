@@ -1,26 +1,53 @@
-// Seed commands in a setup draft (TS-UX-1): the worker takes a command that fills or migrates a database OUT of the setup commands (setup has no database) and carries it in the draft as `seedCommands`. The BROKER
-// decides where it lands: the seed of the first database dependency it proposes (real software or Rovara local AWS, never a fake), after the same refusals a seed always gets (`seedCommandProblem`: download-and-run,
-// secrets, system variables, length). Nothing here approves anything: a seed command is a less-safe change (`dependency_seed`), so a second person still confirms it. Notes are fixed words, never the command.
-import { TEST_ENV_DEPENDENCY_LIMITS, TestEnvDependenciesSchema, type TestEnvDependency, type TestEnvDraft } from "@agentx/contracts";
+// Seed commands in a setup draft (TS-UX-1): the worker reports a command that fills or migrates a database in the draft as `seedCommands`, and leaves every setup command where it was (setup has no database, but the
+// worker cannot know whether a database will be proposed). The BROKER decides where it lands: the seed of the first database dependency it proposes (real software or Rovara local AWS, never a fake), after the same
+// refusals a seed always gets (`seedCommandProblem`: download-and-run, secrets, system variables, length). ONLY a command the dependency actually took is taken out of the setup commands (`withoutRoutedSeeds`, and the draft's own setup commands in `draft.ts`); one that was refused, dropped (test services off) or had no database to go to stays a setup command. Nothing here approves anything: a seed
+// command is a less-safe change (`dependency_seed`), so a second person still confirms it. Notes are fixed words, never the command.
+import { formatCommandLine, parseCommandLine, TEST_ENV_DEPENDENCY_LIMITS, TestEnvDependenciesSchema, type ProjectCommand, type SetupProposal, type TestEnvDependency, type TestEnvDraft } from "@agentx/contracts";
 import { seedCommandProblem } from "./refused-command.js";
 
 export const SEED_OFFERED_NOTE = "A command that fills the database was found. It is offered as the test database's seed, not as a setup command: setup has no database. A seed runs against the test database, so approving it needs a second person.";
-export const SEED_NO_DATABASE_NOTE = "A command that fills the database was found, but no test database could be proposed for it, so it is not part of the proposal. Add the database first.";
+export const SEED_NO_DATABASE_NOTE = "A command that fills the database was found, but no test database could be proposed for it, so it is not offered as a seed and stays where it was found. Add the database first.";
+export const SEED_LEFT_OUT_OF_SETUP_NOTE = "A command that fills the database was left out of the setup commands: the database exists only inside the test environment, so the command would fail in setup. It is offered as the test environment's seed instead.";
 export const SEED_REFUSED_NOTE = "A command that fills the database was left out: it downloads and runs code, holds something secret, or sets a variable the system owns.";
 
-/** The dependencies with the draft's seed commands on the first database one, and the fixed notes for what happened. A list the contract would refuse is returned as it came. Never throws. */
-export function attachDraftSeeds(dependencies: readonly TestEnvDependency[], seeds: TestEnvDraft["seedCommands"]): { dependencies: TestEnvDependency[]; notes: string[] } {
-  if (seeds === undefined || seeds.length === 0) return { dependencies: [...dependencies], notes: [] };
+/**
+ * The dependencies with the draft's seed commands on the first database one, the fixed notes for what happened, and `routed`: the commands the dependency actually took (none when it took nothing). A list the contract
+ * would refuse is returned as it came. Never throws.
+ */
+export function attachDraftSeeds(dependencies: readonly TestEnvDependency[], seeds: TestEnvDraft["seedCommands"]): { dependencies: TestEnvDependency[]; notes: string[]; routed: ProjectCommand[] } {
+  if (seeds === undefined || seeds.length === 0) return { dependencies: [...dependencies], notes: [], routed: [] };
   const notes: string[] = [];
   const allowed = seeds.filter((seed) => seedCommandProblem(seed.command) === undefined);
   if (allowed.length < seeds.length) notes.push(SEED_REFUSED_NOTE);
-  if (allowed.length === 0) return { dependencies: [...dependencies], notes };
+  if (allowed.length === 0) return { dependencies: [...dependencies], notes, routed: [] };
   const index = dependencies.findIndex((dependency) => dependency.kind === "database" && (dependency.backing.kind === "local" || dependency.backing.kind === "emulated"));
-  if (index < 0) return { dependencies: [...dependencies], notes: [...notes, SEED_NO_DATABASE_NOTE] };
+  if (index < 0) return { dependencies: [...dependencies], notes: [...notes, SEED_NO_DATABASE_NOTE], routed: [] };
   const target = dependencies[index]!;
   const held = target.seeds.filter((seed) => !("command" in seed));
-  const next: TestEnvDependency = { ...target, seeds: [...held, ...allowed.map((seed) => ({ command: seed.command }))].slice(0, TEST_ENV_DEPENDENCY_LIMITS.seeds) };
+  const taken = allowed.slice(0, Math.max(0, TEST_ENV_DEPENDENCY_LIMITS.seeds - held.length));
+  const next: TestEnvDependency = { ...target, seeds: [...held, ...taken.map((seed) => ({ command: seed.command }))] };
   const list = dependencies.map((dependency, at) => (at === index ? next : dependency));
-  if (!TestEnvDependenciesSchema.safeParse(list).success) return { dependencies: [...dependencies], notes: [...notes, SEED_NO_DATABASE_NOTE] };
-  return { dependencies: list, notes: [...notes, SEED_OFFERED_NOTE] };
+  if (taken.length === 0 || !TestEnvDependenciesSchema.safeParse(list).success) return { dependencies: [...dependencies], notes: [...notes, SEED_NO_DATABASE_NOTE], routed: [] };
+  return { dependencies: list, notes: [...notes, SEED_OFFERED_NOTE], routed: taken.map((seed) => seed.command) };
+}
+
+/** Whether two commands are the same one: the same directory, program and words (the time limit does not make a command another). */
+export const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && formatCommandLine(left) === formatCommandLine(right);
+
+/**
+ * The setup proposal without the lines the dependency took as its seed, and nothing else: another repository's command that merely looks like a seed stays, and so does every line the dependency did not take. An
+ * item left with no command is removed; a fixed note says so once. The same proposal object is returned when nothing was taken.
+ */
+export function withoutRoutedSeeds(proposal: SetupProposal, routed: readonly ProjectCommand[]): SetupProposal {
+  if (routed.length === 0) return proposal;
+  const lines = new Set(routed.map((command) => formatCommandLine(command)));
+  const line = (text: string): string => { try { return formatCommandLine(parseCommandLine(text, ".", 900)); } catch { return text; } };
+  let removed = false;
+  const setup = proposal.setup.flatMap((item) => {
+    const commands = item.value.commands.filter((text) => { const taken = lines.has(line(text)); removed ||= taken; return !taken; });
+    return commands.length === 0 ? [] : [{ ...item, value: { ...item.value, commands } }];
+  });
+  if (!removed) return proposal;
+  const notes = proposal.notes.includes(SEED_LEFT_OUT_OF_SETUP_NOTE) ? proposal.notes : [proposal.notes, SEED_LEFT_OUT_OF_SETUP_NOTE].filter((part) => part !== "").join(" ").slice(0, 2000);
+  return { ...proposal, setup, notes };
 }

@@ -8,7 +8,6 @@ import { useAppHost } from "../../../host.js";
 import { isConfirmUrl } from "../../../text/links.js";
 import { Button } from "../../../design/Button.js";
 import { TextArea } from "../../../design/TextArea.js";
-import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ShareRecipePanel } from "../../admin/how-we-work/ShareRecipePanel.js";
 
@@ -114,7 +113,7 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
       onAsk={() => { void act("ask", () => api.requestApproval(project, proposal.digest, approvedRevision), (answer) => { take(answer.state); setConfirmUrl(answer.confirmUrl); }); }}
       onRefresh={() => { void act("refresh", () => api.read(project), take); }}
       onEdit={() => setEditing(JSON.stringify(proposal.environment, null, 2))}
-      onSeed={(dependencyId, command) => act("seed", () => api.setSeed(project, proposal.digest, dependencyId, command), take)}
+      onSeed={(dependencyId, commands) => act("seed", () => api.setSeed(project, proposal.digest, dependencyId, commands), take)}
       signIn={error?.reauth === true ? error.message : undefined} onSignIn={() => host.signIn(host.currentPath())}
     />}
     {proposal !== undefined && editing !== undefined && <div className="rv-proposal-card">
@@ -172,7 +171,7 @@ function ApprovedGap({ approved, busy, onCheck, onRefresh, onApply }: { approved
 function ProposalView(props: {
   proposal: Proposal; approvedRevision: number; busy: string | undefined; confirmUrl: string | undefined; origin: string; applied: TestEnvApplyAnswer | undefined;
   onCheck: () => void; onProve: () => void; onApprove: () => void; onAsk: () => void; onRefresh: () => void; onEdit: () => void;
-  onSeed: (dependencyId: string, command: string) => Promise<void>; signIn: string | undefined; onSignIn: () => void;
+  onSeed: (dependencyId: string, commands: string[]) => Promise<void>; signIn: string | undefined; onSignIn: () => void;
 }) {
   const { proposal, busy } = props;
   const link = props.confirmUrl !== undefined && isConfirmUrl(props.confirmUrl, props.origin) ? props.confirmUrl : undefined;
@@ -190,7 +189,7 @@ function ProposalView(props: {
         {sourceOf(proposal, `repos[${String(index)}].checks[${String(at)}]`) !== undefined && <span className="rv-proposal-meta"> <VisibleText text={sourceWords(sourceOf(proposal, `repos[${String(index)}].checks[${String(at)}]`)!)} /></span>}
       </li>)}</ul>
     </div>)}
-    {proposal.dependencySeeds.map((dependency) => <SeedField key={`${dependency.id}:${dependency.command ?? ""}`} dependency={dependency} busy={busy === "seed"} onSave={props.onSeed} />)}
+    {proposal.dependencySeeds.map((dependency) => <SeedField key={`${dependency.id}:${dependency.commands.join("\n")}`} dependency={dependency} busy={busy === "seed"} onSave={props.onSeed} />)}
     {proposal.valueSources.length === 0 && proposal.source === "edited" && <p className="rv-proposal-meta">Edited by a maintainer, so no value has a source file.</p>}
 
     {proposal.lessSafe.length > 0 && <div role="note" className="rv-proposal-conflict"><p><strong>This is less safe than a sandbox:</strong></p><ul>{proposal.lessSafe.map((flag) => <li key={flag}>{LESS_SAFE_WORDS[flag] ?? flag.replace(/_/g, " ")}</li>)}</ul>
@@ -230,12 +229,15 @@ function ProposalView(props: {
   </div>;
 }
 
-/** One dependency's "fill it with test data" field: a plain command line, read and checked by the server when saved. Empty clears it. */
-function SeedField({ dependency, busy, onSave }: { dependency: Proposal["dependencySeeds"][number]; busy: boolean; onSave: (dependencyId: string, command: string) => Promise<void> }) {
-  const [text, setText] = useState(dependency.command ?? "");
-  const changed = text.trim() !== (dependency.command ?? "");
+/** The lines of the field as commands: trimmed, with the empty ones left out. */
+const seedLinesOf = (text: string): string[] => text.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+
+/** One dependency's "fill it with test data" field: EVERY command that fills it, one per line in the order they run. Each line is read and checked by the server when saved. Empty clears them all. */
+function SeedField({ dependency, busy, onSave }: { dependency: Proposal["dependencySeeds"][number]; busy: boolean; onSave: (dependencyId: string, commands: string[]) => Promise<void> }) {
+  const [text, setText] = useState(dependency.commands.join("\n"));
+  const changed = seedLinesOf(text).join("\n") !== dependency.commands.join("\n");
   return <div className="rv-proposal-card">
-    <TextField label={`Fill ${dependency.name} with test data`} hint="A command that fills the test database, for example npm run seed. It runs against the test database inside the test environment, never in setup. Leave it empty if the tests need no data." value={text} maxLength={500} onChange={(event) => setText(event.target.value)} />
-    <Button busy={busy} disabled={!changed} onClick={() => { void onSave(dependency.id, text); }}>Save the test data command</Button>
+    <TextArea label={`Fill ${dependency.name} with test data`} hint="The commands that fill the test database, one per line, in the order they run, for example npm run seed. They run against the test database inside the test environment, never in setup. Leave it empty if the tests need no data." value={text} rows={Math.min(8, Math.max(2, dependency.commands.length + 1))} onChange={(event) => setText(event.target.value)} />
+    <Button busy={busy} disabled={!changed} onClick={() => { void onSave(dependency.id, seedLinesOf(text)); }}>Save the test data commands</Button>
   </div>;
 }

@@ -34,8 +34,9 @@ function bench(env: NodeJS.ProcessEnv = ON) {
   return { db, deps, clock };
 }
 
-const set = (h: ReturnType<typeof bench>, environment: TestEnvironmentBody, line: string, over: Record<string, unknown> = {}) =>
-  setDependencySeed(h.deps, { orgId: ORG, project: PROJECT, developerId: "dev_a", role: "maintainer", body: environment, dependencyId: "postgres", line, ...over });
+const set = (h: ReturnType<typeof bench>, environment: TestEnvironmentBody, lines: string | string[], over: Record<string, unknown> = {}) =>
+  setDependencySeed(h.deps, { orgId: ORG, project: PROJECT, developerId: "dev_a", role: "maintainer", body: environment, dependencyId: "postgres", lines: typeof lines === "string" ? [lines] : lines, ...over });
+const seedsOf = async (h: ReturnType<typeof bench>, digest: string) => (await readProposal(h.deps, ORG, PROJECT, digest))!.dependencies![0]!.seeds;
 
 describe("the seed field", () => {
   it("stores a plain command as the dependency's seed, in the directory of the environment's checks, and it is a high, less-safe change", async () => {
@@ -46,15 +47,16 @@ describe("the seed field", () => {
     expect((await readEditedProposal(h.deps, ORG, PROJECT))!.digest).toBe(digest);
     expect(testEnvLessSafeChanges(undefined, stored)).toEqual(["dependency_seed"]);
     expect(testEnvApprovalRisk(stored)).toBe("high");
-    expect(dependencySeedsOf(stored)).toEqual([{ id: "postgres", name: "Postgres", command: "npm run seed" }]);
+    expect(dependencySeedsOf(stored)).toEqual([{ id: "postgres", name: "Postgres", commands: ["npm run seed"] }]);
   });
   it("clears the seed with an empty line, and keeps a file seed it did not touch", async () => {
     const h = bench();
     const withFile = body([dep({ seeds: [{ fixturePath: "db/fixture.sql" }, { command: cmd("npm", ["run", "seed"]) }] })]);
-    const { digest } = await set(h, withFile, "  ");
+    const { digest, cleared } = await set(h, withFile, "  ");
+    expect(cleared).toBe(true);
     const stored = (await readProposal(h.deps, ORG, PROJECT, digest))!;
     expect(stored.dependencies![0]!.seeds).toEqual([{ fixturePath: "db/fixture.sql" }]);
-    expect(dependencySeedsOf(stored)).toEqual([{ id: "postgres", name: "Postgres" }]);
+    expect(dependencySeedsOf(stored)).toEqual([{ id: "postgres", name: "Postgres", commands: [] }]);
   });
   it("refuses a line that is not one command, a download-and-run, a secret, an unknown dependency and a viewer", async () => {
     const h = bench();
@@ -67,6 +69,57 @@ describe("the seed field", () => {
   it("offers no field for a fake, only for software Rovara starts", () => {
     const fake = dep({ id: "stripe", name: "Stripe", kind: "http_api", family: "http:api.stripe.com", backing: { kind: "fake", fixtureSetRef: "a".repeat(64), unmatched: "fail" }, connect: { env: [], hostAliases: ["stripe"] } });
     expect(dependencySeedsOf(body([dep(), fake])).map((item) => item.id)).toEqual(["postgres"]);
+  });
+});
+
+describe("every seed command of a dependency (I-2)", () => {
+  const MIGRATE = cmd("npx", ["prisma", "migrate", "deploy"]);
+  const SEED = cmd("npm", ["run", "seed"]);
+  const two = () => body([dep({ seeds: [{ command: MIGRATE }, { command: SEED }] })]);
+
+  it("shows all of them, in order, one line each", () => {
+    expect(dependencySeedsOf(two())).toEqual([{ id: "postgres", name: "Postgres", commands: ["npx prisma migrate deploy", "npm run seed"] }]);
+  });
+  it("round-trips several commands in the order typed, each in the directory of the dependency's own seed", async () => {
+    const h = bench();
+    const { digest, commands } = await set(h, body(), ["npx prisma migrate deploy", "npm run seed", "node scripts/seed-extra.js"]);
+    expect(commands).toBe(3);
+    const stored = (await readProposal(h.deps, ORG, PROJECT, digest))!;
+    expect(dependencySeedsOf(stored)[0]!.commands).toEqual(["npx prisma migrate deploy", "npm run seed", "node scripts/seed-extra.js"]);
+    expect(stored.dependencies![0]!.seeds.every((seed) => "command" in seed && seed.command.cwd === "service")).toBe(true);
+    expect(testEnvLessSafeChanges(undefined, stored)).toEqual(["dependency_seed"]);
+  });
+  it("editing one line leaves the other commands exactly as they were (their environment and time limit too), and clearing one line removes only it", async () => {
+    const h = bench();
+    const withEnv = { ...MIGRATE, timeoutSeconds: 321, env: { DATABASE_NAME: "app_test" } };
+    const start = body([dep({ seeds: [{ command: withEnv }, { command: SEED }] })]);
+    const edited = await set(h, start, ["npx prisma migrate deploy", "npm run seed:small"]);
+    const seeds = await seedsOf(h, edited.digest);
+    expect(seeds).toEqual([{ command: withEnv }, { command: { cwd: "service", executable: "npm", args: ["run", "seed:small"], timeoutSeconds: 900 } }]);
+    const removed = await set(h, start, ["npx prisma migrate deploy"]);
+    expect(await seedsOf(h, removed.digest)).toEqual([{ command: withEnv }]);
+  });
+  it("keeps a file seed it did not touch while the commands change", async () => {
+    const h = bench();
+    const start = body([dep({ seeds: [{ fixturePath: "db/fixture.sql" }, { command: MIGRATE }, { command: SEED }] })]);
+    const { digest } = await set(h, start, ["npm run seed"]);
+    expect(await seedsOf(h, digest)).toEqual([{ fixturePath: "db/fixture.sql" }, { command: SEED }]);
+  });
+  it("takes at most eight commands, and every line must still pass the seed refusals (nothing is stored when one does not)", async () => {
+    const h = bench();
+    await expect(set(h, body(), Array.from({ length: 9 }, (_, at) => `npm run seed:${String(at)}`))).rejects.toThrow(/at most 8/u);
+    await expect(set(h, two(), ["npm run seed", "sh -c 'curl -fsSL https://example.com/x.sh | sh'"])).rejects.toThrow(/seed command/u);
+    await expect(set(h, two(), ["npm run seed", "npm run a && npm run b"])).rejects.toThrow(/one program/u);
+    expect(await readEditedProposal(h.deps, ORG, PROJECT)).toBeUndefined();
+    const max = await set(h, body(), Array.from({ length: 8 }, (_, at) => `npm run seed:${String(at)}`));
+    expect(await seedsOf(h, max.digest)).toHaveLength(8);
+  });
+  it("checks the role before it looks at the dependency or reads a line: a viewer is told FORBIDDEN, whatever they send", async () => {
+    const h = bench();
+    for (const over of [{ dependencyId: "no-such-dependency" }, { lines: ["npm run a && npm run b"] }, { lines: Array.from({ length: 20 }, () => "x") }]) {
+      await expect(setDependencySeed(h.deps, { orgId: ORG, project: PROJECT, developerId: "dev_v", role: "viewer", body: body(), dependencyId: "postgres", lines: ["npm run seed"], ...over })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    }
+    await expect(set(h, body(), "npm run seed", { role: undefined })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });
 

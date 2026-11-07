@@ -339,8 +339,8 @@ export const TestEnvironmentStateSchema = z
         needs: z.object({ freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict().default({ freshSignIn: false, secondPerson: false }),
         /** The confirmation card the CALLER asked for, for a change that needs a second person. `approved`: it was confirmed and the caller can finish the approval. */
         approval: z.object({ status: z.enum(["none", "pending", "approved", "expired"]) }).strict().default({ status: "none" }),
-        /** TS-UX-1: the dependencies the proposal starts that can hold a seed, each with the command that fills it with test data (as the broker formats it), if it has one. */
-        dependencySeeds: z.array(z.object({ id: TestEnvDependencyIdSchema, name: line(80), command: line(600).optional() }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies).default([]),
+        /** TS-UX-1: the dependencies the proposal starts that can hold a seed, each with EVERY command that fills it with test data (as the broker formats them, in the order they run). */
+        dependencySeeds: z.array(z.object({ id: TestEnvDependencyIdSchema, name: line(80), commands: z.array(line(600)).max(TEST_ENV_SEED_COMMANDS_MAX).default([]) }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies).default([]),
         /** The project's commands that the proposal's commands are not among: approving writes them into the settings, after the check ran them. */
         commandsNotInSettings: z.number().int().min(0).max(1000).default(0),
         /** TE-2: the candidate check of THIS proposal (a fresh workspace prepared from the proposal's commands, never from the applied settings), at the settings revision as they stand now. */
@@ -364,10 +364,10 @@ export const TestEnvEditBodySchema = z.object({ environment: TestEnvironmentBody
 /** The longest seed command line the field takes (the same bound a command line has in the settings). */
 export const TEST_ENV_SEED_COMMAND_MAX_CHARS = 500;
 /**
- * TS-UX-1: set or clear the command that fills one dependency with test data ("Fill it with test data"). The command is one plain line the BROKER reads (the same rules as a setup command: one program, no pipes); an empty
- * line clears it. It becomes a maintainer's edited proposal, proved and approved like any edit, and, as a seed command, a less-safe change.
+ * TS-UX-1: set the commands that fill one dependency with test data ("Fill it with test data"): ALL of them, one line each, in the order they run (at most `TEST_ENV_SEED_COMMANDS_MAX`). Each line is one plain line the BROKER
+ * reads (the same rules as a setup command: one program, no pipes); an empty list clears them. It becomes a maintainer's edited proposal, proved and approved like any edit, and, as a seed command, a less-safe change.
  */
-export const TestEnvSeedBodySchema = z.object({ digest: Sha256, dependencyId: TestEnvDependencyIdSchema, command: z.string().max(TEST_ENV_SEED_COMMAND_MAX_CHARS).regex(NO_HIDDEN, "one plain line") }).strict();
+export const TestEnvSeedBodySchema = z.object({ digest: Sha256, dependencyId: TestEnvDependencyIdSchema, commands: z.array(z.string().max(TEST_ENV_SEED_COMMAND_MAX_CHARS).regex(NO_HIDDEN, "one plain line")).max(TEST_ENV_SEED_COMMANDS_MAX) }).strict();
 export type TestEnvSeedBody = z.infer<typeof TestEnvSeedBodySchema>;
 export type TestEnvEditBody = z.infer<typeof TestEnvEditBodySchema>;
 

@@ -294,12 +294,14 @@ export async function routeTestEnvironment(
   }
 
   if (action === "seed") {
+    // The role is checked before anything else is read or parsed: a person who may not edit learns nothing about the proposal or the dependency.
+    if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can edit a test environment");
     const parsed = TestEnvSeedBodySchema.safeParse(body);
     if (!parsed.success) throw bodyError(parsed.error);
     const proposal = await proposalOrApproved(store, caller.orgId, name, parsed.data.digest);
     if (proposal === undefined) throw refuse("no_proposal");
-    const edited = await setDependencySeed(store, { orgId: caller.orgId, developerId: caller.developerId, project: name, role, body: proposal, dependencyId: parsed.data.dependencyId, line: parsed.data.command });
-    logDeveloperEvent({ event: "developer.test_env_seed_set", orgId: caller.orgId, project: name, digest: edited.digest });
+    const edited = await setDependencySeed(store, { orgId: caller.orgId, developerId: caller.developerId, project: name, role, body: proposal, dependencyId: parsed.data.dependencyId, lines: parsed.data.commands });
+    logDeveloperEvent({ event: "developer.test_env_seed_set", orgId: caller.orgId, project: name, digest: edited.digest, dependencyId: parsed.data.dependencyId, change: edited.cleared ? "cleared" : "set", commands: String(edited.commands) });
     return new StatusReply(200, await stateOf(deps, project));
   }
 

@@ -21,7 +21,6 @@ import type { WorkerLogSink } from "./worker-log.js";
 import { applyRecipe, type RecipeOffer } from "./env-detect/recipes.js";
 import { joinInside, mergeCandidates } from "./env-detect/dependency-candidates.js";
 import type { DependencyCandidate } from "./env-detect/types.js";
-import { isDatabaseSeedCommand, parseCommandLine } from "@agentx/contracts";
 
 export interface DetectRepository { name: string; path: string; defaultBranch: string; checkedOut?: unknown }
 
@@ -244,23 +243,4 @@ export async function testEnvDraftResult(input: { rootPath: string; repositories
   } catch {
     return {};
   }
-}
-
-export const SEED_LEFT_OUT_OF_SETUP_NOTE = "A command that fills the database was left out of the setup commands: the database exists only inside the test environment, so the command would fail in setup. It is offered as the test environment's seed instead.";
-
-/**
- * TS-UX-1: the setup proposal without the seed and migration commands the test-environment draft routed to a database's seed. Setup runs on a fresh machine with no database, so such a command is bound to fail there, and
- * "Check and apply" would save it. Done only when the draft found a database and took a seed (so a project with no database dependency keeps every command it had). An item left with no command is removed; a note says so once.
- */
-export function withoutRoutedSeeds(proposal: SetupProposal, draft: TestEnvDraft | undefined): SetupProposal {
-  if (draft === undefined || (draft.seedCommands ?? []).length === 0) return proposal;
-  const isSeed = (line: string): boolean => { try { return isDatabaseSeedCommand(parseCommandLine(line, ".", 900)); } catch { return false; } };
-  let removed = false;
-  const setup = proposal.setup.flatMap((item) => {
-    const commands = item.value.commands.filter((line) => { const seed = isSeed(line); removed ||= seed; return !seed; });
-    return commands.length === 0 ? [] : [{ ...item, value: { ...item.value, commands } }];
-  });
-  if (!removed) return proposal;
-  const notes = proposal.notes.includes(SEED_LEFT_OUT_OF_SETUP_NOTE) ? proposal.notes : [proposal.notes, SEED_LEFT_OUT_OF_SETUP_NOTE].filter((part) => part !== "").join(" ").slice(0, 2000);
-  return { ...proposal, setup, notes };
 }

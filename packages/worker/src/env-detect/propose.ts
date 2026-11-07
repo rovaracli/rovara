@@ -26,8 +26,8 @@ export interface EnvironmentDraft {
   valueSources: Array<{ field: string; source: TestEnvValueSource }>;
   pendingServices: PendingService[];
   /**
-   * Commands that fill or migrate a database, taken OUT of the setup commands (TS-UX-1): setup runs on a fresh machine with no database, so such a command is bound to fail there. They are offered as the database
-   * dependency's seed (the broker attaches them to the dependency it proposes). Empty when no database was found: with none, nothing says the command needs one.
+   * Commands that fill or migrate a database (TS-UX-1), offered as the database dependency's seed: the broker attaches them to the dependency it proposes and, only then, takes them out of the setup commands (setup runs
+   * on a fresh machine with no database). They are ALSO still in the setup commands here. Empty when no database was found: with none, nothing says the command needs one.
    */
   seedCommands: Array<{ command: ProjectCommand; source: TestEnvValueSource }>;
   /** A database dependency was found, so a seed or migration command is routed (also for the setup agent's own commands). */
@@ -46,7 +46,9 @@ export function buildEnvironmentDraft(detection: Detection, input: { repositoryI
   const checks = detection.checks.slice(0, 32);
   const routesSeeds = Array.isArray(detection.dependencies) && detection.dependencies.some((item) => item.kind === "database");
   const isSeed = (item: Located<ProjectCommand>): boolean => routesSeeds && isDatabaseSeedCommand(item.value);
-  const setup = detection.setupCommands.filter((item) => !isSeed(item)).slice(0, 20);
+  // A seed or migration found among the setup commands stays one here and is ALSO reported as a seed: the worker cannot know whether the broker will propose a database to hold it (services off, no catalog, nothing to
+  // run on), and a command that lands nowhere must not vanish from setup. The broker takes it out of setup once a dependency has taken it.
+  const setup = detection.setupCommands.slice(0, 20);
   const seedCommands: EnvironmentDraft["seedCommands"] = [];
   if (routesSeeds) {
     for (const item of [...detection.setupCommands.filter(isSeed), ...(detection.seedCommands ?? [])]) {
@@ -129,11 +131,8 @@ export function proposalFromDraft(draft: EnvironmentDraft, setupDraft: SetupDraf
   for (const line of setupDraft.setupCommands) {
     const command = take(line, "setup");
     if (command === undefined || repo.setupCommands.some((existing) => sameProgram(existing, command)) || repo.setupCommands.length >= 20) continue;
-    // A seed or migration needs the database, which exists only inside the test environment: it is the dependency's seed, never a setup command.
-    if (draft.routesSeeds && isDatabaseSeedCommand(command)) {
-      if (seedCommands.length < 8 && !seedCommands.some((existing) => sameProgram(existing.command, command))) seedCommands.push({ command, source: "model" });
-      continue;
-    }
+    // A seed or migration needs the database, which exists only inside the test environment: it is offered as the dependency's seed too, and the broker takes it out of setup once a dependency has taken it.
+    if (draft.routesSeeds && isDatabaseSeedCommand(command) && seedCommands.length < 8 && !seedCommands.some((existing) => sameProgram(existing.command, command))) seedCommands.push({ command, source: "model" });
     sources.push({ field: `repos[0].setupCommands[${String(repo.setupCommands.length)}]`, source: "model" });
     repo.setupCommands.push(command);
   }

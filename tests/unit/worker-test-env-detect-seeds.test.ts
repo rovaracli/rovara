@@ -1,11 +1,11 @@
-// TS-UX-1 (0.5.10): a seed or migration command needs a database that exists only inside the test environment, so the draft never puts one in SETUP. It is the database dependency's seed (carried in the draft,
-// attached by the broker). Only when a database was found: with none, nothing says the command needs one, and the setup commands stay as they were.
+// TS-UX-1 (0.5.10): a seed or migration command needs a database that exists only inside the test environment, so the draft OFFERS it as the database dependency's seed (carried in the draft, attached by the broker).
+// The worker never takes a command out of setup: whether a database is proposed, and whether the seed is kept (services off drops it), is the broker's to know. Only when a database was found is anything offered at all.
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TestEnvDraftSchema, formatCommandLine, type SetupProposal } from "@agentx/contracts";
-import { SEED_LEFT_OUT_OF_SETUP_NOTE, detectTestEnvironment, withoutRoutedSeeds } from "../../packages/worker/src/test-env-detect.js";
+import { detectTestEnvironment } from "../../packages/worker/src/test-env-detect.js";
 
 let root: string;
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "te-detect-seeds-")); });
@@ -21,8 +21,8 @@ const PACKAGE = JSON.stringify({ scripts: { test: "vitest run", seed: "node scri
 const DB_CODE = "export const url = process.env.DATABASE_URL;\n";
 const setupLines = (draft: Awaited<ReturnType<typeof detectTestEnvironment>>) => draft!.environment.repos[0]!.setupCommands.map(formatCommandLine);
 
-describe("seed commands are the database's, never setup's", () => {
-  it("offers a package.json seed script as the seed when a database is found from code, and leaves it out of setup", async () => {
+describe("seed commands are offered to the database, and setup keeps every command it had", () => {
+  it("offers a package.json seed script as the seed when a database is found from code (it was never a setup command)", async () => {
     await write("svc/package.json", PACKAGE);
     await write("svc/src/db.ts", DB_CODE);
     const draft = await detectTestEnvironment({ rootPath: root, repositories: [repo] });
@@ -32,34 +32,30 @@ describe("seed commands are the database's, never setup's", () => {
     expect(draft!.seedCommands![0]).toMatchObject({ source: { path: "package.json", line: 1 }, command: { cwd: "svc" } });
     expect(setupLines(draft)).not.toContain("npm run seed");
   });
-  it("moves the setup agent's own seed command out of setup, keeping its other commands", async () => {
+  it("offers the setup agent's own seed and migration commands as seeds AND leaves them in setup, with their other commands (I-1: the broker decides, once it knows)", async () => {
     await write("svc/package.json", JSON.stringify({ scripts: { test: "vitest run" } }));
     await write("svc/src/db.ts", DB_CODE);
     const draft = await detectTestEnvironment({ rootPath: root, repositories: [repo], setupProposal: proposal(["npm ci", "npm run db:seed", "npx prisma migrate deploy"]) });
-    expect(setupLines(draft)).toContain("npm ci");
-    expect(setupLines(draft).some((line) => /seed|migrate/u.test(line))).toBe(false);
+    expect(setupLines(draft)).toEqual(["npm install", "npm ci", "npm run db:seed", "npx prisma migrate deploy"]);
     expect(draft!.seedCommands!.map((seed) => [formatCommandLine(seed.command), seed.source])).toEqual([["npm run db:seed", "model"], ["npx prisma migrate deploy", "model"]]);
+    // The value sources still line up with the setup commands, since none was removed.
+    expect(draft!.valueSources.filter((item) => item.field.includes("setupCommands")).map((item) => item.field)).toEqual(["repos[0].setupCommands[0]", "repos[0].setupCommands[1]", "repos[0].setupCommands[2]", "repos[0].setupCommands[3]"]);
   });
-  it("changes nothing when no database was found (positive control: the same command is routed once a database is)", async () => {
+  it("offers nothing when no database was found (positive control: the same command is offered once a database is)", async () => {
     await write("svc/package.json", JSON.stringify({ scripts: { test: "vitest run", seed: "node seed.js" } }));
     const draft = await detectTestEnvironment({ rootPath: root, repositories: [repo], setupProposal: proposal(["npm run seed"]) });
     expect(setupLines(draft)).toContain("npm run seed");
     expect(draft!.seedCommands).toBeUndefined();
     await write("svc/src/db.ts", DB_CODE);
     const routed = await detectTestEnvironment({ rootPath: root, repositories: [repo], setupProposal: proposal(["npm run seed"]) });
-    expect(setupLines(routed)).not.toContain("npm run seed");
+    expect(routed!.seedCommands!.map((seed) => formatCommandLine(seed.command))).toContain("npm run seed");
+    expect(setupLines(routed)).toContain("npm run seed");
   });
-  it("takes the routed seed out of the setup proposal too, with one note, and leaves it alone when nothing was routed", async () => {
-    await write("svc/package.json", PACKAGE);
+  it("does not offer a build or install step whose path holds the word (I-3)", async () => {
+    await write("svc/package.json", JSON.stringify({ scripts: { test: "vitest run" } }));
     await write("svc/src/db.ts", DB_CODE);
-    const original = proposal(["npm ci", "npm run seed"]);
-    const draft = await detectTestEnvironment({ rootPath: root, repositories: [repo], setupProposal: original });
-    const stripped = withoutRoutedSeeds(original, draft);
-    expect(stripped.setup[0]!.value.commands).toEqual(["npm ci"]);
-    expect(stripped.notes).toContain(SEED_LEFT_OUT_OF_SETUP_NOTE);
-    expect(withoutRoutedSeeds(stripped, draft)).toBe(stripped);
-    const onlySeed = withoutRoutedSeeds(proposal(["npm run seed"]), draft);
-    expect(onlySeed.setup).toEqual([]);
-    expect(withoutRoutedSeeds(original, undefined)).toBe(original);
+    const draft = await detectTestEnvironment({ rootPath: root, repositories: [repo], setupProposal: proposal(["npx tsc -p tsconfig.migrations.json", "npm ci --prefix packages/migrations", "node scripts/migrate-assets.js"]) });
+    expect(draft!.seedCommands).toBeUndefined();
+    expect(setupLines(draft)).toEqual(["npm install", "npx tsc -p tsconfig.migrations.json", "npm ci --prefix packages/migrations", "node scripts/migrate-assets.js"]);
   });
 });

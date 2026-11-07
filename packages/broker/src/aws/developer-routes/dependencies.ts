@@ -92,6 +92,7 @@ import { requireGithubRecord } from "../../plugins/code-host/github-only.js";
 import { diagnosisEnabled, diagnosisTagKeyOf } from "../../diagnosis/switch.js";
 import type { DiagnosisRouteDependencies } from "../../diagnosis/routes.js";
 import { putProjectSettingsChecked } from "./settings-proof.js";
+import { routedSeedsOf } from "../../test-env/routed-seeds.js";
 import { personOwnerOf } from "../../developer/system-owner.js";
 import { effectiveTaskOwner } from "../../developer/task-records.js";
 
@@ -126,6 +127,8 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
     // Meta repo lane B: a risky item of the setup agent's proposal gets its own approval card, and its citations are re-read from GitHub.
     ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
     ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),
+    // TS-UX-1: a seed or migration leaves the setup proposal only when the test environment's draft gave it to a database dependency.
+    routedSeeds: (orgId, project, taskId) => routedSeedsOf(deps, orgId, project, taskId),
   };
 }
 

@@ -21,7 +21,7 @@ export function createTestEnvironmentApi(host: AppHost) {
     propose: (name: string) => api.sendAnswer("POST", base(name) + "/propose", {}, state),
     edit: (name: string, environment: unknown) => api.sendAnswer("POST", base(name) + "/edit", TestEnvEditBodySchema.parse({ environment }), state),
     /** The command that fills one dependency with test data (an empty line clears it). The server reads the line; the answer is the new state. */
-    setSeed: (name: string, digest: string, dependencyId: string, command: string) => api.sendAnswer("POST", base(name) + "/seed", TestEnvSeedBodySchema.parse({ digest, dependencyId, command }), state),
+    setSeed: (name: string, digest: string, dependencyId: string, commands: string[]) => api.sendAnswer("POST", base(name) + "/seed", TestEnvSeedBodySchema.parse({ digest, dependencyId, commands }), state),
     prove: (name: string, digest: string) => api.sendAnswer("POST", base(name) + "/prove", TestEnvProveBodySchema.parse({ digest }), state),
     startCheck: (name: string, digest: string, requestId: string) => api.sendAnswer("POST", base(name) + "/check", TestEnvCheckBodySchema.parse({ digest, requestId }), state),
     applyCommands: (name: string, body: ReturnType<typeof TestEnvApplyBodySchema.parse>) => api.sendAnswer("POST", base(name) + "/apply-commands", TestEnvApplyBodySchema.parse(body), exactAnswer(TestEnvApplyAnswerSchema)),

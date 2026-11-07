@@ -39,6 +39,7 @@ import {
   setupItemsOf,
   type AppProjectDetail,
   type OrgId,
+  type ProjectCommand,
   type ProjectRole,
   type ProjectSettingsBody,
   type SetupApplyResponse,
@@ -64,6 +65,7 @@ import {
   SETUP_ITEM_WORDS, citationWords, currentOf, getSetupItemApplier, githubFullNameOf, isCardKind, itemDigest, registerSetupItemApplier, unavailableReason, type SetupItemApplier,
 } from "./setup-items.js";
 import { verifyProposalDetailed, type CitationFileReader } from "./setup-proposal-verify.js";
+import { withoutRoutedSeeds } from "../test-env/seed-routing.js";
 import { addIntakeSource } from "../intake/sources.js";
 import { registerIntakeSetupApplier } from "../intake/setup-applier.js";
 import { SETUP_CONSENT_USED, consentHasExpired, consentIsUsed, giveBackConsent, useConsent } from "./setup-consent.js";
@@ -295,6 +297,18 @@ export interface SetupDraftDependencies {
   approvals?: ApprovalDependencies | undefined;
   /** A file of one of an org's repositories at a commit (undefined when it is not there; throws when GitHub cannot answer). Absent: every citation is `unchecked`. */
   readFile?: ((orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => Promise<string | undefined>) | undefined;
+  /**
+   * TS-UX-1: the seed commands the test environment's draft of this setup draft (the task) actually gave to a database dependency. Only those are taken out of the setup proposal (setup has no database); a command
+   * the dependency did not take (test services off, no database to hold it, refused) stays a setup command. Absent where test environments are not set up: nothing is taken out.
+   */
+  routedSeeds?: ((orgId: OrgId, project: string, taskId: string) => Promise<readonly ProjectCommand[]>) | undefined;
+}
+
+/** The state with the seeds a dependency took left out of its setup proposal, so the page shows, and an apply saves, the same commands. A read that fails leaves the proposal as it was. */
+async function withSeedsRouted<T extends { proposal?: SetupProposal | undefined; pointer?: SetupDraftPointer | undefined }>(deps: SetupDraftDependencies, orgId: OrgId, project: string, state: T): Promise<T> {
+  if (state.proposal === undefined || state.pointer === undefined || deps.routedSeeds === undefined) return state;
+  const routed = await deps.routedSeeds(orgId, project, state.pointer.taskId).catch(() => []);
+  return routed.length === 0 ? state : { ...state, proposal: withoutRoutedSeeds(state.proposal, routed) };
 }
 
 const bodyError = (error: { issues: ReadonlyArray<{ path: PropertyKey[]; message: string }> }) => {
@@ -337,7 +351,7 @@ export async function startSetupDraft(deps: SetupDraftDependencies, caller: Deve
   const previous = await getItem(deps.documentClient, deps.tableName, runRequestKey(caller.orgId, requestId));
   if (previous !== undefined) {
     await run(undefined);
-    return new StatusReply(200, setupDraftView(await setupDraftState(deps, caller.orgId, name, latest.revision)));
+    return new StatusReply(200, setupDraftView(await withSeedsRouted(deps, caller.orgId, name, await setupDraftState(deps, caller.orgId, name, latest.revision))));
   }
   await deps.requireNewWork(caller, name, role);
   const before = await setupDraftState(deps, caller.orgId, name, latest.revision);
@@ -351,7 +365,7 @@ export async function startSetupDraft(deps: SetupDraftDependencies, caller: Deve
     }
     throw error;
   }
-  return new StatusReply(202, setupDraftView(await setupDraftState(deps, caller.orgId, name, latest.revision)));
+  return new StatusReply(202, setupDraftView(await withSeedsRouted(deps, caller.orgId, name, await setupDraftState(deps, caller.orgId, name, latest.revision))));
 }
 
 // ---- re-reading the citations
@@ -556,7 +570,7 @@ export async function getSetupDraft(deps: SetupDraftDependencies, caller: Develo
   const { name } = await maintainerOf(deps, caller, rawName);
   const latest = await deps.latest(caller.orgId, name);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
-  const state = await setupDraftState(deps, caller.orgId, name, latest.revision);
+  const state = await withSeedsRouted(deps, caller.orgId, name, await setupDraftState(deps, caller.orgId, name, latest.revision));
   if (state.proposal !== undefined && state.pointer !== undefined) {
     return setupDraftView({ ...state, review: await reviewOf(deps, caller, name, latest.definition, state.pointer, state.proposal) });
   }
@@ -625,7 +639,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   }
   const latest = await deps.latest(caller.orgId, name);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
-  const state = await setupDraftState(deps, caller.orgId, name, latest.revision);
+  const state = await withSeedsRouted(deps, caller.orgId, name, await setupDraftState(deps, caller.orgId, name, latest.revision));
   // Only a ready state carries a proposal.
   if (state.proposal === undefined || state.pointer === undefined) throw agentXError("CONFIG_INVALID", SETUP_DRAFT_NONE_TO_APPLY);
   const proposal = state.proposal;

@@ -13,4 +13,10 @@ describe("a command that needs the test database", () => {
   it.each([
     "npm ci", "npm test", "npm run build", "pip install -r requirements.txt", "npx prisma generate", "python -m pytest", "make test", "node scripts/seedling-farm.js", "npm run reseed-nothing", "git clone x",
   ])("%s is not", (line) => expect(is(line)).toBe(false));
+  // I-3: a path or a file name that merely holds the word is not the word. These are install and build steps, and they stay in setup.
+  it.each([
+    "npx tsc -p tsconfig.migrations.json", "tsc -p tsconfig.migrations.json", "npm ci --prefix packages/migrations", "npm install --prefix migrations", "node scripts/migrate-assets.js", "node scripts/seed-images-to-cdn.js", "python scripts/migrate_logs_to_s3.py",
+    "npm run build --workspace packages/seeds", "node tools/migrations/build.js", "npm test -- --seed 5", "npx jest --config jest.migrations.config.js", "make -f seed.mk build",
+  ])("%s is not, even though a path or an option holds the word", (line) => expect(is(line)).toBe(false));
+  it.each(["npm run seed -- --reset", "python manage.py migrate --noinput", "npx ts-node prisma/seed.ts", "npm run db:seed:replant", "flask --app app db upgrade", "npm run migrate:test", "pnpm run db-migrate"])("%s still is", (line) => expect(is(line)).toBe(true));
 });

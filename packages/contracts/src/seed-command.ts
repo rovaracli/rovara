@@ -7,9 +7,36 @@ import type { ProjectCommand } from "./project-node.js";
 const RUNNERS = new Set([
   "npm", "npx", "pnpm", "pnpx", "yarn", "bun", "bunx", "node", "ts-node", "tsx", "deno", "python", "python3", "poetry", "pipenv", "uv", "flask", "django-admin", "alembic", "rake", "rails", "bundle", "make", "psql", "pg_restore", "knex", "sequelize", "prisma", "typeorm", "drizzle-kit",
 ]);
-/** A word that names a seed or a migration: delimited by the start, the end or one of `: / _ . -`. `seedling` and `reseed` are not. */
-const SEED_WORD = /(?:^|[:/_.-])(?:seed|seeds|seeding|migrate|migrations?|loaddata|db-setup|db-reset)(?![A-Za-z0-9])/u;
-const EXTRA_WORDS = new Set(["db:setup", "db:reset", "db:push", "db:schema:load", "db:create"]);
+/** The words that say a command seeds or migrates a database. */
+const VERBS = new Set(["seed", "seeds", "seeding", "migrate", "migration", "migrations", "loaddata"]);
+/** Words that may sit beside a verb in one name (`db:seed`, `seed_db`, `seed:test`, `db-migrate`) without changing what it is. Any other word (`migrate-assets`, `tsconfig.migrations`) makes it something else. */
+const QUALIFIERS = new Set(["db", "database", "data", "test", "tests", "dev", "local", "run", "all", "up", "down", "schema", "sql", "deploy", "fixtures", "replant", "load", "reset", "setup", "create", "push"]);
+/** A name that is a whole command word of its own, not made of parts: `rails db:setup`. */
+const EXTRA_WORDS = new Set(["db:setup", "db:reset", "db:push", "db:schema:load", "db:create", "db-setup", "db-reset"]);
+/** A path counts only when it ends in a script file (`scripts/seed.js`); a directory or a config file that has the word in its name (`packages/migrations`, `tsconfig.migrations.json`) is not a seed. */
+const SCRIPT_EXTENSION = /\.(?:[cm]?[jt]s|py|rb|sh|sql)$/u;
+/** Options that take the next word as their value, so that word is a path or a name and not a command word (`npm ci --prefix packages/migrations`). */
+const VALUE_OPTIONS = new Set(["--prefix", "--cwd", "-C", "--dir", "--directory", "--workspace", "-w", "--filter", "--project", "-p", "--config", "-c", "--file", "-f", "--schema", "--env-file", "--require", "-r"]);
+
+/** Whether one word of a command names a seed or a migration: the whole word (or the script's file name) is a verb, with at most the qualifiers above beside it. `seedling` and `reseed` are not. */
+function namesSeed(word: string): boolean {
+  if (EXTRA_WORDS.has(word)) return true;
+  const slash = word.lastIndexOf("/");
+  const base = slash < 0 ? word : word.slice(slash + 1);
+  if (slash >= 0 && !SCRIPT_EXTENSION.test(base)) return false;
+  const parts = base.replace(SCRIPT_EXTENSION, "").toLowerCase().split(/[:_.-]+/u).filter((part) => part !== "");
+  return parts.some((part) => VERBS.has(part)) && parts.every((part) => VERBS.has(part) || QUALIFIERS.has(part));
+}
+
+/** Whether any of the first words (not options, and not an option's value) names a seed or a migration. */
+function hasSeedWord(words: readonly string[], extra?: (word: string) => boolean): boolean {
+  for (let at = 0; at < words.length; at += 1) {
+    const word = words[at]!;
+    if (word.startsWith("-")) { if (VALUE_OPTIONS.has(word)) at += 1; continue; }
+    if (namesSeed(word) || extra?.(word) === true) return true;
+  }
+  return false;
+}
 
 /** Whether a command fills or migrates a database (by the words of its program and arguments), so it must not run in SETUP. */
 export function isDatabaseSeedCommand(command: Pick<ProjectCommand, "executable" | "args">): boolean {
@@ -18,6 +45,6 @@ export function isDatabaseSeedCommand(command: Pick<ProjectCommand, "executable"
   if (program === "psql" || program === "pg_restore") return true;
   const words = command.args.slice(0, 12);
   if (program === "alembic") return words.some((word) => word === "upgrade" || word === "downgrade");
-  if (program === "flask" || program === "poetry") return words.some((word) => SEED_WORD.test(word) || word === "upgrade");
-  return words.some((word) => EXTRA_WORDS.has(word) || SEED_WORD.test(word));
+  if (program === "flask" || program === "poetry") return hasSeedWord(words, (word) => word === "upgrade");
+  return hasSeedWord(words);
 }
