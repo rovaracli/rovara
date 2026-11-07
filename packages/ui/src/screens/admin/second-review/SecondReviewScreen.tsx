@@ -92,9 +92,9 @@ function ReviewerSection({ state }: { state: SecondReviewState }) {
   {state.models.length === 0 ? <p>{T.NO_MODELS}</p> : <table className="rv-table"><thead><tr><th scope="col">{T.COL_MODEL}</th><th scope="col">{T.COL_MAKER}</th><th scope="col">{T.COL_COST}</th><th scope="col">{T.COL_FIT}</th><th scope="col">{T.COL_NOTES}</th></tr></thead>
    <tbody>{state.models.map(entry => <tr key={refKey(entry.model)} className={entry.eligible ? undefined : "rv-muted"}>
     <th scope="row"><VisibleText text={entry.model.modelId} /><br /><span className="rv-muted"><VisibleText text={entry.model.provider} /></span>{entry.suggested && <><br /><strong>{T.SUGGESTED}</strong>{entry.suggestionReason !== undefined && <>: <VisibleText text={entry.suggestionReason} /></>}</>}</th>
-    <td><VisibleText text={entry.company} /></td><td>{cost(entry.costUsd)}</td>
-    <td>{entry.eligible ? T.FITS : T.NOT_USED + ": " + (entry.ineligibleWhy === undefined ? "" : T.WHY[entry.ineligibleWhy] ?? entry.ineligibleWhy)}</td>
-    <td>{[...entry.notes, ...(entry.trackRecord === undefined ? [] : [entry.trackRecord])].map((note, index) => <span key={index}><VisibleText text={note} /><br /></span>)}</td></tr>)}</tbody></table>}
+    <td data-label={T.COL_MAKER}><VisibleText text={entry.company} /></td><td data-label={T.COL_COST}>{cost(entry.costUsd)}</td>
+    <td data-label={T.COL_FIT}>{entry.eligible ? T.FITS : T.NOT_USED + ": " + (entry.ineligibleWhy === undefined ? "" : T.WHY[entry.ineligibleWhy] ?? entry.ineligibleWhy)}</td>
+    <td data-label={T.COL_NOTES}>{[...entry.notes, ...(entry.trackRecord === undefined ? [] : [entry.trackRecord])].map((note, index) => <span key={index}><VisibleText text={note} /><br /></span>)}</td></tr>)}</tbody></table>}
   {usable.length > 0 && <>
    <Select label={T.PRIMARY} value={primaryKey} options={options} placeholder="Choose a model" onValueChange={setPrimary} />
    <Select label={T.BACKUP} value={backupKey} options={[{ value: "", label: T.NONE }, ...options.filter(option => option.value !== primaryKey)]} onValueChange={setBackup} />

@@ -52,7 +52,8 @@ it("shows the form to an owner with a Jira connection: a password field, both fi
 
 it("is not on the page for a company with no Jira connection, nor for a member", async () => {
   const noJira = mount({ connections: [row("con_aaaaaaaaaaaaaaaaaaaa", "linear", "Tracker")] });
-  await screen.findByText("Tracker");
+  await screen.findByRole("heading", { name: "Jira" });
+  expect(screen.getByText("Not connected")).toBeTruthy();
   expect(screen.queryByRole("heading", { name: "Jira organization admin key" })).toBeNull();
   noJira.close();
   const admin = mount({ role: "admin" });

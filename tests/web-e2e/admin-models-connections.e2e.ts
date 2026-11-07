@@ -29,8 +29,8 @@ test("opens waiting confirmations in a separate window without an opener or refe
  await page.goto("/app/admin/waiting");const open = page.getByRole("button", { name: "Open confirmation" }).first();await expect(open).toBeVisible();expect(context.pages()).toHaveLength(1);
  const popup = page.waitForEvent("popup");await open.click();const confirmation = await popup;await confirmation.waitForLoadState();expect(await confirmation.evaluate(() => window.opener === null)).toBe(true);expect(await confirmation.evaluate(() => document.referrer)).toBe("");await expect(confirmation).toHaveURL(/\/v1\/app\/approve\/apr_fixture$/);await expect(page).toHaveURL(/\/app\/admin\/waiting$/);await confirmation.close();
 });
-test("does not offer the desktop waiting queue from phone navigation", async ({ page }) => {
- await page.setViewportSize({ width: 390, height: 844 });await page.goto("/app");await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();await page.getByRole("button", { name: "Open workspace menu" }).click();await expect(page.getByRole("link", { name: "Waiting for people" })).toHaveCount(0);
+test("offers the waiting queue from phone navigation", async ({ page }) => {
+ await page.setViewportSize({ width: 390, height: 844 });await page.goto("/app");await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();await page.getByRole("button", { name: "Open workspace menu" }).click();await expect(page.getByRole("link", { name: "Waiting for people" })).toBeVisible();
 });
 
 for(const theme of ["light","dark"] as const)test(`opens scoped connection guidance with keyboard and no requests in ${theme}`,async({page})=>{

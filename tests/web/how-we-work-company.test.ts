@@ -102,10 +102,10 @@ describe("the company cards", () => {
   expect(await screen.findByRole("heading", { name: "Administration unavailable" })).toBeTruthy();
   expect(f.calls()).not.toContain("GET " + POLICY);
  });
- it("shows a phone the larger-screen message, as other admin pages do", async () => {
+ it("opens on a phone, with the settings menu closed behind a button", async () => {
   const f = mount({ width: 360 });
-  expect(await screen.findByText(/Open this on a larger screen/)).toBeTruthy();
-  expect(f.calls()).not.toContain("GET " + POLICY);
+  expect(await screen.findByRole("button", { name: "Settings menu" })).toBeTruthy();
+  await waitFor(() => expect(f.calls()).toContain("GET " + POLICY));
  });
 });
 

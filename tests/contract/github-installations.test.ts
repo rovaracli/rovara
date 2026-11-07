@@ -763,7 +763,7 @@ describe("agentx github list | disconnect", () => {
     const w = await world();
     const listed = await w.dev(MAYA, "GET", "/v1/app/github/installations");
     const entry = (listed.body.installations as Array<Record<string, unknown>>)[0]!;
-    expect(Object.keys(entry).sort()).toEqual(["accountLogin", "accountType", "installationId", "repositorySelection", "status"]);
+    expect(Object.keys(entry).sort()).toEqual(["accountLogin", "accountType", "connectedAt", "connectedBy", "installationId", "repositorySelection", "status"]);
     expect(typeof entry.installationId).toBe("number");
   });
 });

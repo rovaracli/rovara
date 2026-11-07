@@ -94,10 +94,10 @@ test("a stale revision found while reviewing asks for a reload", async ({ page, 
  await expect(page.getByRole("region", { name: "Build" }).getByRole("combobox", { name: "Effort" })).toHaveValue("medium");
 });
 
-test("a phone gets the larger-screen message, like the other admin pages", async ({ page }) => {
+test("a phone gets the same page, with the settings menu behind a button", async ({ page }) => {
  await page.setViewportSize({ width: 360, height: 800 });
  await page.goto("/app/admin/how-we-work");
- await expect(page.getByText(/Open this on a larger screen/)).toBeVisible();
+ await expect(page.getByRole("button", { name: "Settings menu" })).toBeVisible();await expect(page.getByRole("heading", { name: "How we work (company)", exact: true })).toBeVisible();
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await checkA11y(page, { theme: "light" });
 });

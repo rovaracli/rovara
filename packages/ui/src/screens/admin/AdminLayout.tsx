@@ -15,6 +15,7 @@ import "./admin.css";
 const secondReviewProbeKey = ["second-review-probe"] as const;
 interface AdminContext { orgId: string; company: string; developerId: string; role: "owner" | "admin" | "member"; checking: boolean }
 export function useAdminContext() { return useOutletContext<AdminContext>(); }
+// UX3: company settings work on a phone. A narrow screen only changes how the menu and the tables are laid out; it never hides a setting.
 const narrowViewport = () => false;
 function OwnRoleReceipt({ initial }: { initial: boolean }) {
  const [show] = useState(initial), location = useLocation(), navigate = useNavigate();
@@ -62,6 +63,5 @@ export function AdminLayout() {
  }, [allowed, query]);
  if (supported && identity.isPending) return <section aria-label="Administration access" aria-busy="true"><Skeleton label="Checking administration access" /></section>;
  if (!allowed || identity.data === undefined) return <section><PageHeader focusOnMount title="Administration unavailable" /><p>Administration is available to company owners and admins in the web app.</p>{identity.isSuccess && role === "member" && <OwnRoleReceipt key={`${location.pathname}:${identity.data.org.orgId}:${identity.data.developer.id}`} initial={ownReceipt} />}<NavLink to="/app">Go to Home</NavLink>{supported && identity.isError && <><p role="alert">{identity.dataUpdatedAt > 0 ? "Couldn't re-check your administration access. Try again." : "Couldn't verify your administration access. Try again."}</p><Button onClick={() => { void identity.refetch(); }}>Try again</Button></>}</section>;
- if (!largeScreen) return <section><PageHeader focusOnMount title="Administration" /><p>Open this on a larger screen to use it. <NavLink to="/app">Go to Home</NavLink></p></section>;
- return <div className="rv-admin" aria-busy={identity.isFetching}><p className="rv-admin-context">Company settings · <VisibleText text={identity.data.org.name} /></p><div className="rv-admin-content"><AdminNav role={role!} secondReviewOff={secondReviewOff} companyAdmin={companyAdmin} compact={false} /><div className="rv-admin-surface"><Outlet context={{ orgId: identity.data.org.orgId, company: identity.data.org.name, developerId: identity.data.developer.id, role, checking: identity.isFetching } satisfies AdminContext} /></div></div></div>;
+ return <div className="rv-admin" aria-busy={identity.isFetching}><p className="rv-admin-context">Company settings · <VisibleText text={identity.data.org.name} /></p><div className="rv-admin-content"><AdminNav role={role!} secondReviewOff={secondReviewOff} companyAdmin={companyAdmin} compact={!largeScreen} /><div className="rv-admin-surface"><Outlet context={{ orgId: identity.data.org.orgId, company: identity.data.org.name, developerId: identity.data.developer.id, role, checking: identity.isFetching } satisfies AdminContext} /></div></div></div>;
 }

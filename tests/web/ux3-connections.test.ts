@@ -97,7 +97,7 @@ it("opens Linear setup in place, adds with plain fields, then checks it, and nev
   fireEvent.change(key, { target: { value: secret } });
   fireEvent.click(screen.getByRole("button", { name: "Add and check it works" }));
   expect(await screen.findByText(/It didn't work:/)).toBeTruthy();
-  expect(screen.getByText(/Linear refused the saved secret \(HTTP 401\)/)).toBeTruthy();
+  expect(screen.getAllByText(/Linear refused the saved secret \(HTTP 401\)/).length).toBeGreaterThan(0);
   const post = f.request.mock.calls.map(([r]) => r).find(r => r.method === "POST" && r.path === "/v1/app/connections")!;
   expect(post.body).toMatchObject({ connection: { type: "linear", access: "read", identity: "service" }, secret: { apiKey: secret } });
   await waitFor(() => expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe(""));
@@ -140,15 +140,16 @@ it("opens GitHub and AI provider setup in place from a deep link, and old places
  } finally { f.close(); }
  const models = mount({ path: "/app/admin/models/sources" });
  try {
-  const link = await screen.findByRole("link", { name: "Connections" });
-  expect(link.getAttribute("href")).toBe("/app/admin/connections?open=ai-provider");
+  await screen.findByRole("heading", { name: "AI models" });
+  const link = (await screen.findAllByRole("link", { name: "Connections" })).find(node => node.getAttribute("href")?.includes("open=ai-provider"));
+  expect(link?.getAttribute("href")).toBe("/app/admin/connections?open=ai-provider");
   expect(screen.queryByRole("heading", { name: "Add a provider" })).toBeNull();
  } finally { models.close(); }
 });
 it("says a Slack workspace is not connected, and who connects it, when none is stored", async () => {
  const f = mount({ respond: async r => r.path === "/v1/app/org/slack-workspace-evidence" ? { status: 200, body: { orgId: ORG, checkedAt: "2026-10-27T23:00:00Z", kind: "stored_workspace_associations", associationCount: 0, unavailableCount: 0, coverage: "complete", verification: "unverified" } } : undefined });
  try {
-  await waitFor(() => expect(within(card("slack")).getByText("Not connected")).toBeTruthy());
-  expect(within(card("slack")).getByText(/Ask your Rovara operator/)).toBeTruthy();
+  await waitFor(() => expect(within(card("slack")).getByText(/Ask your Rovara operator/)).toBeTruthy());
+  expect(within(card("slack")).getByText("Not connected")).toBeTruthy();
  } finally { f.close(); }
 });

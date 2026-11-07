@@ -9,7 +9,7 @@ test.beforeEach(async ({ context, request, baseURL }) => {
  await context.addCookies([{ name: "__Host-agentx_review_session", value: FIXTURE_SESSION, url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
 });
 test("opens the real member read from administration and preserves keyboard focus", async ({ page, request }) => {
- await page.goto("/app/admin");await expect(page.getByRole("heading", { name: "Administration", exact: true })).toBeFocused();
+ await page.goto("/app/admin");await expect(page.getByRole("heading", { name: "Company settings", exact: true })).toBeFocused();
  await page.getByRole("link", { name: "Review company members" }).focus();await page.keyboard.press("Enter");await expect(page.getByRole("heading", { name: "People", exact: true })).toBeFocused();await expect(page.getByRole("cell", { name: "Maya", exact: true })).toBeVisible();
  await expect(page.getByText("Other company person")).toHaveCount(0);
  await page.getByRole("searchbox", { name: "Find in this member list" }).fill("does not exist");await expect(page.getByText("No matching members in this list.")).toBeVisible();await page.getByRole("searchbox").fill("Maya");
@@ -19,17 +19,17 @@ test("opens the real member read from administration and preserves keyboard focu
  expect(reads.filter(r => r.path.startsWith("/v1/web/")).every(r => r.method === "GET")).toBe(true);
 });
 for (const theme of ["light", "dark"] as const) test(`checks all three pages in ${theme}`, async ({ page }) => {
- for (const [path, heading] of [["/app/admin", "Administration"], ["/app/admin/people", "People"], ["/app/admin/people/roles", "Roles"]]) {
+ for (const [path, heading] of [["/app/admin", "Company settings"], ["/app/admin/people", "People"], ["/app/admin/people/roles", "Roles"]]) {
   await page.goto(path!);await expect(page.getByRole("heading", { name: heading!, exact: true })).toBeVisible();if (heading === "People") await expect(page.getByText("Maya", { exact: true })).toBeVisible();await checkA11y(page, { theme });
  }
 });
 test("refuses a member deep link after a live role change", async ({ page, request }) => {
  await page.goto("/app/admin/people");await expect(page.getByText("Maya", { exact: true })).toBeVisible();await request.post("/__mock/admin-role");await page.reload();await expect(page.getByRole("heading", { name: "Administration unavailable" })).toBeVisible();await expect(page.getByText("Maya", { exact: true })).toHaveCount(0);await expect(page.getByRole("link", { name: "Admin", exact: true })).toHaveCount(0);
 });
-test("shows the large-screen boundary on phones and at 200 percent zoom equivalent", async ({ page }) => {
+test("works on phones and at 200 percent zoom equivalent: people become a list, nothing scrolls sideways", async ({ page }) => {
  await page.emulateMedia({ reducedMotion: "reduce" });
- for (const width of [390, 640, 1023]) { await page.setViewportSize({ width, height: 844 });await page.goto("/app/admin/people");await expect(page.getByText("Open this on a larger screen to use it.", { exact: false })).toBeVisible();await expect(page.getByRole("heading", { name: "Administration" , exact: true })).toBeVisible();await expect(page.getByRole("table")).toHaveCount(0);const reads = await (await page.request.get("/__mock/requests")).json() as Array<{ path: string }>;expect(reads.some(r => r.path === "/v1/web/org/members")).toBe(false);expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); }
- await page.setViewportSize({ width: 1440, height: 1000 });await page.goto("/app/admin/people");await expect(page.getByRole("table")).toBeVisible();await evidenceShot(page, { path: ".superpowers/sdd/codex/m1-people.png" });
+ for (const width of [390, 640, 1023]) { await page.setViewportSize({ width, height: 844 });await page.goto("/app/admin/people");await expect(page.getByRole("heading", { name: "People", exact: true })).toBeVisible();await expect(page.getByRole("button", { name: "Settings menu" })).toBeVisible();await expect(page.getByRole("cell", { name: "Maya", exact: true })).toBeVisible();expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); }
+ await page.setViewportSize({ width: 1440, height: 1000 });await page.goto("/app/admin/people");await expect(page.getByRole("table")).toBeVisible();await expect(page.getByRole("button", { name: "Settings menu" })).toHaveCount(0);await evidenceShot(page, { path: ".superpowers/sdd/codex/m1-people.png" });
 });
 
 test("wraps a long member name without overflowing the directory", async ({ page, request }) => { await request.post("/__mock/admin-long-name");await page.goto("/app/admin/people");const cell = page.getByRole("cell", { name: "Long display name ".repeat(30).trim(), exact: true });await expect(cell).toBeVisible();expect(await cell.evaluate(node => getComputedStyle(node).overflowWrap)).toBe("anywhere");expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);await checkA11y(page, { theme: "light" }); });
