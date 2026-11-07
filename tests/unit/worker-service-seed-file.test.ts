@@ -79,24 +79,24 @@ describe("loading it with the database's own client", () => {
     const docker = fakeDocker();
     const bytes = Buffer.from("insert into users values (1);");
     await loadSeedFile(docker, target, bytes, new AbortController().signal, { role: ROLE, timeoutMs: 60_000 });
-    const [make, load, drop] = docker.calls;
-    expect(statementsOf(make!)).toEqual(seedRoleStatements({ role: ROLE, database: "app" }, 60_000));
+    const [make, grants, load, drop] = docker.calls;
+    expect([...statementsOf(make!), ...statementsOf(grants!)]).toEqual(seedRoleStatements({ role: ROLE, database: "app" }, 60_000));
     expect(statementsOf(make!)[0]).toBe(`CREATE ROLE "${ROLE}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
     // Only data rights and CREATE in schema public: no pg_execute_server_program, no pg_read_server_files, no CREATE on the database (so no CREATE EXTENSION).
-    expect(statementsOf(make!).join(" ")).not.toMatch(/pg_execute_server_program|pg_read_server_files|(?<!NO)SUPERUSER|ON DATABASE/u);
+    expect([...statementsOf(make!), ...statementsOf(grants!)].join(" ")).not.toMatch(/pg_execute_server_program|pg_read_server_files|(?<!NO)SUPERUSER|ON DATABASE/u);
     expect(load).toEqual(["load", "exec", "-i", "rovara-svc-run1-postgres", "timeout", "-s", "KILL", "60", "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-U", ROLE, "-d", "app", "-f", "-"]);
     expect(load!.some((arg) => /^-h$|^--host|^-p$|^--port|PGPASSWORD|password/iu.test(arg))).toBe(false);
     expect((docker.execBytes.mock.calls[0]![1]).stdin).toBe(bytes);
     expect(statementsOf(drop!)).toEqual([`REASSIGN OWNED BY "${ROLE}" TO "rovara"`, `DROP OWNED BY "${ROLE}"`, `DROP ROLE "${ROLE}"`]);
-    expect(docker.calls).toHaveLength(3);
+    expect(docker.calls).toHaveLength(4);
   });
   it("M2: a timeout kills psql inside the container (timeout -s KILL, exit 137), terminates the role's backends, and still drops the role", async () => {
     for (const load of [{ exitCode: 137 }, { exitCode: null, timedOut: true }]) {
       const docker = fakeDocker(load);
       expect(await reasonOf(loadSeedFile(docker, target, Buffer.from("select pg_sleep(9999);"), new AbortController().signal, { role: ROLE, timeoutMs: 5_000 }))).toBe("timeout");
-      expect(docker.calls[1]!.slice(4, 8)).toEqual(["timeout", "-s", "KILL", "5"]);
-      expect(statementsOf(docker.calls[2]!)).toEqual([`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '${ROLE}'`]);
-      expect(statementsOf(docker.calls[3]!)[2]).toBe(`DROP ROLE "${ROLE}"`);
+      expect(docker.calls[2]!.slice(4, 8)).toEqual(["timeout", "-s", "KILL", "5"]);
+      expect(statementsOf(docker.calls[3]!)).toEqual([`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '${ROLE}'`]);
+      expect(statementsOf(docker.calls[4]!)[2]).toBe(`DROP ROLE "${ROLE}"`);
     }
     // The role's own statement limit is set too, so the server stops a statement even if the kill were lost.
     expect(seedRoleStatements({ role: ROLE, database: "app" }, 5_000)).toContain(`ALTER ROLE "${ROLE}" SET statement_timeout = 5000`);
@@ -109,6 +109,19 @@ describe("loading it with the database's own client", () => {
     expect(await reasonOf(loadSeedFile(noRole as never, target, Buffer.from("select 1"), new AbortController().signal, { role: ROLE }))).toBe("load_failed");
     expect(noRole.execBytes).not.toHaveBeenCalled();
     expect(await reasonOf(loadSeedFile({ run: noRole.run }, target, Buffer.from("select 1"), new AbortController().signal, { role: ROLE }))).toBe("unsupported");
+  });
+  it("a grant that fails after the role is made still drops the role, and a statement the role may not run is its own reason", async () => {
+    const calls: string[][] = [];
+    let call = 0;
+    const docker = {
+      run: vi.fn(async (args: readonly string[]) => { calls.push([...args]); call += 1; return { exitCode: call === 2 ? 1 : 0, stdout: "", stderr: "" }; }),
+      execBytes: vi.fn(async () => ({ exitCode: 0, stdout: Buffer.alloc(0), stderr: "" })),
+    };
+    expect(await reasonOf(loadSeedFile(docker, target, Buffer.from("select 1"), new AbortController().signal, { role: ROLE }))).toBe("load_failed");
+    expect(docker.execBytes).not.toHaveBeenCalled();
+    expect(statementsOf(calls.at(-1)!).at(-1)).toBe(`DROP ROLE "${ROLE}"`);
+    const denied = { run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" })), execBytes: vi.fn(async () => ({ exitCode: 3, stdout: Buffer.alloc(0), stderr: "ERROR:  permission denied for function pg_read_file" })) };
+    expect(await reasonOf(loadSeedFile(denied, target, Buffer.from("select pg_read_file('/etc/passwd');"), new AbortController().signal, { role: ROLE }))).toBe("not_allowed");
   });
   it("I2: a file with a psql meta-command (any backslash) or PROGRAM is refused before anything runs", async () => {
     for (const text of ["\\! sh -c 'id'", "select 1;\n\\c host=other", "insert into t values ('a'); \\copy t from '/etc/passwd'", "COPY t FROM PROGRAM 'id';", "copy t from program 'id'"]) {
@@ -171,6 +184,16 @@ describe("the run's seed port", () => {
     expect((changed as SeedError).reason).toBe("seed_changed");
     expect((changed as Error).message).toContain("approve it again");
     expect(docker.execBytes).toHaveBeenCalledTimes(1);
+  });
+  it("each refusal reason is its own seed failure, with its own words", async () => {
+    const failWith = (reason: string) => ({ runCommand: commandPort, applyFixture: () => Promise.reject(Object.assign(new Error("x"), { reason })) });
+    const outcome = async (reason: string) => (await runSeeds("postgres", [{ fixturePath: "repo/db/seeds/users.sql" }], failWith(reason), new AbortController().signal).catch((error: unknown) => error)) as SeedError;
+    expect((await outcome("meta_command")).reason).toBe("seed_meta_command");
+    expect((await outcome("meta_command")).message).toContain("plain SQL only");
+    expect((await outcome("program")).reason).toBe("seed_program");
+    expect((await outcome("not_allowed")).message).toContain("no superuser rights");
+    expect((await outcome("changed")).reason).toBe("seed_changed");
+    expect((await outcome("load_failed")).reason).toBe("seed_failed");
   });
   it("refuses a dependency this phase has no helper for", async () => {
     const apply = seedFileApplier({ docker: okDocker(), rootPath: root, repositoryPaths: [repo()], items: [item], helpers: [] });

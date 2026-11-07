@@ -60,6 +60,12 @@ describe("SQL seed files", () => {
   it("leaves out migrations, tests' own fixtures, other files and words that only contain seed", () => {
     expect(seedFilesOf(["migrations/seed.sql", "tests/seed.sql", "seeds/users.js", "schema.sql", "seedling.sql", "node_modules/x/seed.sql"])).toEqual([]);
   });
+  it("does not offer a pg_dump-style COPY ... FROM stdin file (or one with a psql command), and says why", async () => {
+    const { SEED_FILE_DUMP_NOTE } = await import("../../packages/worker/src/env-detect/seed-files.js");
+    const detection = await detect({ "package.json": pkg({}), "db/seeds/dump.sql": "COPY public.users (id) FROM stdin;\n1\n\\.\n", "db/seeds/plain.sql": "insert into users values (1);" });
+    expect(detection.seedFiles?.map((item) => item.value)).toEqual(["db/seeds/plain.sql"]);
+    expect(detection.notes).toContain(SEED_FILE_DUMP_NOTE);
+  });
   it("reports them on the detection, cited at the file", async () => {
     const detection = await detect({ "package.json": pkg({}), "db/seeds/users.sql": "insert into users values (1);" });
     expect(detection.seedFiles).toEqual([{ value: "db/seeds/users.sql", source: { path: "db/seeds/users.sql", line: 1 } }]);

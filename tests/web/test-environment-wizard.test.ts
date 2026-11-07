@@ -218,6 +218,11 @@ it("runs the proposal's own check, shows it running and shows how a failed one f
   expect(changedAlert.textContent).toContain("The test data file changed since the test environment was approved");
   expect(changedAlert.textContent).toContain("approve the test environment again");
   changed.close();
+  // Review: each file seed refusal has its own cause and fix.
+  const meta = setup({ read: { status: 200, body: state({ proposal: { ...PROPOSAL, check: { status: "failed", failedStep: "setup: A test service's seed file holds a psql command (a backslash, as in \\copy, \\! or a pg_dump COPY FROM stdin block); a seed file is plain SQL only" } } }) } });
+  const metaAlert = await within(await section()).findByRole("alert");
+  expect(metaAlert.textContent).toContain("pg_dump --inserts");
+  meta.close();
 });
 
 it("S2: when an approved command is not in the settings, offers the check of the approved environment first, then writes exactly the approved commands, and loads the saved settings", async () => {

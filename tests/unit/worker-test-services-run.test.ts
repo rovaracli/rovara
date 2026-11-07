@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, type ProjectCommand, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/contracts";
 import { SEALED_DNS_READY_TIMEOUT_MS, withDetachedWorking } from "../../packages/worker/src/check-sandbox.js";
@@ -135,6 +136,8 @@ const nothingLeft = async (h: Awaited<ReturnType<typeof harness>>): Promise<void
   expect(h.fake.left().containers.filter((name) => name.startsWith("rovara-svc-"))).toEqual([]);
   expect(await readdir(h.runParent)).toEqual([]);
 };
+/** The seed-file loads (psql given the file on stdin), apart from any other byte-exact exec of the sandbox. */
+const loads = (h: Awaited<ReturnType<typeof harness>>) => h.fake.byteExecs.filter((exec) => exec.args.includes("psql"));
 const indexOf = (calls: string[][], predicate: (call: string[]) => boolean, from = 0): number => calls.findIndex((call, index) => index >= from && predicate(call));
 
 describe("starting the run", () => {
@@ -219,9 +222,47 @@ describe("starting the run", () => {
     await nothingLeft(h);
   });
 
-  it("fixes the seed of a fixture file as not available yet: the seed fails closed and the run is removed", async () => {
+  it("a seed file that is not in the repository fails the seed closed, and the run is removed", async () => {
     const h = await harness();
     await expect(h.start([dependency({ seeds: [{ fixturePath: "db/seed.sql" }] })])).rejects.toMatchObject({ reason: "seed_failed", failures: new Map([["postgres", "seed_failed"]]) });
+    await nothingLeft(h);
+  });
+
+  it("TS-UX-1 item 9: a seed FILE loads into the working phase's helper and into each sealed round's own, as a fresh role over psql's socket, and the run reports what it loaded", async () => {
+    const h = await harness({ docker: { byteExec: true } });
+    await mkdir(join(h.root, "app", "db", "seeds"), { recursive: true });
+    await writeFile(join(h.root, "app", "db", "seeds", "users.sql"), "INSERT INTO users VALUES (1);\n");
+    const run = await h.start([dependency({ seeds: [{ command: MIGRATE }, { fixturePath: "app/db/seeds/users.sql" }] })]);
+    // The working phase: one load, into the working helper (the review's TDZ blocker would have failed it as seed_failed here).
+    expect(loads(h)).toHaveLength(1);
+    const [first] = loads(h);
+    expect(first!.stdin).toBe("INSERT INTO users VALUES (1);\n");
+    expect(first!.args.slice(0, 2)).toEqual(["exec", "-i"]);
+    expect(first!.args).toContain("psql");
+    expect(first!.args[first!.args.indexOf("-U") + 1]).toMatch(/^rovara_seed_[a-f0-9]{12}$/u);
+    const roleCalls = (fragment: string) => h.fake.execs.filter((exec) => exec.args.some((arg) => arg.includes(fragment)));
+    expect(roleCalls("CREATE ROLE")).toHaveLength(1);
+    expect(roleCalls("DROP ROLE")).toHaveLength(1);
+    // A sealed round seeds its own brand-new helper the same way.
+    await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    expect(loads(h)).toHaveLength(2);
+    expect(loads(h)[1]!.args[2]).not.toBe(first!.args[2]);
+    expect(loads(h)[1]!.stdin).toBe("INSERT INTO users VALUES (1);\n");
+    expect(roleCalls("DROP ROLE")).toHaveLength(2);
+    const record = await run.usageRecord();
+    expect(record?.seedFiles).toEqual([{ id: "postgres", path: "app/db/seeds/users.sql", sha256: createHash("sha256").update("INSERT INTO users VALUES (1);\n").digest("hex") }]);
+    await run.dispose();
+    await nothingLeft(h);
+  });
+
+  it("a seed file with a psql command is refused with its own message, before anything loads", async () => {
+    const h = await harness({ docker: { byteExec: true } });
+    await mkdir(join(h.root, "app", "db"), { recursive: true });
+    await writeFile(join(h.root, "app", "db", "seed.sql"), "COPY users FROM stdin;\n1\n\\.\n");
+    const refused = (await h.start([dependency({ seeds: [{ fixturePath: "app/db/seed.sql" }] })]).catch((error: unknown) => error)) as { reason?: string; message?: string };
+    expect(refused.reason).toBe("seed_meta_command");
+    expect(refused.message).toContain("plain SQL only");
+    expect(loads(h)).toEqual([]);
     await nothingLeft(h);
   });
 

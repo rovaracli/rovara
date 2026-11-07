@@ -17,6 +17,10 @@ export interface FakeServicesDockerOptions {
   execExit?: (args: readonly string[]) => number;
   /** Slice 3: what a `docker exec` prints (a fake server's ledger summary). Default: nothing. */
   execStdout?: (args: readonly string[]) => string | undefined;
+  /** TS-UX-1 item 9: answer byte-exact `docker exec -i` calls (a seed file's load). Off by default: the sandbox then runs commands as before, so the golden call lists stay as they were. */
+  byteExec?: boolean;
+  /** The exit code of a byte-exact exec, default 0. */
+  execBytesExit?: (args: readonly string[]) => number;
   /** Slice 3: the state `docker inspect --format {{.State.Status}}` answers for a container (default `running`). */
   stateOf?: (container: string) => string;
 }
@@ -36,6 +40,8 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
   const pulls: string[] = [];
   /** The read-only file mounts of each `docker run`, with the file's content AT THE TIME of the run (the run's files are removed later). */
   const mounts: Array<{ container: string; to: string; content: string | undefined }> = [];
+  /** Every byte-exact exec (a seed file's load), with what it was given on stdin. */
+  const byteExecs: Array<{ args: string[]; stdin: string }> = [];
   const answer = (exitCode = 0, stdout = "", stderr = ""): Promise<{ exitCode: number; stdout: string; stderr: string }> => Promise.resolve({ exitCode, stdout, stderr });
   const docker: DockerCli = {
     run(args) {
@@ -108,7 +114,14 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
       return answer();
     },
   };
+  if (options.byteExec === true) {
+    docker.execBytes = (args, execOptions) => {
+      calls.push([...args]);
+      byteExecs.push({ args: [...args], stdin: execOptions.stdin?.toString("utf8") ?? "" });
+      return Promise.resolve({ exitCode: options.execBytesExit?.(args) ?? 0, stdout: Buffer.alloc(0), stderr: "" });
+    };
+  }
   /** Every container and service network still there, by name (the working sandbox included). */
   const left = (): { containers: string[]; networks: string[] } => ({ containers: [...containers.keys()], networks: [...networks] });
-  return { docker, calls, containers, networks, removedNetworks, execs, pulls, mounts, left, verbs: (verb: string) => calls.filter((call) => call[0] === verb) };
+  return { docker, calls, containers, networks, removedNetworks, execs, byteExecs, pulls, mounts, left, verbs: (verb: string) => calls.filter((call) => call[0] === verb) };
 }

@@ -34,7 +34,7 @@ const CONTROL_TIMEOUT_MS = 30_000;
 /** The families whose own client loads a file, and the extension each takes. */
 const FILE_SEED_FAMILIES: Readonly<Record<string, string>> = { postgres: ".sql" };
 
-export type SeedFileFailure = "outside" | "not_a_file" | "too_large" | "unsupported" | "meta_command" | "program" | "changed" | "load_failed" | "timeout";
+export type SeedFileFailure = "outside" | "not_a_file" | "too_large" | "unsupported" | "meta_command" | "program" | "not_allowed" | "changed" | "load_failed" | "timeout";
 export class SeedFileError extends Error {
   constructor(readonly reason: SeedFileFailure) {
     super(reason === "changed" ? "A test service's seed file changed since the test environment was approved" : "A test service's seed file did not load");
@@ -153,20 +153,31 @@ export async function loadSeedFile(docker: Pick<DockerCli, "execBytes" | "run">,
   if (problem !== undefined) throw new SeedFileError(problem);
   const timeoutMs = options.timeoutMs ?? SEED_FILE_TIMEOUT_MS;
   const names = namesOf(target, options.role ?? seedRoleName());
-  if (docker.execBytes === undefined) throw new SeedFileError("unsupported");
+  const execBytes = docker.execBytes;
+  if (execBytes === undefined) throw new SeedFileError("unsupported");
   const control = async (statements: readonly string[]): Promise<boolean> => {
     const result = await docker.run(controlArgs(target.container, names.owner, names.database, statements), { timeoutMs: CONTROL_TIMEOUT_MS }).catch(() => undefined);
     return result !== undefined && result.exitCode === 0;
   };
-  if (!await control(seedRoleStatements(names, timeoutMs))) throw new SeedFileError("load_failed");
+  const roleStatements = seedRoleStatements(names, timeoutMs);
+  if (!await control(roleStatements.slice(0, 1))) throw new SeedFileError("load_failed");
+  const grants = roleStatements.slice(1);
+  /** The load itself, as this load's role; the failure it came to, or undefined. */
+  const runLoad = async (): Promise<SeedFileError | undefined> => {
+    const result = await execBytes.call(docker, seedFileLoadArgs(target, names.role, timeoutMs), { stdin: bytes, signal, timeoutMs: timeoutMs + 10_000, maxStdoutBytes: 64 * 1_024 }).catch(() => undefined);
+    if (result === undefined) return new SeedFileError("load_failed");
+    // `timeout -s KILL` ends psql with 137; the local client's own limit is a backstop.
+    if (result.timedOut === true || result.exitCode === 137) return new SeedFileError("timeout");
+    if (result.aborted === true || signal.aborted) return new SeedFileError("load_failed");
+    // A statement the seed role may not run (a superuser-only function, a file read): said as its own reason. Only this fixed match of psql's own error is read, never shown.
+    if (result.exitCode !== 0) return new SeedFileError(/permission denied|must be superuser|must be owner|insufficient privilege/iu.test(result.stderr) ? "not_allowed" : "load_failed");
+    return undefined;
+  };
   let failure: SeedFileError | undefined;
   try {
-    const result = await docker.execBytes(seedFileLoadArgs(target, names.role, timeoutMs), { stdin: bytes, signal, timeoutMs: timeoutMs + 10_000, maxStdoutBytes: 64 * 1_024 }).catch(() => undefined);
-    if (result === undefined) failure = new SeedFileError("load_failed");
-    // `timeout -s KILL` ends psql with 137; the local client's own limit is a backstop.
-    else if (result.timedOut === true || result.exitCode === 137) failure = new SeedFileError("timeout");
-    else if (result.aborted === true || signal.aborted) failure = new SeedFileError("load_failed");
-    else if (result.exitCode !== 0) failure = new SeedFileError("load_failed");
+    // The role exists from here: whatever fails next (a grant included), it is dropped in the finally below.
+    if (!await control(grants)) failure = new SeedFileError("load_failed");
+    else failure = await runLoad();
   } finally {
     // Nothing of the load keeps running after Rovara gave up on it.
     if (failure !== undefined || signal.aborted) await control([`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '${names.role}'`]);

@@ -94,7 +94,7 @@ const MODES_WITH_SERVICES: ReadonlySet<string | undefined> = new Set([undefined,
 // ---- errors
 
 export type TestServicesFailureReason =
-  | "not_configured" | "unsupported" | "nightly" | "init_file" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "seed_changed" | "setup_failed" | "fixtures";
+  | "not_configured" | "unsupported" | "nightly" | "init_file" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "seed_changed" | "seed_meta_command" | "seed_program" | "seed_not_allowed" | "setup_failed" | "fixtures";
 
 /** The one sentence for an image the worker cannot use: it is not one of the digests pinned INSIDE this worker image, or it was not pre-pulled onto this worker at boot. The worker never pulls. */
 export const PULL_FAILED_SENTENCE = "Dependency image not available on this worker";
@@ -112,6 +112,9 @@ const SENTENCES: Record<TestServicesFailureReason, string> = {
   not_healthy: "A test service did not become healthy",
   seed_failed: "A test service's seeds did not complete",
   seed_changed: "A test service's seed file changed since the test environment was approved; check it works and approve it again",
+  seed_meta_command: "A test service's seed file holds a psql command (a backslash, as in \\copy, \\! or a pg_dump COPY FROM stdin block); a seed file is plain SQL only",
+  seed_program: "A test service's seed file uses COPY ... PROGRAM, which a seed file may not run",
+  seed_not_allowed: "A test service's seed file runs a statement the seed role may not run: it has no superuser rights (no file reads, server programs or extensions)",
   setup_failed: "The sealed check round's name server could not be set up",
   fixtures: "The approved answers a test service needs could not be fetched",
 };
@@ -867,6 +870,12 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     return torndown;
   };
 
+  /** Review I3: the seed files this run loaded, with the sha256 of what it loaded (the approval of a candidate check binds them). Declared before the working phase, whose seeds note into it. */
+  const loadedSeedFiles: Array<{ id: string; path: string; sha256: string }> = [];
+  function noteSeedFile(entry: { id: string; path: string; sha256: string }): void {
+    if (loadedSeedFiles.length < 16 && !loadedSeedFiles.some((seen) => seen.id === entry.id && seen.path === entry.path && seen.sha256 === entry.sha256)) loadedSeedFiles.push(entry);
+  }
+
   // ---- the working phase
 
   try {
@@ -902,7 +911,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
           await seedRun(countResets(workSession).session, [dependencyOf(item, workSession, files, runId)], workingSeeds, seedSignal);
         } catch (error) {
           for (const id of item.emulator?.ids ?? [item.plan.id]) failures.set(id, "seed_failed");
-          throw new TestServicesError(error instanceof SeedError && error.reason === "seed_changed" ? "seed_changed" : "seed_failed", failures);
+          throw new TestServicesError(seedStartFailureOf(error), failures);
         }
       }
     }
@@ -1009,13 +1018,13 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
           await seedRun(state.counted, state.resetDeps.filter((dependency) => dependency.id === item.plan.id), roundSeeds, seedSignal);
         } catch (error) {
           for (const id of item.emulator?.ids ?? [item.plan.id]) failures.set(id, "seed_failed");
-          throw new TestServicesError(error instanceof SeedError && error.reason === "seed_changed" ? "seed_changed" : "seed_failed", failures);
+          throw new TestServicesError(seedStartFailureOf(error), failures);
         }
       }
       return state;
     } catch (error) {
       const failure = failureOf(error);
-      if (failure.reason !== "seed_failed" && failure.reason !== "seed_changed") for (const id of ids) failures.set(id, failure.failures.get(id) ?? (failure.reason === "not_healthy" ? "not_healthy" : "start_failed"));
+      if (!SEED_START_FAILURES.has(failure.reason)) for (const id of ids) failures.set(id, failure.failures.get(id) ?? (failure.reason === "not_healthy" ? "not_healthy" : "start_failed"));
       if (round === undefined || round.session !== session) {
         // Not yet recorded as the open round: this attempt's own parts are removed here.
         await step("sealed-round", async () => { await closeSealed?.(); });
@@ -1035,11 +1044,6 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     return runners;
   };
 
-  /** Review I3: the seed files this run loaded, with the sha256 of what it loaded (the approval of a candidate check binds them). */
-  const loadedSeedFiles: Array<{ id: string; path: string; sha256: string }> = [];
-  function noteSeedFile(entry: { id: string; path: string; sha256: string }): void {
-    if (loadedSeedFiles.length < 16 && !loadedSeedFiles.some((seen) => seen.id === entry.id && seen.path === entry.path && seen.sha256 === entry.sha256)) loadedSeedFiles.push(entry);
-  }
   const usageRecord = async (): Promise<TestServicesUsageRecord | undefined> => {
     const record = await baseUsageRecord();
     if (record === undefined || loadedSeedFiles.length === 0) return record;
@@ -1110,6 +1114,14 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
 
 function materializeAll(bases: readonly Base[], phase: "working" | "check", fixtures: ReadonlyMap<string, string>): Resolved[] {
   return bases.map((base) => materialize(base, phase, fixtures));
+}
+
+/** The start failures that are a seed's (the dependency started; its seeds did not complete), each with its own message. */
+const SEED_START_FAILURES: ReadonlySet<string> = new Set(["seed_failed", "seed_changed", "seed_meta_command", "seed_program", "seed_not_allowed"]);
+/** The start failure a seed error is told as: a file seed's own reason, or the generic one. */
+function seedStartFailureOf(error: unknown): "seed_failed" | "seed_changed" | "seed_meta_command" | "seed_program" | "seed_not_allowed" {
+  const reason = error instanceof SeedError ? error.reason : undefined;
+  return reason === "seed_changed" || reason === "seed_meta_command" || reason === "seed_program" || reason === "seed_not_allowed" ? reason : "seed_failed";
 }
 
 /** The seeds' ports: a command runs where the caller says; a seed FILE is loaded by `applyFixture` (TS-UX-1 item 9, `service-seed-file.ts`), which the caller binds to the phase's own helpers. */
