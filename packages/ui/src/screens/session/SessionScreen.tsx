@@ -9,6 +9,7 @@ import { PRESENCE_HEARTBEAT_SECONDS } from "../../constants.js";
 import { createRealtimeClient } from "../../realtime/client.js";
 import { createNoticeInvalidator } from "../../realtime/invalidate.js";
 import { NotFound } from "../../shell/NotFound.js";
+import { Unavailable } from "../../shell/Unavailable.js";
 import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";
 import { Skeleton } from "../../design/Skeleton.js";
@@ -55,6 +56,8 @@ export function SessionScreen() {
  if (read.error instanceof ApiError && read.error.status === 404) return <NotFound />;
  if (session === undefined) return <section><h1 tabIndex={-1}>Session unavailable</h1><p role="alert"><VisibleText text={read.error instanceof ApiError ? read.error.message : "Couldn't load this session. Try again."} /></p><Button onClick={() => { void read.refetch(); }}>Try again</Button></section>;
  const agent = session.agent?.name ?? "The agent", nav = query.getQueryData<ReadAppNav>(["nav"]), orgName = nav?.org.name ?? "your company";
+ // Chains are hidden (the `chains` feature is off in every install): an old link to a chain run says so instead of showing its steps.
+ if (session.body.kind === "chain" && nav?.features.chains !== true) return <Unavailable />;
  return <section ref={root} className="rv-session"><SessionHeader session={session} onAction={() => undefined} controls={<SessionControls key={id} id={id} agent={agent} actions={session.you.actions} following={session.you.following} makeAgent responsive ask={session.you.live?.ask === true} share={{ orgName }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />} /><MoneyBanners session={session} />{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}
  <div className="rv-session-work"><div className="rv-session-work-heading"><h2>Work</h2><Dialog title={selected === undefined ? "Conversation" : selected.target === "change_file" ? "Discussion of this file" : selected.target === "step" ? "Discussion of this step" : "Discussion of this plan paragraph"} className="rv-conversation-tray" open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { const source = sourceControl.current;if (source?.isConnected) { event.preventDefault();source.focus(); }sourceControl.current = undefined; }} trigger={<Button onClick={() => { setSelection(undefined);sourceControl.current = undefined; }}>Conversation</Button>}>
  {selected && <Button variant="quiet" onClick={() => setSelection(undefined)}>All conversation</Button>}

@@ -74,6 +74,25 @@ describe("AgentX executable command surface", () => {
   });
 });
 
+describe("hidden chains and triggers (owner decision 2026-11-07)", () => {
+  it("leaves chains and every triggers group out of help, and keeps the commands so nothing existing breaks", () => {
+    const program = createCliProgram();
+    const help = program.helpInformation();
+    expect(help).toContain("agents");
+    expect(help).not.toMatch(/^\s+chains\b/mu);
+    const chains = program.commands.find((command) => command.name() === "chains");
+    const agents = program.commands.find((command) => command.name() === "agents");
+    expect(chains).toBeDefined();
+    expect(agents?.helpInformation()).not.toMatch(/^\s+triggers\b/mu);
+    expect(chains?.commands.some((command) => command.name() === "triggers")).toBe(true);
+    expect(agents?.commands.some((command) => command.name() === "triggers")).toBe(true);
+    for (const group of [chains, chains?.commands.find((command) => command.name() === "triggers"), agents?.commands.find((command) => command.name() === "triggers")]) expect((group as unknown as { _hidden: boolean })._hidden).toBe(true);
+    // Positive control: a command that stays offered is in help.
+    expect(help).toMatch(/^\s+sessions\b/mu);
+    expect(agents?.helpInformation()).toMatch(/^\s+list\b/mu);
+  });
+});
+
 function subcommands(
   admin: ReturnType<typeof createCliProgram> | undefined,
   group: string,

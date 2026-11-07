@@ -3,6 +3,7 @@ import { type RouteObject } from "react-router";
 import { type AppNav } from "@agentx/contracts/web";
 import { AppShell } from "./shell/AppShell.js";
 import { NotFound } from "./shell/NotFound.js";
+import { Unavailable } from "./shell/Unavailable.js";
 import { RouteError } from "./shell/ErrorBoundary.js";
 function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>{title}</h1></section>; }
 export function appRoutes(features: AppNav["features"]): RouteObject[] {
@@ -32,7 +33,8 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  { path: "second-review", lazy: async () => ({ Component: (await import("./screens/admin/second-review/SecondReviewScreen.js")).SecondReviewScreen }) },
  // Lane C2: read-only company audit.
  { path: "audit", lazy: async () => ({ Component: (await import("./screens/admin/audit/AuditScreen.js")).AuditScreen }) }, { path: "*", element: <NotFound /> }] });
- if (features.chains) children.push({ path: "chains/*", element: <Page title="Chains" /> });
+ // Chains and triggers are hidden: an old link shows "This isn't available" with a link home, not an error. Their code and data stay.
+ children.push({ path: "chains/*", element: <Unavailable /> }, { path: "triggers/*", element: <Unavailable /> });
  if (features.describe) children.push({ path: "describe", element: <Page title="Describe an agent" /> });
  children.push({ path: "*", element: <NotFound /> });
  return [{ path: "/s/:id", element: <AppShell />, errorElement: <RouteError />, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) }] }, { path: "/app/signup", lazy: async () => ({ Component: (await import("./screens/onboarding/SignupScreen.js")).SignupScreen }), errorElement: <RouteError /> }, { path: "/app/welcome", lazy: async () => ({ Component: (await import("./screens/onboarding/WelcomeScreen.js")).WelcomeScreen }), errorElement: <RouteError /> }, { path: "/app/signed-out", lazy: async () => ({ Component: (await import("./screens/signed-out/SignedOutScreen.js")).SignedOutRoute }), errorElement: <RouteError /> }, { path: "/app", element: <AppShell />, errorElement: <RouteError />, children }, { path: "*", element: <NotFound /> }];

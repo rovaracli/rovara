@@ -1611,11 +1611,17 @@ describe("the route", () => {
     expect(await code(w.post(BO, sessionId, w.body(), ORG_B))).toMatchObject({ code: "NOT_FOUND" });
   });
 
-  it("offers the owner the 'handoff' action on the session", async () => {
+  it("does not offer anyone the 'handoff' action (the Mac move is unfinished and hidden, owner decision 14), while the owner's move itself still works", async () => {
     const w = world();
     const { sessionId } = await w.onMac();
-    expect((await w.view(PRIYA, sessionId)).you.actions).toContain("handoff");
+    const owner = (await w.view(PRIYA, sessionId)).you;
+    expect(owner.actions).not.toContain("handoff");
     expect((await w.view(ARJUN, sessionId)).you.actions).not.toContain("handoff");
+    // Positive controls: the owner is still offered their other actions, and the move route still moves the session.
+    expect(owner).toMatchObject({ owner: true });
+    expect(owner.actions).toEqual(expect.arrayContaining(["watch", "comment", "stop"]));
+    const moved = await w.post(PRIYA, sessionId, w.body()) as { session: { sessionId: string; where: { kind: string } } };
+    expect(moved.session).toMatchObject({ sessionId, where: { kind: "cloud" } });
   });
 });
 

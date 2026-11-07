@@ -243,7 +243,8 @@ describe("the actions a tile offers are the caller's own", () => {
     expect(await of(OLA)).toEqual(["watch", "comment", "stop"]);
     expect(await of(MAX)).toEqual(expect.arrayContaining(["watch", "comment", "steer", "stop", "take_over", "share"]));
     expect(await of(MAX)).not.toContain("retry");
-    expect(await of(PRIYA)).toEqual(expect.arrayContaining(["stop", "handoff"]));
+    expect(await of(PRIYA)).toEqual(expect.arrayContaining(["stop"]));
+    expect(await of(PRIYA)).not.toContain("handoff");
     // QA6-11: the owner already owns it, so Take over is for others only.
     expect(await of(PRIYA)).not.toContain("take_over");
   });
@@ -791,7 +792,8 @@ describe("through the real broker", () => {
     const mine = await read(MAYA, "?filter=mine");
     expect(mine.tiles).toHaveLength(1);
     expect(mine.tiles[0]).toMatchObject({ sessionId, kind: "task", project: "payments", owner: { developerId: MAYA.developerId }, status: "starting", statusWords: "Starting", following: true, needsYou: false });
-    expect(mine.tiles[0]!.actions).toEqual(expect.arrayContaining(["watch", "comment", "stop", "handoff"]));
+    expect(mine.tiles[0]!.actions).toEqual(expect.arrayContaining(["watch", "comment", "stop"]));
+    expect(mine.tiles[0]!.actions).not.toContain("handoff");
     expect((await read(OMAR)).tiles).toEqual([]);
     grantProject(h.db, OMAR);
     expect((await read(OMAR)).tiles.map((tile) => tile.sessionId)).toEqual([sessionId]);
