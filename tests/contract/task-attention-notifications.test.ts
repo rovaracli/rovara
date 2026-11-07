@@ -4,7 +4,8 @@
 import { describe, expect, it } from "vitest";
 import type { SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { agentSessionKey, NOTIFY_BATCH_MINUTES, effectiveNotify, type AgentSessionRecord, type OrgId, type SessionSummary } from "../../packages/contracts/src/index.js";
-import { ATTENTION_DM_PK, attentionEmail, deliverAttention, queueAttention, writePrefs, type AttentionDeliveryDependencies } from "../../packages/broker/src/notifications/attention.js";
+import { ATTENTION_CHANNEL_TRIES_MAX, ATTENTION_DM_PK, ATTENTION_RETRY_BASE_MS, attentionEmail, deliverAttention, queueAttention, writePrefs, type AttentionDeliveryDependencies } from "../../packages/broker/src/notifications/attention.js";
+import { deliverAttentionDm } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf } from "../../packages/broker/src/developer/notifications.js";
 import type { SessionChange } from "../../packages/broker/src/agent-sessions/notice-sink.js";
 import { ARJUN, CELL, MIA, ORG_A, PRIYA, T0, sessionWorld } from "../support/agent-session-world.js";
@@ -25,7 +26,7 @@ function setup() {
   const change = (previous: Partial<SessionSummary> & { display?: unknown }, next: Partial<SessionSummary> & { display?: unknown }): SessionChange => {
     const session = setSummary(next);
     const { display: _shown, ...base } = session.summary as SessionSummary & { display?: unknown }; void _shown;
-    return { orgId: ORG_A, sessionId: seeded.sessionId, session, previous: { ...base, ...previous }, summary: session.summary, summaryRevision: 2, statusChanged: true, stepChanged: false, ended: false, at: new Date(w.clock.now).toISOString() };
+    return { orgId: ORG_A, sessionId: seeded.sessionId, session, previous: { ...base, display: { state: "building" }, ...previous }, summary: session.summary, summaryRevision: 2, statusChanged: true, stepChanged: false, ended: false, at: new Date(w.clock.now).toISOString() };
   };
   const sent: Array<{ to: string[]; subject: string; text: string; html?: unknown; from: string }> = [];
   const ses = { send: async (command: unknown) => {
@@ -152,5 +153,120 @@ describe("no leakage", () => {
     await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
     t.setSummary({ status: "running", display: { state: "building" } });
     expect(await deliverAttention(t.deps())).toMatchObject({ emails: 0, dropped: 1 });
+  });
+});
+
+describe("review fixes", () => {
+  it("I3: a summary written before the status model counts as unchanged on its first refresh (no re-notify after the deploy)", async () => {
+    const t = setup();
+    expect(await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "needs_person", display: undefined }, { ...blocked, needsPeople: [PRIYA] }), T0)).toBe(0);
+    expect(t.pending()).toHaveLength(0);
+    // Positive control: the same change from a summary that has the field is told.
+    expect(await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0)).toBe(1);
+  });
+
+  it("I5: an ended session is never told as needing someone, and a row for one is dropped", async () => {
+    const t = setup();
+    const ended = t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] });
+    expect(await queueAttention({ documentClient: t.w.db, tableName: "state" }, { ...ended, session: { ...ended.session, endedAt: new Date(T0).toISOString() } }, T0)).toBe(0);
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, ended, T0);
+    const meta = t.w.db.get(agentSessionKey(ORG_A, t.seeded.sessionId, "META")) as Item;
+    t.w.db.set({ ...meta, endedAt: new Date(T0).toISOString() });
+    expect(await deliverAttention(t.deps())).toMatchObject({ emails: 0, slack: 0, dropped: 1 });
+  });
+
+  it("I1: a failing email never holds back the Slack message, is tried again after a growing wait, gives up after the last try, and a sent email is never sent again", async () => {
+    const t = setup();
+    t.people[PRIYA] = { email: "priya@example.com", slackUserId: "U0PRIYA01" };
+    await writePrefs({ documentClient: t.w.db, tableName: "state", now: () => T0 }, ORG_A, PRIYA, { channel: "both" });
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
+    let sesCalls = 0;
+    const failing = { send: async () => { sesCalls += 1;throw Object.assign(new Error("rejected"), { name: "MessageRejected" }); } };
+    expect(await deliverAttention(t.deps({ email: { ses: failing, from: "Rovara <notices@example.com>" } }))).toMatchObject({ slack: 1, emails: 0, failed: 1 });
+    expect(t.dms()).toHaveLength(1);
+    expect(t.pending()).toHaveLength(1);
+    // Within the wait nothing is tried again, and Slack is not sent twice.
+    t.w.clock.now += NOTIFY_BATCH_MINUTES * 60_000 + 1;
+    expect(await deliverAttention(t.deps({ email: { ses: failing, from: "x@example.com" } }))).toMatchObject({ slack: 0, emails: 0 });
+    expect(sesCalls).toBe(2);
+    expect(t.dms()).toHaveLength(1);
+    for (let attempt = 3; attempt <= ATTENTION_CHANNEL_TRIES_MAX; attempt += 1) {
+      t.w.clock.now += ATTENTION_RETRY_BASE_MS * 2 ** (attempt - 1) + NOTIFY_BATCH_MINUTES * 60_000;
+      await deliverAttention(t.deps({ email: { ses: failing, from: "x@example.com" } }));
+    }
+    expect(sesCalls).toBe(ATTENTION_CHANNEL_TRIES_MAX);
+    // It gave up: the row is gone and nothing is tried again.
+    expect(t.pending()).toHaveLength(0);
+    t.w.clock.now += 86_400_000;
+    await deliverAttention(t.deps({ email: { ses: failing, from: "x@example.com" } }));
+    expect(sesCalls).toBe(ATTENTION_CHANNEL_TRIES_MAX);
+  });
+
+  it("I1: an email that went out is not sent again when the Slack message fails", async () => {
+    const t = setup();
+    t.people[PRIYA] = { email: "priya@example.com", slackUserId: "U0PRIYA01" };
+    await writePrefs({ documentClient: t.w.db, tableName: "state", now: () => T0 }, ORG_A, PRIYA, { channel: "both" });
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
+    t.w.db.injectFault({ command: "PutCommand", match: (input) => (input["Item"] as Item | undefined)?.["entityType"] === "TASK_ATTENTION_DM", error: { name: "ProvisionedThroughputExceededException" }, times: 1 });
+    expect(await deliverAttention(t.deps())).toMatchObject({ emails: 1, slack: 0, failed: 1 });
+    expect(t.pending()[0]).toMatchObject({ emailSent: true });
+    t.w.clock.now += NOTIFY_BATCH_MINUTES * 60_000 + ATTENTION_RETRY_BASE_MS;
+    expect(await deliverAttention(t.deps())).toMatchObject({ emails: 0, slack: 1 });
+    expect(t.sent).toHaveLength(1);
+    expect(t.pending()).toHaveLength(0);
+  });
+
+  it("I2: pages the queue, leaves out expired rows, and people inside their window never use up the sweep's places", async () => {
+    const t = setup();
+    // 45 people were told a minute ago and have rows waiting; they sort first.
+    for (let n = 0; n < 45; n += 1) {
+      const id = String(n).padStart(2, "0").padEnd(64, "0");
+      t.w.db.set({ pk: `NOTIFY_SENT#${ORG_A}`, sk: `DEV#${id}`, entityType: "NOTIFY_SENT", orgId: ORG_A, developerId: id, lastAt: T0 - 60_000 });
+      t.readers.add(id);t.people[id] = { email: `p${String(n)}@example.com` };
+      t.w.db.set({ pk: "NOTIFY_PENDING", sk: `${ORG_A}#${id}#${t.seeded.sessionId}#needs_you`, entityType: "NOTIFY_PENDING", orgId: ORG_A, developerId: id, sessionId: t.seeded.sessionId, kind: "needs_you", at: new Date(T0).toISOString() });
+    }
+    // And 300 rows of sessions that are gone, also before Priya's row.
+    for (let n = 0; n < 300; n += 1) {
+      const id = "0".repeat(60) + String(n).padStart(4, "0");
+      t.w.db.set({ pk: "NOTIFY_PENDING", sk: `${ORG_A}#${id}#ses_x${String(n).padStart(19, "0")}#needs_you`, entityType: "NOTIFY_PENDING", orgId: ORG_A, developerId: id, sessionId: `ses_x${String(n).padStart(19, "0")}`, kind: "needs_you", at: new Date(T0).toISOString() });
+    }
+    // An expired row of Mia's is never delivered.
+    t.w.db.set({ pk: "NOTIFY_PENDING", sk: `${ORG_A}#${MIA}#${t.seeded.sessionId}#needs_you`, entityType: "NOTIFY_PENDING", orgId: ORG_A, developerId: MIA, sessionId: t.seeded.sessionId, kind: "needs_you", at: new Date(T0).toISOString(), indexExpiresAt: Math.floor(T0 / 1000) - 1 });
+    t.setSummary(blocked);
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
+    await deliverAttention(t.deps());
+    expect(t.sent.map((mail) => mail.to)).toEqual([["priya@example.com"]]);
+    // The 45 inside their window keep their rows for a later sweep.
+    expect(t.pending().filter((row) => row["sessionId"] === t.seeded.sessionId && row["developerId"] !== MIA)).toHaveLength(45);
+  });
+
+  it("I2: stops starting new people once the sweep's time budget is spent", async () => {
+    const t = setup();
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
+    expect(await deliverAttention(t.deps(), { deadlineMs: T0 - 1 })).toMatchObject({ people: 0, emails: 0 });
+    expect(t.pending()).toHaveLength(1);
+  });
+
+  it("M5: the email carries a List-Unsubscribe header to the account page's stop link", async () => {
+    const t = setup();
+    const headers: unknown[] = [];
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
+    await deliverAttention(t.deps({ email: { ses: { send: async (command: unknown) => { headers.push((command as SendEmailCommand).input.Content?.Simple?.Headers);return {}; } }, from: "x@example.com" } }));
+    expect(headers).toEqual([[{ Name: "List-Unsubscribe", Value: `<${CELL}/app/account?notify=unsubscribe#notifications>` }]]);
+  });
+
+  it("M1: a redelivered direct-message notice posts once", async () => {
+    const t = setup();
+    t.people[PRIYA] = { slackUserId: "U0PRIYA01" };
+    await queueAttention({ documentClient: t.w.db, tableName: "state" }, t.change({ status: "running" }, { ...blocked, needsPeople: [PRIYA] }), T0);
+    await deliverAttention(t.deps());
+    const sk = String(t.dms()[0]!["sk"]);
+    const posts: unknown[] = [];
+    const deps = { documentClient: t.w.db, tableName: "state", post: async (input: unknown) => { posts.push(input);return { ts: "1.1" }; } } as never;
+    const notice = { id: `attention_dm:${sk}`, kind: "attention_dm" as const, at: new Date(T0).toISOString(), attentionKey: sk };
+    expect(await Promise.all([deliverAttentionDm(deps, notice), deliverAttentionDm(deps, notice)])).toEqual(expect.arrayContaining(["sent", "already_sent"]));
+    expect(await deliverAttentionDm(deps, notice)).toBe("already_sent");
+    expect(posts).toHaveLength(1);
+    expect(t.dms()[0]).toMatchObject({ status: "SENT" });
   });
 });

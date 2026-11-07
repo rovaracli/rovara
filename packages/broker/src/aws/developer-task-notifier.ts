@@ -1574,7 +1574,7 @@ const ATTENTION_DM_TEXT_MAX = 4000;
  * UX2 slice 2 item 5: one person's batch of task notifications, worded by the broker's sweep (titles escaped for Slack, links to the task's page on the install's origin), sent as a direct message.
  * Told once: the row is marked SENT after the post; a row that is not PENDING, not this kind or not well formed is not posted.
  */
-async function deliverAttentionDm(deps: NotifierDependencies, notice: Notice): Promise<string> {
+export async function deliverAttentionDm(deps: NotifierDependencies, notice: Notice): Promise<string> {
   const sk = notice.attentionKey;
   if (sk === undefined) return "invalid";
   const key = { pk: "NOTIFY_DM", sk };
@@ -1582,10 +1582,29 @@ async function deliverAttentionDm(deps: NotifierDependencies, notice: Notice): P
   if (row === undefined || row.entityType !== "TASK_ATTENTION_DM") return "invalid";
   if (row.status !== "PENDING") return "already_sent";
   if (typeof row.slackUserId !== "string" || !SLACK_USER_ID.test(row.slackUserId) || typeof row.text !== "string" || row.text === "" || row.text.length > ATTENTION_DM_TEXT_MAX) return "invalid";
-  await deps.post({ channel: row.slackUserId, text: row.text });
+  // Review M1: the row is claimed (PENDING to SENDING) before the post, so a redelivered or a concurrent notice posts once: whoever loses the claim posts nothing.
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sending", ConditionExpression: "#status = :pending",
+      ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sending": "SENDING", ":pending": "PENDING" },
+    }));
+  } catch (error) {
+    if (error instanceof Error && error.name === "ConditionalCheckFailedException") return "already_sent";
+    throw error;
+  }
+  try {
+    await deps.post({ channel: row.slackUserId, text: row.text });
+  } catch (error) {
+    // The post did not happen: give the row back, so the notice's retry can send it.
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :pending", ConditionExpression: "#status = :sending",
+      ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sending": "SENDING", ":pending": "PENDING" },
+    })).catch(() => undefined);
+    throw error;
+  }
   await deps.documentClient.send(new UpdateCommand({
-    TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sent", ConditionExpression: "#status = :pending",
-    ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sent": "SENT", ":pending": "PENDING" },
+    TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sent", ConditionExpression: "#status = :sending",
+    ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sent": "SENT", ":sending": "SENDING" },
   })).catch(() => undefined);
   return "sent";
 }

@@ -293,7 +293,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // UX2 slice 2 item 5: the task notifications queued since the last sweep, batched per person (Slack direct message and/or email through the sign-in notice sender).
       const attention = attentionDeliveryOf(dependencies, agents?.projectMembers);
       if (attention !== undefined) {
-        try { outcome.notifications = await deliverAttention(attention); }
+        // Review I2: at most half of what is left of the sweep's budget (and never more than 8 s), so the steps after it keep their time.
+        const left = Math.max(0, SESSION_EVENT_BUDGET_MS - (Date.now() - startedAt));
+        try { outcome.notifications = await deliverAttention(attention, { deadlineMs: Date.now() + Math.min(8000, Math.floor(left / 2)) }); }
         catch (error) { console.log(JSON.stringify({ component: "broker", event: "attention.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.notifications = "failed"; }
       }
       // Saved project images: the periodic poll (a few due projects a pass; off, nothing is read).

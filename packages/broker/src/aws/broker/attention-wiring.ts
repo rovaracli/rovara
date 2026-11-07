@@ -16,7 +16,9 @@ export function attentionDeliveryOf(dependencies: AwsBrokerDependencies, project
   const signIn = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, nameTableName: dependencies.tableName, now: Date.now });
   const notice = dependencies.githubConnectedNotice;
   return {
-    ...table, now: Date.now, origin: process.env.ROVARA_WEB_ORIGIN || new URL(developer.issuer).origin,
+    ...table, now: Date.now, // Review M7: the issuer's origin, the same base every other task link uses (`sessionLink`, the session view's `link`, the Slack links). ROVARA_WEB_ORIGIN (set on Cloud for invite links) is not used, so a
+    // notification's link is never on a different host than the task page the app itself links to.
+    origin: new URL(developer.issuer).origin,
     person: async (developerId) => { const record = await signIn.getDeveloper(developerId);return record === undefined || record.revoked ? undefined : { email: record.email, slackUserId: record.slackUserId }; },
     access: async (orgId: OrgId, developerId: string, session: AgentSessionRecord) => {
       const member = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: orgMemberKey(orgId, developerId), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
