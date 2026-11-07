@@ -26,6 +26,8 @@ export function decisionActionPath(card: ReadDecisionCard, kind: "approve" | "re
 }
 /** Slice 2: the kinds whose HIGH card is approved on the card itself, on its task page, with a recent sign-in (the broker's `highOnCard`). Every other high card has no approve here. */
 export const HIGH_ON_CARD_KINDS: readonly string[] = ["approve_plan", "approve_requirements", "merge", "approve_request"];
+/** OWNER DECISION 7: a design WITHOUT design review (its card carries `choices`) is approved on its card too, with the decide-grade sign-in; a reviewed design keeps the design review's own route. */
+export const isUnreviewedDesign = (decision: { card: { kind: string }; choices?: unknown }): boolean => decision.card.kind === "approve_design" && decision.choices !== undefined;
 /** A coding plan's card: whether approving raises the run limit, so the card asks for a tick (the broker refuses a raise without it). */
 export function runLimitRaise(card: ReadDecisionCard): { currentUsd: number | undefined; proposedUsd: number; raises: boolean } | undefined {
  const limit = card.runLimit;
@@ -86,7 +88,7 @@ export function createDecisionsApi(host: AppHost) {
   /** Slice 2: a HIGH requirements or coding plan card, approved on its card on the task page. The broker asks for the browser session and the recent sign-in (REAUTH_REQUIRED otherwise). */
   async approveHighOnCard(decision: ReadDecision, shownDigest: string, acknowledgedRunLimitUsd?: number, plan?: PlanDecisionFields): Promise<DecisionResult> {
    const card = decision.card;
-   if (card.risk !== "high" || !HIGH_ON_CARD_KINDS.includes(card.kind) || typeof card.id !== "string") throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
+   if (card.risk !== "high" || !(HIGH_ON_CARD_KINDS.includes(card.kind) || isUnreviewedDesign(decision)) || typeof card.id !== "string") throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
    // A high merge answers 202: its approval card (decided there with the decide-grade sign-in) is where it goes on.
    return resultOf(done(await api.send("POST", "/v1/app/decisions/" + card.id.replace(":", "/") + "/approve", { requestId: crypto.randomUUID(), shownDigest, ...(acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd }), ...plan }, DecisionOutcomeReaderSchema, { retry: "never" })));
   },

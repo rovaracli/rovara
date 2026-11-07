@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { DECISION_FOCUS_PARAM } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
-import { HIGH_ON_CARD_KINDS, createDecisionsApi, useDecisions, type PlanDecisionFields, type ReadDecision } from "../../api/decisions.js";
+import { HIGH_ON_CARD_KINDS, createDecisionsApi, isUnreviewedDesign, useDecisions, type PlanDecisionFields, type ReadDecision } from "../../api/decisions.js";
 import { DecisionCard, type DecisionCardActions } from "../../design/DecisionCard.js";
 import { createDesignReviewApi } from "../../api/design-review.js";
 import { ApiError } from "../../api/errors.js";
@@ -45,7 +45,7 @@ function useInlineApprove() {
    highRisk: { read: async () => ({ digest: decision.digest, mayApprove: true }), approve: async (shownDigest) => { const result = await decisionsApi.approveHighOnCard(decision, shownDigest);await reread();return result; } },
    decline: async () => { await decisionsApi.declineOnCard(decision);await reread(); },
   };
-  if (HIGH_ON_CARD_KINDS.includes(decision.card.kind) && taskId !== undefined) return { highRisk: {
+  if ((HIGH_ON_CARD_KINDS.includes(decision.card.kind) || isUnreviewedDesign(decision)) && taskId !== undefined) return { highRisk: {
    read: async () => ({ digest: decision.digest, mayApprove: true }),
    approve: async (shownDigest, _reason, acknowledgedRunLimitUsd, plan) => { const result = await decisionsApi.approveHighOnCard(decision, shownDigest, acknowledgedRunLimitUsd, plan);await reread();return result; },
   } };

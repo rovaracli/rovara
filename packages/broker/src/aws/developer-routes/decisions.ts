@@ -20,7 +20,7 @@
 //   dependency, E2E plan, feedback, autofix, setting and test-environment decisions (their endpoints live in hot task files and stay page-decided). An unregistered kind is refused `unsupported`.
 import { recordsOf } from "../../test-env/fixture-lookup.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { projectAllows } from "@agentx/contracts";
+import { agentXError, projectAllows } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { createDecisionPerformer, envChangeHandler, fixSetupHandler, mergeHandler, testEnvHandler, type KindHandler } from "../../decisions/performer.js";
@@ -34,7 +34,7 @@ import { alwaysTwoPeople } from "../../org/known-failing-policy.js";
 import { visibleProjectRoles } from "./project-list.js";
 import { dynamoDecisionStore } from "../../decisions/store.js";
 import { mergeItemsFor } from "../../decisions/merge-source.js";
-import type { DecisionRouteDependencies } from "../../decisions/routes.js";
+import { DECISION_FULL_PAGE_MESSAGE, type DecisionRouteDependencies } from "../../decisions/routes.js";
 import { pressMerge, type MergePressReply } from "../../rovara-code/merge.js";
 import { withCardDecideGrade } from "./card-decide-grade.js";
 import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
@@ -153,7 +153,9 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
       // Design review (`dr`): approving a design goes through `designApproveHandler`, which refuses a task that carries no design review. Not registered while `dr` is off: the kind stays page-decided.
       // OWNER DECISION 7: a design WITHOUT design review is approved on its card through the one workflow decision (as its requirements and coding plan are); one under review keeps its review's own handler.
       approve_design: designReviewEnabled(env) ? {
-        approve: (who: DeveloperCaller, input: Parameters<KindHandler<DeveloperCaller>["approve"]>[1]) => input.item.kind === "approve_design" && input.item.review === undefined ? planCardHandler(deps, caller, request.decideCookie).approve(who, input) : designApproveHandlerFor(deps, caller).approve(who, input),
+        // A HIGH design under review keeps its own route (the design review's inline Approve with its decide-grade sign-in); only a design without review is decided here at high, under the card's decide-grade sign-in.
+        approve: async (who: DeveloperCaller, input: Parameters<KindHandler<DeveloperCaller>["approve"]>[1]) => input.item.kind === "approve_design" && input.item.review === undefined ? planCardHandler(deps, caller, request.decideCookie).approve(who, input)
+          : input.card.risk === "high" ? Promise.reject(agentXError("NOT_FOUND", DECISION_FULL_PAGE_MESSAGE)) : designApproveHandlerFor(deps, caller).approve(who, input),
         requestChanges: (who: DeveloperCaller, input: Parameters<typeof requestChanges>[2]) => requestChanges(deps, who, input),
       } : planCardHandler(deps, caller, request.decideCookie),
       approve_plan: planCardHandler(deps, caller, request.decideCookie),
@@ -163,7 +165,8 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
     }),
     // Slice 2: a high requirements or coding plan card is approved on its card, on the task page; its handler asks for the browser session and the decide-grade sign-in (security review).
     // Slice 3: a high merge too (its press makes the pending change, decided on its approval card with the decide-grade sign-in).
-    highOnCard: new Set(["approve_plan", "approve_requirements", "merge", "approve_request"]),
+    // OWNER DECISION 7: and a HIGH design without design review (planCardHandler asks for the decide-grade sign-in); a reviewed one is refused here and keeps its own route.
+    highOnCard: new Set(["approve_plan", "approve_requirements", "approve_design", "merge", "approve_request"]),
     // Security review: an outside approval's evidence is opened first (as a medium card's), and opening it is what the kind records as its page having been read.
     // A high design cost card too: its choices (the design review's spend routes) need its evidence opened, which nothing could record for a high card before.
     evidenceFirstOnHigh: new Set(["approve_request", "approve_spend"]),

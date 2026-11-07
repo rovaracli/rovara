@@ -167,4 +167,29 @@ describe("OWNER DECISION 7: a plan's choices on its decision card", () => {
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     expect(t.meta(taskId).workflow.decisions.at(-1)).toMatchObject({ decision: "APPROVE", reason: "Good design.", commentsIncluded: 1 });
   });
+
+  it("a design without design review that touches infrastructure is a medium card: its evidence is opened first, a token never decides it, someone else has no card", async () => {
+    // (An unreviewed design is at most medium today: its tier rule only raises to medium. Were a company lock to raise it to high, its handler asks for the decide-grade sign-in, as a coding plan's does.)
+    const t = await world();
+    const taskId = await t.planned("FULL");
+    expect((await t.press(taskId, "approve", {})).status).toBe(200);
+    const workspaceId = String(t.meta(taskId).workspaceId);
+    const planning = String(t.h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION" && item.workflowMode === "PLAN" && item.status !== "SUCCEEDED").at(-1)?.id);
+    const infra = planDocument({ title: "Retry failed payments: design", claims: [{ id: "1", text: "The payments role may read the retry queue.", evidence: [{ kind: "code", path: "infra/iam/payments-role.tf", startLine: 1, endLine: 9, note: "Today the role cannot read it." }] }] });
+    await t.h.artifact(workspaceId, planning, "plan.md", planAnswer(infra));
+    await t.h.finish(workspaceId, planning, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    const shown = (await t.cardOf(taskId))!;
+    expect(shown.card).toMatchObject({ kind: "approve_design", risk: "medium" });
+    expect(shown.choices, "an unreviewed design carries its choices, so the app decides it on the card").toBeDefined();
+    const path = `/v1/app/decisions/approve_design/${taskId}/approve`;
+    expect((await t.h.dev(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: shown.digest })).status).toBeGreaterThanOrEqual(400);
+    const unopened = await t.web(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: shown.digest });
+    expect(unopened.status, "the evidence is opened first").toBe(409);
+    seedMembership(t.h.db, OMAR.developerId, { orgId: TEST_ORG, role: "member" });
+    expect((await t.web(OMAR, "POST", path, { requestId: randomUUID(), shownDigest: shown.digest })).status).toBe(404);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", reviewPhase: "DESIGN" });
+    const approved = await t.press(taskId, "approve", {});
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(t.meta(taskId).workflow.decisions.at(-1)).toMatchObject({ decision: "APPROVE" });
+  });
 });

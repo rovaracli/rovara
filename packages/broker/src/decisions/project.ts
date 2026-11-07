@@ -535,5 +535,7 @@ function choicesOfItem(item: DecisionItem, card: DecisionCard): DecisionPlanChoi
   const parsed = DecisionPlanChoicesSchema.safeParse(item.choices);
   if (!parsed.success) return undefined;
   const { questions, optionalChecks, openComments } = parsed.data;
+  // A design without design review always carries its choices (empty or not): the app reads them as "decided on this card", where its high Approve asks for the decide-grade sign-in.
+  if (item.kind === "approve_design") return parsed.data;
   return questions.length === 0 && optionalChecks.length === 0 && openComments.length === 0 ? undefined : parsed.data;
 }
