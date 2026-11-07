@@ -2,6 +2,7 @@
 // medium, so a company lock raises it to high here (the one way it gets there), through the real broker and card routes.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as RiskTier from "../../packages/broker/src/decisions/risk-tier.js";
 import { browserRequests } from "../support/browser-session.js";
 import { decideSessionFor, signInApprovalOf } from "../support/decide-sign-in.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership } from "../support/developer-task-broker.js";
@@ -9,7 +10,7 @@ import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 
 vi.mock("../../packages/broker/src/decisions/risk-tier.js", async (original) => {
-  const actual = await original<typeof import("../../packages/broker/src/decisions/risk-tier.js")>();
+  const actual = await original<typeof RiskTier>();
   return { ...actual, riskTierOf: (kind: Parameters<typeof actual.riskTierOf>[0], inputs: Parameters<typeof actual.riskTierOf>[1], locks: Parameters<typeof actual.riskTierOf>[2] = {}) => actual.riskTierOf(kind, inputs, { ...locks, approve_design: "high" }) };
 });
 

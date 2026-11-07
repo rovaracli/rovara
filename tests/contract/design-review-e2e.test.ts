@@ -997,7 +997,7 @@ describe("slice C: the design review's routes", () => {
       expect(shown, "a card for the design, never Slack alone").toBeDefined();
       const base = `/v1/app/decisions/${shown!.card.id.replace(":", "/")}`;
       if (shown!.card.friction.expandEvidenceFirst) expect((await w.dev(MAYA, "POST", `${base}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest })).status).toBe(200);
-      const web = browserRequests(w as never);
+      const web = browserRequests(w);
       const approved = await web(MAYA, "POST", `${base}/approve`, { requestId: randomUUID(), shownDigest: shown!.digest });
       expect(approved.status, JSON.stringify(approved.body)).toBe(200);
       expect(w.task().workflow.decisions.at(-1)).toMatchObject({ decision: "APPROVE" });
