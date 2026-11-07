@@ -2,7 +2,7 @@
 // (so a token is looked up in its own company only), the secret is 32 random bytes (base64url). Only the SHA-256 of the whole token is stored; the secret's 256 bits make a slow hash
 // unnecessary. The token is compared in constant time and never logged, stored or echoed.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { OrgIdSchema, SCRIPT_TOKEN_PREFIX, ScriptTokenIdSchema, type OrgId } from "@agentx/contracts";
+import { DEVELOPER_CLIENT_NAME_MAX, OrgIdSchema, SCRIPT_TOKEN_PREFIX, ScriptTokenIdSchema, cleanDisplayName, type OrgId } from "@agentx/contracts";
 
 const TOKEN = /^rvst_([0-9a-z]{20})_([0-9a-z]{20})_([A-Za-z0-9_-]{43})$/u;
 /** The longest Authorization header value looked at: anything longer is not a script token. */
@@ -44,3 +44,6 @@ export function scriptTokenMatches(token: string, storedHash: unknown): boolean 
 
 /** What the settings screen shows of a token: the prefix and the first eight characters of its id, which are not secret. */
 export const scriptTokenHint = (tokenId: string): string => `${SCRIPT_TOKEN_PREFIX}…${tokenId.slice(4, 12)}`;
+
+/** Review I3: the client name a token's tasks carry (turn records, the PR footer): "Script token" and the token's own name, cleaned like a display name, at most the client name's length. */
+export const scriptTokenClientName = (name: string): string => `Script token ${cleanDisplayName(name) ?? ""}`.trim().slice(0, DEVELOPER_CLIENT_NAME_MAX).trim();

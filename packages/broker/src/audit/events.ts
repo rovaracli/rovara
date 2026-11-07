@@ -1038,8 +1038,8 @@ export function auditScriptTokenCreated(input: AuditBuilderBase & { tokenId: str
   return build("script_token.created", input, { kind: "script_token", id: input.tokenId }, { days: input.days, projects: input.projects, permissions: input.permissions });
 }
 
-/** `by` is `creator` or `admin` (an owner or admin revoking another person's token). */
-export function auditScriptTokenRevoked(input: AuditBuilderBase & { tokenId: string; by: "creator" | "admin" }): AuditEventInput {
+/** `by`: `creator`, `admin` (an owner or admin revoking another person's token), `access_changed` (Rovara, when the creator's place changed) or `limit` (a take-back over the per-person limit). */
+export function auditScriptTokenRevoked(input: AuditBuilderBase & { tokenId: string; by: "creator" | "admin" | "access_changed" | "limit" }): AuditEventInput {
   return build("script_token.revoked", input, { kind: "script_token", id: input.tokenId }, { by: input.by });
 }
 

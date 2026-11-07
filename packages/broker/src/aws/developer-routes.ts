@@ -304,7 +304,7 @@ import { clearArchivedProjectLearning } from "./developer-routes/project-archive
 import { forgetTaskComment, rememberTaskComment } from "../learning/capture-comment.js";
 import { getTaskStopEditing, writeTaskStopEditing } from "../org/task-stop-editing.js";
 import { SCRIPT_TOKENS_BROWSER_MESSAGE, isScriptTokensPath, routeScriptTokens } from "../script-tokens/routes.js";
-import { authenticateScriptToken } from "../script-tokens/authenticate.js";
+import { auditScriptTokenTaskStart, authenticateScriptToken } from "../script-tokens/authenticate.js";
 import { isScriptTokenHeader } from "../script-tokens/token-format.js";
 import { scriptTokensEnabled } from "../script-tokens/switch.js";
 export { projectMembersOf, projectsWithPolicy } from "./developer-routes/project-list.js";
@@ -809,7 +809,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     const waitingForOwner = request.method === "POST" && url.pathname === "/v1/dev/tasks" ? await gateDeveloperStart(deps, caller, request) : undefined;
     if (waitingForOwner !== undefined) return waitingForOwner;
     // Rovara Code (Plan 6): a client that does not send `x-agentx-task-view: 2` reads a version 1 projection of any task in the answer.
-    return taskResponseForClient(await routeDeveloperTaskRequest(developerTaskRouteDependencies(deps, caller), caller, request, url), request.headers);
+    const taskAnswer = await routeDeveloperTaskRequest(developerTaskRouteDependencies(deps, caller), caller, request, url);
+    // UX5b review I3: every task a script token starts is audited, naming the token and the task.
+    await auditScriptTokenTaskStart(deps, caller, request.method, url.pathname, taskAnswer);
+    return taskResponseForClient(taskAnswer, request.headers);
   }
   if (url.pathname === CHATGPT_CONNECTION_PATH || url.pathname === `${CHATGPT_CONNECTION_PATH}/finish`) {
     return routeChatGptConnection(deps, caller, request, url);

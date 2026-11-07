@@ -3,12 +3,13 @@
 // permissions (read, start), and only on the closed list of task routes: everything else (tokens, members, roles, settings, decisions) is refused. It is rate limited and audited.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SCRIPT_TOKEN_NOT_ALLOWED_MESSAGE, AuditEventInputSchema, developerOrgKey, orgScriptTokensKey, scriptTokenKey, type OrgId } from "@agentx/contracts";
+import { SCRIPT_TOKEN_NOT_ALLOWED_MESSAGE, AuditEventInputSchema, developerOrgKey, editionPolicy, orgScriptTokensKey, scriptTokenKey, type OrgId } from "@agentx/contracts";
 import { appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { scriptTokenRoute } from "../../packages/broker/src/script-tokens/authenticate.js";
 import { hashScriptToken, parseScriptTokenHeader, scriptTokenMatches } from "../../packages/broker/src/script-tokens/token-format.js";
+import { ScriptTokenRecordSchema, noteScriptTokenUse } from "../../packages/broker/src/script-tokens/store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
-import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 type Reply = { status: number; body: Record<string, unknown> };
@@ -18,16 +19,17 @@ const OTHER_ORG = "org_zzzzzzzzzzzzzzzzzzzz" as OrgId;
 beforeEach(() => { vi.stubEnv("SCRIPT_TOKENS_ENABLED", "1"); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
-async function world() {
+async function world(options: { brokerExtra?: Record<string, unknown>; developerExtra?: Record<string, unknown> } = {}) {
   const audit = capturingAuditDeps();
-  const h = await createDeveloperTaskBroker({ audit });
+  const h = await createDeveloperTaskBroker({ audit, ...(options.brokerExtra === undefined ? {} : { brokerExtra: options.brokerExtra }), ...(options.developerExtra === undefined ? {} : { developerExtra: options.developerExtra }) });
   const browserSessions = new Map<string, string>();
   const sessionOf = (who: Developer) => {
     let sid = browserSessions.get(who.developerId);
     if (sid === undefined) {
       sid = randomUUID();
       browserSessions.set(who.developerId, sid);
-      h.db.set({ pk: `SESSION#${sid}`, sk: "META", sessionId: sid, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 3600, reviewExpiresAt: Math.floor(Date.now() / 1000) + 3600 });
+      // A sign-in made a moment ago (`authTime`): making a token needs a fresh one (review I2).
+      h.db.set({ pk: `SESSION#${sid}`, sk: "META", sessionId: sid, developerId: who.developerId, amr: who.provider, identityKey: `id-${who.developerId.slice(0, 8)}`, authTime: new Date(Date.now() - 30_000).toISOString(), startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 3600, reviewExpiresAt: Math.floor(Date.now() / 1000) + 3600 });
     }
     return sid;
   };
@@ -51,7 +53,8 @@ async function world() {
   };
   const start = (token: string, project = "payments") => script(token, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project, instructions: "Fix the retry bug", client: "ci-script" });
   const record = (tokenId: string, orgId: OrgId = TEST_ORG) => h.db.get(scriptTokenKey(orgId, tokenId)) as Record<string, unknown>;
-  return { ...h, audit, web, script, create, start, record };
+  const session = (who: Developer) => h.db.get(`SESSION#${sessionOf(who)}`, "META")!;
+  return { ...h, audit, web, script, create, start, record, session };
 }
 
 
@@ -135,8 +138,11 @@ describe("using a token", () => {
     expect(read.status).toBe(200);
     expect((await w.script(made.secret, "GET", `/v1/dev/tasks/${taskId}/events`)).status).toBe(200);
     expect((await w.script(made.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(200);
-    expect(w.audit.recordedBy("script_token.used")).toHaveLength(1);
-    expect(w.audit.recordedBy("script_token.used")[0]).toMatchObject({ facts: { day: new Date().toISOString().slice(0, 10), permission: "start" } });
+    // One daily summary (no task named) and one event for the start, which names the task.
+    const used = w.audit.recordedBy("script_token.used");
+    expect(used.filter((event) => event.related === undefined)).toEqual([expect.objectContaining({ facts: { day: new Date().toISOString().slice(0, 10), permission: "start" } })]);
+    expect(used.filter((event) => event.related?.includes(taskId))).toHaveLength(1);
+    expect(used).toHaveLength(2);
     expect(w.record(made.token.tokenId).lastUsedAt).toEqual(expect.any(String));
   });
 
@@ -219,16 +225,29 @@ describe("using a token", () => {
     }
   });
 
-  it("stops when the creator's role changes or they leave the company", async () => {
+  it("stops for good when the creator's role changes, even if it changes back (review M3), and Rovara's revoke is audited", async () => {
     const w = await world();
     const made = await w.create();
     expect((await w.start(made.secret)).status).toBe(200);
     seedMembership(w.db, MAYA.developerId, { orgId: TEST_ORG, role: "admin" });
     expect((await w.start(made.secret)).status).toBe(401);
+    expect(w.record(made.token.tokenId).revokedBy).toBe("rovara");
+    expect(typeof w.record(made.token.tokenId).revokedAt).toBe("string");
+    expect(w.audit.recordedBy("script_token.revoked")[0]).toMatchObject({ actor: { kind: "system", id: "rovara" }, facts: { by: "access_changed" }, related: [MAYA.developerId] });
     seedMembership(w.db, MAYA.developerId, { orgId: TEST_ORG, role: "member" });
-    expect((await w.start(made.secret)).status).toBe(200);
+    const back = await w.start(made.secret);
+    expect(back.status).toBe(401);
+    expect(JSON.stringify(back.body)).toContain("revoked");
+  });
+
+  it("stops for good when the creator leaves, and stays dead after they rejoin", async () => {
+    const w = await world();
+    const made = await w.create();
     w.db.delete(developerOrgKey(MAYA.developerId));
     expect((await w.start(made.secret)).status).toBe(401);
+    seedMembership(w.db, MAYA.developerId, { orgId: TEST_ORG, role: "member" });
+    expect((await w.start(made.secret)).status).toBe(401);
+    expect(w.record(made.token.tokenId).revokedBy).toBe("rovara");
   });
 
   it("stops when an admin ends the creator's sign-ins", async () => {
@@ -238,16 +257,42 @@ describe("using a token", () => {
     expect((await w.start(made.secret)).status).toBe(401);
   });
 
-  it("is rate limited per token", async () => {
-    const w = await world();
-    const made = await w.create();
-    const window = Math.floor(Date.now() / 60_000) * 60_000;
-    w.db.set({ pk: `ORG#${TEST_ORG}#SCRIPT_TOKEN_RATE`, sk: made.token.tokenId, windowStart: window, count: 60 });
-    const limited = await w.script(made.secret, "GET", "/v1/dev/tasks?project=payments");
-    // A request on the edge of a minute lands in a fresh window; that is the only way it passes.
-    if (Math.floor(Date.now() / 60_000) * 60_000 === window) expect(limited.status).toBe(429);
-    const other = await w.create();
-    expect((await w.script(other.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(200);
+  it("is rate limited per token, on a fixed clock (review M7)", async () => {
+    // The clock stands in the middle of a minute, so the window can't roll over during the test.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-11-07T12:00:30.000Z") });
+    try {
+      const w = await world();
+      const made = await w.create();
+      const window = Math.floor(Date.now() / 60_000) * 60_000;
+      w.db.set({ pk: `ORG#${TEST_ORG}#SCRIPT_TOKEN_RATE`, sk: made.token.tokenId, windowStart: window, count: 60 });
+      expect((await w.script(made.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(429);
+      const other = await w.create();
+      expect((await w.script(other.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(200);
+      // Review M2: a revoked token is rate limited too, before anything else is read.
+      await w.web(MAYA, "DELETE", `/v1/app/script-tokens/${made.token.tokenId}`);
+      expect((await w.script(made.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(429);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("limits requests and starts across all of one person's tokens (review M1)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-11-07T12:20:00.000Z") });
+    try {
+      const w = await world();
+      const first = await w.create();
+      const second = await w.create();
+      const minute = Math.floor(Date.now() / 60_000) * 60_000;
+      const hour = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+      w.db.set({ pk: `ORG#${TEST_ORG}#SCRIPT_TOKEN_CREATOR_START_RATE`, sk: MAYA.developerId, windowStart: hour, count: 20 });
+      expect((await w.start(first.secret)).status).toBe(429);
+      expect((await w.start(second.secret)).status).toBe(429);
+      expect((await w.script(second.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(200);
+      w.db.set({ pk: `ORG#${TEST_ORG}#SCRIPT_TOKEN_CREATOR_RATE`, sk: MAYA.developerId, windowStart: minute, count: 120 });
+      expect((await w.script(second.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(429);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("is refused while the switch is off, and the settings routes are not found", async () => {
@@ -293,5 +338,192 @@ describe("revoking a token", () => {
     const reply = await w.web(OMAR, "DELETE", `/v1/app/script-tokens/${made.token.tokenId}`);
     expect(reply.status).not.toBe(200);
     expect(w.record(made.token.tokenId).revokedAt).toBeUndefined();
+  });
+});
+
+describe("review fixes (UX5B-SCRIPT-TOKENS-REVIEW)", () => {
+  it("I2: making a token needs a fresh sign-in", async () => {
+    const w = await world();
+    w.db.set({ ...w.session(MAYA), authTime: new Date(Date.now() - 60 * 60_000).toISOString() });
+    const refused = await w.web(MAYA, "POST", "/v1/app/script-tokens", { requestId: randomUUID(), name: "CI", projects: ["payments"], permissions: ["read"] });
+    expect(refused.status).toBe(403);
+    expect(JSON.stringify(refused.body)).toContain("REAUTH_REQUIRED");
+    expect(w.db.find((item) => item.entityType === "SCRIPT_TOKEN")).toEqual([]);
+  });
+
+  it("I1: the method turned off and on again after the token was made ends it for good", async () => {
+    const since = Math.floor(Date.now() / 1000) - 600;
+    const w = await world({ developerExtra: { since: { slack: since } } });
+    const made = await w.create();
+    expect((await w.script(made.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(200);
+    w.db.set({ ...w.record(made.token.tokenId), createdAt: new Date((since - 600) * 1000).toISOString() });
+    expect((await w.script(made.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(401);
+    expect(w.record(made.token.tokenId).revokedBy).toBe("rovara");
+  });
+
+  it("I1: unlinking the sign-in method or the identity the token was made from ends it", async () => {
+    const w = await world();
+    const byMethod = await w.create();
+    const byIdentity = await w.create();
+    expect(w.record(byIdentity.token.tokenId).identityKey).toBe(w.session(MAYA).identityKey);
+    const developer = () => w.db.get(`DEVELOPER#${MAYA.developerId}`, "META")!;
+    w.db.set({ ...developer(), [`identityUnlinked#${String(w.session(MAYA).identityKey)}`]: new Date().toISOString() });
+    expect((await w.script(byIdentity.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(401);
+    // A token from before tokens recorded their identity is ended by the method's mark.
+    const { identityKey: _dropped, ...legacy } = w.record(byMethod.token.tokenId);
+    void _dropped;
+    w.db.set(legacy);
+    w.db.set({ ...developer(), "sessionsEndedByMethod#slack": new Date(Date.now() + 1000).toISOString() });
+    expect((await w.script(byMethod.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(401);
+  });
+
+  it("I1: under an edition's session cap a token lives no longer than a session, and is refused past it", async () => {
+    const w = await world({ brokerExtra: { editionPolicy: editionPolicy("enterprise") } });
+    grantProject(w.db, OMAR, "payments");
+    const made = await w.create(OMAR, { permissions: ["read"] });
+    const cap = editionPolicy("enterprise").sessionMaxSeconds!;
+    expect(Date.parse(made.token.expiresAt) - Date.parse(made.token.createdAt)).toBe(cap * 1000);
+    expect((await w.script(made.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(200);
+    w.db.set({ ...w.record(made.token.tokenId), createdAt: new Date(Date.now() - (cap + 60) * 1000).toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+    expect((await w.script(made.secret, "GET", "/v1/dev/tasks?project=payments")).status).toBe(401);
+  });
+
+  it("I1: a SAML cut-off after the token was made ends it; SAML settings that can't be read refuse it", async () => {
+    let validFrom: number | undefined = Math.floor(Date.now() / 1000) - 3600;
+    let fail = false;
+    const sso = { saml: { config: { get: async () => { if (fail) throw new Error("unreadable"); return validFrom === undefined ? undefined : { sessionsValidFrom: validFrom }; } } } };
+    const w = await world({ brokerExtra: { editionPolicy: editionPolicy("enterprise"), sso }, developerExtra: { methods: { slack: true, oidc: true, saml: true } } });
+    grantProject(w.db, OMAR, "payments");
+    const made = await w.create(OMAR, { permissions: ["read"] });
+    // The token as one made from a SAML session would be stored.
+    w.db.set({ ...w.record(made.token.tokenId), amr: "saml", authTime: new Date(Date.now() - 60_000).toISOString() });
+    const read = () => w.script(made.secret, "GET", "/v1/dev/tasks?project=payments");
+    expect((await read()).status).toBe(200);
+    fail = true;
+    expect((await read()).status).toBe(401);
+    expect(w.record(made.token.tokenId).revokedAt).toBeUndefined();
+    fail = false;
+    validFrom = Math.floor(Date.now() / 1000) + 5;
+    expect((await read()).status).toBe(401);
+    expect(w.record(made.token.tokenId).revokedBy).toBe("rovara");
+  });
+
+  it("I3: a token's start carries the token's client name whatever the body says, and is audited with the task", async () => {
+    const w = await world();
+    const made = await w.create();
+    const started = await w.script(made.secret, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
+    expect(started.status).toBe(200);
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    expect(w.db.get(`DEVTASK#${taskId}`, "META")).toMatchObject({ client: "Script token CI deploy" });
+    const perStart = w.audit.recordedBy("script_token.used").filter((event) => event.related?.includes(taskId));
+    expect(perStart).toHaveLength(1);
+    expect(perStart[0]).toMatchObject({ target: { kind: "script_token", id: made.token.tokenId }, facts: { permission: "start" } });
+  });
+
+  it("I3: a body with two `project` keys starts only where the scope check looked", async () => {
+    const w = await world();
+    const made = await w.create();
+    const raw = (first: string, last: string) => `{"requestId":"${randomUUID()}","project":"${first}","project":"${last}","instructions":"Fix it","client":"ci"}`;
+    const send = (body: string) => w.handler({ version: "2.0", rawPath: "/v1/dev/tasks", rawQueryString: "", headers: { authorization: `Bearer ${made.secret}` }, body, requestContext: { requestId: randomUUID(), http: { method: "POST" } } });
+    expect((await send(raw("payments", "billing"))).statusCode).toBe(403);
+    const ok = await send(raw("billing", "payments"));
+    expect(ok.statusCode).toBe(200);
+    const taskId = (JSON.parse(ok.body) as { task: { taskId: string } }).task.taskId;
+    expect(w.db.get(`DEVTASK#${taskId}`, "META")).toMatchObject({ project: "payments" });
+  });
+
+  it("I4: if the day's audited use can't be written the request is refused (503) and does not run; the retry goes through", async () => {
+    const w = await world();
+    const made = await w.create();
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("lastUsedDay"), error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "None" }, { Code: "ThrottlingError" }] } });
+    const refused = await w.start(made.secret);
+    expect(refused.status).toBe(503);
+    expect(w.db.find((item) => item.entityType === "DEVELOPER_TASK" || (typeof item.pk === "string" && item.pk.startsWith("DEVTASK#")))).toEqual([]);
+    expect(w.audit.recordedBy("script_token.used")).toEqual([]);
+    expect((await w.start(made.secret)).status).toBe(200);
+    expect(w.audit.recordedBy("script_token.used").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("I4: a start whose own audit event can't be written answers 503, and the same request again returns the task and audits it once", async () => {
+    const w = await world();
+    const made = await w.create();
+    w.db.set({ ...w.record(made.token.tokenId), lastUsedDay: new Date().toISOString().slice(0, 10), lastUsedAt: new Date().toISOString() });
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => { const items = (input as { TransactItems?: unknown[] }).TransactItems ?? []; return items.length === 1 && JSON.stringify(items).includes("script_token.used"); }, error: { name: "ServiceUnavailable" } });
+    const body = { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "ci" };
+    expect((await w.script(made.secret, "POST", "/v1/dev/tasks", body)).status).toBe(503);
+    const again = await w.script(made.secret, "POST", "/v1/dev/tasks", body);
+    expect(again.status).toBe(200);
+    const taskId = (again.body.task as { taskId: string }).taskId;
+    expect(w.audit.recordedBy("script_token.used").filter((event) => event.related?.includes(taskId))).toHaveLength(1);
+  });
+
+  it("I4: with no audit ledger a token's use is refused", async () => {
+    const w = await world();
+    const made = await w.create();
+    const record = w.record(made.token.tokenId);
+    const store = { documentClient: w.db, tableName: "state", now: Date.now, log: () => undefined };
+    await expect(noteScriptTokenUse(store, ScriptTokenRecordSchema.parse(record), "read")).rejects.toMatchObject({ code: "AUDIT_UNAVAILABLE" });
+  });
+
+  it("M5: a take-back over the per-person limit is audited as a revoke", async () => {
+    const w = await world();
+    const first = await w.create();
+    const template = w.record(first.token.tokenId);
+    const plant = (index: number) => {
+      const tokenId = `stk_${String(index).padStart(20, "0")}`;
+      w.db.set({ ...template, ...scriptTokenKey(TEST_ORG, tokenId), tokenId });
+      w.db.set({ ...orgScriptTokensKey(TEST_ORG, tokenId), entityType: "SCRIPT_TOKEN_ROW", orgId: TEST_ORG, tokenId, developerId: MAYA.developerId, createdAt: template.createdAt });
+    };
+    for (let index = 1; index <= 8; index += 1) plant(index);
+    // A second request makes the tenth token at the same moment: this one's own count then finds eleven.
+    let raced = false;
+    const stop = w.db.onWrite(({ after }) => { if (!raced && after?.entityType === "SCRIPT_TOKEN_ROW" && !String(after.tokenId).startsWith("stk_000")) { raced = true; plant(9); } });
+    const refused = await w.web(MAYA, "POST", "/v1/app/script-tokens", { requestId: randomUUID(), name: "Race", projects: ["payments"], permissions: ["read"] });
+    stop();
+    expect(refused.status).toBe(400);
+    const takenBack = w.db.find((item) => item.entityType === "SCRIPT_TOKEN" && item.name === "Race");
+    expect(takenBack).toHaveLength(1);
+    expect(takenBack[0]).toHaveProperty("revokedAt");
+    expect(w.audit.recordedBy("script_token.revoked").filter((event) => event.target.kind === "script_token" && (event.target as { id: string }).id === takenBack[0]!.tokenId)).toEqual([expect.objectContaining({ facts: { by: "limit" } })]);
+  });
+
+  it("refuses every look-alike of the closed list through the real handler", async () => {
+    const w = await world();
+    const made = await w.create();
+    const started = await w.start(made.secret);
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const tasksBefore = w.db.find((item) => typeof item.pk === "string" && item.pk.startsWith("DEVTASK#") && item.sk === "META").length;
+    const cases: Array<[string, string]> = [
+      ["POST", "/v1/dev/tasks/"], ["GET", "/v1/dev/tasks/"], ["POST", "/V1/dev/tasks"], ["POST", "//v1/dev/tasks"], ["GET", `/v1/dev/tasks/%2e%2e/${taskId}`], ["GET", `/v1/dev/tasks/${encodeURIComponent(taskId).replace("-", "%2D")}`],
+      ["HEAD", `/v1/dev/tasks/${taskId}`], ["OPTIONS", "/v1/dev/tasks"], ["POST", "/v1/app/tasks"], ["GET", `/v1/app/tasks/${taskId}`], ["POST", "/v1/web/tasks"], ["GET", `/review/${taskId}/task`], ["POST", "/v1/service/tasks"],
+    ];
+    for (const [method, path] of cases) {
+      const reply = await w.script(made.secret, method, path, { requestId: randomUUID(), project: "payments", instructions: "x", client: "ci" });
+      expect(reply.status, `${method} ${path}`).toBeGreaterThanOrEqual(300);
+    }
+    expect(w.db.find((item) => typeof item.pk === "string" && item.pk.startsWith("DEVTASK#") && item.sk === "META")).toHaveLength(tasksBefore);
+  });
+
+  it("a token header beside a browser cookie never stands in for the cookie's CSRF token", async () => {
+    const w = await world();
+    const made = await w.create();
+    const sid = String(w.session(MAYA).sessionId);
+    const response = await w.handler({
+      version: "2.0", routeKey: "ANY /v1/web/{proxy+}", rawPath: "/v1/web/script-tokens", rawQueryString: "",
+      headers: { authorization: `Bearer ${made.secret}`, cookie: `__Host-agentx_review_session=${sid}`, "sec-fetch-site": "same-origin", origin: ORIGIN },
+      body: JSON.stringify({ requestId: randomUUID(), name: "x", projects: ["payments"], permissions: ["read"] }), requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+    });
+    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    expect(w.db.find((item) => item.entityType === "SCRIPT_TOKEN")).toHaveLength(1);
+  });
+
+  it("the creator losing project access refuses a start; their own task still reads", async () => {
+    const w = await world();
+    const made = await w.create();
+    const started = await w.start(made.secret);
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    w.channelMembers.mockImplementation(async () => ({ ok: true, memberOf: [] }));
+    expect((await w.start(made.secret)).status).toBe(403);
+    expect((await w.script(made.secret, "GET", `/v1/dev/tasks/${taskId}`)).status).toBe(200);
   });
 });

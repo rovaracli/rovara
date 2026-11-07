@@ -3,7 +3,7 @@
 import { agentXError } from "@agentx/contracts";
 import { readChosenName } from "../developer/chosen-name.js";
 import { safeDisplayName } from "../developer/person-name.js";
-import type { DeveloperRecord } from "../developer/store.js";
+import { isFreshSignIn, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { getSignIn } from "../aws/developer-routes/authentication.js";
@@ -15,6 +15,7 @@ import { createScriptToken, listScriptTokens, revokeScriptToken, type ScriptToke
 export const SCRIPT_TOKENS_PATH = "/v1/app/script-tokens";
 const TOKEN_PATH = /^\/v1\/app\/script-tokens\/([^/]+)$/u;
 export const SCRIPT_TOKENS_BROWSER_MESSAGE = "Use a live browser session to manage script tokens.";
+export const SCRIPT_TOKEN_FRESH_SIGN_IN_MESSAGE = "Sign in again to make a script token.";
 
 /** The paths this module owns under `/v1/app/`. */
 export function isScriptTokensPath(pathname: string): boolean {
@@ -41,7 +42,14 @@ export async function routeScriptTokens(deps: DeveloperRouteDependencies, caller
   if (url.pathname === SCRIPT_TOKENS_PATH) {
     if (request.method === "GET") return { tokens: await listScriptTokens(store, who, (developerId) => personName(deps, developerId)) };
     if (request.method === "POST") {
-      return new StatusReply(201, await createScriptToken(store, who, jsonBody(request), async (project) => { await checkProjectAccess(deps, caller, project); }));
+      // Review I2: a long-lived credential needs a sign-in made within the last few minutes (the rule of the audit export). The session also says which identity the token is
+      // made from and when the person signed in, so an unlink or a SAML cut-off ends the token as it ends the session (review I1).
+      const session = await getSignIn<Pick<SessionRecord, "authTime" | "identityKey">>(deps, `SESSION#${caller.sessionId}`);
+      if (session === undefined || !isFreshSignIn(session, deps.now())) throw agentXError("REAUTH_REQUIRED", SCRIPT_TOKEN_FRESH_SIGN_IN_MESSAGE);
+      const maker = { ...who, ...(session.identityKey === undefined ? {} : { identityKey: session.identityKey }), ...(session.authTime === undefined ? {} : { authTime: session.authTime }) };
+      // Review I1: where the edition caps every session, a token lives no longer than one.
+      const cap = deps.editionPolicy?.sessionMaxSeconds;
+      return new StatusReply(201, await createScriptToken(store, maker, jsonBody(request), async (project) => { await checkProjectAccess(deps, caller, project); }, cap === undefined ? {} : { lifetimeCapSeconds: cap }));
     }
     throw notFound();
   }

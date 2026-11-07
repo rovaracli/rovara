@@ -42,7 +42,11 @@ export interface ScriptTokenDependencies extends TableInput, AuditDeps {
 }
 
 /** Who makes, lists or revokes tokens: a signed-in person, with their live role, and the sign-in method of the session they used. */
-export interface ScriptTokenCaller { developerId: string; orgId: OrgId; orgRole: OrgRole; amr: DeveloperSignInMethod }
+export interface ScriptTokenCaller {
+  developerId: string; orgId: OrgId; orgRole: OrgRole; amr: DeveloperSignInMethod;
+  /** The creating session's sign-in identity and the time the person signed in: the token is ended by what ends that session (an unlink, a SAML cut-off). */
+  identityKey?: string; authTime?: string;
+}
 
 const DAY_MS = 86_400_000;
 /** How long a dead token's items stay before the TTL deletes them: a month after the token's end (or its revocation). */
@@ -75,7 +79,11 @@ export const ScriptTokenRecordSchema = z.object({
   lastUsedAt: Instant.optional(),
   lastUsedDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   revokedAt: Instant.optional(),
-  revokedBy: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  /** A person's id, or `rovara` when Rovara revoked it because its creator's access changed. */
+  revokedBy: z.union([z.string().regex(/^[a-f0-9]{64}$/), z.literal("rovara")]).optional(),
+  /** Review I1: the creating session's identity and sign-in time, so an unlink or a SAML cut-off ends the token as it ends the session. Absent on a token made before. */
+  identityKey: z.string().min(1).max(200).optional(),
+  authTime: Instant.optional(),
 }).strip();
 export type ScriptTokenRecord = z.infer<typeof ScriptTokenRecordSchema>;
 
@@ -169,7 +177,7 @@ const liveCount = (records: ScriptTokenRecord[], nowMs: number) => records.filte
  * remembers only the token's id: a repeat of the request is refused, never answered with the token. A person keeps at most `SCRIPT_TOKENS_PER_PERSON_MAX` live tokens, counted from what
  * is stored; two requests can pass the count together, so the list is read again after the write and a request that finds more takes its own token back and is refused.
  */
-export async function createScriptToken(deps: ScriptTokenDependencies, caller: ScriptTokenCaller, body: unknown, checkProject: (project: string) => Promise<void>): Promise<CreatedScriptToken> {
+export async function createScriptToken(deps: ScriptTokenDependencies, caller: ScriptTokenCaller, body: unknown, checkProject: (project: string) => Promise<void>, options: { lifetimeCapSeconds?: number } = {}): Promise<CreatedScriptToken> {
   if (caller.orgRole === "auditor") throw agentXError("FORBIDDEN", "An Auditor can't make script tokens.");
   const parsed = CreateScriptTokenBodySchema.safeParse(body);
   if (!parsed.success) throw invalidBody(parsed.error.issues[0]);
@@ -195,12 +203,14 @@ export async function createScriptToken(deps: ScriptTokenDependencies, caller: S
   const nowMs = deps.now();
   const tokenId = newPrefixedId("stk");
   const { token, hash } = mintScriptToken(orgId, tokenId);
-  const expiresMs = nowMs + days * DAY_MS;
+  // Review I1: where the edition caps every session (Enterprise), a token lives no longer than a session would.
+  const expiresMs = Math.min(nowMs + days * DAY_MS, options.lifetimeCapSeconds === undefined ? Number.MAX_SAFE_INTEGER : nowMs + options.lifetimeCapSeconds * 1000);
   const record: ScriptTokenRecord = {
     orgId, tokenId, developerId, name: input.name, projects, permissions, createdAt: isoOf(nowMs), expiresAt: isoOf(expiresMs), createdRole: caller.orgRole, amr: caller.amr, secretHash: hash,
+    ...(caller.identityKey === undefined ? {} : { identityKey: caller.identityKey }), ...(caller.authTime === undefined ? {} : { authTime: caller.authTime }),
   };
   const event = auditScriptTokenCreated({
-    orgId, actor: { kind: "member", id: developerId }, occurredAt: record.createdAt, occurrence: auditOccurrence(tokenId, "created"), tokenId, days, projects: projects.length, permissions: permissions.join(","),
+    orgId, actor: { kind: "member", id: developerId }, occurredAt: record.createdAt, occurrence: auditOccurrence(tokenId, "created"), tokenId, days: Math.max(0, Math.round((expiresMs - nowMs) / DAY_MS)), projects: projects.length, permissions: permissions.join(","),
   });
   const items: TransactItem[] = [
     { Put: { TableName: deps.tableName, Item: { ...scriptTokenKey(orgId, tokenId), entityType: "SCRIPT_TOKEN", ...record, [INDEX_EXPIRY_ATTRIBUTE]: keepUntil(expiresMs) }, ConditionExpression: "attribute_not_exists(pk)" } },
@@ -229,7 +239,10 @@ async function takeBack(deps: ScriptTokenDependencies, record: ScriptTokenRecord
   for (let attempt = 0; attempt < REVOKE_TRIES; attempt += 1) {
     try {
       const at = isoOf(deps.now());
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: revokeItems(deps, record, at, record.developerId) }));
+      // Review M5: the take-back is audited like any revoke, so the ledger never shows a token made and never ended.
+      const event = auditScriptTokenRevoked({ orgId: record.orgId, actor: { kind: "member", id: record.developerId }, occurredAt: at, occurrence: auditOccurrence(record.tokenId, "revoked"), tokenId: record.tokenId, by: "limit" });
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...revokeItems(deps, record, at, record.developerId), ...auditPending(deps, event)] }));
+      await flushAuditEvents(deps, [event]);
       return;
     } catch (error) {
       log(deps, { event: "script_tokens.take_back_failed", orgId: record.orgId, error: errorName(error) ?? "unknown" });
@@ -282,26 +295,45 @@ export async function revokeScriptToken(deps: ScriptTokenDependencies, caller: S
       return viewOf({ ...record, revokedAt: at, revokedBy: caller.developerId }, deps.now(), caller.developerId);
     } catch (error) {
       // Revoked by someone else at the same moment: read it again and answer what is there.
-      if (failedIndexes(error) === undefined) throw error;
+      const failed = failedIndexes(error);
+      if (failed === undefined) throw error;
+      log(deps, { event: "script_tokens.revoke_cancelled", orgId: caller.orgId, reasons: [...failed].join(",") || "none" });
     }
   }
   throw agentXError("RUNTIME_UNAVAILABLE", "That token changed while it was revoked. Try again.");
 }
 
+/**
+ * Review M3: a token refused because its creator's place changed (role, removal, ended or unlinked sign-in) is revoked by Rovara at once, so it never works again if the creator
+ * goes back to where they stood. Best effort: the request is refused either way; a failed write is logged and the next request tries again.
+ */
+export async function revokeForAccessChange(deps: ScriptTokenDependencies, record: ScriptTokenRecord): Promise<void> {
+  const at = isoOf(deps.now());
+  const event = auditScriptTokenRevoked({ orgId: record.orgId, actor: { kind: "system", id: "rovara" }, occurredAt: at, occurrence: auditOccurrence(record.tokenId, "revoked"), related: [record.developerId], tokenId: record.tokenId, by: "access_changed" });
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...revokeItems(deps, record, at, "rovara"), ...auditPending(deps, event)] }));
+    await flushAuditEvents(deps, [event]);
+  } catch (error) {
+    log(deps, { event: "script_tokens.access_revoke_failed", orgId: record.orgId, error: errorName(error) ?? "unknown", reasons: [...(failedIndexes(error) ?? [])].join(",") || "none" });
+  }
+}
+
 // ---- use
 
 /**
- * Notes a request a token made: its "last used" time (at most every `LAST_USED_EVERY_MS`) and, with the day's first request, the day's `script_token.used` audit event in the same
- * write. Bookkeeping only: a failure is logged and the next request tries again; it never lets a refused token through (the caller has already decided) nor stops a good one.
+ * Notes a request a token made: with the day's first request, the day's `script_token.used` audit event, in the same write as the token's "last used" day. That write fails closed
+ * (review I4): if it fails for any reason but its own condition (another request noted the day first), the request is refused with a retryable 503, so every day of use is in the
+ * ledger. A use with no audit ledger is refused. Later "last used" updates (at most every `LAST_USED_EVERY_MS`) are bookkeeping only: a failure is logged and the request goes on.
  */
 export async function noteScriptTokenUse(deps: ScriptTokenDependencies, record: ScriptTokenRecord, permission: ScriptTokenPermission): Promise<void> {
+  if (deps.audit === undefined) throw auditUnavailable();
   const nowMs = deps.now();
   const at = isoOf(nowMs);
   const day = at.slice(0, 10);
   const key = scriptTokenKey(record.orgId, record.tokenId);
-  try {
-    if (record.lastUsedDay !== day) {
-      const event = auditScriptTokenUsed({ orgId: record.orgId, actor: { kind: "member", id: record.developerId }, occurredAt: at, occurrence: auditOccurrence(record.tokenId, day), tokenId: record.tokenId, day, permission });
+  if (record.lastUsedDay !== day) {
+    const event = auditScriptTokenUsed({ orgId: record.orgId, actor: { kind: "member", id: record.developerId }, occurredAt: at, occurrence: auditOccurrence(record.tokenId, day), tokenId: record.tokenId, day, permission });
+    try {
       await deps.documentClient.send(new TransactWriteCommand({
         TransactItems: [
           {
@@ -314,17 +346,44 @@ export async function noteScriptTokenUse(deps: ScriptTokenDependencies, record: 
           ...auditPending(deps, event),
         ],
       }));
-      await flushAuditEvents(deps, [event]);
-      return;
+    } catch (error) {
+      const failed = failedIndexes(error);
+      log(deps, { event: "script_tokens.use_note_cancelled", orgId: record.orgId, error: errorName(error) ?? "unknown", reasons: [...(failed ?? [])].join(",") || "none" });
+      // Only the token's own condition: today is noted already (or the token was revoked a moment ago, which the next request refuses).
+      if (failed !== undefined && failed.size === 1 && failed.has(0)) return;
+      throw agentXError("RUNTIME_UNAVAILABLE", "Rovara couldn't record this script token's use. Try again.");
     }
-    if (record.lastUsedAt !== undefined && Date.parse(record.lastUsedAt) > nowMs - LAST_USED_EVERY_MS) return;
+    await flushAuditEvents(deps, [event]);
+    return;
+  }
+  if (record.lastUsedAt !== undefined && Date.parse(record.lastUsedAt) > nowMs - LAST_USED_EVERY_MS) return;
+  try {
     await deps.documentClient.send(new UpdateCommand({
       TableName: deps.tableName, Key: key, UpdateExpression: "SET lastUsedAt = :at",
       ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(revokedAt) AND (attribute_not_exists(lastUsedAt) OR lastUsedAt < :cutoff)",
       ExpressionAttributeValues: { ":at": at, ":cutoff": isoOf(nowMs - LAST_USED_EVERY_MS) },
     }));
   } catch (error) {
-    const name = errorName(error);
-    if (name !== "ConditionalCheckFailedException" && name !== "TransactionCanceledException") log(deps, { event: "script_tokens.use_note_failed", orgId: record.orgId, error: name ?? "unknown" });
+    if (errorName(error) !== "ConditionalCheckFailedException") log(deps, { event: "script_tokens.last_used_failed", orgId: record.orgId, error: errorName(error) ?? "unknown" });
   }
+}
+
+/**
+ * Review I3: every task a token starts is audited by itself, naming the token and the task (`related`), so the ledger lists what a token did. Written after the start answered;
+ * the occurrence is the token and the task, so a retry of the same start (same request id, same task) writes the same event once. Fails closed with a retryable 503: the script
+ * retries with its request id, gets the same task back, and the event is written then.
+ */
+export async function auditScriptTokenStart(deps: ScriptTokenDependencies, token: { orgId: OrgId; tokenId: string; developerId: string }, taskId: string): Promise<void> {
+  if (deps.audit === undefined) throw auditUnavailable();
+  const at = isoOf(deps.now());
+  const event = auditScriptTokenUsed({
+    orgId: token.orgId, actor: { kind: "member", id: token.developerId }, occurredAt: at, occurrence: auditOccurrence(token.tokenId, taskId), related: [taskId], tokenId: token.tokenId, day: at.slice(0, 10), permission: "start",
+  });
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: auditPending(deps, event) }));
+  } catch (error) {
+    log(deps, { event: "script_tokens.start_audit_failed", orgId: token.orgId, error: errorName(error) ?? "unknown", reasons: [...(failedIndexes(error) ?? [])].join(",") || "none" });
+    throw agentXError("RUNTIME_UNAVAILABLE", "The task started, but Rovara couldn't record it. Send the same request again.");
+  }
+  await flushAuditEvents(deps, [event]);
 }

@@ -293,7 +293,7 @@ export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId; orgRole
 export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId; orgRole: OrgRole; /** True only for a caller the web boundary authenticated with a live browser session cookie and its CSRF token (`authenticateWebRequest`); never for a token. */ browserSession?: true;
   /** Release 0.4.16: true once the person chose their own display name (`PUT /v1/app/me/name`). Set by the session read; absent on a caller built another way. */ nameChosen?: boolean;
   /** UX5b: set only for a caller a script token stands for (`script-tokens/authenticate.ts`), which reached a route on the token's closed list. Never with `browserSession`. */
-  scriptToken?: { tokenId: string; permissions: readonly ("read" | "start")[]; projects: readonly string[] } }
+  scriptToken?: { tokenId: string; name: string; permissions: readonly ("read" | "start")[]; projects: readonly string[] } }
 
 /** What the broker needs from a Lambda invoke; `@aws-sdk/client-lambda`'s InvokeCommand output fits. */
 export interface ChannelMembersInvokeResult { FunctionError?: string | undefined; Payload?: Uint8Array | undefined }

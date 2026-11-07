@@ -28,16 +28,16 @@ export function ScriptTokensScreen() {
  const nav = useQuery({ queryKey: ["nav"], queryFn: () => client.get("/v1/app/nav", AppNavReaderSchema) });
  const read = useQuery({ queryKey: key, queryFn: () => api.list(), gcTime: 0, refetchOnWindowFocus: false });
  const [name, setName] = useState(""), [projects, setProjects] = useState<string[]>([]), [permissions, setPermissions] = useState<ScriptTokenPermission[]>(["read"]), [days, setDays] = useState(String(SCRIPT_TOKEN_DEFAULT_DAYS));
- const [busy, setBusy] = useState<string>(), [error, setError] = useState<string>(), [made, setMade] = useState<{ name: string; secret: string }>(), [revoking, setRevoking] = useState<ScriptTokenRow>(), [copied, setCopied] = useState(false);
+ const [busy, setBusy] = useState<string>(), [error, setError] = useState<string>(), [reauth, setReauth] = useState(false), [made, setMade] = useState<{ name: string; secret: string }>(), [revoking, setRevoking] = useState<ScriptTokenRow>(), [copied, setCopied] = useState(false);
  const sending = useRef(false);
  // The token lives only in this screen's state while its dialog is open: closing it, or leaving the screen, forgets it.
  useEffect(() => () => { setMade(undefined);query.removeQueries({ queryKey: key }); }, [query, key]);
 
  async function run(label: string, work: () => Promise<void>) {
   if (sending.current) return;
-  sending.current = true;setBusy(label);setError(undefined);
+  sending.current = true;setBusy(label);setError(undefined);setReauth(false);
   try { await work(); await read.refetch(); }
-  catch (caught) { setError(problem(caught)); }
+  catch (caught) { setError(problem(caught));setReauth(caught instanceof ApiError && caught.code === "REAUTH_REQUIRED"); }
   finally { sending.current = false;setBusy(undefined); }
  }
  const toggle = <T extends string>(list: T[], value: T, on: boolean) => on ? [...list.filter(item => item !== value), value] : list.filter(item => item !== value);
@@ -60,7 +60,7 @@ export function ScriptTokensScreen() {
    <p className="rv-muted">A token can never make tokens, change people, roles, billing, company settings or secrets, or approve or decide anything for you.</p>
    <Button type="submit" variant="primary" busy={busy === "create"} disabled={!canCreate}>Make token</Button>
   </form>
-  {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
+  {error !== undefined && <p role="alert"><VisibleText text={error} />{reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>Sign in again</Button></>}</p>}
   <h2>Tokens</h2>
   {read.isPending ? <Skeleton label="Loading script tokens" /> : read.isError ? <div><p role="alert"><VisibleText text={problem(read.error)} /></p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div>
    : read.data.tokens.length === 0 ? <p>No script tokens yet.</p> : <ul className="rv-token-list" aria-label="Script tokens">

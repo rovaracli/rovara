@@ -101,6 +101,7 @@ import { taskStartAgentAuthorityChecks } from "../../org/task-start-agent-author
 import { taskStartProjectAuthorityChecks } from "../../org/task-start-project-authority.js";
 import { taskStopWindowItems } from "../../org/task-stop-window.js";
 import { usdToWholeMicrodollars } from "../../org/budget-amount.js";
+import { scriptTokenClientName } from "../../script-tokens/token-format.js";
 
 export async function limitError(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, full: "member" | "organization", limits: WorkspaceLimits): Promise<AgentXError> {
   const open = await openTasksText(deps, caller.developerId);
@@ -242,7 +243,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (systemStart && request.workflow === true) throw agentXError("CONFIG_INVALID", "an automatic run is not a workflow: it asks no model");
   const turns = turnTable(deps);
   // Only the Slack workflow's own caller can say "slack": an AI tool that sends that name is still an AI tool.
-  const client = caller.sessionId === SLACK_WORKFLOW_SESSION_ID && request.client?.trim().toLowerCase() === "slack" ? SLACK_CLIENT_NAME : cleanClientName(request.client);
+  // UX5b review I3: a script token's start names the token, whatever the body says.
+  const client = caller.scriptToken !== undefined ? scriptTokenClientName(caller.scriptToken.name) : caller.sessionId === SLACK_WORKFLOW_SESSION_ID && request.client?.trim().toLowerCase() === "slack" ? SLACK_CLIENT_NAME : cleanClientName(request.client);
   const payloadHash = hashJson({
     project: request.project, instructions: request.instructions, title: request.title ?? null,
     shareToChannel: request.shareToChannel ?? null, shareMode: request.shareMode ?? null, channel: request.channel ?? null,
