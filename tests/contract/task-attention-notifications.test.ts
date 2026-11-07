@@ -47,7 +47,7 @@ function setup() {
   return { w, seeded, setSummary, change, sent, readers, people, deps, pending, dms };
 }
 
-const blocked = { status: "needs_person" as const, display: { state: "needs_you", reason: "The checks didn't pass or couldn't run", next: "Send it back to coding." } };
+const blocked = { status: "needs_person" as const, display: { state: "needs_you" as const, reason: "The checks didn't pass or couldn't run", next: "Send it back to coding." } };
 
 describe("who is told", () => {
   it("queues the owner and the people the summary names for a task that now needs someone, once per person, for a web-started task with no Slack thread", async () => {
