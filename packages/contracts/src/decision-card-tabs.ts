@@ -37,6 +37,8 @@ export const DECISION_PLAN_COMMENTS_MAX = 25;
 export const DECISION_PLAN_NOTE_MAX = 500;
 export const DECISION_PLAN_QUESTIONS_MAX = 20;
 export const DECISION_PLAN_CHECKS_MAX = 20;
+/** OWNER DECISION 18: the most summary lines a document card shows. */
+export const DECISION_PLAN_SUMMARY_LINES_MAX = 5;
 /** OWNER DECISION 7: the card kinds that carry the document's own choices (its questions, the optional checks, the open comments, a note), as the old review page sent them with a decision. */
 export const DECISION_PLAN_CHOICE_KINDS: readonly string[] = ["approve_plan", "approve_requirements", "approve_design"];
 /** The card kinds whose Approve chooses optional checks: the coding plan only (the workflow decision's rule). */
@@ -61,6 +63,13 @@ export const DecisionPlanChoicesSchema = z.object({
   }).strict()).max(DECISION_PLAN_QUESTIONS_MAX),
   optionalChecks: z.array(z.object({ id: z.string().min(1).max(64), label: line(200), selected: z.boolean() }).strict()).max(DECISION_PLAN_CHECKS_MAX),
   openComments: z.array(z.object({ id: z.string().uuid(), excerpt: line(200) }).strict()).max(DECISION_PLAN_COMMENTS_MAX),
+  /**
+   * OWNER DECISION 18: the key facts on the card, worked out by the server from the document itself (no model call; the same document gives the same lines): what is needed, and what Rovara will do
+   * in 1 to 5 lines (3 to 5 whenever the document has that many points). Absent when the document cannot be read.
+   */
+  summary: z.object({ needed: line(300), lines: z.array(line(200)).min(1).max(DECISION_PLAN_SUMMARY_LINES_MAX) }).strict().optional(),
+  /** OWNER DECISION 18: how many person comments are open on this version (all of them; `openComments` lists at most 25). */
+  openCommentCount: z.number().int().min(0).max(100_000).optional(),
 }).strict();
 export type DecisionPlanChoices = z.infer<typeof DecisionPlanChoicesSchema>;
 
