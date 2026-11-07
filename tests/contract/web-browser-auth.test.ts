@@ -224,7 +224,8 @@ describe("browser sign-in returns and sign-out", () => {
    if (reason === "cancelled") target.searchParams.delete("code");
    if (reason === "failed") target.searchParams.set("code", "invalid-fixture-code");
    const callback = httpEvent("GET", target.toString());callback.headers = { cookie: start.cookies!.find(value => value.startsWith("__Host-agentx_review_pkce="))!.split(";", 1)[0] };
-   const response = await h.http(callback);expect(response.headers.location).toBe(`/app/signed-out?reason=${reason}`);
+   // UX1: a code the provider refuses is "refused" (the account or code was not accepted), a fixed reason of its own.
+   const response = await h.http(callback);expect(response.headers.location).toBe(`/app/signed-out?reason=${reason === "failed" ? "refused" : reason}`);
    expect(response.cookies?.some(value => value.startsWith("__Host-agentx_review_session="))).toBe(false);
   }
  });
@@ -279,7 +280,8 @@ it("uses the real cookie Origin and CSRF boundary for reviewed creation and safe
  seedMembership(h.db,WHO,{orgId:TEST_ORG,role:"member"});expect((await h.call("GET",`/v1/web/org/invites/requests/${body.requestId}`)).status).toBe(403);expect((await h.call("POST",path,headers,body)).status).toBe(403);
 });
 
-it("delivers a configured cloud join link across origins through the real cookie route and console client",async()=>{const audit=capturingAuditDeps(),h=await broker({audit:audit.audit,cloud:true},"https://join.example.test");audit.attach(h.db);const host=fakeHost(async r=>h.call(r.method,r.path.replace("/v1/app/","/v1/web/"),{cookie:COOKIE,origin:CELL,[APP_CSRF_HEADER]:appCsrfTokenFor(SID)},r.body));const result=await createInviteAdminApi(host.host,TEST_ORG).create({requestId:randomUUID(),role:"member",email:"private.person@example.test"});expect(new URL(result.inviteUrl!).origin).toBe("https://join.example.test");expect(result.receipt.orgId).toBe(TEST_ORG);expect(h.db.find(row=>row.entityType==="ORG_INVITE").length).toBe(1);expect(audit.flushed().filter(event=>event.action==="org.invite_created").length).toBe(1);});
+// UX1: a cloud invite link points at the app's own origin (which serves /join), not the configured rovara.dev forwarder.
+it("delivers a cloud join link on the app's own origin through the real cookie route and console client",async()=>{const audit=capturingAuditDeps(),h=await broker({audit:audit.audit,cloud:true},"https://join.example.test");audit.attach(h.db);const host=fakeHost(async r=>h.call(r.method,r.path.replace("/v1/app/","/v1/web/"),{cookie:COOKIE,origin:CELL,[APP_CSRF_HEADER]:appCsrfTokenFor(SID)},r.body));const result=await createInviteAdminApi(host.host,TEST_ORG).create({requestId:randomUUID(),role:"member",email:"private.person@example.test"});expect(new URL(result.inviteUrl!).origin).toBe(CELL);expect(new URL(result.inviteUrl!).pathname).toBe("/join");expect(result.receipt.orgId).toBe(TEST_ORG);expect(h.db.find(row=>row.entityType==="ORG_INVITE").length).toBe(1);expect(audit.flushed().filter(event=>event.action==="org.invite_created").length).toBe(1);});
 
 it("reads only current-org monthly base settings through the real cookie boundary",async()=>{const h=await broker();const path="/v1/web/org/budget-settings";expect((await h.call("GET",path,{})).status).toBe(401);const first=await h.call("GET",path,{cookie:COOKIE});expect(first.status).toBe(200);expect(first.body.orgId).toBe(TEST_ORG);expect(first.body.coverage).toBe("monthly_base_settings_only");expect(first.body.usage).toBe("not_checked");seedMembership(h.db,WHO,{orgId:TEST_ORG,role:"member"});expect((await h.call("GET",path,{cookie:COOKIE})).status).toBe(403);});
 
@@ -368,7 +370,18 @@ function seedCompanySource(db: Awaited<ReturnType<typeof broker>>["db"]) {
 for (const role of ["owner", "admin", "member"] as const) it(`refuses unreviewed cookie source deletion for ${role} without touching order or proxy`, async () => {
  const audit = capturingAuditDeps(), access = fakeModelAccess(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access, proxyUrl: "https://proxy.example.test" } });audit.attach(h.db);seedMembership(h.db, WHO, { orgId: TEST_ORG, role });const source = seedCompanySource(h.db), before = h.db.commandNames().length;
  const response = await h.call("DELETE", `/v1/web/org/model-sources/${source.sourceId}`, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID() });
- expect(response.status).toBe(403);expect(errorOf(response.body)).toMatchObject({ code: "FORBIDDEN", message: "Removing a company AI source is not available in the console yet." });expect(h.db.get(modelSourcesKey(TEST_ORG))).toEqual(source.item);expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);expect(audit.recorded()).toEqual([]);expect(access.removeSource).not.toHaveBeenCalled();
+ expect(response.status).toBe(403);expect(errorOf(response.body)).toMatchObject({ code: "FORBIDDEN", message: "Review the company's current AI sources before removing one." });expect(h.db.get(modelSourcesKey(TEST_ORG))).toEqual(source.item);expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);expect(audit.recorded()).toEqual([]);expect(access.removeSource).not.toHaveBeenCalled();
+});
+// UX1: the web app removes a company AI source only with the revision the person reviewed; a member is refused, and so is a stale review.
+it("removes a reviewed cookie source deletion for an admin, and refuses a member and a stale revision without touching order or proxy", async () => {
+ const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };
+ for (const [role, revision, status] of [["member", 1, 403], ["owner", 0, 409], ["admin", 1, 200]] as const) {
+  const access = fakeModelAccess(), h = await broker({ agents: {}, modelAccess: { access, proxyUrl: "https://proxy.example.test" } });seedMembership(h.db, WHO, { orgId: TEST_ORG, role });const source = seedCompanySource(h.db);
+  const response = await h.call("DELETE", `/v1/web/org/model-sources/${source.sourceId}`, headers, { requestId: randomUUID(), expectedRevision: revision });
+  expect(response.status, role).toBe(status);
+  if (status === 200) { expect(h.db.get(modelSourcesKey(TEST_ORG))?.sources).toEqual([]);expect(access.removeSource).toHaveBeenCalledWith(TEST_ORG, source.sourceId); }
+  else { expect(h.db.get(modelSourcesKey(TEST_ORG))).toEqual(source.item);expect(access.removeSource).not.toHaveBeenCalled(); }
+ }
 });
 it("preserves bearer CLI source-removal compatibility while deleting its ordered ID", async () => {
  const access = fakeModelAccess(), h = await broker({ agents: {}, modelAccess: { access, proxyUrl: "https://proxy.example.test" } }), source = seedCompanySource(h.db);
@@ -378,7 +391,7 @@ it("refuses cookie deletes uniformly for unknown and foreign-company source IDs"
  const h = await broker({ agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } }), source = seedCompanySource(h.db), otherOrg = "org_bbbbbbbbbbbbbbbbbbbb";
  h.db.delete(modelSourcesKey(TEST_ORG));const foreign = { ...source.item, ...modelSourcesKey(otherOrg) };h.db.set(foreign);const before = h.db.commandNames().length;
  for (const sourceId of [source.sourceId, "src_" + "b".repeat(20)]) {
-  const response = await h.call("DELETE", `/v1/web/org/model-sources/${sourceId}`, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID() });expect(response.status).toBe(403);expect(errorOf(response.body)).toMatchObject({ code: "FORBIDDEN", message: "Removing a company AI source is not available in the console yet." });
+  const response = await h.call("DELETE", `/v1/web/org/model-sources/${sourceId}`, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID() });expect(response.status).toBe(403);expect(errorOf(response.body)).toMatchObject({ code: "FORBIDDEN", message: "Review the company's current AI sources before removing one." });
  }
  expect(h.db.get(modelSourcesKey(otherOrg))).toEqual(foreign);expect(h.db.get(modelSourcesKey(TEST_ORG))).toBeUndefined();expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);
 });

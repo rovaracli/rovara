@@ -193,7 +193,7 @@ export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "
 export { OrgInvitePublicIdSchema, AppOrgInviteStatusSchema } from "./developer-web.js";
 
 // Lane A: safe reviewed invite creation receipts.
-export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema } from "./invite-creation.js";
+export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema, InviteEmailOutcomeSchema } from "./invite-creation.js";
 
 // Lane A: strict read-only monthly base budget settings.
 export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
@@ -311,3 +311,4 @@ export * from "./company-domains-web.js";
 export * from "./task-stop-enrollment.js";
 
 export * from "./task-stop-start-preview.js";
+export { SIGNED_OUT_REASONS, isSignedOutReason, type SignedOutReason } from "./sign-in-reasons.js";

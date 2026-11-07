@@ -61,7 +61,8 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const COOKIE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const INSTALLATION_ID_PATTERN = /^[1-9][0-9]{0,14}$/;
 const USER_INSTALLATION_PAGES = 10;
-const NOT_LINKED_START_MESSAGE = "sign in to Rovara with GitHub once (agentx login, then choose GitHub), then run agentx github connect again";
+// UX1: neutral words (the web app detects a missing GitHub link first and offers "Link your GitHub account" in place; the CLI prints this).
+const NOT_LINKED_START_MESSAGE = "link your GitHub account to your Rovara account first, then connect GitHub again";
 
 
 /** The Set-Cookie value that carries the confirmation token to the confirm page's form post, and only to this host. */

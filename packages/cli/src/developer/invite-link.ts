@@ -1,4 +1,4 @@
-// Plan 2, Task 6: `agentx login --invite <link>`. An invite link comes in three shapes: the rovara.dev link a cloud install hands out
+// Plan 2, Task 6: `agentx login --invite <link>`. An invite link comes in these shapes (UX1 adds a cell's own <origin>/join#invite=<token>): the rovara.dev link a cloud install hands out
 // (https://rovara.dev/join#invite=<token>), the link of a cell's own join page (<cell>/v1/auth/join?invite=<token>) and the bare
 // token. This file reads them, finds the cell, and asks that cell, before any browser opens, what the invite is for (ruling R19).
 import { INVITE_WRONG_EMAIL_MESSAGE, agentXError } from "@agentx/contracts";
@@ -19,7 +19,11 @@ export const INVITE_NO_LONGER_USABLE = "That invite can no longer be used; ask f
 export interface ParsedInviteLink { token: string; cellUrl?: string; directoryOrigin?: string }
 
 /** The invite and, when the link says so, the cell it is for or the directory that knows the cell. */
-export function parseInviteLink(link: string): ParsedInviteLink {
+/**
+ * `knownCells` (UX1 review I1): the cells this computer already signs in to (its saved logins) and any URL the person gave. A cloud cell serves its own
+ * invite page at <origin>/join, and such a link is read as that cell only when its origin is one of these; any other host's /join is refused as before.
+ */
+export function parseInviteLink(link: string, knownCells: readonly string[] = []): ParsedInviteLink {
   const text = link.trim();
   if (TOKEN_PATTERN.test(text)) return { token: text };
   let url: URL;
@@ -33,11 +37,27 @@ export function parseInviteLink(link: string): ParsedInviteLink {
   let where: Pick<ParsedInviteLink, "cellUrl" | "directoryOrigin">;
   if (path.endsWith(CELL_JOIN_SUFFIX)) where = { cellUrl: `${url.origin}${path.slice(0, -CELL_JOIN_SUFFIX.length)}` };
   else if (path === "/join" && url.origin === ROVARA_DIRECTORY_ORIGIN) where = { directoryOrigin: url.origin };
+  // UX1: a cloud cell serves its own invite page at <app origin>/join; the CLI follows it only to a cell it already knows. Only rovara.dev is the directory.
+  else if (path === "/join" && knownOrigins(knownCells).has(url.origin)) where = { cellUrl: url.origin };
   else throw agentXError("CONFIG_INVALID", NOT_AN_INVITE);
   const token = new URLSearchParams(url.hash.replace(/^#/, "")).get("invite") ?? url.searchParams.get("invite");
   if (token === null || token === "") throw agentXError("CONFIG_INVALID", "that invite link has no invite in it");
   if (!TOKEN_PATTERN.test(token)) throw agentXError("CONFIG_INVALID", NOT_AN_INVITE);
   return { token, ...where };
+}
+
+/** The https origins of the known cells; anything unparsable or not https is left out. */
+function knownOrigins(cells: readonly string[]): Set<string> {
+  const origins = new Set<string>();
+  for (const cell of cells) {
+    try {
+      const url = new URL(cell);
+      if (url.protocol === "https:" && url.username === "" && url.password === "") origins.add(url.origin);
+    } catch {
+      // Not a URL: not a known cell.
+    }
+  }
+  return origins;
 }
 
 /** An https URL with no query, hash or password, as the cell's base: the same rule web/rovara-dev-join/join.js applies. */

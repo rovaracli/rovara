@@ -5,6 +5,7 @@ import { SessionIdSchema } from "@agentx/contracts/web";
 import { HSTS, appHeaders, assetOrigin, type AppEnvironment } from "./headers.js";
 import { notFound, serveAsset, type AppResponse } from "./assets.js";
 import { renderShell } from "./shell.js";
+import { joinResponse } from "./join.js";
 export interface AppEvent { rawPath?: string; rawQueryString?: string; headers?: Record<string, string | undefined>; requestContext?: { http?: { method?: string } } }
 /** `canonicalOrigin` (0.5.7, a custom domain): the one origin the app's pages belong on; empty or absent means every address is canonical. */
 export interface AppHandlerOptions extends AppEnvironment { appDirectory: string; canonicalOrigin?: string }
@@ -20,6 +21,8 @@ export function createAppHandler(options: AppHandlerOptions): (event: AppEvent) 
   }
   const moved = canonicalRedirect(options.canonicalOrigin ?? "", event, path);
   if (moved !== undefined) return moved;
+  // UX1: an invite link opens on the app's own origin.
+  if (path === "/join") return joinResponse(event.rawQueryString);
   const session = path.startsWith("/s/") && SessionIdSchema.safeParse(path.slice(3)).success;
   if (!(path === "/app" || path.startsWith("/app/") || session)) return notFound();
   const nonce = randomBytes(18).toString("base64url");
@@ -31,7 +34,7 @@ export function createAppHandler(options: AppHandlerOptions): (event: AppEvent) 
 // The app's page on the API's own address (a bookmark, an old link) goes to the custom domain: its sign-in cookies are host-only, so the page and its sign-in must share a host.
 // A temporary redirect, so a rollback leaves nothing cached. Assets are not pages and are never redirected.
 function canonicalRedirect(canonicalOrigin: string, event: AppEvent, path: string): AppResponse | undefined {
- if (canonicalOrigin === "" || !(path === "/app" || path.startsWith("/app/") || path.startsWith("/s/"))) return undefined;
+ if (canonicalOrigin === "" || !(path === "/app" || path.startsWith("/app/") || path.startsWith("/s/") || path === "/join")) return undefined;
  const canonical = new URL(canonicalOrigin);
  const host = Object.entries(event.headers ?? {}).find(([key]) => key.toLowerCase() === "host")?.[1]?.toLowerCase();
  if (host === undefined || host === canonical.host.toLowerCase()) return undefined;

@@ -30,66 +30,77 @@ export interface InviteView {
   maskedEmail?: string;
 }
 
-/** An invite no one has used or let expire (200): who invited you, to what, and the way in. */
-export function openInvitePage(invite: InviteView, startUrl: string, pageUrl: string): PageSpec {
+/**
+ * An invite no one has used or let expire (200): who invited you, to what, and the way in. A browser page (UX1): no terminal commands; the CLI reads the
+ * JSON form of the same address (`agentx login --invite`).
+ */
+export function openInvitePage(invite: InviteView, startUrl: string): PageSpec {
   return {
     statusCode: 200,
     title: `Join ${invite.orgName} on Rovara`,
     paragraphs: [
       `${invite.inviterName} invited you to join ${invite.orgName} as ${roleInSentence(invite.role)}.`,
-      ...(invite.maskedEmail === undefined ? [] : [`This invite is for ${invite.maskedEmail}.`]),
-      `Using the terminal? Run: agentx login --invite ${pageUrl}`,
+      ...(invite.maskedEmail === undefined ? ["Sign in on the next page to join. No new company is created."] : [`This invite is for ${invite.maskedEmail}. Sign in with that address on the next page to join.`]),
     ],
     links: [{ href: startUrl, label: `Join ${invite.orgName}` }],
   };
 }
 
+/** UX1: the way back into Rovara from a page that can't go on: the sign-up page, where a person chooses to create a company or join one. */
+const TO_ROVARA = { href: "/app/signup", label: "Go to Rovara" };
+
 export const expiredInvitePage = (inviterName: string): PageSpec =>
-  ({ statusCode: 410, title: "This invite has expired", paragraphs: [`Ask ${inviterName} to send you a new invite.`] });
+  ({ statusCode: 410, title: "This invite has expired", paragraphs: [`Invites last seven days. Ask ${inviterName} to send you a new invite from Administration, Invites.`], links: [TO_ROVARA] });
 
 export const usedInvitePage = (inviterName: string): PageSpec =>
-  ({ statusCode: 410, title: "This invite was already used", paragraphs: [`Ask ${inviterName} for a new invite if you still need one.`] });
+  ({ statusCode: 410, title: "This invite was already used", paragraphs: [`Each invite works once. If you already joined, open Rovara and sign in. Otherwise ask ${inviterName} for a new invite.`], links: [{ href: "/app", label: "Open Rovara" }] });
 
 /** An unknown or malformed invite (404). Says nothing about which. */
 export const unknownInvitePage = (): PageSpec =>
-  ({ statusCode: 404, title: "This invite link isn't valid", paragraphs: ["Check that you copied the whole link, or ask for a new invite."] });
+  ({ statusCode: 404, title: "This invite link isn't valid", paragraphs: ["Check that you copied the whole link, or ask the person who invited you for a new invite."], links: [TO_ROVARA] });
 
 /** The done page for a browser that did not start the join, or whose result is gone (400). One answer for both, so a request id tells nothing. */
 export const otherBrowserPage = (): PageSpec =>
-  ({ statusCode: 400, title: "This page belongs to another browser", paragraphs: ["Open the invite link again."] });
+  ({ statusCode: 400, title: "This page belongs to another browser", paragraphs: ["Open the invite link again in this browser to finish joining."], links: [{ href: "/app", label: "Open Rovara" }] });
 
 /** The join page's sign-in could not continue in this browser (the callback came without the browser's own cookie). */
 export const joinExpiredPage = (): PageSpec =>
-  ({ statusCode: 400, title: "This invite sign-in expired", paragraphs: ["Open the invite link again and sign in."] });
+  ({ statusCode: 400, title: "This invite sign-in expired", paragraphs: ["Open the invite link again and sign in within ten minutes. The invite itself still works."], links: [TO_ROVARA] });
 
-/** What the person sees once the sign-in has ended, by outcome. `cellUrl` is the sign-in server's URL without `/v1/auth`. */
-export function joinDonePage(result: JoinResultRecord, cellUrl: string): PageSpec {
+/**
+ * What the person sees once the sign-in has ended, by outcome. `appOrigin` is the origin the app is served from (the sign-in server's own). A join that
+ * worked never shows this page: the browser goes straight into the app (server.ts); "joined" is kept for a result read some other way.
+ */
+export function joinDonePage(result: JoinResultRecord, appOrigin: string): PageSpec {
   switch (result.outcome) {
     case "joined":
       return {
         statusCode: 200,
         title: `You joined ${result.orgName}`,
-        paragraphs: [`You're now ${roleInSentence(result.role)} of ${result.orgName}.`, `Using the terminal? Run: agentx login ${cellUrl}`],
-        links: [{ href: "/app/welcome?joined=1", label: "Open Rovara" }],
+        paragraphs: [`You're now ${roleInSentence(result.role)} of ${result.orgName}.`],
+        links: [{ href: `${appOrigin}/app/welcome?joined=1`, label: "Open Rovara" }],
       };
     case "ALREADY_IN_ORG": {
+      // UX1: a clear choice, not a dead end. Keep the company they have, or leave it (the account menu opens on its Leave step) and open the invite again.
       const current = result.currentOrgName ?? "your organization";
       return {
         statusCode: 200,
         title: `You're already in ${current}`,
         paragraphs: [
-          `For now, a person can belong to one Rovara organization. To join ${result.invitedOrgName}, sign in with a different email address, or ask an owner of ${current} to remove you.`,
-          `If ${current} is a team you made by mistake and no one else is in it, leave it from your account menu in Rovara, then open this invite again.`,
+          `A person belongs to one Rovara company at a time. You can keep using ${current}, or leave it and then open this invite again to join ${result.invitedOrgName}.`,
+          `If you are the last owner of ${current}, leaving closes it. The invite stays valid until it expires.`,
         ],
+        links: [{ href: `${appOrigin}/app`, label: `Keep using ${current}` }, { href: `${appOrigin}/app?account=leave`, label: `Leave ${current} to join ${result.invitedOrgName}` }],
       };
     }
     case "INVITE_WRONG_EMAIL":
       return {
         statusCode: 200,
         title: "This invite is for a different email",
-        paragraphs: [`It was sent to ${result.maskedEmail ?? "another address"}. Sign in with that address, or ask ${result.inviterName} for an invite to yours.`],
+        paragraphs: [`It was sent to ${result.maskedEmail ?? "another address"}. Open the invite again and sign in with that address, or ask ${result.inviterName} for an invite to yours.`],
+        links: [TO_ROVARA],
       };
     case "INVITE_INVALID":
-      return { statusCode: 200, title: "This invite can no longer be used", paragraphs: [`Ask ${result.inviterName} for a new invite.`] };
+      return { statusCode: 200, title: "This invite can no longer be used", paragraphs: [`It expired, was revoked or was already used. Ask ${result.inviterName} for a new invite.`], links: [TO_ROVARA] };
   }
 }

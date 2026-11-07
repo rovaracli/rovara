@@ -40,7 +40,8 @@ const CLIENT_SECRET = "client-secret-value-9f3a";
 const OWNER = "owner-dev";
 const ADMIN = "admin-dev";
 const OTHER = "other-dev";
-const STARTED_MESSAGE = "sign in to Rovara with GitHub once (agentx login, then choose GitHub), then run agentx github connect again";
+// UX1: neutral words; the web app detects the missing link first and offers "Link your GitHub account" in place.
+const STARTED_MESSAGE = "link your GitHub account to your Rovara account first, then connect GitHub again";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
 interface GhUser { id: number; installations: number[]; memberships?: Record<string, { state: string; role: string }> }
@@ -555,7 +556,7 @@ describe("the callback route", () => {
     const page = await routeGithubInstall(deps, request, new URL(`https://cell.example/v1/github/install/callback?code=code1&installation_id=501&setup_action=install&state=${started.state}`));
     expect(page.statusCode).toBe(410);
     expect(page.headers["content-type"]).toContain("text/html");
-    expect(page.body).toContain("This connect link has expired.");
+    expect(page.body).toContain("This connect link has expired");
     expect(w.logs).toContainEqual({ event: "github.connect_callback_failed", error: "ThrottlingException" });
   });
 });
@@ -659,7 +660,8 @@ describe("through the broker", () => {
     expect(confirmed.statusCode).toBe(200);
     expect(confirmed.body).toContain("<h1>GitHub connected</h1>");
     expect(confirmed.body).toContain("acme is now connected to Acme &lt;img src=x onerror=alert(1)&gt;.");
-    expect(confirmed.body).toContain("Next: <code>agentx project create --repository acme/&lt;repository&gt;</code>");
+    // UX1: a button to the next step in the app, never a terminal command.
+    expect(confirmed.body).toContain('<a class="rv-next" href="/app/onboard?github=connected">Continue in Rovara</a>');expect(confirmed.body).not.toContain("agentx");
     expect(confirmed.headers["set-cookie"]).toContain("Max-Age=0");
     expect(b.db.get(githubInstallationKey(501))).toMatchObject({ orgId: TEST_ORG, accountLogin: "acme", boundByDeveloperId: OMAR.developerId });
     expect(b.db.get(orgGithubInstallationKey(TEST_ORG, 501))).toMatchObject({ orgId: TEST_ORG });
@@ -667,7 +669,7 @@ describe("through the broker", () => {
     // The same post again is a used state.
     const again = await b.publicCall("POST", "/v1/github/install/confirm", headers, form);
     expect(again.statusCode).toBe(410);
-    expect(again.body).toContain("This connect link has expired. Run agentx github connect again.");
+    expect(again.body).toContain("<h1>This connect link has expired</h1>");
   });
 
   it("the confirmation refuses a foreign Origin with 400 and a missing cookie as expired, and binds nothing", async () => {
@@ -696,7 +698,7 @@ describe("through the broker", () => {
     const state = new URL(installUrl).searchParams.get("state")!;
     const callback = await b.publicCall("GET", `/v1/github/install/callback?code=code1&installation_id=501&setup_action=install&state=${state}`);
     expect(callback.statusCode).toBe(403);
-    expect(callback.body).toContain("Sign in to Rovara with this GitHub account first");
+    expect(callback.body).toContain("Link this GitHub account to your Rovara account first");expect(callback.body).toContain('href="/app/onboard?github=not_linked"');
     expect(callback.headers["set-cookie"]).toBeUndefined();
     expect(b.db.get(githubInstallationKey(501))).toBeUndefined();
   });
@@ -705,7 +707,7 @@ describe("through the broker", () => {
     const b = await broker();
     const expired = await b.publicCall("GET", `/v1/github/install/callback?state=${"z".repeat(43)}`);
     expect(expired.statusCode).toBe(410);
-    expect(expired.body).toContain("<h1>This connect link has expired. Run agentx github connect again.</h1>");
+    expect(expired.body).toContain("<h1>This connect link has expired</h1>");expect(expired.body).toContain('href="/app/onboard">Back to Rovara</a>');
     b.linkGithub();
     const { installUrl } = (await b.dev(OMAR, "POST", "/v1/app/github/connect")).body as { installUrl: string };
     const state = new URL(installUrl).searchParams.get("state")!;
@@ -725,16 +727,18 @@ describe("the pages", () => {
     const text = (kind: Parameters<typeof githubConnectPage>[0], data = { accountLogin: "acme", orgName: "Acme" }) => githubConnectPage(kind, data).body.replace(/<style[^>]*>.*?<\/style>/, "");
     expect(text("connected_trial_used")).toContain("Your free trial stays locked: this GitHub account already started a trial for another organization.");
     expect(text("cancelled")).toContain("<h1>Nothing was connected</h1>");
-    expect(text("cancelled")).toContain("Run agentx github connect again if you change your mind.");
+    expect(text("cancelled")).toContain("You can connect GitHub again from Rovara whenever you&#39;re ready.");
     expect(text("taken")).toContain(`<h1>${GITHUB_INSTALLATION_TAKEN_MESSAGE}</h1>`);
     expect(githubConnectPage("taken").statusCode).toBe(409);
     expect(text("not_yours")).toContain("<h1>Only the account&#39;s owner or an admin of the GitHub organization can connect it</h1>");
-    expect(text("not_yours")).toContain("Ask an admin of acme on GitHub to run agentx github connect.");
+    expect(text("not_yours")).toContain("Choose a GitHub account you own, or ask an admin of acme on GitHub to approve Rovara&#39;s request.");
     expect(githubConnectPage("confirm", { accountLogin: "acme", orgName: "Acme", connectId: "a".repeat(64) }).headers["referrer-policy"]).toBe("same-origin");
     expect(githubConnectPage("not_allowed", { orgName: "Acme" }).statusCode).toBe(403);
     expect(text("not_allowed")).toContain("<h1>Nothing was connected</h1>");
-    expect(text("not_allowed")).toContain("The Rovara organization Acme was closed, or you are no longer its owner or admin. Ask an owner or admin of Acme to run agentx github connect.");
-    expect(text("not_linked")).toContain("This connect link was started by someone else in Rovara, or your GitHub account isn&#39;t linked to your Rovara account. Sign in with GitHub (agentx login, then choose GitHub), then run agentx github connect yourself.");
+    expect(text("not_allowed")).toContain("The Rovara organization Acme was closed, or you are no longer its owner or admin. Ask an owner or admin of Acme to connect GitHub from Rovara.");
+    expect(text("not_linked")).toContain("This connect link was started by someone else in Rovara, or your GitHub account isn&#39;t linked to your Rovara account yet. In Rovara, choose Link your GitHub account, then connect GitHub again.");
+    // UX1: no browser page of the connect flow speaks CLI, and every one but the confirm form has a button to the next step.
+    for (const kind of ["connected", "connected_trial_used", "cancelled", "requested", "not_linked", "not_yours", "not_allowed", "unattributed", "taken", "expired"] as const) { expect(text(kind)).not.toContain("agentx");expect(text(kind)).toMatch(/<a class="rv-next" href="\/app[^"]*">/); }
   });
 });
 

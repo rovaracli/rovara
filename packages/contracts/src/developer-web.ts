@@ -33,6 +33,8 @@ export const AppMeResponseSchema = z.object({
   }),
   org: z.object({ orgId: z.string(), name: z.string(), plan: z.string(), trial: AppTrialSchema.optional(), nameIsDefault: z.boolean().optional() }),
   identities: z.array(LinkedIdentitySchema),
+  /** UX1: the sign-in methods this person may link from the web app (the method is on here). Absent from an older control plane. */
+  linkable: z.object({ slack: z.boolean(), github: z.boolean() }).optional(),
 });
 export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;
 
@@ -57,7 +59,10 @@ export const OrgMemberRoleChangeResponseReaderSchema = forwardReader(OrgMemberRo
 /** Pending indexed invites only. Historical unindexed invites may still exist; never return bearer material. */
 export const AppOrgInvitesResponseSchema = z.object({
  invites: z.array(z.object({ inviteId: z.string().uuid(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), role: z.enum(["admin", "member"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), createdBy: z.string().regex(/^[a-f0-9]{64}$/), destination: z.discriminatedUnion("kind", [z.object({ kind: z.literal("link") }).strict(), z.object({ kind: z.literal("email"), label: z.string().max(260) }).strict()]) }).strict()).max(50),
- unavailableCount: z.number().int().min(0).max(50).optional(), coverage: z.enum(["indexed_only", "indexed_only_partial"]), checkedAt: z.string().datetime(), nextCursor: z.string().max(512).optional(),
+ unavailableCount: z.number().int().min(0).max(50).optional(),
+ /** UX1: whether this install can email an invite (its sign-in notice sender is set up). Absent from an older control plane: copy only. */
+ emailDelivery: z.boolean().optional(),
+ coverage: z.enum(["indexed_only", "indexed_only_partial"]), checkedAt: z.string().datetime(), nextCursor: z.string().max(512).optional(),
 }).strict();
 export const AppOrgInvitesResponseReaderSchema = forwardReader(AppOrgInvitesResponseSchema);
 

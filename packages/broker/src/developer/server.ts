@@ -1,6 +1,6 @@
 import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 import { withDecideIsolation } from "./confirm-page.js";
-import { SAML_SIGN_IN_REFUSED_MESSAGE, SessionIdSchema, agentXError } from "@agentx/contracts";
+import { SAML_SIGN_IN_REFUSED_MESSAGE, SessionIdSchema, agentXError, type SignedOutReason } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // packages/broker/src/developer/server.ts
 // Spec 025 FR-001 to FR-008: the control plane as the developers' sign-in server. Behind
@@ -74,7 +74,7 @@ import {
 } from "./join-page.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderIdentity, type ProviderResult, type SamlSignInProvider, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
-import { SLACK_LINK_HAS_ONE, endedByAdmin, endedByUnlink, isFreshSignIn, samlSessionEnded, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
+import { GITHUB_LINK_HAS_ONE, SLACK_LINK_HAS_ONE, SLACK_NO_WORKSPACE_MESSAGE, endedByAdmin, endedByUnlink, isFreshSignIn, samlSessionEnded, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
 import { sendDecideSignInAddedNotice, sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "./edition-methods.js";
 import { companySignInRefusalEvent, decideCompanySignIn, type CompanySignIn, type SsoStores } from "./sso-sign-in.js";
@@ -103,7 +103,7 @@ export interface DeveloperIdentityDependencies {
   saml?: SamlSignInProvider;
   directory: SlackDirectory;
   /** The org store: a sign-in puts the developer in an org, and the tokens carry it. */
-  orgs: ResolveOrgOnSignInDependencies["orgs"] & Pick<OrgStore, "developerForVerifiedEmail" | "describeInviteByHash" | "describeInvite" | "getOrg" | "setRole" | "orgForDeveloper" | "orgForSlackTeam">;
+  orgs: ResolveOrgOnSignInDependencies["orgs"] & Pick<OrgStore, "developerForVerifiedEmail" | "describeInviteByHash" | "describeInvite" | "getOrg" | "setRole" | "orgForDeveloper" | "orgForSlackTeam" | "hasSlackTeam">;
   /** The install's single org (ruling R3), which a Slack or company sign-in joins as a member. */
   singleOrgId?: OrgId;
   /** Told when a sign-in created or joined an org, so the model proxy can be told its budgets (see ResolveOrgOnSignInDependencies.onOrgJoined). */
@@ -256,8 +256,19 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const headers = (event as { headers?: Record<string, string | undefined> }).headers;
     return headers === undefined ? undefined : Object.entries(headers).find(([name]) => name.toLowerCase() === "host")?.[1]?.toLowerCase();
   };
+  const primaryOrigin = new URL(deps.config.issuer).origin;
   // Direct invokes (the broker's questions to this function) have no host and are the canonical server's; so is any host that is not the API's own.
-  const handler: typeof primary = async (event) => ("kind" in event || hostOf(event) !== legacyHost ? primary(event) : own(event));
+  // UX1: an invite opened on the API's own address moves to the custom domain before it signs anyone in, so the join's sign-in cookie lands on the host the app is served from.
+  const handler: typeof primary = async (event) => {
+    if ("kind" in event || hostOf(event) !== legacyHost) return primary(event);
+    const http = event as { rawPath?: string; rawQueryString?: string; headers?: Record<string, string | undefined>; requestContext?: { http?: { method?: string } } };
+    const accept = Object.entries(http.headers ?? {}).find(([name]) => name.toLowerCase() === "accept")?.[1] ?? "";
+    const browserPage = !(/application\/json/i.test(accept) && !/text\/html/i.test(accept));
+    if (http.requestContext?.http?.method === "GET" && (http.rawPath === "/v1/auth/join" || http.rawPath === "/v1/auth/join/start") && browserPage) {
+      return redirect(`${primaryOrigin}${http.rawPath}${http.rawQueryString === undefined || http.rawQueryString === "" ? "" : `?${http.rawQueryString}`}`);
+    }
+    return own(event);
+  };
   return handler;
 }
 
@@ -278,6 +289,13 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     }
     return configured ? methods : methods.filter((method) => method !== "saml");
   };
+  /**
+   * UX1: the methods the browser sign-in page offers. On Rovara Cloud (no single org) a company sign-in can neither create nor join a company
+   * (NO_ORG_ON_INSTALL_MESSAGE), so the page leaves it out. Slack stays (OWNER DECISION 13, SLACK-SIGNIN-KEEP): it signs in a person whose Slack account is
+   * linked to an account with a company; anyone else gets `method_unavailable`.
+   */
+  const browserSignInMethods = (methods: DeveloperSignInMethod[]): DeveloperSignInMethod[] =>
+    deps.singleOrgId === undefined && config.cloud !== undefined ? methods.filter((method) => method !== "oidc") : methods;
   const provider = (method: DeveloperSignInMethod): SignInProvider => {
     // Every flow that talks to a provider (sign-in, join, link, decide) comes through here: an edition that has no such method never reaches it.
     if (!methodAllowedByEdition(deps.editionPolicy, method)) throw new ProviderNotConfiguredError(`${methodLabel(method)} sign-in is not available in this edition`);
@@ -367,13 +385,15 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
   async function authorizeBrowser(query: URLSearchParams): Promise<HttpResult> {
     const returnTo = query.get("return_to") ?? "";
     if (!BROWSER_RETURN_TO.test(returnTo)) return page(400, "Invalid review link", ["Open the review from Slack and sign in again."]);
-    const methods = await availableMethods();
+    const methods = browserSignInMethods(await availableMethods());
     if (methods.length === 0) return page(503, "Sign-in is unavailable", ["Ask an AgentX administrator to enable a sign-in method."]);
     const verifier = randomBytes(32).toString("base64url");
     const challenge = createHash("sha256").update(verifier).digest("base64url");
+    // UX1 (OWNER DECISION 5): only "Create a company" on the sign-up screen asks for a company; any other browser sign-in of a new person creates nothing.
+    const createCompany = query.get("intent") === "create";
     const auth = await store.createAuthRequest({
       clientRedirectUri: endpoint("/browser/callback"), clientState: randomBytes(24).toString("base64url"),
-      codeChallenge: challenge, nonce: randomBytes(32).toString("base64url"), browserReturnTo: returnTo,
+      codeChallenge: challenge, nonce: randomBytes(32).toString("base64url"), browserReturnTo: returnTo, ...(createCompany ? { createCompany: true as const } : {}),
     });
     const cookie = `${REVIEW_PKCE_COOKIE}=${verifier}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`;
     if (methods.length === 1) {
@@ -393,7 +413,6 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     }))), cookies: [cookie] };
   }
 
-  const cellUrl = () => config.issuer.replace(/\/v1\/auth\/?$/, "");
   /** Plan 3, Task 21a-presence: the decide flow, over this server's own pages, providers and sign-in resolution. */
   const decideFlow = deps.decide === undefined ? undefined : createDecideSignIn({
     deps: deps.decide, signIn: store, orgs: deps.orgs, endpoint, methods: () => enabledMethods(deps), methodLabel, provider,
@@ -454,7 +473,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     const { token, invite, inviterName } = found;
     return render(openInvitePage(
       { orgName: invite.orgName, role: invite.role, inviterName, ...(invite.email === undefined ? {} : { maskedEmail: maskEmail(invite.email) }) },
-      endpoint(`/join/start?invite=${token}`), endpoint(`/join?invite=${token}`),
+      endpoint(`/join/start?invite=${token}`),
     ));
   }
 
@@ -531,7 +550,11 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     const result = verifier === undefined || !REQUEST_ID_PATTERN.test(id) ? undefined : await store.getJoinResult(id);
     // One answer for a missing result, an old one and another browser's, so a request id tells a stranger nothing.
     if (result === undefined || verifier === undefined || !pkceChallengeMatches(verifier, result.codeChallenge)) return render(otherBrowserPage());
-    return render(joinDonePage(result, cellUrl()));
+    // UX1: a person who joined lands in the app at once, on this same origin, where the join's sign-in cookie was set (the join cookie is spent).
+    if (result.outcome === "joined") {
+      return { ...redirect(`${new URL(config.issuer).origin}/app/welcome?joined=1`), cookies: [`${JOIN_PKCE_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`] };
+    }
+    return render(joinDonePage(result, new URL(config.issuer).origin));
   }
 
   /** Once the CLI's redirect URI and state are known, any failure goes back to the CLI, so it never
@@ -563,7 +586,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     throw error;
   }
 
-  const browserReturn = (returnTo: string, signedIn: boolean, sessionId?: string, reason: "removed" | "ended" | "cancelled" | "failed" = "failed"): HttpResult => ({
+  const browserReturn = (returnTo: string, signedIn: boolean, sessionId?: string, reason: SignedOutReason = "failed"): HttpResult => ({
     statusCode: 302,
     headers: { location: !signedIn && (returnTo === "/app" || returnTo.startsWith("/app/") || returnTo.startsWith("/app?") || returnTo.startsWith("/s/")) ? `/app/signed-out?reason=${reason}` : returnTo, "cache-control": "no-store", "referrer-policy": "no-referrer" },
     body: "",
@@ -637,7 +660,11 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
         return page(500, "Confirmation failed", ["Something went wrong on the Rovara server. Open the approval again from Rovara."]);
       }
     }
-    if (request.linkDeveloperId !== undefined) return request.linkMethod === "slack" ? slackLinkCallback(request, query.get("code"), headers) : linkCallback(method, request, query.get("code"));
+    if (request.linkDeveloperId !== undefined) {
+      if (request.linkMethod === "slack") return slackLinkCallback(request, query.get("code"), headers);
+      if (request.linkMethod === "github" && request.linkBrowser === true) return githubLinkCallback(request, query.get("code"), headers);
+      return linkCallback(method, request, query.get("code"));
+    }
     if (request.browserReturnTo !== undefined) {
       const verifier = (headers.cookie ?? "").split(";").map(part => part.trim()).find(part => part.startsWith(`${REVIEW_PKCE_COOKIE}=`))?.slice(REVIEW_PKCE_COOKIE.length + 1);
       if (!BROWSER_RETURN_TO.test(request.browserReturnTo) || verifier === undefined || !pkceChallengeMatches(verifier, request.codeChallenge)) {
@@ -650,7 +677,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       // The state is spent, so tell the CLI now rather than leave it waiting for its timeout.
       if (request.browserReturnTo !== undefined) {
         deps.log({ event: "signin.browser_error", method, error: errorName(error) });
-        return browserReturn(request.browserReturnTo, false);
+        return browserReturn(request.browserReturnTo, false, undefined, error instanceof ProviderUnavailableError || error instanceof ProviderNotConfiguredError ? "unavailable" : "failed");
       }
       return serverError(error, `/v1/auth/callback/${method}`, request.clientRedirectUri, request.clientState);
     }
@@ -719,7 +746,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     if (!result.ok) {
       deps.log({ event: "signin.refused", method, reason: result.code ?? result.reason });
       if (join) return page(403, "Sign-in was refused", [result.reason, "Open the invite link again to try another account."]);
-      if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
+      if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "refused");
       // A provider may quietly reuse the refused account's session on the next try, so say how to switch.
       const hint = result.wrongAccount === true ? `. If you signed in with the wrong account, sign out of ${methodLabel(method)} or use a private window, then try again.` : "";
       return client({ error: "access_denied", error_description: `${result.reason}${hint}` });
@@ -742,7 +769,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
         // A person the mapping no longer lets in loses their Slack access too (Enterprise foundations I-6).
         await revokeSlackAllowance(developerId);
         if (join) return page(403, "Sign-in was refused", [decided.message, "Ask your administrator."]);
-        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
+        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "refused");
         return client({ error: "access_denied", error_description: decided.message });
       }
       companySignIn = decided;
@@ -795,14 +822,17 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     const orgInput = { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
       ...(request.inviteTokenHash === undefined ? {} : { inviteTokenHash: request.inviteTokenHash }) };
     let org: SignInOrg | SignInNoOrg;
+    // UX1 (OWNER DECISION 5): a browser sign-in creates a company only when the person chose "Create a company". For the cloud and GitHub methods
+    // `allowCreate: false` skips only that (rule 3); a person who already has a company, or brings an invite, is unaffected.
+    const askedToCreate = request.browserReturnTo === undefined || request.createCompany === true || (method !== "cloud" && method !== "github");
     try {
-      org = join ? await resolveOrgOnSignIn(orgDependencies, { ...orgInput, allowCreate: false }) : await resolveOrgOnSignIn(orgDependencies, orgInput);
+      org = join || !askedToCreate ? await resolveOrgOnSignIn(orgDependencies, { ...orgInput, allowCreate: false }) : await resolveOrgOnSignIn(orgDependencies, orgInput);
     } catch (error) {
       if (join) throw error;
       // A Slack or company sign-in on a cloud install has no org to join (R51): told to sign in with Rovara, not shown an internal error.
       if (isCode(error, "CONFIG_INVALID") && refusalWords(error) === NO_ORG_ON_INSTALL_MESSAGE) {
         deps.log({ event: "signin.refused", method, reason: "no_org_on_install", developerId });
-        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
+        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "method_unavailable");
         return client({ error: "access_denied", error_description: `${NO_ORG_ON_INSTALL_MESSAGE}; run agentx login again and choose Sign in with Rovara` });
       }
       // A removed member (single-org ban) is told so, not shown an internal error.
@@ -839,7 +869,12 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       }
       return redirect(endpoint(`/join/done?request=${request.id}`));
     }
-    // Only a join answers without an org; this sign-in created or joined one.
+    // A browser sign-in of a new person who did not ask for a company ends here: nothing was created, and the app explains the two ways in.
+    if (org.orgId === undefined && !askedToCreate && request.browserReturnTo !== undefined) {
+      deps.log({ event: "signin.refused", method, reason: "no_account", developerId });
+      return browserReturn(request.browserReturnTo, false, undefined, "no_account");
+    }
+    // Only a join (or the case above) answers without an org; this sign-in created or joined one.
     if (org.orgId === undefined) throw new Error("sign-in resolved no organization");
     if (method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined) await unlockTrialBestEffort(org.orgId, identity.githubUserId, developerId);
     // When the person signed in: the callback's time, or the provider's own `auth_time` when that is earlier (a provider that reused its browser
@@ -911,6 +946,11 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     }
     // The Slack workspace the person signed in to must be the one this account's company has bound.
     const own = await deps.orgs.orgForDeveloper(developerId);
+    // UX1: a company with no Slack workspace connected at all is told that, not "wrong workspace".
+    if (own !== undefined && !await deps.orgs.hasSlackTeam(own.orgId)) {
+      deps.log({ event: "signin.slack_link_no_workspace", developerId });
+      return back("no_workspace");
+    }
     const bound = identity.slackTeamId === undefined ? undefined : await deps.orgs.orgForSlackTeam(identity.slackTeamId);
     if (own === undefined || bound === undefined || bound !== own.orgId) {
       deps.log({ event: "signin.slack_link_wrong_team", developerId });
@@ -926,6 +966,56 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       return back(outcome.reason === "taken" ? "taken" : outcome.reason === "has_one" ? "has_one" : "error");
     }
     deps.log({ event: "signin.slack_linked", developerId });
+    return back("linked");
+  }
+
+  /**
+   * UX1: the end of a GitHub link started by a signed-in web user, whatever method they signed in with. The same four rules as the Slack link: the
+   * callback comes from the browser holding the session that started it; the state is spent and the provider checked the code; the account's session
+   * is still fresh; the GitHub account is not someone else's (linked to another account, or its own account holds a company). It never creates a
+   * company, a trial, a session or a code: it only links the identity to this account. The answer is a redirect back to the app with an outcome code.
+   */
+  async function githubLinkCallback(request: AuthRequestRecord, code: string | null, headers: Record<string, string | undefined>): Promise<HttpResult> {
+    const developerId = request.linkDeveloperId!;
+    const back = (outcome: string) => redirect(`${new URL(config.issuer).origin}${request.linkReturnTo === "/app/onboard" ? "/app/onboard" : "/app"}?github_link=${outcome}`);
+    const held = cookieValue(headers.cookie, REVIEW_SESSION_COOKIE);
+    if (request.linkSessionId === undefined || held === undefined || !sameText(held, request.linkSessionId)) {
+      deps.log({ event: "signin.github_link_wrong_browser", developerId });
+      return back("wrong_browser");
+    }
+    if (code === null) return back("cancelled");
+    let result: ProviderResult;
+    try {
+      result = await provider("github").complete({ code, nonce: request.nonce, redirectUri: endpoint("/callback/github"), state: request.id });
+    } catch (error) {
+      deps.log({ event: "signin.github_link_error", error: errorName(error) });
+      return back("error");
+    }
+    if (!result.ok) {
+      deps.log({ event: "signin.github_link_refused", reason: result.code ?? "refused" });
+      return back("refused");
+    }
+    const identity = result.identity;
+    let session: SessionRecord;
+    try {
+      session = await store.freshSessionFor({ developerId, sessionId: request.linkSessionId });
+    } catch (error) {
+      if (!isCode(error, "REAUTH_REQUIRED")) throw error;
+      return back("reauth");
+    }
+    const identityKey = ownerKeyForSubject(identity.issuer, identity.subject);
+    const outcome = await store.linkGithubIdentity({
+      developerId, identityKey, subject: identity.subject, issuer: identity.issuer, ...(identity.email === undefined ? {} : { email: identity.email }),
+      ...(identity.login === undefined ? {} : { login: identity.login }),
+      by: { method: session.amr }, belongsToCompany: await deps.orgs.orgForDeveloper(identityKey) !== undefined,
+    });
+    if (!outcome.ok) {
+      deps.log({ event: "signin.github_link_refused_link", developerId, reason: outcome.reason });
+      return back(outcome.reason === "taken" ? "taken" : outcome.reason === "has_one" ? "has_one" : "error");
+    }
+    deps.log({ event: "signin.github_linked", developerId });
+    // The same notice as any new sign-in method: a person who did not do this can remove it at once.
+    if (outcome.created) await noticeNewMethod("github", identity, await accountEmail(developerId));
     return back("linked");
   }
 
@@ -1318,11 +1408,20 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     if (method === "slack") {
       if (parsed.data.browser !== true) return { ok: false, error: "refused", message: "link your Slack account from the Rovara web app" };
       if ((await store.slackUserIdsOf(developerId)).length > 0) return { ok: false, error: "refused", message: SLACK_LINK_HAS_ONE };
+      // UX1: nothing to link to until a Slack workspace is connected to the company; say so before sending the person to Slack.
+      const own = await deps.orgs.orgForDeveloper(developerId);
+      if (own === undefined || !await deps.orgs.hasSlackTeam(own.orgId)) return { ok: false, error: "refused", message: SLACK_NO_WORKSPACE_MESSAGE };
+    }
+    // UX1: a GitHub account linked from the web app (any sign-in method), finished in the browser that holds this session, for this account only.
+    const browserGithub = method === "github" && parsed.data.browser === true;
+    if (browserGithub && (await store.identitiesOf(developerId)).some((identity) => identity.provider === "github")) {
+      return { ok: false, error: "refused", message: GITHUB_LINK_HAS_ONE };
     }
     const request = await store.createAuthRequest({
       clientRedirectUri: endpoint("/link/done"), clientState: randomBytes(24).toString("base64url"), codeChallenge: randomBytes(32).toString("base64url"),
       nonce: randomBytes(32).toString("base64url"), linkDeveloperId: developerId, linkSessionId: sessionId, linkMethod: method,
-      ...(method === "slack" ? { linkBrowser: true as const } : {}),
+      ...(method === "slack" || browserGithub ? { linkBrowser: true as const } : {}),
+      ...(browserGithub ? { linkReturnTo: parsed.data.returnTo ?? "/app" } : {}),
     });
     if (await store.chooseMethod(request.id, method) === undefined) return { ok: false, error: "unavailable" };
     deps.log({ event: "signin.identity_link_started", developerId, provider: method });

@@ -5,22 +5,25 @@ import { useAppHost } from "../../host.js";
 import { ApiError } from "../../api/errors.js";
 import { createInviteAdminApi, type InviteCreateReceipt, type InviteStatus } from "../../api/invite-admin.js";
 import { Button } from "../../design/Button.js";
+import { Checkbox } from "../../design/Checkbox.js";
 import { Dialog } from "../../design/Dialog.js";
 import { Select } from "../../design/Select.js";
 import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { InviteRevokeTarget } from "./InviteRevokeDialog.js";
 type Intent = z.infer<typeof ReviewedInviteCreateBodySchema>;
-interface Props { open: boolean; orgId: string; company: string; role: "owner" | "admin"; accessAllowed: boolean; checking: boolean; staleData: boolean; onClose: () => void; restoreFocus: () => void; onApplied: () => void; onDenied: () => void; onProgress: (resume: boolean, inviteId?: string) => void; onRevoke: (target: InviteRevokeTarget) => void; onRestart: () => void }
+interface Props { open: boolean; orgId: string; company: string; role: "owner" | "admin"; accessAllowed: boolean; checking: boolean; staleData: boolean; /** UX1: this install can email an invite (its sign-in notice sender is set up). */ emailDelivery?: boolean; onClose: () => void; restoreFocus: () => void; onApplied: () => void; onDenied: () => void; onProgress: (resume: boolean, inviteId?: string) => void; onRevoke: (target: InviteRevokeTarget) => void; onRestart: () => void }
 const utc = (value: string) => new Date(value).toLocaleString("en-US", { timeZone: "UTC" });
 const unknown = "The creation outcome is unknown. Check this request before creating another invite.";
 const lostLink = "This invite was created, but its link cannot be recovered. Revoke this invite before creating a replacement.";
 async function bounded<T>(work: Promise<T>): Promise<T> { let timer: ReturnType<typeof setTimeout> | undefined;try { return await Promise.race([work, new Promise<T>((_, reject) => { timer = setTimeout(() => { reject(new Error("Invite operation timed out.")); }, 30_000); })]); } finally { clearTimeout(timer); } }
-export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, checking, staleData, onClose, restoreFocus, onApplied, onDenied, onProgress, onRevoke, onRestart }: Props) {
+export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, checking, staleData, emailDelivery = false, onClose, restoreFocus, onApplied, onDenied, onProgress, onRevoke, onRestart }: Props) {
  const host = useAppHost(), api = useMemo(() => ({ ...createInviteAdminApi(host, orgId), role, accessAllowed }), [host, orgId, role, accessAllowed]);
  const [destination, setDestination] = useState("email"), [email, setEmail] = useState(""), [proposed, setProposed] = useState("member"), [intent, setIntent] = useState<Intent>();
  const [sent, setSent] = useState(false), [working, setWorking] = useState(false), [copied, setCopied] = useState(false), [canCopy, setCanCopy] = useState(false), [terminal, setTerminal] = useState(false), [feedback, setFeedback] = useState<string>(), [receipt, setReceipt] = useState<InviteCreateReceipt>(), [current, setCurrent] = useState<InviteStatus>(), [proofClient, setProofClient] = useState<typeof api>(), [operationClient, setOperationClient] = useState<typeof api>();
  const [missingReceipt, setMissingReceipt] = useState(false), [restartReview, setRestartReview] = useState(false);
+ // UX1: email the link as well as copy it (only where this install can), and never lose an uncopied, unemailed link to one stray close.
+ const [emailIt, setEmailIt] = useState(true), [emailed, setEmailed] = useState<"sent" | "not_set_up" | "failed" | "limited">(), [confirmClose, setConfirmClose] = useState(false);
  const restartNotice = useRef<HTMLParagraphElement>(null);
  const busy = working && operationClient === api;
  const copyReady = canCopy && proofClient === api;
@@ -33,12 +36,12 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
  const valid = (version: number) => alive.current && version === generation.current;
  function review() {
   if (locked || busy || attempted.current) return;
-  const parsed = ReviewedInviteCreateBodySchema.safeParse({ requestId: globalThis.crypto.randomUUID(), role: proposed, ...(destination === "email" ? { email } : {}) });
+  const parsed = ReviewedInviteCreateBodySchema.safeParse({ requestId: globalThis.crypto.randomUUID(), role: proposed, ...(destination === "email" ? { email, ...(emailDelivery && emailIt ? { sendEmail: true } : {}) } : {}) });
   if (!parsed.success || (destination === "email" && parsed.data.email === undefined)) { setFeedback("Enter a valid colleague email and choose a company role.");return; }
   if (parsed.data.role === "admin" && role !== "owner") { setFeedback("Only an owner can invite an admin.");return; }
   setIntent(parsed.data);setFeedback(undefined);
  }
- async function verify(value: InviteCreateReceipt, version: number, link?: string) {
+ async function verify(value: InviteCreateReceipt, version: number, link?: string, mailed?: "sent" | "not_set_up" | "failed" | "limited") {
   if (!valid(version)) return;
   if (intent === undefined || value.role !== intent.role || value.requestId !== intent.requestId || value.orgId !== orgId) throw new Error("Unverified receipt.");
   setReceipt(value);onProgress(true, value.inviteId);
@@ -47,14 +50,14 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
   setCurrent(status);privateLink.current = undefined;setCanCopy(false);onApplied();
   if (status.status !== "pending") {
    setTerminal(true);onProgress(false);setFeedback(status.status === "accepted" ? "This invite has already been accepted. Creating another link will not remove anyone's access." : status.status === "expired" ? "This invite has expired. No usable link is available." : "This invite is revoked. No usable link is available.");
-  } else if (link !== undefined) { privateLink.current = link;setProofClient(api);setCanCopy(true);setFeedback("Invite created and checked."); }
+  } else if (link !== undefined) { privateLink.current = link;setProofClient(api);setCanCopy(true);setEmailed(mailed);setFeedback(mailed === "sent" ? "Invite created and emailed. You can also copy the link." : mailed === "failed" ? "Invite created, but the email couldn't be sent. Copy the link and send it yourself." : mailed === "not_set_up" ? "Invite created. Email isn't set up on this Rovara install, so copy the link and send it yourself." : mailed === "limited" ? "Invite created, but it wasn't emailed: this address already got an invite email today, or your company reached today's email limit. Copy the link and send it yourself." : "Invite created and checked."); }
   else setFeedback(lostLink);
  }
  async function commit() {
   if (sending.current || attempted.current || busy || locked || roleBlocked || intent === undefined) return;
   attempted.current = true;sending.current = true;setSent(true);setOperationClient(api);setWorking(true);setFeedback(undefined);onProgress(true);
   const version = generation.current;
-  try { const result = await bounded(api.create(intent));if (!valid(version)) return;await verify(result.receipt, version, result.inviteUrl); }
+  try { const result = await bounded(api.create(intent));if (!valid(version)) return;await verify(result.receipt, version, result.inviteUrl, result.email); }
   catch (error) { if (!valid(version)) return;privateLink.current = undefined;setCanCopy(false);setFeedback(unknown);if (error instanceof ApiError && error.status === 403 && error.code !== "CSRF_STALE") onDenied(); }
   finally { if (valid(version)) { sending.current = false;setWorking(false); } }
  }
@@ -72,7 +75,9 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
   finally { if (valid(version)) { sending.current = false;setWorking(false); } }
  }
  function close() {
-  if (sending.current) return;privateLink.current = undefined;setCanCopy(false);
+  if (sending.current) return;
+  if (copyReady && !copied && emailed !== "sent" && !confirmClose) { setConfirmClose(true);return; }
+  privateLink.current = undefined;setCanCopy(false);
   if (sent && !copied && !terminal) { onProgress(true, receipt?.inviteId);if (receipt !== undefined && current?.status === "pending") setFeedback(lostLink); }
   onClose();
  }
@@ -91,13 +96,14 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
    {intent === undefined ? <>
     <Select label="Invite destination" value={destination} onValueChange={setDestination} options={[{ value: "email", label: "Colleague email" }, { value: "link", label: "Anyone with the link" }]} />
     {destination === "email" && <TextField label="Colleague email" type="email" autoComplete="off" value={email} onChange={event => { setEmail(event.target.value); }} />}
+    {destination === "email" && (emailDelivery ? <Checkbox label="Email the invite link to this colleague" checked={emailIt} onCheckedChange={value => { setEmailIt(value === true); }} /> : <p className="rv-muted">Email isn't set up on this Rovara install. You'll copy the link and send it yourself.</p>)}
     <Select label="Company role" value={proposed} onValueChange={setProposed} options={[{ value: "member", label: "Member" }, ...(role === "owner" ? [{ value: "admin", label: "Admin" }] : [])]} />
     <Button variant="primary" aria-disabled={locked} onClick={review}>Review invite</Button>
    </> : <>
     {!sent && <h3 ref={reviewHeading} tabIndex={-1}>Review invite</h3>}
     <p>Destination: <VisibleText text={intent.email ?? "Anyone with the link"} /></p><p>Company role: {intent.role === "admin" ? "Admin" : "Member"}</p>
     <p>{intent.role === "admin" ? "Admins can open Administration and invite members. Only owners can invite admins or change company roles." : "Members can use the projects they are given access to."}</p>
-    <p>{intent.email === undefined ? "Anyone who receives this link may join with this role. Share it privately." : "Sign-in must verify this colleague's email."} The invite expires in seven days. Nothing is emailed automatically.</p>
+    <p>{intent.email === undefined ? "Anyone who receives this link may join with this role. Share it privately." : "Sign-in must verify this colleague's email."} The invite expires in seven days. {intent.sendEmail === true ? "Rovara emails the link to this address when you create it, and you can copy it too." : intent.email !== undefined && !emailDelivery ? "Email isn't set up on this Rovara install, so copy the link and send it yourself." : "Nothing is emailed; copy the link and share it privately."}</p>
     {roleBlocked && <p role="alert">Only an owner can invite an admin. Close and review again.</p>}
     {!sent && <><Button variant="primary" busy={busy} aria-disabled={locked || roleBlocked} onClick={() => { void commit(); }}>Create invite link</Button><Button disabled={busy} onClick={() => { if (!attempted.current) { setIntent(undefined);setFeedback(undefined); } }}>Edit invite</Button></>}
    </>}
@@ -105,6 +111,7 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
    {(feedback || scopeChanged) && <p ref={notice} tabIndex={-1} role={!scopeChanged && (canCopy || terminal || copied) ? "status" : "alert"}>{scopeChanged ? "Your company access changed. The creation outcome is unknown. Check this request before continuing." : feedback}</p>}
    {receipt && <><p>Expires <time dateTime={receipt.expiresAt}>{utc(receipt.expiresAt)}</time> UTC.</p><details><summary>Invite reference</summary><VisibleText text={receipt.inviteId} /></details></>}
    {current && <p>Checked at <time dateTime={current.checkedAt}>{utc(current.checkedAt)}</time> UTC.</p>}
+   {confirmClose && copyReady && !copied && <p role="alert">You haven't copied this link{emailed === "sent" ? "" : " or emailed it"}. After you close, it can't be shown again. Copy it first, or <Button variant="quiet" onClick={close}>close anyway</Button>.</p>}
    {copyReady && <><p>Copy this private link before closing. Closing discards it; revoke it if you do not need it.</p><Button variant="primary" busy={busy} aria-disabled={locked || roleBlocked} onClick={() => { void copy(); }}>Copy invite link</Button></>}
    {sent && !terminal && !copyReady && !restartReview && <Button busy={busy} aria-disabled={locked} onClick={() => { void recover(); }}>Check creation request</Button>}
    {sent && !terminal && missingReceipt && receipt === undefined && !restartReview && <Button aria-disabled={locked || busy} onClick={() => { if (!locked && !busy && !sending.current) setRestartReview(true); }}>Start again</Button>}

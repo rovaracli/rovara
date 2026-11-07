@@ -281,13 +281,13 @@ describe("the request callback (recordInstallRequest)", () => {
     expect(boundTo(w, 601)).toBeUndefined();
   });
 
-  it("the unattributed page says Rovara couldn't confirm who asked, tells them to ask their GitHub admin to run agentx github connect, and is not the expired page", async () => {
+  it("the unattributed page says Rovara couldn't confirm who asked, tells them to send the request again from Rovara, and is not the expired page", async () => {
     const { githubConnectPage } = await import("../../packages/broker/src/org/github-connect-page.js");
     const page = githubConnectPage("unattributed", { orgName: "Acme" });
     const text = page.body.replace(/<style[^>]*>.*?<\/style>/, "");
     expect(page.statusCode).toBe(403);
     expect(text).toContain("<h1>Rovara couldn&#39;t confirm who asked</h1>");
-    expect(text).toContain("Ask your GitHub admin to run agentx github connect.");
+    expect(text).toContain("Connect GitHub again from Rovara and send the request from there.");expect(text).not.toContain("agentx");
     expect(text).not.toContain("expired");
   });
 

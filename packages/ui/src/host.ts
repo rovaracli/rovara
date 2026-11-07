@@ -24,7 +24,7 @@ export interface AppHost {
  copyText?(text: string): Promise<void>;
  openSocket(url: string, protocols: string[]): RealtimeSocket;
  openExternal(this: void, url: string): void;navigate(url: string): void;saveFile(name: string, data: Blob): void;
- signIn(this: void, returnPath: string, options?: { automatic?: boolean }): void;signOut(this: void): Promise<void>;
+ signIn(this: void, returnPath: string, options?: { automatic?: boolean; /** UX1: the person chose "Create a company"; only then does a new person's sign-in create one. */ createCompany?: boolean }): void;signOut(this: void): Promise<void>;
  storage: { get(key: string): string | undefined;set(key: string, value: string): void };
  features: { admin: boolean };
 }

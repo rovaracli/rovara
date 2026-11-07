@@ -6,7 +6,7 @@ import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { startAppIdentityLink, unlinkAppIdentity } from "../../packages/broker/src/aws/developer-routes/organization.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { slackCallerFor } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
-import { SLACK_LINKED_ATTRIBUTE, SLACK_LINK_HAS_ONE, SLACK_LINK_TAKEN, developerIdentityKey, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
+import { SLACK_LINKED_ATTRIBUTE, SLACK_LINK_HAS_ONE, SLACK_LINK_TAKEN, SLACK_NO_WORKSPACE_MESSAGE, developerIdentityKey, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
 import { membershipOrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { T0, TEAM, httpEvent, identityHarness, type FakeSlackUser } from "../support/developer-fakes.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -233,10 +233,16 @@ describe("finishing the link", () => {
     await w2.h.orgs.bindSlackTeam({ orgId: w2.orgId, teamId: "T0BOUNDELSE" });
     expect(outcomeOf(await link(w2))).toBe("wrong_team");
     expect(w2.h.db.get(signInIdentityKey(slackKey(OWNER_SLACK)))).toBeUndefined();
-    // And a team bound to no company at all.
+    // UX1: a company with no Slack workspace at all is told that, not "wrong workspace": refused before Slack, and at the callback if it was unbound meanwhile.
     const w3 = await world();
     await w3.h.orgs.unbindSlackTeam({ orgId: w3.orgId, teamId: TEAM });
-    expect(outcomeOf(await link(w3))).toBe("wrong_team");
+    expect(await start(w3.h, w3.account, w3.session.sessionId)).toEqual({ ok: false, error: "refused", message: SLACK_NO_WORKSPACE_MESSAGE });
+    expect(w3.h.db.find((item) => item.entityType === "AUTH_REQUEST" && item.linkMethod === "slack")).toEqual([]);
+    const w4 = await world();
+    const begun = await start(w4.h, w4.account, w4.session.sessionId) as { ok: true; authorizeUrl: string };
+    await w4.h.orgs.unbindSlackTeam({ orgId: w4.orgId, teamId: TEAM });
+    expect(outcomeOf(await finish(w4.h, begun.authorizeUrl, OWNER_SLACK, { sessionId: w4.session.sessionId }))).toBe("no_workspace");
+    expect(w4.h.db.get(signInIdentityKey(slackKey(OWNER_SLACK)))).toBeUndefined();
   });
 
   it("a person cancelling at Slack links nothing", async () => {
@@ -360,8 +366,11 @@ describe("the callback's remaining guards", () => {
 
   it("refuses when the account belongs to no company, so there is no bound team to match", async () => {
     const w = await world();
+    // UX1: the start itself refuses an account with no company (there is no workspace to link to); one that lost its company after starting is refused at the callback.
+    const begun = await start(w.h, w.account, w.session.sessionId) as { ok: true; authorizeUrl: string };
     w.h.state.delete(`DEVELOPER_ORG#${w.account}`, "ORG");
-    expect(outcomeOf(await link(w))).toBe("wrong_team");
+    expect(await start(w.h, w.account, w.session.sessionId)).toEqual({ ok: false, error: "refused", message: SLACK_NO_WORKSPACE_MESSAGE });
+    expect(outcomeOf(await finish(w.h, begun.authorizeUrl, OWNER_SLACK, { sessionId: w.session.sessionId }))).toBe("wrong_team");
     expect(w.h.db.get(signInIdentityKey(slackKey(OWNER_SLACK)))).toBeUndefined();
   });
 

@@ -25,7 +25,15 @@ export function isGithubInstallationUrl(value: string): boolean {
 }
 
 /** The sign-in server's Slack-link address (same origin, request id only): the one full-URL hand-off the web app makes in the same tab besides GitHub's. */
-export function isSlackLinkUrl(value: string, origin: string): boolean {
+export function isSlackLinkUrl(value: string, origin: string): boolean { return isIdentityLinkUrl(value, origin, "slack"); }
+/** UX1: the same hand-off for linking a GitHub account from the web app. */
+export function isGithubLinkUrl(value: string, origin: string): boolean { return isIdentityLinkUrl(value, origin, "github"); }
+function isIdentityLinkUrl(value: string, origin: string, method: "slack" | "github"): boolean {
  const safe = safeExternalUrl(value);if (safe === undefined || safe !== value || /[#%]/.test(value)) return false;
- try { const url = new URL(safe), entries = [...url.searchParams];return url.origin === new URL(origin).origin && url.pathname === "/v1/auth/authorize" && entries.length === 2 && entries[0]![0] === "request" && /^[A-Za-z0-9_-]{16,80}$/.test(entries[0]![1]) && entries[1]![0] === "method" && entries[1]![1] === "slack"; } catch { return false; }
+ try { const url = new URL(safe), entries = [...url.searchParams];return url.origin === new URL(origin).origin && url.pathname === "/v1/auth/authorize" && entries.length === 2 && entries[0]![0] === "request" && /^[A-Za-z0-9_-]{16,80}$/.test(entries[0]![1]) && entries[1]![0] === "method" && entries[1]![1] === method; } catch { return false; }
+}
+/** UX1: an invite link on this app's own origin, `/join#invite=<token>`, which "Join my team" opens in this tab. */
+export function joinLinkPath(value: string): string | undefined {
+ const match = /^(?:https?:\/\/[^/?#]+)?\/join#invite=([A-Za-z0-9_-]{43})$/.exec(value.trim());
+ return match === null ? undefined : `/join#invite=${match[1]!}`;
 }

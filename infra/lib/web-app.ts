@@ -30,7 +30,8 @@ export class WebApp extends Construct {
   if (upload !== undefined) fn.node.addDependency(upload);
   const integration = new apigwv2.CfnIntegration(this, "Integration", { apiId: props.api.ref, integrationType: "AWS_PROXY", integrationUri: fn.functionArn, payloadFormatVersion: "2.0" });
   // No `GET /app/` route: an HTTP API refuses a route key with an empty path segment (the 0.4.8 staging deploy rolled back on it). A request to `/app/` has no matching web route (`/app/{proxy+}` needs at least one character after the slash), so the app's own links always use `/app`.
-  for (const [name, path] of [["App", "/app"], ["AppPath", "/app/{proxy+}"], ["Session", "/s/{sessionId}"]] as const) {
+  // UX1: `GET /join` is the invite link's page on the app's own origin (the web handler forwards it to the sign-in server's invite page on the same origin).
+  for (const [name, path] of [["App", "/app"], ["AppPath", "/app/{proxy+}"], ["Session", "/s/{sessionId}"], ["Join", "/join"]] as const) {
    const route = new apigwv2.CfnRoute(this, name + "Route", { apiId: props.api.ref, routeKey: "GET " + path, target: `integrations/${integration.ref}`, authorizationType: "NONE" });
    this.routes.push({ route, burst: 200, rate: 100 });
    fn.addPermission(name + "Invoke", { principal: new iam.ServicePrincipal("apigateway.amazonaws.com"), sourceArn: `arn:${stack.partition}:execute-api:${stack.region}:${stack.account}:${props.api.ref}/*/GET${path.replace(/\{[^}]+\}/g, "*")}` });

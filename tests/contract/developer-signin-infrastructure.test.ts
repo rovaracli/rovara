@@ -348,6 +348,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "GET /app": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
       "GET /app/{proxy+}": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
       "GET /s/{sessionId}": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
+      // UX1: the invite link's page on the app's own origin.
+      "GET /join": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
       // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post.
       "GET /v1/github/install/callback": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "POST /v1/github/install/confirm": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },

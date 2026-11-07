@@ -16,7 +16,8 @@ for(const outcome of ["joined","ALREADY_IN_ORG","INVITE_WRONG_EMAIL","INVITE_INV
   const session=await h.deps.store.getSession(sessionCookie!.split(";")[0]!.split("=")[1]!);
   expect(session).toMatchObject({developerId:id,amr:"cloud"});
   const doneUrl=new URL(callback.headers.location!,API),done=await h.http({...httpEvent("GET",doneUrl.pathname+doneUrl.search),headers:{cookie}});
-  expect(done.body).toContain('href="/app/welcome?joined=1"');expect(done.body).toContain('>Open Rovara</a>');
+  // UX1: straight into the app on the same origin as the session cookie.
+  expect(done.statusCode).toBe(302);expect(done.headers.location).toBe(`${API}/app/welcome?joined=1`);
  }else{expect(sessionCookie).toBeUndefined();expect(h.db.find(item=>String(item.pk).startsWith("SESSION#"))).toHaveLength(0);}
 });
 it("a later invite page shows the renamed company",async()=>{
