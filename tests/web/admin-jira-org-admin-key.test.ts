@@ -28,7 +28,7 @@ function mount(options: { role?: "owner" | "admin" | "member"; connections?: unk
   f.host.viewport = { width: () => 1280, subscribe: () => () => undefined };
   const query = createQueryClient();
   query.setQueryData(["nav"], nav);
-  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/connections"] });
+  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/connections?open=jira"] });
   const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
   return { ...f, ...view, close: () => { view.unmount();router.dispose();query.clear(); } };
 }

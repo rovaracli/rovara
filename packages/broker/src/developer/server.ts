@@ -977,7 +977,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
    */
   async function githubLinkCallback(request: AuthRequestRecord, code: string | null, headers: Record<string, string | undefined>): Promise<HttpResult> {
     const developerId = request.linkDeveloperId!;
-    const back = (outcome: string) => redirect(`${new URL(config.issuer).origin}${request.linkReturnTo === "/app/onboard" ? "/app/onboard" : "/app"}?github_link=${outcome}`);
+    const back = (outcome: string) => redirect(`${new URL(config.issuer).origin}${request.linkReturnTo === "/app/onboard" || request.linkReturnTo === "/app/admin/connections" ? request.linkReturnTo : "/app"}?github_link=${outcome}`);
     const held = cookieValue(headers.cookie, REVIEW_SESSION_COOKIE);
     if (request.linkSessionId === undefined || held === undefined || !sameText(held, request.linkSessionId)) {
       deps.log({ event: "signin.github_link_wrong_browser", developerId });

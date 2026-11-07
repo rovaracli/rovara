@@ -35,3 +35,7 @@
 .rv-admin-domains>li{border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);padding:var(--rv-space-4)}
 .rv-admin-record{display:grid;grid-template-columns:max-content 1fr;gap:var(--rv-space-2) var(--rv-space-4);margin:var(--rv-space-2) 0}
 .rv-admin-record dd{margin:0;overflow-wrap:anywhere}
+
+/* UX3: what a change affects and who can change it. */
+.rv-settings-note{border-left:3px solid var(--rv-border-strong);padding:var(--rv-space-2) var(--rv-space-4);margin-block:var(--rv-space-4);max-width:76ch}
+.rv-settings-note p{margin:var(--rv-space-1) 0;overflow-wrap:anywhere}

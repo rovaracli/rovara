@@ -10,7 +10,6 @@ import { modelProvider, modelSourcesSnapshot } from "./source-order.js";
 import { ModelSourceGuidance } from "./ModelSourceGuidance.js";
 import { SourceOrderEditor } from "./SourceOrderEditor.js";
 import { ReadSection, useAdminRead } from "./read.js";
-import { ProviderSetup } from "./ProviderSetup.js";
 const providers = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", bedrock: "Amazon Bedrock", endpoint: "Gateway endpoint" };
 const servingSchema = z.object({ models: z.array(z.object({ provider: modelProvider, modelId: z.string().max(256), sources: z.array(z.string().max(100)).max(12) })).max(1000) });
 function ServingCatalog() {
@@ -29,7 +28,7 @@ export function ModelsScreen() {
  <nav aria-label="AI models"><NavLink to="/app/admin/models/sources">Model sources</NavLink>{" · "}<NavLink to="/app/admin/models/available">Available models</NavLink>{" · "}<NavLink to="/app/admin/models/steps">Code step models</NavLink></nav>
  <ReadSection read={read} label="Model sources">{data => <>
  {tab === "sources" && <>
- <ProviderSetup available={data.available} sources={data.sources} revision={data.orgId===context.orgId&&data.developerId===context.developerId?data.revision:undefined} canEdit={context.role==="owner"||context.role==="admin"} onChanged={() => { void read.refetch(); }} />
+ <p>To add, check or remove an AI provider, use <NavLink to="/app/admin/connections?open=ai-provider">Connections</NavLink>. Here you choose the order they are tried in.</p>
  <h2>Company providers</h2>
  {data.sources.length === 0 ? <p>No company providers are added. Work runs on Rovara's own models.</p> : <DataTable caption="Company sources" rows={data.sources} rowKey={s => s.sourceId} columns={[
  { key: "label", title: "Source", render: s => <VisibleText text={s.label} /> }, { key: "provider", title: "Provider", render: s => providers[s.kind] },

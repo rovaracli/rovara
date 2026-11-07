@@ -45,7 +45,7 @@ export interface AuthRequestRecord { id: string; clientRedirectUri: string; clie
   /** UX1 (OWNER DECISION 5): the browser sign-in came from "Create a company"; only then may a new person's sign-in create one. */
   createCompany?: true;
   /** UX1: where a browser GitHub link returns the person (a fixed choice). */
-  linkReturnTo?: "/app" | "/app/onboard" }
+  linkReturnTo?: "/app" | "/app/onboard" | "/app/admin/connections" }
 /** How a join ended (Plan 2, Task 5). Only "joined" used the invite. */
 export type JoinOutcome = "joined" | "ALREADY_IN_ORG" | "INVITE_WRONG_EMAIL" | "INVITE_INVALID";
 /**

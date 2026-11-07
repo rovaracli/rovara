@@ -20,7 +20,7 @@ const Answer = z.object({ ok: z.boolean(), message: z.string().max(2000).optiona
 const Created = z.object({ sourceId: z.string().regex(/^src_[0-9a-z]{20}$/) }).passthrough();
 const Anything = { parse: (value: unknown) => value };
 type Check = { state: "busy" } | { state: "ok" } | { state: "failed"; message: string };
-export function ProviderSetup({ available, sources, revision, canEdit, onChanged }: { available: readonly Kind[] | undefined; sources: readonly Source[]; revision: number | undefined; canEdit: boolean; onChanged: () => void }) {
+export function ProviderSetup({ available, sources, revision, canEdit, onChanged, onChecked }: { available: readonly Kind[] | undefined; sources: readonly Source[]; revision: number | undefined; canEdit: boolean; onChanged: () => void; onChecked?: (sourceId: string, ok: boolean) => void }) {
  const host = useAppHost(), api = createApiClient(host);
  const addable = (available ?? []).filter((kind): kind is Exclude<Kind, "endpoint"> => kind !== "endpoint");
  const [checks, setChecks] = useState<Record<string, Check>>({}), [removing, setRemoving] = useState<Source>(), [removeError, setRemoveError] = useState<string>(), [busy, setBusy] = useState(false);
@@ -29,8 +29,8 @@ export function ProviderSetup({ available, sources, revision, canEdit, onChanged
   try {
    const result = await api.send("POST", `/v1/app/org/model-sources/${sourceId}/check`, undefined, Answer, { retry: "never" });
    const value = result.kind === "done" ? result.value : undefined;
-   setChecks(current => ({ ...current, [sourceId]: value?.ok === true ? { state: "ok" } : { state: "failed", message: value?.message ?? "The check didn't finish. Try again." } }));
-  } catch (failure) { setChecks(current => ({ ...current, [sourceId]: { state: "failed", message: failure instanceof ApiError ? failure.message : "The check didn't finish. Try again." } })); }
+   setChecks(current => ({ ...current, [sourceId]: value?.ok === true ? { state: "ok" } : { state: "failed", message: value?.message ?? "The check didn't finish. Try again." } }));onChecked?.(sourceId, value?.ok === true);
+  } catch (failure) { setChecks(current => ({ ...current, [sourceId]: { state: "failed", message: failure instanceof ApiError ? failure.message : "The check didn't finish. Try again." } }));onChecked?.(sourceId, false); }
  }
  async function remove() {
   if (removing === undefined || revision === undefined) return;setBusy(true);setRemoveError(undefined);

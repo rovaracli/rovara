@@ -374,6 +374,9 @@ export interface InstallationView {
   accountType: "User" | "Organization";
   repositorySelection: "all" | "selected";
   status: GithubInstallationRecord["status"];
+  /** UX3: who connected it and when (the person's id, as the members list shows it; the web app turns it into a name). Left out for an older record that lacks either. */
+  connectedBy?: string;
+  connectedAt?: string;
 }
 
 /** `GET /v1/app/github/installations`: the org's installations (any member may read them), ordered by account. */
@@ -392,7 +395,11 @@ export async function listGithubInstallations(deps: Pick<GithubConnectionDepende
   const installations = items.flatMap((item): InstallationView[] => {
     if (typeof item.installationId !== "number" || typeof item.accountLogin !== "string" || (item.accountType !== "User" && item.accountType !== "Organization")
       || (item.repositorySelection !== "all" && item.repositorySelection !== "selected") || (item.status !== "active" && item.status !== "suspended" && item.status !== "removed")) return [];
-    return [{ installationId: item.installationId, accountLogin: item.accountLogin, accountType: item.accountType, repositorySelection: item.repositorySelection, status: item.status }];
+    return [{
+      installationId: item.installationId, accountLogin: item.accountLogin, accountType: item.accountType, repositorySelection: item.repositorySelection, status: item.status,
+      ...(typeof item.boundByDeveloperId === "string" && /^[a-f0-9]{64}$/.test(item.boundByDeveloperId) ? { connectedBy: item.boundByDeveloperId } : {}),
+      ...(typeof item.boundAt === "string" && item.boundAt.length <= 40 ? { connectedAt: item.boundAt } : {}),
+    }];
   });
   return { installations: installations.sort((left, right) => left.accountLogin.toLowerCase().localeCompare(right.accountLogin.toLowerCase()) || left.installationId - right.installationId) };
 }

@@ -176,7 +176,8 @@ export async function startAppIdentityLink(deps: DeveloperRouteDependencies, cal
   if (deps.developer.startIdentityLink === undefined) throw agentXError("NOT_FOUND", "adding a sign-in method back is not set up in this deployment");
   // UX1: from a live browser session, GitHub is linked to this account (any sign-in method), finished in this browser; from the CLI it stays "add a removed method back".
   const browserGithub = method.data === "github" && caller.browserSession === true;
-  const returnTo = typeof body === "object" && body !== null && (body as { returnTo?: unknown }).returnTo === "/app/onboard" ? "/app/onboard" as const : "/app" as const;
+  const asked = typeof body === "object" && body !== null ? (body as { returnTo?: unknown }).returnTo : undefined;
+  const returnTo = asked === "/app/onboard" || asked === "/app/admin/connections" ? asked : "/app" as const;
   const answer = await deps.developer.startIdentityLink({ kind: "start-identity-link", developerId: caller.developerId, sessionId: caller.sessionId, provider: method.data,
     ...(method.data === "slack" || browserGithub ? { browser: true as const } : {}), ...(browserGithub ? { returnTo } : {}) });
   if (!answer.ok) {
