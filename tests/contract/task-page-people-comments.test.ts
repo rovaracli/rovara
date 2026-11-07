@@ -211,5 +211,29 @@ describe("SECURITY (review I1): People of another company's task", () => {
     expect(refused.status).toBeLessThan(500);
     expect(t.harness.db.find((item) => String(item.pk).includes("LEARNING") && JSON.stringify(item).includes(commentId))).toEqual([]);
   });
+
+  it("37's decision (fail closed): a task with no company recorded answers as a missing task and makes no Slack check, on /v1/dev and on the task page's People routes", async () => {
+    const t = await slackTask();
+    const meta = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown>;
+    const { orgId: _org, ...noCompany } = meta; // eslint-disable-line @typescript-eslint/no-unused-vars -- the company is left out on purpose
+    t.harness.db.set(noCompany);
+    const peopleBefore = JSON.stringify(t.harness.db.find((item) => item.pk === `DEVTASK#${t.taskId}` && String(item.sk).startsWith("PEOPLE")));
+    t.slackReads.count = 0;
+    const missing = randomUUID();
+    for (const [method, suffix, body] of [
+      ["GET", "people", undefined],
+      ["POST", "people/role", { requestId: randomUUID(), expectedPeopleRevision: 1, personId: randomUUID(), role: "viewer" }],
+      ["POST", "people/take-ownership", { requestId: randomUUID(), expectedPeopleRevision: 1 }],
+    ] as const) {
+      const devReal = await t.harness.dev(CREATOR, method, `/v1/dev/tasks/${t.taskId}/${suffix}`, body);
+      const devNone = await t.harness.dev(CREATOR, method, `/v1/dev/tasks/${missing}/${suffix}`, body);
+      expect([devReal.status, devReal.body.error], `dev ${suffix}`).toEqual([devNone.status, devNone.body.error]);
+      const appReal = await t.web(CREATOR, method, `/v1/app/tasks/${t.taskId}/${suffix}`, body);
+      const appNone = await t.web(CREATOR, method, `/v1/app/tasks/${missing}/${suffix}`, body);
+      expect([appReal.status, appReal.body.error], `app ${suffix}`).toEqual([appNone.status, appNone.body.error]);
+    }
+    expect(t.slackReads.count, "no Slack check for a task with no company").toBe(0);
+    expect(JSON.stringify(t.harness.db.find((item) => item.pk === `DEVTASK#${t.taskId}` && String(item.sk).startsWith("PEOPLE")))).toBe(peopleBefore);
+  });
 });
 

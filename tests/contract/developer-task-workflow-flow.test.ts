@@ -298,10 +298,12 @@ describe("native developer task workflow", () => {
     };
     expect(await guardTaskDispatch(peopleDeps, outbox as never)).toBe("PARKED");
     expect(harness.db.get(`OUTBOX#${outboxId}`, "OUTBOX")?.status).toBe("WAITING_FOR_TASK_ACCESS");
-    await getTaskPeople(peopleDeps, nextOwner as never, taskId);
+    // The People reads compare the task's company with the caller's (fail closed), so the caller carries its company, as a signed-in caller does.
+    const nextOwnerCaller = { ...nextOwner, orgId: harness.db.get(`DEVTASK#${taskId}`, "META")!.orgId } as never;
+    await getTaskPeople(peopleDeps, nextOwnerCaller, taskId);
     const orphaned = harness.db.get(`DEVTASK#${taskId}`, "PEOPLE")!;
     expect(orphaned).toMatchObject({ revision: 2, orphaned: true });
-    await takeTaskOwnership(peopleDeps, nextOwner as never, taskId, { requestId: randomUUID(), expectedPeopleRevision: 2 });
+    await takeTaskOwnership(peopleDeps, nextOwnerCaller, taskId, { requestId: randomUUID(), expectedPeopleRevision: 2 });
     expect(harness.db.get(`OUTBOX#${outboxId}`, "OUTBOX")?.status).toBe("WAITING_FOR_TASK_ACCESS");
 
     const retryRequestId = randomUUID();
