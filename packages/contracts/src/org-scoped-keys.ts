@@ -943,6 +943,16 @@ export function memberDevicesKey(orgId: OrgId, developerId: string, deviceId: De
   return { pk: orgScoped(orgId, `MEMBER_DEVICES#${keyPart(developerId, "a developer id")}`), sk: keyPart(deviceId, "a device id") };
 }
 
+/** A script token's record (UX5b): its hash, scope and life. Read on every request the token makes. */
+export function scriptTokenKey(orgId: OrgId, tokenId: string): OrgKey {
+  return { pk: orgScoped(orgId, `SCRIPT_TOKEN#${keyPart(tokenId, "a script token id")}`), sk: "META" };
+}
+
+/** The company's list of script tokens, one row per token (who made it), for the settings screen and the per-person limit. */
+export function orgScriptTokensKey(orgId: OrgId, tokenId: string): OrgKey {
+  return { pk: orgScoped(orgId, "SCRIPT_TOKENS"), sk: keyPart(tokenId, "a script token id") };
+}
+
 /** The count of commands a device was given: the next command is this plus one. Sits beside the commands (its sort key is not a command's) and expires with them. */
 export function deviceCommandCounterKey(orgId: OrgId, deviceId: DeviceId): OrgKey {
   return { pk: devicePk(orgId, deviceId), sk: "COMMAND_SEQ" };

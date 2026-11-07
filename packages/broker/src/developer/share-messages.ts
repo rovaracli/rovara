@@ -25,7 +25,7 @@ const MODE_SENTENCE = {
 export function startMessage(input: StartMessageInput): string {
   const name = who(input);
   return [
-    // The client is one of four fixed names (R25), so it needs no escaping.
+    // The client is one of the fixed names (R25: the four AI tool names, "Slack", "Script token"), so it needs no escaping.
     `${name} started a task from ${input.client}: *${escapeSlack(hideEmailAddresses(input.title))}*`,
     `Project: \`${escapeSlack(input.project)}\`. Status: ${input.status}.`,
     input.mode === "view" ? MODE_SENTENCE.view(name) : MODE_SENTENCE.continue(),

@@ -1,5 +1,6 @@
 import { AppNavSchema, agentXError, type AppNav, type OrgId, type OrgRole, type OrgRecord } from "@agentx/contracts";
 import { safeDisplayName } from "../developer/person-name.js";
+import { scriptTokensEnabled } from "../script-tokens/switch.js";
 export const APP_NAV_CACHE_MS = 5000;
 const CACHE_ENTRIES_MAX = 256;
 export interface NavCaller { orgId: OrgId; developerId: string; name: string; orgRole: OrgRole; /** True once the person chose their name (release 0.4.16); the web app asks once while it is false. */ nameChosen?: boolean }
@@ -41,7 +42,7 @@ export function appNav(deps: AppNavDependencies, caller: NavCaller): Promise<App
  projects: names.map(name => ({ name, agents: rosters.filter(agent => agent.project === name).map(agent => ({ agentId: agent.agentId, name: agent.name, running: live.filter(session => session.project === name && session.agentId === agent.agentId && session.running).length, needsYou: live.filter(session => session.project === name && session.agentId === agent.agentId && session.needsYou).length })) })),
  shared: { agents: sharedAgents.slice(0, 20).map(agent => ({ agentId: agent.agentId, name: agent.name })), sessions: sharedSessions.filter(session => session.endedAt === undefined).slice(0, 10).map(session => ({ sessionId: session.sessionId, title: session.title })) },
  ...(deps.release !== undefined && /^\d{1,4}\.\d{1,4}\.\d{1,4}$/u.test(deps.release) ? { release: deps.release } : {}),
- features: { localAgents: deps.localAgents, usage: features.has("usage"), admin: features.has("admin") && (caller.orgRole === "owner" || caller.orgRole === "admin"), chains: features.has("chains"), notices: features.has("notices"), describe: features.has("describe") },
+ features: { localAgents: deps.localAgents, usage: features.has("usage"), admin: features.has("admin") && (caller.orgRole === "owner" || caller.orgRole === "admin"), chains: features.has("chains"), notices: features.has("notices"), describe: features.has("describe"), ...(scriptTokensEnabled() ? { scriptTokens: true as const } : {}) },
  });
  })();
  const entry = { value, role: caller.orgRole, name: caller.name, nameChosen: caller.nameChosen, expiresAt: deps.now() + APP_NAV_CACHE_MS };

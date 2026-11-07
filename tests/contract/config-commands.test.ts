@@ -53,7 +53,8 @@ describe("agentx config list and get", () => {
     expect(rows.find((row) => row.key === "liveFix.rovaraPaidDailyCents")).toBeUndefined();
     // 0.5.7 (DR-FU4 part 2): the retired designReview.projects key is gone from the list (an upgrade still names it when it drops the old parameter).
     expect(rows.find((row) => row.key === "designReview.projects")).toBeUndefined();
-    expect(rows).toHaveLength(38);
+    // UX5b: scriptTokens.enabled.
+    expect(rows).toHaveLength(39);
   });
 
   it("never shows the alert address itself, only that it is set", async () => {

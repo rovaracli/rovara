@@ -164,6 +164,7 @@ export * from "./event-hooks.js";
 export * from "./session-views-node.js";
 export * from "./home.js";
 export * from "./local-agents.js";
+export * from "./script-tokens.js";
 export * from "./session-handoff.js";
 export * from "./realtime-node.js";
 export * from "./realtime-readers.js";

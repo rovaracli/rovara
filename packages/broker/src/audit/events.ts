@@ -1027,3 +1027,23 @@ export function auditTestAccountChange(input: AuditBuilderBase & { action: TestA
 export function auditTaskWorkRefused(input: AuditBuilderBase & { taskId: string; path: string; reason: string }): AuditEventInput {
   return build("task.work_refused", input, { kind: "task", id: input.taskId }, { path: input.path, cause: input.reason });
 }
+
+// Script tokens (UX5b, switch `pt`) ------------------------------------------------------------------------------
+
+/**
+ * `occurrence`: `auditOccurrence(tokenId, "created")`, `auditOccurrence(tokenId, "revoked")` (a token is revoked once), or for the daily use summary `auditOccurrence(tokenId, day)`.
+ * The target is the token's id. Facts are counts and fixed words only: the token, its hash, its name and its projects' names never go in.
+ */
+export function auditScriptTokenCreated(input: AuditBuilderBase & { tokenId: string; days: number; projects: number; permissions: string }): AuditEventInput {
+  return build("script_token.created", input, { kind: "script_token", id: input.tokenId }, { days: input.days, projects: input.projects, permissions: input.permissions });
+}
+
+/** `by`: `creator`, `admin` (an owner or admin revoking another person's token), `access_changed` (Rovara, when the creator's place changed) or `limit` (a take-back over the per-person limit). */
+export function auditScriptTokenRevoked(input: AuditBuilderBase & { tokenId: string; by: "creator" | "admin" | "access_changed" | "limit" }): AuditEventInput {
+  return build("script_token.revoked", input, { kind: "script_token", id: input.tokenId }, { by: input.by });
+}
+
+/** Written once a day per token, with its first request of the day (`permission` is what that request used). */
+export function auditScriptTokenUsed(input: AuditBuilderBase & { tokenId: string; day: string; permission: string }): AuditEventInput {
+  return build("script_token.used", input, { kind: "script_token", id: input.tokenId }, { day: input.day, permission: input.permission });
+}

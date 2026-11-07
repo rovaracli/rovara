@@ -37,7 +37,7 @@ describe("hydrateBrokerEnvironment: the settings (AGENTX_SETTINGS)", () => {
     memberWorkspaceLimit: "3", organizationWorkspaceLimit: "20",
     taskPeopleChanges: "true", taskPeoplePublicInvitations: "false", taskPeoplePrivateInvitations: "true", workflowDependencies: "false",
     slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false", planSelfCheck: "true", autofix: "false", liveSteer: "1", liveRedirect: "1", liveAsk: "0", liveFix: "0", proofEvidence: "0", decisionCards: "1", testEnvironment: "0", learnedLessons: "0", verifyResults: "0", secondReview: "0", setupRecipes: "0", nightlyHealth: "0", learningSuggestionsDefault: "off",
-    teamRecord: "0", teamRecordEmbeddingModel: "amazon.titan-embed-text-v2:0", teamRecordLake: "0", projectRegistries: "0", setupAgent: "0", savedEnv: "0", testServices: "0", testAccounts: "0", projectImages: "0", designReview: "0",
+    teamRecord: "0", teamRecordEmbeddingModel: "amazon.titan-embed-text-v2:0", teamRecordLake: "0", projectRegistries: "0", setupAgent: "0", savedEnv: "0", scriptTokens: "0", testServices: "0", testAccounts: "0", projectImages: "0", designReview: "0",
     githubAppCredentialRef: "github-agentx-sdlc", githubAppId: "1234567", developerGithubClientId: "Iv1.0123456789abcdef", webFeatures: "admin", customDomain: "staging.rovara.dev",
   };
 
@@ -139,6 +139,7 @@ describe("the control plane wires each setting and name to what it came from", (
       setupRecipes: { Ref: "SetupRecipesEnabled" },
       nightlyHealth: { Ref: "NightlyHealthEnabled" },
       savedEnv: { Ref: "SavedEnvEnabled" },
+      scriptTokens: { Ref: "ScriptTokensEnabled" },
       designReview: { Ref: "DesignReviewEnabled" },
       verifyResults: { Ref: "VerifyResultsEnabled" },
       setupAgent: { Ref: "SetupAgentEnabled" },

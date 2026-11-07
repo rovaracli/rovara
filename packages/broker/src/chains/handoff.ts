@@ -16,6 +16,8 @@ import {
  */
 const SECRET_PATTERNS: readonly RegExp[] = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+  // Rovara script tokens (UX5b), bare as well as after "Bearer".
+  /rvst_[0-9a-z]{20}_[0-9a-z]{20}_[A-Za-z0-9_-]{43}/g,
   /Bearer [A-Za-z0-9._~+/-]{20,}=*/g,
   /eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g,
   /github_pat_[A-Za-z0-9_]{20,}/g,
