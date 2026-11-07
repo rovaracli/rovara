@@ -976,6 +976,24 @@ describe("slice 5: one start, and the web link on every task", () => {
     expect(runAgent).not.toHaveBeenCalled();
   });
 
+  it("is the same start under any of its names: a retry through an alias sends the same request id (review M9)", async () => {
+    const startTask = vi.fn(async () => linked("STARTING"));
+    const runAgent = vi.fn(async () => linked("STARTING"));
+    const mcp = await connect({ startTask, runAgent }, { newRequestId: counter() });
+    await mcp.callTool({ name: "agentx_start_task", arguments: { project: "payments", instructions: "Fix retry handling" } });
+    await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "Fix retry handling" } });
+    await mcp.callTool({ name: "agentx_start_workflow", arguments: { project: "payments", instructions: "Plan it", workflow_path: "full" } });
+    await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "Plan it", workflow_path: "full" } });
+    const ids = (startTask.mock.calls as unknown as Array<[{ requestId: string }]>).map(([request]) => request.requestId);
+    expect(ids[1]).toBe(ids[0]);
+    expect(ids[3]).toBe(ids[2]);
+    expect(ids[2]).not.toBe(ids[0]);
+    await mcp.callTool({ name: "agentx_run_agent", arguments: { agent_id: "code-reviewer", project: "payments", input: "Look at the build" } });
+    await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "Look at the build", agent: { agent_id: "code-reviewer" }, run_agent: true } });
+    const runs = (runAgent.mock.calls as unknown as Array<[string, { requestId: string }]>).map(([, request]) => request.requestId);
+    expect(runs[1]).toBe(runs[0]);
+  });
+
   it("keeps the old start tools as aliases that say so", async () => {
     const { tools } = await (await connect({})).listTools();
     for (const name of ["agentx_start_task", "agentx_start_workflow", "agentx_run_agent"]) expect(tools.find((tool) => tool.name === name)?.description, name).toMatch(/^Alias of agentx_start/u);

@@ -448,6 +448,14 @@ export function requestIdFor(context: ToolContext, call: ToolCall, input: Record
   return call.requestIds === undefined ? context.newRequestId() : call.requestIds.idFor(content, context.now(), () => context.newRequestId(), group);
 }
 const optional = (value: unknown) => value ?? null;
+/**
+ * Review M9: what makes a start the same start, for agentx_start and its aliases alike, so a retry under another of the start tools' names is the same start (never a second task).
+ * `workflowPath` is QUICK, FULL or absent; an agent run is told apart by its own content.
+ */
+const startContent = (input: Record<string, unknown>, text: string, workflowPath: "QUICK" | "FULL" | undefined): readonly unknown[] =>
+  ["agentx_start", input.project, text, optional(workflowPath), optional(input.title), optional(input.share_to_channel), optional(input.share_mode), optional(input.channel), optional(input.agent), optional(input.input)];
+const agentRunContent = (agentId: unknown, project: unknown, text: string, context: unknown, version: unknown): readonly unknown[] =>
+  ["agentx_start", "run_agent", agentId, project, text, optional(context), optional(version)];
 /** Issue 196: the statuses a cancel answers with only when the task had already finished. */
 const ALREADY_FINISHED: ReadonlySet<DeveloperTaskClientView["status"]> = new Set(["SUCCEEDED", "FAILED"]);
 /** What makes a cancel the same cancel: the tool and its task (final review M3). */
@@ -656,12 +664,12 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
         const given = input.input as { context?: RunInput["context"] } | undefined;
         const runInput: RunInput = { text, ...(given?.context === undefined ? {} : { context: given.context }) };
         if (!RunInputSchema.safeParse(runInput).success) throw new ToolError("INVALID_REQUEST", "input: the text or context is too long or not valid");
-        const id = requestIdFor(context, call, input, ["agentx_start", "run_agent", agent.agent_id, input.project, text, optional(given?.context), optional(agent.version)]);
+        const id = requestIdFor(context, call, input, agentRunContent(agent.agent_id, input.project, text, given?.context, agent.version));
         const task = await context.client.runAgent(agent.agent_id, { requestId: id, project: input.project as string, ...(agent.version === undefined ? {} : { version: agent.version }), input: runInput });
         return afterAction(context, call, "agentx_start", task, wait, id);
       }
       const workflowPath = input.workflow_path === undefined ? undefined : input.workflow_path === "full" ? "FULL" as const : "QUICK" as const;
-      const id = requestIdFor(context, call, input, ["agentx_start", input.project, text, optional(workflowPath), optional(input.title), optional(input.share_to_channel), optional(input.share_mode), optional(input.channel), optional(input.agent), optional(input.input)]);
+      const id = requestIdFor(context, call, input, startContent(input, text, workflowPath));
       const task = await context.client.startTask({
         ...agentSelection(input, text),
         requestId: id, project: input.project as string, instructions: text,
@@ -696,7 +704,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
     async handler(context, input, call) {
       const text = instructions(input.instructions);
       // Everything but wait_seconds: a retry with another wait is still the same start.
-      const id = requestIdFor(context, call, input, ["agentx_start_task", input.project, text, optional(input.title), optional(input.share_to_channel), optional(input.share_mode), optional(input.channel), optional(input.agent), optional(input.input)]);
+      const id = requestIdFor(context, call, input, startContent(input, text, undefined));
       const task = await context.client.startTask({
         ...agentSelection(input, text),
         requestId: id,
@@ -733,7 +741,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
     async handler(context, input, call) {
       const text = instructions(input.instructions);
       const workflowPath = input.workflow_path === "full" ? "FULL" : "QUICK";
-      const id = requestIdFor(context, call, input, ["agentx_start_workflow", input.project, text, workflowPath, optional(input.title), optional(input.share_to_channel), optional(input.share_mode), optional(input.channel), optional(input.agent), optional(input.input)]);
+      const id = requestIdFor(context, call, input, startContent(input, text, workflowPath));
       const task = await context.client.startTask({
         ...agentSelection(input, text),
         requestId: id, project: input.project as string, instructions: text, workflow: true, workflowPath,
@@ -1373,7 +1381,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       const text = instructions(input.input);
       const runInput: RunInput = { text, ...(input.context === undefined ? {} : { context: input.context as RunInput["context"] }) };
       if (!RunInputSchema.safeParse(runInput).success) throw new ToolError("INVALID_REQUEST", "input: the text or context is too long or not valid");
-      const id = requestIdFor(context, call, input, ["agentx_run_agent", input.agent_id, input.project, text, optional(input.context), optional(input.version)]);
+      const id = requestIdFor(context, call, input, agentRunContent(input.agent_id, input.project, text, input.context, input.version));
       const task = await context.client.runAgent(input.agent_id as string, {
         requestId: id, project: input.project as string, ...(input.version === undefined ? {} : { version: input.version as number | "draft" }), input: runInput,
       });
