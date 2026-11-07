@@ -63,7 +63,10 @@ export async function outsideItemsFor(deps: DeveloperRouteDependencies, caller: 
   const target = (approvalId: string): DecideTarget => ({ orgId: caller.orgId, developerId: caller.developerId, approvalId });
   const now = deps.now();
   if (kinds.apr !== undefined) {
-    const open = (await listApprovalsFor(agents, { orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole }, "PENDING").catch(() => [] as AnyApprovalRecord[]))
+    // The list is read with the route's own reads (`deps.documentClient`): on the navigation that is the per-request read cache (`app-nav/read-cache.ts`), so it is the same read Home's approval
+    // cards make, not a second one. The list only reads (a Query and Gets), so the cache never refuses it; inspecting and deciding keep the agents' own client. A list that cannot be read fails
+    // the cards (the caller says so: Home logs `home.decisions_unreadable`), never a shorter list that looks complete.
+    const open = (await listApprovalsFor({ ...agents, documentClient: deps.documentClient, tableName: deps.tableName }, { orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole }, "PENDING"))
       .filter((record) => Date.parse(record.expiresAt) > now && !(record.kind === "change" && record.subject.kind === "card_decision")).slice(0, APPROVALS_MAX);
     for (const record of open) {
       try {

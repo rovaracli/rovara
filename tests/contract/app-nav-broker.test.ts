@@ -33,8 +33,8 @@ it("coalesces production source reads across separately authenticated requests",
  expect(answers.map(answer => answer.status)).toEqual([200, 200]);await h.dev(MAYA, "GET", "/v1/app/nav");expect(liveReads).toBe(1);
 });
 
-it("counts 300 visible sessions across 40 projects without reading the live index per project", async () => {
- const { INTAKE_HOME_PROJECTS_MAX } = await import("../../packages/broker/src/intake/home-source.js");
+/** 40 projects Maya may see and 300 of her running sessions across them, one of which needs her. */
+async function bigNavWorld() {
  const { projectRevisionKey, orgProjectCatalogKey, agentSessionKey } = await import("@agentx/contracts");
  const { grantProject } = await import("../support/developer-task-broker.js");
  const { sessionWorld } = await import("../support/agent-session-world.js");
@@ -54,6 +54,11 @@ it("counts 300 visible sessions across 40 projects without reading the live inde
  h.db.set(w.db.get(taskKey(seeded.taskId))!);
  h.db.set({ ...liveSessionKey(TEST_ORG, seeded.sessionId), entityType: "LIVE_SESSION", ...record, ownerId: MAYA.developerId });
  }
+ return { h, projects };
+}
+it("counts 300 visible sessions across 40 projects without reading the live index per project", async () => {
+ const { INTAKE_HOME_PROJECTS_MAX } = await import("../../packages/broker/src/intake/home-source.js");
+ const { h, projects } = await bigNavWorld();
  const original = h.db.send.bind(h.db);let liveReads = 0, intakeReads = 0;
  h.db.send = async command => { if (command instanceof QueryCommand && command.input.ExpressionAttributeValues?.[":pk"] === liveSessionKey(TEST_ORG, "ses_00000000000000000000").pk) liveReads++;if (command instanceof QueryCommand && String(command.input.ExpressionAttributeValues?.[":pk"]).includes("#INTAKE_ITEM#")) intakeReads++;return original(command); };
  const before = h.db.commandNames().length, response = await h.dev(MAYA, "GET", "/v1/app/nav");expect(response.status).toBe(200);
@@ -71,6 +76,45 @@ it("counts 300 visible sessions across 40 projects without reading the live inde
  expect(intakeReads).toBe(INTAKE_HOME_PROJECTS_MAX);
  expect(counts).toEqual({ BatchGetCommand: 15, GetCommand: 94, QueryCommand: 134 + INTAKE_HOME_PROJECTS_MAX });
  expect(names).not.toContain("ScanCommand");
+});
+
+/** The Queries of one nav read as Maya, by partition (ids masked), with the decision cards switched on as they are at upgrade (owner decision). */
+async function decisionCardsNav(failApproverList = false) {
+ vi.stubEnv("DECISION_CARDS_ENABLED", "1");
+ const logged: string[] = [], log = vi.spyOn(console, "log").mockImplementation((line: unknown) => { logged.push(String(line)); });
+ try {
+ const { h } = await bigNavWorld(), original = h.db.send.bind(h.db), partitions: string[] = [];
+ const approverPk = String((await import("@agentx/contracts")).approverIndexKey(TEST_ORG, MAYA.developerId, "apr_00000000000000000000").pk);
+ h.db.send = async command => {
+ const pk = command instanceof QueryCommand ? String(command.input.ExpressionAttributeValues?.[":pk"]) : undefined;
+ if (pk !== undefined) partitions.push(pk);
+ if (failApproverList && pk === approverPk) throw Object.assign(new Error("throttled"), { name: "ProvisionedThroughputExceededException" });
+ return original(command);
+ };
+ const before = h.db.commandNames().length, response = await h.dev(MAYA, "GET", "/v1/app/nav");
+ const names = h.db.commandNames().slice(before);
+ return { response, queries: names.filter(name => name === "QueryCommand").length, approverReads: partitions.filter(pk => pk === approverPk).length, logged };
+ } finally { log.mockRestore();vi.unstubAllEnvs(); }
+}
+
+it("with the decision cards on, the nav reads the caller's approvals once: the outside cards share Home's read (145 Queries)", async () => {
+ const { INTAKE_HOME_PROJECTS_MAX } = await import("../../packages/broker/src/intake/home-source.js");
+ const { response, queries, approverReads } = await decisionCardsNav();
+ expect(response.status).toBe(200);
+ // The decision cards add one Query, the caller's own pending decision partition. Their outside approval cards list the caller's approvals through the request's read cache, the same read
+ // Home's approval cards make (outside-cards.ts), so that list is not read a second time (146 before).
+ expect(approverReads).toBe(1);
+ expect(queries).toBe(134 + INTAKE_HOME_PROJECTS_MAX + 1);
+});
+
+it("with the decision cards on, an approvals list that cannot be read fails the decision cards visibly, never a shorter list that looks complete", async () => {
+ const { response, approverReads, logged } = await decisionCardsNav(true);
+ // A failed read is never kept by the read cache: whoever asks after it failed reads again (once or twice, as the two askers meet).
+ expect(approverReads).toBeGreaterThanOrEqual(1);expect(approverReads).toBeLessThanOrEqual(2);
+ expect(response.status).toBe(200);
+ // Home's approval source and the decision cards both say they could not read, so the count is known to be short; the outside cards no longer turn the failure into an empty list.
+ expect(logged.some(line => line.includes('"event":"home.source_failed"') && line.includes('"source":"approval"'))).toBe(true);
+ expect(logged.some(line => line.includes('"event":"home.decisions_unreadable"'))).toBe(true);
 });
 
 it("keeps production navigation separate across organizations", async () => {
