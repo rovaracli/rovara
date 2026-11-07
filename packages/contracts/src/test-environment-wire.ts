@@ -135,6 +135,13 @@ export const TEST_ENV_DRAFT_MAX_BYTES = 200 * 1_024;
 
 /** The key under which a draft rides in a SETUP_DRAFT run's result. */
 export const TEST_ENV_DRAFT_RESULT_KEY = "testEnvironmentDraft";
+/**
+ * TS-UX-1 item 6: why a SETUP_DRAFT run that ran the detectors reports no draft (`no_test_command`: the detectors found no command that runs the tests, or nothing they found could be put together; `failed`: the
+ * detection itself failed). Present only when detection ran and made no draft, so a result with neither key is a worker that did not run detection (an older one, or the field was not sent).
+ */
+export const TEST_ENV_DRAFT_NONE_KEY = "testEnvironmentDraftNone";
+export const TEST_ENV_DRAFT_NONE_REASONS = ["no_test_command", "failed"] as const;
+export type TestEnvDraftNoneReason = (typeof TEST_ENV_DRAFT_NONE_REASONS)[number];
 
 /**
  * Test services: one dependency of a task's run as the worker starts it. Everything is a pin or a name, never a secret: the catalog entry and image digest the broker chose (the worker checks its own signed catalog agrees

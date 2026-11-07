@@ -14,7 +14,7 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { TEST_ENV_CANDIDATE_MAX, TEST_ENV_DRAFT_MAX_BYTES, TEST_ENV_SEED_COMMANDS_MAX, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDependencyCandidate, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
+import { TEST_ENV_CANDIDATE_MAX, TEST_ENV_DRAFT_MAX_BYTES, TEST_ENV_DRAFT_NONE_KEY, type TestEnvDraftNoneReason, TEST_ENV_SEED_COMMANDS_MAX, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDependencyCandidate, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
 import { ENV_DETECT_MAX_FILE_BYTES, ENV_DETECT_MAX_PATHS, boundedReader, buildEnvironmentDraft, proposalFromDraft } from "./env-detect/index.js";
 import { runDetectorsGuarded } from "./env-detect/guarded.js";
 import type { WorkerLogSink } from "./worker-log.js";
@@ -236,11 +236,12 @@ function dedupe<T>(list: readonly T[], key: (item: T) => string): T[] {
  * What a SETUP_DRAFT run adds to its result when it was asked to detect (`testEnvDetect`): the draft environment under `testEnvironmentDraft`, or nothing. NEVER throws and never fails the run: the setup proposal is
  * the run's product, the environment draft is an addition.
  */
-export async function testEnvDraftResult(input: { rootPath: string; repositories: readonly DetectRepository[]; setupProposal?: SetupProposal | undefined; recipes?: readonly RecipeOffer[] | undefined }): Promise<{ testEnvironmentDraft?: TestEnvDraft }> {
+export async function testEnvDraftResult(input: { rootPath: string; repositories: readonly DetectRepository[]; setupProposal?: SetupProposal | undefined; recipes?: readonly RecipeOffer[] | undefined }): Promise<{ testEnvironmentDraft?: TestEnvDraft; testEnvironmentDraftNone?: TestEnvDraftNoneReason }> {
   try {
     const draft = await detectTestEnvironment(input);
-    return draft === undefined ? {} : { testEnvironmentDraft: draft };
+    // TS-UX-1 item 6: detection ran and made nothing, said with a fixed reason so the page can tell it from a worker that never ran it.
+    return draft === undefined ? { [TEST_ENV_DRAFT_NONE_KEY]: "no_test_command" } : { testEnvironmentDraft: draft };
   } catch {
-    return {};
+    return { [TEST_ENV_DRAFT_NONE_KEY]: "failed" };
   }
 }
