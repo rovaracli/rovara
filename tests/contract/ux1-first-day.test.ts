@@ -82,6 +82,14 @@ describe("the sign-in server moves an invite opened on the API's own address to 
       const moved = await onLegacy(path, { accept: "text/html" });
       expect([moved.statusCode, moved.headers.location], path).toEqual([302, `${CUSTOM}${path}`]);
     }
+    // An empty query moves without a stray "?", and only GET moves: HEAD and POST stay on the old host's own server.
+    const bare = await onLegacy("/v1/auth/join", { accept: "text/html" });
+    expect([bare.statusCode, bare.headers.location]).toEqual([302, `${CUSTOM}/v1/auth/join`]);
+    for (const method of ["HEAD", "POST"]) {
+      const base = httpEvent("GET", `/v1/auth/join?invite=${token}`, undefined, { host: new URL(API).host, accept: "text/html" });
+      const kept = await handler({ ...base, requestContext: { ...base.requestContext, http: { ...base.requestContext.http, method } } }) as HttpResult;
+      expect(kept.headers.location ?? "", method).not.toContain(CUSTOM);
+    }
     const json = await onLegacy(`/v1/auth/join?invite=${token}`, { accept: "application/json" });
     expect(json.statusCode).toBe(404);
     expect(JSON.parse(json.body)).toEqual({ state: "unknown" });
@@ -372,6 +380,18 @@ describe("linking a GitHub account from the web app, for any sign-in method", ()
     expect(w.h.db.get(`DEVELOPER#${w.account}`, "META")?.githubLinkedIdentity).toBe(key);
     const other = ownerKeyForSubject(GITHUB_ISSUER, "9002");
     expect(await w.h.deps.store.linkGithubIdentity({ developerId: w.account, identityKey: other, subject: "9002", issuer: GITHUB_ISSUER, by: { method: "cloud" }, belongsToCompany: false })).toEqual({ ok: false, reason: "has_one" });
+  });
+
+  it("refuses a GitHub account that was unlinked from a different account, and changes nothing", async () => {
+    const w = await world();
+    const zed = "e".repeat(64), key = ownerKeyForSubject(GITHUB_ISSUER, "9002"), at = new Date(T0).toISOString();
+    const tombstone = { ...signInIdentityKey(key), entityType: "IDENTITY_LINK", developerId: zed, provider: "github", issuer: GITHUB_ISSUER, subject: "9002", linkedAt: at, lastSignInAt: at, unlinkedFrom: zed, unlinkedAt: at };
+    w.h.db.set(tombstone);
+    const started = await start(w);
+    expect(outcome(await finish(w, started.authorizeUrl!, 9002)).value).toBe("taken");
+    expect(w.h.db.get(signInIdentityKey(key))).toEqual(tombstone);
+    expect(await w.h.deps.store.githubUserIdOf(w.account)).toBeUndefined();
+    expect(w.h.db.get(`DEVELOPER#${w.account}`, "META")?.githubLinkedIdentity).toBeUndefined();
   });
 
   it("returns to the account menu by default, and accepts only the two fixed return paths", async () => {
