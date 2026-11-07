@@ -159,7 +159,7 @@ describe("withoutRoutedSeeds (the setup proposal)", () => {
   });
 });
 
-// TS-UX-1 item 9: a detected seed FILE is offered, preferred over a command (a file loads data and runs no code). Its risk is what the existing rules give a file seed.
+// TS-UX-1 item 9: a detected seed FILE is offered, preferred over a command (SQL run by the database's own client, never the project's code). Its risk is what the existing rules give a file seed.
 describe("seed files in a draft", () => {
   const withFiles = (candidates: unknown[], seeds: unknown[] | undefined, files: unknown[]) => ({ ...draftOf(candidates, seeds), seedFiles: files });
   const file = (path: string) => ({ path, source: { path: path.replace(/^service\//u, ""), line: 1 } });

@@ -175,7 +175,7 @@ it("a passed check shows a tick and no Prove press; the plain rows show the serv
   expect(within(services).getByText(/started by Rovara for each run \(postgres@16\)/)).toBeTruthy();
   expect(within(services).getByText("DATABASE_URL")).toBeTruthy();
   expect(within(services).getByText("web/db/seeds/users.sql")).toBeTruthy();
-  expect(within(services).getByText(/it runs no code/)).toBeTruthy();
+  expect(within(services).getByText(/as a role with no superuser rights; it cannot reach the network or your secrets/)).toBeTruthy();
   expect(within(region).getByText(/Nightly run of the whole suite: off/)).toBeTruthy();
   // The connection template (even with placeholders only) is not shown: names are.
   expect(region.textContent).not.toContain("{password}");

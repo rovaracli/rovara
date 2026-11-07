@@ -126,7 +126,7 @@ export const TestEnvDraftSchema = z
     seedCommands: z.array(z.object({ command: ProjectCommandSchema, source: TestEnvValueSourceSchema }).strict()).max(TEST_ENV_SEED_COMMANDS_MAX).optional(),
     /**
      * TS-UX-1 item 9: SQL files of test data found in the repository (workspace-relative, as a seed's `fixturePath`). The broker offers them as the database dependency's FILE seed, preferred over a seed command (a file
-     * loads data and runs no code). Absent when none.
+     * is SQL the database's own client runs as a role with no superuser rights, in the sealed test database; it cannot reach the network or a secret). Absent when none.
      */
     seedFiles: z.array(z.object({ path: RelativeWorkspacePathSchema, source: TestEnvValueSourceSchema }).strict()).max(TEST_ENV_SEED_COMMANDS_MAX).optional(),
     /** Fixed statements for the maintainer (what was found that the proposal cannot use, and what is not known). */

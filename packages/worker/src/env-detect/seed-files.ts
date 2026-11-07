@@ -1,5 +1,5 @@
 // Seed files (TS-UX-1 item 8): SQL files in a repository that hold test data for its database: a `.sql` file in a `seeds/`, `seed/`, `seeders/` or `db/seeds/` folder, or one named for a seed (`seed.sql`,
-// `test-seed.sql`, `users.seed.sql`). Offered as the database dependency's FILE seed, which loads data and runs no code, preferred over a command that fills the database. Only paths are read here, never a file.
+// `test-seed.sql`, `users.seed.sql`). Offered as the database dependency's FILE seed (SQL the database's own client runs as a role with no superuser rights, in the sealed test database), preferred over a command that fills the database. Only paths are read here, never a file.
 import { DEPENDENCY_SKIP_DIRS } from "./dependency-candidates.js";
 import type { Detector, Located } from "./types.js";
 

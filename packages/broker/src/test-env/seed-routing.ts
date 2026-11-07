@@ -9,8 +9,8 @@ export const SEED_OFFERED_NOTE = "A command that fills the database was found. I
 export const SEED_NO_DATABASE_NOTE = "A command that fills the database was found, but no test database could be proposed for it, so it is not offered as a seed and stays where it was found. Add the database first.";
 export const SEED_NOT_TAKEN_NOTE = "A command that fills the database was found, but the test database could not take it, so it is not offered as a seed and stays where it was found.";
 export const SEED_LEFT_OUT_OF_SETUP_NOTE = "A command that fills the database was left out of the setup commands: the database exists only inside the test environment, so the command would fail in setup. It is offered as the test environment's seed instead.";
-export const SEED_FILE_OFFERED_NOTE = "A file of test data was found and is offered as the test database's seed: it loads data and runs no code. A command that fills the database was also found; it is not used, and is left out of setup (setup has no database). If the tests need it too, add it in the test data field (a seed command needs a second person).";
-export const SEED_FILE_ONLY_NOTE = "A file of test data was found and is offered as the test database's seed: it loads data and runs no code.";
+export const SEED_FILE_OFFERED_NOTE = "A file of test data was found and is offered as the test database's seed: it is SQL the test database's own client runs inside the sealed test database, as a role with no superuser rights; it cannot reach the network or your secrets. A command that fills the database was also found; it is not used, and is left out of setup (setup has no database). If the tests need it too, add it in the test data field (a seed command needs a second person).";
+export const SEED_FILE_ONLY_NOTE = "A file of test data was found and is offered as the test database's seed: it is SQL the test database's own client runs inside the sealed test database, as a role with no superuser rights; it cannot reach the network or your secrets.";
 export const SEED_REFUSED_NOTE = "A command that fills the database was left out: it downloads and runs code, holds something secret, or sets a variable the system owns.";
 
 /**
@@ -18,7 +18,7 @@ export const SEED_REFUSED_NOTE = "A command that fills the database was left out
  * would refuse is returned as it came. Never throws.
  */
 export function attachDraftSeeds(dependencies: readonly TestEnvDependency[], seeds: TestEnvDraft["seedCommands"], files?: TestEnvDraft["seedFiles"]): { dependencies: TestEnvDependency[]; notes: string[]; routed: ProjectCommand[] } {
-  // TS-UX-1 item 9: a seed FILE, where one was found, is preferred over a command (a file loads data and runs no code).
+  // TS-UX-1 item 9: a seed FILE, where one was found, is preferred over a command (a file is SQL the database's own client runs, as a role with no superuser rights, in the sealed test database; a command runs the project's code).
   if (files !== undefined && files.length > 0) {
     const withFiles = attachSeedFiles(dependencies, files, seeds ?? []);
     if (withFiles !== undefined) return withFiles;

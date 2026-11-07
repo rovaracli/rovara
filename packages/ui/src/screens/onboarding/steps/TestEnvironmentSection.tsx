@@ -195,7 +195,7 @@ function DependencyRows({ dependencies, seeds, busy, canEdit, onSeed }: { depend
       <p><strong><VisibleText text={dependency.name} /></strong> ({dependency.kind}), <VisibleText text={backingWords(dependency)} /></p>
       {dependency.connect.env.length > 0 && <p className="rv-proposal-meta">Connection variables the tests get: {dependency.connect.env.map((entry, at) => <span key={entry.name}>{at > 0 ? ", " : ""}<code><VisibleText text={entry.name} /></code></span>)}</p>}
       {dependency.connect.hostAliases.length > 0 && <p className="rv-proposal-meta">Reached at: {dependency.connect.hostAliases.map((alias, at) => <span key={alias}>{at > 0 ? ", " : ""}<code><VisibleText text={alias} /></code></span>)}</p>}
-      {files.length > 0 && <p className="rv-proposal-meta">Test data loaded from {files.map((file, at) => <span key={file}>{at > 0 ? ", " : ""}<code><VisibleText text={file} /></code></span>)} (a file of data: it runs no code)</p>}
+      {files.length > 0 && <p className="rv-proposal-meta">Test data loaded from {files.map((file, at) => <span key={file}>{at > 0 ? ", " : ""}<code><VisibleText text={file} /></code></span>)} (SQL the test database's own client runs inside the sealed test database, as a role with no superuser rights; it cannot reach the network or your secrets)</p>}
       {field !== undefined && (canEdit ? <SeedField key={`${field.id}:${field.commands.join("\n")}`} dependency={field} busy={busy} onSave={onSeed} /> : field.commands.length > 0 && <p className="rv-proposal-meta">Test data commands: {field.commands.map((line, at) => <span key={at}>{at > 0 ? ", " : ""}<code><VisibleText text={line} /></code></span>)}</p>)}
     </li>;
   })}</ul></>;
