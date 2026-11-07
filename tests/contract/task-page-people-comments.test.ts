@@ -22,15 +22,17 @@ const OUTSIDER: Developer = { developerId: "e".repeat(64), name: "Out Sider", pr
 /** A Slack-started task with a People list (the creator owns it; Lee is in the channel), as the old page's People tests start one. */
 async function slackTask() {
   const name = (id: string) => (id === CREATOR_SLACK ? CREATOR.name : "Lee Park");
+  /** Every Slack proof or directory read the People code makes (review I1: another company's caller must cause none). */
+  const slackReads = { count: 0 };
   const harness = await createDeveloperTaskBroker({
     channelMembers: async (input) => ({ ok: true, memberOf: [CREATOR_SLACK, LEE_SLACK].includes(input.slackUserId) ? input.channelIds : [] }),
     developerExtra: {
       taskPeopleConfiguration: { peopleChangesEnabled: true },
-      taskPersonProof: async (input) => ({ ok: true, user: { id: input.slackUserId, teamId: SLACK_TEAM, name: name(input.slackUserId) }, memberOf: input.channelIds }),
-      taskPeopleDisplayRead: async (input: TaskPeopleDisplayReadRequest) => input.operation === "proof"
+      taskPersonProof: async (input) => (slackReads.count += 1, { ok: true, user: { id: input.slackUserId, teamId: SLACK_TEAM, name: name(input.slackUserId) }, memberOf: input.channelIds }),
+      taskPeopleDisplayRead: async (input: TaskPeopleDisplayReadRequest) => (slackReads.count += 1, input.operation === "proof"
         ? { operation: "proof" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: { ok: true as const, user: { id: input.request.slackUserId, teamId: SLACK_TEAM, name: name(input.request.slackUserId) }, memberOf: input.request.channelIds } }
         : { operation: "directory" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: { ok: true as const,
-          users: [CREATOR_SLACK, LEE_SLACK].map((id) => ({ id, teamId: SLACK_TEAM, name: name(id), memberOf: input.request.channelIds })) } },
+          users: [CREATOR_SLACK, LEE_SLACK].map((id) => ({ id, teamId: SLACK_TEAM, name: name(id), memberOf: input.request.channelIds })) } }),
     },
   });
   for (const who of [CREATOR, LEE]) {
@@ -41,7 +43,7 @@ async function slackTask() {
     instructions: "Exercise People on the task page", workflowPath: "QUICK", requestId: randomUUID() });
   expect(started.statusCode).toBe(200);
   const taskId = (JSON.parse(started.body) as { taskId: string }).taskId;
-  return { harness, taskId, web: browserRequests(harness) };
+  return { harness, taskId, web: browserRequests(harness), slackReads };
 }
 
 describe("People on the task page (OWNER DECISION 7)", () => {
@@ -144,3 +146,70 @@ describe("Remember and Forget on a comment, on the task page (OWNER DECISION 7)"
     expect((await t.web(LEE, "POST", `/v1/app/tasks/${t.taskId}/comments/${commentId}/remember`, {})).status).toBeGreaterThanOrEqual(400);
   });
 });
+
+describe("SECURITY (review I1): People of another company's task", () => {
+  it("a caller of another company makes no Slack check and no People write, and gets exactly the missing task's answer on /v1/dev and on the task page's routes", async () => {
+    const t = await slackTask();
+    // The task becomes another company's: every caller of the test company is now an outsider to it.
+    const meta = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown>;
+    t.harness.db.set({ ...meta, orgId: "org_zzzzzzzzzzzzzzzzzzzz" });
+    const peopleBefore = JSON.stringify(t.harness.db.find((item) => item.pk === `DEVTASK#${t.taskId}` && String(item.sk).startsWith("PEOPLE")));
+    const eventsBefore = t.harness.db.find((item) => item.entityType === "TASK_PEOPLE_EVENT").length;
+    t.slackReads.count = 0;
+    const missing = randomUUID();
+    const pairs: Array<[string, string, Record<string, unknown> | undefined]> = [
+      ["GET", "people", undefined],
+      ["POST", "people/role", { requestId: randomUUID(), expectedPeopleRevision: 1, personId: randomUUID(), role: "viewer" }],
+      ["POST", "people/take-ownership", { requestId: randomUUID(), expectedPeopleRevision: 1 }],
+    ];
+    for (const [method, suffix, body] of pairs) {
+      const devReal = await t.harness.dev(CREATOR, method, `/v1/dev/tasks/${t.taskId}/${suffix}`, body);
+      const devNone = await t.harness.dev(CREATOR, method, `/v1/dev/tasks/${missing}/${suffix}`, body);
+      expect([devReal.status, devReal.body.error], `dev ${suffix}`).toEqual([devNone.status, devNone.body.error]);
+      const appReal = await t.web(CREATOR, method, `/v1/app/tasks/${t.taskId}/${suffix}`, body);
+      const appNone = await t.web(CREATOR, method, `/v1/app/tasks/${missing}/${suffix}`, body);
+      expect([appReal.status, appReal.body.error], `app ${suffix}`).toEqual([appNone.status, appNone.body.error]);
+      expect(appReal.status, suffix).toBeGreaterThanOrEqual(400);
+    }
+    expect(t.slackReads.count, "no Slack check for another company's caller").toBe(0);
+    expect(JSON.stringify(t.harness.db.find((item) => item.pk === `DEVTASK#${t.taskId}` && String(item.sk).startsWith("PEOPLE")))).toBe(peopleBefore);
+    expect(t.harness.db.find((item) => item.entityType === "TASK_PEOPLE_EVENT")).toHaveLength(eventsBefore);
+    // Positive control: in its own company the same read does reach Slack.
+    t.harness.db.set(meta);
+    expect((await t.web(CREATOR, "GET", `/v1/app/tasks/${t.taskId}/people`)).status).toBe(200);
+    expect(t.slackReads.count).toBeGreaterThan(0);
+  });
+
+  it("missing test 4: the comments list, Revise the plan and Retry the checks answer another company exactly as a missing task", async () => {
+    const t = await slackTask();
+    const meta = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown>;
+    t.harness.db.set({ ...meta, orgId: "org_zzzzzzzzzzzzzzzzzzzz" });
+    const missing = randomUUID();
+    const pairs: Array<[string, string, Record<string, unknown> | undefined]> = [
+      ["GET", "comments", undefined],
+      ["POST", "workflow/revise-plan", { requestId: randomUUID(), expectedRevision: 1 }],
+      ["POST", "workflow/checks-retry", { requestId: randomUUID(), expectedRevision: 1 }],
+    ];
+    for (const [method, suffix, body] of pairs) {
+      const real = await t.web(CREATOR, method, `/v1/app/tasks/${t.taskId}/${suffix}`, body);
+      const none = await t.web(CREATOR, method, `/v1/app/tasks/${missing}/${suffix}`, body);
+      expect([real.status, real.body.error], suffix).toEqual([none.status, none.body.error]);
+      expect(real.status, suffix).toBeGreaterThanOrEqual(400);
+    }
+  });
+
+  it("missing test 3: a commenter on the task who is only a project viewer cannot Remember through the new route", async () => {
+    const t = await slackTask();
+    const project = String((t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { project: string }).project);
+    seedProject(t.harness.db, project);
+    seedGrant(t.harness.db, { orgId: TEST_ORG, developerId: LEE.developerId } as never, "viewer", project);
+    const commentId = randomUUID();
+    t.harness.db.set({ ...commentKey(t.taskId, commentId), entityType: "TASK_COMMENT", schemaVersion: 1, taskId: t.taskId, commentId, document: "plan", version: 1, target: { kind: "document" },
+      author: { kind: "person", developerId: CREATOR.developerId, slackUserId: CREATOR.slackUserId, name: CREATOR.name, owner: true }, text: "Use the shared retry helper.", createdAt: new Date().toISOString(), rev: 1 });
+    const refused = await t.web(LEE, "POST", `/v1/app/tasks/${t.taskId}/comments/${commentId}/remember`, {});
+    expect(refused.status, JSON.stringify(refused.body)).toBeGreaterThanOrEqual(400);
+    expect(refused.status).toBeLessThan(500);
+    expect(t.harness.db.find((item) => String(item.pk).includes("LEARNING") && JSON.stringify(item).includes(commentId))).toEqual([]);
+  });
+});
+
