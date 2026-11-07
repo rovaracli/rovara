@@ -8,7 +8,7 @@
 // decided, needs the confirmation page (a fresh sign-in), or refused. Only a decided answer is recorded and reported as approved; a surface never says "Approved" for anything else.
 // Mounting is one call (routeDecisionCards).
 import {
-  DECISION_CARDS_MAX, DECISION_RUN_LIMIT_KINDS, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, DecisionRequestChangesBodySchema, agentXError, approveReasonProblem,
+  DECISION_CARDS_MAX, DECISION_RUN_LIMIT_KINDS, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, DecisionRequestChangesBodySchema, agentXError, approveReasonProblem, planChoicesProblem, type DecisionPlanAnswer,
   type DecisionAnswered, type DecisionCard, type DecisionCardsView, type DecisionEvidenceOpenedAnswer, type DecisionNeedsConfirmation, type DecisionRefusalReason, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
 } from "@agentx/contracts";
 import { StatusReply } from "../aws/status-reply.js";
@@ -39,6 +39,20 @@ export interface PerformInput {
   acknowledgedRunLimitUsd?: number | undefined;
   /** The card and the digest the person was SHOWN (the evidence-opened record is keyed by them): set by the approve route, read by the design handler's medium friction. */
   shown?: { cardId: string; digest: string } | undefined;
+  /**
+   * OWNER DECISION 7 (requirements and coding plan cards only; the route refuses it on any other kind): what the old review page sent with a decision, passed to the one workflow decision, which checks each
+   * answer against the document, each check against the plan and each comment against the open ones.
+   */
+  plan?: { answers?: DecisionPlanAnswer[] | undefined; selectedOptionalCheckIds?: string[] | undefined; includedCommentIds?: string[] | undefined; note?: string | undefined } | undefined;
+}
+
+/** The plan fields of an approve or request-changes body, or undefined when it sends none. */
+function planFieldsOf(body: { answers?: DecisionPlanAnswer[] | undefined; selectedOptionalCheckIds?: string[] | undefined; includedCommentIds?: string[] | undefined; note?: string | undefined }): PerformInput["plan"] {
+  const plan = {
+    ...(body.answers === undefined ? {} : { answers: body.answers }), ...(body.selectedOptionalCheckIds === undefined ? {} : { selectedOptionalCheckIds: body.selectedOptionalCheckIds }),
+    ...(body.includedCommentIds === undefined ? {} : { includedCommentIds: body.includedCommentIds }), ...(body.note === undefined ? {} : { note: body.note }),
+  };
+  return Object.keys(plan).length === 0 ? undefined : plan;
 }
 
 /** An approve or a reject goes through the existing endpoint's own function, which re-checks the caller's live authority. */
@@ -173,6 +187,8 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     for (const card of cards) {
       const tabs = projection.tabs[card.id];
       if (tabs !== undefined) view.tabs[card.id] = tabs;
+      const choices = projection.choices[card.id];
+      if (choices !== undefined) (view.choices ??= {})[card.id] = choices;
       view.details[card.id] = projection.details[card.id] ?? [];
       view.digests[card.id] = projection.digests[card.id]!;
     }
@@ -222,7 +238,8 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     if (body.data.shownDigest !== pending.digest) throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);
     const acting = actingSubject(pending, body.data.tab);
     // A reason belongs to a design approved with an open blocker and nowhere else: the body is refused before any friction step or anything is performed, never dropped.
-    const reasonProblem = approveReasonProblem(acting.item.kind, body.data.reason);
+    // A design under design review is approved by its review's own handler, which takes none of the plan fields: they are refused there, never dropped.
+    const reasonProblem = approveReasonProblem(acting.item.kind, body.data.reason) ?? planChoicesProblem(acting.item.kind === "approve_design" && acting.item.review !== undefined ? "approve_design_reviewed" : acting.item.kind, body.data);
     if (reasonProblem !== undefined) throw agentXError("CONFIG_INVALID", reasonProblem);
     if (body.data.acknowledgedRunLimitUsd !== undefined && !DECISION_RUN_LIMIT_KINDS.includes(acting.item.kind)) throw agentXError("CONFIG_INVALID", "acknowledgedRunLimitUsd: this card sets no run limit");
     let openedAt: string | undefined;
@@ -231,7 +248,7 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
       openedAt = await deps.store.evidenceOpenedAt({ ...who, cardId, tab: body.data.tab }, pending.digest);
       if (openedAt === undefined) throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);
     }
-    const outcome = await deps.performer.approve(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, tab: body.data.tab, shown: { cardId, digest: pending.digest }, ...(body.data.reason === undefined ? {} : { reason: body.data.reason }), ...(body.data.acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd: body.data.acknowledgedRunLimitUsd }) });
+    const outcome = await deps.performer.approve(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, tab: body.data.tab, shown: { cardId, digest: pending.digest }, ...(planFieldsOf(body.data) === undefined ? {} : { plan: planFieldsOf(body.data) }), ...(body.data.reason === undefined ? {} : { reason: body.data.reason }), ...(body.data.acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd: body.data.acknowledgedRunLimitUsd }) });
     const notDecided = outcomeReply(cardId, outcome, asksForMerging(request));
     if (notDecided !== undefined) return notDecided;
     const decidedAt = nowIso();
@@ -257,7 +274,9 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     // A card with tabs sends back the first document still waiting.
     const tab = tabs === undefined ? undefined : tabsPending(tabs)[0];
     const acting = actingSubject(pending, tab);
-    const outcome = await deps.performer.requestChanges(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, reason: body.data.reason, tab });
+    const commentsProblem = planChoicesProblem(acting.item.kind === "approve_design" && acting.item.review !== undefined ? "approve_design_reviewed" : acting.item.kind, { includedCommentIds: body.data.includedCommentIds });
+    if (commentsProblem !== undefined) throw agentXError("CONFIG_INVALID", commentsProblem);
+    const outcome = await deps.performer.requestChanges(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, reason: body.data.reason, tab, ...(body.data.includedCommentIds === undefined ? {} : { plan: { includedCommentIds: body.data.includedCommentIds } }) });
     const notDecided = outcomeReply(cardId, outcome);
     if (notDecided !== undefined) return notDecided;
     const decidedAt = nowIso();

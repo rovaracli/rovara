@@ -2,7 +2,7 @@ import { requireSessionLevel, type SessionAccessDependencies } from "../agent-se
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, emailSafeName, redactAndCap, slackThreadUrl } from "@agentx/contracts";
+import { AgentXError, SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, emailSafeName, redactAndCap, slackThreadUrl } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { ProjectAccessSubject, TaskPersonIdentity } from "./task-person-identity.js";
 import type { TaskPeopleDisplayAdmission } from "./task-people-display-budget.js";
@@ -538,6 +538,8 @@ async function readablePriorOutcome(
   const outcome = await priorOutcome(deps, taskId, requestId, caller.developerId, kind, payload);
   if (outcome === undefined) return undefined;
   const currentTask = await loadTask(deps, taskId);
+  // SECURITY (review I1): another company's task answers as a missing one, before any reconcile, Slack check or People write (a task stored before tasks carried their company has none to compare).
+  if (currentTask.orgId !== undefined && currentTask.orgId !== caller.orgId) return denied();
   const current = await currentPeople(deps, currentTask);
   await authorizedRead(deps, currentTask, current, caller);
   return outcome;
@@ -678,14 +680,30 @@ export async function resolveTaskDispatchPeople(
   return { peopleRevision: people.revision, ownerActorIds: [], status: unknown ? "UNKNOWN" : "OWNERLESS" };
 }
 
+/** A step that settles the caller's own standing (see getTaskPeople): "unavailable" stays so only for someone the task knows; for anyone else it is the refusal a missing task gets. */
+async function callerStanding<T>(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, caller: DeveloperCaller, step: () => Promise<T>): Promise<T> {
+  try { return await step(); } catch (error) {
+    if (!(error instanceof AgentXError) || error.code !== "RUNTIME_UNAVAILABLE") throw error;
+    if (task.developerId === caller.developerId) throw error;
+    const listed = await loadPeople(deps, task.taskId).catch(() => undefined);
+    if (listed?.people.some((person) => person.developerId === caller.developerId) === true) throw error;
+    return denied();
+  }
+}
+
 export async function getTaskPeople(deps: TaskPeopleDependencies, caller: DeveloperCaller, taskId: string): Promise<TaskPeopleView> {
   const admission = deps.createTaskPeopleDisplayAdmission?.() ?? unavailable();
   try {
     admission.assertOpen();
     const task = await loadTask(deps, taskId);
+    // SECURITY (review I1): another company's task answers as a missing one, before any reconcile, Slack check or People write (a task stored before tasks carried their company has none to compare).
+    if (task.orgId !== undefined && task.orgId !== caller.orgId) return denied();
     admission.assertOpen();
-    const people = await currentPeopleForCaller(deps, task, caller, false, admission);
-    await authorizedRead(deps, task, people, caller, admission);
+    // SECURITY (OWNER DECISION 17): the caller's own standing on the task. For someone the task does not already know (not its creator, not on its People list: another company, or anyone
+    // outside it), a standing that cannot be worked out is the answer a missing task gets (TASK_ACCESS_DENIED), never "unavailable", which would tell them the task exists. Someone it knows still
+    // hears "unavailable" when their proof cannot be read (Slack down), as before.
+    const people = await callerStanding(deps, task, caller, () => currentPeopleForCaller(deps, task, caller, false, admission));
+    await callerStanding(deps, task, caller, () => authorizedRead(deps, task, people, caller, admission));
     if (deps.listTaskPeople === undefined) return unavailable();
     const displayChecks = await deps.listTaskPeople(task, admission);
     admission.assertOpen();
@@ -704,6 +722,8 @@ export async function getTaskPeopleCapabilities(
   taskId: string,
 ): Promise<{ peopleRevision?: number; canManagePeople: boolean; canTakeOwnership: boolean }> {
   const task = await loadTask(deps, taskId);
+  // SECURITY (review I1): another company's task answers as a missing one, before any reconcile, Slack check or People write (a task stored before tasks carried their company has none to compare).
+  if (task.orgId !== undefined && task.orgId !== caller.orgId) return denied();
   const people = await loadPeople(deps, taskId);
   if (people === undefined) return { canManagePeople: false, canTakeOwnership: false };
   const current = await reconcile(deps, task, people);
@@ -728,6 +748,8 @@ export async function getTaskPeopleEffectAdmission(
   taskId: string,
 ): Promise<{ peopleRevision: number; taskRevision: number; taskStage: string; taskShare: { teamId: string; channelId: string; threadTs: string } }> {
   const task = await loadTask(deps, taskId);
+  // SECURITY (review I1): another company's task answers as a missing one, before any reconcile, Slack check or People write (a task stored before tasks carried their company has none to compare).
+  if (task.orgId !== undefined && task.orgId !== caller.orgId) return denied();
   const people = await loadPeople(deps, taskId);
   const taskShare = SlackThreadSchema.safeParse(task.share === undefined ? undefined : {
     teamId: task.share.teamId, channelId: task.share.channelId, threadTs: task.share.threadTs,
@@ -764,6 +786,8 @@ export async function changeTaskPeople(
 ): Promise<TaskPeopleView> {
   mutationInput(input);
   const task = await loadTask(deps, taskId);
+  // SECURITY (review I1): another company's task answers as a missing one, before any reconcile, Slack check or People write (a task stored before tasks carried their company has none to compare).
+  if (task.orgId !== undefined && task.orgId !== caller.orgId) return denied();
   let people = await currentPeopleForCaller(deps, task, caller, true);
   const callerRole = await authorizedRead(deps, task, people, caller);
   const payload = { expectedPeopleRevision: input.expectedPeopleRevision, targetDeveloperId: input.targetDeveloperId, role: input.role };
@@ -802,9 +826,11 @@ export async function takeTaskOwnership(
     throw agentXError("CONFIG_INVALID", "ownership request is invalid");
   }
   const task = await loadTask(deps, taskId);
+  // SECURITY (review I1): another company's task answers as a missing one, before any reconcile, Slack check or People write (a task stored before tasks carried their company has none to compare).
+  if (task.orgId !== undefined && task.orgId !== caller.orgId) return denied();
   // Session ownership moves payer and all authority together, only on the confirmation page.
   if (task.sessionId !== undefined && task.workflow?.definitionId === "agentx-task-to-pr") {
-    if (task.orgId !== caller.orgId) return denied();
+    if (task.orgId !== undefined && task.orgId !== caller.orgId) return denied();
     if (deps.agentSessions === undefined) return unavailable();
     await requireSessionLevel(deps.agentSessions, caller, task.sessionId, "edit", "take it over");
     throw agentXError("REAUTH_REQUIRED", "Confirm the session take-over in your browser.");

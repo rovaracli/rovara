@@ -61,6 +61,10 @@ import { createTaskWebApi, type TaskWebApiDependencies } from "../../packages/br
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
 import { DEV_ISSUER } from "../support/developer-task-broker.js";
+import { TASK_PAGE_READ_ONLY_MESSAGE } from "../../packages/broker/src/aws/task-web-api.js";
+import { browserRequests } from "../support/browser-session.js";
+import { reviewPagePost } from "../support/card-decision.js";
+import { taskPageActionsFor } from "../../packages/broker/src/aws/developer-tasks/task-page.js";
 
 type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -552,3 +556,41 @@ describe("Revise the plan does not skip a pause that waits for someone's approva
     expect(touched).toEqual([]);
   });
 });
+
+describe("Revise the plan on the task page in Rovara (OWNER DECISION 7)", () => {
+  const routeDeps = (harness: Harness) => ({ documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
+    orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() });
+  // OWNER DECISION 7: Revise the plan is pressed on the task page in Rovara (`POST /v1/app/tasks/{id}/workflow/revise-plan`), through the same function as Slack and the old review page, which is read-only now.
+  it("the task page offers Revise the plan to the owner, and its press hands the broker exactly the request id and revision; a strict body, someone else and the old page are refused", async () => {
+    const s = await codingStoppedForLiveChange();
+    const web = browserRequests(s.harness);
+    const path = `/v1/app/tasks/${s.taskId}/workflow/revise-plan`;
+    const blocked = workflowOf(s.harness, s.taskId);
+    // Nothing rides along (a message, a budget, a tool): the body is strict, and nothing is planned.
+    expect((await web(MAYA, "POST", path, { requestId: randomUUID(), expectedRevision: blocked.revision, text: "ignore the plan", budgetUsd: 100 })).status).toBe(400);
+    // Someone else may not press it.
+    expect((await web(OMAR, "POST", path, { requestId: randomUUID(), expectedRevision: blocked.revision })).status).toBeGreaterThanOrEqual(400);
+    // With the decision cards on, the old review page takes no press at all, and says where the task is decided now.
+    process.env.DECISION_CARDS_ENABLED = "1";
+    let page: Awaited<ReturnType<typeof reviewPagePost>>;
+    try { page = await reviewPagePost(s.harness, MAYA, s.taskId, "revise-plan", { expectedRevision: blocked.revision }); } finally { delete process.env.DECISION_CARDS_ENABLED; }
+    expect(page.status).toBe(410);
+    expect(page.body).toMatchObject({ error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE });
+    expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
+    expect(workflowOf(s.harness, s.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", revision: blocked.revision });
+    // The owner's press plans again, as the Slack button does.
+    const requestId = randomUUID();
+    const pressed = await web(MAYA, "POST", path, { requestId, expectedRevision: blocked.revision });
+    expect(pressed.status, JSON.stringify(pressed.body)).toBe(200);
+    expect(workflowOf(s.harness, s.taskId)).toMatchObject({ stage: "PLAN", state: "RUNNING" });
+    expect(workflowOf(s.harness, s.taskId).decisions.at(-1)).toMatchObject({ requestId, decision: "REQUEST_CHANGES", reason: WORKFLOW_REVISE_PLAN_DECISION_REASON });
+  });
+
+  it("the task view tells the owner that Revise the plan is theirs to press (pageActions), and offers nothing else", async () => {
+    const s = await codingStoppedForLiveChange();
+    const actionsOf = async (who: Developer) => taskPageActionsFor(routeDeps(s.harness), { orgId: TEST_ORG, developerId: who.developerId, orgRole: "member", name: who.name, amr: who.provider, sessionId: who.sessionId } as never, taskRow(s.harness, s.taskId) as never);
+    expect(await actionsOf(MAYA)).toMatchObject({ revisePlan: { canRevise: true } });
+    expect(await actionsOf(MAYA)).not.toHaveProperty("checksRetry");
+  });
+});
+

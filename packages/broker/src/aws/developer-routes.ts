@@ -1,6 +1,7 @@
 import { previewTaskStartStop } from "../org/task-stop-start-preview.js";
 import { routeNotificationPrefs } from "../notifications/prefs-routes.js";
 import { routeTaskFindings } from "./developer-routes/task-findings.js";
+import { routeTaskPageActions } from "./developer-routes/task-page-actions.js";
 import { DECIDE_COOKIE, cookieOf } from "../developer/decide-session.js";
 import { getTaskStopEnrollment, reviewTaskStopEnrollment, writeTaskStopEnrollment } from "../org/task-stop-enrollment.js";
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
@@ -10,6 +11,8 @@ import { getInstallInfo } from "./developer-routes/install.js";
 import { isSsoRoute, routeSsoRequest } from "./developer-routes/sso.js";
 import { isCompanyDomainsRoute, routeCompanyDomains } from "./developer-routes/company-domains.js";
 import { specOwnerChoice } from "./developer-tasks/spec-wiring.js";
+import { taskPagePathFor } from "./developer-tasks/task-page.js";
+import { decisionCardsEnabled } from "../proof/switch.js";
 import "../org/task-stop-unpriced.js";
 import "../org/task-stop-editing.js";
 import "../org/service-status.js";
@@ -378,6 +381,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (TASK_PAGE.test(url.pathname) || TASK_PEOPLE_CONFIRMATION.test(url.pathname) || TASK_STATUS.test(url.pathname) || TASK_PAGE_API_PREFIX.test(url.pathname)) {
       const routeDeps = (caller: DeveloperCaller) => developerTaskRouteDependencies(deps, caller);
       return createTaskWeb({
+        readOnly: decisionCardsEnabled(),
         authenticateSession: authenticatePersonSession,
         getTaskDocumentView: (caller, taskId) => getTaskDocumentView(routeDeps(caller), caller, taskId),
         getTaskFreshness: (caller, taskId) => getTaskFreshness(routeDeps(caller), caller, taskId),
@@ -409,6 +413,9 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
           proposeOwnership: (caller, taskId, input) => proposeTaskOwnershipForPage(routeDeps(caller), caller, taskId, input),
           getPeopleRequest: (caller, taskId, requestId) => getTaskPeopleProposal(routeDeps(caller), caller, taskId, requestId),
           confirmPeopleRequest: (caller, taskId, requestId) => confirmTaskPeopleProposal(routeDeps(caller), caller, taskId, requestId),
+          // OWNER DECISION 7: with the decision cards on, the page is read-only (its writes live on the task page); a refused write says where the task is decided now. With them off it decides as before.
+          readOnly: decisionCardsEnabled(),
+          taskPagePath: (caller, taskId) => taskPagePathFor(routeDeps(caller), caller, taskId),
         }),
       })(request, url);
     }
@@ -588,7 +595,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (secondReviewAck !== null && request.method === "POST") return new StatusReply(200, await acknowledgeSecondReview(developerTaskRouteDependencies(deps, caller), caller, secondReviewAck[1]!, jsonBody(request)));
   const notifyReply = await routeNotificationPrefs(deps, caller, request, url);
   if (notifyReply !== undefined) return notifyReply;
-  const findingsReply = await routeTaskFindings(deps, caller, request, url);
+  const findingsReply = await routeTaskFindings(deps, caller, request, url) ?? await routeTaskPageActions(deps, caller, request, url);
   if (findingsReply !== undefined) return findingsReply;
   const secondReviewReply = await routeSecondReview(deps, caller, request, url);
   if (secondReviewReply !== undefined) return secondReviewReply;
@@ -700,7 +707,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Design review: Design first, Skip, the cost card's choices, the question card's answers, the Retry of a review that did not run, and the confirmation page of a high-risk design. A task with no design review answers as a missing one.
   if ((request.method === "POST" || request.method === "GET") && isDesignReviewPath(url.pathname)) return routeDesignReview(deps, caller, request, url);
   const specChoice = SPEC_CHOICE_ROUTE.exec(url.pathname);
-  if (request.method === "POST" && specChoice !== null) return routeSpecChoice(deps, caller, specChoice[1]!, specChoice[2]!);
+  if (request.method === "POST" && specChoice !== null) return routeSpecChoice(deps, caller, specChoice[1]!, specChoice[2]!, jsonBody(request));
   // SH14 (switch `su`, off by default): the setup run that runs commands. With the switch off this answers undefined and the path falls through as any unknown path.
   const setupAgentReply = await routeSetupAgent(deps, caller, request, url);
   if (setupAgentReply !== undefined) return setupAgentReply;

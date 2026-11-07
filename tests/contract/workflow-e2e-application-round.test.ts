@@ -8,6 +8,7 @@ import { disposeRealCandidates } from "../support/e2e-application-candidate.js";
 import type { E2EApplicationReport } from "../../packages/verifier/src/application-report-schema.js";
 import type { ApplicationGroupEvidence, ObservedApiOutcome } from "../support/e2e-application-evidence-fixture.js";
 import { MAYA, grantProject } from "../support/developer-task-broker.js";
+import { browserRequests } from "../support/browser-session.js";
 import { apiRowKey, sha, startApplicationRound, type ApplicationRound } from "../support/e2e-application-round-harness.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { orgMemberKey, projectMemberKey, slackBindingKey } from "@agentx/contracts";
@@ -626,6 +627,49 @@ describe("current authority at verification (the runtime row, the creator, the s
       round.harness.db.set({ ...task, workflow: { ...task.workflow, blockReason: "AgentX ran none of this task's checks on the final code." } });
       expect((await getTaskDocumentView(deps, maya, round.taskId)).applicationRetry).toBeUndefined();
       await expect(retryApplicationRoundOnPage(deps, maya, round.taskId, { requestId: randomUUID(), expectedRevision: before.revision })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+      expect(round.workflowNow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED", revision: before.revision });
+    });
+  });
+
+  // Review I2 (OWNER DECISION 7): the task page's own route, through the real broker and the real retryApplicationRoundOnPage.
+  describe("POST /v1/app/tasks/{id}/workflow/checks-retry", () => {
+    const requalify = () => requalifiedDuringRound((row) => ({ ...row, generation: Number(row.generation) + 1, qualifiedAt: new Date(Date.now() - 1_000).toISOString() }));
+    const route = (round: ApplicationRound) => `/v1/app/tasks/${round.taskId}/workflow/checks-retry`;
+
+    it("the owner's press retries the round once; a stale revision and an extra field are refused and change nothing", async () => {
+      const round = await requalify();
+      grantProject(round.harness.db as never, MAYA);
+      const web = browserRequests(round.harness as never);
+      const before = round.workflowNow();
+      const extra = await web(MAYA, "POST", route(round), { requestId: randomUUID(), expectedRevision: before.revision, instructions: "x" });
+      expect(extra.status).toBe(400);
+      const stale = await web(MAYA, "POST", route(round), { requestId: randomUUID(), expectedRevision: before.revision - 1 });
+      expect(stale.status).toBe(409);
+      expect(round.workflowNow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED", revision: before.revision });
+      const pressed = await web(MAYA, "POST", route(round), { requestId: randomUUID(), expectedRevision: before.revision });
+      expect(pressed.status, JSON.stringify(pressed.body)).toBe(200);
+      expect(pressed.body).toMatchObject({ revision: before.revision + 1 });
+      expect(round.workflowNow()).toMatchObject({ stage: "VERIFY", state: "WAITING" });
+    });
+
+    it("refuses a teammate with no retry role and the owner as a project viewer, and answers another company exactly as a missing task, changing nothing", async () => {
+      const round = await requalify();
+      const web = browserRequests(round.harness as never);
+      const before = round.workflowNow();
+      const body = () => ({ requestId: randomUUID(), expectedRevision: before.revision });
+      // Someone of the same company with no part in the task (no retry role).
+      const teammate = { developerId: "c".repeat(64), name: "Cam Lee", provider: "slack" as const, sessionId: "s-cam", slackUserId: "U0CAM0001" };
+      round.harness.db.set({ ...orgMemberKey(TEST_ORG, teammate.developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: teammate.developerId, role: "member", joinedAt: "2026-09-01T00:00:00.000Z" });
+      expect((await web(teammate, "POST", route(round), body())).status).toBeGreaterThanOrEqual(400);
+      // The owner, now only a project viewer: viewers only view.
+      round.harness.db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role: "viewer" });
+      expect((await web(MAYA, "POST", route(round), body())).status).toBeGreaterThanOrEqual(400);
+      // Another company: the same answer a missing task gets.
+      const task = round.taskNow() as Record<string, unknown>;
+      round.harness.db.set({ ...task, orgId: "org_zzzzzzzzzzzzzzzzzzzz" });
+      const real = await web(MAYA, "POST", route(round), body());
+      const none = await web(MAYA, "POST", `/v1/app/tasks/${randomUUID()}/workflow/checks-retry`, body());
+      expect([real.status, real.body.error]).toEqual([none.status, none.body.error]);
       expect(round.workflowNow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED", revision: before.revision });
     });
   });

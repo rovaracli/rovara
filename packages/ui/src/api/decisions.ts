@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
- DecisionCardsViewReaderSchema, DecisionDetailGroupsSchema, DecisionDigestSchema, DecisionEvidenceOpenedAnswerSchema, DecisionOutcomeReaderSchema, DecisionTabsSchema,
- type DecisionDetailGroup, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
+ DecisionCardsViewReaderSchema, DecisionDetailGroupsSchema, DecisionDigestSchema, DecisionEvidenceOpenedAnswerSchema, DecisionOutcomeReaderSchema, DecisionPlanChoicesSchema, DecisionTabsSchema,
+ type DecisionDetailGroup, type DecisionPlanChoices, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
@@ -13,7 +13,9 @@ import { isConfirmUrl } from "../text/links.js";
 type View = ReturnType<typeof DecisionCardsViewReaderSchema.parse>;
 export type ReadDecisionCard = View["cards"][number];
 /** A card with what the server shows beside it: its tabs, its evidence detail and the digest of what is shown (sent back with every open and approve). A card with no valid digest is not shown. */
-export interface ReadDecision { card: ReadDecisionCard; tabs: DecisionTab[] | undefined; details: DecisionDetailGroup[]; digest: string }
+export interface ReadDecision { card: ReadDecisionCard; tabs: DecisionTab[] | undefined; details: DecisionDetailGroup[]; digest: string; /** OWNER DECISION 7: a requirements or coding plan card's questions, optional checks and open comments. */ choices?: DecisionPlanChoices | undefined }
+/** What a requirements or coding plan card sends with Approve (OWNER DECISION 7). */
+export interface PlanDecisionFields { answers?: Array<{ decisionId: string; optionId: string; opened: boolean }>; selectedOptionalCheckIds?: string[]; includedCommentIds?: string[]; note?: string }
 
 /** The card's own action of a kind, only when its address is exactly the card route this app knows: a client never follows an address a card made up. */
 export function decisionActionPath(card: ReadDecisionCard, kind: "approve" | "reject" | "request_changes"): string | undefined {
@@ -24,6 +26,8 @@ export function decisionActionPath(card: ReadDecisionCard, kind: "approve" | "re
 }
 /** Slice 2: the kinds whose HIGH card is approved on the card itself, on its task page, with a recent sign-in (the broker's `highOnCard`). Every other high card has no approve here. */
 export const HIGH_ON_CARD_KINDS: readonly string[] = ["approve_plan", "approve_requirements", "merge", "approve_request"];
+/** OWNER DECISION 7: a design WITHOUT design review (its card carries `choices`) is approved on its card too, with the decide-grade sign-in; a reviewed design keeps the design review's own route. */
+export const isUnreviewedDesign = (decision: { card: { kind: string }; choices?: unknown }): boolean => decision.card.kind === "approve_design" && decision.choices !== undefined;
 /** A coding plan's card: whether approving raises the run limit, so the card asks for a tick (the broker refuses a raise without it). */
 export function runLimitRaise(card: ReadDecisionCard): { currentUsd: number | undefined; proposedUsd: number; raises: boolean } | undefined {
  const limit = card.runLimit;
@@ -54,7 +58,9 @@ export function readDecisions(view: View): ReadDecision[] {
   const digest = DecisionDigestSchema.safeParse(view.digests?.[card.id]);
   if (!digest.success) return [];
   const tabs = DecisionTabsSchema.safeParse(view.tabs?.[card.id]), details = DecisionDetailGroupsSchema.safeParse(view.details?.[card.id]);
-  return [{ card, tabs: tabs.success ? tabs.data : undefined, details: details.success ? details.data : [], digest: digest.data }];
+  // A card's choices are read one by one, as its tabs are: a bad entry hides that card's choices (it still approves with AgentX's answers), never the list.
+  const raw = (view as { choices?: Record<string, unknown> }).choices?.[card.id], choices = raw === undefined ? undefined : DecisionPlanChoicesSchema.safeParse(raw);
+  return [{ card, tabs: tabs.success ? tabs.data : undefined, details: details.success ? details.data : [], digest: digest.data, ...(choices?.success === true ? { choices: choices.data } : {}) }];
  });
 }
 
@@ -69,22 +75,22 @@ export function createDecisionsApi(host: AppHost) {
   : { kind: "decided", outcome: value.outcome };
  return {
   async evidenceOpened(decision: ReadDecision, tab?: DecisionTabId) { return done(await api.send("POST", evidencePath(decision.card, tab), { requestId: crypto.randomUUID(), shownDigest: decision.digest }, exactAnswer(DecisionEvidenceOpenedAnswerSchema))); },
-  async approve(decision: ReadDecision, tab?: DecisionTabId, reason?: string, acknowledgedRunLimitUsd?: number): Promise<DecisionResult> {
+  async approve(decision: ReadDecision, tab?: DecisionTabId, reason?: string, acknowledgedRunLimitUsd?: number, plan?: PlanDecisionFields): Promise<DecisionResult> {
    const path = mayApproveHere(decision.card) ? decisionActionPath(decision.card, "approve") : undefined;
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
    // A merge asks for the pull requests it names (`merging`), which only a reader that knows the field is sent. Approve, Cancel, Approve of the SAME card as shown (same digest) is one request, not a new pending change each time.
-   const key = decision.card.id + "|" + decision.digest + "|" + (tab ?? "") + "|" + (reason ?? ""), requestId = waiting.get(key) ?? crypto.randomUUID();
+   const key = decision.card.id + "|" + decision.digest + "|" + (tab ?? "") + "|" + (reason ?? "") + "|" + JSON.stringify(plan ?? {}), requestId = waiting.get(key) ?? crypto.randomUUID();
    waiting.delete(key);
-   const result = resultOf(done(await api.send("POST", decision.card.kind === "merge" ? path + "?merging=1" : path, { requestId, shownDigest: decision.digest, ...(tab === undefined ? {} : { tab }), ...(reason === undefined ? {} : { reason }), ...(acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd }) }, DecisionOutcomeReaderSchema, { retry: "never" })));
+   const result = resultOf(done(await api.send("POST", decision.card.kind === "merge" ? path + "?merging=1" : path, { requestId, shownDigest: decision.digest, ...(tab === undefined ? {} : { tab }), ...(reason === undefined ? {} : { reason }), ...(acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd }), ...plan }, DecisionOutcomeReaderSchema, { retry: "never" })));
    if (result.kind === "needs_confirmation") waiting.set(key, requestId);
    return result;
   },
   /** Slice 2: a HIGH requirements or coding plan card, approved on its card on the task page. The broker asks for the browser session and the recent sign-in (REAUTH_REQUIRED otherwise). */
-  async approveHighOnCard(decision: ReadDecision, shownDigest: string, acknowledgedRunLimitUsd?: number): Promise<DecisionResult> {
+  async approveHighOnCard(decision: ReadDecision, shownDigest: string, acknowledgedRunLimitUsd?: number, plan?: PlanDecisionFields): Promise<DecisionResult> {
    const card = decision.card;
-   if (card.risk !== "high" || !HIGH_ON_CARD_KINDS.includes(card.kind) || typeof card.id !== "string") throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
+   if (card.risk !== "high" || !(HIGH_ON_CARD_KINDS.includes(card.kind) || isUnreviewedDesign(decision)) || typeof card.id !== "string") throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
    // A high merge answers 202: its approval card (decided there with the decide-grade sign-in) is where it goes on.
-   return resultOf(done(await api.send("POST", "/v1/app/decisions/" + card.id.replace(":", "/") + "/approve", { requestId: crypto.randomUUID(), shownDigest, ...(acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd }) }, DecisionOutcomeReaderSchema, { retry: "never" })));
+   return resultOf(done(await api.send("POST", "/v1/app/decisions/" + card.id.replace(":", "/") + "/approve", { requestId: crypto.randomUUID(), shownDigest, ...(acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd }), ...plan }, DecisionOutcomeReaderSchema, { retry: "never" })));
   },
   /** Slice 3b: Decline an outside approval on its card (its reject route; the broker asks for the browser, the recent sign-in and the decider's authority, as the confirmation page did). */
   async declineOnCard(decision: ReadDecision): Promise<void> {
@@ -93,10 +99,10 @@ export function createDecisionsApi(host: AppHost) {
    done(await api.send("POST", path, { requestId: crypto.randomUUID(), reason: "other" }, DecisionOutcomeReaderSchema, { retry: "never" }));
   },
   /** Slice 2: send a document back with the person's reason (one line). Only the card's own request-changes route. */
-  async requestChanges(decision: ReadDecision, reason: string): Promise<DecisionResult> {
+  async requestChanges(decision: ReadDecision, reason: string, includedCommentIds?: string[]): Promise<DecisionResult> {
    const path = decisionActionPath(decision.card, "request_changes");
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
-   return resultOf(done(await api.send("POST", path, { requestId: crypto.randomUUID(), shownDigest: decision.digest, reason }, DecisionOutcomeReaderSchema, { retry: "never" })));
+   return resultOf(done(await api.send("POST", path, { requestId: crypto.randomUUID(), shownDigest: decision.digest, reason, ...(includedCommentIds === undefined ? {} : { includedCommentIds }) }, DecisionOutcomeReaderSchema, { retry: "never" })));
   },
   async reject(decision: ReadDecision, reason: DecisionRejectReason): Promise<DecisionResult> {
    const path = decision.card.risk === "high" ? undefined : decisionActionPath(decision.card, "reject");

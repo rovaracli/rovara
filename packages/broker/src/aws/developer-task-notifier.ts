@@ -5,7 +5,7 @@
 // Spec 025 E13: it also posts an admin change's Slack Confirm message, and edits it when the change ends.
 import { taskStatusOf } from "../agent-sessions/task-status.js";
 import { decisionCardUrl, sessionPageUrl } from "../decisions/open-path.js";
-import { PER_TASK_BUDGET_USD, runLimitRaises, taskStatusText } from "@agentx/contracts";
+import { PER_TASK_BUDGET_USD, SessionIdSchema, runLimitRaises, taskStatusText } from "@agentx/contracts";
 import { chatGptFallbackText } from "../chatgpt/fallback-notice.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { createHash } from "node:crypto";
@@ -1202,8 +1202,13 @@ async function feedbackReviewNotification(deps: NotifierDependencies, task: Deve
       .map(finding => ({ findingId: finding.id, question: finding.fixProposal?.summary ?? finding.rationale })),
     checkChanges: feedbackCardCheckChanges(workflow!.checkPolicy, findings.filter(finding => finding.recommended)),
     ...(workflow!.feedbackCiFailures === undefined ? {} : { ciFailures: workflow!.feedbackCiFailures.checks }),
-    detailUrl: new URL(`/review/${encodeURIComponent(task.taskId)}`, base).href,
+    detailUrl: new URL(feedbackDetailPath(task), base).href,
   });
+}
+
+/** OWNER DECISION 7: where the PR feedback card's details link goes: the task's page in Rovara (its decisions, findings and next step); a task with no session keeps the feedback review page. */
+export function feedbackDetailPath(task: { taskId: string; sessionId?: string | undefined }): string {
+  return SessionIdSchema.safeParse(task.sessionId).success ? `/app/sessions/${encodeURIComponent(task.sessionId!)}` : `/review/${encodeURIComponent(task.taskId)}`;
 }
 
 /**

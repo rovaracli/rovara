@@ -7,9 +7,11 @@
 //   request changes   the workflow decision's REQUEST_CHANGES with the person's reason, for requirements, a coding plan and a design alike (a design's Approve stays the design review's).
 // The requirements and design pair card (project.ts `pairCards`) forms only when both documents wait at once; today's Full flow asks for them one after the other, so this source never yields both.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { DECISION_APPROVE_TAKES, PER_TASK_BUDGET_USD, agentXError, planClaimCount, taskGraphDigest, type WorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
+import { DECISION_APPROVE_TAKES, DECISION_PLAN_COMMENTS_MAX, DECISION_PLAN_QUESTIONS_MAX, PER_TASK_BUDGET_USD, agentXError, planClaimCount, redactText, taskGraphDigest, taskGraphOrder, type DecisionPlanChoices, type PlanDocument, type WorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
+import { listSuggestions, listTaskComments, openCommentsFor } from "../../developer/page-comments.js";
 import { isE2EPlanCorrectionBlockReason, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { planFactsOf } from "../../decisions/plan-risk.js";
+import { designReviewEnabled } from "../../design-review/switch.js";
 import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { taskOpenPath } from "../../decisions/open-path.js";
 import type { DecisionItem } from "../../decisions/project.js";
@@ -69,28 +71,73 @@ async function itemOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller,
   // The task's owner now (after a take-over, the taker, whose own task index lists it): the workflow decision is theirs.
   if (workflow === undefined || task.orgId !== caller.orgId || task.closedAt !== undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) return undefined;
   const type = waitingDocument(workflow);
-  if (type === undefined || type === "design" || isE2EPlanCorrectionBlockReason(workflow.blockReason)) return undefined;
+  // A design under design review waits on that review's card (design-review.ts); a design without one is decided here (OWNER DECISION 7: the old review page was its browser place).
+  // Review M3: only while the design review stage is on; a design that kept a review after the stage was switched off is decided here, so it is never left to Slack alone.
+  if (type === undefined || (type === "design" && workflow.designReview !== undefined && designReviewEnabled()) || isE2EPlanCorrectionBlockReason(workflow.blockReason)) return undefined;
   const artifact = latestOf(workflow, type);
   if (artifact === undefined) return undefined;
   const loaded = await loadWorkflowDocument(reader(deps, caller), artifact, {}).catch(() => undefined);
   const claims = loaded?.format === "structured" ? planClaimCount(loaded.plan) : 0;
+  const choices = await choicesOf(deps, task, type, artifact, loaded?.format === "structured" ? loaded.plan : undefined);
   const base = {
     subjectId: task.taskId, taskId: task.taskId, project: task.project, title: task.title, createdAt: workflow.updatedAt ?? new Date(deps.now()).toISOString(),
     openPath: await taskPagePathOf(deps, caller.orgId, task), contentVersion: artifact.sha256,
   };
-  if (type === "requirements") return { ...base, kind: "approve_requirements", claims };
+  if (type === "requirements") return { ...base, kind: "approve_requirements", claims, ...(choices === undefined ? {} : { choices }) };
+  if (type === "design") return { ...base, kind: "approve_design", files: planFactsOf(loaded, workflow).files, ...(choices === undefined ? {} : { choices }) };
   const estimate = task.runEstimate;
   let proposedUsd: number | undefined;
   try { proposedUsd = await planRunLimit(estimateDependencies(developerTaskRouteDependencies(deps, caller)), task); } catch { proposedUsd = estimate?.runLimitUsd; }
   // What the plan changes and how it is proved, read from the plan itself (`planFactsOf`): the tier the card shows is the one the workflow decision enforces. Unreadable: no chips, at least medium.
   const facts = planFactsOf(loaded, workflow);
+  const breakdown = loaded?.format === "structured" ? workBreakdownLines(loaded.plan) : [];
   return {
-    ...base, kind: "approve_plan", path: workflow.path === "FULL" ? "full" : "quick", files: facts.files, claims, untestedClaims: facts.untestedClaims, ...(facts.unread ? { unread: true } : {}),
+    ...base, kind: "approve_plan", ...(choices === undefined ? {} : { choices }), path: workflow.path === "FULL" ? "full" : "quick", files: facts.files, claims, untestedClaims: facts.untestedClaims, ...(facts.unread ? { unread: true } : {}),
     ...(estimate === undefined ? {} : { cost: { lowUsd: estimate.lowUsd, highUsd: estimate.highUsd, ...(estimate.minutes === undefined ? {} : { minutes: estimate.minutes }) } }),
     // A task with no limit of its own runs on the per-task default: that is its current limit.
     ...(proposedUsd === undefined ? {} : { runLimit: { proposedUsd, currentUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD } }),
-    details: [{ title: "What Approve takes", lines: [TAKES] }],
+    // OWNER DECISION 7 item 5: the work breakdown Approve binds to (its digest is worked out from this same document when the card is pressed), named part by part.
+    details: [{ title: "What Approve takes", lines: [TAKES] }, ...(breakdown.length === 0 ? [] : [{ title: "Work breakdown", lines: breakdown }])],
   };
+}
+
+/** One plain line of at most `max` characters, redacted: model and person text on a card. */
+const plain = (text: string, max: number): string => {
+  const flat = redactText(text).replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim();
+  const characters = Array.from(flat);
+  return characters.length <= max ? flat : `${characters.slice(0, max - 1).join("")}…`;
+};
+
+/** The work breakdown's parts in their order, as the plan names them (at most 20 lines). */
+function workBreakdownLines(plan: PlanDocument): string[] {
+  const graph = plan.workBreakdown;
+  if (graph === undefined) return [];
+  try {
+    const byId = new Map(graph.items.map((item) => [item.id, item] as const));
+    return taskGraphOrder(graph).slice(0, 20).map((id, index) => plain(`${String(index + 1)}. ${byId.get(id)?.title ?? id}`, 200)).filter((line) => line !== "");
+  } catch { return []; }
+}
+
+/**
+ * OWNER DECISION 7 items 1, 3 and 9: what the card offers beside Approve: the document's questions (with the suggestions people made on this version), the coding plan's optional checks, and the person comments
+ * still open on the document (what the old review page offered). Read-only: the workflow decision checks every answer, check and comment again when the card is pressed. Undefined when nothing can be read.
+ */
+async function choicesOf(deps: DeveloperRouteDependencies, task: DeveloperTaskRecord, type: DocumentType, artifact: WorkflowArtifact, plan: PlanDocument | undefined): Promise<DecisionPlanChoices | undefined> {
+  try {
+    const [comments, suggestions] = await Promise.all([listTaskComments(deps, task.taskId), plan === undefined ? Promise.resolve([]) : listSuggestions(deps, task.taskId)]);
+    const questions = (plan?.decisions ?? []).slice(0, DECISION_PLAN_QUESTIONS_MAX).map((decision) => {
+      const suggested = suggestions.filter((suggestion) => suggestion.document === type && suggestion.version === artifact.version && suggestion.decisionId === decision.id && decision.options.some((option) => option.id === suggestion.optionId))
+        .slice(0, 10).map((suggestion) => ({ optionId: suggestion.optionId, name: plain(suggestion.name, 80) || "Someone" }));
+      return {
+        id: decision.id, question: plain(decision.question, 500) || "A question", recommended: decision.recommended,
+        options: decision.options.slice(0, 12).map((option) => ({ id: option.id, label: plain(option.label, 300) || option.id })), ...(suggested.length === 0 ? {} : { suggested }),
+      };
+    });
+    const policy = task.workflow?.checkPolicy;
+    const optionalChecks = type !== "plan" ? [] : (policy?.optional ?? []).slice(0, 20).map((check) => ({ id: check.id, label: plain(check.label, 200) || check.id, selected: (policy?.selectedOptionalIds ?? []).includes(check.id) }));
+    const openComments = openCommentsFor(comments, type, artifact.version).slice(0, DECISION_PLAN_COMMENTS_MAX).map((comment) => ({ id: comment.commentId, excerpt: plain(comment.text, 200) || "A comment" }));
+    return { questions, optionalChecks, openComments };
+  } catch { return undefined; }
 }
 
 /** The requirements and coding plan cards of the caller's own tasks. A task that cannot be read is left out. */
@@ -144,11 +191,16 @@ async function approvePlan(deps: DeveloperRouteDependencies, caller: DeveloperCa
       // The work breakdown the approval binds to is the one in the document the card was drawn from (the workflow decision checks it again).
       const loaded = now.artifact.type === "plan" ? await loadWorkflowDocument(reader(deps, caller), now.artifact, {}).catch(() => undefined) : undefined;
       const breakdown = loaded?.format === "structured" && loaded.plan.workBreakdown !== undefined ? taskGraphDigest(loaded.plan.workBreakdown) : undefined;
+      // OWNER DECISION 7: the answers, optional checks, comments and note the person chose on the card go to the same workflow decision the old review page used, which checks each one.
+      const plan = input.plan;
       await decideTaskWorkflow(developerTaskRouteDependencies(deps, who), who, now.task.taskId, {
-        requestId: input.requestId, expectedRevision: now.workflow.revision, decision: "APPROVE", artifactDigest: now.artifact.sha256, reason: "Approved on its card in Rovara.",
+        requestId: input.requestId, expectedRevision: now.workflow.revision, decision: "APPROVE", artifactDigest: now.artifact.sha256, reason: plan?.note ?? "Approved on its card in Rovara.",
         ...(breakdown === undefined ? {} : { workBreakdownDigest: breakdown }),
         ...(input.acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd: input.acknowledgedRunLimitUsd }),
-      }, decideGrade ? { decideGrade: true } : {});
+        ...(plan?.answers === undefined ? {} : { answers: plan.answers }),
+        ...(plan?.selectedOptionalCheckIds === undefined ? {} : { selectedOptionalCheckIds: plan.selectedOptionalCheckIds }),
+        ...(plan?.includedCommentIds === undefined ? {} : { includedCommentIds: plan.includedCommentIds }),
+      }, { ...(decideGrade ? { decideGrade: true as const } : {}), ...(plan?.note === undefined ? {} : { note: plan.note }) });
       return { kind: "done" };
 }
 
@@ -159,7 +211,9 @@ export function requestChanges(deps: DeveloperRouteDependencies, who: DeveloperC
     if (now === "stale") return { kind: "refused", reason: "stale" };
     await decideTaskWorkflow(developerTaskRouteDependencies(deps, who), who, now.task.taskId, {
       requestId: input.requestId, expectedRevision: now.workflow.revision, decision: "REQUEST_CHANGES", artifactDigest: now.artifact.sha256, reason: input.reason,
-    });
+      // OWNER DECISION 7: the review comments the person sent back with the reason (the workflow decision checks each is still open on this document).
+      ...(input.plan?.includedCommentIds === undefined ? {} : { includedCommentIds: input.plan.includedCommentIds }),
+    }, { note: input.reason });
     return { kind: "done" };
   });
 }

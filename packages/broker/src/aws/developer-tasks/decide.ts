@@ -439,7 +439,7 @@ export async function decideTaskWorkflow(
   // limit is raised, starts what the approval would have started.
   // QA6-12: an approval that names the limit it was shown (the task page does) is checked against the limit `acceptRunLimit` itself works out, inside `settleRunLimit`, so the limit
   // written is exactly the one acknowledged (a second, separate recompute could differ if the estimate's history or the spend policy changed in between).
-  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd) : undefined;
+  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd, caller.browserSession === true || options.via === "PAGE") : undefined;
   // The corrected plan's approval ends the E2E correction fence, whether coding starts now or waits for the run limit.
   const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
     && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
@@ -602,7 +602,7 @@ type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: numbe
  * (a proxy that can't say refuses the approval, as a Continue is). Not accepted: the `run_limit` request is made through Task 32's seam before anything is
  * written, so a workflow is never blocked on a request that was not made; without the seam (until Task 32 is wired) no request is made and the words are the same.
  */
-async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd: number | undefined): Promise<RunLimitOutcome> {
+async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd: number | undefined, browser: boolean): Promise<RunLimitOutcome> {
   const decision = await acceptRunLimit(
     // The approver's project role is read now: from the project's people where agents are set up, else through the caller's own project access.
     { ...estimateDependencies(deps), projectMembers: deps.agentRuns?.projectMembers ?? { roleOf: async () => (await deps.checkAccess(task.project)).role } },
@@ -617,7 +617,9 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
   // While the decision cards are on (the card and the plan review page both carry the tick; Slack and tools cannot show it). Not yet always: see requirePlanApprovalPlace.
   // A task with no limit of its own runs on the per-task default, so the raise is measured against that.
   const currentUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
-  if (decisionCardsEnabled() && acknowledgedUsd === undefined && runLimitRaises(currentUsd, decision.runLimitUsd)) { const { link, place } = planApprovalLink(deps, task); throw agentXError("CONFIG_INVALID", runLimitAckMessage(currentUsd, decision.runLimitUsd, link, place)); }
+  // OWNER DECISION 7: from a signed-in browser (the card, or any page) the tick is the SERVER's rule whatever the cards switch says: a raise sent without it is refused, so no page script can skip it.
+  // Slack and tools with the cards off keep the earlier rule until the owner decides that rollout (see requirePlanApprovalPlace).
+  if ((decisionCardsEnabled() || browser) && acknowledgedUsd === undefined && runLimitRaises(currentUsd, decision.runLimitUsd)) { const { link, place } = planApprovalLink(deps, task); throw agentXError("CONFIG_INVALID", runLimitAckMessage(currentUsd, decision.runLimitUsd, link, place)); }
   if (decision.accepted) return { accepted: true, runLimitUsd: decision.runLimitUsd, baselineUsd: await capWindowBaseline(deps, task) ?? 0 };
   const ask = deps.agentRuns?.requestRunLimit;
   let asked = false;

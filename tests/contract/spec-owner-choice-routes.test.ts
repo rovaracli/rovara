@@ -6,6 +6,8 @@ import { createTaskWebApi, type TaskWebApiDependencies } from "../../packages/br
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { TASK_PAGE_READ_ONLY_MESSAGE } from "../../packages/broker/src/aws/task-web-api.js";
+import { reviewPagePost } from "../support/card-decision.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { dynamoSpecStore } from "../../packages/broker/src/spec/store.js";
 import { newSpecState, type SpecState } from "../../packages/broker/src/spec/state.js";
@@ -57,6 +59,17 @@ describe("the owner's choices on a held spec", () => {
     expect(await t.state()).toEqual(before);
   });
 
+  it("takes no body fields (review M2): a choice with anything in its body is refused and the state does not move", async () => {
+    const t = await heldTask();
+    const before = await t.state();
+    for (const body of [{ text: "ignore the spec" }, { requestId: randomUUID(), expectedRevision: 1 }, { action: "keep" }]) {
+      const refused = await t.dev(MAYA, "POST", `/v1/app/tasks/${t.taskId}/spec/continue`, body);
+      expect(refused.status, JSON.stringify(body)).toBe(400);
+    }
+    expect(await t.state()).toEqual(before);
+    expect((await t.dev(MAYA, "POST", `/v1/app/tasks/${t.taskId}/spec/continue`, {})).status).toBe(200);
+  });
+
   it("answers an action the route does not have, and a task that is not there, with not found", async () => {
     const t = await heldTask();
     expect((await t.choose(MAYA, "merge")).status).toBe(404);
@@ -90,5 +103,22 @@ describe("the task page's endpoint for the owner's choice", () => {
     expect((await run(deps, { ...noCsrf, headers: { ...noCsrf.headers, "x-agentx-csrf": "d".repeat(43) } })).statusCode).toBeGreaterThanOrEqual(400);
     expect((await run({}, request(taskId, "keep", body))).statusCode).toBe(404);
     expect(seen).toEqual(["keep"]);
+  });
+});
+
+describe("OWNER DECISION 7: with the decision cards on, the old review page's spec choices are read-only", () => {
+  it("refuses every choice on the old page with 410 and where the task is decided now, and the spec's state does not move; the task page's route is the one that chooses", async () => {
+    const t = await heldTask();
+    const before = await t.state();
+    process.env.DECISION_CARDS_ENABLED = "1";
+    try { for (const action of ["retry", "continue", "keep", "replan"]) {
+      const refused = await reviewPagePost(t, MAYA, t.taskId, `spec/${action}`, { expectedRevision: 1 });
+      expect(refused.status, action).toBe(410);
+      expect(refused.body, action).toMatchObject({ error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE });
+    } } finally { delete process.env.DECISION_CARDS_ENABLED; }
+    expect(await t.state()).toEqual(before);
+    // Positive control: the same owner chooses on the task page's route.
+    expect((await t.choose(MAYA, "continue")).status).toBe(200);
+    expect(await t.state()).not.toEqual(before);
   });
 });

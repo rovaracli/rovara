@@ -6,6 +6,8 @@ import {
   redactText,
   sharedTaskKey,
   type Operation,
+  type DeveloperTaskView,
+  SessionIdSchema,
   type WorkflowSnapshot,
   type TaskComment,
   type TaskSuggestion,
@@ -503,6 +505,32 @@ export async function retryApplicationRoundOnPage(deps: DeveloperTaskRouteDepend
   await retryTaskWorkflow(deps, caller, taskId, { requestId: input.requestId, expectedRevision: input.expectedRevision, instructions: "Retried the browser and API checks from the task page." });
   const stored = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(taskId), ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
   return { revision: stored.Item?.workflow?.revision ?? input.expectedRevision };
+}
+
+/**
+ * OWNER DECISION 7: what the old review page offered on a stopped task, for the task page in Rovara (`DeveloperTaskView.pageActions`): the retry of a blocked browser and API round, Revise the plan after a live-steer
+ * block, and a held spec's choices, each with whether THIS caller may press it, by the same rules the page used (`retry` for the first two, `publish` and project work for the spec). Undefined when none applies or the
+ * caller may not read the task. The routes (`developer-routes/task-page-actions.ts`, `spec-routes.ts`) check everything again.
+ */
+export async function taskPageActionsFor(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord): Promise<DeveloperTaskView["pageActions"]> {
+  const workflow = task.workflow;
+  if (workflow === undefined || task.closedAt !== undefined) return undefined;
+  const retryOffered = workflowApplicationRetryOffered(workflow), reviseOffered = workflowReviseOffered(workflow);
+  let access: TaskAccess;
+  try { access = await resolveTaskAccess(deps, caller, task.taskId); } catch { return undefined; }
+  const specHold = await specHoldOf(deps, task, can(access.role, "publish") && await projectWorkAllowed(deps, task, caller)).catch(() => undefined);
+  if (!retryOffered && !reviseOffered && specHold === undefined) return undefined;
+  return {
+    ...(retryOffered ? { checksRetry: { canRetry: can(access.role, "retry") } } : {}),
+    ...(reviseOffered ? { revisePlan: { canRevise: can(access.role, "retry") } } : {}),
+    ...(specHold === undefined ? {} : { specHold }),
+  };
+}
+
+/** OWNER DECISION 7: the task's page in Rovara for a caller who may read the task (the page's own access rule), said when the read-only review page refuses a write. */
+export async function taskPagePathFor(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<string | undefined> {
+  const { task } = await resolveTaskAccess(deps, caller, taskId);
+  return SessionIdSchema.safeParse(task.sessionId).success ? `/app/sessions/${task.sessionId!}` : undefined;
 }
 
 /** Where the task stands now, for the open task page's "moved on" check: the same access rule as the page, two values only. */
