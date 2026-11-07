@@ -37,7 +37,7 @@ import { derivedRequestId } from "../../rovara-code/setup-draft.js";
 import { refusedCommand } from "../../test-env/draft.js";
 import { SEED_COMMAND_PROBLEM_WORDS, dependencySeedCommands, seedCommandProblem } from "../../test-env/refused-command.js";
 import { commandsToApply } from "../../test-env/candidate-commands.js";
-import { recordOwnSettingsWrite } from "../../test-env/own-settings-write.js";
+import { ownWriteOf, recordOwnSettingsWrite } from "../../test-env/own-settings-write.js";
 import { TEST_ENV_REFUSAL_WORDS, selectionFieldsAreSafe } from "../../test-env/prove-from-setup-check.js";
 import { getSignIn } from "./authentication.js";
 import { startProjectSetupCheck } from "./project-archive-setup.js";
@@ -235,7 +235,9 @@ export async function applyProposalCommands(
     ...(plan.readiness.length === 0 ? {} : { testCommands: [...definition.readiness, ...plan.readiness].map(formatCommandLine) }),
   }, { origin: originOfSave(input.definition, plan, input.edited) });
   // TS-UX-1 item 5: this write is the test environment's own, so it does not make the look it was drafted from stale.
-  await recordOwnSettingsWrite(deps.documentClient, deps.tableName, caller.orgId, input.name, { from: definition.revision, to: saved.project.latestRevision }).catch(() => undefined);
+  // Review M3: only the one revision this save made: when the revision read back is not exactly the next one, someone else saved in between, and their change must still make the look stale.
+  const own = ownWriteOf(definition.revision, saved.project.latestRevision);
+  if (own !== undefined) await recordOwnSettingsWrite(deps.documentClient, deps.tableName, caller.orgId, input.name, own).catch(() => undefined);
   let setupCheck: TestEnvApplyAnswer["setupCheck"] = "started";
   try { await startProjectSetupCheck(deps, caller, encodeURIComponent(input.name), { requestId: derivedRequestId(input.requestId, "test-env-setup-check") }); } catch { setupCheck = "not_started"; }
   return { added: added.map(formatCommandLine), skipped: plan.skipped, settingsRevision: saved.project.latestRevision, setupCheck };

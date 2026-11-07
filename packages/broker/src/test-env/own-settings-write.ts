@@ -30,3 +30,8 @@ export function lookIsStale(basedOnRevision: number, revision: number, own: OwnS
   if (basedOnRevision >= revision) return false;
   return !(own !== undefined && own.to === revision && basedOnRevision >= own.from);
 }
+
+/** Review M3: the own write a save made, from the revision it was based on to the one read back after it: only when that is exactly the next revision (anything more means someone else saved in between). */
+export function ownWriteOf(fromRevision: number, latestRevision: number): OwnSettingsWrite | undefined {
+  return Number.isSafeInteger(fromRevision) && fromRevision >= 1 && latestRevision === fromRevision + 1 ? { from: fromRevision, to: fromRevision + 1 } : undefined;
+}

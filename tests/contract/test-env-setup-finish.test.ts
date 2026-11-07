@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { projectPk, testEnvDigest, type TestEnvironmentBody } from "../../packages/contracts/src/index.js";
 import { pinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
-import { lookIsStale, recordOwnSettingsWrite, readOwnSettingsWrite } from "../../packages/broker/src/test-env/own-settings-write.js";
+import { lookIsStale, ownWriteOf, recordOwnSettingsWrite, readOwnSettingsWrite } from "../../packages/broker/src/test-env/own-settings-write.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { ENV, NAME, command, draftBody, draftOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -39,6 +39,10 @@ describe("item 5: the approval's own settings write does not stale its own look"
     expect(lookIsStale(2, 3, { from: 2, to: 3 })).toBe(false);
     expect(lookIsStale(1, 3, { from: 2, to: 3 })).toBe(true);
     expect(lookIsStale(2, 4, { from: 2, to: 3 })).toBe(true);
+    // Review M3: a person's save straight after the apply (the revision read back is two on) is not recorded as the test environment's own.
+    expect(ownWriteOf(2, 3)).toEqual({ from: 2, to: 3 });
+    expect(ownWriteOf(2, 4)).toBeUndefined();
+    expect(ownWriteOf(2, 2)).toBeUndefined();
     const db = new FakeDynamoDb();
     await recordOwnSettingsWrite(db, "t", TEST_ORG, NAME, { from: 2, to: 3 });
     await recordOwnSettingsWrite(db, "t", TEST_ORG, NAME, { from: 3, to: 4 });
