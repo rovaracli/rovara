@@ -27,21 +27,20 @@ export type TicketStatusMap = z.infer<typeof TicketStatusMapSchema>;
 /**
  * A project's ticket updates.
  *   comments        post a comment at each moment (on by default: the ticket asked for the work);
- *   changeStatus    "Also change the ticket's status" (OFF by default), to the names in `statuses`;
- *   privateSessions also write for a task only its owner can see when the tracker is public (a GitHub issue in a repository that is not private). Off by default.
+ *   changeStatus    "Also change the ticket's status" (OFF by default), to the names in `statuses`.
+ * A task only its owner (or a named few) can see NEVER writes to a public tracker (a GitHub issue in a repository that is not private): an owner rule, with no project switch.
  */
 export const TicketUpdatesSettingsSchema = z.object({
   comments: z.boolean(),
   changeStatus: z.boolean(),
   statuses: TicketStatusMapSchema,
-  privateSessions: z.boolean(),
 }).strict();
 export type TicketUpdatesSettings = z.infer<typeof TicketUpdatesSettingsSchema>;
 
 /** The statuses a ticket moves to when the switch is on and the project named none (a common Linear and Jira workflow). A moment with no name moves nothing. */
 export const DEFAULT_TICKET_STATUSES: Readonly<TicketStatusMap> = { started: "In Progress", pr_opened: "In Review", merged: "Done" };
 
-export const DEFAULT_TICKET_UPDATES: Readonly<TicketUpdatesSettings> = { comments: true, changeStatus: false, statuses: DEFAULT_TICKET_STATUSES, privateSessions: false };
+export const DEFAULT_TICKET_UPDATES: Readonly<TicketUpdatesSettings> = { comments: true, changeStatus: false, statuses: DEFAULT_TICKET_STATUSES };
 
 /** `PUT /v1/app/projects/{project}/intake/updates`: a maintainer replaces the project's settings. */
 export const TicketUpdatesPutBodySchema = z.object({ requestId: z.string().uuid(), settings: TicketUpdatesSettingsSchema }).strict();

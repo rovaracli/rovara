@@ -144,14 +144,16 @@ describe("the ticket updates settings", () => {
   it("reads the safe defaults (comments on, status changes OFF, never a private task to a public tracker) and lets only a maintainer change them", async () => {
     const w = routed();
     const read = await w.call("/v1/app/projects/web/intake/updates", "GET", undefined);
-    expect(read.body).toMatchObject({ settings: { comments: true, changeStatus: false, privateSessions: false, statuses: { started: "In Progress", pr_opened: "In Review", merged: "Done" } }, canEdit: false });
-    const settings = { comments: true, changeStatus: true, statuses: { started: "Doing" }, privateSessions: false };
+    expect(read.body).toMatchObject({ settings: { comments: true, changeStatus: false, statuses: { started: "In Progress", pr_opened: "In Review", merged: "Done" } }, canEdit: false });
+    const settings = { comments: true, changeStatus: true, statuses: { started: "Doing" } };
     expect(await code(w.call("/v1/app/projects/web/intake/updates", "PUT", { requestId: REQUEST, settings }))).toBe("FORBIDDEN");
     expect((await w.call("/v1/app/projects/api/intake/updates", "PUT", { requestId: REQUEST, settings })).body).toMatchObject({ settings, canEdit: true });
     // The same request again answers the same and writes nothing more; the same id with other settings is refused; a fresh id over a stale read is a clear conflict path (revision moves).
     expect((await w.call("/v1/app/projects/api/intake/updates", "PUT", { requestId: REQUEST, settings })).body).toMatchObject({ settings });
     expect(await code(w.call("/v1/app/projects/api/intake/updates", "PUT", { requestId: REQUEST, settings: { ...settings, comments: false } }))).toBe("CONFIG_INVALID");
     expect((await w.call("/v1/app/projects/api/intake/updates", "GET", undefined)).body).toMatchObject({ settings });
+    // An org admin with only a viewer's role on the project cannot change them either (the project role decides, `edit_settings`).
+    expect(await code(w.call("/v1/app/projects/docs/intake/updates", "PUT", { requestId: REQUEST_2, settings }, w.caller({ orgRole: "admin" })))).toBe("FORBIDDEN");
     // Another org reads nothing of it.
     expect(await code(w.call("/v1/app/projects/api/intake/updates", "GET", undefined, w.caller({ orgId: OTHER_ORG })))).toBe("PROJECT_NOT_FOUND");
     expect(await code(w.call("/v1/app/projects/api/intake/updates", "PUT", { requestId: REQUEST_2, settings: { ...settings, statuses: { started: "x\u0000" } } }))).toBe("CONFIG_INVALID");

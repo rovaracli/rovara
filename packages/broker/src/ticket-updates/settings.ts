@@ -19,7 +19,10 @@ const isConditional = (error: unknown): boolean => error instanceof Error && err
 export async function readTicketUpdates(table: TicketUpdatesTable, orgId: OrgId, project: string): Promise<{ settings: TicketUpdatesSettings; revision: number; requestId?: string }> {
   const item = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: ticketUpdatesSettingsKey(orgId, project), ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
   if (item === undefined || item["orgId"] !== orgId || item["project"] !== project) return { settings: { ...DEFAULT_TICKET_UPDATES, statuses: { ...DEFAULT_TICKET_UPDATES.statuses } }, revision: 0 };
-  const parsed = TicketUpdatesSettingsSchema.safeParse(item["settings"]);
+  // Settings saved before review I3 may carry `privateSessions`: it is dropped (it never overrides the owner rule), and the rest is read as saved.
+  const stored = item["settings"] !== null && typeof item["settings"] === "object" ? { ...(item["settings"] as Record<string, unknown>) } : item["settings"];
+  if (stored !== null && typeof stored === "object") delete (stored as Record<string, unknown>)["privateSessions"];
+  const parsed = TicketUpdatesSettingsSchema.safeParse(stored);
   const revision = typeof item["revision"] === "number" ? item["revision"] : 0;
   // A stored item that no longer parses is read as the safe defaults (status changes off), never as "on".
   return { settings: parsed.success ? parsed.data : { ...DEFAULT_TICKET_UPDATES, statuses: { ...DEFAULT_TICKET_UPDATES.statuses } }, revision, ...(typeof item["requestId"] === "string" ? { requestId: item["requestId"] } : {}) };

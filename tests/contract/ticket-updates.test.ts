@@ -6,7 +6,7 @@ import { agentSessionKey, intakeItemIdOf, sessionBindingKey, ticketUpdatesSettin
 import { claimIntakeItem, markIntakeStarted } from "../../packages/broker/src/intake/store.js";
 import { TICKET_UPDATES_PER_TASK, inertTicketTitle, sendTicketUpdate, ticketUpdateText, type TicketUpdatesDependencies } from "../../packages/broker/src/ticket-updates/handler.js";
 import { readWriteAccess } from "../../packages/broker/src/ticket-updates/settings.js";
-import { ticketTrackersOf, type TicketTrackerPort } from "../../packages/broker/src/ticket-updates/trackers.js";
+import { MARKER_PROPERTY, ticketTrackersOf, type TicketTrackerPort } from "../../packages/broker/src/ticket-updates/trackers.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -94,7 +94,7 @@ describe("the ticket's status", () => {
   it("moves to the project's name for the moment when the switch is on, and the comment says so", async () => {
     const w = world();
     await w.setup();
-    await w.settings({ comments: true, changeStatus: true, statuses: { started: "Doing" }, privateSessions: false });
+    await w.settings({ comments: true, changeStatus: true, statuses: { started: "Doing" } });
     await sendTicketUpdate(w.deps, w.milestone("started"));
     expect(w.calls[0]).toMatchObject({ kind: "status", status: "Doing" });
     expect(w.calls[1]!.text).toContain("Status: Doing.");
@@ -105,15 +105,20 @@ describe("the ticket's status", () => {
 });
 
 describe("private tasks and public trackers", () => {
-  it("asks for a private repository for a task only its owner sees, unless the project allows private tasks", async () => {
+  it("always asks for a private repository for a task only its owner sees, whatever the project's settings (no override, review I3)", async () => {
     const w = world({ system: "github" });
     await w.setup();
     await sendTicketUpdate(w.deps, w.milestone("started"));
     expect(w.calls[0]).toMatchObject({ tracker: "github", requirePrivate: true });
+    // Settings saved before the fix still carry the old switch: it is ignored, and the rest of the settings still apply.
     await w.settings({ comments: true, changeStatus: false, statuses: {}, privateSessions: true });
     await sendTicketUpdate(w.deps, w.milestone("merged"));
-    expect(w.calls[1]).toMatchObject({ tracker: "github", requirePrivate: false });
+    expect(w.calls[1]).toMatchObject({ tracker: "github", requirePrivate: true });
+    // A maintainer cannot save the switch any more.
+    const { TicketUpdatesSettingsSchema } = await import("@agentx/contracts");
+    expect(TicketUpdatesSettingsSchema.safeParse({ comments: true, changeStatus: false, statuses: {}, privateSessions: true }).success).toBe(false);
   });
+
 });
 
 describe("a missing scope", () => {
@@ -144,6 +149,44 @@ describe("once, and rate limited", () => {
     expect(outcomes.filter((outcome) => outcome === "posted")).toHaveLength(TICKET_UPDATES_PER_TASK);
     expect(outcomes.slice(-2)).toEqual(["rate_limited", "rate_limited"]);
     expect(w.calls).toHaveLength(TICKET_UPDATES_PER_TASK);
+  });
+
+  it("stops at the per-company hourly cap for one tracker; another tracker and another org are not touched (and the per-task count is not spent by a cap)", async () => {
+    const { TICKET_UPDATES_PER_HOUR } = await import("../../packages/broker/src/ticket-updates/handler.js");
+    const { ticketUpdateCallsKey } = await import("@agentx/contracts");
+    const w = world();
+    await w.setup();
+    const hour = new Date(NOW).toISOString().slice(0, 13);
+    await w.db.send(new PutCommand({ TableName: "state", Item: { ...ticketUpdateCallsKey(ORG, "jira", hour), count: TICKET_UPDATES_PER_HOUR } }));
+    expect(await sendTicketUpdate(w.deps, w.milestone("started"))).toBe("rate_limited");
+    expect(w.calls).toEqual([]);
+    const count = async (key: { pk: string; sk: string }) => ((await w.db.send(new GetCommand({ TableName: "state", Key: key }))) as { Item?: { count?: number } }).Item?.count ?? 0;
+    // Review M3: the cap's "no" gave the per-task count back.
+    expect(await count({ pk: `DEVTASK#${TASK}`, sk: "TICKET_UPDATE_COUNT" })).toBe(0);
+    expect(await count(ticketUpdateCallsKey(ORG, "linear", hour))).toBe(0);
+    expect(await count(ticketUpdateCallsKey(OTHER, "jira", hour))).toBe(0);
+    // Another tracker of the same org still writes.
+    const linear = world({ system: "linear" });
+    await linear.setup();
+    expect(await sendTicketUpdate(linear.deps, linear.milestone("started"))).toBe("posted");
+  });
+
+  it("spends no count on an update that wrote nothing, or that failed and will be tried again (review M3)", async () => {
+    const w = world({ answer: { comment: "needs_write_access" } });
+    await w.setup();
+    const count = async () => ((await w.db.send(new GetCommand({ TableName: "state", Key: { pk: `DEVTASK#${TASK}`, sk: "TICKET_UPDATE_COUNT" } }))) as { Item?: { count?: number } }).Item?.count ?? 0;
+    await sendTicketUpdate(w.deps, w.milestone("started"));
+    expect(await count()).toBe(0);
+    const failing = world();
+    await failing.setup();
+    failing.deps.trackers.jira = { ...failing.deps.trackers.jira, comment: async () => { throw new Error("tracker away"); } };
+    await expect(sendTicketUpdate(failing.deps, failing.milestone("started"))).rejects.toThrow("tracker away");
+    expect(((await failing.db.send(new GetCommand({ TableName: "state", Key: { pk: `DEVTASK#${TASK}`, sk: "TICKET_UPDATE_COUNT" } }))) as { Item?: { count?: number } }).Item?.count ?? 0).toBe(0);
+    // A write that did reach the tracker spends one.
+    const ok = world();
+    await ok.setup();
+    await sendTicketUpdate(ok.deps, ok.milestone("started"));
+    expect(((await ok.db.send(new GetCommand({ TableName: "state", Key: { pk: `DEVTASK#${TASK}`, sk: "TICKET_UPDATE_COUNT" } }))) as { Item?: { count?: number } }).Item?.count).toBe(1);
   });
 
   it("gives the claim back on a fault that may pass, so the next delivery sends it", async () => {
@@ -186,23 +229,107 @@ describe("the tracker writers use the connection's access as it is", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("Jira: a read and write connection posts only to its own site; a refusal is needs_write_access; a rate limit throws to be tried again", async () => {
+  it("Jira: a read and write connection posts only to its own site, marked, internal for an owner-only task; a refusal is needs_write_access; a rate limit throws", async () => {
     const deps = await connectionWorld([{ id: "con_jira0000000000000002", access: "read_write" }]);
-    const seen: Array<{ url: string; body: unknown; redirect: unknown }> = [];
+    const seen: Array<{ url: string; method: string; body: unknown; redirect: unknown }> = [];
     let status = 201;
-    const fetch = vi.fn(async (url: string, init: RequestInit) => { seen.push({ url, body: JSON.parse(typeof init.body === "string" ? init.body : "{}"), redirect: init.redirect }); return new Response("{}", { status }); });
+    let existing: unknown[] = [];
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      seen.push({ url, method: init.method ?? "GET", body: typeof init.body === "string" ? JSON.parse(init.body) : undefined, redirect: init.redirect });
+      if ((init.method ?? "GET") === "GET") return new Response(JSON.stringify({ comments: existing }), { status: status === 201 ? 200 : status });
+      return new Response("{}", { status });
+    });
     const trackers = ticketTrackersOf({ connections: deps, fetch: fetch as never });
-    expect(await trackers.jira.comment({ orgId: ORG, ticket: jira, text: "line one\nline two", key: "k", requirePrivate: true })).toBe("posted");
-    expect(seen[0]).toEqual({ url: "https://acme.atlassian.net/rest/api/3/issue/PAY-12/comment", redirect: "error", body: { body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: "line one" }] }, { type: "paragraph", content: [{ type: "text", text: "line two" }] }] } } });
+    expect(await trackers.jira.comment({ orgId: ORG, ticket: jira, text: "line one\nline two", key: "k1", requirePrivate: true })).toBe("posted");
+    expect(seen[0]).toMatchObject({ method: "GET", url: "https://acme.atlassian.net/rest/api/3/issue/PAY-12/comment?orderBy=-created&maxResults=50&expand=properties", redirect: "error" });
+    const marker = (seen[1]!.body as { properties: Array<{ key: string; value: { id: string } }> }).properties[0]!.value.id;
+    expect(seen[1]).toEqual({ method: "POST", url: "https://acme.atlassian.net/rest/api/3/issue/PAY-12/comment", redirect: "error", body: {
+      body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: "line one" }] }, { type: "paragraph", content: [{ type: "text", text: "line two" }] }] },
+      properties: [{ key: MARKER_PROPERTY, value: { id: marker } }, { key: "sd.public.comment", value: { internal: true } }],
+    } });
+    // A task shared with the project: the comment is not made internal.
+    seen.length = 0;
+    await trackers.jira.comment({ orgId: ORG, ticket: jira, text: "x", key: "k2", requirePrivate: false });
+    expect((seen[1]!.body as { properties: unknown[] }).properties).toHaveLength(1);
+    // Review M4: a retry after a lost answer finds its marker on the ticket and does not post again.
+    seen.length = 0;
+    existing = [{ id: "1", properties: [{ key: MARKER_PROPERTY, value: { id: marker } }] }];
+    expect(await trackers.jira.comment({ orgId: ORG, ticket: jira, text: "line one\nline two", key: "k1", requirePrivate: true })).toBe("posted");
+    expect(seen.map((call) => call.method)).toEqual(["GET"]);
+    existing = [];
     // A ticket on another site has no connection there: nothing is sent.
+    seen.length = 0;
     expect(await trackers.jira.comment({ orgId: ORG, ticket: { ...jira, url: "https://other.atlassian.net/browse/PAY-12" }, text: "x", key: "k", requirePrivate: true })).toBe("not_connected");
+    expect(seen).toEqual([]);
     status = 403;
-    expect(await trackers.jira.comment({ orgId: ORG, ticket: jira, text: "x", key: "k", requirePrivate: true })).toBe("needs_write_access");
+    expect(await trackers.jira.comment({ orgId: ORG, ticket: jira, text: "x", key: "k3", requirePrivate: true })).toBe("needs_write_access");
     status = 429;
-    await expect(trackers.jira.comment({ orgId: ORG, ticket: jira, text: "x", key: "k", requirePrivate: true })).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
-    expect(fetch).toHaveBeenCalledTimes(3);
+    await expect(trackers.jira.comment({ orgId: ORG, ticket: jira, text: "x", key: "k4", requirePrivate: true })).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
     // The key never appears in what a caller sees.
     expect(JSON.stringify(seen)).not.toContain("tok-en-x");
+  });
+
+  it("Linear: with two workspaces, the comment and the status go only to the ticket's own workspace (review I2)", async () => {
+    const fake = new FakeOrgSecrets({ env: "staging", now: () => NOW });
+    const db = new FakeDynamoDb();
+    const secrets = new OrgSecrets({ env: "staging", roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: () => NOW });
+    const deps = { documentClient: db, tableName: "T", env: "staging", secrets, now: () => NOW };
+    const keys: Record<string, string> = { [["key", "alpha"].join("_")]: "alpha", [["key", "beta"].join("_")]: "beta" };
+    const calls: Array<{ workspace: string; query: string }> = [];
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      const workspace = keys[(init.headers as Record<string, string>)["authorization"] ?? ""] ?? "none";
+      const body = JSON.parse(typeof init.body === "string" ? init.body : "{}") as { query: string };
+      calls.push({ workspace, query: body.query });
+      if (/viewer/u.test(body.query)) return Response.json({ data: { viewer: { id: `rovara-${workspace}`, organization: { urlKey: workspace } } } });
+      if (/issue\(id/u.test(body.query)) return Response.json({ data: { issue: { id: `uuid-${workspace}`, url: `https://linear.app/${workspace}/issue/ENG-12/x`, state: { name: "Todo" }, team: { states: { nodes: [{ id: `done-${workspace}`, name: "Done" }] } } } } });
+      if (/issueUpdate/u.test(body.query)) return Response.json({ data: { issueUpdate: { success: true } } });
+      return Response.json({ data: null, errors: [{ message: "unknown" }] });
+    });
+    const store = new OrgConnectionStore({ ...deps, fetch: fetch as never });
+    // The service identity of workspace alpha sorts first: before the fix every write went through it.
+    await store.put({ orgId: ORG, by: "dev-admin", connection: { connectionId: "con_lin00000000000000001", type: "linear", label: "Alpha", access: "read_write", identity: "service" }, secret: { apiKey: ["key", "alpha"].join("_") } });
+    await store.put({ orgId: ORG, by: "dev-admin", connection: { connectionId: "con_lin00000000000000002", type: "linear", label: "Beta", access: "read_write" }, secret: { apiKey: ["key", "beta"].join("_") } });
+    await store.check(ORG, "con_lin00000000000000001");
+    await store.check(ORG, "con_lin00000000000000002");
+    const replies: Array<{ workspace?: string; issueKey: string }> = [];
+    const reply = { reply: vi.fn(async (input: { workspace?: string; issueKey: string }) => { replies.push({ workspace: input.workspace, issueKey: input.issueKey }); return { commentId: "c1" }; }) };
+    const trackers = ticketTrackersOf({ connections: deps, linearReply: reply as never, fetch: fetch as never });
+    const beta = { tracker: "linear" as const, id: "ENG-12", url: "https://linear.app/beta/issue/ENG-12/refunds" };
+    calls.length = 0;
+    expect(await trackers.linear.comment({ orgId: ORG, ticket: beta, text: "x", key: "k", requirePrivate: true })).toBe("posted");
+    expect(replies).toEqual([{ workspace: "beta", issueKey: "ENG-12" }]);
+    expect(await trackers.linear.setStatus({ orgId: ORG, ticket: beta, status: "Done" })).toBe("moved");
+    expect(calls.map((call) => call.workspace)).toEqual(["beta", "beta"]);
+    // A ticket link that names no workspace, or a workspace no connection was checked in, writes nothing.
+    calls.length = 0;
+    expect(await trackers.linear.comment({ orgId: ORG, ticket: { ...beta, url: "https://linear.app/gamma/issue/ENG-12/x" }, text: "x", key: "k", requirePrivate: true })).toBe("not_connected");
+    expect(await trackers.linear.setStatus({ orgId: ORG, ticket: { ...beta, url: "https://example.com/ENG-12" }, status: "Done" })).toBe("not_connected");
+    expect(calls).toEqual([]);
+    expect(replies).toHaveLength(1);
+  });
+
+  it("Linear: a workspace whose only connection reads says it needs write access, and the issue the key finds must be in the ticket's workspace", async () => {
+    const fake = new FakeOrgSecrets({ env: "staging", now: () => NOW });
+    const db = new FakeDynamoDb();
+    const secrets = new OrgSecrets({ env: "staging", roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: () => NOW });
+    const deps = { documentClient: db, tableName: "T", env: "staging", secrets, now: () => NOW };
+    let issueWorkspace = "alpha";
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(typeof init.body === "string" ? init.body : "{}") as { query: string };
+      if (/viewer/u.test(body.query)) return Response.json({ data: { viewer: { id: "rovara", organization: { urlKey: "alpha" } } } });
+      if (/issue\(id/u.test(body.query)) return Response.json({ data: { issue: { id: "u", url: `https://linear.app/${issueWorkspace}/issue/ENG-12/x`, state: { name: "Todo" }, team: { states: { nodes: [{ id: "d", name: "Done" }] } } } } });
+      return Response.json({ data: { issueUpdate: { success: true } } });
+    });
+    const store = new OrgConnectionStore({ ...deps, fetch: fetch as never });
+    await store.put({ orgId: ORG, by: "dev-admin", connection: { connectionId: "con_lin00000000000000003", type: "linear", label: "Alpha", access: "read" }, secret: { apiKey: ["key", "r"].join("_") } });
+    await store.check(ORG, "con_lin00000000000000003");
+    const ticket = { tracker: "linear" as const, id: "ENG-12", url: "https://linear.app/alpha/issue/ENG-12/x" };
+    expect(await ticketTrackersOf({ connections: deps, fetch: fetch as never }).linear.comment({ orgId: ORG, ticket, text: "x", key: "k", requirePrivate: true })).toBe("needs_write_access");
+    await store.put({ orgId: ORG, by: "dev-admin", connection: { connectionId: "con_lin00000000000000004", type: "linear", label: "Alpha 2", access: "read_write" }, secret: { apiKey: ["key", "w"].join("_") } });
+    await store.check(ORG, "con_lin00000000000000004");
+    issueWorkspace = "other";
+    expect(await ticketTrackersOf({ connections: deps, fetch: fetch as never }).linear.setStatus({ orgId: ORG, ticket, status: "Done" })).toBe("not_found");
+    expect(fetch.mock.calls.some(([, init]) => typeof (init).body === "string" && /issueUpdate/u.test((init).body))).toBe(false);
   });
 
   it("with no connections at all every tracker answers not_connected, and GitHub without the App too", async () => {

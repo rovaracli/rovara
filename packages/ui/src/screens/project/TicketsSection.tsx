@@ -68,12 +68,11 @@ export function TicketsSection({ project, canStart, canEdit }: { project: string
         <Button disabled={busy} onClick={addSource}>Add source</Button></fieldset>}</>}
     <h3>What Rovara writes back</h3>
     {updates.isError ? <p role="alert"><VisibleText text={failure(updates.error)} /></p> : settings === undefined ? <p className="rv-muted">Loading</p> : <>
-      <p className="rv-muted">Only to the ticket that started a task: its title, the moment and a link to the task. Nothing else from the task leaves Rovara.</p>
+      <p className="rv-muted">Only to the ticket that started a task: its title, the moment and a link to the task. Nothing else from the task leaves Rovara, and a task only its owner can see never writes to a public GitHub issue.</p>
       {updates.data?.access.filter((entry) => entry.state === "needs_write_access").map((entry) => <p key={entry.tracker} role="status"><VisibleText text={TICKET_WRITE_ACCESS_WORDS[entry.tracker]} /></p>)}
       <Checkbox label="Comment on the ticket when work starts, the plan is ready, the pull request opens, and it merges or closes" checked={settings.comments} disabled={!editable || busy} onCheckedChange={(value) => setDraft({ ...settings, comments: value === true })} />
       <Checkbox label="Also change the ticket's status" checked={settings.changeStatus} disabled={!editable || busy} onCheckedChange={(value) => setDraft({ ...settings, changeStatus: value === true })} />
       {settings.changeStatus && TICKET_UPDATE_MOMENTS.map((moment) => <TextField key={moment} label={`${MOMENT_LABEL[moment]}: status`} hint={DEFAULT_TICKET_STATUSES[moment] === undefined ? "Leave empty to keep the status" : `Default: ${DEFAULT_TICKET_STATUSES[moment]}`} maxLength={60} disabled={!editable || busy} value={settings.statuses[moment] ?? ""} onChange={(event) => setMoment(moment, event.target.value)} />)}
-      <Checkbox label="Also write to public GitHub issues for tasks only their owner can see" checked={settings.privateSessions} disabled={!editable || busy} onCheckedChange={(value) => setDraft({ ...settings, privateSessions: value === true })} />
       {editable && draft !== undefined && <Button disabled={busy} onClick={() => { void run(async () => { const saved = await api.saveUpdates(project, draft);query.setQueryData(["project", project, "ticket-updates"], saved);setDraft(undefined); }); }}>Save</Button>}
     </>}
   </section>;

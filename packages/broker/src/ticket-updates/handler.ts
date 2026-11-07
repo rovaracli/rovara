@@ -3,8 +3,8 @@
 //   - ONLY the ticket that started the task: a `tracker_item` binding of the task's session that intake itself recorded as started for THIS task (the intake item names the session or the
 //     task). A ticket someone linked by hand, or any other place, is never written to;
 //   - only fixed words, the task's title (made inert and cut), the status it moved to, and the link to `/app/sessions/<id>`. No plan, code, comment or summary ever leaves;
-//   - a task only its owner can see is never written to a PUBLIC tracker (a GitHub issue whose repository is not private) unless the project allows it (`privateSessions`). Linear and Jira are
-//     the company's own workspaces;
+//   - a task only its owner can see is never written to a PUBLIC tracker (a GitHub issue whose repository is not private), whatever the project's settings (an owner rule); on Jira its comment
+//     is internal (never shown to a service-desk customer). Linear and Jira are otherwise the company's own workspaces;
 //   - rate limited: at most `TICKET_UPDATES_PER_HOUR` writes per company and tracker an hour, and at most `TICKET_UPDATES_PER_TASK` per task. Over a limit the update is skipped (logged), never queued;
 //   - each update is claimed once (a conditional write in the task's partition) before it is sent, so two deliveries send it once; a fault that may pass gives the claim back and throws, so the
 //     delivery tries again (bounded by the milestone's attempts). A missing scope is noted for the company's settings page and the update is skipped: it never fails the task.
@@ -126,6 +126,18 @@ async function countWithin(deps: TicketUpdatesDependencies, key: { pk: string; s
   }
 }
 
+/** Gives one count back (a write that did not happen). Never below zero. */
+async function giveBack(deps: TicketUpdatesDependencies, key: { pk: string; sk: string }): Promise<void> {
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: key, UpdateExpression: "ADD #count :minus", ConditionExpression: "#count > :zero",
+      ExpressionAttributeNames: { "#count": "count" }, ExpressionAttributeValues: { ":minus": -1, ":zero": 0 },
+    }));
+  } catch (error) {
+    if (!isConditional(error)) throw error;
+  }
+}
+
 /** A refusal that will not pass by itself (the tracker's own "no"): the update is skipped, not tried again. A rate limit or a fault may pass and is thrown. */
 const isFinal = (error: unknown): boolean => error instanceof AgentXError && error.statusCode < 500 && error.code !== "TOO_MANY_REQUESTS";
 
@@ -144,17 +156,25 @@ export async function sendTicketUpdate(deps: TicketUpdatesDependencies, mileston
   const { settings } = await readTicketUpdates(deps, orgId, project);
   const status = settings.changeStatus ? settings.statuses[moment] : undefined;
   if (!settings.comments && status === undefined) return "off";
-  // A task only its owner (or a named few) can see never writes to a public tracker unless the project allows it. Unknown visibility is private.
+  // A task only its owner (or a named few) can see never writes to a public tracker: an owner rule with no project switch (review I3). Unknown visibility is private.
   const visibility = await resolveTaskVisibility(deps, orgId, milestone.taskId).catch(() => undefined);
-  const requirePrivate = visibility?.kind !== "shared" && !settings.privateSessions;
+  const requirePrivate = visibility?.kind !== "shared";
   const key = claimKeyOf(milestone, moment);
   const claimed = await claim(deps, milestone.taskId, key);
   if (claimed === "done") return "already_sent";
   if (claimed === "busy") throw new Error("ticket update in flight");
+  // Review M3: the two counters are spent only by a write that reached the tracker. Each is taken in one conditional update (so two deliveries cannot both use the last one), and given back
+  // when the other limit says no, when nothing was written, or when the send fails and will be tried again.
+  const now = deps.now();
+  const perTask = { pk: `DEVTASK#${milestone.taskId}`, sk: "TICKET_UPDATE_COUNT" };
+  const perHour = ticketUpdateCallsKey(orgId, ticket.tracker, hourOf(now));
+  const spent: Array<{ pk: string; sk: string }> = [];
+  const refund = async () => { for (const counter of spent.splice(0)) await giveBack(deps, counter).catch(() => undefined); };
   try {
-    const now = deps.now();
-    if (!await countWithin(deps, { pk: `DEVTASK#${milestone.taskId}`, sk: "TICKET_UPDATE_COUNT" }, TICKET_UPDATES_PER_TASK, Math.floor(now / 1000) + KEPT_SECONDS)
-      || !await countWithin(deps, ticketUpdateCallsKey(orgId, ticket.tracker, hourOf(now)), TICKET_UPDATES_PER_HOUR, Math.floor(now / 1000) + 2 * 3600)) {
+    if (await countWithin(deps, perTask, TICKET_UPDATES_PER_TASK, Math.floor(now / 1000) + KEPT_SECONDS)) spent.push(perTask);
+    if (spent.length === 1 && await countWithin(deps, perHour, TICKET_UPDATES_PER_HOUR, Math.floor(now / 1000) + 2 * 3600)) spent.push(perHour);
+    if (spent.length < 2) {
+      await refund();
       deps.log?.("ticket_update.rate_limited", { orgId, taskId: milestone.taskId, tracker: ticket.tracker, moment });
       await settle(deps, milestone.taskId, key, "rate_limited");
       return "rate_limited";
@@ -176,11 +196,13 @@ export async function sendTicketUpdate(deps: TicketUpdatesDependencies, mileston
     }
     if (missing) await noteWriteAccessMissing(deps, orgId, ticket.tracker).catch(() => undefined);
     else if (posted === "posted" || moved !== undefined) await noteWriteAccessOk(deps, orgId, ticket.tracker).catch(() => undefined);
+    if (posted !== "posted" && moved === undefined) await refund();
     const outcome = missing ? "needs_write_access" : posted;
     deps.log?.("ticket_update.sent", { orgId, taskId: milestone.taskId, tracker: ticket.tracker, moment, outcome, ...(moved === undefined ? {} : { statusMoved: true }) });
     await settle(deps, milestone.taskId, key, outcome);
     return outcome;
   } catch (error) {
+    await refund();
     await release(deps, milestone.taskId, key);
     throw error;
   }
