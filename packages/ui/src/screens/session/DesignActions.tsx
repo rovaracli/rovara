@@ -6,6 +6,7 @@ import { createDesignReviewApi } from "../../api/design-review.js";
 import { ApiError } from "../../api/errors.js";
 import { TaskDecisions } from "../home/NeedsYou.js";
 import { StoppedTaskActions } from "./StoppedTaskActions.js";
+import { TaskPagePeopleAndComments } from "./TaskPagePeopleAndComments.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { classificationLine, notNeededLine, questionLines, readDesignActions, readDesignReview, retryOffer } from "./design-review-view.js";
@@ -80,5 +81,5 @@ export function TaskDesignPanel({ session, taskId }: { session: ReadSession; tas
   submit: async (answers: ReadonlyArray<{ questionId: string; optionId?: string; text?: string }>) => { await api.answer(taskId, crypto.randomUUID(), answers);await reread(); },
   resume: async () => { await api.resume(taskId, crypto.randomUUID());await reread(); },
  };
- return <>{task !== undefined && <DesignActions task={task} sessionKey={key} />}{task !== undefined && <StoppedTaskActions task={task} sessionId={session.sessionId} />}<TaskDecisions taskId={taskId} design={design} questions={questions} /></>;
+ return <>{task !== undefined && <DesignActions task={task} sessionKey={key} />}{task !== undefined && <StoppedTaskActions task={task} sessionId={session.sessionId} />}<TaskPagePeopleAndComments taskId={taskId} /><TaskDecisions taskId={taskId} design={design} questions={questions} /></>;
 }

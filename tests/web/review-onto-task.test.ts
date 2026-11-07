@@ -119,3 +119,24 @@ it("a reader who may not press is told who can, and no button is offered", async
  expect(within(section).queryByRole("button")).toBeNull();
  f.close();
 });
+
+it("People and the review page's comments are on the task page: Remember posts to the comment's route, and a role change goes on to its confirmation page", async () => {
+ const COMMENT = "44444444-4444-4444-8444-444444444444", PERSON = "55555555-5555-4555-8555-555555555555", REQUEST = "66666666-6666-4666-8666-666666666666";
+ const f = taskPage([], request => {
+  if (request.path === "/v1/app/tasks/" + TASK + "/comments") return { status: 200, body: { comments: [{ id: COMMENT, author: { kind: "person", name: "Sam" }, text: "Use the shared retry helper.", deleted: false, learning: { remembered: false } }], canRemember: true } };
+  if (request.path === "/v1/app/tasks/" + TASK + "/people") return { status: 200, body: { view: { revision: 3, people: [{ personId: PERSON, name: "Lee", role: "commenter", you: false }], canManage: true, canTakeOwnership: false } } };
+  if (request.method === "POST" && request.path.endsWith("/remember")) return { status: 200, body: { correction: { id: "c1" } } };
+  if (request.method === "POST" && request.path.endsWith("/people/role")) return { status: 200, body: { change: { status: "PENDING", requestId: REQUEST, confirmationUrl: "/review/" + TASK + "/task/people/confirm/" + REQUEST } } };
+  return undefined;
+ });
+ const region = await screen.findByRole("region", { name: "People and comments" });
+ fireEvent.click(await within(region).findByRole("button", { name: "Remember this" }));
+ await waitFor(() => expect(f.posts().map(request => request.path)).toContain("/v1/app/tasks/" + TASK + "/comments/" + COMMENT + "/remember"));
+ expect(f.posts().find(request => request.path.endsWith("/remember"))!.body).toEqual({});
+ fireEvent.change(within(region).getByLabelText("Access for Lee"), { target: { value: "viewer" } });
+ fireEvent.click(within(region).getByRole("button", { name: "Review role change" }));
+ await waitFor(() => expect(f.posts().map(request => request.path)).toContain("/v1/app/tasks/" + TASK + "/people/role"));
+ expect(f.posts().find(request => request.path.endsWith("/people/role"))!.body).toMatchObject({ expectedPeopleRevision: 3, personId: PERSON, role: "viewer" });
+ await waitFor(() => expect(f.host.openExternal).toHaveBeenCalledWith(expect.stringContaining("/review/" + TASK + "/task/people/confirm/" + REQUEST)));
+ f.close();
+});
