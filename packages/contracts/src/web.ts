@@ -130,7 +130,7 @@ export * from "./decision-card-tabs.js";
 export * from "./plan-one-screen.js";
 export * from "./test-environment.js";
 // Setup wizard (E4): what the test-environment setup routes answer and take (browser-safe).
-export { TestEnvironmentStateSchema, TestEnvSummarySchema, TestEnvRunsSchema, TestEnvProposeBodySchema, TestEnvProveBodySchema, TestEnvCheckBodySchema, TestEnvApproveBodySchema, TestEnvEditBodySchema, TestEnvApplyBodySchema, TestEnvApplyAnswerSchema, TestEnvRequestApprovalBodySchema, TestEnvRequestApprovalAnswerSchema, TestEnvApproveAnswerSchema, TEST_ENV_REFUSALS, TEST_ENV_APPLY_SKIPPED, type TestEnvironmentState, type TestEnvSummary, type TestEnvRuns, type TestEnvApplyAnswer, type TestEnvRequestApprovalAnswer, type TestEnvApproveAnswer, type TestEnvEditBody, type TestEnvApplyBody, type TestEnvCheckBody } from "./test-environment-wire.js";
+export { TestEnvironmentStateSchema, TestEnvSummarySchema, TestEnvRunsSchema, TestEnvProposeBodySchema, TestEnvProveBodySchema, TestEnvCheckBodySchema, TestEnvApproveBodySchema, TestEnvEditBodySchema, TestEnvSeedBodySchema, TEST_ENV_SEED_COMMAND_MAX_CHARS, TestEnvApplyBodySchema, TestEnvApplyAnswerSchema, TestEnvRequestApprovalBodySchema, TestEnvRequestApprovalAnswerSchema, TestEnvApproveAnswerSchema, TEST_ENV_REFUSALS, TEST_ENV_APPLY_SKIPPED, type TestEnvironmentState, type TestEnvSummary, type TestEnvRuns, type TestEnvApplyAnswer, type TestEnvRequestApprovalAnswer, type TestEnvApproveAnswer, type TestEnvEditBody, type TestEnvApplyBody, type TestEnvCheckBody } from "./test-environment-wire.js";
 // K1 C5b: what the agent loaded (browser-safe readers).
 export * from "./knowledge-skills.js";
 // Meta repo lane F: task intake (browser-safe).

@@ -14,7 +14,7 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { TEST_ENV_CANDIDATE_MAX, TEST_ENV_DRAFT_MAX_BYTES, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDependencyCandidate, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
+import { TEST_ENV_CANDIDATE_MAX, TEST_ENV_DRAFT_MAX_BYTES, TEST_ENV_SEED_COMMANDS_MAX, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDependencyCandidate, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
 import { ENV_DETECT_MAX_FILE_BYTES, ENV_DETECT_MAX_PATHS, boundedReader, buildEnvironmentDraft, proposalFromDraft } from "./env-detect/index.js";
 import { runDetectorsGuarded } from "./env-detect/guarded.js";
 import type { WorkerLogSink } from "./worker-log.js";
@@ -108,6 +108,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
   const questions: string[] = [];
   const takenIds = new Set<string>();
   const found: DependencyCandidate[] = [];
+  const seeds: NonNullable<TestEnvDraft["seedCommands"]> = [];
   let notPlaced = 0;
   for (const repository of input.repositories) {
     if (repository.checkedOut !== undefined) { notes.push(`A pull request's files were checked out in ${repository.name}; only the default branch is read, so it was left out.`); continue; }
@@ -125,6 +126,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     if ("ok" in draft) { notes.push(`The setup of ${repository.name} could not be put together from what was found.`); continue; }
     // The setup agent fills only the gaps: its commands go through the same schema, and a flagged one is dropped.
     const filled = proposalFromDraft(draft, agentDraftFor(input.setupProposal, repository.name), { cwd: repository.path });
+    for (const seed of filled.ok ? filled.seedCommands : draft.seedCommands) if (seeds.length < TEST_ENV_SEED_COMMANDS_MAX) seeds.push(seed);
     const environment = filled.ok ? filled.proposal.environment : draft.environment;
     const sources = filled.ok ? filled.proposal.valueSources : draft.valueSources;
     const index = environments.length;
@@ -159,6 +161,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     pendingServices: dedupe(pending, (service) => `${service.kind}:${service.target}`).slice(0, 32),
     notes: [...new Set(notes)].map(plainLine).filter((line) => line !== "").slice(0, 60),
     questions: [...new Set(questions)].map(plainLine).filter((line) => line !== "").slice(0, 60),
+    ...(seeds.length === 0 ? {} : { seedCommands: seeds }),
   };
   // The dependencies are tried on top of today's draft; if they do not fit or do not parse, today's draft stands.
   const listed = listableDependencies(found, notPlaced);

@@ -1414,8 +1414,9 @@ async function runTask(
         if (!read.ok) throw agentXError("OPERATION_INTERRUPTED", "the setup draft run produced no readable proposal");
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SETUP_DRAFT" });
-        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupProposal: read.proposal,
-          ...(invocation.payload.testEnvDetect === true ? await testEnvDraftResult({ rootPath: canonicalRoot, repositories: manifest.repositories, setupProposal: read.proposal, ...(invocation.payload.testEnvRecipes === undefined ? {} : { recipes: invocation.payload.testEnvRecipes }) }) : {}) };
+        const detected = invocation.payload.testEnvDetect === true ? await testEnvDraftResult({ rootPath: canonicalRoot, repositories: manifest.repositories, setupProposal: read.proposal, ...(invocation.payload.testEnvRecipes === undefined ? {} : { recipes: invocation.payload.testEnvRecipes }) }) : {};
+        // TS-UX-1: the setup proposal keeps every command. A seed or migration leaves it only in the BROKER, and only once a database dependency has taken it as its seed (the worker cannot know whether one will be proposed).
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupProposal: read.proposal, ...detected };
       } else if (specBinding !== undefined) {
         let read = readSpecWriteAnswer(finalText ?? "", specBinding);
         // An answer that can't be read gets one more try in the same session, with what is wrong with it; whichever comes last is what is reported.

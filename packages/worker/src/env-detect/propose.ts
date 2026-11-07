@@ -7,6 +7,7 @@
 //   - services found in the code are listed as `pendingServices`, not put in the environment: a mocked service needs a recorded fixture set first (the Prove run's recorder makes it);
 //   - the environment must pass the contract's own schema, or the proposal is not produced (and the reason is a fixed word).
 import {
+  isDatabaseSeedCommand,
   TestEnvironmentBodySchema,
   TestEnvironmentProposalSchema,
   parseCommandLine,
@@ -24,6 +25,13 @@ export interface EnvironmentDraft {
   environment: TestEnvironmentBody;
   valueSources: Array<{ field: string; source: TestEnvValueSource }>;
   pendingServices: PendingService[];
+  /**
+   * Commands that fill or migrate a database (TS-UX-1), offered as the database dependency's seed: the broker attaches them to the dependency it proposes and, only then, takes them out of the setup commands (setup runs
+   * on a fresh machine with no database). They are ALSO still in the setup commands here. Empty when no database was found: with none, nothing says the command needs one.
+   */
+  seedCommands: Array<{ command: ProjectCommand; source: TestEnvValueSource }>;
+  /** A database dependency was found, so a seed or migration command is routed (also for the setup agent's own commands). */
+  routesSeeds: boolean;
   iac: Detection["iac"];
   notes: string[];
   questions: string[];
@@ -36,7 +44,17 @@ const sameProgram = (left: ProjectCommand, right: ProjectCommand): boolean => le
 export function buildEnvironmentDraft(detection: Detection, input: { repositoryId: string; nightlyBranch?: string }): EnvironmentDraft | { ok: false; reason: "invalid_environment" } {
   const valueSources: EnvironmentDraft["valueSources"] = [];
   const checks = detection.checks.slice(0, 32);
+  const routesSeeds = Array.isArray(detection.dependencies) && detection.dependencies.some((item) => item.kind === "database");
+  const isSeed = (item: Located<ProjectCommand>): boolean => routesSeeds && isDatabaseSeedCommand(item.value);
+  // A seed or migration found among the setup commands stays one here and is ALSO reported as a seed: the worker cannot know whether the broker will propose a database to hold it (services off, no catalog, nothing to
+  // run on), and a command that lands nowhere must not vanish from setup. The broker takes it out of setup once a dependency has taken it.
   const setup = detection.setupCommands.slice(0, 20);
+  const seedCommands: EnvironmentDraft["seedCommands"] = [];
+  if (routesSeeds) {
+    for (const item of [...detection.setupCommands.filter(isSeed), ...(detection.seedCommands ?? [])]) {
+      if (seedCommands.length < 8 && !seedCommands.some((existing) => sameProgram(existing.command, item.value))) seedCommands.push({ command: item.value, source: sourceOf(item.source) });
+    }
+  }
   const fullSuiteOn = [...new Set([...detection.fullSuiteOn.map((item) => item.value), ...COMMON_FULL_SUITE])].slice(0, 100);
   setup.forEach((item, index) => valueSources.push({ field: `repos[0].setupCommands[${String(index)}]`, source: sourceOf(item.source) }));
   checks.forEach((item, index) => valueSources.push({ field: `repos[0].checks[${String(index)}]`, source: sourceOf(item.source) }));
@@ -67,6 +85,8 @@ export function buildEnvironmentDraft(detection: Detection, input: { repositoryI
   return {
     environment: environment.data,
     valueSources,
+    seedCommands,
+    routesSeeds,
     pendingServices: detection.services.map((item) => ({ kind: item.value.kind, target: item.value.target, source: sourceOf(item.source) })),
     iac: detection.iac,
     notes: [...detection.notes, ...unnamedCoverageNotes(detection)],
@@ -97,11 +117,12 @@ function optionalPaths(check: Located<{ reportPath?: string; coveragePath?: stri
  * Adds what the setup agent found that code did not, then builds the proposal (the agent's draft with the environment and the source of each value). A command from the draft that cannot be read, is flagged, or
  * duplicates a detected one is dropped, and the draft's own flags stay on the draft.
  */
-export function proposalFromDraft(draft: EnvironmentDraft, setupDraft: SetupDraft, input: { cwd: string; timeoutSeconds?: number }): { ok: true; proposal: TestEnvironmentProposal; dropped: number } | { ok: false; reason: "invalid_proposal" } {
+export function proposalFromDraft(draft: EnvironmentDraft, setupDraft: SetupDraft, input: { cwd: string; timeoutSeconds?: number }): { ok: true; proposal: TestEnvironmentProposal; dropped: number; /** The draft's seed commands and the agent's own, none of them in the setup commands. */ seedCommands: EnvironmentDraft["seedCommands"] } | { ok: false; reason: "invalid_proposal" } {
   const flagged = new Set(setupDraft.flaggedCommands.map((item) => item.command));
   const environment = structuredClone(draft.environment);
   const repo = environment.repos[0]!;
   const sources = [...draft.valueSources];
+  const seedCommands = [...draft.seedCommands];
   let dropped = 0;
   const take = (line: string, kind: "setup" | "test"): ProjectCommand | undefined => {
     if (flagged.has(line)) { dropped += 1; return undefined; }
@@ -110,6 +131,8 @@ export function proposalFromDraft(draft: EnvironmentDraft, setupDraft: SetupDraf
   for (const line of setupDraft.setupCommands) {
     const command = take(line, "setup");
     if (command === undefined || repo.setupCommands.some((existing) => sameProgram(existing, command)) || repo.setupCommands.length >= 20) continue;
+    // A seed or migration needs the database, which exists only inside the test environment: it is offered as the dependency's seed too, and the broker takes it out of setup once a dependency has taken it.
+    if (draft.routesSeeds && isDatabaseSeedCommand(command) && seedCommands.length < 8 && !seedCommands.some((existing) => sameProgram(existing.command, command))) seedCommands.push({ command, source: "model" });
     sources.push({ field: `repos[0].setupCommands[${String(repo.setupCommands.length)}]`, source: "model" });
     repo.setupCommands.push(command);
   }
@@ -124,5 +147,5 @@ export function proposalFromDraft(draft: EnvironmentDraft, setupDraft: SetupDraf
     repo.checks.push({ id, label: `Test command ${String(counter)}`, command, kind: "test" });
   }
   const proposal = TestEnvironmentProposalSchema.safeParse({ ...setupDraft, environment, valueSources: sources.slice(0, 400) });
-  return proposal.success ? { ok: true, proposal: proposal.data, dropped } : { ok: false, reason: "invalid_proposal" };
+  return proposal.success ? { ok: true, proposal: proposal.data, dropped, seedCommands } : { ok: false, reason: "invalid_proposal" };
 }

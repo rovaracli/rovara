@@ -11,9 +11,11 @@
 //                                     and, when less safe, a second person's confirmation card (`org/test-env-approval.ts`) whose proof and live authority `approveTestEnvironment` checks again
 // A browser session is the only thing that can show a fresh sign-in: a token (a CLI, an assistant holding one) never counts.
 import {
+  TEST_ENV_SEED_COMMANDS_MAX,
   TestEnvironmentBodySchema,
   agentXError,
   formatCommandLine,
+  parseCommandLine,
   projectAllows,
   settingOriginOf,
   type ProjectOrigins,
@@ -22,6 +24,8 @@ import {
   type ProjectCommand,
   type ProjectRole,
   type TestEnvApplyAnswer,
+  type TestEnvironmentState,
+  type TestEnvDependency,
   type TestEnvRuns,
   type TestEnvironmentBody,
 } from "@agentx/contracts";
@@ -64,6 +68,66 @@ export function runsOf(body: TestEnvironmentBody): TestEnvRuns[] {
     setup: repo.setupCommands.map((command) => shownLine(formatCommandLine(command), LINE_MAX)),
     checks: repo.checks.map((check) => ({ id: check.id, label: shownLine(check.label, 80), kind: check.kind, command: shownLine(formatCommandLine(check.command), LINE_MAX), ...(check.selectArgs === undefined ? {} : { selectArgs: [...check.selectArgs] }) })),
   }));
+}
+
+// ---- the seed of a dependency, as a plain field (TS-UX-1)
+
+type ProposalView = NonNullable<TestEnvironmentState["proposal"]>;
+/** The dependencies a seed can be set on (real software or Rovara local AWS: a fake is never seeded), each with EVERY command that fills it as the broker formats them, in the order they run. */
+export function dependencySeedsOf(body: TestEnvironmentBody): ProposalView["dependencySeeds"] {
+  return (body.dependencies ?? []).filter((dependency) => dependency.backing.kind === "local" || dependency.backing.kind === "emulated").map((dependency) => ({
+    id: dependency.id, name: shownLine(dependency.name, 80),
+    commands: dependency.seeds.flatMap((seed) => ("command" in seed ? [shownLine(formatCommandLine(seed.command), LINE_MAX)] : [])),
+  }));
+}
+
+export const TEST_ENV_SEED_WORDS = {
+  noDependency: "This test environment has no such dependency to fill with test data.",
+  cannotRead: "That isn't one command. A command runs one program: put steps joined by && , | or ; in a script and call the script.",
+  noDirectory: "This test environment has no command to take the directory from, so a seed command can't be placed.",
+  tooMany: `A dependency takes at most ${String(TEST_ENV_SEED_COMMANDS_MAX)} test data commands.`,
+} as const;
+
+/** What a seed edit did, for the record: how many commands the dependency has now, and whether it was emptied. */
+export interface SeedEdit { digest: string; cleared: boolean; commands: number }
+
+/**
+ * Sets the commands that fill one dependency with test data (ALL of them, one line each, in order; an empty list clears them), as a maintainer's edit of the proposal. The role is checked FIRST, before the
+ * dependency is looked up or a line is read, so a person who may not edit learns nothing about the proposal. Each line is read here, by the same rule as a setup command (one program). A line that is the same as one
+ * the dependency already has keeps that command as it is (its directory, its environment, its time limit), so editing one line never rewrites the others; a new line runs in the directory of the dependency's own seed
+ * or, failing that, of the environment's own commands. Every refusal of a seed command applies (`refuseUnsafeEdit` through `editTestEnvironment`); a command seed is a less-safe change, and the approval still says so.
+ */
+export async function setDependencySeed(
+  store: TestEnvDeps, input: { orgId: OrgId; project: string; developerId: string; role: ProjectRole | undefined; body: TestEnvironmentBody; dependencyId: string; lines: readonly string[] },
+): Promise<SeedEdit> {
+  if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can edit a test environment");
+  const dependencies = input.body.dependencies ?? [];
+  const index = dependencies.findIndex((dependency) => dependency.id === input.dependencyId && (dependency.backing.kind === "local" || dependency.backing.kind === "emulated"));
+  if (index < 0) throw agentXError("CONFIG_INVALID", TEST_ENV_SEED_WORDS.noDependency);
+  const target = dependencies[index]!;
+  const kept = target.seeds.filter((seed) => !("command" in seed));
+  const held = target.seeds.flatMap((seed) => ("command" in seed ? [seed.command] : []));
+  const lines = input.lines.map((line) => line.trim()).filter((line) => line !== "");
+  if (lines.length > TEST_ENV_SEED_COMMANDS_MAX) throw agentXError("CONFIG_INVALID", TEST_ENV_SEED_WORDS.tooMany);
+  const commands: ProjectCommand[] = [];
+  const reusable = [...held];
+  for (const line of lines) {
+    const same = reusable.findIndex((command) => formatCommandLine(command) === line);
+    let command: ProjectCommand;
+    if (same >= 0) command = reusable.splice(same, 1)[0]!;
+    else {
+      const cwd = held[0]?.cwd ?? input.body.repos.flatMap((repo) => [...repo.checks.map((check) => check.command), ...repo.setupCommands])[0]?.cwd;
+      if (cwd === undefined) throw agentXError("CONFIG_INVALID", TEST_ENV_SEED_WORDS.noDirectory);
+      try { command = parseCommandLine(line, cwd, 900); } catch { throw agentXError("CONFIG_INVALID", TEST_ENV_SEED_WORDS.cannotRead); }
+      const problem = seedCommandProblem(command);
+      if (problem !== undefined) throw agentXError("CONFIG_INVALID", SEED_COMMAND_PROBLEM_WORDS[problem]);
+    }
+    commands.push(command);
+  }
+  const seeds: TestEnvDependency["seeds"] = [...kept, ...commands.map((command) => ({ command }))];
+  const next = { ...input.body, dependencies: dependencies.map((dependency, at) => (at === index ? { ...dependency, seeds } : dependency)) };
+  const edited = await editTestEnvironment(store, { orgId: input.orgId, project: input.project, developerId: input.developerId, role: input.role, environment: next });
+  return { digest: edited.digest, cleared: commands.length === 0, commands: commands.length };
 }
 
 // ---- a fresh sign-in

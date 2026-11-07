@@ -92,14 +92,38 @@ it("says it is loading, and offers a retry when the read fails", async () => {
   f.close();
 });
 
-it("asks the person to have Rovara propose the setup first when there is no draft, and says a stale draft is old", async () => {
+it("explains what is needed when no look has been made, with the one button that asks for it, and says a stale draft is old", async () => {
   const none = setup({ read: { status: 200, body: state({ draft: { status: "none", notes: [], questions: [], pendingServices: [] } }) } });
-  expect(await screen.findByText(/Ask Rovara to propose the setup above first/)).toBeTruthy();
+  expect(await screen.findByText(/You have not asked for that look yet/)).toBeTruthy();
+  expect(screen.queryByText(/above first/)).toBeNull();
   expect(screen.queryByRole("button", { name: "Propose a test environment" })).toBeNull();
+  fireEvent.click(await screen.findByRole("button", { name: "Look at my repositories and draft the test environment" }));
+  await waitFor(() => expect(posts(none, "/setup-draft")).toHaveLength(1));
+  expect(typeof (posts(none, "/setup-draft")[0]!.body as { requestId: unknown }).requestId).toBe("string");
   none.close();
-  const stale = setup({ read: { status: 200, body: state({ draft: { status: "stale", notes: [], questions: [], pendingServices: [] } }) } });
-  expect(await screen.findByText(/older than the project's settings/)).toBeTruthy();
+  const stale = setup({ read: { status: 200, body: state({ draft: { looked: true, status: "stale", notes: [], questions: [], pendingServices: [] } }) } });
+  expect(await screen.findByText(/older than your project's settings/)).toBeTruthy();
+  expect(screen.getByText(/If test services were switched on after your last look/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Look again and draft the test environment" })).toBeTruthy();
   stale.close();
+});
+
+it("says what is missing when the look ran and found nothing to draft from, instead of asking to look first", async () => {
+  const f = setup({ read: { status: 200, body: state({ draft: { looked: true, status: "none", notes: ["Rovara looked at your default branch and found no command that runs your tests."], questions: [], pendingServices: [] } }) } });
+  expect(await screen.findByText(/found no command that runs your tests/)).toBeTruthy();
+  expect(screen.getByText(/could not draft a test environment from what it found/)).toBeTruthy();
+  expect(screen.queryByText(/You have not asked for that look yet/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Look again and draft the test environment" })).toBeTruthy();
+  f.close();
+});
+
+it("shows the steps, with the one the person is on", async () => {
+  const f = setup({ read: { status: 200, body: state({ proposal: PROPOSAL }) } });
+  const region = await section();
+  const steps = within(region).getByRole("list", { name: "Steps to a proven test environment" });
+  expect(within(steps).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Read your repositories", "Propose the test environment", "Check that it works", "Prove it", "Approve it"]);
+  expect(within(steps).getByText("Check that it works").closest("li")!.getAttribute("aria-current")).toBe("step");
+  f.close();
 });
 
 it("shows what Rovara found and proposes it with an empty request", async () => {
@@ -250,7 +274,7 @@ it("edits the proposal as JSON: a body that isn't JSON is refused here, a valid 
   const edited = { ...PROPOSAL, source: "edited" };
   const f = setup({ read: { status: 200, body: state({ proposal: PROPOSAL }) }, answers: { "/edit": { status: 200, body: state({ proposal: edited }) } } });
   const region = await section();
-  fireEvent.click(within(region).getByRole("button", { name: "Edit this proposal" }));
+  fireEvent.click(within(region).getByRole("button", { name: "Edit as JSON (advanced)" }));
   const box = within(region).getByLabelText<HTMLTextAreaElement>("Edit the test environment");
   expect(JSON.parse(box.value)).toMatchObject({ tier: "sandbox", roundBudgetMin: 30 });
   fireEvent.change(box, { target: { value: "{ not json" } });
@@ -287,4 +311,52 @@ it("offers a maintainer 'Share as company recipe' under the approved environment
   expect(viewer.request.mock.calls.some(([r]) => r.path.endsWith("/setup-recipe"))).toBe(false);
   expect(screen.queryByRole("region", { name: "Company recipe" })).toBeNull();
   viewer.close();
+});
+
+const DB = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", found: [{ path: "src/db.ts", line: 2 }], usedBy: ["integration"], backing: { kind: "local", catalogId: "postgres@16", config: {} },
+  connect: { env: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], hostAliases: ["postgres"] }, seeds: [], reset: "fresh_per_round" };
+
+it("has a plain field per dependency for the data commands: every command is shown, one per line, and what is typed is sent line by line", async () => {
+  const withDb = { ...PROPOSAL, environment: { ...ENVIRONMENT, dependencies: [DB] }, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: [] }] };
+  const seeded = { ...withDb, digest: "b".repeat(64), source: "edited", risk: "high", lessSafe: ["dependency_seed"], needs: { freshSignIn: true, secondPerson: true }, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: ["npx prisma migrate deploy", "npm run seed"] }] };
+  const f = setup({ read: { status: 200, body: state({ proposal: withDb }) }, answers: { "/seed": { status: 200, body: state({ proposal: seeded }) } } });
+  const region = await section();
+  const field = within(region).getByLabelText<HTMLTextAreaElement>("Fill Postgres with test data");
+  expect(within(region).getByText(/never in setup/)).toBeTruthy();
+  expect(within(region).getByRole<HTMLButtonElement>("button", { name: "Save the test data commands" }).disabled).toBe(true);
+  fireEvent.change(field, { target: { value: "npx prisma migrate deploy\n\n  npm run seed  \n" } });
+  fireEvent.click(within(region).getByRole("button", { name: "Save the test data commands" }));
+  await waitFor(() => expect(posts(f, "/test-environment/seed")).toHaveLength(1));
+  expect(posts(f, "/test-environment/seed")[0]!.body).toEqual({ digest: DIGEST, dependencyId: "postgres", commands: ["npx prisma migrate deploy", "npm run seed"] });
+  // I-2: the answer lists both commands, in order, so none runs unseen.
+  await waitFor(() => expect(within(region).getByLabelText<HTMLTextAreaElement>("Fill Postgres with test data").value).toBe("npx prisma migrate deploy\nnpm run seed"));
+  f.close();
+});
+
+it("shows every command a dependency already has, and clearing the field sends an empty list", async () => {
+  const two = { ...PROPOSAL, source: "edited", risk: "high", lessSafe: ["dependency_seed"], needs: { freshSignIn: true, secondPerson: true }, environment: { ...ENVIRONMENT, dependencies: [DB] }, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: ["npx prisma migrate deploy", "npm run seed"] }] };
+  const f = setup({ read: { status: 200, body: state({ proposal: two }) }, answers: { "/seed": { status: 200, body: state({ proposal: { ...two, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: [] }] } }) } } });
+  const region = await section();
+  expect(within(region).getByLabelText<HTMLTextAreaElement>("Fill Postgres with test data").value).toBe("npx prisma migrate deploy\nnpm run seed");
+  fireEvent.change(within(region).getByLabelText("Fill Postgres with test data"), { target: { value: "  \n" } });
+  fireEvent.click(within(region).getByRole("button", { name: "Save the test data commands" }));
+  await waitFor(() => expect(posts(f, "/test-environment/seed")).toHaveLength(1));
+  expect(posts(f, "/test-environment/seed")[0]!.body).toEqual({ digest: DIGEST, dependencyId: "postgres", commands: [] });
+  f.close();
+});
+
+it("says before Approve why a seed makes it high tier, who must approve, and offers the sign-in right there when it is refused", async () => {
+  const seeded = { ...PROPOSAL, source: "edited", risk: "high", lessSafe: ["dependency_seed"], needs: { freshSignIn: true, secondPerson: true }, proved: true, proveSteps: [{ step: "setup", status: "passed" }],
+    approval: { status: "approved" }, check: { status: "ready" }, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: ["npm run seed"] }], environment: { ...ENVIRONMENT, dependencies: [{ ...DB, seeds: [{ command: command("npm", ["run", "seed"], 900) }] }] } };
+  const f = setup({ read: { status: 200, body: state({ proposal: seeded }) }, answers: { "/approve": { status: 401, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to approve this change." } } } } });
+  const region = await section();
+  expect(within(region).getByText("A seed command runs against the test database, so a second person, or a fresh sign-in if you're the only owner, must approve.")).toBeTruthy();
+  expect(within(region).getByText(/runs a command to fill a dependency with test data/)).toBeTruthy();
+  fireEvent.click(within(region).getByRole("button", { name: "Approve" }));
+  const alert = await within(region).findByRole("alert");
+  expect(alert.textContent).toContain("Sign in again to approve this change.");
+  expect(within(alert).getByRole("button", { name: "Sign in again" })).toBeTruthy();
+  // The sign-in is on the approval, once: not a second alert at the bottom of the section.
+  expect(within(region).getAllByRole("button", { name: "Sign in again" })).toHaveLength(1);
+  f.close();
 });

@@ -9,8 +9,8 @@
 //   - a name must be an upper-case variable name and must not be shaped like a key (the contracts' secret-shape rule), or it is dropped;
 //   - http(s) URLs are not read here: outside API hosts are the services detector's (D8).
 // Nothing is run; a file is read only if the reader was given its path.
-import { candidate, DEPENDENCY_SKIP_DIRS, kindOfFamily, mergeCandidates, safeEnvName, slug } from "./dependency-candidates.js";
-import { lineOf, type DependencyCandidate, type DependencyHints, type Detector } from "./types.js";
+import { candidate, DEPENDENCY_SKIP_DIRS, FAMILY_KINDS, kindOfFamily, mergeCandidates, safeEnvName, slug } from "./dependency-candidates.js";
+import { blocksBetween, lineOf, type DependencyCandidate, type DependencyHints, type Detector } from "./types.js";
 
 const DOTENV = /(?:^|\/)\.env(?:\.[A-Za-z0-9_-]{1,32})?$/u;
 const DOTENV_ENCRYPTED = /\.(?:enc|age|gpg|sops|vault)$/u;
@@ -169,10 +169,28 @@ function readSettings(path: string, text: string, out: DependencyCandidate[]): v
   }
 }
 
+/** Prisma names its database in the schema file: `provider = "postgresql"`. The connection string is an env() call; nothing of it is read. */
+const PRISMA_PROVIDERS: Readonly<Record<string, string>> = { postgresql: "postgres", postgres: "postgres", mysql: "mysql", mongodb: "mongodb" };
+function readPrismaSchema(path: string, text: string, out: DependencyCandidate[]): void {
+  const datasource = /(?:^|\n)\s{0,40}datasource\s{1,40}[A-Za-z_][A-Za-z0-9_]{0,40}\s{0,40}\{/u.exec(text);
+  if (datasource === null) return;
+  const block = text.slice(datasource.index, datasource.index + 1_500);
+  const provider = /provider\s{0,40}=\s{0,40}"([a-z]{2,20})"/u.exec(block);
+  const family = provider === null ? undefined : PRISMA_PROVIDERS[provider[1]!];
+  const url = /url\s{0,40}=\s{0,40}env\(\s{0,40}"([A-Z][A-Z0-9_]{1,63})"/u.exec(block);
+  const name = url === null ? undefined : safeEnvName(url[1]);
+  if (family !== undefined) add(out, family, path, lineOf(text, datasource.index + (provider?.index ?? 0)), name === undefined ? {} : { envNames: [name] });
+}
+
 export const detectEnvConfig: Detector = async ({ repo }) => {
+  const prismaFound: DependencyCandidate[] = [];
+  for (const path of repo.paths.filter((candidate) => /(?:^|\/)schema\.prisma$/u.test(candidate) && !DEPENDENCY_SKIP_DIRS.test(candidate)).slice(0, 4)) {
+    const text = await repo.read(path);
+    if (text !== undefined) readPrismaSchema(path, text, prismaFound);
+  }
   const files = repo.paths.filter((path) => !DEPENDENCY_SKIP_DIRS.test(path) && ((DOTENV.test(path) && !DOTENV_ENCRYPTED.test(path)) || SETTINGS_FILE.test(path))).slice(0, ENV_CONFIG_MAX_FILES);
-  if (files.length === 0) return {};
-  const found: DependencyCandidate[] = [];
+  if (files.length === 0 && prismaFound.length === 0) return {};
+  const found: DependencyCandidate[] = [...prismaFound];
   for (const path of files) {
     const text = await repo.read(path);
     if (text === undefined) continue;
@@ -182,3 +200,93 @@ export const detectEnvConfig: Detector = async ({ repo }) => {
   const dependencies = mergeCandidates(found);
   return dependencies.length === 0 ? {} : { dependencies };
 };
+
+// ---- references to a setting in source code (TS-UX-1)
+//
+// A project that reads its database address from `process.env.DATABASE_URL` and has no `.env.example` still depends on a database. These readers find the NAME of a setting the code reads, in JavaScript, TypeScript and
+// Python source, with its line. Read-only and bounded by the caller (the source files of the SDK pass). A comment, a block comment and a Python docstring are blanked first, so a commented-out line is not a use. No value
+// is looked at: a name only, through the same name rules as an env file.
+
+const JS_SOURCE = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/u;
+const PY_SOURCE = /\.py$/u;
+const NAME = "[A-Z][A-Z0-9_]{1,63}";
+const MAX_CODE_REFERENCES = 60;
+
+/** The text with every comment replaced by spaces (newlines kept, so lines still line up). One pass per kind of block: no pattern rescans to the end of the text. */
+function withoutComments(text: string, python: boolean): string {
+  const blank = (value: string): string => value.replace(/[^\n]/gu, " ");
+  let out = text;
+  const blocks = python ? [...blocksBetween(out, '"""', '"""'), ...blocksBetween(out, "'''", "'''")] : blocksBetween(out, "/*", "*/");
+  for (const block of blocks.sort((a, b) => b.index - a.index)) out = out.slice(0, block.index) + blank(block.text) + out.slice(block.end);
+  return out.split("\n").map((line) => {
+    if (python) { const at = line.indexOf("#"); return at < 0 ? line : line.slice(0, at); }
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("*")) return "";
+    for (let at = line.indexOf("//"); at >= 0; at = line.indexOf("//", at + 2)) if (at === 0 || line[at - 1] !== ":") return line.slice(0, at);
+    return line;
+  }).join("\n");
+}
+
+export interface CodeEnvReference { name: string; line: number }
+
+/** The names of the settings a JavaScript, TypeScript or Python file reads, each once, with the line of its first use. Anything else gives none. */
+export function codeEnvReferences(path: string, text: string): CodeEnvReference[] {
+  const python = PY_SOURCE.test(path);
+  if (!python && !JS_SOURCE.test(path)) return [];
+  const clean = withoutComments(text, python);
+  const found = new Map<string, number>();
+  const note = (raw: string | undefined, index: number): void => {
+    if (raw === undefined || found.size >= MAX_CODE_REFERENCES) return;
+    const name = safeEnvName(raw);
+    if (name !== undefined && !found.has(name)) found.set(name, lineOf(clean, index));
+  };
+  const patterns: RegExp[] = python
+    ? [new RegExp(`environ\\[\\s{0,40}["'](${NAME})["']\\s{0,40}\\]`, "gu"), new RegExp(`(?:environ\\.get|getenv)\\(\\s{0,40}["'](${NAME})["']`, "gu")]
+    : [
+      new RegExp(`(?:process|Bun)\\.env\\.(${NAME})(?![A-Za-z0-9_])`, "gu"),
+      new RegExp(`import\\.meta\\.env\\.(${NAME})(?![A-Za-z0-9_])`, "gu"),
+      new RegExp(`(?:process\\.env|import\\.meta\\.env|Bun\\.env)\\[\\s{0,40}["'\x60](${NAME})["'\x60]\\s{0,40}\\]`, "gu"),
+      new RegExp(`Deno\\.env\\.get\\(\\s{0,40}["'\x60](${NAME})["'\x60]`, "gu"),
+    ];
+  const hits: Array<{ name: string; index: number }> = [];
+  for (const pattern of patterns) for (const match of clean.matchAll(pattern)) hits.push({ name: match[1]!, index: match.index });
+  if (!python) {
+    // const { DATABASE_URL, REDIS_URL: url = "x" } = process.env
+    for (const match of clean.matchAll(/\{([^{}]{1,400})\}\s{0,40}=\s{0,40}process\.env(?![A-Za-z0-9_.[])/gu)) {
+      for (const part of match[1]!.split(",")) { const name = /^\s*([A-Z][A-Z0-9_]{1,63})\s*(?::|=|$)/u.exec(part)?.[1]; if (name !== undefined) hits.push({ name, index: match.index }); }
+    }
+  }
+  for (const hit of hits.sort((a, b) => a.index - b.index)) note(hit.name, hit.index);
+  return [...found].map(([name, line]) => ({ name, line }));
+}
+
+/** A setting that names a database without saying which software: `DATABASE_URL`, `DB_HOST`. */
+const GENERIC_DATABASE_NAME = /^(?:DATABASE|DB)_(?:URL|URI|HOST|PORT|NAME|USER|PASSWORD|CONNECTION(?:_STRING)?)$/u;
+
+export const ASSUMED_POSTGRES_NOTE = "The code reads a database setting (such as DATABASE_URL) and no database driver was found, so Rovara assumed Postgres. Check that it is right before you approve.";
+export const WHICH_DATABASE_QUESTION = "The code reads a database setting (such as DATABASE_URL), and more than one kind of database is in use, so Rovara can't tell which one it points at.";
+
+/**
+ * Candidates from the settings the code reads. A name a table knows stands for its family. A bare database setting goes to the one database software the other findings (`known`: drivers in code and manifests)
+ * name; with none it is Postgres, said in a note; with two or more it is a question and no candidate. Only families the catalog can back (`FAMILY_KINDS`, AWS) come from code: an outside API's key is for a file to name.
+ */
+export function codeReferenceFindings(references: ReadonlyArray<CodeEnvReference & { path: string }>, known: readonly DependencyCandidate[]): { dependencies: DependencyCandidate[]; notes: string[]; questions: string[] } {
+  const out: DependencyCandidate[] = [];
+  const notes: string[] = [];
+  const questions: string[] = [];
+  const databases = [...new Set(known.filter((item) => item.kind === "database" && !item.family.startsWith("aws:")).map((item) => item.family))];
+  for (const reference of references) {
+    const evidence = { path: reference.path, line: reference.line };
+    const hints = { envNames: [reference.name], seenBy: ["code"] };
+    if (GENERIC_DATABASE_NAME.test(reference.name)) {
+      if (databases.length === 1) out.push(candidate(databases[0]!, "used", evidence, hints));
+      else if (databases.length === 0) { out.push(candidate("postgres", "mentioned", evidence, hints)); notes.push(ASSUMED_POSTGRES_NOTE); }
+      else questions.push(WHICH_DATABASE_QUESTION);
+      continue;
+    }
+    const family = familyOfName(reference.name);
+    if (family === undefined || !(Object.hasOwn(FAMILY_KINDS, family) || family.startsWith("aws:"))) continue;
+    out.push(candidate(family, "used", evidence, hints));
+  }
+  return { dependencies: out, notes: [...new Set(notes)], questions: [...new Set(questions)] };
+}

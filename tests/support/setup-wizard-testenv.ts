@@ -77,14 +77,14 @@ export async function setupWizardBench(options: { agents?: boolean; teamRecord?:
   const operations = (workspaceId: string) => h.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === workspaceId) as Array<{ id: string; kind: string; status: string; workflowMode?: string }>;
   const taskOf = (): { taskId: string; workspaceId: string } => h.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.purpose === "setup_draft").at(-1) as never;
   /** A finished setup draft that reports `draft` as the environment it found. */
-  const drafted = async (draft: TestEnvDraft = draftOf(), options: { /** Runs after the run was dispatched and before it reports (what changed in the company meanwhile). */ whileRunning?: () => Promise<void> } = {}) => {
+  const drafted = async (draft: TestEnvDraft = draftOf(), options: { /** The setup proposal the run reports (default: one `npm ci` command). */ setupProposal?: unknown; /** Runs after the run was dispatched and before it reports (what changed in the company meanwhile). */ whileRunning?: () => Promise<void> } = {}) => {
     const reply = await ask();
     if (reply.status !== 202) throw new Error(`setup draft: ${JSON.stringify(reply.body)}`);
     const task = taskOf();
     await h.finish(task.workspaceId, operations(task.workspaceId).find((operation) => operation.kind === "prepare")!.id, "SUCCEEDED", PREPARED);
     const own = operations(task.workspaceId).find((operation) => operation.kind === "task")!;
     await options.whileRunning?.();
-    await h.finish(task.workspaceId, own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_DRAFT", setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draft } });
+    await h.finish(task.workspaceId, own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_DRAFT", setupProposal: options.setupProposal ?? SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draft } });
   };
   /** The proposal's CANDIDATE check, passed (TE-2): a ready workspace and the record of the commands it ran, at `revision` (default: the project's latest). */
   const candidatePassedFor = (digest: string, options: Parameters<typeof candidatePassed>[2] = {}) => candidatePassed(h.db, { orgId: TEST_ORG, project: NAME, digest, developerId: OMAR.developerId }, options);

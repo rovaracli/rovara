@@ -105,6 +105,7 @@ export async function runDetectors(reader: RepositoryReader, cwd: string, option
     let part: Partial<Detection>;
     try { part = await detector.run({ repo: reader, cwd }); } catch { merged.notes.push(`The ${detector.name} detector could not finish.`); continue; }
     merged.setupCommands.push(...(part.setupCommands ?? []));
+    if (part.seedCommands !== undefined && part.seedCommands.length > 0) merged.seedCommands = [...(merged.seedCommands ?? []), ...part.seedCommands];
     for (const check of part.checks ?? []) {
       if (merged.checks.some((existing) => sameCommand(existing.value.command, check.value.command))) continue;
       if (merged.checks.length >= ENV_DETECT_MAX_CHECKS) { cutChecks = true; continue; }
@@ -121,6 +122,7 @@ export async function runDetectors(reader: RepositoryReader, cwd: string, option
   }
   const dedupe = <T>(list: T[], key: (item: T) => string): T[] => { const seen = new Set<string>(); return list.filter((item) => { const k = key(item); if (seen.has(k)) return false; seen.add(k); return true; }); };
   merged.setupCommands = dedupe(merged.setupCommands, (item) => JSON.stringify(item.value));
+  if (merged.seedCommands !== undefined) merged.seedCommands = dedupe(merged.seedCommands, (item) => JSON.stringify(item.value)).slice(0, 8);
   merged.fullSuiteOn = dedupe(merged.fullSuiteOn, (item) => item.value);
   merged.services = dedupe(merged.services, (item) => `${item.value.kind}:${item.value.target}`);
   // Dependency candidates (test services D1-D7): present only when a detector found one, so a repository with none gives today's detection byte for byte.

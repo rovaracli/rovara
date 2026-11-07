@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { CoverageMapSchema } from "./test-env-nightly.js";
 import { CheckKindSchema } from "./evidence.js";
-import { RelativeWorkspacePathSchema } from "./project.js";
+import { ProjectCommandSchema, RelativeWorkspacePathSchema } from "./project.js";
 import {
   CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, SeedRefSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
   IacSeedRefSchema, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema, catalogIdName, testEnvStartedCount,
@@ -59,6 +59,7 @@ export type TestEnvPendingService = z.infer<typeof TestEnvPendingServiceSchema>;
 export const TEST_ENV_CANDIDATE_REFUSED_FIELDS = ["privileged", "host_network", "host_pid", "host_ipc", "host_volume", "docker_socket", "cap_add", "devices", "build"] as const;
 export const TEST_ENV_CANDIDATE_STRENGTHS = ["declared", "used", "mentioned"] as const;
 export const TEST_ENV_CANDIDATE_MAX = 64;
+export const TEST_ENV_SEED_COMMANDS_MAX = 8;
 
 const CandidateKeyAttribute = z.object({ name: line(255), type: z.enum(["S", "N", "B"]) }).strict();
 const CandidateResource = z
@@ -113,6 +114,11 @@ export const TestEnvDraftSchema = z
      * `environment.dependencies`: a draft's environment must carry none (a worker cannot approve a backing); the broker turns these candidates into proposed dependencies through `chooseBacking` (`sanitizeTestEnvDraft`).
      */
     dependencies: z.array(TestEnvDependencyCandidateSchema).max(TEST_ENV_CANDIDATE_MAX).optional(),
+    /**
+     * TS-UX-1: commands that fill or migrate a database (`npm run seed`), found in the repository or proposed by the setup agent, and kept OUT of the environment's setup commands (setup has no database). The broker
+     * offers them as the seed of the database dependency it proposes (`sanitizeTestEnvDraft`); a person approves it, as a seed command is always a less-safe change. Absent when none.
+     */
+    seedCommands: z.array(z.object({ command: ProjectCommandSchema, source: TestEnvValueSourceSchema }).strict()).max(TEST_ENV_SEED_COMMANDS_MAX).optional(),
     /** Fixed statements for the maintainer (what was found that the proposal cannot use, and what is not known). */
     notes: z.array(line(400)).max(60),
     questions: z.array(line(400)).max(60),
@@ -309,7 +315,7 @@ export const TestEnvironmentStateSchema = z
       check: z.object({ status: z.enum(["unchecked", "checking", "ready", "failed", "outdated"]), failedStep: line(400).optional() }).strict().default({ status: "unchecked" }),
     }).strict().optional(),
     /** What the latest setup run found, ready to propose. `stale`: the setup run is older than the project's settings or is not ready. */
-    draft: z.object({ status: z.enum(["none", "ready", "stale"]), notes: z.array(line(400)).max(60), questions: z.array(line(400)).max(60), pendingServices: z.array(TestEnvPendingServiceSchema).max(32) }).strict(),
+    draft: z.object({ looked: z.boolean().default(false), status: z.enum(["none", "ready", "stale"]), notes: z.array(line(400)).max(60), questions: z.array(line(400)).max(60), pendingServices: z.array(TestEnvPendingServiceSchema).max(32) }).strict(),
     proposal: z
       .object({
         digest: Sha256,
@@ -333,6 +339,8 @@ export const TestEnvironmentStateSchema = z
         needs: z.object({ freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict().default({ freshSignIn: false, secondPerson: false }),
         /** The confirmation card the CALLER asked for, for a change that needs a second person. `approved`: it was confirmed and the caller can finish the approval. */
         approval: z.object({ status: z.enum(["none", "pending", "approved", "expired"]) }).strict().default({ status: "none" }),
+        /** TS-UX-1: the dependencies the proposal starts that can hold a seed, each with EVERY command that fills it with test data (as the broker formats them, in the order they run). */
+        dependencySeeds: z.array(z.object({ id: TestEnvDependencyIdSchema, name: line(80), commands: z.array(line(600)).max(TEST_ENV_SEED_COMMANDS_MAX).default([]) }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies).default([]),
         /** The project's commands that the proposal's commands are not among: approving writes them into the settings, after the check ran them. */
         commandsNotInSettings: z.number().int().min(0).max(1000).default(0),
         /** TE-2: the candidate check of THIS proposal (a fresh workspace prepared from the proposal's commands, never from the applied settings), at the settings revision as they stand now. */
@@ -353,6 +361,14 @@ export const TestEnvApproveBodySchema = z.object({ digest: Sha256, expectedRevis
 
 /** A maintainer's edited proposal: the whole body, validated like any other (the broker checks it again and refuses production, recordings in the shared tier and unsafe selection). */
 export const TestEnvEditBodySchema = z.object({ environment: TestEnvironmentBodySchema }).strict();
+/** The longest seed command line the field takes (the same bound a command line has in the settings). */
+export const TEST_ENV_SEED_COMMAND_MAX_CHARS = 500;
+/**
+ * TS-UX-1: set the commands that fill one dependency with test data ("Fill it with test data"): ALL of them, one line each, in the order they run (at most `TEST_ENV_SEED_COMMANDS_MAX`). Each line is one plain line the BROKER
+ * reads (the same rules as a setup command: one program, no pipes); an empty list clears them. It becomes a maintainer's edited proposal, proved and approved like any edit, and, as a seed command, a less-safe change.
+ */
+export const TestEnvSeedBodySchema = z.object({ digest: Sha256, dependencyId: TestEnvDependencyIdSchema, commands: z.array(z.string().max(TEST_ENV_SEED_COMMAND_MAX_CHARS).regex(NO_HIDDEN, "one plain line")).max(TEST_ENV_SEED_COMMANDS_MAX) }).strict();
+export type TestEnvSeedBody = z.infer<typeof TestEnvSeedBodySchema>;
 export type TestEnvEditBody = z.infer<typeof TestEnvEditBodySchema>;
 
 /** Apply a proposal's commands to the project's settings: the settings revision the person looked at, and a request id so a retry is one save. */
