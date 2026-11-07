@@ -14,7 +14,7 @@ import { SlackLink, slackLinkOutcome } from "./SlackLink.js";
 import { GithubLink, githubLinkOutcome } from "./GithubLink.js";
 export function AccountMenu({ nav }: { nav: ReadAppNav }) {
  const host = useAppHost(), theme = useTheme();
- const outcome = slackLinkOutcome(host.currentPath()), githubOutcome = host.currentPath().startsWith("/app/onboard") ? undefined : githubLinkOutcome(host.currentPath());
+ const outcome = slackLinkOutcome(host.currentPath()), githubOutcome = (host.currentPath().startsWith("/app/onboard") || host.currentPath().startsWith("/app/admin/connections")) ? undefined : githubLinkOutcome(host.currentPath());
  // UX1: `?account=leave` (from an invite to another company) opens the account menu on its Leave step.
  const leaveAsked = new URLSearchParams(host.currentPath().split("?", 2)[1] ?? "").get("account") === "leave";
  const [open, setOpen] = useState(outcome !== undefined || githubOutcome !== undefined), [leaving, setLeaving] = useState(leaveAsked), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [pending, setPending] = useState<Exclude<SendResult<unknown>, { kind: "done" }>>();

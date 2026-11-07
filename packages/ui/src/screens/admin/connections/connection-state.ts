@@ -59,7 +59,7 @@ export function groupSummary(connections: readonly RegistryConnection[], message
 export function slackSummary(read: { status: "loading" } | { status: "unavailable" } | { status: "refused" } | { status: "ok"; associations: number }): CardSummary {
   if (read.status === "loading") return { state: "not_connected", why: "Checking what Rovara has stored about your Slack workspace." };
   // A refusal (not signed in, not allowed, not set up on this install, or the service answering 503) is the same "not available here yet" the evidence panel says; it is not a connection that needs attention.
-  if (read.status === "refused") return { state: "unavailable", why: "Slack workspace details aren't available here yet." };
+  if (read.status === "refused") return { state: "unavailable", why: "Rovara can't show your Slack workspace here yet." };
   if (read.status === "unavailable") return { state: "attention", why: "Rovara couldn't read your Slack workspace details just now.", fix: "Reload this page to try again." };
   return read.associations > 0
     ? { state: "connected", why: "Your Slack workspace is connected to this company. Channels are linked project by project." }

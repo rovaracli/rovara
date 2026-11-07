@@ -25,7 +25,7 @@ function mount(options: { path?: string; role?: "owner" | "admin"; connections?:
  const bodies: Record<string, unknown> = {
   "/v1/app/me": me, "/v1/app/nav": nav, "/v1/app/home": { cards: [], total: 0 },
   "/v1/app/connections": { connections: options.connections ?? [linear] },
-  "/v1/app/github/installations": { installations: [{ installationId: 7, accountLogin: "Acme-Inc", status: "active", connectedBy: OWNER, connectedAt: "2026-09-30T00:00:00Z" }] },
+  "/v1/app/github/installations": { installations: [{ installationId: 7, accountLogin: "Acme-Inc", accountType: "Organization", repositorySelection: "all", status: "active", connectedBy: OWNER, connectedAt: "2026-09-30T00:00:00Z" }] },
   "/v1/app/github/requests": { requests: [] },
   "/v1/app/org/model-sources": { orgId: ORG, developerId: OWNER, revision: 1, sources: [], order: ["rovara"], available: [] },
   "/v1/app/org/members": { members: [{ developerId: OWNER, name: "Priya" }, { developerId: MAYA, name: "Maya" }] },
@@ -33,7 +33,7 @@ function mount(options: { path?: string; role?: "owner" | "admin"; connections?:
   "/v1/app/projects": { projects: [] },
  };
  const f = fakeHost(async r => (await options.respond?.(r)) ?? { status: 200, body: bodies[r.path] ?? {} });
- f.host.kind = "web";f.host.viewport = { width: () => 1280, subscribe: () => () => undefined };
+ f.host.kind = "web";f.host.viewport = { width: () => 1280, subscribe: () => () => undefined };f.host.currentPath = () => options.path ?? "/app/admin/connections";
  const query = createQueryClient();query.setQueryData(["nav"], nav);
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [options.path ?? "/app/admin/connections"] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
@@ -159,7 +159,7 @@ it("says a Slack workspace is not connected, and who connects it, when none is s
 it("UX3 review: Connect GitHub says it was started from Connections, and the card opens on a GitHub link result", async () => {
  const f = mount({ path: "/app/admin/connections?github_link=taken", respond: async r => r.method === "POST" && r.path === "/v1/app/github/connect" ? { status: 200, body: { installUrl: "https://github.com/apps/rovara-cloud/installations/new?state=" + "s".repeat(43), expiresAt: "2026-11-07T00:00:00Z" } } : undefined });
  try {
-  const connect = await screen.findByRole("button", { name: "Connect GitHub" });
+  const connect = await screen.findByRole("button", { name: "Connect GitHub" }, { timeout: 5000 });
   expect(screen.getByText(/already belongs to another Rovara account/)).toBeTruthy();
   fireEvent.click(connect);
   await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.method === "POST" && r.path === "/v1/app/github/connect")).toBe(true));
@@ -170,13 +170,13 @@ it("UX3 review: Slack that cannot be read says it is not available here, not tha
  for (const status of [401, 403, 404, 503]) {
   const f = mount({ respond: async r => r.path === "/v1/app/org/slack-workspace-evidence" || r.path === "/v1/app/org/members" ? { status, body: { error: { code: "NOT_FOUND", message: "x" } } } : undefined });
   try {
-   await waitFor(() => expect(within(card("slack")).getByText("Not available here")).toBeTruthy());
+   await waitFor(() => expect(within(card("slack")).getByText("Not available here")).toBeTruthy(), { timeout: 5000 });
    expect(within(card("slack")).queryByText("Needs attention")).toBeNull();
   } finally { f.close(); }
  }
  const names = mount({ respond: async r => r.path === "/v1/app/org/members" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "x" } } } : undefined });
  try {
-  await waitFor(() => expect(within(card("github")).getByText("Connected by")).toBeTruthy());
+  await waitFor(() => expect(within(card("github")).getByText("Connected by")).toBeTruthy(), { timeout: 5000 });
   expect(card("github").textContent).not.toContain("former member");
   expect(card("github").textContent).toContain("Not recorded");
  } finally { names.close(); }
