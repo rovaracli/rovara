@@ -4,7 +4,7 @@ import { expect, it, vi } from "vitest";
 import { useState } from "react";
 import { screen, waitFor, act, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, Outlet, RouterProvider } from "react-router";
-import { focusManager, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
@@ -134,7 +134,6 @@ function sourcesPageText(page:Element){
 }
 const credentialSourceNames={anthropic:"Anthropic",openai:"OpenAI",openrouter:"OpenRouter",bedrock:"Amazon Bedrock",endpoint:"Gateway endpoint"};
 type CredentialSourceKind=keyof typeof credentialSourceNames;
-const providerSetupNames={anthropic:"Anthropic",openai:"OpenAI",openrouter:"OpenRouter",bedrock:"Amazon Bedrock (your AWS account)",endpoint:"Your own model gateway"};
 function permittedSourcesText(configured:boolean,kind:CredentialSourceKind){return [
  "AI models","Company source configuration does not verify access to a model.","What a change affects.","Which AI provider Rovara tries first for the whole company. Add a provider on the Connections page.","Who can change it.","Owners and admins can change the order.","Model sources","·","Available models","·","Step models (in How we work)",
  // UX3: provider setup moved to the Connections page; this page links there.

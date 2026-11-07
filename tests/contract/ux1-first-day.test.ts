@@ -376,10 +376,10 @@ describe("linking a GitHub account from the web app, for any sign-in method", ()
     const w = await world();
     const started = await start(w, { browser: true, returnTo: "/app/admin/connections" });
     expect(started.ok).toBe(true);
-    expect(outcome(await finish(w, started.authorizeUrl!, 9002))).toEqual({ path: "/app/admin/connections", value: "linked" });
+    expect(outcome(await finish(w, started.authorizeUrl!, 9001))).toEqual({ path: "/app/admin/connections", value: "linked" });
     const other = await world();
     const plain = await start(other, { browser: true });
-    expect(outcome(await finish(other, plain.authorizeUrl!, 9003))).toEqual({ path: "/app", value: "linked" });
+    expect(outcome(await finish(other, plain.authorizeUrl!, 9001))).toEqual({ path: "/app", value: "linked" });
   });
 
   it("is refused from a browser that does not hold the session that started it, and links nothing", async () => {

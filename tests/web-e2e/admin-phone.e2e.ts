@@ -19,7 +19,7 @@ async function fitsThePhone(page: Page) {
  const outside = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("main button, main a, main input, main select, main textarea")].filter(node => { const box = node.getBoundingClientRect();return box.width > 0 && box.height > 0 && (box.left < -1 || box.right > innerWidth + 1); }).map(node => node.textContent?.slice(0, 40) ?? node.tagName));
  expect(outside).toEqual([]);
 }
-const PAGES = [["/app/admin", "Company settings"], ["/app/admin/people", "People"], ["/app/admin/people/roles", "Roles"], ["/app/admin/invites", "Invites"], ["/app/admin/money/budgets", "Spending"], ["/app/admin/connections", "Connections"], ["/app/admin/models/sources", "AI models"], ["/app/admin/projects", "Projects"], ["/app/admin/agents", "Agents"], ["/app/admin/health", "Health"]] as const;
+const PAGES = [["/app/admin", "Company settings"], ["/app/admin/people", "People"], ["/app/admin/people/roles", "Roles"], ["/app/admin/invites", "Invites"], ["/app/admin/money/budgets", "Spending"], ["/app/admin/connections", "Connections"], ["/app/admin/models/sources", "AI models"], ["/app/admin/projects", "Projects"], ["/app/admin/agents", "Agents"], ["/app/admin/health", "Rovara service status"]] as const;
 for (const theme of ["light", "dark"] as const) test(`every main company settings page fits a 390px phone in ${theme}`, async ({ page }) => {
  await page.emulateMedia({ colorScheme: theme });
  for (const [path, heading] of PAGES) {
@@ -45,7 +45,7 @@ test("a connection's setup opens in place on a phone and stays inside the screen
  await page.getByRole("button", { name: /^Fix GitHub/ }).click();
  await expect(page.getByRole("button", { name: "Connect GitHub" })).toBeVisible();await fitsThePhone(page);
  await page.getByRole("button", { name: /^Manage Linear/ }).click();
- await expect(page.getByRole("button", { name: "Check it works" })).toBeVisible();await fitsThePhone(page);
+ await expect(page.getByRole("button", { name: "Check it works", exact: true })).toBeVisible();await fitsThePhone(page);
  await page.getByRole("button", { name: /^Open AI provider|^Add an AI provider|^Manage AI provider|^Fix AI provider/ }).first().click();
  await fitsThePhone(page);await evidenceShot(page, { path: ".test-build/web-e2e/ux3-phone-connections-open.png", fullPage: true });
 });

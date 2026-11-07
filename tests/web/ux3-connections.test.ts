@@ -43,11 +43,14 @@ const card = (id: string) => document.querySelector(`[data-card="${id}"]`) as HT
 
 it("summarises each connection in words, with the cause and the fix when it needs attention", () => {
  expect(githubSummary([{ installationId: 1, accountLogin: "acme", status: "active" }], [])).toMatchObject({ state: "connected" });
- expect(githubSummary([{ installationId: 1, accountLogin: "acme", status: "suspended" }], [])).toMatchObject({ state: "attention", why: expect.stringContaining("suspended"), fix: expect.stringContaining("unsuspend") });
- expect(githubSummary([], [{ status: "waiting", accountLogin: "acme" }])).toMatchObject({ state: "attention", why: expect.stringContaining("Waiting for your GitHub admin") });
+ const suspended = githubSummary([{ installationId: 1, accountLogin: "acme", status: "suspended" }], []);
+ expect(suspended.state).toBe("attention");expect(suspended.why).toMatch(/suspended/);expect(suspended.fix).toMatch(/unsuspend/);
+ const waiting = githubSummary([], [{ status: "waiting", accountLogin: "acme" }]);
+ expect(waiting.state).toBe("attention");expect(waiting.why).toMatch(/Waiting for your GitHub admin/);
  expect(githubSummary([], [])).toMatchObject({ state: "not_connected" });
  expect(connectionSummary({ ...linear, lastCheck: undefined }, undefined)).toMatchObject({ state: "attention", fix: "Press Check it works." });
- expect(connectionSummary({ ...linear, lastCheck: { ok: false, at: "x" } }, "Linear refused the saved secret (HTTP 401)")).toMatchObject({ state: "attention", why: expect.stringContaining("Linear refused") });
+ const refused = connectionSummary({ ...linear, lastCheck: { ok: false, at: "x" } }, "Linear refused the saved secret (HTTP 401)");
+ expect(refused.state).toBe("attention");expect(refused.why).toMatch(/Linear refused/);
  expect(connectionSummary({ ...linear, hasCredential: false }, undefined)).toMatchObject({ state: "attention", why: "No key is saved for this connection." });
  expect(connectionSummary({ ...linear, type: "cloudwatch", hasCredential: false, lastCheck: { ok: true, at: "x" } }, undefined)).toMatchObject({ state: "connected" });
  expect(groupSummary([], {}, "Jira")).toMatchObject({ state: "not_connected" });
@@ -100,7 +103,7 @@ it("opens Linear setup in place, adds with plain fields, then checks it, and nev
   expect(screen.getAllByText(/Linear refused the saved secret \(HTTP 401\)/).length).toBeGreaterThan(0);
   const post = f.request.mock.calls.map(([r]) => r).find(r => r.method === "POST" && r.path === "/v1/app/connections")!;
   expect(post.body).toMatchObject({ connection: { type: "linear", access: "read", identity: "service" }, secret: { apiKey: secret } });
-  await waitFor(() => expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe(""));
+  await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>("API key").value).toBe(""));
   expect(JSON.stringify(f.query.getQueriesData({ queryKey: ["admin"] }))).not.toContain(secret);
   expect(document.body.textContent).not.toContain(secret);
   expect(within(card("linear")).getByText("Needs attention")).toBeTruthy();
