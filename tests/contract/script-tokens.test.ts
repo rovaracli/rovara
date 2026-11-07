@@ -11,6 +11,7 @@ import { ScriptTokenRecordSchema, noteScriptTokenUse } from "../../packages/brok
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 
 type Reply = { status: number; body: Record<string, unknown> };
 const ORIGIN = new URL(DEV_ISSUER).origin;
@@ -19,9 +20,9 @@ const OTHER_ORG = "org_zzzzzzzzzzzzzzzzzzzz" as OrgId;
 beforeEach(() => { vi.stubEnv("SCRIPT_TOKENS_ENABLED", "1"); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
-async function world(options: { brokerExtra?: Record<string, unknown>; developerExtra?: Record<string, unknown> } = {}) {
+async function world(options: { brokerExtra?: Record<string, unknown>; developerExtra?: Record<string, unknown>; orgResolver?: OrgResolver } = {}) {
   const audit = capturingAuditDeps();
-  const h = await createDeveloperTaskBroker({ audit, ...(options.brokerExtra === undefined ? {} : { brokerExtra: options.brokerExtra }), ...(options.developerExtra === undefined ? {} : { developerExtra: options.developerExtra }) });
+  const h = await createDeveloperTaskBroker({ audit, ...(options.brokerExtra === undefined ? {} : { brokerExtra: options.brokerExtra }), ...(options.developerExtra === undefined ? {} : { developerExtra: options.developerExtra }), ...(options.orgResolver === undefined ? {} : { orgResolver: options.orgResolver }) });
   const browserSessions = new Map<string, string>();
   const sessionOf = (who: Developer) => {
     let sid = browserSessions.get(who.developerId);
@@ -525,5 +526,38 @@ describe("review fixes (UX5B-SCRIPT-TOKENS-REVIEW)", () => {
     w.channelMembers.mockImplementation(async () => ({ ok: true, memberOf: [] }));
     expect((await w.start(made.secret)).status).toBe(403);
     expect((await w.script(made.secret, "GET", `/v1/dev/tasks/${taskId}`)).status).toBe(200);
+  });
+
+  it("org close: the company's tokens stop at once, are revoked, and every route refuses them", async () => {
+    // Maya is the company's only member (Omar is in another company), so her leaving closes it.
+    const w = await world({ orgResolver: async (subject) => (subject.developerId === OMAR.developerId ? OTHER_ORG : TEST_ORG), brokerExtra: { cloud: true } });
+    await w.orgOf(MAYA);
+    seedMembership(w.db, MAYA.developerId, { orgId: TEST_ORG, role: "owner" });
+    const made = await w.create();
+    const started = await w.start(made.secret);
+    expect(started.status).toBe(200);
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const left = await w.dev(MAYA, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    expect(left.status, JSON.stringify(left.body)).toBe(200);
+    expect(left.body).toMatchObject({ orgClosed: true });
+    for (const [method, path, body] of [["POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "x", client: "ci" }], ["GET", `/v1/dev/tasks/${taskId}`, undefined], ["GET", `/v1/dev/tasks/${taskId}/events`, undefined], ["GET", "/v1/dev/tasks?project=payments", undefined]] as const) {
+      expect((await w.script(made.secret, method, path, body)).status, `${method} ${path}`).toBe(401);
+    }
+    // The first refusal revoked it (its creator is no longer a member), so it stays dead even if the company were reopened.
+    expect(w.record(made.token.tokenId).revokedBy).toBe("rovara");
+  });
+
+  it("account merge: the merged-away account's tokens stop and are revoked; they never follow the surviving account", async () => {
+    const w = await world();
+    const made = await w.create();
+    expect((await w.start(made.secret)).status).toBe(200);
+    // What a merge writes on the duplicate's record (developer/store.ts mergeItems): mergedInto, and sessionsEndedAt at the merge, which ends every session of the duplicate.
+    const at = new Date(Date.now() + 1000).toISOString();
+    w.db.set({ ...w.db.get(`DEVELOPER#${MAYA.developerId}`, "META")!, mergedInto: OMAR.developerId, mergedAt: at, sessionsEndedAt: at });
+    expect((await w.start(made.secret)).status).toBe(401);
+    expect(w.record(made.token.tokenId).revokedBy).toBe("rovara");
+    // The token's record still names the old account: nothing moves it to the survivor, so the survivor gains no token from the merge.
+    expect(w.record(made.token.tokenId).developerId).toBe(MAYA.developerId);
+    expect((await w.web(OMAR, "GET", "/v1/app/script-tokens")).body.tokens).toEqual([]);
   });
 });
