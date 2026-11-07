@@ -56,7 +56,7 @@ describe("agentx session answer against the real broker", () => {
     expect(sent[0]!.status).toBe(200);
     expect(h.meta(task.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING", intent: { rounds: 1, answers: [{ round: 1, source: "app", answers: [{ questionId: "q1", optionId: "b" }, { questionId: "q2", text: "25 items" }] }] } });
     expect(cli.text()).toMatch(/Answered/);
-    expect(cli.text()).toContain(`/s/${task.sessionId}`);
+    expect(cli.text()).toContain(`/app/sessions/${task.sessionId}`);
   });
 
   it("takes the task's ID as well as the session's, an option's label as well as its letter, and \"your call\" as an answer", async () => {

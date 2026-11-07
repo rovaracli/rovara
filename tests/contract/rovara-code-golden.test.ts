@@ -25,7 +25,9 @@ vi.mock("node:crypto", async (importOriginal) => {
 
 // The hash of SHA256SUMS itself, so the list of fixture hashes cannot be edited in the same breath as a fixture. A change
 // to this value is a re-record: it needs the per-path attribution and the Opus review that PF4 requires of a Plan 2 merge.
-const SHA256SUMS_SHA256 = "3b29f748b9fb372ece9eecd541b80cb97feac4047d09d77cdc39c58cb95667e7";
+// Re-record 2026-11-07 (UX2 slice 2 item 1, the one status model), per path: plan-ready-full.json and plan-ready-quick.json change ONLY the shared thread's start line, "Status: STARTING." to
+// "Status: Planning." (the Slack start message says the status in words, never the raw code). No other fixture changed.
+const SHA256SUMS_SHA256 = "896bfb8f7c05954d0ad7dd917c9f60cdf5ef5dcfe1bf5c33230c87059739ffa4";
 
 beforeAll(async () => { await loadSlackBroker(); });
 

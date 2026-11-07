@@ -214,7 +214,7 @@ describe("a shared task through its life (US3)", () => {
     await tool("agentx_share_task", { task_id: taskId });
     await slack.pump();
     expect(slack.posts).toHaveLength(1);
-    expect(slack.posts[0]!.text).toContain("Status: STARTING");
+    expect(slack.posts[0]!.text).toContain("Status: Understanding the request.");
     const task = taskRecord(harness, taskId);
     expect(task.share).toMatchObject({ mode: "view", sharedReason: "requested", threadTs: expect.any(String) as unknown });
     expect(sharedRecord(harness, subjectOf(task))).toMatchObject({ taskId, mode: "view" });

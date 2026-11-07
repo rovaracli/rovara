@@ -17,6 +17,8 @@ import { withoutDecided } from "./one-card.js";
 import type { ReadDecision } from "../../api/decisions.js";
 // Decision cards load after the first paint: they bring the cards, the tabs and their contracts, which no other first-page view needs.
 const NeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NeedsYou }));
+// UX2 slice 2 item 7: the start box loads after the first paint too (it brings the project page's start form).
+const HomeStart = lazy(async () => ({ default: (await import("./HomeStart.js")).HomeStart }));
 import "./home.css";
 const DECISIONS_KEY = ["decisions"] as const;
 export function HomeScreen() {
@@ -29,17 +31,20 @@ export function HomeScreen() {
  });
  const cards = home.isError ? undefined : home.data?.cards, ready = cards !== undefined;
  const shown = cards === undefined ? undefined : withoutDecided(cards, decisions), total = Math.max(0, (home.data?.total ?? 0) - (cards?.length ?? 0) + (shown?.length ?? 0));
+ // UX2 slice 2: the ONE "needs you" count, the server's (its cards and the pending decision cards, counted once; the sidebar shows the same number). An older server has none: the cards shown here count.
+ const pendingCards = decisions?.filter(decision => decision.card.status === "pending").length ?? 0, needsYou = typeof home.data?.needsYou === "number" ? home.data.needsYou : total + pendingCards;
  useEffect(() => { if (!ready) return;const invalidator = createNoticeInvalidator(query), realtime = createRealtimeClient(host, { onNotice: notice => invalidator.notice(notice), onStatus: () => undefined, onReset: () => invalidator.reset() });realtime.start();return () => { realtime.stop();invalidator.stop(); }; }, [host, query, ready]);
  useEffect(() => {
  if (cards === undefined) return;
  for (const card of previous.current ?? []) if (!cards.some(next => next.cardId === card.cardId)) announce(card.title + " no longer needs you");
  previous.current = cards;
  }, [cards, announce]);
- return <section className="rv-home"><PageHeader title="Home" {...(shown !== undefined && total > 0 ? { description: `${total} ${total === 1 ? "thing needs" : "things need"} you` } : {})} />
+ return <section className="rv-home"><PageHeader title="Home" {...(shown !== undefined && needsYou > 0 ? { description: `${needsYou} ${needsYou === 1 ? "thing needs" : "things need"} you` } : {})} />
+ <Suspense fallback={null}><HomeStart /></Suspense>
  <Suspense fallback={null}><NeedsYou /></Suspense>
  {home.isPending && <Skeleton label="Loading what needs you" />}
  {home.isError && <div className="rv-home-error" role="alert"><p><VisibleText text={home.error instanceof ApiError ? home.error.message : "Couldn't load what needs you. Try again."} /></p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
- {shown !== undefined && shown.length === 0 && total === 0 && decisions?.some(decision => decision.card.status === "pending") !== true && <EmptyState title="Nothing needs you right now" description="Your team's work can keep moving. Find ongoing sessions in Live." action={<Link to="/app/live">See work in progress</Link>} />}
+ {shown !== undefined && shown.length === 0 && total === 0 && needsYou === 0 && decisions?.some(decision => decision.card.status === "pending") !== true && <EmptyState title="Nothing needs you right now" description="Your team's work can keep moving. Find ongoing sessions in Live." action={<Link to="/app/live">See work in progress</Link>} />}
  {cards !== undefined && cards.length === 0 && total > 0 && <div><p>Items are temporarily unavailable.</p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
  {shown !== undefined && total > shown.length && <p className="rv-muted">Showing {shown.length} of {total}</p>}
  {shown !== undefined && shown.length > 0 && <ol className="rv-attention-list" aria-label="What needs you">{shown.map(card => <HomeCard key={card.cardId} card={card} />)}</ol>}

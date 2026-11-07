@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): write gate, model access (web and Slack), turn routing and budgets.
 
+import { sessionPageUrl } from "../../decisions/open-path.js";
 import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, PER_TASK_BUDGET_USD, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE } from "@agentx/contracts";
 import { queryAllItems } from "../admin-reads.js";
 import { DynamoConnectorLedger, GITHUB_LEDGER, connectorLedgerKeys } from "../connector-ledger.js";
@@ -139,7 +140,7 @@ export function agentRunHostOf(dependencies: AwsBrokerDependencies, tasks: Devel
     askForPause: async (task, operationId) => {
       if (await askForPausedTask(dependencies, task.taskId, { id: operationId }) === "failed") throw agentXError("RUNTIME_UNAVAILABLE", "the pause could not be asked for");
     },
-    ...(developer === undefined ? {} : { taskUrl: (taskId: string) => taskPageUrl(developer.issuer, taskId) }),
+    ...(developer === undefined ? {} : { taskUrl: (taskId: string, sessionId?: string) => sessionPageUrl(developer.issuer, sessionId) ?? taskPageUrl(developer.issuer, taskId) }),
     ...(developer?.slackTeamId === undefined ? {} : {
       slackChannels: async (orgId: OrgId, project: string) => (await queryAllItems(dependencies, slackBindingPk(orgId, developer.slackTeamId!), SLACK_BINDING_SK_PREFIX))
         .filter((binding) => binding.projectName === project).map((binding) => String(binding.channelId)).sort(),

@@ -162,7 +162,7 @@ describe("a person's start creates its session in the start transaction", () => 
     expect(String(record.title)).not.toContain("<@");
     const event = t.sessionPartitions().find((item) => (item.sk as string).startsWith("EVENT#"))!;
     expect(String(event.text)).not.toContain(GITHUB_TOKEN);
-    expect(task.sessionUrl).toBe(`${ORIGIN}/s/${task.sessionId}`);
+    expect(task.sessionUrl).toBe(`${ORIGIN}/app/sessions/${task.sessionId}`);
     expect(DeveloperTaskViewSchema.parse(task).sessionId).toBe(task.sessionId);
   });
 

@@ -7,7 +7,7 @@
 // Nothing in this file decides an approval (R66).
 import { randomUUID } from "node:crypto";
 import {
-  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, INTENT_NOT_WAITING_MESSAGE, LEVEL_WORDS, LIVE_FILTERS, YOUR_CALL_WORDS, NeedsConfirmationReaderSchema, SESSION_LEVELS, SESSION_STATUS_WORDS, SessionIdSchema, TASK_VIEW_HEADER, TASK_VIEW_VERSION, agentXError, sessionLink,
+  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, INTENT_NOT_WAITING_MESSAGE, LEVEL_WORDS, LIVE_FILTERS, YOUR_CALL_WORDS, NeedsConfirmationReaderSchema, SESSION_LEVELS, SessionIdSchema, sessionTaskStatus, taskStatusText, TASK_VIEW_HEADER, TASK_VIEW_VERSION, agentXError, sessionLink,
   type SessionLevel,
 } from "@agentx/contracts";
 import { appRequest, clean, developerRef, list, result, seg, str, type AppResult } from "./agents.js";
@@ -47,7 +47,8 @@ const sessionPath = (id: string, rest = "") => `/v1/app/sessions/${seg(sessionId
 /** The link to a session: the server's own when it is a plain https address, else built from the ID. */
 const linkOf = (origin: string, sessionId: string, given?: unknown): string => safeUrl(given, origin) ?? sessionLink(origin, sessionId);
 
-const statusWords = (status: unknown): string => (typeof status === "string" && status in SESSION_STATUS_WORDS ? SESSION_STATUS_WORDS[status as keyof typeof SESSION_STATUS_WORDS] : str(status, "unknown"));
+/** UX2 slice 2: a session's status in the one status model's words, from its summary (`display` when the server wrote one). */
+const statusWords = (status: unknown, display?: unknown): string => (typeof status === "string" ? clean(taskStatusText(sessionTaskStatus({ status, display }))) : "Status unavailable");
 const levelWords = (level: unknown): string => (typeof level === "string" && level in LEVEL_WORDS ? LEVEL_WORDS[level as SessionLevel] : str(level, "unknown"));
 const money = (value: unknown): string => (typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "unknown");
 const nameOf = (value: unknown): string => str((value as Body | undefined)?.name, "someone");
@@ -70,7 +71,7 @@ function confirmationOf(answer: { env: string; url: string; body: Body }): AppRe
 
 // ---- the lists
 
-const tileLine = (tile: Body): string => `  ${str(tile.sessionId)}  ${statusWords((tile.summary as Body | undefined)?.status)}  ${str(tile.title)}${tile.project === undefined ? "" : `  ${str(tile.project)}`}  ${nameOf(tile.owner)}`;
+const tileLine = (tile: Body): string => `  ${str(tile.sessionId)}  ${statusWords((tile.summary as Body | undefined)?.status, (tile.summary as Body | undefined)?.display)}  ${str(tile.title)}${tile.project === undefined ? "" : `  ${str(tile.project)}`}  ${nameOf(tile.owner)}`;
 
 const liveLine = (origin: string) => (tile: Body): string => {
   const confirm = safeUrl(tile.approvalUrl, origin);
@@ -112,7 +113,7 @@ function headline(origin: string, view: Body, fallbackId: string): string[] {
   return [
     `${str(view.title, "(no title)")}`,
     `  ${linkOf(origin, sessionId, view.link)}`,
-    `  ${statusWords(view.status)}${view.step === undefined ? "" : `: ${str(view.step)}`}`,
+    `  ${statusWords(view.status, view.display)}${view.step === undefined ? "" : `: ${str(view.step)}`}`,
     `  ${view.project === undefined ? "" : `project ${str(view.project)}; `}owned by ${nameOf(view.owner)}; runs ${placed}`,
   ];
 }

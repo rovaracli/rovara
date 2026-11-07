@@ -697,7 +697,9 @@ describe("the other task tools (FR-030)", () => {
       const cancelTask = vi.fn(async () => view(status));
       const result = await (await connect({ cancelTask })).callTool({ name: "agentx_cancel_task", arguments: { task_id: TASK } });
       expect(result.structuredContent).toMatchObject({ status });
-      expect(text(result), status).toContain(`The task had already finished as ${status}, so nothing was cancelled.`);
+      // UX2 slice 2: the status in words, never the raw code.
+      expect(text(result), status).toMatch(/The task had already finished \((Finished its run|Failed: the run stopped with an error)\), so nothing was cancelled\./u);
+      expect(text(result)).not.toContain(status);
     }
   });
 
@@ -776,7 +778,7 @@ describe("the error and progress caps (Task 15 fix round 1)", () => {
     const getTask = vi.fn().mockResolvedValueOnce(view("RUNNING", { events: [{ at: "t", kind: "tool", text: "p".repeat(5_000) }] })).mockResolvedValueOnce(view("SUCCEEDED"));
     const progress: Array<{ message?: string }> = [];
     await (await connect({ getTask })).callTool({ name: "agentx_wait_for_task", arguments: { task_id: TASK, wait_seconds: 30 } }, undefined, { onprogress: (update) => progress.push(update as { message?: string }) });
-    expect(progress[0]?.message?.startsWith("RUNNING: ppp")).toBe(true);
+    expect(progress[0]?.message?.startsWith("Working: ppp")).toBe(true);
     expect(progress[0]?.message?.length).toBe(300);
   });
 });

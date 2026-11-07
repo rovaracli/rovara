@@ -6,3 +6,4 @@
 @media(max-width:767px){.rv-app-shell{grid-template-columns:minmax(0,1fr);grid-template-rows:60px minmax(0,1fr)}.rv-shell-sidebar{display:none}.rv-shell-header{padding:0 16px;gap:12px}.rv-shell-org{display:none}.rv-mobile-menu{display:inline-flex}.rv-shell-main{padding:28px 20px}.rv-trial-banner{align-items:flex-start;flex-direction:column;gap:12px}.rv-workspace-menu{width:min(380px,calc(100vw - 24px))}.rv-large-screen-content{display:none}.rv-large-screen-message{display:block}}
 @media(prefers-reduced-motion:reduce){.rv-sidebar-nav a,.rv-shell-header button{transition:none}}
 .rv-name-prompt .rv-field{min-width:min(360px,100%)}.rv-name-form{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}.rv-name-form .rv-account-actions{margin-bottom:2px}
+.rv-account{max-width:720px;min-width:0}.rv-account section{margin-top:var(--rv-space-5)}.rv-notify-options{border:0;padding:0;display:grid;gap:var(--rv-space-3);margin:var(--rv-space-4) 0}

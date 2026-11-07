@@ -23,7 +23,7 @@ test("shows the answer of an Answered task, then makes the change anyway with th
  await evidenceShot(page, { path: ".test-build/web-e2e/answered.png", fullPage: true });
  await page.getByRole("button", { name: "Make a change anyway" }).focus();await expect(page.getByRole("button", { name: "Make a change anyway" })).toBeFocused();
  await page.keyboard.press("Enter");
- await expect(page).toHaveURL(new RegExp("/s/" + next + "$"));
+ await expect(page).toHaveURL(new RegExp("/app/sessions/" + next + "$"));
  await expect(page.getByText("Working")).toBeVisible();
  const posts = ((await (await request.get("/__mock/requests")).json()) as Array<{ method: string; path: string; body?: unknown }>).filter(row => row.method === "POST" && row.path.endsWith("/change-anyway"));
  expect(posts).toHaveLength(1);

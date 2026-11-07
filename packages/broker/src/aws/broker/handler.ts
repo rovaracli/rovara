@@ -1,5 +1,7 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { attentionDeliveryOf } from "./attention-wiring.js";
+import { deliverAttention } from "../../notifications/attention.js";
 import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { noteInvokedFunctionArn } from "../../test-env/lambda-identity.js";
 import { EVIDENCE_RESUME_BUDGET_MS, evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
@@ -288,6 +290,12 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // System owner of automatic runs: a run past its time is ended and its slot given back, so a hung night can never hold the project's one automatic slot for good.
       outcome.automaticRuns = await sweepAutomaticRunsOf(dependencies, { budgetMs: Math.max(0, SESSION_EVENT_BUDGET_MS - (Date.now() - startedAt)) });
       outcome.asks = await runAskMaintenance(dependencies, Date.now());
+      // UX2 slice 2 item 5: the task notifications queued since the last sweep, batched per person (Slack direct message and/or email through the sign-in notice sender).
+      const attention = attentionDeliveryOf(dependencies, agents?.projectMembers);
+      if (attention !== undefined) {
+        try { outcome.notifications = await deliverAttention(attention); }
+        catch (error) { console.log(JSON.stringify({ component: "broker", event: "attention.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.notifications = "failed"; }
+      }
       // Saved project images: the periodic poll (a few due projects a pass; off, nothing is read).
       // With the switch off the answer is today's, byte for byte: neither key is there.
       const polled = await runSavedEnvPoll(dependencies);
@@ -544,7 +552,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     if (isSlackWorkflowStartEvent(event)) {
       try {
         const task = await startSlackWorkflow(dependencies, tasks, event);
-        return json({ taskId: task.task.taskId }, "slack-ingress");
+        return json({ taskId: task.task.taskId, sessionUrl: task.sessionUrl }, "slack-ingress");
       } catch (error) {
         if (error instanceof AgentXError) return json({ error: { code: error.code, message: stripCode(error.message, error.code) } }, "slack-ingress", error.statusCode);
         return unexpectedErrorAnswer(error, "slack-ingress");

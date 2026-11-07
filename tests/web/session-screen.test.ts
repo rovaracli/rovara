@@ -120,7 +120,7 @@ it("retries the header session once and navigates to the returned session", asyn
  const base = sessionFixture(), returned = "ses_bbbbbbbbbbbbbbbbbbbb", f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["retry"] } }), async () => ({ status: 200, body: { session: sessionFixture({ sessionId: returned }) } }));
  const navigate = vi.spyOn(f.host, "navigate");
  const retry = await screen.findByRole("button", { name: "Retry" });act(() => { retry.click();retry.click(); });
- await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + returned));
+ await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + returned));
  expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/retry"))).toHaveLength(1);f.close();
 });
 it("posts stop only after explicit confirmation and refreshes the session", async () => {

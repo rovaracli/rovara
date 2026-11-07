@@ -10,8 +10,11 @@ export interface StartMessageInput {
   title: string;
   project: string;
   mode: "view" | "continue";
+  /** Where the task stands, in the one status model's words (never the raw code). */
   status: string;
   sharedReason: "requested" | "required";
+  /** The task's page in Rovara (`/app/sessions/<id>`), when the notifier knows it. */
+  link?: string | undefined;
 }
 
 const who = (input: Pick<StartMessageInput, "developerName" | "slackUserId">) =>
@@ -27,7 +30,7 @@ export function startMessage(input: StartMessageInput): string {
   return [
     // The client is one of the fixed names (R25: the four AI tool names, "Slack", "Script token"), so it needs no escaping.
     `${name} started a task from ${input.client}: *${escapeSlack(hideEmailAddresses(input.title))}*`,
-    `Project: \`${escapeSlack(input.project)}\`. Status: ${input.status}.`,
+    `Project: \`${escapeSlack(input.project)}\`. Status: ${escapeSlack(input.status)}.${input.link === undefined ? "" : ` Follow it in Rovara: <${input.link}|open the task>.`}`,
     input.mode === "view" ? MODE_SENTENCE.view(name) : MODE_SENTENCE.continue(),
     ...(input.sharedReason === "required" ? ["This project shares every task started from an AI tool."] : []),
   ].join("\n");

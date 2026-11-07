@@ -90,3 +90,9 @@ it("starts signup without navigation reads and welcome with only a me read", asy
 });
 
 it("preserves the server refusal message on a failed page", () => { const f = renderUi(h(PageError, { error: new ApiError(403, "FORBIDDEN", "Ask the project owner to restore your access.") }));expect(screen.getByText("Ask the project owner to restore your access.")).toBeTruthy();f.unmount(); });
+it("sends an older /s/<id> link to the task's one address, keeping its query and tab (UX2 slice 2)", async () => {
+ const f = shell("/s/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_plan:x#plan");
+ await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"));
+ expect(f.router.state.location.search).toBe("?decision=approve_plan:x");expect(f.router.state.location.hash).toBe("#plan");
+ f.close();
+});

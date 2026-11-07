@@ -5,7 +5,7 @@ for (const expired of [false, true]) test(expired ? "returns an expired shared-l
  await request.post("/__mock/scenario", { data: { name: "workspace" } });await context.clearCookies();
  if (expired) { await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);await request.post("/__mock/auth", { data: { expired: true } }); }
  await mockRealtime(page);await page.goto(link);await expect(page.getByRole("heading", { name: "Sign in to the mock cell" })).toBeVisible();
- await page.getByRole("button", { name: "Sign in", exact: true }).click();await expect(page).toHaveURL(new RegExp(link + "$"));await expect(page.getByRole("heading", { name: "Fix duplicate refunds" })).toBeVisible();expect(await page.getByRole("link", { name: /download/i }).count()).toBe(0);
+ await page.getByRole("button", { name: "Sign in", exact: true }).click();await expect(page).toHaveURL(new RegExp("/app/sessions/" + id + "$"));await expect(page.getByRole("heading", { name: "Fix duplicate refunds" })).toBeVisible();expect(await page.getByRole("link", { name: /download/i }).count()).toBe(0);
 });
 test("ends a refused sign-in once without returning to the shared link", async ({ page, context, request }) => {
  await request.post("/__mock/scenario", { data: { name: "workspace" } });await context.clearCookies();await request.post("/__mock/auth", { data: { refused: true } });

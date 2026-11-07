@@ -10,7 +10,7 @@ import { CloseTaskDialog } from "../session/CloseTaskDialog.js";
 /** One of the person's open tasks, as a link to its page and a Close button. */
 function OpenTask({ id, title, project, onClosed }: { id: string; title: string; project: string | undefined; onClosed: () => Promise<unknown> }) {
  const [open, setOpen] = useState(false);
- return <li><Link to={"/s/" + id}><VisibleText text={title} /></Link>{project !== undefined && <span className="rv-muted"> on <VisibleText text={project} /></span>} <CloseTaskDialog id={id} open={open} onOpenChange={setOpen} onClosed={onClosed} trigger={<Button>Close</Button>} /></li>;
+ return <li><Link to={"/app/sessions/" + id}><VisibleText text={title} /></Link>{project !== undefined && <span className="rv-muted"> on <VisibleText text={project} /></span>} <CloseTaskDialog id={id} open={open} onOpenChange={setOpen} onClosed={onClosed} trigger={<Button>Close</Button>} /></li>;
 }
 /**
  * Shown when a start was refused because the person has too many open tasks: the tasks they can close, each a link and a Close button, read from the Live wall (`close` is in a tile's actions only for a

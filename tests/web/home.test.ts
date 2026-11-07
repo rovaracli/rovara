@@ -29,7 +29,7 @@ function setup(body: unknown = HomeResponseSchema.parse({ cards, total: cards.le
 it("keeps server ranking, renders safe titles and uses the actual session identity", async () => {
  const f = setup();await screen.findByText("2 things need you");
  expect(screen.getAllByRole("heading", { level: 2 }).map(el => el.textContent)).toEqual(["Review the duplicate-refund fix", "<img src=x onerror=alert(1)>"]);
- expect(f.container.querySelector("img")).toBeNull();expect(screen.getByRole("link", { name: "Open session: Review the duplicate-refund fix" }).getAttribute("href")).toBe("/s/" + sessionId);expect(f.container.querySelector("time")?.getAttribute("datetime")).toBe("2026-10-23T12:00:00.000Z");f.close();
+ expect(f.container.querySelector("img")).toBeNull();expect(screen.getByRole("link", { name: "Open session: Review the duplicate-refund fix" }).getAttribute("href")).toBe("/app/sessions/" + sessionId);expect(f.container.querySelector("time")?.getAttribute("datetime")).toBe("2026-10-23T12:00:00.000Z");f.close();
 });
 it("hides unsupported writes rather than guessing destinations or permissions", async () => {
  const f = setup();await screen.findByText("2 things need you");expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();expect(screen.queryByRole("button", { name: "Start" })).toBeNull();expect(f.request.mock.calls.every(([request]) => request.method === "GET")).toBe(true);f.close();
@@ -61,9 +61,9 @@ it("opens the authoritative bare approval link externally without an inline deci
  fireEvent.click(await screen.findByRole("button", { name: "Review approval" }));expect(f.host.openExternal).toHaveBeenCalledWith(href);expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();expect(f.request.mock.calls.every(([request]) => request.method === "GET")).toBe(true);f.close();
 });
 it("preserves a question's exact app anchor and only Open for unknown kinds", async () => {
- const href = "https://cell.example/s/" + sessionId + "#questions";
+ const href = "https://cell.example/app/sessions/" + sessionId + "#questions";
  const f = setup({ cards: [{ ...cards[0], kind: "question", cardId: "question:one", buttons: [{ action: "open", label: "Answer", method: "GET", href }] }, { ...cards[1], sessionId, kind: "future_kind", cardId: "offer:future", buttons: [{ action: "open", label: "Open", method: "GET", href }, { action: "retry", label: "Retry future", method: "POST", href: "https://cell.example/v1/app/sessions/" + sessionId + "/retry" }] }], total: 2 });
- expect((await screen.findByRole("link", { name: "Answer" })).getAttribute("href")).toBe("/s/" + sessionId + "#questions");expect(screen.getByRole("link", { name: "Open" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Retry future" })).toBeNull();f.close();
+ expect((await screen.findByRole("link", { name: "Answer" })).getAttribute("href")).toBe("/app/sessions/" + sessionId + "#questions");expect(screen.getByRole("link", { name: "Open" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Retry future" })).toBeNull();f.close();
 });
 it("dismisses a failure once with the exact occurrence and announces only server removal", async () => {
  const cardId = "failure:one", path = "/v1/app/home/cards/failure%3Aone/dismiss?occurrence=run%3A2";
@@ -77,7 +77,7 @@ it("dismisses a failure once with the exact occurrence and announces only server
 it("retries the session once with a request id and uses the actual returned session", async () => {
  const returned = "ses_" + "b".repeat(20), sent = vi.fn(async () => ({ status: 200, body: { session: sessionFixture({ sessionId: returned }) } }));
  const f = setup({ cards: [{ ...cards[1], sessionId, buttons: [{ action: "retry", label: "Retry", method: "POST", href: "https://cell.example/v1/app/sessions/" + sessionId + "/retry" }] }], total: 1 }, "light", 200, sent);
- const navigate = vi.spyOn(f.host, "navigate"), button = await screen.findByRole("button", { name: "Retry" });fireEvent.click(button);fireEvent.click(button);await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + returned));expect(sent).toHaveBeenCalledTimes(1);expect(f.request.mock.calls.find(([request]) => request.method === "POST")?.[0].body).toMatchObject({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown });f.close();
+ const navigate = vi.spyOn(f.host, "navigate"), button = await screen.findByRole("button", { name: "Retry" });fireEvent.click(button);fireEvent.click(button);await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + returned));expect(sent).toHaveBeenCalledTimes(1);expect(f.request.mock.calls.find(([request]) => request.method === "POST")?.[0].body).toMatchObject({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown });f.close();
 });
 it("hides cross-origin writes, mismatched targets and unsupported start destinations", async () => {
  const f = setup({ cards: [{ ...cards[1], sessionId, buttons: [
@@ -147,4 +147,8 @@ it("offers a waiting ticket's Start and Not this one only at the intake paths of
  // The same path on another kind of card is not an action.
  const other = HomeCardReaderSchema.parse({ ...cards[1]!, sessionId, buttons: [] });
  expect(homeAction(other, { action: "start", label: "x", method: "POST", href: `https://cell.example/v1/app/projects/web/intake/${item}/start` }, "https://cell.example")).toBeUndefined();
+});
+it("says the ONE needs-you count the server gives (Home's cards and the decision cards, the sidebar's number) (UX2 slice 2)", async () => {
+ const f = setup(HomeResponseSchema.parse({ cards, total: cards.length, needsYou: 5 }));
+ expect(await screen.findByText("5 things need you")).toBeTruthy();f.close();
 });

@@ -7,8 +7,8 @@ db1d43e4593dd01ad715f01f6082774d4686f0acc93a5760a76d0d89ac8ef1d7  tests/fixtures
 446fb390dcfcce52381e89c96c85893f821c7b6928afb10831da60c9e0d9d674  tests/fixtures/rovara-code-golden/plan-full-implementation-plan.json
 c457b107f3d77b42193519ef2e0d0b1372eee9c5a97714e2fd2a0bef287643a5  tests/fixtures/rovara-code-golden/plan-full-requirements.json
 023fa10088ed85896820272dc6d71c5489862a2e0bc6f946c7ffd02357c8f014  tests/fixtures/rovara-code-golden/plan-quick.json
-cbdf9c20f1451bba06aef4234857ecc4f7662e7fbdf7574c0d8479bbc8a14999  tests/fixtures/rovara-code-golden/plan-ready-full.json
-5cbf8cd1a13435b313b4f13c83bf0de56b3eb348819dc63b63d7fceea6853209  tests/fixtures/rovara-code-golden/plan-ready-quick.json
+9a1f77d0ee7e10dcf78011851ef73883de6ceb8b44dfe46d6ae0af1662cd913f  tests/fixtures/rovara-code-golden/plan-ready-full.json
+fdc49a49da6e737cfb9b80916972da97a80b5436cbed238817d0226e44b4cc1f  tests/fixtures/rovara-code-golden/plan-ready-quick.json
 ab3c10664802b693ea8635d16743064b496046cb25a8c6265ad7338a395ab6b6  tests/fixtures/rovara-code-golden/plan-review-decision.json
 bce346ee635e4a1d64b31337c60b71fa74882ba97f3cb220460d7f7fc2e85f7d  tests/fixtures/rovara-code-golden/review.json
 2cf2557b4dec0e283b02a99b4a51b912238917aa2b3574255ab12244d4b017be  tests/fixtures/rovara-code-golden/shared-task.json

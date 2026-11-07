@@ -3,7 +3,7 @@
 // { status: "NEEDS_ADMIN_APPROVAL", spendRequestId, message }; the broker's words and the request's id are printed and it is not a failure.
 import { randomUUID } from "node:crypto";
 import { agentXError } from "@agentx/contracts";
-import { appRequest, clean, list, result, seg, str, waitingText, type AppResult } from "./agents.js";
+import { appRequest, clean, list, result, seg, str, taskStatusLine, waitingText, type AppResult } from "./agents.js";
 import { jsonSafe } from "./audit.js";
 import type { DeveloperSessionDeps } from "./session.js";
 
@@ -153,7 +153,7 @@ export async function spendRequestsList(deps: DeveloperSessionDeps, env: string 
 export async function taskContinueAsTask(deps: DeveloperSessionDeps, env: string | undefined, taskId: string): Promise<AppResult> {
   const answer = await appRequest(deps, env, `/v1/app/tasks/${seg(taskId)}/continue-as-task`, { method: "POST", body: { requestId: randomUUID() } });
   const task = (answer.body.task ?? {}) as Body;
-  return result(answer, answer.body, `Task ${str(task.taskId, clean(taskId))} now continues as a normal task (status ${str(task.status, "unknown")}). It counts against your monthly limit and its project's budget.\n`);
+  return result(answer, answer.body, `Task ${str(task.taskId, clean(taskId))} now continues as a normal task (${taskStatusLine(task)}). It counts against your monthly limit and its project's budget.\n`);
 }
 
 /** Asks again for a blocked plan's run limit once the last request was denied or ran out. It asks; a person decides the new request on its page (R66). */

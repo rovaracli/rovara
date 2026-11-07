@@ -3,8 +3,9 @@
 // notifier's own queue; the queue brings each notice back, and it is posted once. Logs carry event
 // names, IDs, notice kinds and Slack error codes only: never a token, a post's text or a task's text.
 // Spec 025 E13: it also posts an admin change's Slack Confirm message, and edits it when the change ends.
-import { decisionCardUrl } from "../decisions/open-path.js";
-import { PER_TASK_BUDGET_USD, runLimitRaises } from "@agentx/contracts";
+import { taskStatusOf } from "../agent-sessions/task-status.js";
+import { decisionCardUrl, sessionPageUrl } from "../decisions/open-path.js";
+import { PER_TASK_BUDGET_USD, runLimitRaises, taskStatusText } from "@agentx/contracts";
 import { chatGptFallbackText } from "../chatgpt/fallback-notice.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { createHash } from "node:crypto";
@@ -23,7 +24,7 @@ import { designWaitArmOf, designWaitNotifyKey } from "../design-review/wait-rows
 import { designWaitWords } from "../design-review/wait-words.js";
 import { CANCELLED_REPLY, CLOSED_REPLY, READY_REPLY, endedReply, modeReply, pullRequestReply, setupFailedReply, startMessage } from "../developer/share-messages.js";
 import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
-import { answeredWorkflowCard, cleanLine, documentSummaryLines, feedbackReviewFailedMessage, planReviewLink, slackSectionTexts, slackText, workflowDocumentType, workflowMessage, workflowMessageKey, type WorkflowMessageContext } from "../developer/workflow-messages.js";
+import { answeredWorkflowCard, cleanLine, documentSummaryLines, feedbackReviewFailedMessage, pageDocumentLink, planReviewLink, slackSectionTexts, slackText, workflowDocumentType, workflowMessage, workflowMessageKey, type WorkflowMessageContext } from "../developer/workflow-messages.js";
 import { AUTOFIX_CARD_HOLD_MS, AutoFixAskSchema, autoFixCardLines, fixSetupWording } from "../developer/autofix-messages.js";
 import { deriveTaskStatus, failureCategory, plannerRepliesKey, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type OperationFacts, type TaskShare } from "../developer/task-records.js";
 import { bindingItemsForOpenSession } from "../agent-sessions/bindings.js";
@@ -85,7 +86,7 @@ class CanvasCloseoutPending extends Error {
 /** 30, 60, 120, 240, 480, then 900 seconds, by the delivery attempt that failed. */
 export const retryDelaySeconds = (attempt: number): number => Math.min(900, 30 * 2 ** Math.max(0, Math.min(attempt - 1, 5)));
 
-const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report", "spec_changed", "spec_hold", "settings_proof", "design_wait", "owner_stopped_dm"]);
+const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report", "spec_changed", "spec_hold", "settings_proof", "design_wait", "owner_stopped_dm", "attention_dm"]);
 
 class PeopleDeliveryRetry extends Error {
   constructor(readonly attempt: number) { super("People notification delivery should retry"); this.name = "PeopleDeliveryRetry"; }
@@ -155,9 +156,9 @@ async function deliverPeopleNotification(deps: NotifierDependencies, notice: Not
     ExpressionAttributeNames: { "#status": "status" },
     ExpressionAttributeValues: { ":sending": "SENDING", ":expected": row.status, ":attempt": attempt, ":previous": row.attempts, ":until": deps.now() + 30_000 },
   }));
-  const base = deps.reviewUrlBase;
-  const taskUrl = base === undefined ? undefined : new URL(`/review/${notice.taskId}/task`, base).href;
-  const text = `You now have the ${row.role} role on an AgentX task.${taskUrl === undefined ? "" : ` ${taskUrl}`}`;
+  const roleTask = await getItem<DeveloperTaskRecord>(deps, { pk: `DEVTASK#${notice.taskId}`, sk: "META" });
+  const taskUrl = notice.taskId === undefined ? undefined : taskAppUrl(deps.reviewUrlBase, { taskId: notice.taskId, sessionId: roleTask?.sessionId });
+  const text = `You now have the ${row.role} role on a Rovara task.${taskUrl === undefined ? "" : ` ${taskUrl}`}`;
   try {
     const posted = await deps.post({ channel: row.slackUserId, text });
     try {
@@ -213,8 +214,7 @@ async function deliverOwnerStopped(deps: NotifierDependencies, notice: Notice): 
     TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sending, attempts = :attempt, claimUntil = :until", ConditionExpression: "#status = :expected AND attempts = :previous",
     ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sending": "SENDING", ":expected": row.status, ":attempt": attempt, ":previous": row.attempts, ":until": deps.now() + 30_000 },
   }));
-  const base = deps.reviewUrlBase;
-  const taskUrl = base === undefined ? undefined : new URL(`/review/${notice.taskId}/task`, base).href;
+  const taskUrl = taskAppUrl(deps.reviewUrlBase, task);
   const title = typeof task?.title === "string" && task.title !== "" ? escapedLine(task.title, 80) : "a task you are on";
   const text = `Rovara stopped ${title} because its owner no longer has access. You can take it over to continue.${taskUrl === undefined ? "" : ` ${taskUrl}`}`;
   try {
@@ -437,6 +437,7 @@ function parseNotice(body: string): Notice | undefined {
       && (value.kind !== "canvas_closeout" || (value.manifestDigest === undefined || /^[a-f0-9]{64}$/.test(value.manifestDigest))
         && (value.expectedWorkflowRevision === undefined || Number.isSafeInteger(value.expectedWorkflowRevision) && value.expectedWorkflowRevision > 0))
       && (value.kind !== "owner_stopped_dm" || (typeof value.ownerStopKey === "string" && value.ownerStopKey.startsWith("OWNER_STOP_NOTIFY#") && value.ownerStopKey.length <= 400))
+      && (value.kind !== "attention_dm" || (typeof value.attentionKey === "string" && value.attentionKey.length > 0 && value.attentionKey.length <= 300))
       && (value.workflowRevision === undefined || Number.isSafeInteger(value.workflowRevision) && value.workflowRevision > 0)
       && (value.kind !== "design_wait" || (value.workflowRevision !== undefined && (value.designWaitStep === "24h" || value.designWaitStep === "72h" || value.designWaitStep === "parked" || value.designWaitStep === "closed")))
       ? value as Notice
@@ -635,7 +636,13 @@ async function currentStatus(deps: NotifierDependencies, task: DeveloperTaskReco
     getItem<DeveloperTaskPointerRecord>(deps, taskPointerKey(task.workspaceId)),
     operationsOf(deps, task.workspaceId),
   ]);
-  return deriveTaskStatus({ closedAt: task.closedAt, outcome: task.outcome, workspaceStatus: workspace?.status ?? "PREPARING", pointer, operations: operations as unknown as OperationFacts[] }).status;
+  const derived = deriveTaskStatus({ closedAt: task.closedAt, outcome: task.outcome, workspaceStatus: workspace?.status ?? "PREPARING", pointer, operations: operations as unknown as OperationFacts[] }).status;
+  // UX2 slice 2: said in the one status model's words, never the raw code.
+  const failed = derived === "FAILED" || derived === "INTERRUPTED";
+  return taskStatusText(taskStatusOf({
+    workflow: task.workflow, closed: task.closedAt !== undefined || derived === "CLOSED", budgetPaused: task.budgetPause !== undefined,
+    sessionStatus: derived === "STARTING" ? "starting" : derived === "RUNNING" ? "running" : derived === "CANCELLED" ? "stopped" : failed ? "waiting" : "running", ...(failed ? { lastRunFailed: true as const } : {}),
+  }));
 }
 
 /** How many items `recordThread` writes before the session's binding items: the task's share, the thread's record and the notice marker. */
@@ -779,9 +786,17 @@ interface Reply {
   approval?: WorkflowArtifact;
 }
 
-/** The trusted AgentX task page, when the notifier knows its base and it is a plain https origin. */
-function taskPageUrl(deps: NotifierDependencies, taskId: string): string | undefined {
-  return taskPageUrlFromBase(deps.reviewUrlBase, taskId);
+/**
+ * UX2 slice 2 item 4: the ONE task address, `/app/sessions/<id>`, when the notifier knows its base (a plain https origin) and the task has its session; the legacy task page only for a task with no session
+ * (from before sessions). Every Slack line and DM links here.
+ */
+function taskPageUrl(deps: NotifierDependencies, task: { taskId: string; sessionId?: string | undefined }): string | undefined {
+  return taskAppUrl(deps.reviewUrlBase, task);
+}
+
+/** The task's address in the app, or the legacy page for a task with no session. */
+export function taskAppUrl(reviewUrlBase: string | undefined, task: { taskId: string; sessionId?: string | undefined }): string | undefined {
+  return sessionPageUrl(reviewUrlBase, task.sessionId) ?? taskPageUrlFromBase(reviewUrlBase, task.taskId);
 }
 
 function taskPageUrlFromBase(reviewUrlBase: string | undefined, taskId: string): string | undefined {
@@ -838,7 +853,7 @@ async function prepareDocumentLink(deps: NotifierDependencies, task: DeveloperTa
     unavailable("integrity_check_failed");
     return {};
   }
-  const fallback = taskPageUrl(deps, task.taskId);
+  const fallback = taskPageUrl(deps, task);
   // A structured plan is read on the task page, never in a Canvas: the card carries its top claims and a link that opens
   // the page at this document and version.
   if (loaded.format === "structured") {
@@ -1016,7 +1031,7 @@ export function planOpenFor(task: Pick<DeveloperTaskRecord, "budgetUsd" | "runEs
 async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, workflow: WorkflowSnapshot, reopenedPullRequests?: ReadonlyArray<{ repositoryId: string; number: number }>): Promise<Reply | undefined> {
   // A task closed in Slack has its own closed reply; a second "closed" line would say it twice.
   if (workflow.stage === "CLOSED" && task.closedAt !== undefined) return undefined;
-  const page = taskPageUrl(deps, task.taskId);
+  const page = taskPageUrl(deps, task);
   // A reopened pull request is said once per reopening (its step's revision), even though its merge step was said before.
   const reopened = reopenedPullRequests !== undefined && workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING";
   const context: WorkflowMessageContext = { taskId: task.taskId, ownerSlackUserId: tryEffectiveTaskOwner(task)?.slackUserId, workflow, peopleEnabled: deps.peopleChangesEnabled === true,
@@ -1514,9 +1529,9 @@ async function deliverNudge(deps: NotifierDependencies, task: DeveloperTaskRecor
   const where = places.map((place) => `${place.document.label} v${place.version}`);
   const joined = where.length === 1 ? where[0]! : `${where.slice(0, -1).join(", ")} and ${where.at(-1)!}`;
   const name = escapedLine(typeof author.name === "string" && author.name.trim() !== "" ? author.name : "A teammate", 80);
-  const page = taskPageUrl(deps, task.taskId);
+  const page = taskPageUrl(deps, task);
   const anchor = places[0]!.document.anchor;
-  const link = page === undefined ? "" : ` <${slackText(`${page}?doc=${anchor}#${anchor}`)}|Open review>`;
+  const link = page === undefined ? "" : ` <${slackText(pageDocumentLink(page, `doc=${anchor}`, anchor))}|Open review>`;
   await deps.post({ channel: share.channelId, threadTs: share.threadTs, text: `${name} left ${total === 1 ? "a comment" : `${total} comments`} on ${joined}.${link}` });
   await putMarker(deps, marker);
   return "posted";
@@ -1552,6 +1567,29 @@ async function deliverChatGptFallback(deps: NotifierDependencies, notice: Notice
   return "posted";
 }
 
+/** A Slack direct message's longest text (Slack's own limit is 40,000 characters; the broker's batches are far shorter). */
+const ATTENTION_DM_TEXT_MAX = 4000;
+
+/**
+ * UX2 slice 2 item 5: one person's batch of task notifications, worded by the broker's sweep (titles escaped for Slack, links to the task's page on the install's origin), sent as a direct message.
+ * Told once: the row is marked SENT after the post; a row that is not PENDING, not this kind or not well formed is not posted.
+ */
+async function deliverAttentionDm(deps: NotifierDependencies, notice: Notice): Promise<string> {
+  const sk = notice.attentionKey;
+  if (sk === undefined) return "invalid";
+  const key = { pk: "NOTIFY_DM", sk };
+  const row = await getItem<Record<string, unknown>>(deps, key);
+  if (row === undefined || row.entityType !== "TASK_ATTENTION_DM") return "invalid";
+  if (row.status !== "PENDING") return "already_sent";
+  if (typeof row.slackUserId !== "string" || !SLACK_USER_ID.test(row.slackUserId) || typeof row.text !== "string" || row.text === "" || row.text.length > ATTENTION_DM_TEXT_MAX) return "invalid";
+  await deps.post({ channel: row.slackUserId, text: row.text });
+  await deps.documentClient.send(new UpdateCommand({
+    TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sent", ConditionExpression: "#status = :pending",
+    ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":sent": "SENT", ":pending": "PENDING" },
+  })).catch(() => undefined);
+  return "sent";
+}
+
 const DESIGN_WAIT_KINDS = new Set(["answers", "cost", "decision"]);
 const DESIGN_WAIT_AUDIENCES = new Set(["normal", "approver_left", "nobody_eligible", "unreadable"]);
 const SLACK_USER_ID = /^[UW][A-Z0-9]{2,20}$/;
@@ -1569,7 +1607,7 @@ async function deliverDesignWait(deps: NotifierDependencies, notice: Notice): Pr
     || !DESIGN_WAIT_KINDS.has(String(row.waitKind)) || !DESIGN_WAIT_AUDIENCES.has(String(row.audience)) || !Array.isArray(row.dm) || !Array.isArray(row.asked)) return "invalid";
   const task = await noticeTask(deps, notice);
   if (task === undefined || task.workflow?.revision !== workflowRevision) return "stale";
-  const page = taskPageUrl(deps, taskId);
+  const page = taskPageUrl(deps, task);
   const names = (row.asked as Array<{ name?: unknown }>).flatMap((person) => typeof person.name === "string" ? [escapedLine(person.name, 40)] : []).slice(0, 8);
   const text = designWaitWords({
     step, kind: row.waitKind as "answers" | "cost" | "decision", audience: row.audience as "normal" | "approver_left" | "nobody_eligible" | "unreadable",
@@ -1653,7 +1691,7 @@ async function deliver(deps: NotifierDependencies, notice: Notice): Promise<Outc
     try {
       ({ ts } = await deps.post({
         channel: share.channelId,
-        text: startMessage({ developerName: task.developerName, slackUserId: task.slackUserId, client: task.client, title: task.title, project: task.project, mode: share.mode, status, sharedReason: share.sharedReason }),
+        text: startMessage({ developerName: task.developerName, slackUserId: task.slackUserId, client: task.client, title: task.title, project: task.project, mode: share.mode, status, sharedReason: share.sharedReason, link: taskPageUrl(deps, task) }),
       }));
     } catch (error) {
       // Slack's own error code means nothing was posted; a lost or unreadable answer may not.
@@ -1873,6 +1911,7 @@ export function createNotifierHandler(deps: NotifierDependencies) {
           : notice.kind === "settings_proof" ? await deliverSettingsProof(deps, notice)
           : notice.kind === "agent_report" ? await deliverAgentReport(deps, notice)
           : notice.kind === "design_wait" ? await deliverDesignWait(deps, notice)
+          : notice.kind === "attention_dm" ? await deliverAttentionDm(deps, notice)
           : notice.kind === "admin_change_dm" || notice.kind === "admin_change_outcome" || notice.kind === "admin_change_expiry" ? await deliverAdminChange(deps, notice) : await deliver(deps, notice);
         deps.log({ event: "developer_notifier.notice", kind: notice.kind, noticeId: notice.id, outcome });
       } catch (error) {
@@ -2143,7 +2182,7 @@ function createAwsNotifierHandler() {
     peopleChangesEnabled: process.env.AGENTX_TASK_PEOPLE_CHANGES_ENABLED === "true",
     workflowE2EBlocks: async (task, operations) => {
       void operations;
-      return workflowE2ENotifierBlocks({ task, taskPageUrl: taskPageUrlFromBase(reviewUrlBase, task.taskId),
+      return workflowE2ENotifierBlocks({ task, taskPageUrl: taskAppUrl(reviewUrlBase, task),
         readPrivateObject: async (key, maxBytes) => {
           if (maxBytes > 262_144 || !/^private\/[^/]+\/[^/]+\/workflow-e2e-display\/[a-f0-9]{64}\.json$/u.test(key)) return undefined;
           const response = await s3.send(new GetObjectCommand({ Bucket: requiredEnvironment("ARTIFACT_BUCKET_NAME"), Key: key }));

@@ -72,7 +72,7 @@ export interface AgentRunHost extends TaskEndHost {
   /** Keeps a step's report with the task (`agent-step-<id>.md`); the object key, or undefined when it could not be kept. */
   saveReport?(input: { task: DeveloperTaskRecord; operationId: string; stepId: string; text: string }): Promise<string | undefined>;
   /** The task's page. */
-  taskUrl?(taskId: string): string | undefined;
+  taskUrl?(taskId: string, sessionId?: string): string | undefined;
   /** The Slack channels bound to the project, sorted. */
   slackChannels?(orgId: OrgId, project: string): Promise<readonly string[]>;
   /** Asks the worker to stop an operation that is still running (never a finished one, which it leaves alone). A run that ends while its step runs calls it. */
@@ -400,7 +400,7 @@ async function reportToSlack(deps: AgentRunEngineDependencies, loaded: Loaded): 
       text: `No Slack channel is set up for ${task.project}, so the report is only on this page.` } }));
     return;
   }
-  const taskUrl = host.taskUrl?.(task.taskId);
+  const taskUrl = host.taskUrl?.(task.taskId, task.sessionId);
   if (taskUrl === undefined) return;
   const guardrails = await readGuardrails(deps, orgId);
   const prepared = prepareSlackReport(run.finalReport, { orgId, taskUrl, reportLinkDomains: guardrails.reportLinkDomains, extraCommandWords: guardrails.extraCommandWords });

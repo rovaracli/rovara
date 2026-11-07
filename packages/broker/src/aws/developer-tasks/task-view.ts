@@ -35,7 +35,12 @@ import {
   heldPlanStartKey,
   planRunLimitSubject,
   runLimitAskedKey,
+  type SessionStatus,
+  openReviewFindings,
+  workflowResolveFindingsOffered,
+  workflowSendBackOffered,
 } from "@agentx/contracts";
+import { taskStatusOf } from "../../agent-sessions/task-status.js";
 import { planRunLimit } from "../../spend/estimate.js";
 import { readSpendPolicy } from "../../spend/settings.js";
 import {
@@ -348,8 +353,18 @@ export async function taskView(
   const updatedAt = derived.failedPrepare?.updatedAt !== undefined && derived.failedPrepare.updatedAt > task.updatedAt ? derived.failedPrepare.updatedAt : derived.current?.createdAt ?? task.updatedAt;
   // Live interaction F1: what "Fix with agent" is about when this view shows an error (fixed codes and ids only).
   const errorRef = taskViewErrorRef({ taskId: task.taskId, status: derived.status, workflow, failure: derived.failure, operationId: derived.failedPrepare?.id ?? derived.current?.id, creatorRemoved: removedReason !== undefined, at: updatedAt });
+  // UX2 slice 2 item 1: where the task stands in the one status model, for the task page, the MCP tools and the CLI (the next step is for the owner, `nextOthers` for anyone else).
+  const statusView = taskStatusOf({
+    workflow, closed: task.closedAt !== undefined || derived.status === "CLOSED", budgetPaused: task.budgetPause !== undefined, removedReason,
+    failedPrepare: workflow !== undefined && derived.failedPrepare !== undefined, ...(merge === undefined || task.closedAt !== undefined ? {} : { merge }),
+    sessionStatus: plainSessionStatus(derived.status, run?.state), ...(derived.status === "FAILED" || derived.status === "INTERRUPTED" ? { lastRunFailed: true as const } : {}),
+    failureCategory: derived.failure?.category,
+  });
+  const reviewFindings = findingActionsOf(task, options.actor === "viewer");
   return {
     modelFallbacks:modelFallbacks.data,
+    statusView,
+    ...(reviewFindings === undefined ? {} : { reviewFindings }),
     taskId: task.taskId,
     // S3: a reader who is not the owner reads the title (a person's request) without an email address.
     title: options.actor === "viewer" ? hideEmailAddresses(task.title) : task.title,
@@ -393,6 +408,35 @@ export async function taskView(
     ...(channelTurns === undefined ? {} : { channelTurns }),
     ...(unpublished === undefined ? {} : { unpublished }),
   };
+}
+
+/** UX2 slice 2 item 3: a blocked task's open review findings and whether Resolve findings and Send back to coding are offered (the same tests as Slack's buttons). Reviewer words are redacted and capped. */
+function findingActionsOf(task: DeveloperTaskRecord, viewer: boolean): DeveloperTaskView["reviewFindings"] {
+  const workflow = task.workflow;
+  if (workflow === undefined || workflow.state !== "BLOCKED" || task.closedAt !== undefined || blockedOnRunLimit(workflow)) return undefined;
+  const resolve = workflowResolveFindingsOffered(workflow);
+  const sendBack = workflowSendBackOffered(workflow);
+  if (!resolve && !sendBack) return undefined;
+  const shown = (text: string, max: number): string => { const cleaned = capText(redactText(viewer ? hideEmailAddresses(text) : text).replace(/[\p{Cc}\p{Cf}]+/gu, " ").trim(), max).text;return cleaned === "" ? "(no text)" : cleaned; };
+  const findings = (workflow.stage === "REVIEW" ? openReviewFindings(workflow) : []).slice(0, 50).map((finding) => ({
+    findingId: finding.findingId, role: finding.role, text: shown(finding.text, 1000),
+    ...(finding.file === undefined ? {} : { file: shown(finding.file, 500) }), ...(finding.line === undefined || finding.line < 1 ? {} : { line: finding.line }),
+  }));
+  return { findings, resolve, sendBack };
+}
+
+/** The session status a task with no workflow reads as (the summary's rule, from what the view already derived). */
+function plainSessionStatus(status: DeveloperTaskView["status"], runState: string | undefined): SessionStatus {
+  if (runState === "WAITING_FOR_APPROVAL") return "needs_person";
+  if (runState === "PAUSED_BUDGET") return "paused";
+  switch (status) {
+    case "STARTING": return "starting";
+    case "RUNNING": return "running";
+    case "CANCELLED": return "stopped";
+    case "FAILED": case "INTERRUPTED": return "waiting";
+    case "CLOSED": return "cancelled";
+    default: return "waiting";
+  }
 }
 
 export async function openTasksText(deps: DeveloperTaskRouteDependencies, developerId: string): Promise<string> {

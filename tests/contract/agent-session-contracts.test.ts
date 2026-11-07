@@ -139,7 +139,7 @@ const view = {
   followers: 1,
   viewingNow: [],
   you: { level: "view", owner: false, following: true, actions: ["watch", "comment"] },
-  link: `https://app.rovara.example/s/${SESSION}`,
+  link: `https://app.rovara.example/app/sessions/${SESSION}`,
   bindings: [],
   legs: [],
   revision: 2,
@@ -193,8 +193,8 @@ describe("session ids", () => {
   });
 
   it("builds a link from the origin and the session id", () => {
-    expect(sessionLink("https://app.rovara.example", SESSION)).toBe(`https://app.rovara.example/s/${SESSION}`);
-    expect(sessionLink("https://app.rovara.example/", SESSION)).toBe(`https://app.rovara.example/s/${SESSION}`);
+    expect(sessionLink("https://app.rovara.example", SESSION)).toBe(`https://app.rovara.example/app/sessions/${SESSION}`);
+    expect(sessionLink("https://app.rovara.example/", SESSION)).toBe(`https://app.rovara.example/app/sessions/${SESSION}`);
   });
 });
 
@@ -482,7 +482,7 @@ describe("the view schemas", () => {
     // Removing or renaming a key below bumps AGENT_SESSION_CONTRACT_VERSION and needs Plans 5, 7 and 8 (the screens read these).
     // Adding an optional key or a new enum value stays under version 1.
     expect(Object.keys(SessionViewSchema.shape).sort()).toEqual([
-      "agent", "anchors", "approvals", "bindings", "body", "contractVersion", "cost", "createdAt", "endedAt", "errorRef", "followers", "kind", "lastRunFailed", "legs", "link", "mode",
+      "agent", "anchors", "approvals", "bindings", "body", "contractVersion", "cost", "createdAt", "display", "endedAt", "errorRef", "followers", "kind", "lastRunFailed", "legs", "link", "mode",
       "owner", "peek", "project", "retryOf", "revision", "sessionId", "startedBy", "status", "step", "title", "updatedAt", "viewingNow", "where", "you",
     ]);
     expect(Object.keys(SessionTileSchema.shape).sort()).toEqual([

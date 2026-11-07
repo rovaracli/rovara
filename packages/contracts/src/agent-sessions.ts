@@ -2,6 +2,7 @@ import { z } from "zod";
 import { TriggerIdSchema } from "./chains.js";
 import { ChainRunIdSchema, SessionIdSchema, SESSION_ID_PATTERN, type SessionId } from "./browser-ids.js";
 import { AgentIdSchema } from "./agent.js";
+import { TaskStatusSchema } from "./task-status.js";
 
 /**
  * The version of the shapes clients read (`SessionViewSchema`, `SessionTileSchema`, `SessionEventSchema`). Removing or renaming a key
@@ -173,6 +174,8 @@ export const SessionSummarySchema = z
     needsPeople: z.array(lineText(NEEDS_PERSON_MAX_CHARS)).max(SESSION_NEEDS_PEOPLE_MAX),
     pendingApprovals: CountSchema,
     offline: z.literal(true).optional(),
+    /** UX2 slice 2: where the work stands in the one status model (`task-status.ts`): state, reason and next step. Absent in summaries written before it (readers use `sessionTaskStatus`). */
+    display: TaskStatusSchema.optional(),
     digest: z.string().min(1).max(DIGEST_MAX),
     computedAt: InstantSchema,
   })

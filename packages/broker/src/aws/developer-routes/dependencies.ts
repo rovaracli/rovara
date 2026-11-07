@@ -1,4 +1,6 @@
 import { logDeveloperEvent } from "../../developer/log.js";
+import { decisionRouteDepsOf } from "./decisions.js";
+import { pendingDecisionRefs } from "../../decisions/routes.js";
 import { designActionsFor } from "./design-review.js";
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
@@ -344,6 +346,8 @@ export function sessionReadDependencies(deps: DeveloperRouteDependencies, caller
   const chainDeps = chainRouteDependenciesFor(deps, caller);
   return {
     ...sessions, origin: new URL(deps.developer.issuer).origin,
+    // UX2 slice 2 item 2: the caller's pending decision cards, for Home's one "needs you" count (none while the cards are off).
+    pendingDecisions: async () => { const cards = decisionRouteDepsOf(deps, caller);return cards === undefined ? [] : pendingDecisionRefs(cards, caller); },
     ...(deps.handoff === undefined ? {} : { handoff: deps.handoff }),
     ...(deps.sessionDiffFiles === undefined ? {} : { diff: {
       files: deps.sessionDiffFiles,

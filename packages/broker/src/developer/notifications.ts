@@ -9,7 +9,7 @@ export interface StreamRecord {
   eventName?: string;
   dynamodb?: { ApproximateCreationDateTime?: number; NewImage?: Record<string, AttributeValue>; OldImage?: Record<string, AttributeValue> };
 }
-export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report" | "spec_changed" | "spec_hold" | "settings_proof" | "design_wait" | "owner_stopped_dm";
+export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report" | "spec_changed" | "spec_hold" | "settings_proof" | "design_wait" | "owner_stopped_dm" | "attention_dm";
 export interface Notice {
   /** Fixed per change, so a repeated delivery posts once (C9). */
   id: string;
@@ -31,6 +31,8 @@ export interface Notice {
   /** Workflow snapshot revision to resume when verification failed before a manifest existed. */
   expectedWorkflowRevision?: number;
   peopleRequestId?: string;
+  /** UX2 slice 2, an `attention_dm` notice: the sort key of the TASK_ATTENTION_DM row (one per person per batch) the notifier reads and posts; the notice holds no text. */
+  attentionKey?: string;
   /** S2, an `owner_stopped_dm` notice: the sort key of the pending row (one per stop and per person) the notifier reads; the notice holds no text. */
   ownerStopKey?: string;
   /** TE-4: the project's settings-proof item whose saved commands failed their check, and the check it is about. The notifier reads the item; the notice holds no text. */
@@ -172,6 +174,12 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
       const sk = text(next.sk);
       if (previous !== undefined || taskId === "" || !sk.startsWith("OWNER_STOP_NOTIFY#") || next.status !== "PENDING") return [];
       return [{ id: `${taskId}:owner_stopped:${sk.slice("OWNER_STOP_NOTIFY#".length)}`, kind: "owner_stopped_dm", taskId, ownerStopKey: sk, at }];
+    }
+    // UX2 slice 2 item 5: a batch of task notifications for one person, worded by the broker's sweep, waits to be sent as a Slack direct message. Once, when it is written.
+    case "TASK_ATTENTION_DM": {
+      const sk = text(next.sk);
+      if (previous !== undefined || next.pk !== "NOTIFY_DM" || sk === "" || sk.length > 300 || next.status !== "PENDING") return [];
+      return [{ id: `attention_dm:${sk}`, kind: "attention_dm", at, attentionKey: sk }];
     }
     case "TASK_PEOPLE_NOTIFICATION": {
       const taskId = text(next.taskId);

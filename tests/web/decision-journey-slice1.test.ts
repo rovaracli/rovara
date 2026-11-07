@@ -69,7 +69,8 @@ it("S1b: Home leaves out the older plan and own pull request cards whose decisio
  expect(within(older).getByText("It failed")).toBeTruthy();
  expect(within(older).queryByText("Your plan is ready to review")).toBeNull();
  expect(within(older).queryByText("Your pull request is ready for review")).toBeNull();
- expect(screen.getByText("3 things need you")).toBeTruthy();
+ // UX2 slice 2: ONE count, the older cards shown and the pending decision cards (2 + 3).
+ expect(screen.getByText("5 things need you")).toBeTruthy();
  f.close();
 });
 

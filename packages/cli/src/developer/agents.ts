@@ -4,7 +4,7 @@
 // person prints the confirmation page's link. Nothing here decides an approval (R66): `approvals open` only fetches the page's link.
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { AgentXErrorCodeSchema, CLI_PACKAGE_NAME, agentXError } from "@agentx/contracts";
+import { AgentXErrorCodeSchema, CLI_PACKAGE_NAME, TaskStatusSchema, agentXError, taskStatusText } from "@agentx/contracts";
 import { ReportedFailure, exitCodeForError } from "../output.js";
 import { jsonSafe, terminalSafe } from "./audit.js";
 import { resolveOrgMember } from "./org.js";
@@ -260,7 +260,7 @@ export async function agentsRun(
     return result(answer, answer.body, [`This run of ${clean(agentId)}${version === undefined ? "" : ` version ${version}`} waits for the agent's owner to OK it. Nothing started yet; it starts once they approve it. Open: ${clean(answer.body.confirmUrl)}`, ...changes, ""].join("\n"));
   }
   const task = (answer.body.task ?? {}) as Body;
-  return result(answer, answer.body, `Started ${clean(agentId)}${version === "draft" ? " (its draft, as a test run)" : version === undefined ? "" : ` version ${version}`} on ${clean(input.project)}: task ${str(task.taskId)} is ${str(task.status)}.\n`);
+  return result(answer, answer.body, `Started ${clean(agentId)}${version === "draft" ? " (its draft, as a test run)" : version === undefined ? "" : ` version ${version}`} on ${clean(input.project)}: task ${str(task.taskId)}: ${taskStatusLine(task)}.\n`);
 }
 
 // ---- a project's agents and connectors
@@ -489,4 +489,14 @@ export async function sourcesCheck(deps: DeveloperSessionDeps, env: string | und
   const answer = await appRequest(deps, env, `${SOURCES}/${seg(sourceId)}/check`, { method: "POST" });
   if (answer.body.ok !== true) throw new ReportedFailure("SOURCE_CHECK_FAILED", `The AI source ${clean(sourceId)} did not pass its check${answer.body.message === undefined ? "" : `: ${str(answer.body.message)}`}.`);
   return result(answer, answer.body, `The AI source ${clean(sourceId)} works.\n`);
+}
+
+/** UX2 slice 2: a task's status in the one status model's words, never the raw code (a server from before the model is read through the same words). */
+const PLAIN_STATUS_WORDS: Record<string, string> = {
+  STARTING: "Understanding the request", RUNNING: "Building", SUCCEEDED: "Finished its run", FAILED: "Failed: the run stopped with an error", CANCELLED: "Stopped", INTERRUPTED: "Failed: the run was interrupted", CLOSED: "Closed",
+};
+export function taskStatusLine(task: Record<string, unknown>): string {
+  const view = TaskStatusSchema.safeParse(task["statusView"]);
+  if (view.success) return clean(taskStatusText(view.data));
+  return typeof task["status"] === "string" ? PLAIN_STATUS_WORDS[task["status"]] ?? "Status unavailable" : "Status unavailable";
 }

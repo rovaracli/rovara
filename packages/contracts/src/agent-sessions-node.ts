@@ -112,9 +112,9 @@ export function sessionEventId(kind: string, occurrence: string): string {
   return `evt_${createHash("sha256").update(`${kind}\n${occurrence}`, "utf8").digest("hex").slice(0, 24)}`;
 }
 
-/** The link to a session: `<origin>/s/<sessionId>`. */
+/** The link to a session: `<origin>/app/sessions/<sessionId>`, the one task address (UX2 slice 2; `/s/<id>` redirects there). */
 export function sessionLink(origin: string, sessionId: SessionId): string {
-  return `${origin.replace(/\/+$/u, "")}/s/${sessionId}`;
+  return `${origin.replace(/\/+$/u, "")}/app/sessions/${sessionId}`;
 }
 
 export const ENDED_SESSION_STATUSES = ["succeeded", "failed", "cancelled"] as const;

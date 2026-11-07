@@ -229,7 +229,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 20000) throw new Error("Mock body limit"); }
   const input = CodeIntentBodySchema.parse(JSON.parse(body));
   if (code[1] !== current.project.project.name) { json(404, { error: { code: "PROJECT_NOT_FOUND", message: "Not found." } });return; }
-  evidence.body = input;json(202, { task: taskFixture({ sessionId: current.session.sessionId }), sessionId: current.session.sessionId, sessionUrl: origin + "/s/" + current.session.sessionId });return;
+  evidence.body = input;json(202, { task: taskFixture({ sessionId: current.session.sessionId }), sessionId: current.session.sessionId, sessionUrl: origin + "/app/sessions/" + current.session.sessionId });return;
  }
  const run = /^\/v1\/web\/agents\/([^/]+)\/runs$/.exec(url.pathname);
  if (current.project !== undefined && run !== null && method === "POST") {
@@ -277,7 +277,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   evidence.body = JSON.parse(body) as unknown;
   const next = "ses_bbbbbbbbbbbbbbbbbbbb";
   current.session = SessionViewSchema.parse({ ...understandSession({ waiting: false }), sessionId: next });
-  json(202, { task: taskFixture({ sessionId: next }), sessionId: next, sessionUrl: origin + "/s/" + next });return;
+  json(202, { task: taskFixture({ sessionId: next }), sessionId: next, sessionUrl: origin + "/app/sessions/" + next });return;
  }
  if (url.pathname === path + "/follow" && (method === "POST" || method === "DELETE")) { const following = method === "POST";current.session = SessionViewSchema.parse({ ...session, you: { ...session.you, following } });json(200, { following });return; }
  if (url.pathname === path + "/shares" && method === "GET") { json(200, { shares: current.shares ?? [] });return; }
