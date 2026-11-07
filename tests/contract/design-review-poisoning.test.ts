@@ -10,6 +10,7 @@ import {
 } from "../../packages/contracts/src/index.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { DESIGN_REVIEW_DEFAULT_SETTING } from "../../packages/contracts/src/design-review.js";
 import { cardOfItem, detailsOfItem } from "../../packages/broker/src/decisions/project.js";
 import { designApproveItem, designCardFactsOf } from "../../packages/broker/src/design-review/card-source.js";
 import { applyPlannerResolve } from "../../packages/broker/src/design-review/resolve-answer.js";
@@ -293,7 +294,7 @@ describe("Understand's reading is a reading: a note that sets a tier, a cap or a
     for (const payload of PAYLOADS) {
       const note = payload.text(tokenFor("note", payload.name)).replace(/[\p{Cc}\p{Cf}]+/gu, " ").slice(0, 190);
       const workflow = await understoodAs(ready(note));
-      expect(workflow, payload.name).toMatchObject({ path: "FULL", designReview: { decidedBy: "auto", status: "estimating", tier: "standard", capUsd: 10, reasons: ["money"], rounds: [] } });
+      expect(workflow, payload.name).toMatchObject({ path: "FULL", designReview: { decidedBy: "auto", status: "estimating", tier: "standard", capUsd: DESIGN_REVIEW_DEFAULT_SETTING.capUsdPerTask, reasons: ["money"], rounds: [] } });
       expect(Object.keys((workflow as { designReview: object }).designReview), payload.name).not.toEqual(expect.arrayContaining(["approver", "approvals"]));
     }
   });
