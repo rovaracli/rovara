@@ -9,7 +9,7 @@ import { TEST_ORG } from "../../support/orgs.js";
 import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { ciEvidenceKey } from "../../../packages/broker/src/rovara-code/ci-fix.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
-import { EDITS, FIXED, PLAN, PUSHED_FIX_TRACKED, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
+import { EDITS, FIXED, PLAN, PUSHED_FIX_TRACKED, TASK_LINK_RETRY, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
 
 const PROGRAM: WorkflowProgram = { steps: [
   { id: "plan", kind: "plan" }, { id: "plan_critic", kind: "plan_critic" }, { id: "build", kind: "build" }, { id: "check", kind: "check" },
@@ -134,7 +134,7 @@ describe("Suite 14: fixing failing CI", () => {
     expect(stopped.fixSource).toBeUndefined();
     expect(milestones(e2e, "stuck")).toEqual([expect.objectContaining({ text: stopped.blockReason, pullRequests: [expect.objectContaining({ number: pullRequest.number })] })]);
     expect(e2e.github.pullRequests[0]!.state).toBe("open");
-    expect(said(e2e).at(-1)).toBe(stopped.blockReason);
+    expect(said(e2e).at(-1)).toBe(stopped.blockReason + TASK_LINK_RETRY);
     // Later passes see the task is waiting for a person and do nothing.
     const revision = stopped.revision;
     e2e.clock.advance(20 * 60_000);
@@ -160,7 +160,7 @@ describe("Suite 14: fixing failing CI", () => {
     expect(dispatchRows(e2e)).toEqual([]);
     expect(github.calls.some((call) => call.startsWith("log:"))).toBe(false);
     expect(prompts.some((prompt) => prompt.includes(CI_OUTPUT_BLOCK_HEADER))).toBe(false);
-    expect(said(e2e).at(-1)).toBe(asked.blockReason);
+    expect(said(e2e).at(-1)).toBe(asked.blockReason + TASK_LINK_RETRY);
     expect(milestones(e2e, "stuck")).toHaveLength(1);
     expect((await e2e.mcp("agentx_get_task", { task_id: e2e.taskId() })).text ?? "").toContain("agentx_retry_workflow");
 
