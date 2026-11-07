@@ -11,6 +11,7 @@ import { DECISION_APPROVE_TAKES, DECISION_PLAN_COMMENTS_MAX, DECISION_PLAN_QUEST
 import { listSuggestions, listTaskComments, openCommentsFor } from "../../developer/page-comments.js";
 import { isE2EPlanCorrectionBlockReason, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { planFactsOf } from "../../decisions/plan-risk.js";
+import { designReviewEnabled } from "../../design-review/switch.js";
 import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { taskOpenPath } from "../../decisions/open-path.js";
 import type { DecisionItem } from "../../decisions/project.js";
@@ -71,7 +72,8 @@ async function itemOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller,
   if (workflow === undefined || task.orgId !== caller.orgId || task.closedAt !== undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) return undefined;
   const type = waitingDocument(workflow);
   // A design under design review waits on that review's card (design-review.ts); a design without one is decided here (OWNER DECISION 7: the old review page was its browser place).
-  if (type === undefined || (type === "design" && workflow.designReview !== undefined) || isE2EPlanCorrectionBlockReason(workflow.blockReason)) return undefined;
+  // Review M3: only while the design review stage is on; a design that kept a review after the stage was switched off is decided here, so it is never left to Slack alone.
+  if (type === undefined || (type === "design" && workflow.designReview !== undefined && designReviewEnabled()) || isE2EPlanCorrectionBlockReason(workflow.blockReason)) return undefined;
   const artifact = latestOf(workflow, type);
   if (artifact === undefined) return undefined;
   const loaded = await loadWorkflowDocument(reader(deps, caller), artifact, {}).catch(() => undefined);

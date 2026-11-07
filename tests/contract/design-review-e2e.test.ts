@@ -987,6 +987,23 @@ describe("slice C: the design review's routes", () => {
     return found === undefined ? undefined : { card: found, digest: (list.body.digests as Record<string, string>)[found.id]! };
   };
 
+  it("review M3: with the design review stage switched off after a review ran, the design is still decided in the browser, on its card", async () => {
+    const w = await openBlockerCard();
+    seedPeople(w, [[MAYA, "member", "contributor"]]);
+    delete process.env.DESIGN_REVIEW_ENABLED;
+    try {
+      expect(w.task().workflow.designReview).toBeDefined();
+      const shown = await cardOf(w, MAYA, "approve_design");
+      expect(shown, "a card for the design, never Slack alone").toBeDefined();
+      const base = `/v1/app/decisions/${shown!.card.id.replace(":", "/")}`;
+      if (shown!.card.friction.expandEvidenceFirst) expect((await w.dev(MAYA, "POST", `${base}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest })).status).toBe(200);
+      const web = browserRequests(w as never);
+      const approved = await web(MAYA, "POST", `${base}/approve`, { requestId: randomUUID(), shownDigest: shown!.digest });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(w.task().workflow.decisions.at(-1)).toMatchObject({ decision: "APPROVE" });
+    } finally { process.env.DESIGN_REVIEW_ENABLED = "1"; }
+  });
+
   it("approves a design with an open blocker only with the approver's reason, which lands on the PR's Proof line and the spec waits for exactly that design", async () => {
     const w = await openBlockerCard();
     seedPeople(w, [[MAYA, "member", "contributor"]]);
