@@ -299,7 +299,7 @@ describe("the tracker writers use the connection's access as it is", () => {
     await store.check(ORG, "con_lin00000000000000001");
     await store.check(ORG, "con_lin00000000000000002");
     const replies: Array<{ workspace?: string; issueKey: string }> = [];
-    const reply = { reply: vi.fn(async (input: { workspace?: string; issueKey: string }) => { replies.push({ workspace: input.workspace, issueKey: input.issueKey }); return { commentId: "c1" }; }) };
+    const reply = { reply: vi.fn(async (input: { workspace?: string; issueKey: string }) => { replies.push({ ...(input.workspace === undefined ? {} : { workspace: input.workspace }), issueKey: input.issueKey }); return { commentId: "c1" }; }) };
     const trackers = ticketTrackersOf({ connections: deps, linearReply: reply as never, fetch: fetch as never });
     const beta = { tracker: "linear" as const, id: "ENG-12", url: "https://linear.app/beta/issue/ENG-12/refunds" };
     calls.length = 0;
