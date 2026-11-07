@@ -10,8 +10,9 @@
 //     people's live authority again and refuses a proof older than ten minutes, so a card confirmed long ago, by someone since demoted, or for a revision that has moved on, approves nothing.
 // The card is single use by construction: it is bound to the approved revision the person looked at, and an approval moves that revision on.
 import { createHash } from "node:crypto";
-import { AuditProofSchema, agentXError, type OrgId } from "@agentx/contracts";
-import { approvalIdFor, createPendingChange, getApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies, type ApprovalRecord } from "../agents/approvals.js";
+import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { AuditProofSchema, agentXError, projectPk, type OrgId } from "@agentx/contracts";
+import { approvalIdFor, createPendingChange, getApproval, mayDecideApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies, type ApprovalRecord } from "../agents/approvals.js";
 import type { ApprovalCaller } from "../agents/approvals.js";
 import { confirmationStands, decideFromRecords, type LessSafeApproval } from "./test-environment.js";
 
@@ -22,7 +23,7 @@ export const TEST_ENV_CARD_TTL_MS = 86_400_000;
 export const TEST_ENV_CARD_ATTEMPTS_MAX = 6;
 
 export const TEST_ENV_CARD_WORDS = {
-  changes: (project: string, flags: readonly string[]) => `Confirm a less-safe test environment for ${project}: ${flags.length === 0 ? "it is above the sandbox" : flags.join(", ").replace(/_/gu, " ")}. Confirming it records your OK; the maintainer who asked then finishes the approval from the setup page.`,
+  changes: (project: string, flags: readonly string[]) => `Confirm a less-safe test environment for ${project}: ${flags.length === 0 ? "it is above the sandbox" : flags.join(", ").replace(/_/gu, " ")}. Confirming it records your OK; the maintainer who asked then finishes the approval on the setup page.`,
   diffTitle: "Exactly what changes (before \u2192 after):",
   tooMany: "This proposal has had too many confirmation cards. Propose the environment again.",
   unavailable: "Confirmation cards are not set up in this deployment.",
@@ -141,4 +142,36 @@ export async function testEnvCardStateOf(deps: ApprovalDependencies, scope: Card
 export async function confirmedTestEnvApproval(deps: ApprovalDependencies, scope: CardScope): Promise<LessSafeApproval | undefined> {
   const { card } = await liveTestEnvCard(deps, scope);
   return card.state === "approved" && card.record !== undefined ? confirmationOf(card.record, deps.now()) : undefined;
+}
+
+// ---- TS-UX-1 item 1: the card on the setup page itself, for the person who asked and for the person who confirms
+
+/** Who asked for a proposal's card, kept so ANY viewer of the setup page finds the card (a card's id is derived from its asker). Bound to the proposal and the approved revision it was asked against. */
+const askKey = (orgId: OrgId, project: string, digest: string) => ({ pk: projectPk(orgId, project), sk: `TESTENV#ASK#${digest}` });
+type Table = { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string };
+
+export async function recordTestEnvAsk(table: Table, scope: CardScope): Promise<void> {
+  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...askKey(scope.orgId, scope.project, scope.digest), entityType: "TEST_ENV_ASK", orgId: scope.orgId, project: scope.project, digest: scope.digest, expectedRevision: scope.expectedRevision, askedBy: scope.askedBy } }));
+}
+
+async function askerOf(table: Table, scope: Omit<CardScope, "askedBy">): Promise<string | undefined> {
+  const item = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: askKey(scope.orgId, scope.project, scope.digest), ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
+  return item !== undefined && item["orgId"] === scope.orgId && item["project"] === scope.project && item["digest"] === scope.digest && item["expectedRevision"] === scope.expectedRevision && typeof item["askedBy"] === "string" ? item["askedBy"] : undefined;
+}
+
+/**
+ * The proposal's card as ONE viewer of the setup page sees it:
+ *   - `status`: the card of whoever asked (the viewer, when nobody else has);
+ *   - `askedByYou`: the viewer asked for it (they finish the approval once it is confirmed);
+ *   - `youConfirm`: the card is waiting and the viewer may decide it NOW (the card's own live rule: a second person, or the asker when the sole-owner exception applies);
+ *   - `approvalId`: given only to the asker and to a viewer who may confirm it, so the page can show the card itself; anyone else learns only that it waits.
+ * Who may decide is the card's rule, unchanged; the card is decided through the decision cards' own Approve (the decide-grade email-code sign-in).
+ */
+export async function testEnvCardViewOf(deps: ApprovalDependencies, table: Table, scope: Omit<CardScope, "askedBy">, viewer: ApprovalCaller): Promise<{ status: TestEnvCardState; askedByYou: boolean; youConfirm: boolean; approvalId?: string }> {
+  const asker = await askerOf(table, scope).catch(() => undefined) ?? viewer.developerId;
+  const { card } = await liveTestEnvCard(deps, { ...scope, askedBy: asker });
+  const askedByYou = asker === viewer.developerId && card.state !== "none";
+  const youConfirm = card.state === "pending" && card.record !== undefined && await mayDecideApproval(deps, viewer, card.record).catch(() => false);
+  const shown = card.approvalId !== undefined && (askedByYou || youConfirm);
+  return { status: card.state, askedByYou, youConfirm, ...(shown ? { approvalId: card.approvalId } : {}) };
 }

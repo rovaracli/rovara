@@ -355,7 +355,17 @@ export const TestEnvironmentStateSchema = z
          */
         needs: z.object({ freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict().default({ freshSignIn: false, secondPerson: false }),
         /** The confirmation card the CALLER asked for, for a change that needs a second person. `approved`: it was confirmed and the caller can finish the approval. */
-        approval: z.object({ status: z.enum(["none", "pending", "approved", "expired"]) }).strict().default({ status: "none" }),
+        approval: z.object({
+          status: z.enum(["none", "pending", "approved", "expired"]),
+          /** TS-UX-1 item 1: the viewer asked for the card (they finish the approval once it is confirmed). */
+          askedByYou: z.boolean().optional(),
+          /** The card waits and the viewer may confirm it now: the page shows the card itself, decided with the email-code sign-in. */
+          youConfirm: z.boolean().optional(),
+          /** The card, for the asker and for a viewer who may confirm it (`approve_request:<id>` on the decision cards). */
+          approvalId: z.string().regex(/^apr_[0-9a-z]{20}$/u).optional(),
+          /** Who a waiting card waits for, for the asker: a second person, or the asker themselves as the company's only owner (the sole-owner exception, with the company switch on). */
+          waitingFor: z.enum(["second_person", "you_sole_owner"]).optional(),
+        }).strict().default({ status: "none" }),
         /** TS-UX-1: the dependencies the proposal starts that can hold a seed, each with EVERY command that fills it with test data (as the broker formats them, in the order they run). */
         dependencySeeds: z.array(z.object({ id: TestEnvDependencyIdSchema, name: line(80), commands: z.array(line(600)).max(TEST_ENV_SEED_COMMANDS_MAX).default([]) }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies).default([]),
         /** The project's commands that the proposal's commands are not among: approving writes them into the settings, after the check ran them. */
@@ -371,8 +381,11 @@ export type TestEnvironmentState = z.infer<typeof TestEnvironmentStateSchema>;
 
 export const TestEnvProposeBodySchema = z.object({}).strict();
 export const TestEnvProveBodySchema = z.object({ digest: Sha256 }).strict();
-/** Run the candidate check of a proposal: a request id, so a retry is one check. */
-export const TestEnvCheckBodySchema = z.object({ digest: Sha256, requestId: z.string().uuid() }).strict();
+/**
+ * Run the candidate check of a proposal: a request id, so a retry is one check. TS-UX-1 item 2 ("Check it works", one press): with no digest, the broker first proposes what the latest look found (as `propose`
+ * does), then checks that proposal; the Prove is read from the check when it passes, with no press of its own.
+ */
+export const TestEnvCheckBodySchema = z.object({ digest: Sha256.optional(), requestId: z.string().uuid() }).strict();
 export type TestEnvCheckBody = z.infer<typeof TestEnvCheckBodySchema>;
 export const TestEnvApproveBodySchema = z.object({ digest: Sha256, expectedRevision: z.number().int().min(0), requestId: z.string().min(8).max(100).optional() }).strict();
 

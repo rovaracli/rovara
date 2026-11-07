@@ -50,11 +50,12 @@ import {
   secondPersonFromRecords, testEnvRequestId, type TestEnvDeps,
 } from "../../org/test-environment.js";
 import { testEnvChangeLines } from "../../org/test-env-diff.js";
-import { confirmedTestEnvApproval, requestTestEnvCard, testEnvCardStateOf } from "../../org/test-env-approval.js";
+import { confirmedTestEnvApproval, recordTestEnvAsk, requestTestEnvCard, testEnvCardViewOf } from "../../org/test-env-approval.js";
 import { derivedRequestId, setupDraftState } from "../../rovara-code/setup-draft.js";
 import { readSetupRunProposal } from "../../rovara-code/setup-run-proposal.js";
-import { readTestEnvDraft, readTestEnvDraftNote } from "../../test-env/draft.js";
+import { DRAFT_ABSENCE_NOTES, readTestEnvDraft, readTestEnvDraftNote } from "../../test-env/draft.js";
 import { commandsMissingFromSettings } from "../../test-env/candidate-commands.js";
+import { lookIsStale, readOwnSettingsWrite } from "../../test-env/own-settings-write.js";
 import { TEST_ENV_REFUSAL_WORDS, commandsNotRun } from "../../test-env/prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { testServicesEnabled } from "../../test-env/test-services-switch.js";
@@ -93,7 +94,7 @@ const refuse = (refusal: TestEnvRefusal): AgentXError => agentXError(refusal ===
  * set (tier, services, accounts, the production deny list, the nightly run, capture, the round budget). Without an approved environment the draft is the proposal. Undefined when the merge is not a valid environment.
  */
 /** The note when a dependency the detectors found clashes with the approved ones and is left out of the proposal. */
-export const LOOK_FOUND_NOTHING_NOTE = "Rovara looked at your default branch and found no command that runs your tests (a test script in package.json, pytest, and the like), so it could not draft a test environment. Add the test command in the setup above, then look again.";
+export const LOOK_FOUND_NOTHING_NOTE = DRAFT_ABSENCE_NOTES.no_test_command;
 export const DEPENDENCY_CLASH_NOTE = "A dependency that was found clashes with one already approved (the same name, address or setting), so it is not part of the proposal.";
 
 export function mergeDraftWithApproved(draft: TestEnvironmentBody, approved: TestEnvironmentBody | undefined, notes?: string[]): TestEnvironmentBody | undefined {
@@ -124,7 +125,7 @@ export function mergeDraftWithApproved(draft: TestEnvironmentBody, approved: Tes
   return parsed.success ? parsed.data : undefined;
 }
 
-interface ProjectView { orgId: OrgId; name: string; role: Parameters<typeof proposeTestEnvironment>[1]["role"]; developerId: string }
+interface ProjectView { orgId: OrgId; name: string; role: Parameters<typeof proposeTestEnvironment>[1]["role"]; developerId: string; /** The viewer, for the card they see (item 1). */ caller: DeveloperCaller }
 
 async function latestOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: string) {
   const latest = await latestRevision({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, name);
@@ -140,11 +141,12 @@ async function currentDraft(deps: DeveloperRouteDependencies, orgId: OrgId, name
   const catalog = testServicesEnabled() ? await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined) : undefined;
   const stored = await readTestEnvDraft(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now(), { propose: { catalog, edition: process.env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: name } });
   if (stored === undefined) {
-    const note = await readTestEnvDraftNote(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now());
-    // The look ran and no test environment came of it: the detectors found no test command to build one on. Said plainly, with what to do (TS-UX-1).
-    return { status: "none", note: note ?? LOOK_FOUND_NOTHING_NOTE, looked: true };
+    // The look ran and no test environment came of it: one plain note for each cause, with what to do (TS-UX-1 item 6).
+    return { status: "none", note: await readTestEnvDraftNote(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now()), looked: true };
   }
-  return state.basedOnRevision < revision ? { status: "stale", looked: true } : { status: "ready", draft: stored.draft, looked: true };
+  // TS-UX-1 item 5: the test environment's own write into the settings (its approval) does not make the look stale.
+  const own = state.basedOnRevision < revision ? await readOwnSettingsWrite(deps.documentClient, deps.tableName, orgId, name).catch(() => undefined) : undefined;
+  return lookIsStale(state.basedOnRevision, revision, own) ? { status: "stale", looked: true } : { status: "ready", draft: stored.draft, looked: true };
 }
 
 /** The stored proposal of a digest, or (after its 7 days) the approved environment it became. */
@@ -159,17 +161,20 @@ async function proposalOrApproved(store: TestEnvDeps, orgId: OrgId, name: string
 async function shownProposal(deps: DeveloperRouteDependencies, project: ProjectView, approved: TestEnvironment | undefined, draft: Awaited<ReturnType<typeof currentDraft>>): Promise<{ body: TestEnvironmentBody; digest: string; source: "setup" | "edited" } | undefined> {
   const store = testEnvStoreOf(deps);
   const edited = await readEditedProposal(store, project.orgId, project.name);
-  if (edited !== undefined) {
+  const approvedDigest = approved === undefined ? undefined : testEnvDigest(approved.environment);
+  // What is already approved is not a proposal (after the approval's own settings write the look reads as current again, item 5).
+  if (edited !== undefined && edited.digest !== approvedDigest) {
     const body = await readProposal(store, project.orgId, project.name, edited.digest).catch(() => undefined);
     if (body !== undefined) return { body, digest: edited.digest, source: "edited" };
   }
   // A setup run's proposal (SH15): shown as Rovara's, never as a person's edit.
   const fromRun = await readSetupRunProposal(store, project.orgId, project.name);
   const runBody = fromRun === undefined ? undefined : await readProposal(store, project.orgId, project.name, fromRun.digest).catch(() => undefined);
-  if (fromRun !== undefined && runBody !== undefined) return { body: runBody, digest: fromRun.digest, source: "setup" };
+  if (fromRun !== undefined && runBody !== undefined && fromRun.digest !== approvedDigest) return { body: runBody, digest: fromRun.digest, source: "setup" };
   const candidate = draft.status === "ready" ? mergeDraftWithApproved(draft.draft.environment, approved?.environment) : undefined;
   if (candidate === undefined) return undefined;
   const digest = testEnvDigest(candidate);
+  if (digest === approvedDigest) return undefined;
   return await readProposal(store, project.orgId, project.name, digest) === undefined ? undefined : { body: candidate, digest, source: "setup" };
 }
 
@@ -193,16 +198,23 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
     const risk = lessSafe.length > 0 ? "high" : testEnvApprovalRisk(shown.body);
     const candidate = await candidateStateOf(deps, project.orgId, project.name, shown.digest, latest.definition);
     const { valueSources, origin } = await readProposalSources(store, project.orgId, project.name, shown.digest);
-    let approval: "none" | "pending" | "approved" | "expired" = "none";
+    // TS-UX-1 item 2: a passed check proves the proposal with no press. A read keeps nothing: it shows the report derived from the check now (the approval keeps it).
+    const kept = testEnvIsProved(report, shown.digest, shown.body);
+    const derived = !kept && candidate.setup.status === "ready" ? await deriveCandidateProve(deps, project.orgId, project.name, shown.body, latest.definition) : undefined;
+    const shownReport = kept ? report : derived?.ok === true ? derived.report : report;
+    // TS-UX-1 item 1: the second person's card on THIS screen: whoever asked sees who it waits for, and a person who may confirm it sees the card itself.
+    let approval: NonNullable<TestEnvironmentState["proposal"]>["approval"] = { status: "none" };
     if (lessSafe.length > 0 && deps.agents !== undefined) {
-      approval = await testEnvCardStateOf(deps.agents, { orgId: project.orgId, project: project.name, digest: shown.digest, expectedRevision: approved?.revision ?? 0, askedBy: project.developerId }).catch(() => "none" as const);
+      const view = await testEnvCardViewOf(deps.agents, { documentClient: deps.documentClient, tableName: deps.tableName }, { orgId: project.orgId, project: project.name, digest: shown.digest, expectedRevision: approved?.revision ?? 0 }, project.caller)
+        .catch(() => ({ status: "none" as const, askedByYou: false, youConfirm: false }));
+      approval = { ...view, ...(view.status === "pending" && view.askedByYou ? { waitingFor: await waitingForOf(deps, project) } : {}) };
     }
     proposal = {
       digest: shown.digest, source: shown.source, risk, lessSafe, summary: testEnvSummaryOf(shown.body), environment: shown.body, runs: runsOf(shown.body),
       valueSources: valueSources.flatMap((entry) => { const parsed = valueSourceOf(entry); return parsed === undefined ? [] : [parsed]; }),
-      proved: testEnvIsProved(report, shown.digest, shown.body), proveSteps: (report?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
+      proved: testEnvIsProved(shownReport, shown.digest, shown.body), proveSteps: (shownReport?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
       needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || candidate.check?.origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
-      approval: { status: approval },
+      approval,
       dependencySeeds: dependencySeedsOf(shown.body),
       commandsNotInSettings: commandsNotRun(shown.body, latest.definition),
       check: checkOf(candidate.setup),
@@ -253,6 +265,49 @@ async function deriveProve(deps: DeveloperRouteDependencies, orgId: OrgId, name:
   return deriveCandidateProve(deps, orgId, name, proposal, latest.definition);
 }
 
+/**
+ * Who a waiting card waits for, as the page says it (item 1): the asker themselves when the company's records give the sole-owner exception (one owner, nobody else eligible, nobody eligible left in the last day,
+ * and the company switch on), else a second person. Read from the same decision the card's rule and the approval use; any failure to read is "a second person" (the exception is never assumed).
+ */
+async function waitingForOf(deps: DeveloperRouteDependencies, project: ProjectView): Promise<"second_person" | "you_sole_owner"> {
+  const check = testEnvApprovalStoreOf(deps).secondPerson;
+  if (check === undefined) return "second_person";
+  try {
+    const decided = await check({ orgId: project.orgId, project: project.name, proposerId: project.developerId, approverId: project.developerId });
+    return decided.mode === "sole_owner_exception" ? "you_sole_owner" : "second_person";
+  } catch {
+    return "second_person";
+  }
+}
+
+/** Stores the proposal the latest look makes (merged onto the approved environment) and answers its digest: `propose`, and the first half of a "Check it works" press with nothing proposed yet. */
+async function proposeFromLook(deps: DeveloperRouteDependencies, caller: DeveloperCaller, role: ProjectView["role"], name: string): Promise<string> {
+  const store = testEnvStoreOf(deps);
+  const latest = await latestOf(deps, caller.orgId, name);
+  const draft = await currentDraft(deps, caller.orgId, name, latest.definition.revision);
+  if (draft.status !== "ready") throw refuse(draft.status === "stale" ? "stale_draft" : "no_draft");
+  const approved = await readApprovedTestEnvironment(store, caller.orgId, name);
+  const candidate = mergeDraftWithApproved(draft.draft.environment, approved?.environment);
+  if (candidate === undefined) throw refuse("not_provable");
+  const proposed = await proposeTestEnvironment(store, { orgId: caller.orgId, project: name, proposedBy: caller.developerId, role, body: candidate, valueSources: draft.draft.valueSources });
+  // Going back to what Rovara found: an earlier edit no longer stands in front of it.
+  await clearEditedProposal(store, caller.orgId, name);
+  logDeveloperEvent({ event: "developer.test_env_proposed", orgId: caller.orgId, project: name, digest: proposed.digest, lessSafe: String(proposed.lessSafe.length) });
+  return proposed.digest;
+}
+
+/**
+ * TS-UX-1 item 2: the Prove of a proposal is a pure derivation of its passed candidate check, so it needs no press: when the check passed and no report is kept yet, the report is derived NOW and kept (the same
+ * derivation and record as the `prove` route). Answers whether the proposal is proved. A check that has not passed, or a derivation that refuses, proves nothing and keeps nothing.
+ */
+async function provedFromCheck(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, digest: string, proposal: TestEnvironmentBody): Promise<boolean> {
+  const store = testEnvStoreOf(deps);
+  if (testEnvIsProved(await readTestEnvProveReport(store, orgId, name, digest), digest, proposal)) return true;
+  const derived = await deriveProve(deps, orgId, name, proposal);
+  if (!derived.ok) return false;
+  return (await recordTestEnvProveReport(store, { orgId, project: name, report: derived.report })).proved;
+}
+
 /** `/v1/app/projects/{name}/test-environment*`: the reply, or undefined when the switch is off or the path is not one of these. */
 export async function routeTestEnvironment(
   deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, hooks: TestEnvRouteHooks = {}, env: NodeJS.ProcessEnv = process.env,
@@ -263,7 +318,7 @@ export async function routeTestEnvironment(
   const action = match[2];
   if ((action === undefined) !== (request.method === "GET")) return undefined;
   const { name, role } = await projectRoleForRoute(deps, caller, match[1]!);
-  const project: ProjectView = { orgId: caller.orgId, name, role, developerId: caller.developerId };
+  const project: ProjectView = { orgId: caller.orgId, name, role, developerId: caller.developerId, caller };
   const store = testEnvStoreOf(deps);
   if (action === undefined) return new StatusReply(200, await stateOf(deps, project));
   if (request.method !== "POST") return undefined;
@@ -272,16 +327,7 @@ export async function routeTestEnvironment(
   if (action === "propose") {
     const parsed = TestEnvProposeBodySchema.safeParse(body ?? {});
     if (!parsed.success) throw bodyError(parsed.error);
-    const latest = await latestOf(deps, caller.orgId, name);
-    const draft = await currentDraft(deps, caller.orgId, name, latest.definition.revision);
-    if (draft.status !== "ready") throw refuse(draft.status === "stale" ? "stale_draft" : "no_draft");
-    const approved = await readApprovedTestEnvironment(store, caller.orgId, name);
-    const candidate = mergeDraftWithApproved(draft.draft.environment, approved?.environment);
-    if (candidate === undefined) throw refuse("not_provable");
-    const proposed = await proposeTestEnvironment(store, { orgId: caller.orgId, project: name, proposedBy: caller.developerId, role, body: candidate, valueSources: draft.draft.valueSources });
-    // Going back to what Rovara found: an earlier edit no longer stands in front of it.
-    await clearEditedProposal(store, caller.orgId, name);
-    logDeveloperEvent({ event: "developer.test_env_proposed", orgId: caller.orgId, project: name, digest: proposed.digest, lessSafe: String(proposed.lessSafe.length) });
+    await proposeFromLook(deps, caller, role, name);
     return new StatusReply(200, await stateOf(deps, project));
   }
 
@@ -322,11 +368,13 @@ export async function routeTestEnvironment(
     const parsed = TestEnvCheckBodySchema.safeParse(body);
     if (!parsed.success) throw bodyError(parsed.error);
     if (!projectAllows(role, "setup_check")) throw agentXError("FORBIDDEN", "only a project maintainer can run a check of a test environment");
+    // TS-UX-1 item 2: "Check it works" with no digest proposes what the look found first (the shown proposal when one stands), so one press proposes and checks.
+    const digest = parsed.data.digest ?? (await stateOf(deps, project)).proposal?.digest ?? await proposeFromLook(deps, caller, role, name);
     // The proposal, or the approved environment it became (to run its check again after the settings changed).
-    const proposal = await proposalOrApproved(store, caller.orgId, name, parsed.data.digest);
+    const proposal = await proposalOrApproved(store, caller.orgId, name, digest);
     if (proposal === undefined) throw refuse("no_proposal");
-    const started = await startCandidateSetupCheck(deps, caller, encodeURIComponent(name), { requestId: parsed.data.requestId, digest: parsed.data.digest, body: proposal, ...(await proposalIsSetupRun(store, caller.orgId, name, parsed.data.digest) ? { origin: "setup_run" as const } : {}) });
-    logDeveloperEvent({ event: "developer.test_env_check_requested", orgId: caller.orgId, project: name, digest: parsed.data.digest, replayed: String(started.statusCode === 200) });
+    const started = await startCandidateSetupCheck(deps, caller, encodeURIComponent(name), { requestId: parsed.data.requestId, digest, body: proposal, ...(await proposalIsSetupRun(store, caller.orgId, name, digest) ? { origin: "setup_run" as const } : {}) });
+    logDeveloperEvent({ event: "developer.test_env_check_requested", orgId: caller.orgId, project: name, digest, replayed: String(started.statusCode === 200) });
     return new StatusReply(started.statusCode, await stateOf(deps, project));
   }
 
@@ -353,9 +401,11 @@ export async function routeTestEnvironment(
     if ((current?.revision ?? 0) !== parsed.data.expectedRevision) throw agentXError("CHANGE_STALE", "someone changed the test environment; reload and review again");
     const lessSafe = testEnvLessSafeChanges(current?.environment, proposal);
     if (lessSafe.length === 0) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.secondPersonNotNeeded);
-    if (!testEnvIsProved(await readTestEnvProveReport(store, caller.orgId, name, parsed.data.digest), parsed.data.digest, proposal)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.provedFirst);
+    if (!await provedFromCheck(deps, caller.orgId, name, parsed.data.digest, proposal)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.provedFirst);
     if (deps.agents === undefined) throw agentXError("RUNTIME_UNAVAILABLE", TEST_ENV_EDIT_WORDS.unavailable);
     const asked = await requestTestEnvCard(deps.agents, caller, { project: name, digest: parsed.data.digest, expectedRevision: parsed.data.expectedRevision, lessSafe, diff: testEnvChangeLines(current?.environment, proposal) });
+    // Item 1: the setup page of every viewer finds this card (who asked is kept for the proposal and revision).
+    await recordTestEnvAsk({ documentClient: deps.documentClient, tableName: deps.tableName }, { orgId: caller.orgId, project: name, digest: parsed.data.digest, expectedRevision: parsed.data.expectedRevision, askedBy: caller.developerId });
     const confirmUrl = asked.state === "pending" ? (await confirmationReply(deps.agents, caller, { approvalId: asked.record.approvalId, changes: asked.record.changes })).body.confirmUrl : undefined;
     logDeveloperEvent({ event: "developer.test_env_second_person_asked", orgId: caller.orgId, project: name, digest: parsed.data.digest, status: asked.state });
     return new StatusReply(200, { status: asked.state, ...(confirmUrl === undefined ? {} : { confirmUrl }), state: await stateOf(deps, project) });
@@ -387,6 +437,8 @@ export async function approveChecked(
       // TE-2: the proof is the proposal's own candidate check, read again now (a check that failed or went out of date since the Prove stops the approval before anything is written).
       const again = await deriveProve(deps, caller.orgId, name, proposal);
       if (!again.ok) throw refuse(again.refusal);
+      // TS-UX-1 item 2: no Prove press: the passed check's report is kept here when none is yet (the approval reads the kept one).
+      if (!testEnvIsProved(await readTestEnvProveReport(store, caller.orgId, name, input.digest), input.digest, proposal)) await recordTestEnvProveReport(store, { orgId: caller.orgId, project: name, report: again.report });
       const lessSafe = testEnvLessSafeChanges(current?.environment, proposal);
       // A proposal a setup RUN made (the agent ran commands) is approved only by a person who signed in just now, in a browser, as a less-safe change is.
       const setupRun = again.candidate?.origin === "setup_run" || await proposalIsSetupRun(store, caller.orgId, name, input.digest);

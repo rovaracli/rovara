@@ -57,5 +57,5 @@ export { candidateDependencyPlan } from "../../test-env/candidate-plan.js";
 
 /** Words for the apply. */
 export const CANDIDATE_APPLY_WORDS = {
-  notApproved: "The commands are added to the project's settings when the test environment is approved, after a check ran them. Run the check, prove it, then approve it.",
+  notApproved: "The commands are added to the project's settings when the test environment is approved, after a check ran them. Check it works, then approve it.",
 } as const;
