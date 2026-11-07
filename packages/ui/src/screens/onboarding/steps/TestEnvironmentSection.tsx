@@ -238,8 +238,12 @@ function FailedCheck({ failedStep }: { failedStep: string | undefined }) {
 
 /** The real approval rule, said before anything is pressed (TS-UX-1 item 1): who approves, who confirms, the sign-ins, and why. One source of words, so the page never says two different things. */
 function SafetyNote({ proposal }: { proposal: Proposal }) {
-  if (proposal.lessSafe.length === 0 && !proposal.needs.freshSignIn) return null;
+  // SEED-RISK-1: each seed command's risk and the broker's reason (medium: detected unchanged from the repository, only on the test database).
+  const seedRisks = proposal.seedRisks ?? [];
+  const seedList = seedRisks.length === 0 ? null : <ul aria-label="Seed commands">{seedRisks.map((entry, index) => <li key={`${entry.dependencyId}-${String(index)}`}>{entry.reason}</li>)}</ul>;
+  if (proposal.lessSafe.length === 0 && !proposal.needs.freshSignIn) return seedList === null ? null : <div role="note" className="rv-proposal-conflict">{seedList}</div>;
   return <div role="note" className="rv-proposal-conflict">
+    {seedList}
     {proposal.lessSafe.length > 0 && <><p><strong>This is less safe than a sandbox:</strong></p><ul>{proposal.lessSafe.map((flag) => <li key={flag}>{LESS_SAFE_WORDS[flag] ?? flag.replace(/_/g, " ")}</li>)}</ul></>}
     {proposal.lessSafe.includes("dependency_seed") && <p>A seed command runs your own code against the test database, with that database's network access, so it is treated as high risk.</p>}
     {proposal.needs.secondPerson
