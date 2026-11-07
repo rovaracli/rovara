@@ -31,7 +31,7 @@ test("an admin follows the link from AI models, reviews a change page by page, s
  await expect(panel.getByText("billing", { exact: true })).toBeVisible();
  await expect(panel.getByRole("button", { name: "Show more" })).toHaveCount(0);
  await checkA11y(page, { theme: "dark" });
- await panel.getByRole("button", { name: "Save company defaults" }).click();
+ await page.getByRole("button", { name: "Save company defaults", exact: true }).click();
  await expect(page.getByText("Saved. New tasks use these defaults; running tasks keep theirs.")).toBeVisible();
  await expect(build.getByRole("combobox", { name: "Effort" })).toHaveValue("high");
  const put = (await sent(request)).find(item => item.method === "PUT" && item.path === "/v1/web/org/model-selection-policy");
@@ -47,7 +47,7 @@ test("a save refused 403 MODEL_NOT_ALLOWED shows the server's own words, not the
  await open(page);
  await page.getByRole("region", { name: "Build" }).getByRole("combobox", { name: "Effort" }).selectOption({ label: "High" });
  await page.getByRole("button", { name: "Review changes" }).click();
- await page.getByRole("region", { name: "Review of company changes" }).getByRole("button", { name: "Save company defaults" }).click();
+ await page.getByRole("button", { name: "Save company defaults", exact: true }).click();
  await expect(page.getByRole("alert").filter({ hasText: message })).toBeVisible();
  await expect(page.getByText("You don't have permission to change the company defaults.")).toHaveCount(0);
 });

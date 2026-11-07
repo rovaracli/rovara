@@ -10,7 +10,7 @@ test.beforeEach(async ({ context, request, baseURL, page }) => {
  await page.route("**/v1/web/org/model-sources", route => route.fulfill({ json: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", sources: [{ sourceId: "src_aaaaaaaaaaaaaaaaaaaa", kind: "openai", label: "Company source with a rather long display name to wrap", hasCredential: true, inOrder: true, models: [{ catalog: { provider: "openai", modelId: "sample-model" } }] }], order: ["rovara"] } }));
  await page.route("**/v1/web/connections", route => route.fulfill({ json: { connections: [{ connectionId: "con_aaaaaaaaaaaaaaaaaaaa", type: "linear", label: "Company tracker", hasCredential: true, identity: "service", updatedAt: "2026-10-01T00:00:00Z", lastCheck: { ok: true, at: "2026-10-01T00:00:00Z" } }] } }));
  await page.route("**/v1/web/github/requests", route => route.fulfill({ json: { requests: [] } }));
- await page.route("**/v1/web/github/installations", route => route.fulfill({ json: { installations: [{ installationId: 7, accountLogin: "Example organization", status: "suspended" }] } }));
+ await page.route("**/v1/web/github/installations", route => route.fulfill({ json: { installations: [{ installationId: 7, accountLogin: "Example organization", accountType: "Organization", repositorySelection: "all", status: "suspended" }] } }));
  await page.setViewportSize({ width: 390, height: 844 });
 });
 /** Nothing scrolls sideways, and every visible control sits inside the screen's width. */

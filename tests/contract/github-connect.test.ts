@@ -636,7 +636,7 @@ describe("through the broker", () => {
     b.linkGithub();
     const confirmFor = async (state: string) => {
       const callback = await b.publicCall("GET", `/v1/github/install/callback?code=code1&installation_id=501&setup_action=install&state=${state}`);
-      const token = cookieOf(callback.headers["set-cookie"]!)![2]!;
+      const token = cookieOf(callback.headers["set-cookie"])![2]!;
       return b.publicCall("POST", "/v1/github/install/confirm", { origin: CELL, cookie: `__Host-rovara_gh_connect=${token}`, "content-type": "application/x-www-form-urlencoded" }, `connect=${sha(state)}&decision=connect`);
     };
     // A place that is not one of the two fixed ones is refused when the connect starts.
