@@ -55,6 +55,9 @@ export function TicketsSection({ project, canStart, canEdit }: { project: string
   const settings = draft ?? updates.data?.settings;
   const setMoment = (moment: TicketUpdateMoment, value: string) => settings !== undefined && setDraft({ ...settings, statuses: { ...settings.statuses, [moment]: value === "" ? undefined : value } });
   const editable = canEdit && updates.data?.canEdit === true;
+  // Ticket intake isn't served on this install (the routes answer 404): say so quietly, once, instead of an alert per read.
+  const unavailable = (problem: unknown) => problem instanceof ApiError && problem.status === 404;
+  if (unavailable(updates.error) && (!canStart || unavailable(list.error))) return <section id="tickets" className="rv-project-section"><h2>Tickets from Linear, Jira and GitHub</h2><p className="rv-muted">Tickets from outside tools aren't available here.</p></section>;
   return <section id="tickets" className="rv-project-section"><h2>Tickets from Linear, Jira and GitHub</h2>
     {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
     {canStart && <><h3>Waiting to start</h3>{list.isPending ? <p className="rv-muted">Loading</p> : list.isError ? <p role="alert"><VisibleText text={failure(list.error)} /></p> : (list.data?.items.length ?? 0) === 0 ? <p className="rv-muted">No tickets are waiting.</p>
