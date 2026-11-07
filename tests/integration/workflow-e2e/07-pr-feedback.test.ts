@@ -78,6 +78,9 @@ describe("Suite 7: PR feedback loop", () => {
     await e2e.settle();
     expect(e2e.github.graphqlDatabaseIdTypes()).toEqual(new Set(["string"]));
     expect(visibleSlackText(e2e.slack.lastPostWithAction("agentx_feedback_review_recommended").text)).toMatch(READY_ONE);
+    // OWNER DECISION 7: a task with no session (this journey runs without agents) keeps the feedback review page as the card's details link; one with a session links its task page (notifier tests).
+    expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")?.sessionId).toBeUndefined();
+    expect(e2e.slack.lastPostWithAction("agentx_feedback_review_recommended").text).toContain(`/review/${e2e.taskId()}|`);
     await e2e.click("agentx_feedback_review_recommended");
     await e2e.settle();
     expect(e2e.slack.ephemerals).toEqual([]);

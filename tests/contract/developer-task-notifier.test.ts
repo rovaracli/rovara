@@ -2044,6 +2044,15 @@ describe("an uncertain start post is logged (25c note 3)", () => {
 });
 
 describe("the PR feedback advisory summary", () => {
+  it("OWNER DECISION 7: links its details to the task's page in Rovara when the task has a session, else to the feedback review page", async () => {
+    const { feedbackDetailPath } = await import("../../packages/broker/src/aws/developer-task-notifier.js");
+    const taskId = "11111111-1111-4111-8111-111111111111";
+    expect(feedbackDetailPath({ taskId, sessionId: "ses_0123456789abcdefghij" })).toBe("/app/sessions/ses_0123456789abcdefghij");
+    expect(feedbackDetailPath({ taskId })).toBe(`/review/${taskId}`);
+    // A malformed session id is never put in a link.
+    expect(feedbackDetailPath({ taskId, sessionId: "ses_../../x" })).toBe(`/review/${taskId}`);
+  });
+
   it("posts a brief, redacted summary with a secure detail link and named actions", async () => {
     const { feedbackReviewSlackMessage } = await import("../../packages/broker/src/aws/developer-task-notifier.js");
     const message = feedbackReviewSlackMessage({
