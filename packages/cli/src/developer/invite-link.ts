@@ -1,4 +1,4 @@
-// Plan 2, Task 6: `agentx login --invite <link>`. An invite link comes in three shapes: the rovara.dev link a cloud install hands out
+// Plan 2, Task 6: `agentx login --invite <link>`. An invite link comes in these shapes (UX1 adds a cell's own <origin>/join#invite=<token>): the rovara.dev link a cloud install hands out
 // (https://rovara.dev/join#invite=<token>), the link of a cell's own join page (<cell>/v1/auth/join?invite=<token>) and the bare
 // token. This file reads them, finds the cell, and asks that cell, before any browser opens, what the invite is for (ruling R19).
 import { INVITE_WRONG_EMAIL_MESSAGE, agentXError } from "@agentx/contracts";
@@ -33,6 +33,9 @@ export function parseInviteLink(link: string): ParsedInviteLink {
   let where: Pick<ParsedInviteLink, "cellUrl" | "directoryOrigin">;
   if (path.endsWith(CELL_JOIN_SUFFIX)) where = { cellUrl: `${url.origin}${path.slice(0, -CELL_JOIN_SUFFIX.length)}` };
   else if (path === "/join" && url.origin === ROVARA_DIRECTORY_ORIGIN) where = { directoryOrigin: url.origin };
+  // UX1: a cloud cell now serves its own invite page at <app origin>/join, so that origin is the cell (the same trust as a <cell>/v1/auth/join link: the cell
+  // is asked what the invite is for before any browser opens). Only rovara.dev is ever read as the directory.
+  else if (path === "/join" && url.port === "") where = { cellUrl: url.origin };
   else throw agentXError("CONFIG_INVALID", NOT_AN_INVITE);
   const token = new URLSearchParams(url.hash.replace(/^#/, "")).get("invite") ?? url.searchParams.get("invite");
   if (token === null || token === "") throw agentXError("CONFIG_INVALID", "that invite link has no invite in it");

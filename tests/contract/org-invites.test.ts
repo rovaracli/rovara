@@ -35,11 +35,12 @@ describe("POST /v1/dev/org/invites", () => {
     expect(db.get(orgInviteKey(sha256Hex(tokenOf(created.body.inviteUrl))))).toMatchObject({ orgId: TEST_ORG, role: "member", createdBy: MAYA.developerId });
   });
 
-  it("builds a cloud install's link on the web origin, with the token in the fragment", async () => {
+  // UX1: the app's own origin (the sign-in server's, where /app is served) answers /join itself, so the link no longer goes through rovara.dev.
+  it("builds a cloud install's link on the app's own origin, with the token in the fragment, whatever the web origin setting", async () => {
     const cloud = await brokerWithOwner({ brokerExtra: { cloud: true } });
-    expect(String((await cloud.invite(MAYA)).body.inviteUrl)).toMatch(/^https:\/\/rovara\.dev\/join#invite=[A-Za-z0-9_-]{43}$/);
+    expect(String((await cloud.invite(MAYA)).body.inviteUrl)).toMatch(/^https:\/\/abc123\.execute-api\.us-east-1\.amazonaws\.com\/join#invite=[A-Za-z0-9_-]{43}$/);
     const { invite } = await brokerWithOwner({ brokerExtra: { cloud: true }, developerExtra: { webOrigin: "http://localhost:3000" } });
-    expect(String((await invite(MAYA)).body.inviteUrl)).toMatch(/^http:\/\/localhost:3000\/join#invite=/);
+    expect(String((await invite(MAYA)).body.inviteUrl)).toMatch(/^https:\/\/abc123\.execute-api\.us-east-1\.amazonaws\.com\/join#invite=/);
   });
 
   it("refuses a member with 403 FORBIDDEN and writes no invite", async () => {

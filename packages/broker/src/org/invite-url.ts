@@ -36,6 +36,13 @@ export function webOriginFromEnvironment(env: Record<string, string | undefined>
  */
 export const inviteUrl = (base: string, token: string, form: "fragment" | "query"): string => `${base}${form === "fragment" ? "#" : "?"}invite=${token}`;
 
+/**
+ * UX1: where a cloud invite link points: the app's own origin (the custom domain when one is set; the sign-in server's issuer is on it), which serves
+ * `/join` itself (packages/web/src/server/handler.ts) and keeps the whole join on one origin, so the join's sign-in cookie is the app's.
+ * Links sent earlier to the rovara.dev forwarder keep working through it.
+ */
+export const cloudJoinBase = (issuer: string): string => `${new URL(issuer).origin}/join`;
+
 /** What a stored invite hash looks like: SHA-256 in base64url without padding. */
 export const INVITE_HASH_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 

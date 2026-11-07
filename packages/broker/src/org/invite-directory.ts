@@ -5,7 +5,8 @@ import { z } from "zod";
 import { AgentXError, AppOrgInvitesResponseSchema, OrgIdSchema, agentXError, orgInviteDirectoryKey, orgInviteKey, orgMemberKey, orgPk, orgScoped } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { takeRateAt } from "../developer/page-comments.js";
-type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">;
+import { inviteEmailAvailable } from "./invite-email.js";
+type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now" | "ownerNotice">;
 const id = z.string().uuid(), hash = z.string().regex(/^[a-f0-9]{64}$/);
 const referenceSchema = z.object({ orgId: OrgIdSchema, inviteId: id, tokenHash: hash, entityType: z.literal("ORG_INVITE_DIRECTORY"), pk: z.string(), sk: z.string() });
 const canonicalSchema = z.object({ orgId: OrgIdSchema, inviteId: id, tokenHash: hash, role: z.enum(["admin", "member"]), createdBy: z.string().regex(/^[a-f0-9]{64}$/), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), email: z.string().max(254).email().optional(), acceptedAt: z.string().datetime().optional(), revokedAt: z.string().datetime().optional(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional() });
@@ -60,6 +61,6 @@ export async function listOrganizationInvites(deps: Deps, caller: DeveloperCalle
    const last = page.LastEvaluatedKey, after = typeof last.sk === "string" && last.sk.startsWith("INVITE_DIRECTORY#") ? last.sk.slice("INVITE_DIRECTORY#".length) : undefined;
    if (last.pk !== orgPk(caller.orgId) || !id.safeParse(after).success) throw unavailable();nextCursor = Buffer.from(JSON.stringify({ orgId: caller.orgId, after })).toString("base64url");
   }
-  return AppOrgInvitesResponseSchema.parse({ invites, unavailableCount, coverage: unavailableCount > 0 ? "indexed_only_partial" : "indexed_only", checkedAt: now, ...(nextCursor === undefined ? {} : { nextCursor }) });
+  return AppOrgInvitesResponseSchema.parse({ invites, unavailableCount, emailDelivery: inviteEmailAvailable(deps.ownerNotice), coverage: unavailableCount > 0 ? "indexed_only_partial" : "indexed_only", checkedAt: now, ...(nextCursor === undefined ? {} : { nextCursor }) });
  } catch (error) { if (error instanceof AgentXError) throw error;throw unavailable(); }
 }

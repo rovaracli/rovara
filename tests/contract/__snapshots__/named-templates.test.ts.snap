@@ -6003,6 +6003,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "GithubInstallConfirmRoute",
         "WebAppAppPathRouteC44AC6EE",
         "WebAppAppRoute46037100",
+        "WebAppJoinRoute2245635D",
         "WebAppSessionRouteA44E7FCE",
       ],
       "Properties": {
@@ -6040,6 +6041,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "ThrottlingRateLimit": 100,
           },
           "GET /app/{proxy+}": {
+            "ThrottlingBurstLimit": 200,
+            "ThrottlingRateLimit": 100,
+          },
+          "GET /join": {
             "ThrottlingBurstLimit": 200,
             "ThrottlingRateLimit": 100,
           },
@@ -16519,6 +16524,47 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::Lambda::Permission",
     },
+    "WebAppFunctionJoinInvoke63139A86": {
+      "DependsOn": [
+        "WebAppUploadAwsCliLayer2F180912",
+        "WebAppUploadCustomResourceC5294313",
+      ],
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "WebAppFunction611CC907",
+            "Arn",
+          ],
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition",
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region",
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId",
+              },
+              ":",
+              {
+                "Ref": "HttpApi",
+              },
+              "/*/GET/join",
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::Lambda::Permission",
+    },
     "WebAppFunctionLogsC7F3963C": {
       "DeletionPolicy": "Delete",
       "Properties": {
@@ -16655,6 +16701,27 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "PayloadFormatVersion": "2.0",
       },
       "Type": "AWS::ApiGatewayV2::Integration",
+    },
+    "WebAppJoinRoute2245635D": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "GET /join",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "WebAppIntegration5E3F10BA",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
     },
     "WebAppSessionRouteA44E7FCE": {
       "Properties": {

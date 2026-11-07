@@ -34,14 +34,17 @@ describe("parseInviteLink", () => {
     expect(parseInviteLink(`${CELL}/v1/auth/join#invite=${TOKEN}`)).toEqual({ token: TOKEN, cellUrl: CELL });
     expect(parseInviteLink(`${CELL}/prod/v1/auth/join?invite=${TOKEN}`)).toEqual({ token: TOKEN, cellUrl: `${CELL}/prod` });
   });
+  // UX1: a cloud cell's own invite page, <app origin>/join, names that origin as the cell (never as the directory); rovara.dev alone is the directory.
+  it("reads another https host's /join as that cell, never as the directory", () => {
+    expect(parseInviteLink(`https://evil.example/join#invite=${TOKEN}`)).toEqual({ token: TOKEN, cellUrl: "https://evil.example" });
+    expect(parseInviteLink(`https://www.rovara.dev/join#invite=${TOKEN}`)).toEqual({ token: TOKEN, cellUrl: "https://www.rovara.dev" });
+    expect(parseInviteLink(`https://rovara.dev.evil.example/join#invite=${TOKEN}`)).toEqual({ token: TOKEN, cellUrl: "https://rovara.dev.evil.example" });
+  });
   it("accepts a bare token with neither", () => {
     expect(parseInviteLink(TOKEN)).toEqual({ token: TOKEN });
   });
   it.each([
-    ["another host's /join", `https://evil.example/join#invite=${TOKEN}`],
-    ["a subdomain of rovara.dev", `https://www.rovara.dev/join#invite=${TOKEN}`],
     ["rovara.dev with another port", `https://rovara.dev:8443/join#invite=${TOKEN}`],
-    ["rovara.dev with a look-alike host", `https://rovara.dev.evil.example/join#invite=${TOKEN}`],
     ["rovara.dev with credentials", `https://rovara.dev@evil.example/join#invite=${TOKEN}`],
     ["plain http", `http://rovara.dev/join#invite=${TOKEN}`],
     ["plain http cell", `http://abc.example/v1/auth/join?invite=${TOKEN}`],

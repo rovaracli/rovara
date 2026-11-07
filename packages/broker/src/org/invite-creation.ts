@@ -5,10 +5,12 @@ import { z } from "zod";
 import { AgentXError, InviteCreateReceiptSchema, ReviewedInviteCreateBodySchema, OrgIdSchema, agentXError, orgMemberKey, developerOrgKey, orgMetaKey, orgScoped } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { takeRateAt } from "../developer/page-comments.js";
-import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "./invite-url.js";
+import { cloudJoinBase, inviteUrl } from "./invite-url.js";
+import { sendInviteEmail } from "./invite-email.js";
 const receiptRecord = InviteCreateReceiptSchema.extend({ pk: z.string(), sk: z.string(), entityType: z.literal("ORG_INVITE_CREATE_RECEIPT"), by: z.string().regex(/^[a-f0-9]{64}$/), action: z.literal("org.invite_created"), bodyHash: z.string().regex(/^[a-f0-9]{64}$/) });
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "Invite creation could not be confirmed. Check its receipt before trying again.");
 const missing = () => agentXError("NOT_FOUND", "That creation receipt is unavailable in this company.");
+// UX1: `sendEmail` is not part of the invite's intent (the store hashes the same three fields), and a replay never sends anything.
 export const inviteCreateBodyHash = (body: { role: string; email?: string | undefined }) => createHash("sha256").update(JSON.stringify({ action: "org.invite_created", role: body.role, email: body.email?.trim().toLowerCase() ?? null })).digest("hex");
 async function read(deps: DeveloperRouteDependencies, Key: { pk: string; sk: string }) { const result = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key, ConsistentRead: true })) as { Item?: Record<string, unknown> };return result.Item; }
 async function authority(deps: DeveloperRouteDependencies, caller: DeveloperCaller, role?: "admin" | "member") {
@@ -35,7 +37,11 @@ export async function createReviewedOrganizationInvite(deps: DeveloperRouteDepen
    const result = await deps.orgs.createInvite({ requestId: parsed.data.requestId, role: parsed.data.role, ...(parsed.data.email === undefined ? {} : { email: parsed.data.email }), orgId: caller.orgId, createdBy: caller.developerId, reviewed: true });
    // Verify the actual atomic record before delivering even the first link.
    await authority(deps, caller, parsed.data.role);const committed = await receipt(deps, caller, parsed.data.requestId, digest);if (committed === undefined) throw unavailable();
-   return { receipt: committed, inviteUrl: deps.cloud === true ? inviteUrl(`${deps.developer.webOrigin ?? DEFAULT_ROVARA_WEB_ORIGIN}/join`, result.token, "fragment") : inviteUrl(`${deps.developer.issuer}/join`, result.token, "query") };
+   const link = deps.cloud === true ? inviteUrl(cloudJoinBase(deps.developer.issuer), result.token, "fragment") : inviteUrl(`${deps.developer.issuer}/join`, result.token, "query");
+   // UX1: emailed only when asked for, only to the invite's own address, and only once (a replay above never reaches here). The link is returned either way, so nothing is lost if the email fails.
+   if (parsed.data.sendEmail !== true || parsed.data.email === undefined) return { receipt: committed, inviteUrl: link };
+   const email = await sendInviteEmail(deps.ownerNotice, { to: parsed.data.email, orgName: (await deps.orgs.getOrg(caller.orgId))?.name ?? "your team", inviterName: caller.name, role: committed.role, inviteUrl: link, expiresAt: committed.expiresAt });
+   return { receipt: committed, inviteUrl: link, email };
   } catch (error) {
    // A response may be lost after commit. Never mint another invite or replay its bearer.
    await authority(deps, caller, parsed.data.role);if (error instanceof AgentXError && error.code === "TOO_MANY_REQUESTS") throw error;const committed = await receipt(deps, caller, parsed.data.requestId, digest);if (committed !== undefined) return { receipt: committed };throw error;
