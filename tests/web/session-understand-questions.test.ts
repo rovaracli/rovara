@@ -106,7 +106,8 @@ it("shows the next step after a successful send without a reload", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Send answers" }));
   await screen.findByText("Answers sent. Rovara is working on your request.");
   await waitFor(() => expect(screen.queryByRole("button", { name: "Send answers" })).toBeNull());
-  expect(screen.getByText("Working")).toBeTruthy();
+  // UX2 slice 2: the header and the pipeline line both say the status model's word.
+  expect(screen.getAllByText("Understanding the request").length).toBeGreaterThan(0);
   expect(f.posts()).toHaveLength(1);
   f.close();
 });
@@ -124,7 +125,7 @@ it("shows the questions read-only, and who they wait for, to someone who cannot 
 
 it("shows nothing when the task is not waiting on questions", async () => {
   const f = setup(understandSession({ waiting: false }));
-  await screen.findByText("Working");
+  await screen.findAllByText("Understanding the request");
   expect(screen.queryByRole("region", { name: "Questions from Rovara" })).toBeNull();
   f.close();
 });
