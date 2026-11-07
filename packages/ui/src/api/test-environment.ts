@@ -2,7 +2,7 @@
 // needs a fresh sign-in and a second person), and this client only asks. The gateway puts its own `requestId` in every answer and the contracts are strict, so it is set aside and the rest is read exactly.
 import { useMemo } from "react";
 import {
-  ProjectOverviewProjectSchema, TestEnvApplyAnswerSchema, TestEnvApplyBodySchema, TestEnvApproveAnswerSchema, TestEnvApproveBodySchema, TestEnvCheckBodySchema, TestEnvEditBodySchema, TestEnvProveBodySchema,
+  ProjectOverviewProjectSchema, TestEnvApplyAnswerSchema, TestEnvApplyBodySchema, TestEnvApproveAnswerSchema, TestEnvApproveBodySchema, TestEnvCheckBodySchema, TestEnvEditBodySchema, TestEnvProveBodySchema, TestEnvSeedBodySchema,
   TestEnvRequestApprovalAnswerSchema, TestEnvRequestApprovalBodySchema, TestEnvironmentStateSchema,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
@@ -20,6 +20,8 @@ export function createTestEnvironmentApi(host: AppHost) {
     read: (name: string) => api.get(base(name), state),
     propose: (name: string) => api.sendAnswer("POST", base(name) + "/propose", {}, state),
     edit: (name: string, environment: unknown) => api.sendAnswer("POST", base(name) + "/edit", TestEnvEditBodySchema.parse({ environment }), state),
+    /** The command that fills one dependency with test data (an empty line clears it). The server reads the line; the answer is the new state. */
+    setSeed: (name: string, digest: string, dependencyId: string, command: string) => api.sendAnswer("POST", base(name) + "/seed", TestEnvSeedBodySchema.parse({ digest, dependencyId, command }), state),
     prove: (name: string, digest: string) => api.sendAnswer("POST", base(name) + "/prove", TestEnvProveBodySchema.parse({ digest }), state),
     startCheck: (name: string, digest: string, requestId: string) => api.sendAnswer("POST", base(name) + "/check", TestEnvCheckBodySchema.parse({ digest, requestId }), state),
     applyCommands: (name: string, body: ReturnType<typeof TestEnvApplyBodySchema.parse>) => api.sendAnswer("POST", base(name) + "/apply-commands", TestEnvApplyBodySchema.parse(body), exactAnswer(TestEnvApplyAnswerSchema)),

@@ -78,3 +78,14 @@ describe("a dependency found from code", () => {
     expect(detection.dependencies).toBeUndefined();
   });
 });
+
+describe("Prisma", () => {
+  it("names the database from the schema's provider and the setting from env(), and copies no value", async () => {
+    const schema = ['generator client {', '  provider = "prisma-client-js"', '}', 'datasource db {', '  provider = "postgresql"', '  url      = env("DATABASE_URL")', '}'].join("\n");
+    const detection = await detect({ "prisma/schema.prisma": schema });
+    expect(family(detection, "postgres")).toMatchObject({ kind: "database", strength: "used", evidence: [{ path: "prisma/schema.prisma", line: 5 }], hints: { envNames: ["DATABASE_URL"], seenBy: ["env"] } });
+    const mongo = await detect({ "schema.prisma": 'datasource db {\n  provider = "mongodb"\n  url = env("MONGO_URL")\n}\n' });
+    expect(family(mongo, "mongodb")).toBeDefined();
+    expect((await detect({ "schema.prisma": 'datasource db {\n  provider = "sqlite"\n  url = "file:dev.db"\n}\n' })).dependencies).toBeUndefined();
+  });
+});

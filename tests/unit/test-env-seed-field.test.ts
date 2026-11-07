@@ -78,3 +78,11 @@ describe("the seed field", () => {
     expect(dependencySeedsOf(body([dep(), fake])).map((item) => item.id)).toEqual(["postgres"]);
   });
 });
+
+describe("the seed route", () => {
+  it("is one of the test-environment paths, and an unknown action still is not", async () => {
+    const { isTestEnvironmentPath } = await import("../../packages/broker/src/aws/developer-routes/test-environment.js");
+    expect(isTestEnvironmentPath("/v1/app/projects/web/test-environment/seed")).toBe(true);
+    expect(isTestEnvironmentPath("/v1/app/projects/web/test-environment/seeds")).toBe(false);
+  });
+});

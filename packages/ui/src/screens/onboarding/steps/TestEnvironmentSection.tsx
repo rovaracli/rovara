@@ -2,11 +2,13 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TestEnvApplyAnswer, TestEnvironmentState } from "@agentx/contracts/web";
 import { useTestEnvironmentApi } from "../../../api/test-environment.js";
+import { useOnboardingApi } from "../../../api/onboarding.js";
 import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";
 import { isConfirmUrl } from "../../../text/links.js";
 import { Button } from "../../../design/Button.js";
 import { TextArea } from "../../../design/TextArea.js";
+import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ShareRecipePanel } from "../../admin/how-we-work/ShareRecipePanel.js";
 
@@ -49,10 +51,14 @@ function Line({ text, source }: { text: string; source: Source | undefined }) {
  */
 export function TestEnvironmentSection({ project, canEditSettings, setupStatus, settingsRevision, onSettingsChanged }: { project: string; /** The page knows the viewer may edit the project's settings (a maintainer): only then is the company-recipe share panel mounted, so a viewer's page never asks and logs a refusal. */ canEditSettings: boolean; setupStatus: string; settingsRevision: number; onSettingsChanged: () => Promise<void> }) {
   const api = useTestEnvironmentApi();
+  const onboarding = useOnboardingApi();
   const host = useAppHost();
-  // The setup check finishing (or the settings changing) changes what can be proved: the status is part of the key, so a change reads again.
+  // The look at the repositories (the setup draft) is the one the Setup step above asks for (the same query): when it finishes, what Rovara found is read again, so the page never keeps saying "ask first" after the look ran.
   const client = useQueryClient();
-  const key = ["onboard", "test-environment", project, setupStatus];
+  const look = useQuery({ queryKey: ["onboard", "setup-draft", project], queryFn: () => onboarding.setupDraft(project), retry: false, refetchInterval: (q) => (q.state.data?.status === "drafting" ? 3000 : false) });
+  const lookStatus = look.data?.status ?? "none";
+  // The setup check finishing (or the settings changing) changes what can be proved: the status is part of the key, so a change reads again.
+  const key = ["onboard", "test-environment", project, setupStatus, lookStatus];
   // While the proposal's own check runs, read again every few seconds: it is done when its workspace is.
   const query = useQuery({ queryKey: key, queryFn: () => api.read(project), retry: false, refetchInterval: (q) => (q.state.data?.proposal?.check.status === "checking" || q.state.data?.approved?.check.status === "checking" ? 5000 : false) });
   const [busy, setBusy] = useState<string>();
@@ -71,6 +77,7 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
     } finally { setBusy(undefined); }
   }
   const take = (value: TestEnvironmentState) => { client.setQueryData(key, value); };
+  const askLook = () => act("look", () => onboarding.startSetupDraft(project, crypto.randomUUID()), () => { void look.refetch(); });
 
   // The feature is off (the server answers "not found"), or this server answers in a shape this page can't read (an older or newer one): nothing to show.
   if (query.isError && query.error instanceof ApiError && (query.error.status === 404 || query.error.code === "INVALID_RESPONSE")) return null;
@@ -95,8 +102,9 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
     {shown.draft.questions.length > 0 && <><p>Rovara is not sure about:</p><ul>{shown.draft.questions.map((question, index) => <li key={index}><VisibleText text={question} /></li>)}</ul></>}
 
     {proposal === undefined && shown.draft.status === "ready" && <Button busy={busy === "propose"} onClick={() => { void act("propose", () => api.propose(project), take); }}>Propose a test environment</Button>}
-    {proposal === undefined && shown.draft.status === "stale" && <p>The setup draft is older than the project's settings. Ask Rovara to propose the setup again, above.</p>}
-    {proposal === undefined && shown.draft.status === "none" && !shown.approved && <p>Ask Rovara to propose the setup above first. The test environment is drafted from that look at your default branch.</p>}
+    {proposal === undefined && shown.draft.status !== "ready" && !shown.approved && <LookNeeded status={shown.draft.status} looked={shown.draft.looked} drafting={lookStatus === "drafting"} busy={busy === "look"} onLook={() => { void askLook(); }} />}
+    {proposal === undefined && shown.draft.status === "stale" && shown.approved && <LookNeeded status="stale" looked drafting={lookStatus === "drafting"} busy={busy === "look"} onLook={() => { void askLook(); }} />}
+    {!shown.approved && <Steps current={stepOf(shown, proposal)} />}
 
     {proposal !== undefined && <ProposalView
       proposal={proposal} approvedRevision={approvedRevision} busy={busy} confirmUrl={confirmUrl} origin={host.origin} applied={applied}
@@ -106,6 +114,8 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
       onAsk={() => { void act("ask", () => api.requestApproval(project, proposal.digest, approvedRevision), (answer) => { take(answer.state); setConfirmUrl(answer.confirmUrl); }); }}
       onRefresh={() => { void act("refresh", () => api.read(project), take); }}
       onEdit={() => setEditing(JSON.stringify(proposal.environment, null, 2))}
+      onSeed={(dependencyId, command) => act("seed", () => api.setSeed(project, proposal.digest, dependencyId, command), take)}
+      signIn={error?.reauth === true ? error.message : undefined} onSignIn={() => host.signIn(host.currentPath())}
     />}
     {proposal !== undefined && editing !== undefined && <div className="rv-proposal-card">
       <TextArea label="Edit the test environment" hint="The whole environment as JSON. It is checked again when you save, and it becomes the proposal; nothing changes until it is proved and approved." value={editing} rows={14} onChange={(event) => setEditing(event.target.value)} />
@@ -116,8 +126,33 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
       }}>Save my edit</Button>
       <Button onClick={() => setEditing(undefined)}>Cancel</Button>
     </div>}
-    {error && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => host.signIn(host.currentPath())}>Sign in again</Button></>}</p>}
+    {error && !(error.reauth && proposal !== undefined) && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => host.signIn(host.currentPath())}>Sign in again</Button></>}</p>}
   </section>;
+}
+
+/** The steps from the look at the repositories to the approval, in order, with the one the person is on. Nothing here is a second path: each button on the page belongs to one of them. */
+const STEPS = ["Read your repositories", "Propose the test environment", "Check that it works", "Prove it", "Approve it"] as const;
+function stepOf(shown: TestEnvironmentState, proposal: Proposal | undefined): number {
+  if (proposal === undefined) return shown.draft.status === "ready" ? 1 : 0;
+  if (proposal.proved) return 4;
+  return proposal.check.status === "ready" ? 3 : 2;
+}
+function Steps({ current }: { current: number }) {
+  return <ol aria-label="Steps to a proven test environment" className="rv-proposal-meta">{STEPS.map((step, index) => <li key={step} aria-current={index === current ? "step" : undefined}>{index === current ? <strong>{step}</strong> : step}</li>)}</ol>;
+}
+
+/**
+ * Where the test environment starts when there is nothing to propose yet: what is needed, in plain words, and the one button that does it. There is no hidden prerequisite and no "go and do this above first": the look
+ * at the repositories is asked for right here (it is the same look the Setup step asks for).
+ */
+function LookNeeded({ status, looked, drafting, busy, onLook }: { status: "none" | "ready" | "stale"; looked: boolean; drafting: boolean; busy: boolean; onLook: () => void }) {
+  if (drafting) return <p role="status">Rovara is reading your repositories. This takes a few minutes; this page updates when it is done.</p>;
+  const [words, button] = status === "stale"
+    ? ["The last look at your repositories is older than your project's settings, so the test environment drafted from it may no longer fit. Look again to draft it from the settings as they are now. If test services were switched on after your last look, looking again is what makes them appear.", "Look again and draft the test environment"]
+    : looked
+      ? ["Rovara has looked at your repositories but could not draft a test environment from what it found (the notes above say what was missing). Add what is missing, then look again.", "Look again and draft the test environment"]
+      : ["A test environment is drafted from a look at your repositories' default branch: Rovara finds how your tests run, and which services they need (a database, for example). You have not asked for that look yet.", "Look at my repositories and draft the test environment"];
+  return <div className="rv-proposal-card" role="note"><p>{words}</p><Button variant="primary" busy={busy} onClick={onLook}>{button}</Button></div>;
 }
 
 /**
@@ -137,6 +172,7 @@ function ApprovedGap({ approved, busy, onCheck, onRefresh, onApply }: { approved
 function ProposalView(props: {
   proposal: Proposal; approvedRevision: number; busy: string | undefined; confirmUrl: string | undefined; origin: string; applied: TestEnvApplyAnswer | undefined;
   onCheck: () => void; onProve: () => void; onApprove: () => void; onAsk: () => void; onRefresh: () => void; onEdit: () => void;
+  onSeed: (dependencyId: string, command: string) => Promise<void>; signIn: string | undefined; onSignIn: () => void;
 }) {
   const { proposal, busy } = props;
   const link = props.confirmUrl !== undefined && isConfirmUrl(props.confirmUrl, props.origin) ? props.confirmUrl : undefined;
@@ -146,7 +182,7 @@ function ProposalView(props: {
     <h4>What will run</h4>
     {proposal.runs.map((repository, index) => <div key={index}>
       <p><strong><VisibleText text={repository.repositoryId} /></strong></p>
-      {repository.setup.length > 0 && <><p className="rv-proposal-meta">Setup commands</p><ul aria-label={`Setup commands for ${repository.repositoryId}`}>{repository.setup.map((line, at) => <Line key={at} text={line} source={sourceOf(proposal, `repos[${String(index)}].setupCommands[${String(at)}]`)} />)}</ul></>}
+      {repository.setup.length > 0 && <><p className="rv-proposal-meta">Setup commands (they run on a fresh machine before anything starts, so there is no database yet)</p><ul aria-label={`Setup commands for ${repository.repositoryId}`}>{repository.setup.map((line, at) => <Line key={at} text={line} source={sourceOf(proposal, `repos[${String(index)}].setupCommands[${String(at)}]`)} />)}</ul></>}
       <p className="rv-proposal-meta">Checks</p>
       <ul aria-label={`Checks for ${repository.repositoryId}`}>{repository.checks.map((check, at) => <li key={check.id}>
         <strong><VisibleText text={check.label} /></strong> ({check.kind}): <code><VisibleText text={check.command} /></code>
@@ -154,6 +190,7 @@ function ProposalView(props: {
         {sourceOf(proposal, `repos[${String(index)}].checks[${String(at)}]`) !== undefined && <span className="rv-proposal-meta"> <VisibleText text={sourceWords(sourceOf(proposal, `repos[${String(index)}].checks[${String(at)}]`)!)} /></span>}
       </li>)}</ul>
     </div>)}
+    {proposal.dependencySeeds.map((dependency) => <SeedField key={`${dependency.id}:${dependency.command ?? ""}`} dependency={dependency} busy={busy === "seed"} onSave={props.onSeed} />)}
     {proposal.valueSources.length === 0 && proposal.source === "edited" && <p className="rv-proposal-meta">Edited by a maintainer, so no value has a source file.</p>}
 
     {proposal.lessSafe.length > 0 && <div role="note" className="rv-proposal-conflict"><p><strong>This is less safe than a sandbox:</strong></p><ul>{proposal.lessSafe.map((flag) => <li key={flag}>{LESS_SAFE_WORDS[flag] ?? flag.replace(/_/g, " ")}</li>)}</ul>
@@ -173,6 +210,7 @@ function ProposalView(props: {
     {!proposal.proved && <Button busy={busy === "prove"} disabled={proposal.check.status !== "ready"} onClick={props.onProve}>Prove it</Button>}
 
     <h4>Approve</h4>
+    {proposal.lessSafe.includes("dependency_seed") && <p role="note">A seed command runs against the test database, so a second person, or a fresh sign-in if you're the only owner, must approve.</p>}
     {!proposal.needs.secondPerson && <>
       <p>{proposal.needs.freshSignIn ? "This raises the risk, so you will be asked to sign in again if your sign-in is more than ten minutes old." : "Tasks in this project use it from now on."}</p>
       <Button variant="primary" busy={busy === "approve"} disabled={!proposal.proved} onClick={props.onApprove}>Approve</Button>
@@ -187,6 +225,17 @@ function ProposalView(props: {
       {proposal.approval.status === "approved" && <><p role="status">Confirmed by a second person. Finish the approval within ten minutes of their sign-in.</p>
         <Button variant="primary" busy={busy === "approve"} disabled={!proposal.proved} onClick={props.onApprove}>Approve</Button></>}
     </>}
-    <Button variant="quiet" onClick={props.onEdit}>Edit this proposal</Button>
+    {props.signIn !== undefined && <p role="alert"><VisibleText text={props.signIn} /> <Button onClick={props.onSignIn}>Sign in again</Button></p>}
+    <Button variant="quiet" onClick={props.onEdit}>Edit as JSON (advanced)</Button>
+  </div>;
+}
+
+/** One dependency's "fill it with test data" field: a plain command line, read and checked by the server when saved. Empty clears it. */
+function SeedField({ dependency, busy, onSave }: { dependency: Proposal["dependencySeeds"][number]; busy: boolean; onSave: (dependencyId: string, command: string) => Promise<void> }) {
+  const [text, setText] = useState(dependency.command ?? "");
+  const changed = text.trim() !== (dependency.command ?? "");
+  return <div className="rv-proposal-card">
+    <TextField label={`Fill ${dependency.name} with test data`} hint="A command that fills the test database, for example npm run seed. It runs against the test database inside the test environment, never in setup. Leave it empty if the tests need no data." value={text} maxLength={500} onChange={(event) => setText(event.target.value)} />
+    <Button busy={busy} disabled={!changed} onClick={() => { void onSave(dependency.id, text); }}>Save the test data command</Button>
   </div>;
 }

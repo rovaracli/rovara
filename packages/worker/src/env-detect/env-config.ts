@@ -169,10 +169,28 @@ function readSettings(path: string, text: string, out: DependencyCandidate[]): v
   }
 }
 
+/** Prisma names its database in the schema file: `provider = "postgresql"`. The connection string is an env() call; nothing of it is read. */
+const PRISMA_PROVIDERS: Readonly<Record<string, string>> = { postgresql: "postgres", postgres: "postgres", mysql: "mysql", mongodb: "mongodb" };
+function readPrismaSchema(path: string, text: string, out: DependencyCandidate[]): void {
+  const datasource = /(?:^|\n)\s{0,40}datasource\s{1,40}[A-Za-z_][A-Za-z0-9_]{0,40}\s{0,40}\{/u.exec(text);
+  if (datasource === null) return;
+  const block = text.slice(datasource.index, datasource.index + 1_500);
+  const provider = /provider\s{0,40}=\s{0,40}"([a-z]{2,20})"/u.exec(block);
+  const family = provider === null ? undefined : PRISMA_PROVIDERS[provider[1]!];
+  const url = /url\s{0,40}=\s{0,40}env\(\s{0,40}"([A-Z][A-Z0-9_]{1,63})"/u.exec(block);
+  const name = url === null ? undefined : safeEnvName(url[1]);
+  if (family !== undefined) add(out, family, path, lineOf(text, datasource.index + (provider?.index ?? 0)), name === undefined ? {} : { envNames: [name] });
+}
+
 export const detectEnvConfig: Detector = async ({ repo }) => {
+  const prismaFound: DependencyCandidate[] = [];
+  for (const path of repo.paths.filter((candidate) => /(?:^|\/)schema\.prisma$/u.test(candidate) && !DEPENDENCY_SKIP_DIRS.test(candidate)).slice(0, 4)) {
+    const text = await repo.read(path);
+    if (text !== undefined) readPrismaSchema(path, text, prismaFound);
+  }
   const files = repo.paths.filter((path) => !DEPENDENCY_SKIP_DIRS.test(path) && ((DOTENV.test(path) && !DOTENV_ENCRYPTED.test(path)) || SETTINGS_FILE.test(path))).slice(0, ENV_CONFIG_MAX_FILES);
-  if (files.length === 0) return {};
-  const found: DependencyCandidate[] = [];
+  if (files.length === 0 && prismaFound.length === 0) return {};
+  const found: DependencyCandidate[] = [...prismaFound];
   for (const path of files) {
     const text = await repo.read(path);
     if (text === undefined) continue;
