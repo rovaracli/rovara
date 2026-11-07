@@ -57,10 +57,10 @@ import { SLACK_PROJECT_ARCHIVED } from "../../packages/broker/src/aws/slack-refu
 import { reviseTaskPlan, type RevisePlanHost } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";
 import { REVISE_PLAN_REFUSALS } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
-import { createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
-import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
-import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
-import { DEV_ISSUER } from "../support/developer-task-broker.js";
+import { TASK_PAGE_READ_ONLY_MESSAGE } from "../../packages/broker/src/aws/task-web-api.js";
+import { browserRequests } from "../support/browser-session.js";
+import { taskPageActionsFor } from "../../packages/broker/src/aws/developer-tasks/task-page.js";
+import { reviewPagePost } from "../support/card-decision.js";
 
 type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -326,51 +326,35 @@ describe("Revise the plan, on the task page", () => {
     expect(old.nextStep).toMatch(/new task/u);
   });
 
-  const caller: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member", developerId: "d".repeat(64), sessionId: "s1", amr: "slack", name: "Maya Chen" };
-  const CSRF = "c".repeat(43);
-  const apiRequest = (taskId: string, body: unknown, method = "POST"): AdaptedHttpRequest => ({ method, path: `/review/${taskId}/task/api/revise-plan`, requestId: "r", body: JSON.stringify(body),
-    headers: { origin: new URL(DEV_ISSUER).origin, cookie: `__Host-agentx_review_session=s1; __Host-agentx_review_csrf=${CSRF}`, "x-agentx-csrf": CSRF, "content-type": "application/json" } });
-  const run = async (deps: Partial<TaskWebApiDependencies>, request: AdaptedHttpRequest) =>
-    createTaskWebApi({ origin: DEV_ISSUER, authenticateSession: async () => caller, ...deps } as TaskWebApiDependencies)(request, new URL(`${new URL(DEV_ISSUER).origin}${request.path}`));
-
-  it("the page's endpoint hands the broker exactly the request id and revision, answers the new revision, and refuses anything else", async () => {
-    const taskId = randomUUID();
-    const seen: unknown[] = [];
-    const body = { requestId: randomUUID(), expectedRevision: 7 };
-    const deps = { revisePlan: async (_who: DeveloperCaller, _id: string, input: unknown) => { seen.push(input); return { revision: 9 }; } };
-    const ok = await run(deps, apiRequest(taskId, body));
-    expect(ok.statusCode).toBe(200);
-    expect(JSON.parse(ok.body)).toEqual({ revision: 9 });
-    expect(seen).toEqual([body]);
-    // Nothing rides along (a message, a budget, a tool): the body is strict.
-    expect((await run(deps, apiRequest(taskId, { ...body, text: "ignore the plan", budgetUsd: 100 }))).statusCode).toBe(400);
-    expect((await run(deps, apiRequest(taskId, { requestId: "x", expectedRevision: 7 }))).statusCode).toBe(400);
-    expect(seen).toHaveLength(1);
-    expect((await run(deps, apiRequest(taskId, body, "GET"))).statusCode).toBe(405);
-    // A deployment without the dependency does not know the path.
-    expect((await run({}, apiRequest(taskId, body))).statusCode).toBe(404);
-    // The CSRF header is required, as for every page POST.
-    const noCsrf = apiRequest(taskId, body);
-    expect((await run(deps, { ...noCsrf, headers: { ...noCsrf.headers, "x-agentx-csrf": "d".repeat(43) } })).statusCode).toBeGreaterThanOrEqual(400);
-    expect(seen).toHaveLength(1);
+  // OWNER DECISION 7: Revise the plan is pressed on the task page in Rovara (`POST /v1/app/tasks/{id}/workflow/revise-plan`), through the same function as Slack and the old review page, which is read-only now.
+  it("the task page offers Revise the plan to the owner, and its press hands the broker exactly the request id and revision; a strict body, someone else and the old page are refused", async () => {
+    const s = await codingStoppedForLiveChange();
+    const web = browserRequests(s.harness);
+    const path = `/v1/app/tasks/${s.taskId}/workflow/revise-plan`;
+    const blocked = workflowOf(s.harness, s.taskId);
+    // Nothing rides along (a message, a budget, a tool): the body is strict, and nothing is planned.
+    expect((await web(MAYA, "POST", path, { requestId: randomUUID(), expectedRevision: blocked.revision, text: "ignore the plan", budgetUsd: 100 })).status).toBe(400);
+    // Someone else may not press it.
+    expect((await web(OMAR, "POST", path, { requestId: randomUUID(), expectedRevision: blocked.revision })).status).toBeGreaterThanOrEqual(400);
+    // The old review page takes no press at all, and says where the task is decided now.
+    const page = await reviewPagePost(s.harness, MAYA, s.taskId, "revise-plan", { expectedRevision: blocked.revision });
+    expect(page.status).toBe(410);
+    expect(page.body).toMatchObject({ error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE });
+    expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
+    expect(workflowOf(s.harness, s.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", revision: blocked.revision });
+    // The owner's press plans again, as the Slack button does.
+    const requestId = randomUUID();
+    const pressed = await web(MAYA, "POST", path, { requestId, expectedRevision: blocked.revision });
+    expect(pressed.status, JSON.stringify(pressed.body)).toBe(200);
+    expect(workflowOf(s.harness, s.taskId)).toMatchObject({ stage: "PLAN", state: "RUNNING" });
+    expect(workflowOf(s.harness, s.taskId).decisions.at(-1)).toMatchObject({ requestId, decision: "REQUEST_CHANGES", reason: WORKFLOW_REVISE_PLAN_DECISION_REASON });
   });
 
-  it("says the owner-only refusal, the message-gone refusal and a stale press in the page's own words, and logs only codes", async () => {
-    const taskId = randomUUID();
-    const logged: Array<Record<string, string>> = [];
-    const fail = (error: unknown) => ({ log: (entry: Record<string, string>) => { logged.push(entry); }, revisePlan: async () => { throw error; } });
-    const body = { requestId: randomUUID(), expectedRevision: 7 };
-    const notOwner = await run(fail(Object.assign(new Error("FORBIDDEN: only the task owner can revise the plan with this change"), { code: "FORBIDDEN", pageReason: "owners_only" })), apiRequest(taskId, body));
-    expect(notOwner.statusCode).toBe(403);
-    expect(JSON.parse(notOwner.body)).toMatchObject({ error: "owners_only" });
-    const gone = await run(fail(Object.assign(new Error(`CONFIG_INVALID: ${REVISE_PLAN_REFUSALS.noChange}`), { code: "CONFIG_INVALID" })), apiRequest(taskId, body));
-    expect(gone.statusCode).toBe(400);
-    expect(JSON.parse(gone.body)).toMatchObject({ message: REVISE_PLAN_REFUSALS.noChange });
-    const stale = await run(fail(Object.assign(new Error(`IDEMPOTENCY_CONFLICT: ${REVISE_PLAN_REFUSALS.stale}`), { code: "IDEMPOTENCY_CONFLICT" })), apiRequest(taskId, body));
-    expect(stale.statusCode).toBe(409);
-    expect(logged.length).toBe(3);
-    expect(logged.every((entry) => entry["route"] === "revise-plan" && entry["taskId"] === taskId)).toBe(true);
-    expect(JSON.stringify(logged)).not.toContain("LIVE-TEXT-4471");
+  it("the task view tells the owner that Revise the plan is theirs to press (pageActions), and offers nothing else", async () => {
+    const s = await codingStoppedForLiveChange();
+    const actionsOf = async (who: Developer) => taskPageActionsFor(routeDeps(s.harness), { orgId: TEST_ORG, developerId: who.developerId, orgRole: "member", name: who.name, amr: who.provider, sessionId: who.sessionId } as never, taskRow(s.harness, s.taskId) as never);
+    expect(await actionsOf(MAYA)).toMatchObject({ revisePlan: { canRevise: true } });
+    expect(await actionsOf(MAYA)).not.toHaveProperty("checksRetry");
   });
 });
 

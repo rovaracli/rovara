@@ -229,19 +229,24 @@ describe("browser sign-in returns and sign-out", () => {
    expect(response.cookies?.some(value => value.startsWith("__Host-agentx_review_session="))).toBe(false);
   }
  });
- it("lets a task-page comment use the app session's CSRF header", async () => {
-  const createComment = vi.fn(async () => ({ comment: {} as never }));
+ it("lets the task page's one write (a People request's confirmation) use the app session's CSRF header, and refuses a comment: the page is read-only (OWNER DECISION 7)", async () => {
+  const requestId = "22222222-2222-4222-8222-222222222222";
+  const confirmPeopleRequest = vi.fn(async () => ({ status: "COMMITTED" as const, view: {} as never }));
+  const getPeopleRequest = vi.fn(async () => ({ status: "PENDING" as const, requestId, confirmationUrl: "https://x.example/c", expiresAt: "2026-11-07T10:00:00.000Z" }));
   const caller = { developerId: WHO, sessionId: SID, amr: "cloud" as const, orgId: TEST_ORG, orgRole: "owner" as const, name: "Web member" };
   const unused = async (): Promise<never> => { throw new Error("Unexpected fixture route"); };
-  const api = createTaskWebApi({ origin: CELL, authenticateSession: async () => caller, createComment, taskState: unused, listComments: unused, editComment: unused, deleteComment: unused, setSuggestion: unused, decide: unused });
-  const path = "/review/11111111-1111-4111-8111-111111111111/task/api/comments";
-  const body = { requestId: randomUUID(), document: "plan", version: 1, target: { kind: "claim", id: "2.1" }, text: "A comment", ask: false };
+  const api = createTaskWebApi({ origin: CELL, authenticateSession: async () => caller, taskState: unused, listComments: unused, getPeopleRequest, confirmPeopleRequest });
+  const path = `/review/11111111-1111-4111-8111-111111111111/task/api/people/requests/${requestId}/confirm`;
+  const body = { requestId };
   for (const headers of [{ origin: CELL }, { origin: CELL, [APP_CSRF_HEADER]: "wrong" }, { origin: "https://evil.example", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }]) {
    const refused = await api({ method: "POST", path, requestId: "fixture", headers: { cookie: COOKIE, "content-type": "application/json", ...headers }, body: JSON.stringify(body) }, new URL(path, CELL));
-   expect(refused.statusCode).toBe(403);expect(createComment).not.toHaveBeenCalled();
+   expect(refused.statusCode).toBe(403);expect(confirmPeopleRequest).not.toHaveBeenCalled();
   }
   const response = await api({ method: "POST", path, requestId: "fixture", headers: { cookie: COOKIE, origin: CELL, "content-type": "application/json", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body: JSON.stringify(body) }, new URL(path, CELL));
-  expect(response.statusCode).toBe(201);expect(createComment).toHaveBeenCalledTimes(1);
+  expect(response.statusCode).toBe(200);expect(confirmPeopleRequest).toHaveBeenCalledTimes(1);
+  const commentPath = "/review/11111111-1111-4111-8111-111111111111/task/api/comments";
+  const comment = await api({ method: "POST", path: commentPath, requestId: "fixture", headers: { cookie: COOKIE, origin: CELL, "content-type": "application/json", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body: JSON.stringify({ requestId: randomUUID(), document: "plan", version: 1, target: { kind: "document" }, text: "A comment", ask: false }) }, new URL(commentPath, CELL));
+  expect(comment.statusCode).toBe(410);
  });
 });
 

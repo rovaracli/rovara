@@ -1193,15 +1193,17 @@ describe("slice C: the design review's routes", () => {
     const response = await get();
     expect(response.statusCode).toBe(200);
     const text = String(response.body);
-    expect(text).toContain("Approve on the decision card");
-    expect(text).toContain("Approve the design on its decision card in Rovara, or request changes here.");
+    // OWNER DECISION 7: the page is read-only; its bar sends the owner to the task page, where the design's card is.
+    expect(text).toMatch(/<a id="decide-on-task" href="\/app\/sessions\/ses_[0-9a-z]{20}">Decide on the task<\/a>/u);
+    expect(text).toContain("Approve the design or request changes on its decision card in Rovara.");
+    expect(text).not.toContain("<button type=\"button\" id=\"decide-approve\"");
     // The header (status and next step) does not send a web-started task to Slack, and there is no People panel to be unavailable.
     expect(text.slice(text.indexOf("<header>"), text.indexOf("</header>"))).not.toContain("Slack");
     expect(text).not.toContain("People unavailable");
     // The guard is unchanged: a plain approval is still refused and nothing is decided.
     const before = w.task().workflow;
     const refused = await pageDecision(w, MAYA, { requestId: randomUUID(), expectedRevision: before.revision, artifactDigest: designDigestOf(w), decision: "APPROVE", answers: [], includedCommentIds: [] });
-    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(refused.status).toBe(410);
     expect(w.task().workflow).toEqual(before);
   });
 
@@ -1289,7 +1291,7 @@ describe("slice C: the design review's routes", () => {
     w.db.set({ pk: `SESSION#${id}`, sk: "META", sessionId: id, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 600, reviewExpiresAt: Math.floor(Date.now() / 1000) + 600 });
     return id;
   };
-  /** The task page's own decision door (`/review/{id}/task/api/decision`), as the page's script posts it. */
+  /** The old review page's decision door (`/review/{id}/task/api/decision`), as its script posted it: read-only now (OWNER DECISION 7). */
   const pageDecision = async (w: World, who: Developer, body: unknown) => {
     await w.orgOf(who);
     const response = await w.handler({
@@ -1308,9 +1310,10 @@ describe("slice C: the design review's routes", () => {
     const tool = await w.dev(MAYA, "POST", `/v1/dev/tasks/${w.taskId}/workflow/decision`, plainApprove(w));
     expect(tool.status).toBe(400);
     expect(JSON.stringify(tool.body)).toContain("design approval card");
+    // The old review page takes no decision at all (OWNER DECISION 7: read-only).
     const page = await pageDecision(w, MAYA, { requestId: randomUUID(), expectedRevision: before.revision, artifactDigest: designDigestOf(w), decision: "APPROVE", answers: [], includedCommentIds: [] });
-    expect(page.status).toBeGreaterThanOrEqual(400);
-    expect(page.body).toContain("design approval card");
+    expect(page.status).toBe(410);
+    expect(page.body).toContain("read_only");
     expect(w.task().workflow).toEqual(before);
     expect(w.db.find((item) => String(item.sk).startsWith("DESIGN_APPROVAL#"))).toEqual([]);
     // Sending the design back is unchanged (the guard is for an approval only).

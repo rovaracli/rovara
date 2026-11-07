@@ -1,4 +1,6 @@
 import { APP_CSRF_HEADER, appCsrfMatches } from "../developer/app-csrf.js";
+// OWNER DECISION 7: the review page is read-only. Its reads (state, comments, People, a People request, E2E screenshots) still answer; every write it made is refused with 410 and a pointer to the task's
+// page in Rovara, where the same functions are reached (decision cards, task page actions, Slack). The one write kept is a People request's confirmation, which Slack's People flow links to.
 // Spec 061 slice 2: the task page's JSON API under `/review/<task ID>/task/api/*`. Every request needs the review
 // session; every POST also needs this origin, the CSRF header matching its cookie, a JSON body of at most 16 KB and a
 // strict schema. Whoever acts is the session's caller, never anything in the body. Not yours and no such task answer
@@ -103,33 +105,20 @@ export interface TaskWebApiDependencies {
   taskState(caller: DeveloperCaller, taskId: string): Promise<TaskPageState>;
   /** The comments, and the suggestions that still apply (names and "you" only), as the open page refreshes them. */
   listComments(caller: DeveloperCaller, taskId: string): Promise<{ comments: PageCommentView[]; suggestions?: unknown[]; canRemember?: boolean }>;
-  createComment(caller: DeveloperCaller, taskId: string, input: PageCommentInput): Promise<{ comment: PageCommentView; duplicate?: boolean; askRefused?: string }>;
-  editComment(caller: DeveloperCaller, taskId: string, input: { commentId: string; rev: number; text: string }): Promise<{ comment: PageCommentView }>;
-  deleteComment(caller: DeveloperCaller, taskId: string, input: { commentId: string; rev: number }): Promise<{ comment: PageCommentView }>;
-  setSuggestion(caller: DeveloperCaller, taskId: string, input: PageSuggestionInput): Promise<unknown>;
-  /** v1.2 learning loop: "Remember this" on a comment. It must check the caller's own standing in the project, not only their role on the task. Without it the path is not found. */
-  rememberComment?: (caller: DeveloperCaller, taskId: string, commentId: string) => Promise<z.infer<typeof LearningRememberAnswerSchema>>;
-  /** v1.2 learning loop: "Forget" on a remembered comment. Without it the path is not found. */
-  forgetComment?: (caller: DeveloperCaller, taskId: string, commentId: string) => Promise<z.infer<typeof LearningForgetAnswerSchema>>;
-  /** Must refuse a caller who may not decide with an error carrying `pageReason: "owners_only"`. */
-  decide(caller: DeveloperCaller, taskId: string, input: PageDecisionInput): Promise<{ revision: number }>;
-  /** Retries a blocked application round (the owner only; any other block is refused) and answers the new revision. Without it, the retry path is not found. */
-  retryApplicationRound?(caller: DeveloperCaller, taskId: string, input: PageRetryInput): Promise<{ revision: number }>;
-  /** Live steer: the owner's Revise the plan press (coding stopped for a change outside the approved plan; only the owner, only then) and the new revision. Without it, the path is not found. */
-  revisePlan?(caller: DeveloperCaller, taskId: string, input: PageRetryInput): Promise<{ revision: number }>;
-  /** Wire lane D (MD-1): the owner's choice on a spec on hold (`retry`, `continue`, `keep` or `replan`). Without it, the paths answer not found. */
-  specChoice?(caller: DeveloperCaller, taskId: string, choice: "retry" | "continue" | "keep" | "replan"): Promise<{ status: string }>;
   /**
    * The screenshot behind a row of the task's results (M1.3 Task 3.7), by its SHA-256: undefined for a digest the task's current display does not name. It must refuse a caller
    * who may not read the task (the page's own access rule) with an error carrying the code TASK_NOT_FOUND, TASK_ACCESS_DENIED, FORBIDDEN or NOT_FOUND. Without it the path is not found.
    */
   readE2EArtifact?(caller: DeveloperCaller, taskId: string, sha256: string): Promise<{ contentType: "image/jpeg"; bytes: Uint8Array } | undefined>;
   getPeople?(caller: DeveloperCaller, taskId: string): Promise<TaskPeopleView | undefined>;
-  proposePeopleRole?(caller: DeveloperCaller, taskId: string, input: TaskPeopleRoleRequest): Promise<TaskPeopleChangeResult>;
-  proposeOwnership?(caller: DeveloperCaller, taskId: string, input: TaskPeopleTakeOwnershipRequest): Promise<TaskPeopleChangeResult>;
   getPeopleRequest?(caller: DeveloperCaller, taskId: string, requestId: string): Promise<TaskPeopleChangeResult>;
   confirmPeopleRequest?(caller: DeveloperCaller, taskId: string, requestId: string): Promise<TaskPeopleChangeResult>;
+  /** OWNER DECISION 7: the task's page in Rovara (`/app/sessions/<id>`) for a caller who may read the task, said with a refused write; undefined when it has none or the caller may not read it. */
+  taskPagePath?(caller: DeveloperCaller, taskId: string): Promise<string | undefined>;
 }
+
+/** OWNER DECISION 7: what a write to the read-only page answers. */
+export const TASK_PAGE_READ_ONLY_MESSAGE = "This page is read only. Decide on the task's page in Rovara.";
 
 const NOT_FOUND = { error: "not_found", message: "You don't have access to this task." };
 const HIDDEN = new Set(["FORBIDDEN", "TASK_NOT_FOUND", "TASK_ACCESS_DENIED", "NOT_FOUND"]);
@@ -240,6 +229,14 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
       refused.headers.allow = allowed.join(", ");
       return refused;
     }
+    // OWNER DECISION 7: every write but a People request's confirmation (Slack's People flow) is refused, before any body is read, with where the task is decided now.
+    if (method === "POST" && !(peopleRequestId !== undefined && peopleConfirm)) {
+      let taskPage: string | undefined;
+      try { taskPage = await deps.taskPagePath?.(caller, taskId); } catch { taskPage = undefined; }
+      const refused = json(410, { error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE, ...(taskPage === undefined ? {} : { taskPage }) });
+      refusalLog(deps, endpoint, taskId, refused, { code: "READ_ONLY" });
+      return refused;
+    }
     try {
       if (method === "GET") {
         if (endpoint === "e2e/artifacts") return e2eArtifactResponse(deps, caller, taskId, artifactSha256!);
@@ -282,82 +279,15 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
       } catch {
         return invalid();
       }
-      if (endpoint === "people/role") {
-        if (deps.proposePeopleRole === undefined) return json(404, { error: "not_found" });
-        const parsed = TaskPeopleRoleRequestSchema.safeParse(value);
-        if (!parsed.success) return invalid();
-        const result = await deps.proposePeopleRole(caller, taskId, parsed.data);
-        return json(result.status === "PENDING" ? 202 : 200, result);
-      }
-      if (endpoint === "people/take-ownership") {
-        if (deps.proposeOwnership === undefined) return json(404, { error: "not_found" });
-        const parsed = TaskPeopleTakeOwnershipRequestSchema.safeParse(value);
-        if (!parsed.success) return invalid();
-        const result = await deps.proposeOwnership(caller, taskId, parsed.data);
-        return json(result.status === "PENDING" ? 202 : 200, result);
-      }
-      if (peopleRequestId !== undefined && peopleConfirm) {
-        if (deps.getPeopleRequest === undefined || deps.confirmPeopleRequest === undefined) return json(404, { error: "not_found" });
-        const parsed = z.object({ requestId: z.string().uuid() }).strict().safeParse(value);
-        if (!parsed.success || parsed.data.requestId.toLowerCase() !== peopleRequestId) return invalid();
-        const receipt = await deps.getPeopleRequest(caller, taskId, peopleRequestId);
-        if (receipt.status === "COMMITTED") return json(200, receipt);
-        const result = await deps.confirmPeopleRequest(caller, taskId, peopleRequestId);
-        return json(result.status === "PENDING" ? 202 : 200, result);
-      }
-      if (endpoint === "comments" && commentId !== undefined && (action === "remember" || action === "forget")) {
-        const learn = action === "remember" ? deps.rememberComment : deps.forgetComment;
-        if (learn === undefined) return json(404, { error: "not_found" });
-        // The body is empty and strict: standing, author and stage are never the caller's to say.
-        if (!LearningTaskPageBodySchema.safeParse(value).success) return invalid();
-        return json(200, await learn(caller, taskId, commentId));
-      }
-      if (endpoint === "comments" && commentId !== undefined) {
-        if (action === "edit") {
-          const parsed = PageCommentEditSchema.safeParse(value);
-          if (!parsed.success) return invalid();
-          return json(200, await deps.editComment(caller, taskId, { commentId, ...parsed.data }));
-        }
-        const parsed = PageCommentDeleteSchema.safeParse(value);
-        if (!parsed.success) return invalid();
-        return json(200, await deps.deleteComment(caller, taskId, { commentId, ...parsed.data }));
-      }
-      if (endpoint === "comments") {
-        const parsed = PageCommentInputSchema.safeParse(value);
-        if (!parsed.success) return invalid();
-        const created = await deps.createComment(caller, taskId, parsed.data);
-        return json(created.duplicate === true ? 200 : 201, created);
-      }
-      if (endpoint === "suggestions") {
-        const parsed = PageSuggestionInputSchema.safeParse(value);
-        if (!parsed.success) return invalid();
-        await deps.setSuggestion(caller, taskId, parsed.data);
-        return json(200, { ok: true });
-      }
-      if (endpoint === "revise-plan") {
-        if (deps.revisePlan === undefined) return json(404, { error: "not_found" });
-        const parsedRevise = PageRetryInputSchema.safeParse(value);
-        if (!parsedRevise.success) return invalid();
-        return json(200, await deps.revisePlan(caller, taskId, parsedRevise.data));
-      }
-      if (endpoint.startsWith("spec/")) {
-        if (deps.specChoice === undefined) return json(404, { error: "not_found" });
-        if (!PageRetryInputSchema.safeParse(value).success) return invalid();
-        return json(200, await deps.specChoice(caller, taskId, endpoint.slice("spec/".length) as "retry" | "continue" | "keep" | "replan"));
-      }
-      if (endpoint === "retry") {
-        if (deps.retryApplicationRound === undefined) return json(404, { error: "not_found" });
-        const parsedRetry = PageRetryInputSchema.safeParse(value);
-        if (!parsedRetry.success) return invalid();
-        return json(200, await deps.retryApplicationRound(caller, taskId, parsedRetry.data));
-      }
-      const parsed = PageDecisionInputSchema.safeParse(value);
-      if (!parsed.success) {
-        const refused = invalid("AgentX didn't accept that decision. Refresh the page and try again.");
-        refusalLog(deps, "decision", taskId, refused, { code: "INVALID_REQUEST" }, parsed.error.issues.flatMap((issue) => [...issue.path.map(String), ...(issue.code === "unrecognized_keys" ? issue.keys : [])]));
-        return refused;
-      }
-      return json(200, await deps.decide(caller, taskId, parsed.data));
+      // The only write left (OWNER DECISION 7): a People request's confirmation, from the confirmation page Slack's People flow links to.
+      const receiptOf = deps.getPeopleRequest, confirm = deps.confirmPeopleRequest;
+      if (receiptOf === undefined || confirm === undefined || peopleRequestId === undefined) return json(404, { error: "not_found" });
+      const parsed = z.object({ requestId: z.string().uuid() }).strict().safeParse(value);
+      if (!parsed.success || parsed.data.requestId.toLowerCase() !== peopleRequestId) return invalid();
+      const receipt = await receiptOf(caller, taskId, peopleRequestId);
+      if (receipt.status === "COMMITTED") return json(200, receipt);
+      const result = await confirm(caller, taskId, peopleRequestId);
+      return json(result.status === "PENDING" ? 202 : 200, result);
     } catch (error) {
       const refused = refusalResponse(error);
       if (method === "POST") refusalLog(deps, endpoint, taskId, refused, error);

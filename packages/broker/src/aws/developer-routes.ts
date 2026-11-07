@@ -6,11 +6,11 @@ import { DECIDE_COOKIE, cookieOf } from "../developer/decide-session.js";
 import { getTaskStopEnrollment, reviewTaskStopEnrollment, writeTaskStopEnrollment } from "../org/task-stop-enrollment.js";
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
 // The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
-import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./developer-routes/spec-routes.js";
+import { SPEC_CHOICE_ROUTE, routeSpecChoice } from "./developer-routes/spec-routes.js";
 import { getInstallInfo } from "./developer-routes/install.js";
 import { isSsoRoute, routeSsoRequest } from "./developer-routes/sso.js";
 import { isCompanyDomainsRoute, routeCompanyDomains } from "./developer-routes/company-domains.js";
-import { specOwnerChoice } from "./developer-tasks/spec-wiring.js";
+import { taskPagePathFor } from "./developer-tasks/task-page.js";
 import "../org/task-stop-unpriced.js";
 import "../org/task-stop-editing.js";
 import "../org/service-status.js";
@@ -161,25 +161,16 @@ import { requireFreshSignInForExport, startsAuditExport } from "./developer-rout
 import { canReadAuditLog, requireAuditorRoute } from "../org/auditor.js";
 import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
 import {
-  createPageComment,
-  decideOnPage,
-  deletePageComment,
-  editPageComment,
   getTaskDocumentView,
   getTaskFreshness,
   getTaskPageState,
   listPageComments,
-  retryApplicationRoundOnPage,
-  reviseTaskWorkflowPlan,
-  setPageSuggestion,
   confirmTaskPeopleProposal,
   getTaskPeopleCapabilities,
   getTaskPeopleForPage,
   getTaskPeopleProposal,
   getTaskPeopleProposalMetadata,
   getTaskPersonPresentationName,
-  proposeTaskOwnershipForPage,
-  proposeTaskPeopleRoleForPage,
   getWorkflowFeedbackReview,
   routeDeveloperTaskRequest,
   submitWorkflowFeedbackDecision,
@@ -304,7 +295,6 @@ import { recordWriteContextOf } from "./developer-routes/team-record-source-writ
 import { LEARNING_SETTINGS_PATH, routeLearningSettings } from "../learning/settings-routes.js";
 import { REVIEW_DEFAULT_NOTICE_PATH, dismissReviewDefaultNotice, readReviewDefaultNotice } from "../model-selection/review-default-notice.js";
 import { clearArchivedProjectLearning } from "./developer-routes/project-archive-setup.js";
-import { forgetTaskComment, rememberTaskComment } from "../learning/capture-comment.js";
 import { getTaskStopEditing, writeTaskStopEditing } from "../org/task-stop-editing.js";
 import { SCRIPT_TOKENS_BROWSER_MESSAGE, isScriptTokensPath, routeScriptTokens } from "../script-tokens/routes.js";
 import { auditScriptTokenTaskStart, authenticateScriptToken } from "../script-tokens/authenticate.js";
@@ -393,23 +383,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
           authenticateSession: authenticatePersonSession,
           taskState: (caller, taskId) => getTaskPageState(routeDeps(caller), caller, taskId),
           listComments: (caller, taskId) => listPageComments(routeDeps(caller), caller, taskId),
-          createComment: (caller, taskId, input) => createPageComment(routeDeps(caller), caller, taskId, input),
-          editComment: (caller, taskId, input) => editPageComment(routeDeps(caller), caller, taskId, input),
-          deleteComment: (caller, taskId, input) => deletePageComment(routeDeps(caller), caller, taskId, input),
-          setSuggestion: (caller, taskId, input) => setPageSuggestion(routeDeps(caller), caller, taskId, input),
-          rememberComment: (caller, taskId, commentId) => rememberTaskComment(routeDeps(caller), caller, taskId, commentId, { audit: deps.agents?.audit }),
-          forgetComment: (caller, taskId, commentId) => forgetTaskComment(routeDeps(caller), caller, taskId, commentId, { audit: deps.agents?.audit }),
-          decide: (caller, taskId, input) => decideOnPage(routeDeps(caller), caller, taskId, input),
-          retryApplicationRound: (caller, taskId, input) => retryApplicationRoundOnPage(routeDeps(caller), caller, taskId, input),
-          // Wire lane D (MD-1): the owner's choice on a spec on hold (the same function as POST /v1/app/tasks/{id}/spec/{choice}).
-          specChoice: (caller, taskId, choice) => specOwnerChoice(routeDeps(caller), caller, taskId, SPEC_PAGE_CHOICES[choice]),
-          revisePlan: async (caller, taskId, input) => { await reviseTaskWorkflowPlan(routeDeps(caller), caller, taskId, input); return { revision: (await getTaskFreshness(routeDeps(caller), caller, taskId)).revision }; },
           readE2EArtifact: (caller, taskId, sha256) => getTaskE2EArtifact(routeDeps(caller), caller, taskId, sha256),
           getPeople: (caller, taskId) => getTaskPeopleForPage(routeDeps(caller), caller, taskId),
-          proposePeopleRole: (caller, taskId, input) => proposeTaskPeopleRoleForPage(routeDeps(caller), caller, taskId, input),
-          proposeOwnership: (caller, taskId, input) => proposeTaskOwnershipForPage(routeDeps(caller), caller, taskId, input),
           getPeopleRequest: (caller, taskId, requestId) => getTaskPeopleProposal(routeDeps(caller), caller, taskId, requestId),
           confirmPeopleRequest: (caller, taskId, requestId) => confirmTaskPeopleProposal(routeDeps(caller), caller, taskId, requestId),
+          // OWNER DECISION 7: the page is read-only; a refused write says where the task is decided now.
+          taskPagePath: (caller, taskId) => taskPagePathFor(routeDeps(caller), caller, taskId),
         }),
       })(request, url);
     }

@@ -234,9 +234,7 @@ describe("task page: remembered flags", () => {
       const deps: TaskWebApiDependencies = {
         origin: "https://api.example.test", authenticateSession: async () => caller,
         taskState: async () => ({ revision: 4, waiting: true, stage: "Coding plan", documents: [], commentSeq: 2, canRead: true, canComment: true, canSuggest: true, canDecide: true, canAsk: true, canManagePeople: false, canTakeOwnership: false }),
-        listComments: async () => ({ comments: [] }),
-        createComment: async () => ({}) as never, editComment: async () => ({}) as never, deleteComment: async () => ({}) as never, setSuggestion: async () => ({}),
-        decide: async () => ({ revision: 5 }), ...overrides,
+        listComments: async () => ({ comments: [] }), ...overrides,
       };
       const path = `/review/${taskId}/task/api/${suffix}`;
       const response = await createTaskWebApi(deps)({ method: "GET", path, requestId: "r", headers: { cookie: `__Host-agentx_review_session=${SESSION}` } }, new URL(`https://api.example.test${path}`));

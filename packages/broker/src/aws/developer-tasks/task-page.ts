@@ -7,6 +7,7 @@ import {
   sharedTaskKey,
   type Operation,
   type DeveloperTaskView,
+  SessionIdSchema,
   type WorkflowSnapshot,
   type TaskComment,
   type TaskSuggestion,
@@ -526,6 +527,12 @@ export async function taskPageActionsFor(deps: DeveloperTaskRouteDependencies, c
   };
 }
 
+/** OWNER DECISION 7: the task's page in Rovara for a caller who may read the task (the page's own access rule), said when the read-only review page refuses a write. */
+export async function taskPagePathFor(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<string | undefined> {
+  const { task } = await resolveTaskAccess(deps, caller, taskId);
+  return SessionIdSchema.safeParse(task.sessionId).success ? `/app/sessions/${task.sessionId!}` : undefined;
+}
+
 /** Where the task stands now, for the open task page's "moved on" check: the same access rule as the page, two values only. */
 export async function getTaskFreshness(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<TaskFreshness> {
   const { task } = await resolveTaskAccess(deps, caller, taskId);
@@ -797,7 +804,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   // QA6-03: while a design is under review its approval is only on its decision card; the page points to the card instead of offering a button the server refuses.
   const designCardOnly = designCardOnlyApplies({ canDecide: permissions?.canDecide === true, waitingKind: deciding.waiting?.kind, workflow });
   const stage = taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task), noChangeHasThread(task.share));
-  const stageWords = designCardOnly ? { status: stage.status, nextStep: "Approve the design on its decision card in Rovara, or request changes here." } : stage;
+  const stageWords = designCardOnly ? { status: stage.status, nextStep: "Approve the design or request changes on its decision card in Rovara." } : stage;
   return {
     taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...stageWords,
     ...(e2eResults === undefined ? {} : { e2eResults }),

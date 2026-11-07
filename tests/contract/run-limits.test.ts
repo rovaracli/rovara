@@ -12,7 +12,8 @@ import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/ta
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { RUN_LIMIT_ACK_PLACE_MESSAGE } from "../../packages/broker/src/aws/developer-tasks/decide.js";
 import { decideSessionFor, signInApprovalOf } from "../support/decide-sign-in.js";
-import { pageDecision } from "../support/page-decision.js";
+import { cardDecision, reviewPagePost } from "../support/card-decision.js";
+import { decideTaskWorkflow } from "../../packages/broker/src/aws/developer-tasks/decide.js";
 import { browserRequests } from "../support/browser-session.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import {
@@ -552,9 +553,9 @@ describe("approving the plan", () => {
         checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() };
       return getTaskDocumentView(deps, { orgId: TEST_ORG, developerId: MAYA.developerId } as never, taskId);
     };
-    // The limit is acknowledged only from a signed-in browser (slice 2): the plan review page's own decision door.
-    const decideShowing = (t: Awaited<ReturnType<typeof world>>, taskId: string, plan: { digest: string; revision: number }, acknowledgedRunLimitUsd: number) =>
-      pageDecision(t.h, MAYA, taskId, { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, acknowledgedRunLimitUsd, answers: [{ decisionId: "d1", optionId: "three", opened: true }] });
+    // The limit is acknowledged only from a signed-in browser (slice 2): the plan's decision card on its task page (OWNER DECISION 7: the old review page is read-only).
+    const decideShowing = (t: Awaited<ReturnType<typeof world>>, taskId: string, _plan: { digest: string; revision: number }, acknowledgedRunLimitUsd: number) =>
+      cardDecision(t.h, MAYA, taskId, { acknowledgedRunLimitUsd, answers: [{ decisionId: "d1", optionId: "five", opened: true }] });
 
     it("gives the waiting coding plan's view the limit the task has now and the limit the approval would set", async () => {
       const t = await world();
@@ -592,7 +593,8 @@ describe("approving the plan", () => {
       let reads = 0;
       t.h.db.send = (async (command: { constructor: { name: string }; input?: { KeyConditionExpression?: string } }) => {
         const answer = await send(command as never);
-        if (command.constructor.name === "QueryCommand" && JSON.stringify(command.input).includes("RUN_COST")) {
+        // The approval's own reading of the history (the card's listing and its friction read it too, before the approval): it grows right after that read.
+        if (command.constructor.name === "QueryCommand" && JSON.stringify(command.input).includes("RUN_COST") && (new Error().stack ?? "").includes("settleRunLimit")) {
           reads += 1;
           if (reads === 1) seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
         }
@@ -612,8 +614,8 @@ describe("approving the plan", () => {
       const { taskId, workspaceId, plan } = await t.planned("QUICK");
       const before = t.meta(taskId);
       const refused = await decideShowing(t, taskId, plan, 6);
-      // The plan review page answers a changed limit as "changed" (409), with the broker's words.
-      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      // The card answers a changed limit as a refused request (400), with the broker's words.
+      expect(refused.status, JSON.stringify(refused.body)).toBe(400);
       expect(JSON.stringify(refused.body)).toContain("$20");
       expect(JSON.stringify(refused.body)).toContain("$6");
       const after = t.meta(taskId);
@@ -622,7 +624,7 @@ describe("approving the plan", () => {
       expect(t.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toEqual([]);
       expect(t.requestRunLimit).not.toHaveBeenCalled();
       // Positive control: the same approval naming the real limit goes on to the same place a plain approval does (blocked on the maintainer's approval at $20).
-      // (On the plan review page, so the approval goes on as that page's approver's does.)
+      // (On the card, so the approval goes on as the card's approver's does.)
       expect((await decideShowing(t, taskId, plan, 20)).status).toBe(200);
       expect(t.meta(taskId).workflow.stage).toBe("IMPLEMENT");
     });
@@ -777,14 +779,15 @@ describe("approving the plan", () => {
     expect(token.body).toMatchObject({ error: { code: "FORBIDDEN", message: RUN_LIMIT_ACK_PLACE_MESSAGE } });
     process.env.DECISION_CARDS_ENABLED = "1";
     try {
-      // The page without the tick (an older page): the raise is refused, and nothing is decided.
-      const refused = await pageDecision(t.h, MAYA, taskId, { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, answers: [{ decisionId: "d1", optionId: "three", opened: true }] });
+      // The card without the tick (an older bundle): the raise is refused, and nothing is decided. The old review page takes no decision at all (read-only).
+      expect((await reviewPagePost(t.h, MAYA, taskId, "decision", { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, answers: [], includedCommentIds: [] })).status).toBe(410);
+      const refused = await cardDecision(t.h, MAYA, taskId, { answers: [{ decisionId: "d1", optionId: "five", opened: true }] });
       expect(refused.status).toBeGreaterThanOrEqual(400);
       expect(t.meta(taskId).workflow.decisions).toEqual([]);
       expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
       expect(t.meta(taskId).budgetUsd).toBe(before.budgetUsd);
-      // The plan review page's approval, with the limit it showed, goes on.
-      const approved = await pageDecision(t.h, MAYA, taskId, { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, acknowledgedRunLimitUsd: before.runEstimate.runLimitUsd, answers: [{ decisionId: "d1", optionId: "three", opened: true }] });
+      // The card's approval, with the limit it showed, goes on.
+      const approved = await cardDecision(t.h, MAYA, taskId, { acknowledgedRunLimitUsd: before.runEstimate.runLimitUsd, answers: [{ decisionId: "d1", optionId: "five", opened: true }] });
       expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     } finally { delete process.env.DECISION_CARDS_ENABLED; }
   });
@@ -796,13 +799,16 @@ describe("approving the plan", () => {
     const before = t.meta(taskId) as unknown as { budgetUsd?: number; runEstimate: { runLimitUsd: number } };
     expect(process.env.DECISION_CARDS_ENABLED, "the cards are off").toBeUndefined();
     expect(before.runEstimate.runLimitUsd, "positive control: approving raises the limit").toBeGreaterThan(before.budgetUsd ?? 0);
-    // A browser's approval that leaves the limit out (a page script that skipped the tick): refused with the words, and nothing is decided or written.
-    const refused = await pageDecision(t.h, MAYA, taskId, { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, answers: [{ decisionId: "d1", optionId: "three", opened: true }] });
-    expect(refused.status, JSON.stringify(refused.body)).toBeGreaterThanOrEqual(400);
+    // A signed-in browser's approval that leaves the limit out (a client that skipped the tick): refused by the workflow decision with the words, and nothing is decided or written.
+    const deps = { documentClient: t.h.db, tableName: "state", actions: t.h.actions, log: () => undefined, orgId: TEST_ORG, ...(t.access === undefined ? {} : { modelAccess: t.access }),
+      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() };
+    const browser = { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "member", name: MAYA.name, amr: MAYA.provider, sessionId: MAYA.sessionId, browserSession: true } as never;
+    const request = (extra: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision: plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: plan.digest, ...extra });
+    await expect(decideTaskWorkflow(deps as never, browser, taskId, request())).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("raises the run limit") as unknown });
     expect(t.meta(taskId).workflow.decisions).toEqual([]);
     expect(t.meta(taskId).budgetUsd).toBe(before.budgetUsd);
-    const approved = await pageDecision(t.h, MAYA, taskId, { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, acknowledgedRunLimitUsd: before.runEstimate.runLimitUsd, answers: [{ decisionId: "d1", optionId: "three", opened: true }] });
-    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    await decideTaskWorkflow(deps as never, browser, taskId, request({ acknowledgedRunLimitUsd: before.runEstimate.runLimitUsd }));
+    expect(t.meta(taskId).workflow.decisions).toHaveLength(1);
   });
 
   it("slice 2: with the cards off, a raise is approved through Slack and tools as before (there is no card to send anyone to)", async () => {
@@ -959,17 +965,18 @@ describe("approving the plan", () => {
     });
   });
 
-  it("security review: a HIGH plan is not approved on the plan review page, whatever the web sign-in: the page sends the person to its card (the decide-grade sign-in)", async () => {
+  it("security review: a HIGH plan is not approved on the plan review page (read-only, OWNER DECISION 7), and its card asks for the decide-grade sign-in whatever the web sign-in", async () => {
     await withCards(async () => {
       const t = await world();
       const { taskId, plan } = await t.planned("QUICK", INFRA);
       const proposed = (t.meta(taskId) as unknown as { runEstimate: { runLimitUsd: number } }).runEstimate.runLimitUsd;
-      const body = { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, acknowledgedRunLimitUsd: proposed, answers: [{ decisionId: "d1", optionId: "three", opened: true }] };
+      const page = await reviewPagePost(t.h, MAYA, taskId, "decision", { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, acknowledgedRunLimitUsd: proposed, answers: [], includedCommentIds: [] });
+      expect(page.status, JSON.stringify(page.body)).toBe(410);
+      expect(page.body).toMatchObject({ error: "read_only", taskPage: expect.stringMatching(/^\/app\/sessions\/ses_[0-9a-z]{20}$/u) as unknown });
       for (const agoMs of [20 * 60_000, 0]) {
-        const refused = await pageDecision(t.h, MAYA, taskId, body, agoMs);
-        expect(refused.status, JSON.stringify(refused.body)).toBe(422);
-        expect(refused.body).toMatchObject({ error: "refused" });
-        expect(String(refused.body.message)).toContain("approved on its card in Rovara, after a sign-in with the email code");
+        const refused = await cardDecision(t.h, MAYA, taskId, { acknowledgedRunLimitUsd: proposed, answers: [{ decisionId: "d1", optionId: "five", opened: true }] }, agoMs);
+        expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+        expect(refused.body).toMatchObject({ error: { code: "REAUTH_REQUIRED" } });
         expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
       }
     });
