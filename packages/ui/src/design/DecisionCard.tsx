@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode, type TouchEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "react-router";
-import { DECISION_APPROVE_TAKES, DECISION_LABELS, DECISION_REJECT_REASONS, decisionTaskSessionOf, type DecisionRejectReason, type DecisionTabId } from "@agentx/contracts/web";
+import { DECISION_LABELS, DECISION_REJECT_REASONS, decisionTaskSessionOf, type DecisionRejectReason, type DecisionTabId } from "@agentx/contracts/web";
 import { useAppHost } from "../host.js";
 import { ApiError } from "../api/errors.js";
 import { HIGH_ON_CARD_KINDS, decisionOpenTarget, mayApproveHere, runLimitRaise, type DecisionResult, type PlanDecisionFields, type ReadDecision } from "../api/decisions.js";
@@ -55,6 +55,13 @@ export interface DecisionCardActions {
 }
 
 const HIGH_RISK_NOTE = "High risk: approving needs a recent sign-in.";
+/**
+ * OWNER DECISION 18: what Approve sends, said where the person chooses it (the card on its task page and the panel's foot). Only an answer changed from Rovara's recommendation is sent; the workflow
+ * decision gives every other question the plan's recommended answer. With open comments, exactly the ticked ones are sent; an unticked one stays open for the next version.
+ */
+const APPROVE_SENDS_CHOICES = "Your answers above and the ticked comments go with your decision. A question you leave on Rovara's recommendation takes Rovara's recommended answer; a comment you untick stays open for the next version.";
+/** Where the card is only shown (Home): Approve sends the recommended answers and the open comments (up to 25), as Slack's Approve does; the choices are made on the task. */
+const APPROVE_TAKES_ELSEWHERE = "Approving here takes Rovara's recommended answer to each decision in the document and the open comments (up to 25). To answer them yourself, open the task.";
 const NO_CHOICES = { questions: [], optionalChecks: [], openComments: [] };
 const CHANGED_WORDS = "This changed while you were looking. The card has the latest; check it and approve again.";
 /** One plain line of at most `max` characters: what a reason field sends (the broker refuses control characters). */
@@ -207,7 +214,7 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
   </fieldset></li>)}</ol>
   <div className="rv-actions"><Button type="submit" variant="primary" busy={busy} disabled={answered.length !== asked.items.length}>{DECISION_LABELS.answer}</Button>{asked.parked && asked.resume !== undefined && <Button busy={busy} onClick={() => { void run(async () => { await asked.resume!();setNote(<p role="status">Still waiting for answers. The 7 days start again.</p>); }); }}>Keep waiting</Button>}</div>
  </form>;
- const deciding = <>{!openOnly && limitBox}{planShown && plan.element}{(card.kind === "approve_plan" || card.kind === "approve_requirements") && card.status === "pending"  && <p className="rv-muted rv-decision-takes">{DECISION_APPROVE_TAKES}</p>}</>;
+ const deciding = <>{!openOnly && limitBox}{planShown && plan.element}{(card.kind === "approve_plan" || card.kind === "approve_requirements") && card.status === "pending" && <p className="rv-muted rv-decision-takes">{planShown ? APPROVE_SENDS_CHOICES : APPROVE_TAKES_ELSEWHERE}</p>}</>;
  /** What decides the card: in the card, or pinned at the foot of its open document (never both, so every control has one id). */
  const actionsBlock = <>{card.risk === "high" && <p className="rv-decision-high">{inline ? HIGH_RISK_NOTE : confirmPage ? "This decision is made on its own page, after you sign in again." : "This decision is made on its own page."}</p>}
   <div className="rv-decision-actions">
