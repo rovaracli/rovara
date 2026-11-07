@@ -17,7 +17,7 @@
 //   - NOT HERE, a TS30 wiring item: the seeding of a Prove run. `seedRun` (seeds, then `seeded`) must be called once after the helpers start, by whoever wires Prove's boot step; Prove's own ports (service-runner.ts) only start and probe.
 //   - A reset kind with no hook, or a hook that fails, is a refusal, never a silent skip (`ServiceRunnerError`).
 import { randomBytes } from "node:crypto";
-import type { ProjectCommand, TaskDependencyPlan } from "@agentx/contracts";
+import type { ProjectCommand, SeedScriptLock, TaskDependencyPlan } from "@agentx/contracts";
 import { HELPER_CREDENTIAL_PATTERNS, controlCallArgs, type HelperFiles } from "./service-helpers.js";
 import type { ResetContext, ResetHook, ResetHooks, ResetOutcome, ServiceSession } from "./service-runner.js";
 
@@ -37,7 +37,7 @@ const SEED_SENTENCES: Record<SeedFailure, string> = {
   seed_failed: "A test service's seed did not complete",
   seed_timeout: "A test service's seed ran out of time",
   stopped: "The test services' seeds were stopped",
-  seed_changed: "A test service's seed file changed since the test environment was approved; check it works and approve it again",
+  seed_changed: "A test service's seed file or seed script changed since the test environment was approved; check it works and approve it again",
   seed_meta_command: "A test service's seed file holds a psql command (a backslash, as in \\copy, \\! or a pg_dump COPY FROM stdin block); a seed file is plain SQL only",
   seed_program: "A test service's seed file uses COPY ... PROGRAM, which a seed file may not run",
   seed_not_allowed: "A test service's seed file runs a statement the seed role may not run: it has no superuser rights (no file reads, server programs or extensions)",
@@ -50,6 +50,11 @@ export interface SeedPorts {
   runCommand(command: ProjectCommand, signal: AbortSignal): Promise<{ exitCode: number | null; timedOut: boolean }>;
   /** Loads a file seed; a file whose content differs from the one its approval bound throws an error whose `reason` is `changed`. */
   applyFixture(dependencyId: string, seed: FileSeedRef, signal: AbortSignal): Promise<void>;
+  /**
+   * SEED-RISK-1: whether a LOCKED seed command's script is still exactly what was approved, hashed again from the checkout now (service-seed-lock.ts). Asked before every run of a locked seed; absent, a locked seed
+   * is refused (it never runs unchecked).
+   */
+  lockHolds?(command: ProjectCommand, lock: SeedScriptLock): Promise<boolean>;
 }
 
 /** The most seeds one dependency holds (the contract's own limit, checked again here). */
@@ -61,6 +66,7 @@ export async function runSeeds(dependencyId: string, seeds: readonly SeedRef[], 
   for (const seed of seeds) {
     if (signal.aborted) throw new SeedError("stopped");
     if ("command" in seed) {
+      if (seed.lock !== undefined && (ports.lockHolds === undefined || !await ports.lockHolds(seed.command, seed.lock).catch(() => false))) throw new SeedError("seed_changed");
       const result = await ports.runCommand(seed.command, signal).catch(() => { throw new SeedError(signal.aborted ? "stopped" : "seed_failed"); });
       if (signal.aborted) throw new SeedError("stopped");
       if (result.timedOut) throw new SeedError("seed_timeout");
