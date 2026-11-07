@@ -18,6 +18,7 @@ export function intakeRouteDependenciesOf(deps: DeveloperRouteDependencies): Int
     ports: intakePortsOf({
       documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, starter,
       intentDependenciesFor: (who) => codeIntentDependenciesOf(deps, who),
+      ...(deps.teamRecord === undefined ? {} : { trackerLinks: deps.teamRecord.table }),
     }),
     projectFor: (who, rawName) => projectRoleForRoute(deps, who, rawName),
   };

@@ -2,7 +2,8 @@
 //
 //   A task starts only from a MEMBER ACT. The act is checked, not the label: who put the label on, or assigned the ticket, is resolved to a member of the org (a link the
 //   tracker's account has to a member, read live) who holds a role on the project that starts tasks. Anything else waits:
-//     - someone outside the company, or an account no member is linked to      -> waits for a member to say "Start"  (reason `outsider`)
+//     - someone outside the company                                            -> waits for a member to say "Start"  (reason `outsider`)
+//     - a person's tracker account no member is linked to                      -> waits, and says so                  (reason `unlinked`, slice 5)
 //     - an automation                                                          -> waits (reason `bot`); Rovara's own account starts nothing (the loop guard)
 //     - a member who may not start tasks on the project                        -> waits (reason `no_authority`)
 //   The ticket's text is data: it is framed as untrusted, redacted and made inert (`ticket-text.ts`), and nothing in it can name a person, a project, a budget or a tool.
@@ -73,8 +74,11 @@ export type IntakeOutcome =
 export interface IntakePorts {
   table: IntakeTable;
   log(event: string, fields: Record<string, unknown>): void;
-  /** The member of the org this tracker account is linked to, read now (a member who is removed or revoked is nobody), or undefined. */
-  memberOfAccount(orgId: OrgId, system: string, accountId: string): Promise<string | undefined>;
+  /**
+   * The member of the org this tracker account is linked to, read now (a member who is removed or revoked is nobody), or undefined. `ticketUrl` is the ticket's own link, checked by the schema
+   * (a Jira account is linked per site, and the site is the link's host).
+   */
+  memberOfAccount(orgId: OrgId, system: string, accountId: string, ticketUrl?: string): Promise<string | undefined>;
   /** Whether the member, read now, holds a role on the project that starts tasks. A read that failed throws. */
   mayStart(orgId: OrgId, developerId: string, project: string): Promise<boolean>;
   /** `startCodeIntent`, as that member. Throws what a start throws. */
@@ -87,6 +91,8 @@ export interface IntakePorts {
   linkPrevious?(orgId: OrgId, nextSessionId: string, previousSessionId: string): Promise<void>;
   /** Tells the project's maintainers once that a flood of waiting tickets is not being stored (optional). */
   notifyWaitingFull?(orgId: OrgId, project: string): Promise<void>;
+  /** Slice 5: told once a ticket's task started and its item says so (the ticket updates' `started` moment). Best effort: it never throws, and the start stands without it. */
+  started?(orgId: OrgId, started: { taskId: string; sessionId?: string | undefined }): Promise<void>;
 }
 
 const errorCode = (error: unknown): string => (error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown");
@@ -112,8 +118,9 @@ async function resolveStanding(ports: IntakePorts, candidate: IntakeCandidate, u
   if (actor === undefined || actor.kind === "unknown") return { standing: "outsider", reason: "outsider" };
   if (actor.kind === "bot") return { standing: "bot", reason: "bot" };
   if (actor.accountId === undefined) return { standing: "outsider", reason: "outsider" };
-  const developerId = await ports.memberOfAccount(candidate.orgId, candidate.externalRef.system, actor.accountId);
-  if (developerId === undefined) return { standing: "outsider", reason: "outsider" };
+  const developerId = await ports.memberOfAccount(candidate.orgId, candidate.externalRef.system, actor.accountId, candidate.externalRef.url);
+  // A person the tracker names, whom no member is linked to (by a verified email or a link an admin made): the ticket waits, and says why. Rovara never guesses who they are.
+  if (developerId === undefined) return { standing: "outsider", reason: "unlinked" };
   if (!await ports.mayStart(candidate.orgId, developerId, candidate.project)) return { standing: "member", developerId, reason: "no_authority" };
   return { standing: "member", developerId };
 }
@@ -159,6 +166,7 @@ async function startHeld(ports: IntakePorts, record: IntakeItemRecord, input: Co
       await ports.linkPrevious(orgId, started.sessionId, previousSessionId).catch((error: unknown) => { ports.log("intake.link_previous_failed", { orgId, project, error: errorCode(error) }); });
     }
     ports.log("intake.started", { orgId, project, system: record.system, channel: record.channel });
+    await ports.started?.(orgId, { taskId: started.task.taskId, sessionId: started.sessionId }).catch(() => undefined);
     return { outcome: "started", taskId: started.task.taskId, ...(started.sessionId === undefined ? {} : { sessionId: started.sessionId }) };
   } catch (error) {
     if (isPassing(error)) {

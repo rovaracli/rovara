@@ -120,6 +120,7 @@ import { learningFirstTick } from "../../spend/settlement-job.js";
 import { learningWalkDeps, resumeOpenLearningWalks } from "../../learning/cleanup.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
 import { installSettingsProofSettler } from "../developer-routes/settings-proof-hook.js";
+import { installTicketUpdates } from "./ticket-updates-wiring.js";
 import { settleSettingsProofOfCheck, sweepSettingsProofs } from "../developer-routes/settings-proof.js";
 
 export function createAwsBrokerHandler(input: AwsBrokerInput) {
@@ -133,6 +134,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   installChainRunner(dependencies, tasks, agents);
   installOwnWriteRecorder(dependencies);
   installLearningTaskEnd(dependencies);
+  installTicketUpdates(dependencies);
   installLessons(dependencies);
   installTeamRecordEmitter(dependencies);
   installSlackAsk(dependencies, tasks, agents?.agentSessions);

@@ -2,17 +2,24 @@
 //   GET  /v1/app/projects/{project}/intake                   the waiting tickets and the sources           (a role that starts tasks)
 //   POST /v1/app/projects/{project}/intake/{itemId}/start     a member says "Start" for a waiting ticket   (a role that starts tasks; the work is theirs)
 //   PUT  /v1/app/projects/{project}/intake/sources            replace the project's sources                (a maintainer: edit_settings)
+//   POST /v1/app/projects/{project}/intake/{itemId}/dismiss   a member says "Not this one"                  (a role that starts tasks; slice 5)
+//   GET  /v1/app/projects/{project}/intake/updates            the ticket updates settings and write access  (anyone who can view the project; slice 5)
+//   PUT  /v1/app/projects/{project}/intake/updates            replace the ticket updates settings           (a maintainer: edit_settings; slice 5)
 // Another org's project, and one the caller has no role in, answer the same 404 as a missing one (`projectFor`). The ticket's words are shown as text only; the page never builds a link from them.
-import { IntakeStartBodySchema, IntakeChannelRefSchema, agentXError, projectAllows, type IntakeWaitingItem, type ProjectRole } from "@agentx/contracts";
+import {
+  IntakeDismissBodySchema, IntakeSourceErrorSchema, IntakeStartBodySchema, IntakeChannelRefSchema, TicketUpdatesPutBodySchema, agentXError, projectAllows,
+  type IntakeSourceView, type IntakeWaitingItem, type ProjectRole, type TicketUpdatesView,
+} from "@agentx/contracts";
 import { z } from "zod";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { startWaitingIntake, type IntakePorts } from "./engine.js";
-import { INTAKE_MAX_SOURCES_PER_PROJECT, intakeSourceIdOf, listIntakeSources, replaceIntakeSources } from "./sources.js";
-import { listWaitingIntakeItems, type IntakeItemRecord } from "./store.js";
+import { readTicketUpdates, readWriteAccess, saveTicketUpdates } from "../ticket-updates/settings.js";
+import { INTAKE_MAX_SOURCES_PER_PROJECT, intakeSourceIdOf, listIntakeSources, replaceIntakeSources, type IntakeSourceRecord } from "./sources.js";
+import { dismissIntakeItem, listWaitingIntakeItems, readIntakeItem, type IntakeItemRecord } from "./store.js";
 
 /** The paths this module owns under `/v1/app/projects/`. */
-export const INTAKE_PATH = /^\/v1\/app\/projects\/([^/]+)\/intake(?:\/(sources)|\/([a-f0-9]{32})\/(start))?$/;
+export const INTAKE_PATH = /^\/v1\/app\/projects\/([^/]+)\/intake(?:\/(sources|updates)|\/([a-f0-9]{32})\/(start|dismiss))?$/;
 
 export interface IntakeRouteDependencies {
   ports: IntakePorts;
@@ -32,6 +39,17 @@ function parsed<Schema extends z.ZodType>(schema: Schema, body: unknown): z.infe
 
 const WAITING_ITEM_CHANNELS: ReadonlySet<string> = new Set(["jira", "github_issue", "tracker"]);
 
+/** A source as a maintainer sees it: a failing one says since when and its last code (a code from an allow-list, never the tracker's words). */
+export function sourceViewOf(record: IntakeSourceRecord): IntakeSourceView {
+  const failing = record.failures > 0;
+  const code = IntakeSourceErrorSchema.safeParse(record.lastError);
+  return {
+    sourceId: record.sourceId, ref: record.ref, failing,
+    ...(failing && typeof record.failingSince === "number" && Number.isFinite(record.failingSince) ? { failingSince: new Date(record.failingSince).toISOString() } : {}),
+    ...(failing && code.success ? { lastError: code.data } : {}),
+  };
+}
+
 function viewOf(record: IntakeItemRecord): IntakeWaitingItem {
   return {
     itemId: record.itemId, channel: record.channel, system: record.system, id: record.id, url: record.url, title: record.title,
@@ -43,15 +61,37 @@ function viewOf(record: IntakeItemRecord): IntakeWaitingItem {
 export async function routeIntakeRequest(deps: IntakeRouteDependencies, caller: DeveloperCaller, method: string, match: RegExpExecArray, body: unknown): Promise<StatusReply> {
   const { name, role } = await deps.projectFor(caller, match[1]!);
   const table = deps.ports.table;
+  if (match[2] === "updates") {
+    const canEdit = projectAllows(role, "edit_settings");
+    if (method === "GET") {
+      const view: TicketUpdatesView = { settings: (await readTicketUpdates(table, caller.orgId, name)).settings, canEdit, access: await readWriteAccess(table, caller.orgId) };
+      return new StatusReply(200, view);
+    }
+    if (method !== "PUT") throw agentXError("NOT_FOUND", "no such route");
+    if (!canEdit) throw agentXError("FORBIDDEN", `Only a maintainer of ${name} can change what Rovara writes back to tickets.`);
+    const { requestId, settings } = parsed(TicketUpdatesPutBodySchema, body);
+    const saved = await saveTicketUpdates(table, { orgId: caller.orgId, project: name, settings, requestId, by: caller.developerId });
+    const view: TicketUpdatesView = { settings: saved, canEdit, access: await readWriteAccess(table, caller.orgId) };
+    return new StatusReply(200, view);
+  }
   if (match[2] === "sources") {
     if (method !== "PUT") throw agentXError("NOT_FOUND", "no such route");
     if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", `Only a maintainer of ${name} can change where its work is asked for.`);
     const { sources } = parsed(PutSourcesBodySchema, body);
     if (new Set(sources.map(intakeSourceIdOf)).size !== sources.length) throw agentXError("CONFIG_INVALID", "sources: the same place is named twice");
     const saved = await replaceIntakeSources(table, { orgId: caller.orgId, project: name, refs: sources, setBy: caller.developerId });
-    return new StatusReply(200, { sources: saved.map((record) => ({ sourceId: record.sourceId, ref: record.ref, failing: record.failures > 0 })) });
+    return new StatusReply(200, { sources: saved.map(sourceViewOf) });
   }
   if (!projectAllows(role, "start_tasks")) throw agentXError("FORBIDDEN", `You can view ${name} but not start tasks in it.`);
+  if (match[3] !== undefined && match[4] === "dismiss") {
+    if (method !== "POST") throw agentXError("NOT_FOUND", "no such route");
+    parsed(IntakeDismissBodySchema, body);
+    if (await dismissIntakeItem(table, caller.orgId, name, match[3], caller.developerId)) return new StatusReply(200, { dismissed: true });
+    // A repeat after it was dismissed answers the same; a ticket that does not wait (started, or no such ticket) is the same 404, so nothing is learned about other tickets.
+    const now = await readIntakeItem(table, caller.orgId, name, match[3]);
+    if (now?.state === "dismissed") return new StatusReply(200, { dismissed: true });
+    throw agentXError("NOT_FOUND", "no such waiting ticket");
+  }
   if (match[3] !== undefined) {
     if (method !== "POST") throw agentXError("NOT_FOUND", "no such route");
     parsed(IntakeStartBodySchema, body);
@@ -65,5 +105,5 @@ export async function routeIntakeRequest(deps: IntakeRouteDependencies, caller: 
   if (method !== "GET") throw agentXError("NOT_FOUND", "no such route");
   const waiting = (await listWaitingIntakeItems(table, caller.orgId, name)).filter((record) => WAITING_ITEM_CHANNELS.has(record.channel));
   const sources = await listIntakeSources(table, caller.orgId, name);
-  return new StatusReply(200, { items: waiting.map(viewOf), sources: sources.map((record) => ({ sourceId: record.sourceId, ref: record.ref, failing: record.failures > 0 })) });
+  return new StatusReply(200, { items: waiting.map(viewOf), sources: sources.map(sourceViewOf) });
 }

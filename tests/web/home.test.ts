@@ -131,3 +131,20 @@ it("shows a suggested-rules card with its title and reason, and Review is an int
  expect(await screen.findByRole("heading", { level: 2, name: "Suggested rules for \u201cpayments\u201d" })).toBeTruthy();expect(screen.getByText("2 suggested rules to review in \u201cpayments\u201d")).toBeTruthy();
  const review = screen.getByRole("link", { name: "Review" });expect(review.getAttribute("href")).toBe("/app/projects/payments?tab=how-we-work");expect(screen.queryByRole("link", { name: /Open session/u })).toBeNull();expect(f.request.mock.calls.every(([request]) => request.method === "GET")).toBe(true);f.close();
 });
+it("offers a waiting ticket's Start and Not this one only at the intake paths of that card (slice 5)", async () => {
+ const { homeAction } = await import("../../packages/ui/src/api/home.js");
+ const item = "a".repeat(32);
+ const card = HomeCardReaderSchema.parse({ cardId: `waiting_ticket:ph_${"0".repeat(24)}_${item}`, kind: "waiting_ticket", title: "Jira PAY-12: Refunds fail", reason: "Waiting", at: "2026-11-07T10:00:00.000Z", buttons: [] });
+ expect(homeAction(card, { action: "start", label: "Start", method: "POST", href: `https://cell.example/v1/app/projects/web/intake/${item}/start` }, "https://cell.example")).toEqual({ kind: "ticket_start", href: `/v1/app/projects/web/intake/${item}/start`, label: "Start" });
+ expect(homeAction(card, { action: "dismiss", label: "Not this one", method: "POST", href: `https://cell.example/v1/app/projects/web/intake/${item}/dismiss` }, "https://cell.example")).toEqual({ kind: "ticket_dismiss", href: `/v1/app/projects/web/intake/${item}/dismiss`, label: "Not this one" });
+ for (const button of [
+ { action: "start", label: "x", method: "POST", href: `https://other.example/v1/app/projects/web/intake/${item}/start` },
+ { action: "start", label: "x", method: "GET", href: `https://cell.example/v1/app/projects/web/intake/${item}/start` },
+ { action: "start", label: "x", method: "POST", href: `https://cell.example/v1/app/projects/web/intake/${item}/dismiss` },
+ { action: "start", label: "x", method: "POST", href: `https://cell.example/v1/app/projects/web/intake/${item}/start?x=1` },
+ { action: "dismiss", label: "x", method: "POST", href: `https://cell.example/v1/app/projects/web/intake/xyz/dismiss` },
+ ] as const) expect(homeAction(card, button, "https://cell.example"), button.href).toBeUndefined();
+ // The same path on another kind of card is not an action.
+ const other = HomeCardReaderSchema.parse({ ...cards[1]!, sessionId, buttons: [] });
+ expect(homeAction(other, { action: "start", label: "x", method: "POST", href: `https://cell.example/v1/app/projects/web/intake/${item}/start` }, "https://cell.example")).toBeUndefined();
+});

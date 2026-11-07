@@ -56,6 +56,7 @@ import { ingestIntake, type IntakePorts } from "../../intake/engine.js";
 import { writeIntakeNotice } from "../../intake/notices.js";
 import { noteOwnWrite, registerOwnWriteRecorder } from "../../intake/own-writes.js";
 import { intakePortsOf } from "../../intake/wiring.js";
+import { intakeSearchesOf } from "../../triggers/intake-searches.js";
 import { listProjectMembers } from "../../org/project-members.js";
 import type { IntakePollDependencies } from "../../triggers/poll-intake.js";
 import { chainTriggerHooksFor, triggerHooksFor } from "../../triggers/lifecycle.js";
@@ -762,6 +763,7 @@ export function intakePortsFrom(dependencies: AwsBrokerDependencies, tasks: Deve
   return intakePortsOf({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, starter,
     intentDependenciesFor: (caller) => codeIntentDependenciesOf(routeDependencies, caller),
+    ...(dependencies.teamRecord === undefined ? {} : { trackerLinks: dependencies.teamRecord.table }),
   });
 }
 
@@ -772,6 +774,8 @@ export function intakePollDependenciesFrom(dependencies: AwsBrokerDependencies, 
   if (ports === undefined || routeDependencies === undefined) return undefined;
   return {
     ports,
+    // Slice 5: Jira and Linear sources are read through the company's own connections; any other system through a search an adapter registered.
+    searchFor: intakeSearchesOf({ deps: dependencies.orgConnections }),
     notify: async (notice) => {
       const people = await listProjectMembers(projectMembersDepsOf(routeDependencies), notice.orgId, notice.project);
       await writeIntakeNotice(ports.table, people.filter((person) => person.role === "maintainer").map((person) => person.developerId), notice);

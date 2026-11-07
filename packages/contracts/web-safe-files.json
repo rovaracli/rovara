@@ -114,6 +114,7 @@
   "packages/contracts/src/test-proof.ts",
   "packages/contracts/src/test-services-shared.ts",
   "packages/contracts/src/test-services-usage.ts",
+  "packages/contracts/src/ticket-updates.ts",
   "packages/contracts/src/tracker-people-web.ts",
   "packages/contracts/src/trigger-specs.ts",
   "packages/contracts/src/verification-result.ts",

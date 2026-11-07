@@ -15,6 +15,7 @@ import { isStoppedSetupOperation, keepStoppedSetupRun } from "./setup-stopped-re
 import { settleAfterCheckReported } from "../developer-routes/settings-proof-hook.js";
 import { releaseFailedCancelWorkspace } from "../failed-cancel-release.js";
 import { deliverCodeMilestones } from "../../rovara-code/milestones.js";
+import { noteTicketPlanAfterResult } from "./ticket-updates-wiring.js";
 import { noteDurationAtPullRequest } from "../../rovara-code/duration.js";
 import { PLAN_EVIDENCE_PK, planEvidenceEvent, type PlanEvidenceEvent, type PlanEvidenceJob } from "../../developer/plan-evidence-jobs.js";
 import { TERMINAL, getItem, operationKey, requireOperation, type OperationRecord } from "../cancellation.js";
@@ -540,6 +541,8 @@ export async function recordTerminalResult(
     await deliverCodeMilestones({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, milestoneTaskId).catch((error: unknown) => {
       console.log(JSON.stringify({ component: "broker", event: "code_milestone.delivery_failed", taskId: milestoneTaskId, error: error instanceof Error ? error.name : "unknown" }));
     });
+    // Slice 5: a task from a ticket whose plan now waits for review tells the ticket (never throws).
+    await noteTicketPlanAfterResult(dependencies, milestoneTaskId);
   }
   // Plan 6 Task 20: the pull request this publication opened is recorded; a Linear link, replace or unlink made since the description was written is honoured now.
   if (taskPointer !== undefined && recordedStatus === terminalStatus && operation.kind === "publish" && terminalStatus === "SUCCEEDED") await settleRecordedPullRequest(dependencies, taskPointer.taskId);

@@ -296,7 +296,7 @@ describe("a Rovara Code trigger on a label", () => {
     const w = dispatchWorld({ members: {} });
     const trigger = await w.trigger();
     const [outcome] = await w.dispatch(LABELED);
-    expect(outcome).toMatchObject({ triggerId: trigger.triggerId, outcome: "skipped", reason: "intake_outsider" });
+    expect(outcome).toMatchObject({ triggerId: trigger.triggerId, outcome: "skipped", reason: "intake_unlinked" });
     expect(w.started).toEqual([]);
     expect(await listWaitingIntakeItems(w.ports.table, ORG_A, "web")).toHaveLength(1);
   });
@@ -421,7 +421,7 @@ describe("a Rovara Code trigger on a label", () => {
       source: "jira", type: "issue.labeled", eventKey: "jira:k", occurredAt: new Date(NOW - 60_000).toISOString(), project: "web", hookId: jira.hookId!,
       subject: { kind: "issue", id: "PAY-12", title: "Refunds fail", url: "https://acme.atlassian.net/browse/PAY-12" }, fields: { label: ["rovara"] }, actor: { kind: "external", id: "acct-dana", accountId: "acct-dana" },
     });
-    expect(outcome).toMatchObject({ outcome: "skipped", reason: "intake_outsider" });
+    expect(outcome).toMatchObject({ outcome: "skipped", reason: "intake_unlinked" });
     expect(w.started).toEqual([]);
   });
 });
@@ -463,7 +463,7 @@ describe("a re-label after the task ended, through dispatch", () => {
     await w.dispatch(LABELED);
     expect((await w.dispatch(again("running")))[0]).toMatchObject({ outcome: "duplicate" });
     for (const id of bound.values()) ended.add(id);
-    expect((await w.dispatch({ ...again("by-eve"), actor: { kind: "external", id: "eve", accountId: "999" } }))[0]).toMatchObject({ outcome: "skipped", reason: "intake_outsider" });
+    expect((await w.dispatch({ ...again("by-eve"), actor: { kind: "external", id: "eve", accountId: "999" } }))[0]).toMatchObject({ outcome: "skipped", reason: "intake_unlinked" });
     expect(w.started).toHaveLength(1);
   });
 });
@@ -479,7 +479,7 @@ describe("the allowances (review I2): only a start that really starts work uses 
   it("uses neither the trigger's hour nor the org's day for tickets that only wait (a flood of outsiders' labels)", async () => {
     const w = dispatchWorld();
     const trigger = await w.trigger({ maxRunsPerHour: 2 });
-    for (let n = 1; n <= 10; n += 1) expect((await w.dispatch(ticketEvent(n, { actor: outsider })))[0]).toMatchObject({ outcome: "skipped", reason: "intake_outsider" });
+    for (let n = 1; n <= 10; n += 1) expect((await w.dispatch(ticketEvent(n, { actor: outsider })))[0]).toMatchObject({ outcome: "skipped", reason: "intake_unlinked" });
     expect(w.v.db.get(hourKey(w, trigger.triggerId))).toBeUndefined();
     expect(w.v.db.get(dayKey(w))).toBeUndefined();
     expect(await listWaitingIntakeItems(w.ports.table, ORG_A, "web")).toHaveLength(10);
