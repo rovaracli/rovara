@@ -511,12 +511,9 @@ function decideDialog(view: TaskDocumentView): string {
  * spec's choices, People roles, comments, suggestions, Remember) is on the task page in Rovara or in Slack. The documents and People list are drawn as for someone who may only read.
  */
 function readOnlyView(view: TaskDocumentView): TaskDocumentView {
-  return {
-    ...view,
-    ...(view.access === undefined ? {} : { access: { ...view.access, canComment: false, canSuggest: false, canAsk: false, canDecide: false } }),
-    ...(view.people === undefined ? {} : { people: { ...view.people, canManage: false, canTakeOwnership: false } }),
-    canManagePeople: false, canTakeOwnership: false,
-  };
+  // OWNER DECISION 17: read-only for decisions only; comments, replies, suggestions, Ask and People stay as they were.
+  const { applicationRetry: _retry, reviseOffer: _revise, ...rest } = view; // eslint-disable-line @typescript-eslint/no-unused-vars -- the offers are links to the task page here, not buttons
+  return { ...rest, ...(view.access === undefined ? {} : { access: { ...view.access, canDecide: false } }), ...(view.specHold === undefined ? {} : { specHold: { ...view.specHold, canChoose: false } }) };
 }
 
 async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequest, csrf?: string, readOnly = false): Promise<string> {
@@ -561,12 +558,12 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
       return `<li><time datetime="${escapeHtml(entry.at)}">${escapeHtml(historyTime(entry.at))}</time> ${linked ? `<a href="${escapeHtml(entry.link)}">${text}</a>` : text}</li>`;
     }).join("")}</ol>`;
   const owns = view.access === undefined ? view.role === "owner" : view.access.role === "owner";
-  const role = owns ? "You're the task owner." : view.access?.canComment === true && !readOnly ? "You can read and comment on this task." : "You can read this task.";
-  const slackOnly = readOnly ? '<p class="muted">This page is read only. Decisions, comments and suggestions are made on the task page in Rovara.</p>'
+  const role = owns ? "You're the task owner." : view.access?.canComment === true ? "You can read and comment on this task." : "You can read this task.";
+  const slackOnly = readOnly ? '<p class="muted">Decisions are made on the task page in Rovara. Comments and suggestions can still be made here.</p>'
     : view.access?.canDecide === true ? ""
     : view.access?.canComment === true ? `<p class="muted">${view.access.canSuggest ? "Only the task owner decides; you can comment and suggest." : "Only the task owner decides; you can comment."}</p>`
     : '<p class="muted">Decisions are made on the task page in Rovara.</p>';
-  const island = readOnly || csrf === undefined || view.access === undefined ? "" : `<script type="application/json" id="agentx-page-data">${scriptJson(pageData(view, csrf))}</script>`;
+  const island = csrf === undefined || view.access === undefined ? "" : `<script type="application/json" id="agentx-page-data">${scriptJson(pageData(shown, csrf))}</script>`;
   // Hidden until the script sees the task moved on; without scripts it never shows and the page reads as before.
   const movedOn = `<div id="moved-on" class="moved-on" role="status" hidden data-version="${escapeHtml(view.revision ?? 0)}" data-stage="${escapeHtml(view.stage)}"`
     + ` data-check="/review/${escapeHtml(view.taskId)}/task/status"><p>This task has moved on. Refresh to see the latest.</p>`
@@ -715,9 +712,8 @@ export function createTaskWeb(deps: TaskWebDependencies): (request: AdaptedHttpR
         } catch { /* A complete People read is optional presentation; authority stays in the page projection. */ }
       }
       const nonce = randomBytes(18).toString("base64url");
-      // Someone who can comment or decide gets the CSRF cookie the page's API checks; a valid one is kept as it is.
-      // Read-only (OWNER DECISION 7, the cards on): no CSRF cookie, because nothing on the page writes.
-      const acts = view.access !== undefined && deps.readOnly !== true;
+      // Someone who can comment or decide gets the CSRF cookie the page's API checks (OWNER DECISION 17: with the cards on, comments still write here); a valid one is kept as it is.
+      const acts = view.access !== undefined;
       const current = parseCookie(request.headers, CSRF_COOKIE);
       const csrf = !acts ? undefined : isCsrfToken(current) ? current : randomBytes(32).toString("base64url");
       const response = htmlResponse(200, await page(view, nonce, pageRequest(url), csrf, deps.readOnly === true), nonce);

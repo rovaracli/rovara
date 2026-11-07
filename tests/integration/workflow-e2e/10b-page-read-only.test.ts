@@ -99,13 +99,13 @@ describe("Suite 10b: the read-only page, decision cards on", () => {
       expect(peopleComments(e2e)).toEqual([]);
     }, 120_000);
 
-    it("10.2 who sees what: the owner is sent to the task page to decide, a teammate reads, an eligible outsider is told whom to ask, anyone else can't tell the task exists, and nobody writes", async () => {
+    it("10.2 who sees what: the owner is sent to the task page to decide, a teammate reads and comments, anyone else can't tell the task exists, and nobody decides here", async () => {
       const e2e = await waitingPlan();
       const owner = await openTaskPage(e2e, OWNER, { search: "?doc=coding-plan", scripts: false });
       expect(owner.text()).toContain("You're the task owner.");
       expect(owner.text()).toContain("Decide on the task");
       const sam = await openTaskPage(e2e, SAM, { search: "?doc=coding-plan", scripts: false });
-      expect(sam.text()).toContain("You can read this task.");
+      expect(sam.text()).toContain("You can read and comment on this task.");
       expect(sam.text()).toContain("Only owners decide.");
       for (const tab of [owner, sam]) expect(tab.document.querySelectorAll("button").filter((button) => !button.hidden && button.closest("[hidden]") === null)).toEqual([]);
       const outsider = await openTaskPage(e2e, OMAR_OIDC, { search: "?doc=coding-plan", scripts: false });

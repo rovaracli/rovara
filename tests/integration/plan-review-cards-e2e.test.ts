@@ -151,7 +151,6 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
     expect((await onCard(e2e, SAM)).status).toBe(404);
     const decision = { expectedRevision: workflow.revision, artifactDigest: workflow.artifacts.at(-1)!.sha256, decision: "APPROVE", answers: [], includedCommentIds: [] };
     expect(await toPage(e2e, SAM, "decision", decision)).toMatchObject({ status: 410, body: { error: "read_only" } });
-    expect(await toPage(e2e, SAM, "suggestions", { document: "plan", decisionId: "d1", optionId: "above" })).toMatchObject({ status: 410 });
     const outside = await openTaskPage(e2e, OMAR_OUTSIDE, { search: "?doc=coding-plan", scripts: false });
     expect(outside.status).toBe(404);
     expect(outside.html).not.toContain("Show a retry banner");
@@ -160,7 +159,6 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
     expect((await onCard(e2e, OMAR_OUTSIDE)).status).toBe(404);
     expect(e2e.workflow().revision).toBe(workflow.revision);
     expect(e2e.workflow().decisions).toEqual(workflow.decisions);
-    expect(e2e.db.find((item) => String(item.sk).startsWith("SUGGEST#"))).toEqual([]);
     expect(codingRuns(e2e)).toEqual([]);
   }, 120_000);
 
@@ -186,18 +184,18 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
     expect(codingRuns(e2e)).toHaveLength(1);
   }, 120_000);
 
-  it("the read-only page refuses a comment and queues nothing for Ask; it still reads in full with JavaScript off, with nothing to press", async () => {
+  it("OWNER DECISION 17: with the cards on, a teammate's comment with Ask still goes through the page and is queued for an answer; the page still reads in full with JavaScript off, with nothing to decide", async () => {
     const queue = recordingQueue();
     const e2e = await waitingPlan({ queue });
-    seedComment(e2e, SAM, "Above reads better on a phone.", { kind: "claim", id: "2.1" });
-    expect(await toPage(e2e, SAM, "comments", { document: "plan", version: 1, target: { kind: "document" }, text: "Ask this", ask: true })).toMatchObject({ status: 410 });
-    expect(queue.sent).toEqual([]);
+    const posted = await toPage(e2e, SAM, "comments", { document: "plan", version: 1, target: { kind: "document" }, text: "Why below?", ask: true });
+    expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+    expect(queue.sent).toHaveLength(1);
+    // An outsider's comment is refused as a missing task's would be.
+    expect((await toPage(e2e, OMAR_OUTSIDE, "comments", { document: "plan", version: 1, target: { kind: "document" }, text: "Hi", ask: false })).status).toBe(404);
     const page = await openTaskPage(e2e, OWNER, { search: "?doc=coding-plan", scripts: false });
     const text = page.text();
-    for (const expected of ["You're the task owner.", "It is placed near the pay button.", "Where does the banner go?", "Above", "Below", "AgentX recommends", "Sam Lee", "Above reads better on a phone.", "Decide on the task"]) {
-      expect(text).toContain(expected);
-    }
-    expect(page.document.querySelectorAll("button").filter((button) => !button.hidden && button.closest("[hidden]") === null)).toEqual([]);
+    for (const expected of ["You're the task owner.", "It is placed near the pay button.", "Where does the banner go?", "Sam Lee", "Why below?", "Decide on the task"]) expect(text).toContain(expected);
+    expect(page.document.getElementById("decide-approve")).toBeNull();
     expect(page.document.querySelector("dialog")).toBeNull();
   }, 120_000);
 

@@ -132,23 +132,26 @@ type Page = ReturnType<typeof boot>;
 
 const posts = (page: Page, path: string) => page.sent.filter((entry) => entry.method === "POST" && entry.url.endsWith(path));
 
-describe("the read-only review page (OWNER DECISION 7)", () => {
+describe("the review page with the decision cards on (OWNER DECISION 7 and 17)", () => {
   const readers = [["an owner who may decide", owner], ["a teammate who may comment and suggest", commenter], ["a reader", { role: "reader" as const, canComment: false, canSuggest: false, canDecide: false, canAsk: false }]] as const;
   for (const [who, access] of readers) {
-    it(`serves ${who} the page with no data island, no deciding script and nothing to press or type in`, async () => {
+    it(`OWNER DECISION 17: serves ${who} a page that decides nothing (no answer, Approve, retry, revise or spec control, the script told it may not decide) and keeps its comment controls`, async () => {
       const html = await pageHtml({ access, applicationRetry: { canRetry: true }, reviseOffer: { canRevise: true }, specHold: { title: "Spec on hold", message: "The spec could not be written.", choices: ["retry", "continue"], canChoose: true } });
-      expect(html).not.toContain('id="agentx-page-data"');
-      expect(html).not.toContain(TASK_PAGE_DECIDING_SCRIPT.slice(0, 200));
       const document = parseHtml(html);
-      expect(document.querySelectorAll("button").filter((button) => button.getAttribute("id") !== "moved-on-refresh")).toEqual([]);
-      expect(document.querySelectorAll("form")).toEqual([]);
-      expect(document.querySelectorAll("textarea")).toEqual([]);
-      expect(document.querySelectorAll("dialog")).toEqual([]);
-      expect(document.querySelectorAll("input")).toEqual([]);
-      // Booting what the page carries sends nothing: no write can start from it.
+      for (const id of ["decide-approve", "decide-request-changes", "decide-dialog", "retry-application", "revise-plan-button", "spec-choice-retry", "spec-choice-continue"]) expect(document.getElementById(id), id).toBeNull();
+      expect(document.querySelectorAll('input[type="radio"]')).toEqual([]);
+      const island = /<script type="application\/json" id="agentx-page-data">([\s\S]*?)<\/script>/u.exec(html);
+      expect(island).not.toBeNull();
+      const data = JSON.parse(island![1]!) as { canDecide: boolean; canComment: boolean; canRetry?: boolean; canRevise?: boolean; canSpecChoose?: boolean };
+      expect(data).toMatchObject({ canDecide: false, canComment: access.canComment });
+      expect(data.canRetry).toBeUndefined();
+      expect(data.canRevise).toBeUndefined();
+      expect(data.canSpecChoose).toBeUndefined();
+      expect(document.querySelectorAll(".comment-open").length > 0).toBe(access.canComment);
+      // Booting the page's scripts sends no decision.
       const page = boot(html);
       await page.settle();
-      expect(page.sent.filter((entry) => entry.method !== "GET")).toEqual([]);
+      expect(page.sent.filter((entry) => entry.method === "POST" && /\/api\/(decision|retry|revise-plan|spec\/)/u.test(entry.url))).toEqual([]);
     });
   }
 
