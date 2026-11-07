@@ -725,7 +725,8 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   const printResult = (command: Command, result: AppResult) => {
     services.stdout.write(globalOptions(command).json ? formatSuccess({ env: result.env, url: result.url, ...result.data }, true) : result.text);
   };
-  const chains = program.command("chains").description("design, publish, share and roll back chains of agents and approval gates");
+  // Chains and triggers are hidden from help (owner decision 2026-11-07); the commands, code and data stay, so nothing existing breaks.
+  const chains = program.command("chains", { hidden: true }).description("design, publish, share and roll back chains of agents and approval gates");
   chains
     .command("list")
     .description("list the chains you can see: all, yours, those shared with you, or a project's")
@@ -887,7 +888,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   /** `agentx chains triggers ...` and `agentx agents triggers ...`: the same four commands on a chain and on an agent (Plan 4 Task 18). */
   const addTriggerCommands = (parent: Command, kind: TriggerOwnerKind, noun: string) => {
-    const triggers = parent.command("triggers").description(`what starts a ${noun} without a person: events and schedules`);
+    const triggers = parent.command("triggers", { hidden: true }).description(`what starts a ${noun} without a person: events and schedules`);
     triggers
       .command("list")
       .description(`list a ${noun}'s triggers`)

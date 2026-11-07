@@ -35,6 +35,14 @@ it("renders an ordered readable sidebar with waiting counts and status words", a
 it("omits disabled routes and shows the exact not-found copy", async () => {
  const f = shell("/app/usage");expect(await screen.findByText("We couldn't find that. It may not exist, or it hasn't been shared with you.")).toBeTruthy();f.close();
 });
+it("shows \"This isn't available\" with a link home for old chain and trigger links, even when the chains switch is on", async () => {
+ for (const path of ["/app/chains", "/app/chains/chn_aaaaaaaaaaaaaaaaaaaa", "/app/triggers/trg_aaaaaaaaaaaaaaaaaaaa"]) for (const on of [false, true]) {
+  const f = shell(path, "light", { ...nav, features: { ...features, chains: on } });
+  expect((await screen.findByRole("heading", { name: "This isn't available", level: 1 })).textContent).toBe("This isn't available");
+  expect(screen.getByRole("link", { name: "Go to Home" }).getAttribute("href")).toBe("/app");expect(screen.queryByText("We couldn't find that. It may not exist, or it hasn't been shared with you.")).toBeNull();
+  expect(screen.queryByRole("link", { name: /chain|trigger/i })).toBeNull();f.close();
+ }
+});
 it("does not call an API for signup or signed out routes", async () => {
  for (const path of ["/app/signup", "/app/signed-out"]) { const f = shell(path);await screen.findByRole("heading", { level: 1 });expect(f.request).not.toHaveBeenCalled();expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();f.close(); }
 });

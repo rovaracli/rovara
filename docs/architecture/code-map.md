@@ -100,7 +100,7 @@ instead: give it a one-line header comment when you next edit it.
 | Why a task ran (user, test run, nightly) | `packages/contracts/src/agent-run-node.ts#WORK_ORIGINS` |
 | Proof and evidence (`pe`) | `packages/broker/src/proof/`, wired in `packages/broker/src/aws/broker/evidence-wiring.ts` |
 | Decision cards (`dk`) | `packages/broker/src/decisions/` |
-| Chains and triggers | `packages/broker/src/chains/`, `packages/broker/src/triggers/` |
+| Chains and triggers (hidden since 2026-11-07: out of the CLI help; the web app shows "This isn't available" for `/app/chains/*`, `/app/triggers/*` and chain-run session links unless the `chains` web feature is on, which no install sets; code and data stay) | `packages/broker/src/chains/`, `packages/broker/src/triggers/`; the web notice is `packages/ui/src/shell/Unavailable.tsx#Unavailable` |
 | Agent sessions (live, stop, redirect, ask) | `packages/broker/src/agent-sessions/` |
 | Plug-ins: code hosts and check runners | `packages/broker/src/plugins/`, registered in `packages/broker/src/aws/broker/plugin-wiring.ts#createBrokerPlugins` |
 | Audit | `packages/broker/src/audit/` |
