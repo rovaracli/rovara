@@ -70,7 +70,7 @@ describe("loading it with the database's own client", () => {
     return {
       calls,
       run: vi.fn(async (args: readonly string[]) => { calls.push(["run", ...args]); return { exitCode: runExit, stdout: "", stderr: "" }; }),
-      execBytes: vi.fn(async (args: readonly string[], _options: { stdin?: Buffer }) => { calls.push(["load", ...args]); return { stdout: Buffer.alloc(0), stderr: "", ...load }; }),
+      execBytes: vi.fn(async (args: readonly string[], options: { stdin?: Buffer }) => { void options; calls.push(["load", ...args]); return { stdout: Buffer.alloc(0), stderr: "", ...load }; }),
     };
   };
   const statementsOf = (call: string[]) => call.flatMap((arg, at) => (call[at - 1] === "-c" ? [arg] : []));
@@ -78,7 +78,7 @@ describe("loading it with the database's own client", () => {
   it("runs the file as a fresh role with no superuser rights, in psql over the socket (no host, port or password), killed inside the container at the limit, then drops the role", async () => {
     const docker = fakeDocker();
     const bytes = Buffer.from("insert into users values (1);");
-    await loadSeedFile(docker as never, target, bytes, new AbortController().signal, { role: ROLE, timeoutMs: 60_000 });
+    await loadSeedFile(docker, target, bytes, new AbortController().signal, { role: ROLE, timeoutMs: 60_000 });
     const [make, load, drop] = docker.calls;
     expect(statementsOf(make!)).toEqual(seedRoleStatements({ role: ROLE, database: "app" }, 60_000));
     expect(statementsOf(make!)[0]).toBe(`CREATE ROLE "${ROLE}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
@@ -93,7 +93,7 @@ describe("loading it with the database's own client", () => {
   it("M2: a timeout kills psql inside the container (timeout -s KILL, exit 137), terminates the role's backends, and still drops the role", async () => {
     for (const load of [{ exitCode: 137 }, { exitCode: null, timedOut: true }]) {
       const docker = fakeDocker(load);
-      expect(await reasonOf(loadSeedFile(docker as never, target, Buffer.from("select pg_sleep(9999);"), new AbortController().signal, { role: ROLE, timeoutMs: 5_000 }))).toBe("timeout");
+      expect(await reasonOf(loadSeedFile(docker, target, Buffer.from("select pg_sleep(9999);"), new AbortController().signal, { role: ROLE, timeoutMs: 5_000 }))).toBe("timeout");
       expect(docker.calls[1]!.slice(4, 8)).toEqual(["timeout", "-s", "KILL", "5"]);
       expect(statementsOf(docker.calls[2]!)).toEqual([`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '${ROLE}'`]);
       expect(statementsOf(docker.calls[3]!)[2]).toBe(`DROP ROLE "${ROLE}"`);
@@ -108,12 +108,12 @@ describe("loading it with the database's own client", () => {
     const noRole = fakeDocker({ exitCode: 0 }, 1);
     expect(await reasonOf(loadSeedFile(noRole as never, target, Buffer.from("select 1"), new AbortController().signal, { role: ROLE }))).toBe("load_failed");
     expect(noRole.execBytes).not.toHaveBeenCalled();
-    expect(await reasonOf(loadSeedFile({ run: noRole.run } as never, target, Buffer.from("select 1"), new AbortController().signal, { role: ROLE }))).toBe("unsupported");
+    expect(await reasonOf(loadSeedFile({ run: noRole.run }, target, Buffer.from("select 1"), new AbortController().signal, { role: ROLE }))).toBe("unsupported");
   });
   it("I2: a file with a psql meta-command (any backslash) or PROGRAM is refused before anything runs", async () => {
     for (const text of ["\\! sh -c 'id'", "select 1;\n\\c host=other", "insert into t values ('a'); \\copy t from '/etc/passwd'", "COPY t FROM PROGRAM 'id';", "copy t from program 'id'"]) {
       const docker = fakeDocker();
-      const reason = await reasonOf(loadSeedFile(docker as never, target, Buffer.from(text), new AbortController().signal, { role: ROLE }));
+      const reason = await reasonOf(loadSeedFile(docker, target, Buffer.from(text), new AbortController().signal, { role: ROLE }));
       expect(["meta_command", "program"], text).toContain(reason);
       expect(docker.calls, text).toEqual([]);
     }
