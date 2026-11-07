@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXError, AgentXNameSchema, StoredProjectDefinitionSchema, projectRevisionKey, type StoredProjectDefinition, ProjectDefinitionSchema, ProjectSettingsBodySchema, ProjectSettingsUndoBodySchema, agentXError, canonicalJson, projectAllows, settingOriginOf, withSettingOrigins,
-  type AppProjectDetail, type OrgId, type ProjectOriginField, type ProjectRole, type ProjectSettingsBody, type SettingsHeld, type SettingsProof,
+  formatCommandLine, type AppProjectDetail, type OrgId, type ProjectCommand, type ProjectOriginField, type ProjectRole, type ProjectSettingsBody, type SettingsHeld, type SettingsProof,
 } from "@agentx/contracts";
 import { auditedWrite } from "../../playbook/project-settings-audit.js";
 import type { TransactItem } from "../../audit/outbox.js";
@@ -386,10 +386,10 @@ export async function putProjectSettingsChecked(deps: DeveloperRouteDependencies
   }
   // UX-4b review I1 (owner decision 11): where the test environment is on, setup and test commands are proved in its sandbox before they are used, so a browser save that changes them is refused
   // here, the server's own rule, whatever the page is. The commands go to `POST .../setup-draft/typed` (the person's edited proposal: check, Prove, Approve). A body whose commands are what is there goes on.
-  if (testEnvironmentEnabled() && (body.setupCommands !== undefined || body.testCommands !== undefined)) {
-    const lists = draftCommandLists(current, body);
-    const before = listsOfDefinition(current);
-    if (!sameProofLists({ setup: before.setup, readiness: before.readiness }, { setup: lists.setup, readiness: lists.readiness })) throw agentXError("CONFIG_INVALID", PROOF_WORDS.provedInTestEnvironment);
+  // Review R3: compared as the lines a person sees and sends (a stored command's own timeout or env is not on its line), so a page that resends the commands unchanged beside a dev container change goes on.
+  if (testEnvironmentEnabled()) {
+    const sameLines = (sent: readonly string[] | undefined, stored: readonly ProjectCommand[]) => sent === undefined || (sent.length === stored.length && sent.every((line, index) => line.trim() === formatCommandLine(stored[index]!)));
+    if (!sameLines(body.setupCommands, current.setup) || !sameLines(body.testCommands, current.readiness)) throw agentXError("CONFIG_INVALID", PROOF_WORDS.provedInTestEnvironment);
   }
   // A browser saves what it sent; what was saved is compared with what was there, after the save (a repository change can move where commands run).
   return browserSave(deps, caller, rawName, name, rawBody, options);

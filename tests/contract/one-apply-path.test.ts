@@ -2,7 +2,9 @@
 // (shownProposal), its check runs, Prove passes, and only the approval writes the commands into the settings. Nothing is saved before that.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
+import { projectRevisionKey } from "@agentx/contracts";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { ENV, NAME, draftOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
 
 afterEach(() => { delete process.env.TEST_ENVIRONMENT_ENABLED; });
@@ -204,6 +206,44 @@ describe("review M2: a repeated draft press does not wipe a later wizard edit", 
       for (const item of t.db.find((entry) => entry.entityType === "SETUP_DRAFT_APPLY")) t.db.delete(item.pk as string, item.sk as string);
       expect((await t.dev(OMAR, "POST", `${BASE}/apply`, { requestId, expectedRevision: 1, items })).status).toBe(200);
       expect((await t.state()).proposal).toMatchObject({ digest: mine, source: "edited" });
+    });
+  });
+});
+
+describe("review R3: a dev container save beside commands resent unchanged", () => {
+  it("goes on when the stored commands have their own timeout and env, and a real command change is still refused", async () => {
+    const t = await setupWizardBench({ autoCandidate: false, cloud: true });
+    // The stored commands carry a non-default timeout and an env, which their lines do not show.
+    const stored = t.db.get(projectRevisionKey(TEST_ORG, NAME, 1)) as { definition: { setup: Array<Record<string, unknown>>; readiness: Array<Record<string, unknown>> } } & Record<string, unknown>;
+    t.db.set({ ...stored, definition: { ...stored.definition, setup: [{ ...stored.definition.setup[0], timeoutSeconds: 300, env: { CI: "1" } }], readiness: [{ ...stored.definition.readiness[0], timeoutSeconds: 600 }] } });
+    const put = (body: Record<string, unknown>) => t.web(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: settingsOf(t).revision, ...body });
+    await withSwitch("1", async () => {
+      const devcontainer = await put({ setupCommands: ["make old-setup"], testCommands: ["make old-test"], devcontainer: { repository: "web", configPath: ".devcontainer/ci.json" } });
+      expect(devcontainer.status, JSON.stringify(devcontainer.body)).toBe(200);
+      const changed = await put({ setupCommands: ["make old-setup", "make more"], testCommands: ["make old-test"] });
+      expect(changed.status).toBe(400);
+      expect((changed.body.error as { message: string }).message).toContain("setup-draft/typed");
+    });
+  });
+});
+
+describe("a typed proposal whose replace mark is gone", () => {
+  it("proves nothing (commands_differ): its check ran the replacing lists, which an added-to proposal would not hold", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    await withSwitch("1", async () => {
+      const typed = await t.dev(OMAR, "POST", `${BASE}/typed`, { requestId: randomUUID(), expectedRevision: 1, setupCommands: ["make deps"], testCommands: ["make smoke"] });
+      const digest = typed.body.proposalDigest as string;
+      const started = await t.dev(OMAR, "POST", `${ENV}/check`, { digest, requestId: randomUUID() });
+      expect(started.status).toBe(202);
+      const record = candidates(t).at(-1)!;
+      await t.finish(record.workspaceId, prepareOf(t, record.workspaceId), "SUCCEEDED", {});
+      // The proposal record is overwritten without its mark (or expired and proposed again by another path).
+      const proposal = t.db.find((item) => item.entityType === "TEST_ENV_PROPOSAL" && item.digest === digest)[0]!;
+      const { replaceLists: _gone, ...rest } = proposal; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+      t.db.set(rest);
+      const proved = await t.dev(OMAR, "POST", `${ENV}/prove`, { digest });
+      expect(proved.status).toBe(400);
+      expect((proved.body.error as { message: string }).message).toContain("not among the commands the check ran");
     });
   });
 });
