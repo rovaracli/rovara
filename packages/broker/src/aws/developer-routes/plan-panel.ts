@@ -1,0 +1,133 @@
+// OWNER DECISION 18 (PLAN-PANEL-NOW): the task page reads, discusses and decides the plan in one place. What the old review page (`/review/<task>/task`) and the PR feedback page (`/review/<task>`)
+// did from a browser, as app routes that call the SAME server functions with the same checks (each re-reads the task and the caller's live access itself; nothing here decides who may):
+//   GET  /v1/app/tasks/{id}/documents/{requirements|design|plan}   the current version of one document, as the old page read it (`getTaskDocumentView`: its access rule, digest checks and redaction)
+//   POST /v1/app/tasks/{id}/comments                               a comment or reply, and Ask (`createPageComment`: rate limits, full threads, roles, the Ask limits)
+//   POST /v1/app/tasks/{id}/comments/{commentId}/edit|delete       your own comment (`editPageComment`, `deletePageComment`: the author only, the same limits)
+//   POST /v1/app/tasks/{id}/suggestions                            a teammate's suggestion on a question (`setPageSuggestion`: never the owner)
+//   GET  /v1/app/tasks/{id}/workflow/feedback                      the PR feedback review (`getWorkflowFeedbackReview`, through the `/v1/dev` route the MCP tool reads)
+//   POST /v1/app/tasks/{id}/workflow/feedback-decision             approve, request changes or dismiss it (`decideTaskWorkflowFeedback` -> `submitWorkflowFeedbackDecision`, as the feedback page and Slack)
+// Every route is for a live browser session only (the web adapter checks its cookie, Origin and CSRF header); a token is refused before anything is read. Bodies are the old page's strict schemas.
+import { PAGE_API_BODY_MAX_BYTES, agentXError, redactText, type PlanClaim, type PlanDocument } from "@agentx/contracts";
+import { createPageComment, deletePageComment, editPageComment, getTaskDocumentView, routeDeveloperTaskRequest, setPageSuggestion } from "../developer-tasks.js";
+import { PageCommentDeleteSchema, PageCommentEditSchema, PageCommentInputSchema, PageSuggestionInputSchema } from "../task-web-api.js";
+import type { TaskDocumentEntry, TaskDocumentKind, TaskDocumentView } from "../task-web.js";
+import { developerTaskRouteDependencies } from "./dependencies.js";
+import { StatusReply } from "../status-reply.js";
+import type { AdaptedHttpRequest } from "../lambda.js";
+import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
+
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+export const PLAN_PANEL_ROUTE = new RegExp(`^/v1/app/tasks/(${UUID})/(documents/(?:requirements|design|plan)|comments|comments/(${UUID})/(?:edit|delete)|suggestions|workflow/feedback|workflow/feedback-decision)$`, "u");
+/** Said to a caller without a live browser session (a token): these are the task page's, as the old pages were. */
+export const PLAN_PANEL_BROWSER_MESSAGE = "Use a live browser session to read and discuss the plan here.";
+/** The documents the panel opens, by the name the app uses; each is the old page's kind. A fixed list: nothing else is a document. */
+export const PLAN_PANEL_DOCUMENTS = { requirements: "requirements", design: "design", plan: "coding plan" } as const satisfies Record<string, TaskDocumentKind>;
+export type PlanPanelDocument = keyof typeof PLAN_PANEL_DOCUMENTS;
+
+/** One plain line of at most `max` characters, redacted (model and person text). */
+const plain = (text: string, max: number): string => {
+  const flat = redactText(text).replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim();
+  const characters = Array.from(flat);
+  return characters.length <= max ? flat : `${characters.slice(0, max - 1).join("")}…`;
+};
+
+export interface PanelClaim { id: string; text: string; children?: PanelClaim[] }
+/** What the panel shows of one document: its current version, every model string redacted and bounded again here (the app shows each as plain text). */
+export interface PlanPanelView {
+  document: PlanPanelDocument;
+  versions: Array<{ version: number; current: boolean; approved: boolean }>;
+  current?: { version: number; approved: boolean } & (
+    | { format: "structured"; title: string; why: Array<{ text: string; author: string }>; claims: PanelClaim[]; decisions: Array<{ id: string; claimId: string; question: string; recommended: string; options: Array<{ id: string; label: string; consequence: string }> }>;
+      risks: string[]; notChanging: string[] }
+    | { format: "markdown"; markdown: string });
+  /** The coding plan's checks, by the ID a comment names. */
+  checks: Array<{ id: string; label: string }>;
+  /** The current version could not be verified: named, never shown. */
+  unverified: boolean;
+  /** This document waits for its owner's decision now. */
+  waiting: boolean;
+  access: { canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean };
+}
+
+const claimsOf = (claims: readonly PlanClaim[]): PanelClaim[] => claims.map((claim) => ({ id: claim.id, text: plain(claim.text, 2000), ...(claim.children === undefined ? {} : { children: claimsOf(claim.children) }) }));
+
+function currentOf(entry: TaskDocumentEntry | undefined): PlanPanelView["current"] {
+  if (entry === undefined) return undefined;
+  const base = { version: entry.version, approved: entry.approved };
+  if (entry.format === "markdown") return { ...base, format: "markdown", markdown: redactText(entry.markdown) };
+  const plan: PlanDocument = entry.plan;
+  return {
+    ...base, format: "structured", title: plain(plan.title, 300), why: plan.why.map((why) => ({ text: plain(why.text, 2000), author: plain(why.author, 80) })), claims: claimsOf(plan.claims),
+    decisions: plan.decisions.map((decision) => ({ id: decision.id, claimId: decision.claimId, question: plain(decision.question, 500), recommended: decision.recommended,
+      options: decision.options.map((option) => ({ id: option.id, label: plain(option.label, 300), consequence: plain(option.consequence, 500) })) })),
+    risks: plan.risks.map((risk) => plain(risk, 500)), notChanging: plan.notChanging.map((line) => plain(line, 500)),
+  };
+}
+
+/** The panel's view of one document from the old page's own read (`getTaskDocumentView`), so the access rule, the digest checks and the redaction are that page's. */
+export function planPanelView(view: TaskDocumentView, document: PlanPanelDocument): PlanPanelView {
+  const kind = PLAN_PANEL_DOCUMENTS[document];
+  const entries = view.documents.filter((entry) => entry.kind === kind);
+  const access = view.access, current = currentOf(entries.find((entry) => entry.current));
+  return {
+    document, versions: entries.map((entry) => ({ version: entry.version, current: entry.current, approved: entry.approved })),
+    ...(current === undefined ? {} : { current }),
+    checks: document !== "plan" ? [] : view.checks.flatMap((check) => (check.id === undefined ? [] : [{ id: check.id, label: plain(check.label, 200) }])),
+    unverified: (view.unverified ?? []).includes(kind), waiting: view.waiting?.kind === kind,
+    access: { canComment: access?.canComment === true, canSuggest: access?.canSuggest === true, canDecide: access?.canDecide === true, canAsk: access?.canAsk === true && view.askAvailable === true },
+  };
+}
+
+/** The request's JSON body, refused when it is not JSON or longer than the old page took (16 KB). */
+function body(request: AdaptedHttpRequest): unknown {
+  const raw = request.body ?? "";
+  if (Buffer.byteLength(raw, "utf8") > PAGE_API_BODY_MAX_BYTES) throw agentXError("CONFIG_INVALID", "That is too long to send.");
+  if (raw === "") return {};
+  try { return JSON.parse(raw) as unknown; } catch { throw agentXError("CONFIG_INVALID", "the request body is not JSON"); }
+}
+
+/** The routes; undefined for any other path or method. */
+export async function routePlanPanel(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL): Promise<StatusReply | undefined> {
+  const match = PLAN_PANEL_ROUTE.exec(url.pathname);
+  if (match === null) return undefined;
+  const endpoint = match[3] === undefined ? match[2]! : url.pathname.endsWith("/edit") ? "comments/edit" : "comments/delete";
+  const method = request.method.toUpperCase();
+  const reads = endpoint.startsWith("documents/") || endpoint === "workflow/feedback";
+  // GET /comments is the task page's comment list (task-page-actions.ts); here only its POST.
+  if (reads ? method !== "GET" : method !== "POST") return undefined;
+  if (caller.browserSession !== true) throw agentXError("FORBIDDEN", PLAN_PANEL_BROWSER_MESSAGE);
+  if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
+  const tasks = developerTaskRouteDependencies(deps, caller);
+  const taskId = match[1]!.toLowerCase();
+  if (endpoint.startsWith("documents/")) return new StatusReply(200, planPanelView(await getTaskDocumentView(tasks, caller, taskId), endpoint.slice("documents/".length) as PlanPanelDocument));
+  if (endpoint === "workflow/feedback" || endpoint === "workflow/feedback-decision") {
+    // The very route the MCP tool reaches (`/v1/dev/tasks/{id}/workflow/feedback[-decision]`): its strict schema, owner rule, GitHub refresh and fences, unchanged.
+    if (endpoint === "workflow/feedback-decision") body(request);
+    const devUrl = new URL(url.href.replace("/v1/app/tasks/", "/v1/dev/tasks/"));
+    const answer = await routeDeveloperTaskRequest(tasks, caller, { ...request, path: devUrl.pathname }, devUrl);
+    return answer instanceof StatusReply ? answer : new StatusReply(200, answer as object);
+  }
+  const value = body(request);
+  const invalid = () => agentXError("CONFIG_INVALID", "AgentX didn't accept that. Refresh the page and try again.");
+  if (endpoint === "comments") {
+    const parsed = PageCommentInputSchema.safeParse(value);
+    if (!parsed.success) throw invalid();
+    const created = await createPageComment(tasks, caller, taskId, parsed.data);
+    return new StatusReply(created.duplicate ? 200 : 201, created);
+  }
+  if (endpoint === "suggestions") {
+    const parsed = PageSuggestionInputSchema.safeParse(value);
+    if (!parsed.success) throw invalid();
+    await setPageSuggestion(tasks, caller, taskId, parsed.data);
+    return new StatusReply(200, { ok: true });
+  }
+  const commentId = match[3]!.toLowerCase();
+  if (endpoint === "comments/edit") {
+    const parsed = PageCommentEditSchema.safeParse(value);
+    if (!parsed.success) throw invalid();
+    return new StatusReply(200, await editPageComment(tasks, caller, taskId, { commentId, ...parsed.data }));
+  }
+  const parsed = PageCommentDeleteSchema.safeParse(value);
+  if (!parsed.success) throw invalid();
+  return new StatusReply(200, await deletePageComment(tasks, caller, taskId, { commentId, ...parsed.data }));
+}
