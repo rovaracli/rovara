@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { OrgId } from "@agentx/contracts";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
-import { adfText, intakeSearchesOf, jiraIntakeSearch, linearIntakeSearch } from "../../packages/broker/src/triggers/intake-searches.js";
+import { adfText, intakeSearchesOf, jiraActorConfirmer, jiraActorOf, jiraIntakeSearch, linearIntakeSearch } from "../../packages/broker/src/triggers/intake-searches.js";
 import { pollIntakeSource } from "../../packages/broker/src/triggers/poll-intake.js";
 import { listIntakeSources, replaceIntakeSources } from "../../packages/broker/src/intake/sources.js";
 import type { IntakePorts } from "../../packages/broker/src/intake/engine.js";
@@ -40,7 +40,7 @@ describe("the Jira search", () => {
       urls.push(url);
       return new Response(JSON.stringify({ issues: [
         { id: "10001", key: "PAY-12", fields: { summary: "Refunds fail", description: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Steps" }] }] }, reporter: { displayName: "Dana" } },
-          changelog: { histories: [{ author: { accountId: "acct-eve" }, items: [{ field: "status", fromString: "a", toString: "b" }] }, { author: { accountId: "acct-dana" }, items: [{ field: "labels", fromString: "bug", toString: "bug rovara" }] }] } },
+          changelog: { histories: [{ created: "2026-11-07T09:00:00.000+0000", author: { accountId: "acct-eve", accountType: "atlassian" }, items: [{ field: "status", fromString: "a", toString: "b" }] }, { created: "2026-11-07T09:05:00.000+0000", author: { accountId: "acct-dana", accountType: "atlassian" }, items: [{ field: "labels", fromString: "bug", toString: "bug rovara" }] }] } },
         { id: "10002", key: "PAY-13", fields: { summary: "No history" }, changelog: { histories: [] } },
         { id: "10003", key: "PAY-14", fields: { summary: "By an app" }, changelog: { histories: [{ author: { accountId: "app-1", accountType: "app" }, items: [{ field: "labels", fromString: "", toString: "rovara" }] }] } },
         { id: "x", key: "not a key", fields: {} },
@@ -97,5 +97,60 @@ describe("a watched source that cannot be read", () => {
     const outcome = await pollIntakeSource({ ports, searchFor: intakeSearchesOf({ deps }), notify: async () => undefined }, record!);
     expect(outcome).toEqual({ outcome: "failed", code: "CONNECTION_MISSING", noticed: false });
     expect((await listIntakeSources(table, ORG, "web"))[0]).toMatchObject({ failures: 1, lastError: "CONNECTION_MISSING", failingSince: NOW });
+  });
+});
+
+describe("who made the act, from the tracker's own history", () => {
+  const added = (at: string, accountId: string, accountType = "atlassian") => ({ created: at, author: { accountId, accountType }, items: [{ field: "labels", fromString: "", toString: "rovara" }] });
+  const removed = (at: string, accountId: string) => ({ created: at, author: { accountId, accountType: "atlassian" }, items: [{ field: "labels", fromString: "rovara", toString: "" }] });
+
+  it("is the NEWEST adder by the change's own time, whatever order the answer lists them in (review M2)", () => {
+    const histories = [added("2026-11-07T09:00:00.000+0000", "acct-a"), removed("2026-11-07T09:10:00.000+0000", "acct-a"), added("2026-11-07T09:20:00.000+0000", "acct-b")];
+    for (const order of [histories, [...histories].reverse(), [histories[2], histories[0], histories[1]]]) expect(jiraActorOf(order, { kind: "label", value: "rovara" })).toEqual({ kind: "person", accountId: "acct-b" });
+  });
+
+  it("is a person only for an atlassian account, as the webhook; a service-desk customer or an unknown type is nobody, an app is a bot (review M1)", () => {
+    expect(jiraActorOf([added("2026-11-07T09:00:00.000+0000", "c-1", "customer")], { kind: "label", value: "rovara" })).toBeUndefined();
+    expect(jiraActorOf([added("2026-11-07T09:00:00.000+0000", "c-2", "")], { kind: "label", value: "rovara" })).toBeUndefined();
+    expect(jiraActorOf([added("2026-11-07T09:00:00.000+0000", "app-1", "app")], { kind: "label", value: "rovara" })).toEqual({ kind: "bot" });
+  });
+
+  it("Linear: the newest adder by createdAt, whatever the answer's order (review M2)", async () => {
+    const { deps } = await connections([{ id: "con_lin00000000000000001", type: "linear" }]);
+    const fetch = vi.fn(async () => Response.json({ data: { viewer: { id: "rovara-user" }, issues: { nodes: [
+      { id: "u1", identifier: "ENG-9", title: "T", url: "https://linear.app/acme/issue/ENG-9/t", labels: { nodes: [{ id: "lab-1", name: "rovara" }] },
+        history: { nodes: [{ createdAt: "2026-11-07T09:00:00.000Z", actor: { id: "lin-a" }, addedLabelIds: ["lab-1"] }, { createdAt: "2026-11-07T09:30:00.000Z", actor: { id: "lin-b" }, addedLabelIds: ["lab-1"] }] } },
+    ] } } }));
+    const items = await linearIntakeSearch({ deps, fetch: fetch })({ orgId: ORG, project: "web", source: source({ channel: "tracker", system: "linear", when: { label: "rovara" } }), signal, limit: 50 });
+    expect(items[0]!.actor).toEqual({ kind: "person", accountId: "lin-b" });
+  });
+});
+
+describe("Jira's word on a webhook's actor (review I1)", () => {
+  const candidate = (accountId: string, url = "https://acme.atlassian.net/browse/PAY-12") => ({ orgId: ORG, externalRef: { system: "jira", id: "PAY-12", url }, actor: { kind: "person" as const, accountId }, act: { kind: "label" as const, value: "rovara" } });
+  const log = (accountId: string) => ({ changelog: { histories: [{ created: "2026-11-07T09:00:00.000+0000", author: { accountId, accountType: "atlassian" }, items: [{ field: "labels", fromString: "", toString: "rovara" }] }] } });
+
+  it("confirms the person only when the issue's own change log, read through the company's connection for that site, names them", async () => {
+    const { deps } = await connections([{ id: "con_jira0000000000000001", type: "jira" }]);
+    const urls: string[] = [];
+    const fetch = vi.fn(async (url: string) => { urls.push(url); return Response.json(log("acct-dana")); });
+    const confirm = jiraActorConfirmer({ deps, fetch: fetch as never });
+    expect(await confirm(candidate("acct-dana"))).toBe("person");
+    expect(urls[0]).toBe("https://acme.atlassian.net/rest/api/3/issue/PAY-12?fields=labels,assignee&expand=changelog");
+    // A forged body naming someone else: Jira says it was Dana.
+    expect(await confirm(candidate("acct-admin"))).toBe("unverified");
+  });
+
+  it("is unverified with no connection for the ticket's site, a link outside Atlassian, a failed read, or no act", async () => {
+    const none = await connections([]);
+    expect(await jiraActorConfirmer({ deps: none.deps, fetch: vi.fn() as never })(candidate("acct-dana"))).toBe("unverified");
+    const { deps } = await connections([{ id: "con_jira0000000000000001", type: "jira" }]);
+    const never = vi.fn();
+    expect(await jiraActorConfirmer({ deps, fetch: never as never })(candidate("acct-dana", "https://other.atlassian.net/browse/PAY-12"))).toBe("unverified");
+    expect(await jiraActorConfirmer({ deps, fetch: never as never })(candidate("acct-dana", "https://evil.example/browse/PAY-12"))).toBe("unverified");
+    expect(never).not.toHaveBeenCalled();
+    expect(await jiraActorConfirmer({ deps, fetch: vi.fn(async () => new Response("{}", { status: 500 })) })(candidate("acct-dana"))).toBe("unverified");
+    expect(await jiraActorConfirmer({ deps: undefined })(candidate("acct-dana"))).toBe("unverified");
+    expect(await jiraActorConfirmer({ deps, fetch: vi.fn() as never })({ ...candidate("acct-dana"), act: undefined })).toBe("unverified");
   });
 });

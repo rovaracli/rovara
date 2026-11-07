@@ -6,6 +6,7 @@
 // company's links, whether it is a member who may start. A ticket whose history does not say is handed over with no actor, so it waits (fail closed). Nothing else from the ticket is trusted.
 import { INTAKE_TITLE_MAX, type OrgId } from "@agentx/contracts";
 import { LINEAR_GRAPHQL, OrgConnectionStore, readConnection, readConnectionSecret, type OrgConnectionDeps, type OrgConnectionRecord } from "../connections/store.js";
+import type { IntakeCandidate } from "../intake/engine.js";
 import { IntakeSearchError, intakeSearchFor, type IntakeSearch, type IntakeSearchItem } from "./poll-intake.js";
 
 const RESPONSE_MAX_BYTES = 2_000_000;
@@ -51,6 +52,67 @@ export function adfText(node: unknown, depth = 0): string {
 const TO_STRING: string = "toString";
 const JIRA_LABEL = /^[^"\\\p{Cc}]{1,100}$/u;
 
+/** When a change happened (Jira's `created`), for an order that never trusts the order of the answer. */
+const createdOf = (entry: Record<string, unknown>): number => { const at = Date.parse(str(entry["created"]) ?? ""); return Number.isFinite(at) ? at : 0; };
+
+/**
+ * Who made the act, from a Jira change log: the NEWEST change (by its own time, not the answer's order) that added the label, or that set the assignee to `act.value` (or to Rovara's own
+ * account `me`, for a source watching assignment). Only an `atlassian` account is a person, the same as the webhook; an `app` is a bot; a service-desk `customer` or an account type Jira does
+ * not say is nobody (no actor, so the ticket waits). Rovara's own account is `rovara`.
+ */
+export function jiraActorOf(histories: readonly unknown[], act: { kind: "label" | "assignee"; value: string } | undefined, me?: string): IntakeSearchItem["actor"] {
+  const sorted = histories.map(rec).sort((left, right) => createdOf(right) - createdOf(left));
+  for (const entry of sorted) {
+    const asked = arr(entry["items"]).some((change) => {
+      const c = rec(change);
+      if (act?.kind === "label" && c["field"] === "labels") return ` ${str(c[TO_STRING]) ?? ""} `.includes(` ${act.value} `) && !` ${str(c["fromString"]) ?? ""} `.includes(` ${act.value} `);
+      if (c["field"] !== "assignee") return false;
+      return act?.kind === "assignee" ? c["to"] === act.value : me !== undefined && c["to"] === me;
+    });
+    if (!asked) continue;
+    const author = rec(entry["author"]);
+    const accountId = str(author["accountId"]);
+    if (author["accountType"] === "app") return { kind: "bot" };
+    if (author["accountType"] !== "atlassian" || accountId === undefined) return undefined;
+    return { kind: accountId === me ? "rovara" : "person", accountId };
+  }
+  return undefined;
+}
+
+/**
+ * Slice 5 review I1: the tracker's own word on who made a Jira webhook's act. A webhook body is signed only with the hook's secret, which the people who made the hook have seen, so its `user`
+ * is not believed alone: the issue's change log is read again through the company's OWN Jira connection for the ticket's site, and the act is a person's only when the newest change that made
+ * it was made by that same account. No connection, a failed read or another author: `unverified` (the ticket waits).
+ */
+export function jiraActorConfirmer(input: { deps: OrgConnectionDeps | undefined; fetch?: typeof fetch }) {
+  const fetchImpl = input.fetch ?? fetch;
+  return async (candidate: Pick<IntakeCandidate, "orgId" | "externalRef" | "actor" | "act">): Promise<"person" | "rovara" | "unverified"> => {
+    const accountId = candidate.actor?.accountId;
+    if (input.deps === undefined || candidate.actor?.kind !== "person" || accountId === undefined || candidate.act === undefined) return "unverified";
+    let site: string;
+    try { const url = new URL(candidate.externalRef.url); if (url.protocol !== "https:" || !/\.atlassian\.net$/u.test(url.hostname)) return "unverified"; site = `https://${url.hostname}`; } catch { return "unverified"; }
+    if (!/^[A-Z][A-Z0-9_]{0,30}-[1-9][0-9]{0,9}$/u.test(candidate.externalRef.id)) return "unverified";
+    try {
+      const connections = (await new OrgConnectionStore({ ...input.deps }).list(candidate.orgId)).filter((entry) => entry.type === "jira" && entry.hasSecret === true);
+      for (const entry of connections) {
+        const record = await readConnection(input.deps, candidate.orgId, entry.connectionId) as Connection | undefined;
+        if (record === undefined || record.orgId !== candidate.orgId || (record as { siteUrl?: string }).siteUrl !== site) continue;
+        const secret = await readConnectionSecret(input.deps, candidate.orgId, record).catch(() => undefined);
+        if (secret === undefined || !("apiToken" in secret) || !("email" in secret)) continue;
+        const response = await fetchImpl(`${site}/rest/api/3/issue/${encodeURIComponent(candidate.externalRef.id)}?fields=labels,assignee&expand=changelog`, {
+          headers: { authorization: `Basic ${Buffer.from(`${secret.email}:${secret.apiToken}`).toString("base64")}`, accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(10_000),
+        });
+        const actor = jiraActorOf(arr(rec(rec(await readCapped(response))["changelog"])["histories"]), candidate.act);
+        if (actor?.kind === "person" && actor.accountId === accountId) return "person";
+        return "unverified";
+      }
+      return "unverified";
+    } catch {
+      return "unverified";
+    }
+  };
+}
+
 /** The Jira search: open issues with the label (or assigned to the connection's own account), with the change log that says who did it. */
 export function jiraIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeof fetch }): IntakeSearch {
   const fetchImpl = input.fetch ?? fetch;
@@ -82,20 +144,7 @@ export function jiraIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeo
       const fields = rec(issue["fields"]);
       if (key === undefined || !/^[A-Z][A-Z0-9_]{0,30}-[1-9][0-9]{0,9}$/u.test(key)) continue;
       // Who did it: the newest change that ADDED the label, or that assigned the issue to Rovara's own account.
-      let actor: IntakeSearchItem["actor"];
-      for (const history of [...arr(rec(issue["changelog"])["histories"])].reverse()) {
-        const entry = rec(history);
-        const author = rec(entry["author"]);
-        const asked = arr(entry["items"]).some((change) => {
-          const c = rec(change);
-          if (label !== undefined && c["field"] === "labels") return ` ${str(c[TO_STRING]) ?? ""} `.includes(` ${label} `) && !` ${str(c["fromString"]) ?? ""} `.includes(` ${label} `);
-          return me !== undefined && c["field"] === "assignee" && c["to"] === me;
-        });
-        if (!asked) continue;
-        const accountId = str(author["accountId"]);
-        actor = author["accountType"] === "app" ? { kind: "bot" } : accountId === undefined ? undefined : { kind: accountId === me ? "rovara" : "person", accountId };
-        break;
-      }
+      const actor = jiraActorOf(arr(rec(issue["changelog"])["histories"]), label === undefined ? undefined : { kind: "label", value: label }, me);
       items.push({
         externalRef: { system: "jira", id: key, url: `${site}/browse/${key}` },
         title: cut(str(fields["summary"]) ?? key, INTAKE_TITLE_MAX),
@@ -110,7 +159,7 @@ export function jiraIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeo
 }
 
 const LINEAR_QUERY = `query($filter: IssueFilter!, $first: Int!) { viewer { id } issues(first: $first, filter: $filter) { nodes { id identifier title description url creator { displayName }
- labels { nodes { id name } } history(first: 25) { nodes { actor { id } botActor { id } addedLabelIds toAssigneeId } } } } }`;
+ labels { nodes { id name } } history(first: 25) { nodes { createdAt actor { id } botActor { id } addedLabelIds toAssigneeId } } } } }`;
 
 /** The Linear search: open issues with the label (or assigned to the connection's own account), with the history that says who did it. */
 export function linearIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeof fetch }): IntakeSearch {
@@ -141,10 +190,10 @@ export function linearIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typ
       const url = str(issue["url"]);
       if (identifier === undefined || url === undefined || !/^[A-Za-z][A-Za-z0-9]{0,9}-[1-9][0-9]{0,8}$/u.test(identifier)) continue;
       const labelIds = new Set(arr(rec(issue["labels"])["nodes"]).filter((node) => label !== undefined && str(rec(node)["name"])?.toLowerCase() === label.toLowerCase()).map((node) => str(rec(node)["id"])));
-      // Linear lists history newest first: the first entry that added the label (or assigned the issue to Rovara's account) says who did it.
+      // The newest entry (by its own `createdAt`, never the answer's order) that added the label, or assigned the issue to Rovara's account, says who did it.
       let actor: IntakeSearchItem["actor"];
-      for (const node of arr(rec(issue["history"])["nodes"])) {
-        const entry = rec(node);
+      const at = (entry: Record<string, unknown>): number => { const value = Date.parse(str(entry["createdAt"]) ?? ""); return Number.isFinite(value) ? value : 0; };
+      for (const entry of arr(rec(issue["history"])["nodes"]).map(rec).sort((left, right) => at(right) - at(left))) {
         const asked = arr(entry["addedLabelIds"]).some((id) => labelIds.has(str(id))) || (viewer !== undefined && entry["toAssigneeId"] === viewer && source.ref.when.assignedToRovara === true);
         if (!asked) continue;
         const accountId = str(rec(entry["actor"])["id"]);

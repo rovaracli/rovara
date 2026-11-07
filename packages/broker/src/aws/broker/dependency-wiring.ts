@@ -56,7 +56,7 @@ import { ingestIntake, type IntakePorts } from "../../intake/engine.js";
 import { writeIntakeNotice } from "../../intake/notices.js";
 import { noteOwnWrite, registerOwnWriteRecorder } from "../../intake/own-writes.js";
 import { intakePortsOf } from "../../intake/wiring.js";
-import { intakeSearchesOf } from "../../triggers/intake-searches.js";
+import { intakeSearchesOf, jiraActorConfirmer } from "../../triggers/intake-searches.js";
 import { listProjectMembers } from "../../org/project-members.js";
 import type { IntakePollDependencies } from "../../triggers/poll-intake.js";
 import { chainTriggerHooksFor, triggerHooksFor } from "../../triggers/lifecycle.js";
@@ -745,10 +745,15 @@ export function eventDispatchOf(dependencies: AwsBrokerDependencies, tasks: Deve
   const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
   const githubApp = dependencies.githubPullRequests;
   const intake = intakePortsFrom(dependencies, tasks, agents);
+  const confirmJira = jiraActorConfirmer({ deps: dependencies.orgConnections });
   return chainDependencies === undefined ? undefined : (orgId, event, context) => dispatchTriggerEvent({
     ...chainDependencies, ...(githubApp.appSlug === undefined ? {} : { githubAppSlug: () => githubApp.appSlug!() }),
     // Meta repo lane F: a label or an assignment on an issue asks Rovara Code for work through the intake engine.
-    ...(intake === undefined ? {} : { intake: { ingest: (candidate, options) => ingestIntake(intake, candidate, options?.admit === undefined ? {} : { admit: options.admit }) } }),
+    // Slice 5 review I1: a Jira act is a member's only on Jira's own word, read again through the company's connection.
+    ...(intake === undefined ? {} : { intake: { ingest: (candidate, options) => ingestIntake(intake, candidate, {
+      ...(options?.admit === undefined ? {} : { admit: options.admit }),
+      ...(candidate.externalRef.system === "jira" ? { confirmActor: () => confirmJira(candidate) } : {}),
+    }) } }),
   }, orgId, event, context);
 }
 

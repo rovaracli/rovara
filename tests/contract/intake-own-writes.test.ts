@@ -52,11 +52,15 @@ const githubLabel = (over: Partial<IntakeCandidate> = {}): IntakeCandidate => ({
 
 afterEach(() => { registerOwnWriteRecorder(undefined); unregisterOwnWriteExtractor("acme-tracker"); });
 
+
+/** Slice 5 review I1: a Jira webhook act needs Jira's own word before it can start work. These tests are about Rovara's own writes, so Jira is taken to confirm the person (as the broker's confirmer would for a real act). */
+const ingestWithWord: typeof ingestIntake = (ports, candidate, context = {}) => ingestIntake(ports, candidate, candidate.externalRef.system === "jira" && context.confirmActor === undefined ? { ...context, confirmActor: async () => "person" } : context);
+
 describe("a label Rovara wrote through a member's key is Rovara's, not the member's", () => {
   it("starts nothing for the event that matches a note, and keeps no item for it", async () => {
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
-    expect(await ingestIntake(w.ports, jiraLabel())).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect(await ingestWithWord(w.ports, jiraLabel())).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
     expect(w.started).toEqual([]);
     expect(await readIntakeItem(w.ports.table, ORG, PROJECT, intakeItemIdOf("jira", "PAY-12"))).toBeUndefined();
   });
@@ -64,31 +68,31 @@ describe("a label Rovara wrote through a member's key is Rovara's, not the membe
   it("is still Rovara's when the vendor delivers the same event again (a note is not used up)", async () => {
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
-    for (let i = 0; i < 3; i += 1) expect(await ingestIntake(w.ports, jiraLabel())).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    for (let i = 0; i < 3; i += 1) expect(await ingestWithWord(w.ports, jiraLabel())).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
     expect(w.started).toEqual([]);
   });
 
   it("matches the label whatever its case, and the ticket whatever the case of its id", async () => {
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "github", ticket: "ACME/Web/7", labels: ["ROVARA"] });
-    expect(await ingestIntake(w.ports, githubLabel())).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect(await ingestWithWord(w.ports, githubLabel())).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
   });
 
   it("matches an assignment the same way", async () => {
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", assignees: ["acct-rovara-bot"] });
-    const outcome = await ingestIntake(w.ports, jiraLabel({ act: { kind: "assignee", value: "acct-rovara-bot" }, eventId: "jira:issue:10042:assigned:acct-rovara-bot:1" }));
+    const outcome = await ingestWithWord(w.ports, jiraLabel({ act: { kind: "assignee", value: "acct-rovara-bot" }, eventId: "jira:issue:10042:assigned:acct-rovara-bot:1" }));
     expect(outcome).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
   });
 
   it("does not match another label, another ticket, or another org", async () => {
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
-    expect((await ingestIntake(w.ports, jiraLabel({ act: { kind: "label", value: "urgent" }, eventId: "e-urgent" }))).outcome).toBe("started");
-    expect((await ingestIntake(w.ports, jiraLabel({ externalRef: { ...JIRA, id: "PAY-13", url: "https://acme.atlassian.net/browse/PAY-13" }, eventId: "e-13" }))).outcome).toBe("started");
+    expect((await ingestWithWord(w.ports, jiraLabel({ act: { kind: "label", value: "urgent" }, eventId: "e-urgent" }))).outcome).toBe("started");
+    expect((await ingestWithWord(w.ports, jiraLabel({ externalRef: { ...JIRA, id: "PAY-13", url: "https://acme.atlassian.net/browse/PAY-13" }, eventId: "e-13" }))).outcome).toBe("started");
     const other = world();
     await noteOwnWrite(other.ports.table, OTHER_ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
-    expect((await ingestIntake(other.ports, jiraLabel())).outcome).toBe("started");
+    expect((await ingestWithWord(other.ports, jiraLabel())).outcome).toBe("started");
   });
 
   it("does not take an event from before the write for its echo (a member who labelled first still starts the work)", async () => {
@@ -97,7 +101,7 @@ describe("a label Rovara wrote through a member's key is Rovara's, not the membe
     const before = new Date(T0 - OWN_WRITE_SKEW_MS - 1_000).toISOString();
     // Received long after the write (outside the delivery lag), stamped before it: not its echo.
     w.clock.now = T0 + OWN_WRITE_DELIVERY_LAG_MS + 1_000;
-    expect((await ingestIntake(w.ports, jiraLabel({ occurredAt: before }))).outcome).toBe("started");
+    expect((await ingestWithWord(w.ports, jiraLabel({ occurredAt: before }))).outcome).toBe("started");
   });
 
   it("stops matching after its window", async () => {
@@ -105,7 +109,7 @@ describe("a label Rovara wrote through a member's key is Rovara's, not the membe
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
     const late = new Date(T0 + OWN_WRITE_LABEL_WINDOW_MS + 1_000).toISOString();
     w.clock.now = T0 + OWN_WRITE_LABEL_WINDOW_MS + 1_000;
-    expect((await ingestIntake(w.ports, jiraLabel({ occurredAt: late }))).outcome).toBe("started");
+    expect((await ingestWithWord(w.ports, jiraLabel({ occurredAt: late }))).outcome).toBe("started");
   });
 
   it("a new write extends the window, and the first write still covers an early event", async () => {
@@ -115,16 +119,16 @@ describe("a label Rovara wrote through a member's key is Rovara's, not the membe
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
     const later = new Date(T0 + OWN_WRITE_LABEL_WINDOW_MS + 60_000).toISOString();
     w.clock.now = T0 + OWN_WRITE_LABEL_WINDOW_MS + 60_000;
-    expect(await ingestIntake(w.ports, jiraLabel({ occurredAt: later }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
-    expect(await ingestIntake(w.ports, jiraLabel({ occurredAt: new Date(T0).toISOString(), eventId: "e-early" }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect(await ingestWithWord(w.ports, jiraLabel({ occurredAt: later }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect(await ingestWithWord(w.ports, jiraLabel({ occurredAt: new Date(T0).toISOString(), eventId: "e-early" }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
   });
 
   it("a note for a whole repository (a ticket Rovara was about to make) is never `own`: an issue in it waits for a member, so a member's label on another issue is not lost", async () => {
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "github", scope: "acme/web", labels: ["rovara"] });
-    expect(await ingestIntake(w.ports, githubLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
+    expect(await ingestWithWord(w.ports, githubLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
     const elsewhere = githubLabel({ externalRef: { ...GITHUB, id: "acme/other/7", url: "https://github.com/acme/other/issues/7" }, eventId: "e-other" });
-    expect((await ingestIntake(w.ports, elsewhere)).outcome).toBe("started");
+    expect((await ingestWithWord(w.ports, elsewhere)).outcome).toBe("started");
     expect(w.started).toHaveLength(1);
   });
 
@@ -133,15 +137,15 @@ describe("a label Rovara wrote through a member's key is Rovara's, not the membe
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
     w.clock.now = T0 + 20_000;
     const behind = new Date(T0 - 30 * 60_000).toISOString();
-    expect(await ingestIntake(w.ports, jiraLabel({ occurredAt: behind }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect(await ingestWithWord(w.ports, jiraLabel({ occurredAt: behind }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
   });
 
   it("Rovara labelled by Jira's numeric id and the event names the issue by its key: still Rovara's", async () => {
     const w = world();
     expect(ownWriteNoteOf("jira", "editJiraIssue", { issueIdOrKey: "10042", fields: { labels: ["rovara"] } })).toMatchObject({ ticket: "10042" });
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "10042", labels: ["rovara"] });
-    expect(await ingestIntake(w.ports, jiraLabel({ alternateIds: ["10042"] }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
-    expect((await ingestIntake(w.ports, jiraLabel({ eventId: "other", externalRef: { ...JIRA, id: "PAY-13", url: "https://acme.atlassian.net/browse/PAY-13" }, alternateIds: ["10099"] }))).outcome).toBe("started");
+    expect(await ingestWithWord(w.ports, jiraLabel({ alternateIds: ["10042"] }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect((await ingestWithWord(w.ports, jiraLabel({ eventId: "other", externalRef: { ...JIRA, id: "PAY-13", url: "https://acme.atlassian.net/browse/PAY-13" }, alternateIds: ["10099"] }))).outcome).toBe("started");
   });
 });
 
@@ -149,7 +153,7 @@ describe("a ticket Rovara just changed in a way a note can't match is not taken 
   it("waits for Start (unverified) instead of starting, and starts nothing", async () => {
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", touch: true });
-    expect(await ingestIntake(w.ports, jiraLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
+    expect(await ingestWithWord(w.ports, jiraLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
     expect(w.started).toEqual([]);
     expect(await readIntakeItem(w.ports.table, ORG, PROJECT, intakeItemIdOf("jira", "PAY-12"))).toMatchObject({ state: "waiting", reason: "unverified", requester: { standing: "outsider" } });
   });
@@ -159,7 +163,7 @@ describe("a ticket Rovara just changed in a way a note can't match is not taken 
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", touch: true });
     const late = new Date(T0 + OWN_WRITE_TOUCH_WINDOW_MS + 1_000).toISOString();
     w.clock.now = T0 + OWN_WRITE_TOUCH_WINDOW_MS + 1_000;
-    expect((await ingestIntake(w.ports, jiraLabel({ occurredAt: late }))).outcome).toBe("started");
+    expect((await ingestWithWord(w.ports, jiraLabel({ occurredAt: late }))).outcome).toBe("started");
   });
 });
 
@@ -167,7 +171,7 @@ describe("a read of the notes that fails is not a guess", () => {
   it("throws, so the delivery is made again, and starts nothing", async () => {
     const w = world();
     w.db.injectFault({ command: "GetCommand", error: { name: "ProvisionedThroughputExceededException" }, times: 1 });
-    const outcome = await ingestIntake(w.ports, jiraLabel()).then(() => "no fault", (error: unknown) => (error instanceof Error ? error.name : "other"));
+    const outcome = await ingestWithWord(w.ports, jiraLabel()).then(() => "no fault", (error: unknown) => (error instanceof Error ? error.name : "other"));
     expect(outcome).toBe("ProvisionedThroughputExceededException");
     expect(w.started).toEqual([]);
   });
@@ -176,20 +180,20 @@ describe("a read of the notes that fails is not a guess", () => {
 describe("the tracker's own word on who did it (where the adapter has one)", () => {
   it("an act the tracker says was done through Rovara's app is Rovara's", async () => {
     const w = world();
-    const outcome = await ingestIntake(w.ports, githubLabel(), { confirmActor: async () => "rovara" });
+    const outcome = await ingestWithWord(w.ports, githubLabel(), { confirmActor: async () => "rovara" });
     expect(outcome).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
     expect(w.started).toEqual([]);
   });
 
   it("an act the tracker confirms is a person's starts the work as before", async () => {
     const w = world();
-    expect((await ingestIntake(w.ports, githubLabel(), { confirmActor: async () => "person" })).outcome).toBe("started");
+    expect((await ingestWithWord(w.ports, githubLabel(), { confirmActor: async () => "person" })).outcome).toBe("started");
   });
 
   it("an act the tracker can't confirm (an error, or no answer) waits for Start", async () => {
     const w = world();
-    expect(await ingestIntake(w.ports, githubLabel(), { confirmActor: async () => { throw new Error("api down"); } })).toEqual({ outcome: "waiting", reason: "unverified" });
-    expect(await ingestIntake(w.ports, githubLabel({ eventId: "e2", externalRef: { ...GITHUB, id: "acme/web/8", url: "https://github.com/acme/web/issues/8" } }), { confirmActor: async () => "unverified" })).toEqual({ outcome: "waiting", reason: "unverified" });
+    expect(await ingestWithWord(w.ports, githubLabel(), { confirmActor: async () => { throw new Error("api down"); } })).toEqual({ outcome: "waiting", reason: "unverified" });
+    expect(await ingestWithWord(w.ports, githubLabel({ eventId: "e2", externalRef: { ...GITHUB, id: "acme/web/8", url: "https://github.com/acme/web/issues/8" } }), { confirmActor: async () => "unverified" })).toEqual({ outcome: "waiting", reason: "unverified" });
     expect(w.started).toEqual([]);
   });
 
@@ -197,8 +201,8 @@ describe("the tracker's own word on who did it (where the adapter has one)", () 
     const w = world();
     let asked = 0;
     const confirmActor = async () => { asked += 1; return "person" as const; };
-    await ingestIntake(w.ports, githubLabel({ actor: { kind: "rovara" } }), { confirmActor });
-    await ingestIntake(w.ports, githubLabel({ eventId: "b", actor: { kind: "bot", accountId: "9" } }), { confirmActor });
+    await ingestWithWord(w.ports, githubLabel({ actor: { kind: "rovara" } }), { confirmActor });
+    await ingestWithWord(w.ports, githubLabel({ eventId: "b", actor: { kind: "bot", accountId: "9" } }), { confirmActor });
     expect(asked).toBe(0);
   });
 });
@@ -284,7 +288,7 @@ describe("the connector call path notes a write before it is sent", () => {
     const result = await run(new CatalogCache<ScopeDiscovery>({ ttlMs: 600_000, maxEntries: 4 }));
     expect(result.status).toBe("SUCCEEDED");
     expect(atCall.verdict).toBe("own");
-    expect(await ingestIntake(w.ports, jiraLabel())).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect(await ingestWithWord(w.ports, jiraLabel())).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
   });
 
   it("a note that can't be made stops the call: nothing is sent to the vendor", async () => {
@@ -330,14 +334,14 @@ describe("the guard fails closed (review round 1)", () => {
   it("an event right after a wide note waits for a member (unverified), in that system or any system for an org-wide note, and not in another org", async () => {
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "*", wide: true });
-    expect(await ingestIntake(w.ports, jiraLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
+    expect(await ingestWithWord(w.ports, jiraLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
     const g = world();
     await noteOwnWrite(g.ports.table, ORG, { system: "github", wide: true });
-    expect(await ingestIntake(g.ports, jiraLabel())).toMatchObject({ outcome: "started" });
-    expect(await ingestIntake(g.ports, githubLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
+    expect(await ingestWithWord(g.ports, jiraLabel())).toMatchObject({ outcome: "started" });
+    expect(await ingestWithWord(g.ports, githubLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
     const other = world();
     await noteOwnWrite(other.ports.table, OTHER_ORG, { system: "*", wide: true });
-    expect((await ingestIntake(other.ports, jiraLabel())).outcome).toBe("started");
+    expect((await ingestWithWord(other.ports, jiraLabel())).outcome).toBe("started");
   });
 
   it("a write with no recorder registered is refused and nothing is sent; a read is not", async () => {
@@ -363,7 +367,7 @@ describe("the real webhook path (fix round 2)", () => {
     const candidate = intakeCandidateOf(ORG, result.events[0]!);
     expect(candidate).toMatchObject({ externalRef: { id: "PAY-12" }, alternateIds: ["10042"], act: { kind: "label", value: "rovara" } });
     await recordWith(w, { orgId: ORG, connectorType: "jira", tool: "editJiraIssue", args: { issueIdOrKey: "10042", fields: { labels: ["rovara"] } } });
-    expect(await ingestIntake(w.ports, candidate!)).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect(await ingestWithWord(w.ports, candidate!)).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
     expect(w.started).toEqual([]);
   });
 
@@ -371,7 +375,7 @@ describe("the real webhook path (fix round 2)", () => {
     const w = world();
     const result = jiraProvider.normalize(body, {}, HOOK);
     if (!("events" in result)) throw new Error(JSON.stringify(result));
-    expect((await ingestIntake(w.ports, intakeCandidateOf(ORG, result.events[0]!)!)).outcome).toBe("started");
+    expect((await ingestWithWord(w.ports, intakeCandidateOf(ORG, result.events[0]!)!)).outcome).toBe("started");
   });
 });
 
@@ -384,8 +388,8 @@ describe("wide notes are held per project and capped (fix round 2)", () => {
   it("a write through a connector with no reader holds only the project the call came from", async () => {
     const w = world();
     await recordWith(w, { orgId: ORG, project: "web", connectorType: "mcp", tool: "update_ticket", args: { id: "T-1" } });
-    expect(await ingestIntake(w.ports, jiraLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
-    expect((await ingestIntake(w.ports, jiraLabel({ project: "api", eventId: "other-project" }))).outcome).toBe("started");
+    expect(await ingestWithWord(w.ports, jiraLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
+    expect((await ingestWithWord(w.ports, jiraLabel({ project: "api", eventId: "other-project" }))).outcome).toBe("started");
   });
 
   it("repeated writes cannot keep a project waiting past the cap: the hold ends 60 minutes after the first note, and the cap is logged", async () => {

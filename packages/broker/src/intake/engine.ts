@@ -95,6 +95,8 @@ export interface IntakePorts {
   started?(orgId: OrgId, started: { taskId: string; sessionId?: string | undefined }): Promise<void>;
 }
 
+/** The trackers whose webhook acts need the tracker's own word on who made them (`IngestContext.confirmActor`) before they can start work. */
+const WORD_REQUIRED: ReadonlySet<string> = new Set(["jira"]);
 const errorCode = (error: unknown): string => (error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown");
 /** A start's own refusal that will not pass by itself (the budget, the project, the process). A busy answer and anything from 500 up may pass, and are thrown to be tried again. */
 const BUSY_CODES: ReadonlySet<string> = new Set(["WORKSPACE_BUSY", "TOO_MANY_REQUESTS"]);
@@ -218,6 +220,9 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
     return { outcome: "skipped", reason: "caused_by_rovara" };
   }
   let unattributed = own === "touched";
+  // Slice 5 review I1: a Jira webhook's body is signed only with the hook's secret, which the people who made the hook have seen, so the person it names is believed only on Jira's own word
+  // (`confirmActor`, read through the company's connection). Without one, the act is not taken for a member's: the ticket waits.
+  if (!unattributed && WORD_REQUIRED.has(ref.data.system) && eventId !== undefined && eventId !== "" && context.confirmActor === undefined && candidate.actor?.kind === "person") unattributed = true;
   // The tracker's own word on who did it, where it has one: asked only when the act looks like a person's and would start work.
   if (!unattributed && context.confirmActor !== undefined && candidate.actor?.kind === "person" && candidate.actor.accountId !== undefined && await wouldStart(ports, candidate)) {
     const word = await context.confirmActor().catch(() => "unverified" as const);
