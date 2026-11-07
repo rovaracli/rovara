@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { SettingsNote } from "../SettingsNote.js";
 import { useQueryClient } from "@tanstack/react-query";
 import type { SecondReviewState } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
@@ -148,7 +149,7 @@ export function SecondReviewScreen() {
  if (read.error instanceof ApiError && read.error.code === "NOT_FOUND") return <section><PageHeader focusOnMount title={T.TITLE} /><p>{T.UNAVAILABLE}</p></section>;
  if (read.data === undefined) return <section><PageHeader focusOnMount title={T.TITLE} /><p role="alert">{T.LOAD_FAILED}</p><div><Button onClick={() => { void read.refetch(); }}>{T.RETRY}</Button></div></section>;
  const state = read.data as unknown as SecondReviewState;
- return <section aria-label={T.TITLE}><PageHeader focusOnMount title={T.TITLE} description={T.INTRO} />
+ return <section aria-label={T.TITLE}><PageHeader focusOnMount title={T.TITLE} description={T.INTRO} /><SettingsNote area="second-review" />
   <NoticeSection state={state} /><ModeSection state={state} /><ReviewerSection state={state} /><ContextSection state={state} /><TrackSection state={state} />
  </section>;
 }

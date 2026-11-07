@@ -1,4 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { SettingsNote } from "../SettingsNote.js";
 import { Link } from "react-router";
 import { useAppHost } from "../../../host.js";
 import { ApiError } from "../../../api/errors.js";
@@ -36,7 +37,7 @@ export function HowWeWorkCompanyScreen() {
  const read = useAdminRead("company-how-we-work", COMPANY_POLICY_PATH, CompanyPolicyReader, { stable: true });
  const [notice, setNotice] = useState<Notice>(), { role } = useAdminContext();
  const reread = async (): Promise<boolean> => !(await read.refetch()).isError;
- return <section><PageHeader focusOnMount title={T.PAGE_TITLE} description={T.PAGE_NOTE} />
+ return <section><PageHeader focusOnMount title={T.PAGE_TITLE} description={T.PAGE_NOTE} /><SettingsNote area="how-we-work" />
   <p><Link to="/app/admin/models/sources">Back to AI models</Link></p>
   <LearningSuggestionsRow />
   <KnownFailingPolicyRow />

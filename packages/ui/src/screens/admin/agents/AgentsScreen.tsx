@@ -1,4 +1,5 @@
 import { Link, useSearchParams } from "react-router";
+import { SettingsNote } from "../SettingsNote.js";
 import { z } from "zod";
 import { AgentDirectoryResponseReaderSchema, AutonomySchema } from "@agentx/contracts/web";
 import { DataTable } from "../../../design/DataTable.js";
@@ -17,7 +18,7 @@ function Guardrails() {
 export function AgentsScreen() {
  const [params,setParams] = useSearchParams(), term = params.get("q") ?? "";
  const read = useAdminRead("agents", "list", "/v1/app/agents?scope=all", agentReader);
- return <section><PageHeader focusOnMount title="Agents" description="Inspect versions and company guardrails. Existing sessions keep their pinned recipes." /><p>Visible agents only; this is not a complete company adoption inventory.</p><ReadState read={read} label="agents">{data=>{
+ return <section><PageHeader focusOnMount title="Agents" description="Inspect versions and company guardrails. Existing sessions keep their pinned recipes." /><SettingsNote area="agents" /><p>Visible agents only; this is not a complete company adoption inventory.</p><ReadState read={read} label="agents">{data=>{
  const matches = data.agents.filter(a=>a.name.toLocaleLowerCase("en-US").includes(term.trim().toLocaleLowerCase("en-US")));
  return <><div className="rv-field rv-admin-search"><label htmlFor="admin-agent-search">Find in this agent list</label><input id="admin-agent-search" type="search" maxLength={200} value={term} onChange={e=>setParams(e.target.value?{q:e.target.value}:{},{replace:true})} /></div><p>Per-agent autonomy and permitted-project lists are not returned by this directory. Inspect the existing profile for recipe details.</p>
  {data.agents.length === 0 ? <p>No visible agents were returned. <Link to="/app/agents">Open agent directory</Link></p> : matches.length === 0 ? <p>No matching agents in this list.</p> : <DataTable caption="Visible agents" rows={matches} rowKey={a=>a.agentId} columns={[

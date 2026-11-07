@@ -9,7 +9,7 @@ export const SETTINGS_AREAS = {
   roles: { title: "Roles", affects: "This page only explains roles. Change a person's role on the People page.", who: "Only owners change roles.", changers: [], readOnly: true },
   connections: { title: "Connections", affects: "What Rovara can reach for every project in the company: your code, AI provider, Slack, trackers and cloud tools.", who: "Owners and admins connect, check and remove connections. Changing one affects every project that uses it.", changers: ["owner", "admin"] },
   models: { title: "AI models", affects: "Which AI provider Rovara tries first for the whole company. Add a provider on the Connections page.", who: "Owners and admins can change the order.", changers: ["owner", "admin"] },
-  money: { title: "Money and limits", affects: "How much AI work the company and its tasks may spend. A looser limit lets work run longer and cost more.", who: "Monthly base budgets are read only here. Owners and admins edit task stops; a looser stop needs a second owner or admin to approve it. Only owners turn enforcement on.", changers: ["owner", "admin"] },
+  money: { title: "Money and limits", affects: "How much AI work the company and its tasks may spend. A looser limit lets work run longer and cost more.", who: "Owners and admins edit task stops; a looser stop must be approved by a different owner or admin. The monthly base amounts are shown here but not edited on this page. Only owners turn enforcement on.", changers: ["owner", "admin"] },
   "how-we-work": { title: "How we work", affects: "The default steps, models, design review and learning rules for every project, unless a project is locked to a stricter choice.", who: "Owners and admins save company defaults. A less-safe change needs a different owner or admin to confirm it.", changers: ["owner", "admin"] },
   projects: { title: "Projects", affects: "Which repositories and people each project covers. Archiving stops new work in a project.", who: "Owners and admins are maintainers of every project and can change any of them.", changers: ["owner", "admin"] },
   "tracker-people": { title: "Tracker people", affects: "Which Linear or Jira person counts as which Rovara member, which decides whose tickets can start work.", who: "Owners and admins can map people.", changers: ["owner", "admin"] },
@@ -26,5 +26,5 @@ const ROLE_WORDS: Record<SettingsRole, string> = { owner: "an owner", admin: "an
 export function readOnlyReason(area: SettingsAreaId, role: SettingsRole): string | undefined {
   const entry: SettingsArea = SETTINGS_AREAS[area];
   if (entry.readOnly === true) return undefined;
-  return entry.changers.includes(role) ? undefined : `You can look at this page, but you can't change it. You are ${ROLE_WORDS[role]}. ${entry.who}`;
+  return entry.changers.includes(role) ? undefined : `You can't change this here. You are ${ROLE_WORDS[role]}. ${entry.who}`;
 }

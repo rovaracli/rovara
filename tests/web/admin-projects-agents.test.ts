@@ -110,7 +110,7 @@ it("opens website editing from fresh active admin project detail without changin
  await screen.findByRole("heading", { name: "Allowed websites" });
  expect(f.request.mock.calls.some(([r]) => r.path.includes("allowed-websites"))).toBe(false);
  fireEvent.click(screen.getByRole("button", { name: "Edit allowed websites" }));await screen.findByRole("button", { name: "Review website change" });
- expect(screen.getByText("github.com")).toBeTruthy();expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
+ expect(screen.getByText("github.com")).toBeTruthy();expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);f.close();
 });
 it("B33 member maintainer opens company-pinned website editing on the shipped own-project route", async () => {

@@ -1,4 +1,5 @@
 import "./audit.css";
+import { SettingsNote } from "../SettingsNote.js";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
@@ -53,7 +54,7 @@ function AuditView() {
   if (from !== undefined && to !== undefined && from > to) { setValidation("From must be no later than Through.");return; }
   setValidation("");setRange({ ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) });setCursors([""]);setPage(0);setGeneration(previous => previous + 1);
  }
- return <section className="rv-admin-audit"><PageHeader focusOnMount title="Audit" description="Read your company's audit records. Reading can add an audit entry; this page does not refresh automatically." actions={<Button aria-disabled={records.isFetching || status.isFetching} onClick={() => { if (records.isFetching || status.isFetching) return;void records.refetch({ cancelRefetch: false });void status.refetch({ cancelRefetch: false }); }}>Refresh this page and status</Button>} />
+ return <section className="rv-admin-audit"><PageHeader focusOnMount title="Audit" description="Read your company's audit records. Reading can add an audit entry; this page does not refresh automatically." actions={<Button aria-disabled={records.isFetching || status.isFetching} onClick={() => { if (records.isFetching || status.isFetching) return;void records.refetch({ cancelRefetch: false });void status.refetch({ cancelRefetch: false }); }}>Refresh this page and status</Button>} /><SettingsNote area="audit" />
  <h2>Log status</h2><ReadSection read={status} label="Audit log status">{data => <>
  <p>Sealed through record {data.sealedThroughSeq} of {data.headSeq} in this status snapshot.</p><p>{data.headSeq - data.sealedThroughSeq} unsealed {data.headSeq - data.sealedThroughSeq === 1 ? "record" : "records"}</p>
  <p>Latest independent timestamp: {data.latestTimestamp === undefined ? "Not returned" : checkedTime(data.latestTimestamp)}.</p>

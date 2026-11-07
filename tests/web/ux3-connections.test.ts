@@ -141,8 +141,7 @@ it("opens GitHub and AI provider setup in place from a deep link, and old places
  const models = mount({ path: "/app/admin/models/sources" });
  try {
   await screen.findByRole("heading", { name: "AI models" });
-  const link = (await screen.findAllByRole("link", { name: "Connections" })).find(node => node.getAttribute("href")?.includes("open=ai-provider"));
-  expect(link?.getAttribute("href")).toBe("/app/admin/connections?open=ai-provider");
+  await waitFor(() => expect(screen.getAllByRole("link", { name: "Connections" }).map(node => node.getAttribute("href"))).toContain("/app/admin/connections?open=ai-provider"));
   expect(screen.queryByRole("heading", { name: "Add a provider" })).toBeNull();
  } finally { models.close(); }
 });

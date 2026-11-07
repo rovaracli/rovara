@@ -1,4 +1,5 @@
 import { NavLink, useLocation } from "react-router";
+import { SettingsNote } from "../SettingsNote.js";
 import { z } from "zod";
 // Keep the source contract warning verbatim without importing its Node-only barrel.
 const BEDROCK_NOT_TESTED_NOTE = "NOT TESTED: Bedrock in your own AWS account hasn't been tested yet.";
@@ -24,7 +25,7 @@ export function ModelsScreen() {
  const context = useAdminContext();
  const location = useLocation(), tab = location.pathname.endsWith("/available") ? "available" : "sources";
  const read = useAdminRead("sources", "/v1/app/org/model-sources", modelSourcesSnapshot.extend({orgId:z.literal(context.orgId).optional(),developerId:z.literal(context.developerId).optional(),revision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),available:z.array(z.enum(["anthropic","openai","openrouter","bedrock","endpoint"])).max(5).optional()}));
- return <section><PageHeader focusOnMount title={tab === "sources" ? "AI models" : "Available models"} description="Company source configuration does not verify access to a model." />
+ return <section><PageHeader focusOnMount title={tab === "sources" ? "AI models" : "Available models"} description="Company source configuration does not verify access to a model." /><SettingsNote area="models" />
  <nav aria-label="AI models"><NavLink to="/app/admin/models/sources">Model sources</NavLink>{" · "}<NavLink to="/app/admin/models/available">Available models</NavLink>{" · "}<NavLink to="/app/admin/how-we-work">Step models (in How we work)</NavLink></nav>
  <ReadSection read={read} label="Model sources">{data => <>
  {tab === "sources" && <>

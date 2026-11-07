@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { SettingsNote } from "../SettingsNote.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppOrgMembersResponseReaderSchema, TrackerPeopleMutationBodySchema, TrackerPeopleReaderSchema, TrackerPeopleResultReaderSchema, type TrackerPeopleMutationBody } from "@agentx/contracts/web";
 import { useAppHost } from "../../../host.js";
@@ -65,7 +66,7 @@ function TrackerPeople({ orgId, developerId }: { orgId: string; developerId: str
   const autoLink = people?.autoLink;
   const memberOptions = (read.data?.members ?? []).map(member => <option key={member.developerId} value={member.developerId}>{member.name}</option>);
   return <section aria-busy={read.isFetching}>
-    <PageHeader focusOnMount title="Tracker people" description="People in Linear and Jira that Rovara could not match to a company member by a verified email. Map each to the member they are, so their work can be remembered and, if they ask, forgotten." />
+    <PageHeader focusOnMount title="Tracker people" description="People in Linear and Jira that Rovara could not match to a company member by a verified email. Map each to the member they are, so their work can be remembered and, if they ask, forgotten." /><SettingsNote area="tracker-people" />
     {receipt !== undefined && <p role="status">{receipt}</p>}
     {failure !== undefined && <p role="alert"><VisibleText text={failure.message} />{failure.reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>Sign in again</Button></>}</p>}
     {read.isPending ? <Skeleton label="Loading tracker people" /> : read.isError || people === undefined ? <div><p role="alert">{read.error instanceof ApiError && read.error.status === 404 ? "Tracker people are not turned on for this company." : read.error instanceof ApiError && read.error.status === 403 ? "You don't have permission to see tracker people." : "Couldn't load tracker people. Try again."}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : <>

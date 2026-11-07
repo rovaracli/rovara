@@ -1,4 +1,5 @@
 import { TaskStopEditor } from "./TaskStopEditor.js";
+import { SettingsNote } from "./SettingsNote.js";
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatUsdMicrodollars, type AdminBudgetSettings } from "@agentx/contracts/web";
@@ -29,7 +30,7 @@ function MonthlyBase({ orgId, developerId, role }: { orgId: string; developerId:
  const locked = checking || read.isFetching;
  const error = read.error instanceof ApiError && read.error.status === 403 ? "Only current company owners and admins can view these budgets. No amounts are shown." : read.error instanceof ApiError && read.error.status === 429 ? "Too many budget checks. Wait a minute before retrying. No current amounts are shown." : "Couldn't check monthly base budgets. No current amounts are shown. Try again; an installation administrator may need to check the settings.";
  return <section aria-busy={locked}>
-  <PageHeader focusOnMount title="Spending" description="Monthly base budget settings and task stop policies." actions={<Button aria-disabled={locked} onClick={() => { if (!locked) void read.refetch(); }}>Refresh budgets</Button>} />
+  <PageHeader focusOnMount title="Spending" description="Monthly base budget settings and task stop policies." actions={<Button aria-disabled={locked} onClick={() => { if (!locked) void read.refetch(); }}>Refresh budgets</Button>} /><SettingsNote area="money" />
   <p className="rv-admin-note">{"Monthly base budgets are read only. Task stops can be reviewed and changed below."}</p>
   <p className="rv-admin-note">Usage, top-ups and enforcement are not checked by the monthly table. A monthly base is separate from a task stop.</p>
   {checking && <p role="status">Checking company access...</p>}{read.isFetching && read.data !== undefined && <p role="status">Checking monthly base budgets...</p>}
