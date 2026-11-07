@@ -68,7 +68,7 @@ describe("People on the task page (OWNER DECISION 7)", () => {
     expect((await t.web(CREATOR, "POST", `/v1/app/tasks/${t.taskId}/people/role`, { requestId: randomUUID(), expectedPeopleRevision: view.revision, personId: lee.personId, role: "viewer", actorId: "x" })).status).toBe(400);
   });
 
-  it("refuses a person who may not manage People as the /v1/dev route does, and gives someone of another company no People data", async () => {
+  it("refuses a person who may not manage People as the /v1/dev route does, and answers another company exactly as a missing task", async () => {
     const t = await slackTask();
     const view = (await t.web(CREATOR, "GET", `/v1/app/tasks/${t.taskId}/people`)).body.view as { revision: number; people: Array<{ personId: string; name: string }> };
     const creator = view.people.find((person) => person.name === CREATOR.name)!;
@@ -82,12 +82,18 @@ describe("People on the task page (OWNER DECISION 7)", () => {
     const missing = await t.web({ ...OUTSIDER }, "GET", `/v1/app/tasks/${randomUUID()}/people`);
     t.harness.db.set({ pk: `SESSION#${OUTSIDER.sessionId}`, sk: "META", sessionId: OUTSIDER.sessionId, developerId: OUTSIDER.developerId, amr: OUTSIDER.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
     const outsiderDev = await t.harness.dev({ ...OUTSIDER }, "GET", `/v1/dev/tasks/${t.taskId}/people`);
-    // The app's answer is the /v1/dev route's own (a route of the same functions), and carries no People data.
-    // FOLLOW-UP (reported): for another company's person that route answers 503 "Task People is unavailable" where a missing task answers 403; the two should read the same.
+    // SECURITY (OWNER DECISION 17): another company's person gets exactly the answer a missing task gets, on the /v1/dev route and on the task page's.
+    const missingDev = await t.harness.dev({ ...OUTSIDER }, "GET", `/v1/dev/tasks/${randomUUID()}/people`);
+    expect(outsiderDev.status).toBe(missingDev.status);
+    expect(outsiderDev.body.error).toEqual(missingDev.body.error);
+    expect(outsider.status).toBe(missing.status);
+    expect(outsider.body.error).toEqual(missing.body.error);
     expect(outsider.status).toBe(outsiderDev.status);
-    expect(outsider.body.error).toEqual(outsiderDev.body.error);
-    expect(outsider.status).toBeGreaterThanOrEqual(400);
-    expect(missing.status).toBeGreaterThanOrEqual(400);
+    for (const [write, extra] of [["role", { personId: randomUUID(), role: "viewer" }], ["take-ownership", {}]] as const) {
+      const real = await t.harness.dev({ ...OUTSIDER }, "POST", `/v1/dev/tasks/${t.taskId}/people/${write}`, { requestId: randomUUID(), expectedPeopleRevision: 1, ...extra });
+      const none = await t.harness.dev({ ...OUTSIDER }, "POST", `/v1/dev/tasks/${randomUUID()}/people/${write}`, { requestId: randomUUID(), expectedPeopleRevision: 1, ...extra });
+      expect([real.status, real.body.error], write).toEqual([none.status, none.body.error]);
+    }
     expect(JSON.stringify(outsider.body)).not.toContain("Lee Park");
   });
 });

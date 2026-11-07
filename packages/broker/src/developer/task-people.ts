@@ -2,7 +2,7 @@ import { requireSessionLevel, type SessionAccessDependencies } from "../agent-se
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, emailSafeName, redactAndCap, slackThreadUrl } from "@agentx/contracts";
+import { AgentXError, SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, emailSafeName, redactAndCap, slackThreadUrl } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { ProjectAccessSubject, TaskPersonIdentity } from "./task-person-identity.js";
 import type { TaskPeopleDisplayAdmission } from "./task-people-display-budget.js";
@@ -678,14 +678,28 @@ export async function resolveTaskDispatchPeople(
   return { peopleRevision: people.revision, ownerActorIds: [], status: unknown ? "UNKNOWN" : "OWNERLESS" };
 }
 
+/** A step that settles the caller's own standing (see getTaskPeople): "unavailable" stays so only for someone the task knows; for anyone else it is the refusal a missing task gets. */
+async function callerStanding<T>(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, caller: DeveloperCaller, step: () => Promise<T>): Promise<T> {
+  try { return await step(); } catch (error) {
+    if (!(error instanceof AgentXError) || error.code !== "RUNTIME_UNAVAILABLE") throw error;
+    if (task.developerId === caller.developerId) throw error;
+    const listed = await loadPeople(deps, task.taskId).catch(() => undefined);
+    if (listed?.people.some((person) => person.developerId === caller.developerId) === true) throw error;
+    return denied();
+  }
+}
+
 export async function getTaskPeople(deps: TaskPeopleDependencies, caller: DeveloperCaller, taskId: string): Promise<TaskPeopleView> {
   const admission = deps.createTaskPeopleDisplayAdmission?.() ?? unavailable();
   try {
     admission.assertOpen();
     const task = await loadTask(deps, taskId);
     admission.assertOpen();
-    const people = await currentPeopleForCaller(deps, task, caller, false, admission);
-    await authorizedRead(deps, task, people, caller, admission);
+    // SECURITY (OWNER DECISION 17): the caller's own standing on the task. For someone the task does not already know (not its creator, not on its People list: another company, or anyone
+    // outside it), a standing that cannot be worked out is the answer a missing task gets (TASK_ACCESS_DENIED), never "unavailable", which would tell them the task exists. Someone it knows still
+    // hears "unavailable" when their proof cannot be read (Slack down), as before.
+    const people = await callerStanding(deps, task, caller, () => currentPeopleForCaller(deps, task, caller, false, admission));
+    await callerStanding(deps, task, caller, () => authorizedRead(deps, task, people, caller, admission));
     if (deps.listTaskPeople === undefined) return unavailable();
     const displayChecks = await deps.listTaskPeople(task, admission);
     admission.assertOpen();

@@ -60,6 +60,8 @@ const ROWS: readonly Row[] = [
   ["developer/task-person-identity.ts", "checkTaskPersonIdentity", "history", ".developerId*3", ".provider*3", ".slackUserId*6", ".developerName"],
   ["developer/task-people.ts", "loadTask", "shape", ".developerId"],
   ["developer/task-people.ts", "taskRowCondition", "principal", ".developerId"],
+  // OWNER DECISION 17: whether the task already knows the caller (its creator, its principal), only to choose between "unavailable" and the not-found a missing task gets; it grants nothing
+  ["developer/task-people.ts", "callerStanding", "principal", ".developerId"],
   ["developer/task-people.ts", "initialize", "owner-actor", ".developerId*3"],
   ["developer/task-people.ts", "reconcile", "owner-actor", ".developerId"],
   ["developer/task-people.ts", "resolveTaskPeopleAccess", "owner-actor", "taskOwnerKey()"],
