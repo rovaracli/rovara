@@ -75,8 +75,11 @@ describe("a detected seed command, unchanged from the repository, on the sealed 
     // I3: the reason says who approves and what reach it has; it never claims the seed is isolated.
     const reason = seedRisksOf(locked.checks, locked.body)[0]!;
     expect(reason).toMatchObject({ dependencyId: "postgres", risk: "medium" });
-    expect(reason.reason).toBe(`Medium: the seed runs the repository's own script, unchanged on main at ${"c".repeat(12)} (db/seed.js, package.json). Rovara checks those files again before every run. It runs against Rovara's throwaway test database, with the same access as your setup commands (in the working phase it can reach the internet). One maintainer can approve it.`);
+    expect(reason.reason).toBe(`Medium: one maintainer can approve it. The seed runs the repository's own script, unchanged on main at ${"c".repeat(12)} (2 files). Rovara checks those files again before every run. It runs against Rovara's throwaway test database, with the same access as your setup commands (in the working phase it can reach the internet).`);
     expect(reason.reason).not.toMatch(/only on the test database|second person/u);
+    // R2: with the most files a lock holds, who approves still survives the 400-character cut.
+    const many = locked.checks.map((check) => (check.verdict === "locked" ? { ...check, from: Array.from({ length: 32 }, (_, at) => `seeds/${"x".repeat(200)}-${String(at)}.js`) } : check));
+    expect(seedRisksOf(many, locked.body)[0]!.reason).toMatch(/^Medium: one maintainer can approve it\. .*\(32 files\)/u);
     expect(seedCardLinesOf([reason], locked.checks, locked.body)).toEqual(["Seed: the repository's own script, unchanged on main (db/seed.js, package.json).", "One maintainer approves; it has the same access as setup and is rechecked each run."]);
   });
 
