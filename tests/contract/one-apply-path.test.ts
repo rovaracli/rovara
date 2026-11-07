@@ -247,3 +247,18 @@ describe("a typed proposal whose replace mark is gone", () => {
     });
   });
 });
+
+describe("review R4: a dev container save keeps the stored commands exactly", () => {
+  it("leaves each stored command's timeout and env byte-identical after a save that resends the same lines", async () => {
+    const t = await setupWizardBench({ autoCandidate: false, cloud: true });
+    const stored = t.db.get(projectRevisionKey(TEST_ORG, NAME, 1)) as { definition: { setup: Array<Record<string, unknown>>; readiness: Array<Record<string, unknown>> } } & Record<string, unknown>;
+    t.db.set({ ...stored, definition: { ...stored.definition, setup: [{ ...stored.definition.setup[0], timeoutSeconds: 300, env: { CI: "1" } }], readiness: [{ ...stored.definition.readiness[0], timeoutSeconds: 600 }] } });
+    const before = JSON.stringify({ setup: settingsOf(t).setup, readiness: settingsOf(t).readiness });
+    await withSwitch("1", async () => {
+      const saved = await t.web(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, setupCommands: ["make old-setup"], testCommands: ["make old-test"], devcontainer: { repository: "web", configPath: ".devcontainer/ci.json" } });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    });
+    expect(settingsOf(t).revision).toBe(2);
+    expect(JSON.stringify({ setup: settingsOf(t).setup, readiness: settingsOf(t).readiness })).toBe(before);
+  });
+});

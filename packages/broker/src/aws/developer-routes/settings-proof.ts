@@ -390,6 +390,11 @@ export async function putProjectSettingsChecked(deps: DeveloperRouteDependencies
   if (testEnvironmentEnabled()) {
     const sameLines = (sent: readonly string[] | undefined, stored: readonly ProjectCommand[]) => sent === undefined || (sent.length === stored.length && sent.every((line, index) => line.trim() === formatCommandLine(stored[index]!)));
     if (!sameLines(body.setupCommands, current.setup) || !sameLines(body.testCommands, current.readiness)) throw agentXError("CONFIG_INVALID", PROOF_WORDS.provedInTestEnvironment);
+    // Review R4: the lines are the stored ones, so the stored commands are kept exactly (their own timeout and env): the lines are not saved again, which would re-parse them with the defaults.
+    if (body.setupCommands !== undefined || body.testCommands !== undefined) {
+      const { setupCommands: _setup, testCommands: _tests, ...rest } = rawBody as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+      return putProjectSettingsChecked(deps, caller, rawName, rest, options);
+    }
   }
   // A browser saves what it sent; what was saved is compared with what was there, after the save (a repository change can move where commands run).
   return browserSave(deps, caller, rawName, name, rawBody, options);
