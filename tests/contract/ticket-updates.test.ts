@@ -236,26 +236,33 @@ describe("the tracker writers use the connection's access as it is", () => {
     let existing: unknown[] = [];
     const fetch = vi.fn(async (url: string, init: RequestInit) => {
       seen.push({ url, method: init.method ?? "GET", body: typeof init.body === "string" ? JSON.parse(init.body) : undefined, redirect: init.redirect });
+      if (url.endsWith("/myself")) return Response.json({ accountId: "acct-rovara" });
       if ((init.method ?? "GET") === "GET") return new Response(JSON.stringify({ comments: existing }), { status: status === 201 ? 200 : status });
       return new Response("{}", { status });
     });
     const trackers = ticketTrackersOf({ connections: deps, fetch: fetch as never });
     expect(await trackers.jira.comment({ orgId: ORG, ticket: jira, text: "line one\nline two", key: "k1", requirePrivate: true })).toBe("posted");
     expect(seen[0]).toMatchObject({ method: "GET", url: "https://acme.atlassian.net/rest/api/3/issue/PAY-12/comment?orderBy=-created&maxResults=50&expand=properties", redirect: "error" });
-    const marker = (seen[1]!.body as { properties: Array<{ key: string; value: { id: string } }> }).properties[0]!.value.id;
-    expect(seen[1]).toEqual({ method: "POST", url: "https://acme.atlassian.net/rest/api/3/issue/PAY-12/comment", redirect: "error", body: {
+    const post = () => seen.find((call) => call.method === "POST")!;
+    const marker = (post().body as { properties: Array<{ key: string; value: { id: string } }> }).properties[0]!.value.id;
+    expect(post()).toEqual({ method: "POST", url: "https://acme.atlassian.net/rest/api/3/issue/PAY-12/comment", redirect: "error", body: {
       body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: "line one" }] }, { type: "paragraph", content: [{ type: "text", text: "line two" }] }] },
       properties: [{ key: MARKER_PROPERTY, value: { id: marker } }, { key: "sd.public.comment", value: { internal: true } }],
     } });
     // A task shared with the project: the comment is not made internal.
     seen.length = 0;
     await trackers.jira.comment({ orgId: ORG, ticket: jira, text: "x", key: "k2", requirePrivate: false });
-    expect((seen[1]!.body as { properties: unknown[] }).properties).toHaveLength(1);
+    expect((post().body as { properties: unknown[] }).properties).toHaveLength(1);
     // Review M4: a retry after a lost answer finds its marker on the ticket and does not post again.
     seen.length = 0;
-    existing = [{ id: "1", properties: [{ key: MARKER_PROPERTY, value: { id: marker } }] }];
+    existing = [{ id: "1", author: { accountId: "acct-rovara" }, properties: [{ key: MARKER_PROPERTY, value: { id: marker } }] }];
     expect(await trackers.jira.comment({ orgId: ORG, ticket: jira, text: "line one\nline two", key: "k1", requirePrivate: true })).toBe("posted");
-    expect(seen.map((call) => call.method)).toEqual(["GET"]);
+    expect(seen.map((call) => call.method)).toEqual(["GET", "GET"]);
+    // Review M4-R: the same marker on someone else's comment does not hold ours back.
+    seen.length = 0;
+    existing = [{ id: "2", author: { accountId: "acct-mallory" }, properties: [{ key: MARKER_PROPERTY, value: { id: marker } }] }];
+    expect(await trackers.jira.comment({ orgId: ORG, ticket: jira, text: "line one\nline two", key: "k1", requirePrivate: true })).toBe("posted");
+    expect(seen.map((call) => call.method)).toEqual(["GET", "GET", "POST"]);
     existing = [];
     // A ticket on another site has no connection there: nothing is sent.
     seen.length = 0;

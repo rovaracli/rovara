@@ -123,7 +123,7 @@ export const MARKER_PROPERTY = "rovara.ticket-update";
 
 function jiraPort(deps: OrgConnectionDeps, fetchImpl: typeof fetch): Pick<TicketTrackerPort, "comment" | "setStatus"> {
   /** The connection of the ticket's own site, and its basic auth; or why there is none. */
-  async function connectionFor(orgId: OrgId, ticket: TicketRef): Promise<{ site: string; auth: string } | "needs_write_access" | "not_connected"> {
+  async function connectionFor(orgId: OrgId, ticket: TicketRef): Promise<{ site: string; auth: string; account?: string | undefined } | "needs_write_access" | "not_connected"> {
     const site = siteOf(ticket.url);
     if (site === undefined || !JIRA_KEY.test(ticket.id)) return "not_connected";
     const sameSite = (await connectionsOf(deps, orgId, "jira")).filter((record) => record.siteUrl === site);
@@ -132,7 +132,7 @@ function jiraPort(deps: OrgConnectionDeps, fetchImpl: typeof fetch): Pick<Ticket
     if (chosen === undefined) return "needs_write_access";
     const secret = await readConnectionSecret(deps, orgId, chosen).catch(() => undefined);
     if (secret === undefined || !("apiToken" in secret) || !("email" in secret)) return "not_connected";
-    return { site, auth: `Basic ${Buffer.from(`${secret.email}:${secret.apiToken}`).toString("base64")}` };
+    return { site, auth: `Basic ${Buffer.from(`${secret.email}:${secret.apiToken}`).toString("base64")}`, account: typeof chosen.actorId === "string" && chosen.actorId !== "" ? chosen.actorId : undefined };
   }
   async function call(site: string, auth: string, path: string, init: { method?: string; body?: unknown } = {}): Promise<{ status: number; body: unknown }> {
     let response: Response;
@@ -164,7 +164,11 @@ function jiraPort(deps: OrgConnectionDeps, fetchImpl: typeof fetch): Pick<Ticket
       if (refused(recent.status)) return "needs_write_access";
       if (recent.status === 404) return "not_found";
       if (recent.status !== 200) throw unavailable("Jira");
-      const already = arr(rec(recent.body)["comments"]).some((comment) => arr(rec(comment)["properties"]).some((property) => rec(property)["key"] === MARKER_PROPERTY && rec(rec(property)["value"])["id"] === marker));
+      // Review M4-R: only a comment the connection's OWN account wrote counts, so someone else's comment carrying the marker cannot hold ours back. The account is the one the connection's
+      // check recorded, else Jira's own answer for the key.
+      const account = chosen.account ?? (await call(chosen.site, chosen.auth, "/rest/api/3/myself").then((answer) => (answer.status === 200 ? rec(answer.body)["accountId"] : undefined)));
+      const already = typeof account === "string" && arr(rec(recent.body)["comments"]).some((comment) => rec(rec(comment)["author"])["accountId"] === account
+        && arr(rec(comment)["properties"]).some((property) => rec(property)["key"] === MARKER_PROPERTY && rec(rec(property)["value"])["id"] === marker));
       if (already) return "posted";
       const paragraphs = text.split("\n").filter((line) => line !== "").map((line) => ({ type: "paragraph", content: [{ type: "text", text: line }] }));
       // Review M5: for a task only its owner can see, the comment is internal, so a Jira Service Management customer never sees it (a plain Jira project ignores the property).
