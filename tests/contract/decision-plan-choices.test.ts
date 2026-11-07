@@ -9,6 +9,7 @@ import { DECISION_PLAN_COMMENTS_MAX, DECISION_PLAN_NOTE_MAX, DecisionApproveBody
 import { browserRequests } from "../support/browser-session.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey } from "@agentx/contracts";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -191,5 +192,28 @@ describe("OWNER DECISION 7: a plan's choices on its decision card", () => {
     const approved = await t.press(taskId, "approve", {});
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     expect(t.meta(taskId).workflow.decisions.at(-1)).toMatchObject({ decision: "APPROVE" });
+  });
+
+  it("the card's approve refuses a non-owner, a stale view, someone of another company and a project viewer, and decides nothing", async () => {
+    const t = await world();
+    const taskId = await t.planned();
+    const shown = (await t.cardOf(taskId))!;
+    const path = `/v1/app/decisions/${shown.card.id.replace(":", "/")}/approve`;
+    if (shown.card.risk === "medium") expect((await t.web(MAYA, "POST", `/v1/app/decisions/${shown.card.id.replace(":", "/")}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown.digest })).status).toBe(200);
+    // Non-owner (same company): no card, and the press is the not-found a missing card gets.
+    seedMembership(t.h.db, OMAR.developerId, { orgId: TEST_ORG, role: "member" });
+    expect((await t.web(OMAR, "POST", path, { requestId: randomUUID(), shownDigest: shown.digest })).status).toBe(404);
+    // Another company's person: the same not-found.
+    const outsider = { developerId: "e".repeat(64), name: "Out Sider", provider: "slack" as const, sessionId: "s-out", slackUserId: "U0OUT0001" };
+    expect((await t.web(outsider, "POST", path, { requestId: randomUUID(), shownDigest: shown.digest })).status).toBe(404);
+    // Stale: what was shown is not what the server shows now.
+    const stale = await t.web(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: "0".repeat(64) });
+    expect(stale.status).toBe(409);
+    expect(stale.body).toMatchObject({ error: { code: "CHANGE_STALE" } });
+    // The owner demoted to a project viewer: the workflow decision's own project rule refuses (viewers only view).
+    t.h.db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role: "viewer" });
+    const viewer = await t.web(MAYA, "POST", path, { requestId: randomUUID(), shownDigest: shown.digest });
+    expect(viewer.status).toBeGreaterThanOrEqual(400);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", decisions: [] });
   });
 });
