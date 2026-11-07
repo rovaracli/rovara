@@ -66,6 +66,20 @@ describe("a seed command's lock", () => {
     ["createRequire", cmd("npm", ["run", "seed"]), { ...NPM_SEED, "prisma/seed.js": "require('module').createRequire(__filename)('pg');\n" }, "imports_repo_files"],
     ["an import by a variable", cmd("npm", ["run", "seed"]), { ...NPM_SEED, "prisma/seed.js": "const name = 'x'; await import(name);\n" }, "imports_repo_files"],
     ["a knexfile with a computed seeds key", cmd("npx", ["knex", "seed:run"]), { "knexfile.js": "module.exports = { ['se' + 'eds']: { directory: './db/real' } };", "seeds/a.js": "x" }, "tool_config"],
+    // Follow-up R1: text run as code, or a file loaded by reading it.
+    ...[
+      "eval(\"require('pg')\");",
+      "const f = Function('return 1'); f();",
+      "const f = new Function('return 1');",
+      "const vm = require('vm'); vm.runInThisContext('1');",
+      "const load = require; load.call(null, 'pg'); require.call(null, 'pg');",
+      "require.apply(null, ['pg']);",
+      "module.constructor._load('pg');",
+      "const config = JSON.parse(readFileSync('db/config.json', 'utf8'));",
+      "const config = JSON.parse(fs.readFileSync('db/config.json'));",
+    ].map((text) => [`a seed file with ${text}`, cmd("npm", ["run", "seed"]), { ...NPM_SEED, "prisma/seed.js": `${text}\n` }, "runs_text_as_code"] as const),
+    ["a knexfile that loads its config by reading a file", cmd("npx", ["knex", "seed:run"]), { "knexfile.js": "module.exports = JSON.parse(require('fs').readFileSync('db.json'));", "seeds/a.js": "x" }, "runs_text_as_code"],
+    ["a knexfile with eval", cmd("npx", ["knex", "seed:run"]), { "knexfile.js": "module.exports = eval('({ client: \"pg\" })');", "seeds/a.js": "x" }, "runs_text_as_code"],
     [".sequelizerc", cmd("npx", ["sequelize-cli", "db:seed:all"]), { ".sequelizerc": "module.exports = {}", "seeders/a.js": "x" }, "tool_config"],
     ["a prisma seed with shell syntax", cmd("npx", ["prisma", "db", "seed"]), { "package.json": pkg({ prisma: { seed: "node prisma/seed.js && curl x" } }), "prisma/seed.js": "x" }, "tool_config"],
     ["more than 32 seed files", cmd("npx", ["knex", "seed:run"]), { "knexfile.js": "module.exports = {};", ...Object.fromEntries(Array.from({ length: 33 }, (_, at) => [`seeds/${String(at).padStart(2, "0")}.js`, "x"])) }, "too_large"],
@@ -82,7 +96,7 @@ describe("a seed command's lock", () => {
   });
 
   it("still locks plain package loads (a literal require or import of a package is code the task already runs)", async () => {
-    const resolved = await seedScriptLockOf(cmd("npm", ["run", "seed"]), tree({ ...NPM_SEED, "prisma/seed.js": "const pg = require('pg');\nconst { faker } = await import(\"@faker-js/faker\");\nimport type { X } from 'y';\n" }));
+    const resolved = await seedScriptLockOf(cmd("npm", ["run", "seed"]), tree({ ...NPM_SEED, "prisma/seed.js": "const pg = require('pg');\nconst { faker } = await import(\"@faker-js/faker\");\nimport type { X } from 'y';\nasync function main() { await prisma.user.createFunction(); evaluate(1); JSON.parse('{}'); }\nmain();\n" }));
     expect(resolved.ok).toBe(true);
   });
 

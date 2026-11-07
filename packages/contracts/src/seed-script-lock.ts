@@ -11,7 +11,9 @@
 //   - `npm run <s>`, `pnpm run <s>`, `yarn run <s>`, `pnpm <s>`, `yarn <s>` (never a package manager's own command, `pnpm deploy`, `yarn node`): the WHOLE package.json (label `package.json`). A `pre<s>` or
 //     `post<s>` script refuses (npm and yarn run them too). The script's body must then be one of the two shapes below.
 //   - a body that runs one file with node, tsx, ts-node or bun (`node prisma/seed.js extra args`, no option before the file): that file's whole text (label: its path). A file that loads another repository file by a
-//     relative `require`/`import`, or loads anything by a computed name (`require(path.join(...))`, `createRequire`, `import(name)`), refuses.
+//     relative `require`/`import`, or loads anything by a computed name (`require(path.join(...))`, `createRequire`, `import(name)`), refuses. So does one that runs text as code or loads a file by reading it
+//     (`eval`, `Function(...)`/`new Function`, `vm.`, `require.call`/`.apply`, `module.constructor._load`, `JSON.parse(readFileSync(...))`). These are pattern checks on the text: they refuse the plain forms,
+//     not every way JavaScript can reach other code (see WHAT A LOCK PINS above).
 //   - a body, or the command itself (`npx prisma db seed`, `npx knex seed:run`, `npx sequelize-cli db:seed:all`), that is a database tool's own seed:
 //       prisma     package.json (whole) and its `prisma.seed`, which must run one file as above, and that file. A `prisma.config.*` or `.config/prisma.*` file refuses (it can move the seed elsewhere).
 //       knex       the one knexfile (`knexfile.{js,ts,cjs,mjs}`; none or several refuses; one that mentions `seeds` or `directory`, or uses a computed key, refuses: its seed folder may not be the default) and every
@@ -53,7 +55,7 @@ export const SEED_LOCK_REFUSED_SETTINGS = [".npmrc", ".yarnrc", ".yarnrc.yml", "
 /** Prisma's config, wherever Prisma looks for it (it can move the seed). */
 const PRISMA_CONFIGS = ["ts", "js", "mjs", "cjs", "mts", "cts"].flatMap((extension) => [`prisma.config.${extension}`, `.config/prisma.${extension}`]);
 
-export const SEED_LOCK_REFUSALS = ["not_a_repo_script", "has_env", "script_shape", "pre_post_script", "tool_config", "manager_config", "manager_command", "imports_repo_files", "unreadable", "too_large", "no_files"] as const;
+export const SEED_LOCK_REFUSALS = ["not_a_repo_script", "has_env", "script_shape", "pre_post_script", "tool_config", "manager_config", "manager_command", "imports_repo_files", "runs_text_as_code", "unreadable", "too_large", "no_files"] as const;
 export type SeedLockRefusal = (typeof SEED_LOCK_REFUSALS)[number];
 /** Why a seed command could not be locked, in fixed words (the reason the card gives for HIGH). */
 export const SEED_LOCK_REFUSAL_WORDS: Record<SeedLockRefusal, string> = {
@@ -65,6 +67,7 @@ export const SEED_LOCK_REFUSAL_WORDS: Record<SeedLockRefusal, string> = {
   manager_config: "a package manager or runtime settings file (.npmrc, .yarnrc, bunfig.toml) could change how it runs",
   manager_command: "it is a package manager's own command, not one of the repository's scripts",
   imports_repo_files: "its seed code loads other files from the repository",
+  runs_text_as_code: "its seed code runs text as code, or loads a file by reading it",
   unreadable: "the files it runs could not be read from the repository",
   too_large: "the files it runs are too large to check",
   no_files: "no seed files were found where it would look",
@@ -89,6 +92,10 @@ const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const RELATIVE_LOAD = /(?:\brequire\s*\(|\bimport\s*\(|\bfrom|\bimport)\s*["'`]\.{1,2}\//u;
 /** A load by a computed name: `require(x)`, `require(path.join(...))`, `import(x)`, `createRequire`, or a template string with a placeholder. */
 const DYNAMIC_LOAD = /\bcreateRequire\b|\b(?:require|import)\s*\(\s*(?!["'][^"'\\]*["']\s*\)|`[^`$\\]*`\s*\))/u;
+/** Text run as code, or a file loaded by reading it: `eval(`, `Function(` (and `new Function`), `vm.`, `require.call`/`.apply`, `module.constructor._load`, `JSON.parse(... readFileSync ...)` in one statement (`fs.readFileSync`, `require('fs').readFileSync`). */
+const CODE_FROM_TEXT = /\beval\s*\(|\bFunction\s*\(|\bvm\s*\.|\brequire\s*\.\s*(?:call|apply)\b|\.constructor\s*\.\s*_load\b|\bJSON\s*\.\s*parse\s*\([^;]{0,200}?\breadFileSync\b/u;
+/** Why a seed file, knexfile or sequelize config's text is refused, or undefined. */
+const codeProblem = (text: string): SeedLockRefusal | undefined => (RELATIVE_LOAD.test(text) || DYNAMIC_LOAD.test(text) ? "imports_repo_files" : CODE_FROM_TEXT.test(text) ? "runs_text_as_code" : undefined);
 const TOOLS: ReadonlyArray<{ tool: "prisma" | "knex" | "sequelize"; words: readonly string[] }> = [
   { tool: "prisma", words: ["prisma", "db", "seed"] },
   { tool: "knex", words: ["knex", "seed:run"] },
@@ -134,7 +141,8 @@ async function readText(reader: SeedSourceReader, path: string): Promise<string 
 async function addSource(reader: SeedSourceReader, inputs: Inputs, path: string): Promise<void> {
   const text = await readText(reader, path);
   if (text === undefined) refuse("unreadable");
-  if (SOURCE_FILE.test(path) && (RELATIVE_LOAD.test(text!) || DYNAMIC_LOAD.test(text!))) refuse("imports_repo_files");
+  const problem = SOURCE_FILE.test(path) ? codeProblem(text!) : undefined;
+  if (problem !== undefined) refuse(problem);
   inputs.add(path, text!, path);
 }
 
@@ -188,7 +196,8 @@ async function addTool(reader: SeedSourceReader, inputs: Inputs, tool: "prisma" 
     // A knexfile that names a seeds folder or a directory, or builds a key (`['se' + 'eds']`), may seed from somewhere other than `seeds/`.
     if (found.length !== 1 || /\b(?:seeds|directory)\b|\[\s*["'`]/u.test(found[0]![1])) refuse("tool_config");
     const [name, text] = found[0]!;
-    if (RELATIVE_LOAD.test(text) || DYNAMIC_LOAD.test(text)) refuse("imports_repo_files");
+    const problem = codeProblem(text);
+    if (problem !== undefined) refuse(problem);
     inputs.add(name, text, name);
     await addFolder(reader, inputs, "seeds");
     return;
@@ -197,7 +206,8 @@ async function addTool(reader: SeedSourceReader, inputs: Inputs, tool: "prisma" 
   for (const name of ["config/config.json", "config/config.js"]) {
     const text = await readText(reader, name);
     if (text === undefined) continue;
-    if (RELATIVE_LOAD.test(text) || DYNAMIC_LOAD.test(text)) refuse("imports_repo_files");
+    const problem = codeProblem(text);
+    if (problem !== undefined) refuse(problem);
     inputs.add(name, text, name);
   }
   await addFolder(reader, inputs, "seeders");

@@ -128,7 +128,8 @@ export function seedTrustOf(checks: readonly SeedCheck[], body: TestEnvironmentB
 
 /** The medium reason, in full, for the setup page (I3: who approves, what is pinned, and that it has the reach of setup). */
 const mediumReason = (check: Extract<SeedCheck, { verdict: "locked" }>): string =>
-  `Medium: the seed runs the repository's own script, unchanged on ${check.branch} at ${check.commit.slice(0, 12)} (${check.from.join(", ")}). Rovara checks those files again before every run. It runs against Rovara's throwaway test database, with the same access as your setup commands (in the working phase it can reach the internet). One maintainer can approve it.`;
+  // "One maintainer can approve it." comes FIRST, and the files are counted, so the 400-character cut can never drop who approves.
+  `Medium: one maintainer can approve it. The seed runs the repository's own script, unchanged on ${check.branch} at ${check.commit.slice(0, 12)} (${check.from.length === 1 ? "1 file" : `${String(check.from.length)} files`}). Rovara checks those files again before every run. It runs against Rovara's throwaway test database, with the same access as your setup commands (in the working phase it can reach the internet).`;
 
 /** The card's short lines (a card shows at most 100 characters of each reason). */
 export function seedCardLinesOf(risks: ReadonlyArray<{ risk: "medium" | "high"; reason: string }>, checks: readonly SeedCheck[], body: TestEnvironmentBody): string[] {

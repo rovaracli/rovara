@@ -47,7 +47,7 @@ describe("a detected seed command through the setup routes", () => {
       const shown = (await t.state()).proposal as unknown as Shown;
       expect(shown).toMatchObject({ risk: "medium", lessSafe: [], needs: { secondPerson: false, freshSignIn: false } });
       expect(shown.seedRisks.map((entry) => [entry.dependencyId, entry.risk])).toEqual([["postgres", "medium"]]);
-      expect(shown.seedRisks[0]!.reason).toMatch(/^Medium: the seed runs the repository's own script, unchanged on main at c{12} \(db\/seed\.js, package\.json\)\..*One maintainer can approve it\.$/u);
+      expect(shown.seedRisks[0]!.reason).toMatch(/^Medium: one maintainer can approve it\. The seed runs the repository's own script, unchanged on main at c{12} \(2 files\)\./u);
       checked(t, shown.digest);
       const proved = await t.dev(OMAR, "POST", `${ENV}/prove`, { digest: shown.digest });
       expect(proved.status, JSON.stringify(proved.body)).toBe(200);
