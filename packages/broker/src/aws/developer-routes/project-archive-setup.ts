@@ -1,4 +1,6 @@
 import { candidateDependencyPlan } from "../../test-env/candidate-plan.js";
+import { testEnvironmentEnabled } from "../../test-env/switch.js";
+import { readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { WorkingBranchNameSchema } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { randomUUID } from "node:crypto";
@@ -228,6 +230,18 @@ export async function startListsCandidateSetupCheck(
 
 type CandidateInput = { digest: string; origin?: "setup_run" } & ({ body: TestEnvironmentBody } | { lists: { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: { repository: string; configPath?: string } | null | undefined }; expectedRevision: number });
 
+/**
+ * TS-UX-1 item 3: the test services of the project's APPROVED test environment, for the project's own setup check. None while the test environment is off, with no approved environment or one without dependencies.
+ * A plan the approved environment can no longer make (test services switched off since, a dev container added) gives none: the check then runs as it always did, without services, and says what fails.
+ */
+async function approvedTestServicesOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: string): Promise<{ plan: Awaited<ReturnType<typeof candidateDependencyPlan>>; prodDeny: TestEnvironmentBody["prodDeny"] } | undefined> {
+  if (!testEnvironmentEnabled()) return undefined;
+  const approved = await readApprovedTestEnvironment({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name).catch(() => undefined);
+  if (approved === undefined || (approved.environment.dependencies?.length ?? 0) === 0) return undefined;
+  const plan = await candidateDependencyPlan(deps, approved.environment, { orgId, project: name }).catch(() => undefined);
+  return plan === undefined ? undefined : { plan, prodDeny: approved.environment.prodDeny };
+}
+
 async function runSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, requestId: string, candidate?: CandidateInput): Promise<StatusReply> {
   const { name, role } = await projectRoleForRoute(deps, caller, rawName);
   if (!projectAllows(role, "setup_check")) throw agentXError("FORBIDDEN", "only a project maintainer can run a setup check");
@@ -267,9 +281,11 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     delete withoutDevcontainer.devcontainer;
     const prepared = lists === undefined ? project : { ...project, definition: { ...(devcontainer === null ? withoutDevcontainer : project.definition), setup: lists.setup, readiness: lists.readiness, ...(devcontainer === undefined || devcontainer === null ? {} : { devcontainer }) } };
     // Test services: the dependencies a candidate check starts, pinned from the signed catalog (a refusal stops the check before anything is written). Nothing for any other check, so its options are what they were.
-    const testServices = candidate !== undefined && "body" in candidate ? await candidateDependencyPlan(deps, candidate.body, { orgId: caller.orgId, project: name }) : undefined;
+    // TS-UX-1 item 3: the project's OWN check (the one an approval starts after writing its commands) runs with the APPROVED environment's test services, so tests that need the database do not fail it for want of one.
+    const approvedServices = candidate === undefined ? await approvedTestServicesOf(deps, caller.orgId, name) : undefined;
+    const testServices = candidate !== undefined && "body" in candidate ? await candidateDependencyPlan(deps, candidate.body, { orgId: caller.orgId, project: name }) : approvedServices?.plan;
     // The proposal's own production list rides with the check (its fixture-set callback scans a fake with it too: the first check has no approved environment).
-    const testServicesDeny = testServices !== undefined && candidate !== undefined && "body" in candidate ? candidate.body.prodDeny : undefined;
+    const testServicesDeny = testServices !== undefined && candidate !== undefined && "body" in candidate ? candidate.body.prodDeny : approvedServices?.prodDeny;
     const preparation = await tasks.preparation(identity, prepared, requestId, runCommits === undefined && testServices === undefined ? undefined : { ...(runCommits === undefined ? {} : { pins: runCommits }), ...(testServices === undefined ? {} : { testServices }), ...(testServicesDeny === undefined ? {} : { testServicesDeny }) });
     const committed = await commitSetupCheck(checks, {
       orgId: caller.orgId, project: name, requestId, actorId: caller.developerId, revision: project.definition.revision,
