@@ -17,6 +17,7 @@ import type { DecisionRisk } from "./decision-cards.js";
 import { RelativeWorkspacePathSchema, ProjectCommandSchema } from "./project.js";
 import type { TestEnvService } from "./test-environment.js";
 import { TestEnvValueSourceSchema } from "./test-env-value-source.js";
+import { SeedScriptLockSchema } from "./seed-script-lock.js";
 import { TestServiceHostSchema, looksLikeSecretValue, reservedDependencyEnvName } from "./test-services-shared.js";
 import { sha256Hex } from "./web-hash.js";
 
@@ -147,8 +148,39 @@ export const ConnectTemplateSchema = z.string().superRefine((template, context) 
   if (problem !== undefined) context.addIssue({ code: "custom", message: TEMPLATE_MESSAGES[problem] });
 });
 
-/** A synthetic-data seed: a command the sandbox runs, or a file inside the repository. Same two shapes as the environment's own `data.seeds`. */
-export const SeedRefSchema = z.union([z.object({ command: ProjectCommandSchema }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema }).strict()]);
+/**
+ * A synthetic-data seed: a command the sandbox runs, or a file inside the repository. Same two shapes as the environment's own `data.seeds`.
+ * SEED-RISK-1: a command may carry the `lock` the BROKER put on it (seed-script-lock.ts): the hash of the repository's own seed script it runs. The worker re-hashes it from its checkout before every run and refuses
+ * on a difference. A lock is not trust by itself (anyone can write one into an edited body): only the broker's own record of the proposal makes a locked seed medium (`verifiedSeeds`). A seed without one parses as before.
+ */
+export const SeedRefSchema = z.union([z.object({ command: ProjectCommandSchema, lock: SeedScriptLockSchema.optional() }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema }).strict()]);
+export type SeedRef = z.infer<typeof SeedRefSchema>;
+
+/** The signature of one seed of one dependency: a command (and its lock's hash, when it has one) or a file. A changed command or lock is another seed. */
+export function testEnvSeedSignature(dependencyId: string, seed: SeedRef): string {
+  if (!("command" in seed)) return `${dependencyId}/file/${seed.fixturePath}`;
+  return `${dependencyId}/${JSON.stringify(seed.command)}${seed.lock === undefined ? "" : `#${seed.lock.hash}`}`;
+}
+
+/** SEED-RISK-1: the seeds the broker checked itself against the repository (signatures, `testEnvSeedSignature`). Absent or empty: every seed command is unchecked. */
+export interface TestEnvSeedTrust { verifiedSeeds?: ReadonlySet<string> | undefined }
+
+/** Whether a backing is software Rovara starts from its own catalog and throws away (no substitute image), or nothing at all. */
+const disposable = (backing: { kind: string; substituteImage?: unknown; excludedTests?: unknown } | undefined): boolean =>
+  backing === undefined || (backing.kind === "local" && backing.substituteImage === undefined) || (backing.kind === "none" && backing.excludedTests === undefined);
+
+/**
+ * SEED-RISK-1 condition (c): a seed of `dependencyId` reaches ONLY Rovara's disposable sealed test database: the seeded dependency is a database Rovara starts from its catalog (in every slot), and nothing else the
+ * run can reach is outside Rovara: no other dependency backed by anything but catalog software (no test account, project or substitute image, fake or emulator), no pre-prod or auto service, no shared
+ * environment, preview or account, and the sandbox tier. Anything else, or a dependency that is not there, is false.
+ */
+export function seedTargetsOnlySealedTestDb(body: { tier: string; services: ReadonlyArray<{ mode: string }>; accounts: readonly unknown[]; shared?: unknown; preview?: unknown; dependencies?: readonly TestEnvDependency[] | undefined }, dependencyId: string): boolean {
+  if (body.tier !== "sandbox" || body.shared !== undefined || body.preview !== undefined || body.accounts.length > 0 || body.services.some((service) => service.mode !== "mock")) return false;
+  const dependencies = body.dependencies ?? [];
+  const seeded = dependencies.find((dependency) => dependency.id === dependencyId);
+  if (seeded === undefined || seeded.kind !== "database" || seeded.backing.kind !== "local" || seeded.backing.substituteImage !== undefined) return false;
+  return dependencies.every((dependency) => disposable(dependency.backing) && disposable(dependency.workingBacking) && disposable(dependency.fallback));
+}
 
 // ---- backings
 
@@ -324,12 +356,18 @@ export const TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS = ["test_account", "project_im
 export type TestEnvDependencyLessSafeField = (typeof TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS)[number];
 
 /** Each less-safe field a dependency list turns on, with a signature per use, so a moved or added use is a change and a removed one is not. */
-function lessSafeSignatures(dependencies: readonly TestEnvDependency[]): Map<TestEnvDependencyLessSafeField, Set<string>> {
+function lessSafeSignatures(dependencies: readonly TestEnvDependency[], verified?: ReadonlySet<string>): Map<TestEnvDependencyLessSafeField, Set<string>> {
   const found = new Map<TestEnvDependencyLessSafeField, Set<string>>(TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS.map((field) => [field, new Set<string>()]));
   const add = (field: TestEnvDependencyLessSafeField, signature: string) => found.get(field)?.add(signature);
   for (const dependency of dependencies) {
     // A seed COMMAND runs with the dependency's network access after it starts, so a new or changed one is less safe (a second person sees it). A seed that is a repository file is data the project already holds.
-    for (const seed of dependency.seeds) if ("command" in seed) add("dependency_seed", `${dependency.id}/${JSON.stringify(seed.command)}`);
+    // SEED-RISK-1: a LOCKED seed the caller says the broker verified (and only such a one) is not counted: it is the repository's own script, unchanged, on the sealed test database (the caller checks the target).
+    for (const seed of dependency.seeds) {
+      if (!("command" in seed)) continue;
+      const signature = testEnvSeedSignature(dependency.id, seed);
+      if (seed.lock !== undefined && verified?.has(signature) === true) continue;
+      add("dependency_seed", signature);
+    }
     for (const slot of SLOT) {
       const backing = dependency[slot];
       if (backing === undefined) continue;
@@ -348,9 +386,9 @@ function lessSafeSignatures(dependencies: readonly TestEnvDependency[]): Map<Tes
  * The less-safe fields this change turns on, against the dependencies before it (none: the first proposal, where every less-safe use is a change). A use already there and unchanged is not a change;
  * a raised run cap is. Pure and deterministic, so the card and the server agree.
  */
-export function testEnvDependencyLessSafeChanges(previous: readonly TestEnvDependency[] | undefined, next: readonly TestEnvDependency[], caps?: { previous?: TestEnvRunCaps; next?: TestEnvRunCaps }): TestEnvDependencyLessSafeField[] {
+export function testEnvDependencyLessSafeChanges(previous: readonly TestEnvDependency[] | undefined, next: readonly TestEnvDependency[], caps?: { previous?: TestEnvRunCaps; next?: TestEnvRunCaps }, verifiedNext?: ReadonlySet<string>): TestEnvDependencyLessSafeField[] {
   const before = lessSafeSignatures(previous ?? []);
-  const after = lessSafeSignatures(next);
+  const after = lessSafeSignatures(next, verifiedNext);
   const changed = TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS.filter((field) => field !== "run_cap_raised" && [...(after.get(field) ?? [])].some((signature) => !(before.get(field)?.has(signature) ?? false)));
   const raised = caps?.next !== undefined && caps.next.maxStarted > (caps.previous ?? TEST_ENV_DEFAULT_RUN_CAPS).maxStarted;
   const list: TestEnvDependencyLessSafeField[] = [...changed];
@@ -359,8 +397,8 @@ export function testEnvDependencyLessSafeChanges(previous: readonly TestEnvDepen
 }
 
 /** The risk the dependencies add to the `approve_test_env` card: high for any test account, project image, company-approved substitute image or excluded tests; medium otherwise. No model output sets it. */
-export function testEnvDependencyApprovalRisk(dependencies: readonly TestEnvDependency[]): DecisionRisk {
-  const found = lessSafeSignatures(dependencies);
+export function testEnvDependencyApprovalRisk(dependencies: readonly TestEnvDependency[], verified?: ReadonlySet<string>): DecisionRisk {
+  const found = lessSafeSignatures(dependencies, verified);
   return (["test_account", "project_image", "substitute_image", "none_excluded_tests", "dependency_seed"] as const).some((field) => (found.get(field)?.size ?? 0) > 0) ? "high" : "medium";
 }
 

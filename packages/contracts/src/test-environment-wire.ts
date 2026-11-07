@@ -10,6 +10,7 @@ import { z } from "zod";
 import { CoverageMapSchema } from "./test-env-nightly.js";
 import { CheckKindSchema } from "./evidence.js";
 import { ProjectCommandSchema, RelativeWorkspacePathSchema } from "./project.js";
+import { SeedScriptLockSchema } from "./seed-script-lock.js";
 import {
   CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
   IacSeedRefSchema, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema, catalogIdName, testEnvStartedCount,
@@ -42,6 +43,8 @@ export const TEST_SERVICES_FAKE_PLAN_FEATURE = "task.testServices.fake.v1";
  * file seed (`ec2-delivery.ts`). In `WORKER_INVOCATION_FEATURES`.
  */
 export const TEST_SERVICES_FILE_SEED_FEATURE = "task.testServices.fileSeed.v1";
+/** SEED-RISK-1: a worker that checks a seed command's `lock` (re-hashes the repository's seed script from its checkout, refuses on a difference). A plan with a locked seed goes only to such a worker. */
+export const TEST_SERVICES_SEED_LOCK_FEATURE = "task.testServices.seedLock.v1";
 /** The AWS services a plan may ask Rovara local AWS for in slice 2. The broker's rule and the worker's contract are this one list. */
 export const TEST_SERVICES_AWS_PLAN_SERVICES = ["s3", "sqs", "dynamodb"] as const;
 
@@ -186,9 +189,10 @@ export const TaskDependencyPlanSchema = z
     connect: z.array(z.object({ name: EnvNameSchema, template: ConnectTemplateSchema }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.connectEnv),
     /**
      * The dependency's seeds. Review I3 (owner decision 12, SEED-FILE-LOCK): a file seed of a plan made from an APPROVED environment names the sha256 the approval bound, and the worker refuses a file whose content
-     * differs. A candidate check's plan names none (it loads the file and reports the sha256 it loaded, which the approval binds).
+     * differs. A candidate check's plan names none (it loads the file and reports the sha256 it loaded, which the approval binds). SEED-RISK-1: a command seed may carry the broker's `lock` (seed-script-lock.ts); the
+     * worker re-hashes it from its checkout before every run and refuses on a difference.
      */
-    seeds: z.array(z.union([z.object({ command: ProjectCommandSchema }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema, sha256: Sha256.optional() }).strict()])).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
+    seeds: z.array(z.union([z.object({ command: ProjectCommandSchema, lock: SeedScriptLockSchema.optional() }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema, sha256: Sha256.optional() }).strict()])).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
     reset: z.enum(TEST_ENV_DEPENDENCY_RESETS),
     /** Only on an `emulated` entry: the AWS services this dependency needs from Rovara local AWS, the region the code is told, and where the project declares its resources (a file, never read by the broker). */
     aws: z.object({ services: z.array(z.enum(TEST_SERVICES_AWS_PLAN_SERVICES)).min(1).max(TEST_SERVICES_AWS_PLAN_SERVICES.length), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
@@ -372,6 +376,8 @@ export const TestEnvironmentStateSchema = z
         }).strict().default({ status: "none" }),
         /** TS-UX-1: the dependencies the proposal starts that can hold a seed, each with EVERY command that fills it with test data (as the broker formats them, in the order they run). */
         dependencySeeds: z.array(z.object({ id: TestEnvDependencyIdSchema, name: line(80), commands: z.array(line(600)).max(TEST_ENV_SEED_COMMANDS_MAX).default([]) }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies).default([]),
+        /** SEED-RISK-1: each seed command's risk and why, in fixed words from the broker (medium: detected unchanged from the repository's files and run only on the test database; high: the reason). */
+        seedRisks: z.array(z.object({ dependencyId: TestEnvDependencyIdSchema, risk: z.enum(["medium", "high"]), reason: line(400) }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies * TEST_ENV_DEPENDENCY_LIMITS.seeds).default([]),
         /** The project's commands that the proposal's commands are not among: approving writes them into the settings, after the check ran them. */
         commandsNotInSettings: z.number().int().min(0).max(1000).default(0),
         /** TE-2: the candidate check of THIS proposal (a fresh workspace prepared from the proposal's commands, never from the applied settings), at the settings revision as they stand now. */
