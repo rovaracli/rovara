@@ -378,18 +378,19 @@ describe("the named TEST proof-only installation gate", () => {
     // snapshot (the whole staging control-plane template, which the foreign case is) shows exactly those two removals and nothing else.
     // 2026-11-07 (UX5b script tokens): the named and foreign digests were retaken from the values the test reports, after one intended change: the `pt` entry of the broker's packed AGENTX_SETTINGS
     // (the ScriptTokensEnabled parameter itself is taken out of the remainder like the other switches). Legacy did not move.
+    // Retaken again from the test's own values after the rebase onto integ/0510 at 44030261c (ux1, ux6a, ux5, ux4a merged); the named-templates snapshot differs from that head only by `pt`. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "bb251d6f86cbdc9d631923206a12e37f0d18389780cd34e84921b9d45e7c9cf8",
-        withoutRoute: "e7c9322e1daa40c7ea6b097bec44f5f328914f06bde61b5391bd350086da0e41",
+        withRoute: "b3413f0699a80ec583d404e5484bb3fb1685ab4e7ff45152f9948b304198ec8c",
+        withoutRoute: "a25101d33efef316d9df082fc05ef17d68844939e0dc219ebaf7f4efd3ebc034",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "df0e4330628131a9d47f02e39d7e1fac59884f913791e3e7769ca7783c7cfd12",
-        withoutRoute: "d73427a961ec7fee22c6e468c4c7a5c877eb615625f3d9a0e6f3c9fdeec1fc7a",
+        withRoute: "b0c4a3b7c45f8668b353475b9bbef21beafa8d7d992e3baaefbebc28b8c3f967",
+        withoutRoute: "4dbf2b73be7dd0dd98db9bc58a518e06e41447a606b1a9cc06a0e3c1efe83059",
       },
       {
         label: "legacy",
