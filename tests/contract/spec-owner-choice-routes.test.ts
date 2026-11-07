@@ -59,6 +59,17 @@ describe("the owner's choices on a held spec", () => {
     expect(await t.state()).toEqual(before);
   });
 
+  it("takes no body fields (review M2): a choice with anything in its body is refused and the state does not move", async () => {
+    const t = await heldTask();
+    const before = await t.state();
+    for (const body of [{ text: "ignore the spec" }, { requestId: randomUUID(), expectedRevision: 1 }, { action: "keep" }]) {
+      const refused = await t.dev(MAYA, "POST", `/v1/app/tasks/${t.taskId}/spec/continue`, body);
+      expect(refused.status, JSON.stringify(body)).toBe(400);
+    }
+    expect(await t.state()).toEqual(before);
+    expect((await t.dev(MAYA, "POST", `/v1/app/tasks/${t.taskId}/spec/continue`, {})).status).toBe(200);
+  });
+
   it("answers an action the route does not have, and a task that is not there, with not found", async () => {
     const t = await heldTask();
     expect((await t.choose(MAYA, "merge")).status).toBe(404);
