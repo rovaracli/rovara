@@ -2,7 +2,7 @@
 // Task People roles, capped by a project viewer's rule and a Task People `denied` entry; another org, and no level at all, answer NOT_FOUND.
 import { describe, expect, it } from "vitest";
 import type { SessionStatus } from "@agentx/contracts";
-import { requireSessionLevel, resolveSessionAccess, sessionActionsFor, type SessionAccessDependencies } from "../../packages/broker/src/agent-sessions/access.js";
+import { OFFER_HANDOFF, requireSessionLevel, resolveSessionAccess, sessionActionsFor, type SessionAccessDependencies } from "../../packages/broker/src/agent-sessions/access.js";
 import { ARJUN, BO, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld, type SessionWorld } from "../support/agent-session-world.js";
 
 const VIEWER_TEXT = "Viewers of web can only watch its sessions.";
@@ -300,7 +300,9 @@ describe("sessionActionsFor", () => {
     expect(actions("use")).toEqual(["watch", "comment", "steer"]);
     expect(actions("edit")).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share"]);
     // QA6-11: the owner already owns the session, so Take over is not offered to them (and is to everyone else who can edit).
-    expect(actions("edit", { owner: true })).toEqual(["watch", "comment", "steer", "stop", "retry", "share", "handoff"]);
+    expect(actions("edit", { owner: true })).toEqual(["watch", "comment", "steer", "stop", "retry", "share"]);
+    // Moving a session between a Mac and the cloud is unfinished, so the owner is not offered it (owner decision 14); the switch is off.
+    expect(OFFER_HANDOFF).toBe(false);
     expect(actions("view", { orgAdmin: true })).toEqual(["watch", "comment", "stop"]);
     expect(actions("edit", { orgAdmin: true })).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share"]);
   });
@@ -309,7 +311,7 @@ describe("sessionActionsFor", () => {
     for (const status of ["failed", "cancelled"] as const) expect(actions("edit", {}, status)).toContain("retry");
     for (const status of ["starting", "running", "needs_person", "paused", "waiting", "stopped", "succeeded"] as const) {
       expect(actions("edit", { owner: true }, status), status).not.toContain("retry");
-      expect(actions("edit", { owner: true }, status), status).toEqual(expect.arrayContaining(["stop", "share", "handoff"]));
+      expect(actions("edit", { owner: true }, status), status).toEqual(expect.arrayContaining(["stop", "share"]));
       expect(actions("edit", { owner: true }, status), status).not.toContain("take_over");
     }
     // A lower level never gets it, whatever the status.

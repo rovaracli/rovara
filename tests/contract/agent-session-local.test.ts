@@ -22,6 +22,9 @@ import {
   projectArchivedMessage,
   projectMetaKey,
   userChannel,
+  LiveResponseReaderSchema,
+  SessionResponseReaderSchema,
+  SessionViewSchema,
   type LiveResponse,
   type OrgId,
   type OrgRole,
@@ -1063,5 +1066,44 @@ describe("review minors", () => {
     await w.update(PRIYA, sessionId, deviceId, { turns: [{ at: iso(T0), role: "agent", text: "safe\u202etxt.exe\u200b done" }] });
     expect(String(w.under(sessionId, "TURN#")[0]!.text)).not.toMatch(/[\u202e\u200b]/u);
     expect(JSON.stringify(w.events(sessionId))).not.toMatch(/\\u202e|\\u200b|[\u202e\u200b]/u);
+  });
+});
+
+describe("an existing session on a Mac after the Mac move was hidden (owner decision 14)", () => {
+  it("still reads on the session page and in Live and the lists, as a session on that Mac, but is not offered a move", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    await w.update(PRIYA, sessionId, deviceId, { step: "Reading the logs" });
+    // The session page: the same view the web app and the CLI read, with its Mac named.
+    const owner = await w.view(PRIYA, sessionId);
+    expect(SessionViewSchema.parse(owner)).toEqual(owner);
+    expect(SessionResponseReaderSchema.safeParse({ session: owner }).success).toBe(true);
+    expect(owner).toMatchObject({ sessionId, kind: "local", where: { kind: "mac", label: "Priya's MacBook" }, title: "Fix the flaky checkout test", owner: { developerId: PRIYA }, you: { level: "edit", owner: true } });
+    expect(owner.you.actions).toEqual(expect.arrayContaining(["watch", "comment", "steer", "stop"]));
+    expect(owner.you.actions).not.toContain("handoff");
+    // The person it is shared with reads it too, without the owner's actions.
+    const shared = await w.view(ARJUN, sessionId);
+    expect(shared).toMatchObject({ kind: "local", you: { level: "view", owner: false } });
+    expect(shared.you.actions).not.toContain("handoff");
+    // Live: the tile for the owner and for the person shared with, parsed with the reader the web app uses.
+    for (const who of [PRIYA, ARJUN]) {
+      const live = await w.liveFor(who);
+      expect(LiveResponseReaderSchema.safeParse(live).success, who).toBe(true);
+      const tile = live.tiles.find((entry) => entry.sessionId === sessionId);
+      expect(tile, who).toMatchObject({ kind: "local", where: { kind: "mac", label: "Priya's MacBook" }, status: "running" });
+      expect(tile!.actions, who).not.toContain("handoff");
+    }
+    // The lists.
+    const path = "/v1/app/sessions?owner=me";
+    const mine = await routeAgentSessionRequest(w.read, w.caller(PRIYA), { method: "GET", path, headers: {}, requestId: "r" }, new URL(`${CELL}${path}`)) as { sessions: Array<{ sessionId: string; kind: string }> };
+    expect(mine.sessions.find((entry) => entry.sessionId === sessionId)).toMatchObject({ kind: "local" });
+  });
+
+  it("keeps the move route itself: the owner's request still reaches it (it answers a refusal, not 404), so nothing that exists is removed", async () => {
+    const w = world();
+    const { sessionId } = await w.started();
+    const path = `/v1/app/sessions/${sessionId}/handoff`;
+    const reply = await code(Promise.resolve(routeAgentSessionRequest(w.read, w.caller(PRIYA), { method: "POST", path, headers: {}, requestId: "r", body: JSON.stringify({ requestId: randomUUID(), to: "moon" }) }, new URL(`${CELL}${path}`))));
+    expect(reply).toMatchObject({ code: "CONFIG_INVALID" });
   });
 });

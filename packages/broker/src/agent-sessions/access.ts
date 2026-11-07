@@ -403,6 +403,9 @@ const RETRYABLE: readonly SessionStatus[] = ["failed", "cancelled"];
 /** A blocked workflow reads as needing a person, or as paused when the task's budget also paused it; a stale flag on any other status offers nothing. */
 const BLOCKED_STATUSES: readonly SessionStatus[] = ["needs_person", "paused"];
 
+/** The hidden switch for offering "handoff" in a session's actions. Off: nothing finished leads a person into the Mac move. */
+export const OFFER_HANDOFF = false as boolean;
+
 /**
  * What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, takes over (not the owner: they already own it) and shares, and retries a session that failed or was
  * cancelled, or whose workflow is blocked (`state` is the session's summary now). Handing off is the owner's.
@@ -422,7 +425,8 @@ export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" 
     actions.push("share");
   }
   if (access.orgAdmin && !actions.includes("stop")) actions.push("stop");
-  if (access.owner) actions.push("handoff");
+  // Moving a session between a Mac and the cloud is unfinished (the move answers RUNTIME_UNAVAILABLE and no client pairs a Mac), so it is not offered (owner decision 14, 2026-11-07). The route and the action name stay.
+  if (access.owner && OFFER_HANDOFF) actions.push("handoff");
   // Close is the task owner's (the route checks that on the task), and only where it has a task to close.
   if (access.owner && state.closable === true) actions.push("close");
   return actions;
