@@ -9,7 +9,7 @@ const PlanPanel = lazy(() => import("./PlanPanel.js"));
 const FeedbackView = lazy(() => import("./FeedbackView.js"));
 
 /** The document open in the panel (validated against the fixed list), and how to open or close it, keeping the page's other parameters. */
-export function usePanelDocument(): { open: PanelDocument | undefined; feedback: boolean; show(document: PanelDocument): void; showFeedback(): void; close(): void } {
+export function usePanelDocument(): { open: PanelDocument | undefined; feedback: boolean; show: (document: PanelDocument) => void; showFeedback: () => void; close: () => void } {
  const [params, setParams] = useSearchParams();
  const raw = params.get("doc"), open = isPanelDocument(raw) ? raw : undefined;
  const change = useCallback((edit: (next: URLSearchParams) => void) => setParams(current => { const next = new URLSearchParams(current);edit(next);return next; }, { replace: true, preventScrollReset: true }), [setParams]);
@@ -22,7 +22,7 @@ export function usePanelDocument(): { open: PanelDocument | undefined; feedback:
 }
 
 /** The panel for one document; `footer` is a decision card's own Approve and Request changes. */
-export function PlanPanelSlot({ taskId, document, footer, onClose }: { taskId: string; document: PanelDocument; footer?: ReactNode; onClose(): void }) {
+export function PlanPanelSlot({ taskId, document, footer, onClose }: { taskId: string; document: PanelDocument; footer?: ReactNode; onClose: () => void }) {
  return <Suspense fallback={null}><PlanPanel taskId={taskId} document={document} footer={footer} onClose={onClose} /></Suspense>;
 }
 

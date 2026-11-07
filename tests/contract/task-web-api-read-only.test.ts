@@ -248,7 +248,7 @@ describe("task page API through the broker, with the decision cards on", () => {
     const t = await sharedTask();
     const { sessionId: _session, ...meta } = t.harness.db.get(`DEVTASK#${t.id}`, "META") as Record<string, unknown>;
     void _session;
-    t.harness.db.set(meta as never);
+    t.harness.db.set(meta);
     const owner = await t.send(MAYA, "GET", `/review/${t.id}/task`);
     expect(owner.statusCode).toBe(200);
     expect(owner.body).not.toContain('type="radio"');

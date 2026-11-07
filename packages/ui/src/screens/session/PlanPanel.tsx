@@ -23,14 +23,14 @@ const domId = (...parts: string[]): string => ["panel", ...parts].join("-").repl
 
 interface Context {
  view: PanelView; document: PanelDocument; comments: PanelComment[]; suggestions: PanelSuggestion[]; canRemember: boolean; busy: boolean;
- composing: string | undefined; setComposing(key: string | undefined): void; editing: string | undefined; setEditing(id: string | undefined): void;
- post(target: CommentTarget, text: string, ask: boolean, parentId?: string): Promise<boolean>;
- edit(comment: PanelComment, text: string): Promise<boolean>; remove(comment: PanelComment): void; learn(comment: PanelComment, action: "remember" | "forget"): void;
- suggest(decisionId: string, optionId: string | null): void;
+ composing: string | undefined; setComposing: (key: string | undefined) => void; editing: string | undefined; setEditing: (id: string | undefined) => void;
+ post: (target: CommentTarget, text: string, ask: boolean, parentId?: string) => Promise<boolean>;
+ edit: (comment: PanelComment, text: string) => Promise<boolean>; remove: (comment: PanelComment) => void; learn: (comment: PanelComment, action: "remember" | "forget") => void;
+ suggest: (decisionId: string, optionId: string | null) => void;
 }
 
 /** A box to write a comment, a reply or an edit; with Ask for a new comment when the person may ask. */
-function Composer({ id, label, initial = "", ask, onSubmit, onCancel, busy, submit }: { id: string; label: string; initial?: string; ask: boolean; busy: boolean; submit: string; onSubmit(text: string, ask: boolean): Promise<boolean>; onCancel(): void }) {
+function Composer({ id, label, initial = "", ask, onSubmit, onCancel, busy, submit }: { id: string; label: string; initial?: string; ask: boolean; busy: boolean; submit: string; onSubmit: (text: string, ask: boolean) => Promise<boolean>; onCancel: () => void }) {
  const [text, setText] = useState(initial), [asking, setAsking] = useState(false);
  const trimmed = text.trim();
  return <form className="rv-panel-composer" onSubmit={event => { event.preventDefault();void onSubmit(trimmed, asking).then(done => { if (done) { setText("");setAsking(false); } }); }}>
@@ -122,7 +122,7 @@ function Body({ context }: { context: Context }) {
  * answer shows in the thread) and Remember / Forget, each through the old page's own server function. `footer` is the decision card's own Approve and Request changes (the same decide path, sign-in
  * and second-person rules as the card), pinned at the bottom; without one (nothing waits on this person) the panel only reads and discusses.
  */
-export default function PlanPanel({ taskId, document, footer, onClose }: { taskId: string; document: PanelDocument; footer?: ReactNode; onClose(): void }) {
+export default function PlanPanel({ taskId, document, footer, onClose }: { taskId: string; document: PanelDocument; footer?: ReactNode; onClose: () => void }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createPlanPanelApi(host), [host]);
  const view = useQuery({ queryKey: ["plan-panel", taskId, document], queryFn: () => api.document(taskId, document), retry: false });
  const comments = useQuery({ queryKey: ["plan-panel-comments", taskId], queryFn: () => api.comments(taskId), retry: false,

@@ -29,7 +29,7 @@ function checkLines(changes: unknown): string[] {
  * the failing CI checks; the pull requests. The owner approves the findings they choose, requests changes or dismisses it, through the same decision as the old page and Slack
  * (`submitWorkflowFeedbackDecision`); the server checks who may and every digest again.
  */
-export default function FeedbackView({ taskId, onClose }: { taskId: string; onClose(): void }) {
+export default function FeedbackView({ taskId, onClose }: { taskId: string; onClose: () => void }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createPlanPanelApi(host), [host]);
  const read = useQuery({ queryKey: ["task-feedback", taskId], queryFn: () => api.feedback(taskId), retry: false });
  const [chosen, setChosen] = useState<Record<string, boolean>>({}), [note, setNote] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
