@@ -92,7 +92,7 @@ const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const RELATIVE_LOAD = /(?:\brequire\s*\(|\bimport\s*\(|\bfrom|\bimport)\s*["'`]\.{1,2}\//u;
 /** A load by a computed name: `require(x)`, `require(path.join(...))`, `import(x)`, `createRequire`, or a template string with a placeholder. */
 const DYNAMIC_LOAD = /\bcreateRequire\b|\b(?:require|import)\s*\(\s*(?!["'][^"'\\]*["']\s*\)|`[^`$\\]*`\s*\))/u;
-/** Text run as code, or a file loaded by reading it: `eval(`, `Function(` (and `new Function`), `vm.`, `require.call`/`.apply`, `module.constructor._load`, `JSON.parse(... readFileSync ...)` in one statement (`fs.readFileSync`, `require('fs').readFileSync`). */
+/** Text run as code, or a file loaded by reading it: `eval(`, `Function(` (and `new Function`), `vm.`, `require.call`/`.apply`, `module.constructor._load`, `JSON.parse(... readFileSync ...)` in one statement (a readFileSync call on the fs module, however it was loaded). */
 const CODE_FROM_TEXT = /\beval\s*\(|\bFunction\s*\(|\bvm\s*\.|\brequire\s*\.\s*(?:call|apply)\b|\.constructor\s*\.\s*_load\b|\bJSON\s*\.\s*parse\s*\([^;]{0,200}?\breadFileSync\b/u;
 /** Why a seed file, knexfile or sequelize config's text is refused, or undefined. */
 const codeProblem = (text: string): SeedLockRefusal | undefined => (RELATIVE_LOAD.test(text) || DYNAMIC_LOAD.test(text) ? "imports_repo_files" : CODE_FROM_TEXT.test(text) ? "runs_text_as_code" : undefined);
