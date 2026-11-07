@@ -10,6 +10,7 @@ import { modelProvider, modelSourcesSnapshot } from "./source-order.js";
 import { ModelSourceGuidance } from "./ModelSourceGuidance.js";
 import { SourceOrderEditor } from "./SourceOrderEditor.js";
 import { ReadSection, useAdminRead } from "./read.js";
+import { ProviderSetup } from "./ProviderSetup.js";
 const providers = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", bedrock: "Amazon Bedrock", endpoint: "Gateway endpoint" };
 const servingSchema = z.object({ models: z.array(z.object({ provider: modelProvider, modelId: z.string().max(256), sources: z.array(z.string().max(100)).max(12) })).max(1000) });
 function ServingCatalog() {
@@ -23,19 +24,19 @@ function ServingCatalog() {
 export function ModelsScreen() {
  const context = useAdminContext();
  const location = useLocation(), tab = location.pathname.endsWith("/available") ? "available" : location.pathname.endsWith("/steps") ? "steps" : "sources";
- const read = useAdminRead("sources", "/v1/app/org/model-sources", modelSourcesSnapshot.extend({orgId:z.literal(context.orgId).optional(),developerId:z.literal(context.developerId).optional(),revision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional()}));
+ const read = useAdminRead("sources", "/v1/app/org/model-sources", modelSourcesSnapshot.extend({orgId:z.literal(context.orgId).optional(),developerId:z.literal(context.developerId).optional(),revision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),available:z.array(z.enum(["anthropic","openai","openrouter","bedrock","endpoint"])).max(5).optional()}));
  return <section><PageHeader focusOnMount title={tab === "sources" ? "AI models" : tab === "available" ? "Available models" : "Code step models"} description="Company source configuration does not verify access to a model." />
  <nav aria-label="AI models"><NavLink to="/app/admin/models/sources">Model sources</NavLink>{" · "}<NavLink to="/app/admin/models/available">Available models</NavLink>{" · "}<NavLink to="/app/admin/models/steps">Code step models</NavLink></nav>
  <ReadSection read={read} label="Model sources">{data => <>
  {tab === "sources" && <>
- <h2>Company providers</h2><p>Credential change time and last verification time: unavailable in this view.</p>
- {data.sources.length === 0 ? <p>No company sources are configured. Ask a company owner or admin to arrange supported provider setup.</p> : <DataTable caption="Company sources" rows={data.sources} rowKey={s => s.sourceId} columns={[
+ <ProviderSetup available={data.available} sources={data.sources} revision={data.orgId===context.orgId&&data.developerId===context.developerId?data.revision:undefined} canEdit={context.role==="owner"||context.role==="admin"} onChanged={() => { void read.refetch(); }} />
+ <h2>Company providers</h2>
+ {data.sources.length === 0 ? <p>No company providers are added. Work runs on Rovara's own models.</p> : <DataTable caption="Company sources" rows={data.sources} rowKey={s => s.sourceId} columns={[
  { key: "label", title: "Source", render: s => <VisibleText text={s.label} /> }, { key: "provider", title: "Provider", render: s => providers[s.kind] },
  { key: "credential", title: "Credential", render: s => s.kind === "bedrock" ? "External setup · Unverified" : s.hasCredential ? "Configured" : "Not configured" },
  { key: "models", title: "Models", render: s => `${s.models.length} configured · verified usable count unavailable` },
  { key: "access", title: "Model access", render: () => "Unverified" },
  ]} />}
- {(["anthropic", "openai", "openrouter", "bedrock"] as const).filter(kind => !data.sources.some(s => s.kind === kind)).map(kind => <p key={kind}>{providers[kind]}: Not configured as a company source.</p>)}
  {data.sources.length > 0 && <><h2>Source evidence and setup guidance</h2><div key={`${context.orgId}:${context.developerId}:${context.role}`}>{data.sources.map(source => <ModelSourceGuidance key={source.sourceId} source={source} providerName={providers[source.kind]} />)}</div></>}
  <h2>Source order</h2><ol>{data.order.map(id => <li key={id}><VisibleText text={id === "rovara" ? "Rovara" : id === "personal-chatgpt" ? "Personal ChatGPT" : data.sources.find(s => s.sourceId === id)?.label ?? "Unknown source"} /></li>)}</ol><p>Rovara and Personal ChatGPT remain separate sources. Installation configuration does not establish company access.</p>
  <SourceOrderEditor available={read.isSuccess&&!read.isFetching&&data.orgId===context.orgId&&data.developerId===context.developerId&&data.revision!==undefined&&data.revision<Number.MAX_SAFE_INTEGER&&data.order.length>1} />

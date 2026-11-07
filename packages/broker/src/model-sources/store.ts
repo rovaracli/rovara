@@ -235,9 +235,11 @@ export class ModelSourceStore {
   }
 
   /** Removes a source and its place in the order. It refuses to leave the order empty, since nothing could then serve a task. */
-  async remove(input: { orgId: string; sourceId: string; by: string; request?: RequestMark | undefined }): Promise<{ sourceId: string; kind: string }> {
+  /** `expectRevision` (UX1, the web app's reviewed removal): the record's revision the person reviewed; another change since is CHANGE_STALE and nothing is removed. */
+  async remove(input: { orgId: string; sourceId: string; by: string; request?: RequestMark | undefined; expectRevision?: number }): Promise<{ sourceId: string; kind: string }> {
     const orgId = parseOrg(input.orgId);
     const { result } = await this.mutate(orgId, input.by, input.request, (current): Plan<{ sourceId: string; kind: string }> => {
+      if (input.expectRevision !== undefined && current.revision !== input.expectRevision) throw coded("CHANGE_STALE", "the company's AI sources changed since you reviewed them; refresh and try again");
       const existing = ModelSourceIdSchema.safeParse(input.sourceId).success ? current.sources.find((candidate) => candidate.sourceId === input.sourceId) : undefined;
       if (existing === undefined) throw coded("NOT_FOUND", MISSING);
       const order = current.order.filter((id) => id !== existing.sourceId);

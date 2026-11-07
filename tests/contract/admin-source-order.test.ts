@@ -86,7 +86,8 @@ it("routes an expectedRevision body to the reviewed boundary and exposes only re
  const request = { method: "PUT", path, requestId: "fixture", headers: {}, body: JSON.stringify({ requestId: f.requestId, expectedRevision: 0, order: ["rovara"] }) };
  expect(await routeModelSourceRequest(deps, caller, request, new URL(path, "https://cell.example"))).toEqual({ order: ["rovara"], revision: 1 });
  const listPath = "/v1/app/org/model-sources", result = await routeModelSourceRequest(deps, caller, { ...request, method: "GET", path: listPath, body: "" }, new URL(listPath, "https://cell.example"));
- expect(result).toEqual({ orgId: org, developerId: actor, sources: [], order: ["rovara"], revision: 1 });
+ // UX1: the read also says which kinds can be added here (none: the launch list is empty on purpose).
+ expect(result).toEqual({ orgId: org, developerId: actor, sources: [], order: ["rovara"], revision: 1, available: [] });
 });
 it("fails closed on malformed reviewed route input without echoing supplied fields", async () => {
  const { routeModelSourceRequest } = await import("../../packages/broker/src/model-sources/routes.js");const f = fixture(), path = "/v1/app/org/model-sources-order";

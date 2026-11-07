@@ -21,6 +21,9 @@ import { catalogModel } from "@agentx/model-runtime/catalog";
 import {
   AgentXError,
   BEDROCK_NOT_TESTED_NOTE,
+  CUSTOM_SOURCE_KINDS,
+  TRANSPORTS_AT_LAUNCH,
+  type CustomSourceKind,
   EGRESS_SYNC_KEY,
   EgressSyncMarkerSchema,
   MODEL_SOURCES_NEED_PROXY,
@@ -101,13 +104,15 @@ export function requireReviewedModelSourceWebWrite(request: AdaptedHttpRequest, 
     throw agentXError("CONFIG_INVALID", "Review a valid company source order before submitting.");
   }
   const item = ITEM_PATH.exec(url.pathname);
-  // Legacy removal changes routing order without the reviewed revision/authority fences.
-  if (request.method === "DELETE" && item !== null && item[2] === undefined) {
-    throw agentXError("FORBIDDEN", "Removing a company AI source is not available in the console yet.");
+  // Legacy removal changes routing order without the reviewed revision fence. UX1: the web app removes a source only with the revision the person reviewed.
+  if (request.method === "DELETE" && item !== null && item[2] === undefined && !RemoveBodySchema.required({ expectedRevision: true }).safeParse(jsonBody(request)).success) {
+    throw agentXError("FORBIDDEN", UNREVIEWED_REMOVAL);
   }
 }
 
 const MISSING = "no AI source has that ID";
+/** UX1: a browser removal must carry the record revision the person reviewed. */
+export const UNREVIEWED_REMOVAL = "Review the company's current AI sources before removing one.";
 const ADMIN_ONLY = "Only an org owner or admin can change the company's AI sources.";
 const CHECK_RACED = "this source changed while it was being tested; run the check again";
 const ENDPOINT_NOT_CONFIRMED = "this endpoint did not confirm every model it lists; check the model names and the secret, then check again";
@@ -118,6 +123,8 @@ const SECRET_SHARED = "source.keyRef: another source already uses this secret; e
 const RequestId = z.string().uuid();
 const WriteBodySchema = z.object({ requestId: RequestId, source: z.unknown(), apiKey: z.string().optional() }).strict();
 const RequestOnlySchema = z.object({ requestId: RequestId }).strict();
+/** UX1: a removal may name the record revision the person reviewed (the web app always does). */
+const RemoveBodySchema = z.object({ requestId: RequestId, expectedRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional() }).strict();
 const OrderBodySchema = z.object({ requestId: RequestId, order: z.array(ModelSourceIdSchema).max(20) }).strict();
 /** A vendor key: printable ASCII with no space, and long enough to be one. It is never repeated in a refusal. */
 const API_KEY = /^[\x21-\x7e]{8,4096}$/;
@@ -240,6 +247,8 @@ async function listSources(deps: Deps, caller: AgentCaller): Promise<unknown> {
   }));
   return {
     orgId: caller.orgId, developerId: caller.developerId, sources, order: stored.order, revision: stored.revision,
+    // UX1: the kinds an admin can add on this install right now (the launch list, the edition and the endpoint checker decide), so the web app says plainly what is available.
+    available: availableKinds(deps),
     ...(stored.assistantModel === undefined ? {} : { assistantModel: stored.assistantModel }),
     ...(stored.chatgptPreferredModel === undefined ? {} : { chatgptPreferredModel: stored.chatgptPreferredModel }),
   };
@@ -259,6 +268,18 @@ function claimedKind(source: unknown): { kind: z.infer<typeof ModelSourceKindSch
   const kind = ModelSourceKindSchema.safeParse(claim.kind);
   if (!kind.success) throw agentXError("CONFIG_INVALID", "source.kind: name the kind of AI source");
   return { kind: kind.data, ...(typeof claim.api === "string" ? { api: claim.api } : {}) };
+}
+
+/** UX1: the custom kinds `requireAvailable` lets through on this install, in a fixed order. */
+function availableKinds(deps: Deps): CustomSourceKind[] {
+  return CUSTOM_SOURCE_KINDS.filter((kind) => {
+    try {
+      requireAvailable(deps, kind, kind === "endpoint" ? TRANSPORTS_AT_LAUNCH[0] : undefined);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** Refuses a kind that is not on, and a kind that is not a company source at all. */
@@ -437,15 +458,16 @@ async function changeSource(deps: Deps, caller: AgentCaller, rawId: string, body
 async function removeSource(deps: Deps, caller: AgentCaller, rawId: string, body: unknown): Promise<Record<string, unknown>> {
   requireAdmin(caller);
   await finishOwedRemovals(deps, caller, caller);
-  const { requestId } = parseBody(RequestOnlySchema, body);
-  const { mark, replay } = await markRequest(deps, caller, "model-source-remove", rawId, requestId, {});
+  const { requestId, expectedRevision } = parseBody(RemoveBodySchema, body);
+  // A request without a revision fingerprints exactly as before.
+  const { mark, replay } = await markRequest(deps, caller, "model-source-remove", rawId, requestId, expectedRevision === undefined ? {} : { expectedRevision });
   if (replay !== undefined) {
     const done = replay.result as { sourceId: string; kind: string };
     await releaseSource(deps.modelSources, caller.orgId, done.sourceId, caller);
     await deps.modelSources.store.finishRemoval({ orgId: caller.orgId, sourceId: done.sourceId });
     return { sourceId: done.sourceId, removed: true };
   }
-  const removed = await deps.modelSources.store.remove({ orgId: caller.orgId, sourceId: rawId, by: caller.developerId, request: mark });
+  const removed = await deps.modelSources.store.remove({ orgId: caller.orgId, sourceId: rawId, by: caller.developerId, request: mark, ...(expectedRevision === undefined ? {} : { expectRevision: expectedRevision }) });
   await releaseSource(deps.modelSources, caller.orgId, removed.sourceId, caller);
   await deps.modelSources.store.finishRemoval({ orgId: caller.orgId, sourceId: removed.sourceId });
   return { sourceId: removed.sourceId, removed: true };
