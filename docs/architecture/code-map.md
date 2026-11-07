@@ -124,6 +124,12 @@ instead: give it a one-line header comment when you next edit it.
   serves it.
 - The pages are in `packages/ui/src/screens/`, the route list is `packages/ui/src/routes.tsx#appRoutes`, and the API
   client is `packages/ui/src/api/client.ts#createApiClient` (one module per area in `packages/ui/src/api/`).
+- Company settings (`/app/admin/*`): one list of sections, `packages/ui/src/screens/admin/admin-sections.ts#ADMIN_SECTIONS`, drives both the
+  navigation (`packages/ui/src/screens/admin/AdminNav.tsx#AdminNav`, a menu behind one button on a phone) and the overview. What a change affects and who
+  can change it, per page, is `packages/ui/src/screens/admin/settings-text.ts#SETTINGS_AREAS`, shown by `packages/ui/src/screens/admin/SettingsNote.tsx#SettingsNote`.
+  The one Connections page is `packages/ui/src/screens/admin/connections/ConnectionsScreen.tsx#ConnectionsView`: a row per connection
+  (`ConnectionCard.tsx`), its state words in `connection-state.ts`, saved connections and the Linear and Jira add form in `RegistryItems.tsx`,
+  GitHub in `packages/ui/src/screens/onboarding/steps/GithubConnectPanel.tsx`, AI providers in `packages/ui/src/screens/admin/models/ProviderSetup.tsx`.
 
 ## Contracts
 
