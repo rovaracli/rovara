@@ -987,6 +987,16 @@ describe("models the environment's model proxy cannot serve (R52)", () => {
 });
 
 describe("keptOperatorParameters", () => {
+  it("keeps the Team record's pause only where the deployed stack and the new template both have it, and never sends it to a template without the record", () => {
+    const declaredWith = new Set(["TeamRecordEnabled", "BudgetMonthlyUsd"]), declaredWithout = new Set(["BudgetMonthlyUsd"]);
+    // Built and kept on (the upgrade synthesizes with the recorded record): the deployed value is kept.
+    expect(keptOperatorParameters({ part: "control-plane", computed: {}, deployed: { TeamRecordEnabled: "0" }, declared: declaredWith }).kept).toEqual({ TeamRecordEnabled: "0" });
+    // Not built: nothing is deployed and nothing is sent.
+    expect(keptOperatorParameters({ part: "control-plane", computed: {}, deployed: {}, declared: declaredWithout }).kept).toEqual({});
+    // Built by hand but not recorded (the new template has no record): reported dropped, never sent (CloudFormation would refuse it); the upgrade's data guard names the fix.
+    expect(keptOperatorParameters({ part: "control-plane", computed: {}, deployed: { TeamRecordEnabled: "1" }, declared: declaredWithout })).toEqual({ kept: {}, dropped: [{ parameter: "TeamRecordEnabled", value: "1" }] });
+  });
+
   it("keeps only listed parameters the answers did not set and the template declares", () => {
     expect(keptOperatorParameters({
       part: "slack", computed: { ModelId: "m" }, deployed: { SlowTurnMinutes: "9", ModelId: "old" }, declared: new Set(["SlowTurnMinutes", "ModelId"]),
