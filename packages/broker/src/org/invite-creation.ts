@@ -6,7 +6,7 @@ import { AgentXError, InviteCreateReceiptSchema, ReviewedInviteCreateBodySchema,
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { takeRateAt } from "../developer/page-comments.js";
 import { cloudJoinBase, inviteUrl } from "./invite-url.js";
-import { sendInviteEmail } from "./invite-email.js";
+import { inviteEmailAvailable, sendInviteEmail, takeInviteEmailAllowance } from "./invite-email.js";
 const receiptRecord = InviteCreateReceiptSchema.extend({ pk: z.string(), sk: z.string(), entityType: z.literal("ORG_INVITE_CREATE_RECEIPT"), by: z.string().regex(/^[a-f0-9]{64}$/), action: z.literal("org.invite_created"), bodyHash: z.string().regex(/^[a-f0-9]{64}$/) });
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "Invite creation could not be confirmed. Check its receipt before trying again.");
 const missing = () => agentXError("NOT_FOUND", "That creation receipt is unavailable in this company.");
@@ -40,6 +40,8 @@ export async function createReviewedOrganizationInvite(deps: DeveloperRouteDepen
    const link = deps.cloud === true ? inviteUrl(cloudJoinBase(deps.developer.issuer), result.token, "fragment") : inviteUrl(`${deps.developer.issuer}/join`, result.token, "query");
    // UX1: emailed only when asked for, only to the invite's own address, and only once (a replay above never reaches here). The link is returned either way, so nothing is lost if the email fails.
    if (parsed.data.sendEmail !== true || parsed.data.email === undefined) return { receipt: committed, inviteUrl: link };
+   // UX1 review I2: a daily cap per company and one email per address per day; past either, the link is still returned and nothing is sent.
+   if (inviteEmailAvailable(deps.ownerNotice) && !await takeInviteEmailAllowance(deps, caller.orgId, parsed.data.email)) return { receipt: committed, inviteUrl: link, email: "limited" as const };
    const email = await sendInviteEmail(deps.ownerNotice, { to: parsed.data.email, orgName: (await deps.orgs.getOrg(caller.orgId))?.name ?? "your team", inviterName: caller.name, role: committed.role, inviteUrl: link, expiresAt: committed.expiresAt });
    return { receipt: committed, inviteUrl: link, email };
   } catch (error) {

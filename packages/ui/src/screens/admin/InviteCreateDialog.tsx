@@ -23,7 +23,7 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
  const [sent, setSent] = useState(false), [working, setWorking] = useState(false), [copied, setCopied] = useState(false), [canCopy, setCanCopy] = useState(false), [terminal, setTerminal] = useState(false), [feedback, setFeedback] = useState<string>(), [receipt, setReceipt] = useState<InviteCreateReceipt>(), [current, setCurrent] = useState<InviteStatus>(), [proofClient, setProofClient] = useState<typeof api>(), [operationClient, setOperationClient] = useState<typeof api>();
  const [missingReceipt, setMissingReceipt] = useState(false), [restartReview, setRestartReview] = useState(false);
  // UX1: email the link as well as copy it (only where this install can), and never lose an uncopied, unemailed link to one stray close.
- const [emailIt, setEmailIt] = useState(true), [emailed, setEmailed] = useState<"sent" | "not_set_up" | "failed">(), [confirmClose, setConfirmClose] = useState(false);
+ const [emailIt, setEmailIt] = useState(true), [emailed, setEmailed] = useState<"sent" | "not_set_up" | "failed" | "limited">(), [confirmClose, setConfirmClose] = useState(false);
  const restartNotice = useRef<HTMLParagraphElement>(null);
  const busy = working && operationClient === api;
  const copyReady = canCopy && proofClient === api;
@@ -41,7 +41,7 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
   if (parsed.data.role === "admin" && role !== "owner") { setFeedback("Only an owner can invite an admin.");return; }
   setIntent(parsed.data);setFeedback(undefined);
  }
- async function verify(value: InviteCreateReceipt, version: number, link?: string, mailed?: "sent" | "not_set_up" | "failed") {
+ async function verify(value: InviteCreateReceipt, version: number, link?: string, mailed?: "sent" | "not_set_up" | "failed" | "limited") {
   if (!valid(version)) return;
   if (intent === undefined || value.role !== intent.role || value.requestId !== intent.requestId || value.orgId !== orgId) throw new Error("Unverified receipt.");
   setReceipt(value);onProgress(true, value.inviteId);
@@ -50,7 +50,7 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
   setCurrent(status);privateLink.current = undefined;setCanCopy(false);onApplied();
   if (status.status !== "pending") {
    setTerminal(true);onProgress(false);setFeedback(status.status === "accepted" ? "This invite has already been accepted. Creating another link will not remove anyone's access." : status.status === "expired" ? "This invite has expired. No usable link is available." : "This invite is revoked. No usable link is available.");
-  } else if (link !== undefined) { privateLink.current = link;setProofClient(api);setCanCopy(true);setEmailed(mailed);setFeedback(mailed === "sent" ? "Invite created and emailed. You can also copy the link." : mailed === "failed" ? "Invite created, but the email couldn't be sent. Copy the link and send it yourself." : mailed === "not_set_up" ? "Invite created. Email isn't set up on this Rovara install, so copy the link and send it yourself." : "Invite created and checked."); }
+  } else if (link !== undefined) { privateLink.current = link;setProofClient(api);setCanCopy(true);setEmailed(mailed);setFeedback(mailed === "sent" ? "Invite created and emailed. You can also copy the link." : mailed === "failed" ? "Invite created, but the email couldn't be sent. Copy the link and send it yourself." : mailed === "not_set_up" ? "Invite created. Email isn't set up on this Rovara install, so copy the link and send it yourself." : mailed === "limited" ? "Invite created, but it wasn't emailed: this address already got an invite email today, or your company reached today's email limit. Copy the link and send it yourself." : "Invite created and checked."); }
   else setFeedback(lostLink);
  }
  async function commit() {
