@@ -34,6 +34,7 @@ it("coalesces production source reads across separately authenticated requests",
 });
 
 it("counts 300 visible sessions across 40 projects without reading the live index per project", async () => {
+ const { INTAKE_HOME_PROJECTS_MAX } = await import("../../packages/broker/src/intake/home-source.js");
  const { projectRevisionKey, orgProjectCatalogKey, agentSessionKey } = await import("@agentx/contracts");
  const { grantProject } = await import("../support/developer-task-broker.js");
  const { sessionWorld } = await import("../support/agent-session-world.js");
@@ -53,18 +54,22 @@ it("counts 300 visible sessions across 40 projects without reading the live inde
  h.db.set(w.db.get(taskKey(seeded.taskId))!);
  h.db.set({ ...liveSessionKey(TEST_ORG, seeded.sessionId), entityType: "LIVE_SESSION", ...record, ownerId: MAYA.developerId });
  }
- const original = h.db.send.bind(h.db);let liveReads = 0;
- h.db.send = async command => { if (command instanceof QueryCommand && command.input.ExpressionAttributeValues?.[":pk"] === liveSessionKey(TEST_ORG, "ses_00000000000000000000").pk) liveReads++;return original(command); };
+ const original = h.db.send.bind(h.db);let liveReads = 0, intakeReads = 0;
+ h.db.send = async command => { if (command instanceof QueryCommand && command.input.ExpressionAttributeValues?.[":pk"] === liveSessionKey(TEST_ORG, "ses_00000000000000000000").pk) liveReads++;if (command instanceof QueryCommand && String(command.input.ExpressionAttributeValues?.[":pk"]).includes("#INTAKE_ITEM#")) intakeReads++;return original(command); };
  const before = h.db.commandNames().length, response = await h.dev(MAYA, "GET", "/v1/app/nav");expect(response.status).toBe(200);
  const body = { ...response.body };delete body.requestId;const nav = AppNavSchema.parse(body);
  expect(nav.projects).toHaveLength(40);expect(nav.projects.flatMap(project => project.agents).reduce((sum, agent) => sum + agent.running, 0)).toBe(300);expect(liveReads).toBe(1);expect(nav.projects.flatMap(project => project.agents).reduce((sum, agent) => sum + agent.needsYou, 0)).toBe(1);
  const names = h.db.commandNames().slice(before);const counts = Object.fromEntries([...new Set(names)].sort().map(name => [name, names.filter(value => value === name).length]));
  expect(counts.GetCommand ?? 0).toBeLessThanOrEqual(100);
- expect(counts.QueryCommand ?? 0).toBeLessThanOrEqual(3 * projects.length + 14);
+ expect(counts.QueryCommand ?? 0).toBeLessThanOrEqual(3 * projects.length + 14 + INTAKE_HOME_PROJECTS_MAX);
  expect(counts.BatchGetCommand ?? 0).toBeLessThanOrEqual(20);
  // Release 0.4.18: two more Gets, the chosen name beside the sign-in check and beside the caller's own record (92 before), and one more BatchGet, the owners' chosen names for the live tiles (14 before).
  // Plan 6 Task 18 (d6eb074d9, review reminders) added one more Query (133 before): Home reads the caller's REVIEW_WAIT partition once per request. It is a fixed read, whatever the number of projects or sessions: the rest is 3 per project (the project's revisions, its shared sessions and its agents) plus 14 fixed.
- expect(counts).toEqual({ BatchGetCommand: 15, GetCommand: 94, QueryCommand: 134 });
+ // Slice 5 (5d0486742, waiting tickets on Home) added the waiting-ticket Home card source, which nav runs for its "needs you" count (the same number Home shows): one Query of each
+ // project's INTAKE_ITEM partition the caller may start tasks in, at most INTAKE_HOME_PROJECTS_MAX (10) projects, however many there are (144 = 134 + 10). There is no org-wide index of
+ // waiting tickets to read instead; the rest is unchanged (3 per project plus 14 fixed).
+ expect(intakeReads).toBe(INTAKE_HOME_PROJECTS_MAX);
+ expect(counts).toEqual({ BatchGetCommand: 15, GetCommand: 94, QueryCommand: 134 + INTAKE_HOME_PROJECTS_MAX });
  expect(names).not.toContain("ScanCommand");
 });
 
