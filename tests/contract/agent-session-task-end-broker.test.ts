@@ -7,6 +7,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agentSessionKey, openAgentSessionKey } from "../../packages/contracts/src/index.js";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
 import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/agent-sessions/index.js";
+import { uninstallTicketUpdates } from "../../packages/broker/src/aws/broker/ticket-updates-wiring.js";
 import { hasTaskEndHandlers, hasTaskPauseHandlers, registerTaskEndHandler } from "../../packages/broker/src/agents/task-end.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -20,6 +21,9 @@ afterEach(() => unregisterAgentSessionTaskHandlers());
 
 async function setup(options: { agents?: boolean } = {}) {
   const h = await createDeveloperTaskBroker({ brokerExtra: options.agents === false ? {} : { agents: {} } });
+  // Slice 5: a broker with developer sign-in also registers the ticket updates end handler, with or without agents. These tests are about the sessions' pair, so it is taken off
+  // (ticket-updates.test.ts covers it with the real broker).
+  uninstallTicketUpdates();
   const operations = (workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION") as Array<Item & { id: string; kind: string; fence: number }>;
   const stepOps = (workspaceId: string) => operations(workspaceId).filter((operation) => operation.kind === "task").sort((a, b) => a.fence - b.fence);
   const meta = (taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as Item & { workspaceId: string; sessionId?: string };
@@ -63,7 +67,8 @@ describe("a broker with agents follows its runs", () => {
     expect(ended.record.summary.status).toBe("succeeded");
     expect(ended.record.endedAt).toBeDefined();
     expect(ended.open).toBe(false);
-    expect(t.sessionEvents(ended.sessionId).filter((text) => text === "Finished: succeeded")).toHaveLength(1);
+    // UX2 slice 2: the timeline says the one status model's words; a run that succeeded and ended its session reads Closed (`taskStatusFromSession`).
+    expect(t.sessionEvents(ended.sessionId).filter((text) => text === "Closed")).toHaveLength(1);
     // Plan 3 told the end once, and a repeat of the worker's last callback tells nothing more.
     expect(t.db.get(`DEVTASK#${run.taskId}`, "TASK_END")).toMatchObject({ done: true });
   });
@@ -81,7 +86,7 @@ describe("a broker with agents follows its runs", () => {
     expect(paused.record.summary.status).toBe("paused");
     expect(paused.record.endedAt).toBeUndefined();
     expect(paused.open).toBe(true);
-    expect(t.sessionEvents(paused.sessionId).some((text) => String(text).includes("Paused for budget"))).toBe(true);
+    expect(t.sessionEvents(paused.sessionId).some((text) => String(text).includes("Paused: needs more budget"))).toBe(true);
     expect(t.db.get(`DEVTASK#${run.taskId}`, "TASK_END")).toBeUndefined();
   });
 

@@ -9,6 +9,7 @@ import { DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/agent-sessions/index.js";
+import { uninstallTicketUpdates } from "../../packages/broker/src/aws/broker/ticket-updates-wiring.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
@@ -89,6 +90,9 @@ async function setup(options: { proxy?: boolean; brokerExtra?: Record<string, un
   // Plan 5 Task 7b: a broker with agents registers the sessions' end and pause handlers. These tests are Plan 3's contract for the handlers it is given (who is told, in what
   // order, how many), and some of them are about nobody listening, so they run without that pair (agent-session-task-end-broker.test.ts covers it with the real broker).
   unregisterAgentSessionTaskHandlers();
+  // Slice 5: a broker with developer sign-in also registers the ticket updates end handler (it notes "closed" on a ticket that started a task). It is one more listener for every end, so
+  // these tests take it off as they take off the sessions' pair (ticket-updates.test.ts covers it with the real broker).
+  uninstallTicketUpdates();
   if (options.readyChecks === true) await registerSlackProject(h.handler, { readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }] });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);

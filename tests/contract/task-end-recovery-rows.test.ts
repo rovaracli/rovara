@@ -12,6 +12,7 @@ import { taskAgentRunKey } from "../../packages/broker/src/developer/task-record
 import { operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
 import { releaseFinishedTaskQuietly } from "../../packages/broker/src/aws/developer-tasks.js";
+import { uninstallTicketUpdates } from "../../packages/broker/src/aws/broker/ticket-updates-wiring.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
@@ -34,6 +35,9 @@ function flakyHandler() {
 
 async function setup() {
   const h = await createDeveloperTaskBroker({ brokerExtra: {} });
+  // Slice 5: a broker with developer sign-in registers the ticket updates end handler. These tests count the handlers they register themselves (and "nobody listens"), so it is taken
+  // off (ticket-updates.test.ts covers it with the real broker).
+  uninstallTicketUpdates();
   const plainTask = async () => {
     const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = (started.body.task as { taskId: string }).taskId;
