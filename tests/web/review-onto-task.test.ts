@@ -130,8 +130,9 @@ it("People and the review page's comments are on the task page: Remember posts t
   return undefined;
  });
  const region = await screen.findByRole("region", { name: "People and comments" });
- // OWNER DECISION 17: comments stay on the review page for now, and the task page links straight to them.
- expect(within(region).getByRole("link", { name: "Comment on the plan" }).getAttribute("href")).toBe("/review/" + TASK + "/task?doc=coding-plan");
+ // OWNER DECISION 18 (replaces 17's link): comments are in the plan panel on this page; nothing links to the review page.
+ expect(within(region).queryByRole("link", { name: "Comment on the plan" })).toBeNull();
+ expect(document.querySelector('a[href^="/review/"]')).toBeNull();
  fireEvent.click(await within(region).findByRole("button", { name: "Remember this" }));
  await waitFor(() => expect(f.posts().map(request => request.path)).toContain("/v1/app/tasks/" + TASK + "/comments/" + COMMENT + "/remember"));
  expect(f.posts().find(request => request.path.endsWith("/remember"))!.body).toEqual({});

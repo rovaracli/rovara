@@ -6,6 +6,7 @@ import { Money } from "../../design/Money.js";
 import { CRITIC_NOT_CHECKED_LINE, PLAN_PROOF_WORDS, formatMinutes } from "@agentx/contracts/web";
 import type { MarkdownComment } from "../../design/SafeMarkdown.js";
 import { planParts } from "./plan-parts.js";
+import { usePanelDocument } from "./plan-panel-host.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadSession } from "./SessionHeader.js";
@@ -38,7 +39,7 @@ function OneScreen({ one }: { one: NonNullable<ReadTask["planOneScreen"]> }) {
  </section>;
 }
 export function PlanTab({ session, task, onComment }: { session: ReadSession; task: ReadTask; onComment?: CommentOnPart | undefined }) {
- const host = useAppHost(), workflow = task.workflow, estimate = task.runEstimate;
+ const host = useAppHost(), workflow = task.workflow, estimate = task.runEstimate, panel = usePanelDocument();
  if (workflow?.planContent === undefined) return <p>No plan is available yet.</p>;
  const unchecked = workflow.critique?.status === "done" && workflow.critique.critiques.length === 0;
  const parts = planParts(workflow.planContent), version = workflow.artifacts.filter(artifact => artifact.type === "plan").reduce<number | undefined>((latest, artifact) => latest === undefined || artifact.version > latest ? artifact.version : latest, undefined);
@@ -55,5 +56,5 @@ export function PlanTab({ session, task, onComment }: { session: ReadSession; ta
  // The limit changes only when the coding plan is approved: not while requirements or the design wait (QUICK has only the coding plan).
  const approvingCodingPlan = workflow.state === "WAITING" && workflow.stage === "PLAN_REVIEW" && (workflow.path === "QUICK" || workflow.reviewPhase === "IMPLEMENTATION_PLAN");
  const review = session.you.owner && workflow.state === "WAITING" && (workflow.stage === "PLAN" || workflow.stage === "PLAN_REVIEW");
- return <section aria-label="Plan evidence"><div className="rv-plan-context"><p>{workflowStateWords(workflow.state)}</p>{estimate && <><p>Estimated cost: <Money usd={estimate.lowUsd} /> to <Money usd={estimate.highUsd} /></p>{approvingCodingPlan && session.cost.runLimitUsd !== undefined && session.cost.runLimitUsd !== estimate.runLimitUsd ? <p>Current limit <Money usd={session.cost.runLimitUsd} /> → proposed limit <Money usd={estimate.runLimitUsd} /></p> : <p>Run limit: <Money usd={estimate.runLimitUsd} /></p>}{estimate.minutes && <p>{"Estimated time: " + formatMinutes(estimate.minutes.low, estimate.minutes.high) + " to a pull request."}</p>}</>}{unchecked && <p>{CRITIC_NOT_CHECKED_LINE}</p>}{review && <Button variant="primary" onClick={() => reviewOnCard(task.taskId, () => host.openExternal(host.origin + "/review/" + encodeURIComponent(task.taskId) + "/task"))}>Review and approve the plan</Button>}</div>{one && <OneScreen one={one} />}{one ? <details className="rv-plan-details"><summary>Details</summary>{full}</details> : full}</section>;
+ return <section aria-label="Plan evidence"><div className="rv-plan-context"><p>{workflowStateWords(workflow.state)}</p>{estimate && <><p>Estimated cost: <Money usd={estimate.lowUsd} /> to <Money usd={estimate.highUsd} /></p>{approvingCodingPlan && session.cost.runLimitUsd !== undefined && session.cost.runLimitUsd !== estimate.runLimitUsd ? <p>Current limit <Money usd={session.cost.runLimitUsd} /> → proposed limit <Money usd={estimate.runLimitUsd} /></p> : <p>Run limit: <Money usd={estimate.runLimitUsd} /></p>}{estimate.minutes && <p>{"Estimated time: " + formatMinutes(estimate.minutes.low, estimate.minutes.high) + " to a pull request."}</p>}</>}{unchecked && <p>{CRITIC_NOT_CHECKED_LINE}</p>}<Button onClick={() => panel.show("plan")}>Read the full plan</Button>{review && <Button variant="primary" onClick={() => reviewOnCard(task.taskId, () => host.openExternal(host.origin + "/review/" + encodeURIComponent(task.taskId) + "/task"))}>Review and approve the plan</Button>}</div>{one && <OneScreen one={one} />}{one ? <details className="rv-plan-details"><summary>Details</summary>{full}</details> : full}</section>;
 }

@@ -7,6 +7,7 @@ import { ApiError } from "../../api/errors.js";
 import { TaskDecisions } from "../home/NeedsYou.js";
 import { StoppedTaskActions } from "./StoppedTaskActions.js";
 import { TaskPagePeopleAndComments } from "./TaskPagePeopleAndComments.js";
+import { PlanPanelHost, usePanelDocument } from "./plan-panel-host.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { classificationLine, notNeededLine, questionLines, readDesignActions, readDesignReview, retryOffer } from "./design-review-view.js";
@@ -65,6 +66,7 @@ export function DesignActions({ task, sessionKey }: { task: ReadTask; sessionKey
 /** The task's decision cards, with the design review's line and buttons above them. A task view without `designActions` or a design review is exactly the cards, as before. */
 export function TaskDesignPanel({ session, taskId }: { session: ReadSession; taskId: string }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createDesignReviewApi(host), [host]), task = useMemo(() => workspaceTask(session), [session]);
+ const panel = usePanelDocument();
  const key = ["session", session.sessionId] as const, actions = readDesignActions(task?.designActions), offered = actions?.designFirst === true;
  const design = offered ? { hint: actions?.hint === true, onDesignFirst: async () => {
   const result = await api.designFirst(taskId, crypto.randomUUID());
@@ -81,5 +83,5 @@ export function TaskDesignPanel({ session, taskId }: { session: ReadSession; tas
   submit: async (answers: ReadonlyArray<{ questionId: string; optionId?: string; text?: string }>) => { await api.answer(taskId, crypto.randomUUID(), answers);await reread(); },
   resume: async () => { await api.resume(taskId, crypto.randomUUID());await reread(); },
  };
- return <>{task !== undefined && <DesignActions task={task} sessionKey={key} />}{task !== undefined && <StoppedTaskActions task={task} sessionId={session.sessionId} />}<TaskPagePeopleAndComments taskId={taskId} /><TaskDecisions taskId={taskId} design={design} questions={questions} /></>;
+ return <>{task !== undefined && <DesignActions task={task} sessionKey={key} />}{task !== undefined && <StoppedTaskActions task={task} sessionId={session.sessionId} />}<TaskPagePeopleAndComments taskId={taskId} />{task?.workflow?.stage === "WAIT_FOR_MERGE" && <p><Button onClick={panel.showFeedback}>Review PR feedback</Button></p>}<TaskDecisions taskId={taskId} design={design} questions={questions} /><PlanPanelHost taskId={taskId} /></>;
 }

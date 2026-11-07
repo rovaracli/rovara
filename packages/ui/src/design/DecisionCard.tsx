@@ -12,6 +12,8 @@ import { Button } from "./Button.js";
 import { Tabs } from "./Tabs.js";
 import { Money } from "./Money.js";
 import { VisibleText } from "./VisibleText.js";
+import { PlanPanelSlot, usePanelDocument } from "../screens/session/plan-panel-host.js";
+import { PANEL_DOCUMENT_WORDS, panelDocumentOfCard } from "../screens/session/panel-docs.js";
 
 type Confirming = { url: string; merging: ReadonlyArray<{ repositoryId: string; number: number; baseBranch: string }> };
 /** "Merge #7 into main?"; with several pull requests each is named by its repository: "Merge payments #7 into main and billing #8 into develop?". */
@@ -178,8 +180,23 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
   <label htmlFor={"changes-" + card.id}>What should change?</label><textarea id={"changes-" + card.id} maxLength={500} value={changes} onChange={event => setChanges(event.target.value)} />
   <Button busy={busy} disabled={changesReason === ""} onClick={() => { void run(async () => { const result = await actions.onRequestChanges!(changesReason, planShown ? plan.commentIds() : undefined);if (result.kind === "decided") { setChanges("");plan.reset();setNote(<p role="status">Sent back with your reason. Rovara revises it.</p>); } else settle(result); }); }}>{DECISION_LABELS.requestChanges}</Button>
  </details>;
- const documentTab = onItsPage ? DOCUMENT_TAB[card.kind] : undefined;
- const readLink = documentTab !== undefined && <Link className="rv-decision-read" to={{ search: location.search, hash: documentTab.hash }}>{documentTab.words}</Link>;
+ // OWNER DECISION 18: on its task page the card opens its document in full in the plan panel ("Read the full plan"); its Approve and Request changes then sit pinned at the panel's foot.
+ const panelDocument = panelDocumentOfCard(card.kind, activeTab), panel = usePanelDocument();
+ const panelHere = onItsPage && card.status === "pending" && panelDocument !== undefined && panel.open !== undefined && (panel.open === panelDocument || (tabs !== undefined && (panel.open === "requirements" || panel.open === "design")));
+ useEffect(() => { if (panelHere && tabs !== undefined && (panel.open === "requirements" || panel.open === "design") && panel.open !== tab) setTab(panel.open); }, [panelHere, tabs, panel.open, tab]);
+ // A medium card's evidence is the document: opening it in full records that it was opened, as the evidence panel does (the server records it for this digest).
+ useEffect(() => { if (panelHere && needsEvidence && !isOpened(activeTab)) void open(activeTab); }, [panelHere]); // eslint-disable-line react-hooks/exhaustive-deps -- once, when the panel opens
+ const documentTab = onItsPage && panelDocument === undefined ? DOCUMENT_TAB[card.kind] : undefined;
+ const readLink = onItsPage && panelDocument !== undefined ? <Button className="rv-decision-read" onClick={() => panel.show(panelDocument)}>{PANEL_DOCUMENT_WORDS[panelDocument].read}</Button>
+  : documentTab !== undefined && <Link className="rv-decision-read" to={{ search: location.search, hash: documentTab.hash }}>{documentTab.words}</Link>;
+ // OWNER DECISION 18 (a): the key facts the server worked out from the document itself, the risk and why, the cost and time, and how many comments are open.
+ const summary = decision.choices?.summary, openCount = decision.choices?.openCommentCount;
+ const facts = (summary !== undefined || card.riskReasons.length > 0 || card.next.costUsd !== undefined || openCount !== undefined) && <div className="rv-decision-facts">
+  {summary !== undefined && <><p className="rv-decision-needed"><strong>Needed:</strong> <VisibleText text={summary.needed} /></p><p className="rv-decision-summary-title">What Rovara will do:</p><ul className="rv-decision-summary">{summary.lines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul></>}
+  {(card.riskReasons.length > 0 || summary !== undefined) && <p className="rv-decision-why-risk">{card.riskReasons.length > 0 ? <><strong>{(RISK_WORDS[card.risk] ?? "Risk unknown") + " because:"}</strong> <VisibleText text={card.riskReasons.join("; ")} /></> : <><strong>{(RISK_WORDS[card.risk] ?? "Risk unknown") + ":"}</strong> nothing in it raises the risk.</>}</p>}
+  {(card.next.costUsd !== undefined || card.next.minutes !== undefined) && <p className="rv-decision-cost"><strong>Cost and time:</strong> {card.next.costUsd !== undefined && <>about <Money usd={card.next.costUsd} /></>}{card.next.costUsd !== undefined && card.next.minutes !== undefined && ", "}{card.next.minutes !== undefined && "about " + String(card.next.minutes) + " minutes"}</p>}
+  {openCount !== undefined && <p className="rv-decision-open-comments">{openCount === 1 ? "1 open comment" : String(openCount) + " open comments"}</p>}
+ </div>;
  // The design questions, answered here (slice 2): an option or words for each, then Answer; a parked review can also be kept waiting.
  const asked = card.kind === "answer_question" ? actions.questions : undefined;
  const answered = asked === undefined ? [] : asked.items.flatMap(question => { const given = answers[question.id], text = plainReason(given?.text ?? "");return given?.optionId === undefined && text === "" ? [] : [{ questionId: question.id, ...(given?.optionId === undefined ? {} : { optionId: given.optionId }), ...(text === "" ? {} : { text }) }]; });
@@ -190,19 +207,9 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
   </fieldset></li>)}</ol>
   <div className="rv-actions"><Button type="submit" variant="primary" busy={busy} disabled={answered.length !== asked.items.length}>{DECISION_LABELS.answer}</Button>{asked.parked && asked.resume !== undefined && <Button busy={busy} onClick={() => { void run(async () => { await asked.resume!();setNote(<p role="status">Still waiting for answers. The 7 days start again.</p>); }); }}>Keep waiting</Button>}</div>
  </form>;
- return <article ref={article} id={decisionElementId(card.id)} className="rv-decision" data-risk={card.risk} data-focused={focused ? "true" : undefined} aria-label={card.title} {...swipe}>
-  <header><h2><VisibleText text={card.title} /></h2><p className="rv-decision-risk">{RISK_WORDS[card.risk] ?? "Risk unknown"}</p></header>
-  <p className="rv-decision-question"><VisibleText text={card.question} /></p>
-  <p className="rv-decision-recommended">Recommended: <VisibleText text={card.recommended.action + ". " + card.recommended.why} /></p>
-  <p className="rv-decision-next">Next: <VisibleText text={card.next.text} /></p>
-  {tabs === undefined ? <Chips chips={card.evidence} /> : <Tabs label={"Documents to approve for " + card.title} value={tab} onValueChange={value => { if (value === "requirements" || value === "design") setTab(value); }} items={tabs.map(item => ({ value: item.id, label: item.title + (item.approved ? " (approved)" : ""), content: <><Chips chips={item.evidence} />{needsEvidence && !openOnly && evidencePanel(item.id)}</> }))} />}
-  {tabs === undefined && needsEvidence && !openOnly && evidencePanel(undefined)}
-  {!openOnly && limitBox}
-  {planShown && plan.element}
-  {(card.kind === "approve_plan" || card.kind === "approve_requirements") && card.status === "pending" && <p className="rv-muted rv-decision-takes">{DECISION_APPROVE_TAKES}</p>}
-  {questionsBox}
-  {readLink}
-  {card.risk === "high" && <p className="rv-decision-high">{inline ? HIGH_RISK_NOTE : confirmPage ? "This decision is made on its own page, after you sign in again." : "This decision is made on its own page."}</p>}
+ const deciding = <>{!openOnly && limitBox}{planShown && plan.element}{(card.kind === "approve_plan" || card.kind === "approve_requirements") && card.status === "pending"  && <p className="rv-muted rv-decision-takes">{DECISION_APPROVE_TAKES}</p>}</>;
+ /** What decides the card: in the card, or pinned at the foot of its open document (never both, so every control has one id). */
+ const actionsBlock = <>{card.risk === "high" && <p className="rv-decision-high">{inline ? HIGH_RISK_NOTE : confirmPage ? "This decision is made on its own page, after you sign in again." : "This decision is made on its own page."}</p>}
   <div className="rv-decision-actions">
    {card.risk === "high" ? <>{inline ? inlineActions : highSpendHere ? choiceButtons : link}{designBox}</> : openOnly ? <><p className="rv-muted">Decided on its card in the task, after a look at the evidence.</p>{link}</> : <>{approveButton(activeTab)}{choiceButtons}{designBox}{canReject && <details className="rv-decision-reject"><summary>{DECISION_LABELS.notNow}</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
    {!openOnly && changesBox}
@@ -217,5 +224,19 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
    // An outside approval needs the decide-grade sign-in (an email code from a clean sign-in): its own flow, which comes back to this approval's card.
    ? <a className="rv-button rv-button-secondary" href={"/v1/auth/decide/identify?return=" + encodeURIComponent("/v1/app/approve/" + String(card.id).slice("approve_request:".length))}>{DECISION_LABELS.signInAgain}</a>
    : <Button onClick={() => host.signIn(host.currentPath())}>{DECISION_LABELS.signInAgain}</Button>)}
+ </>;
+ return <article ref={article} id={decisionElementId(card.id)} className="rv-decision" data-risk={card.risk} data-focused={focused ? "true" : undefined} aria-label={card.title} {...swipe}>
+  <header><h2><VisibleText text={card.title} /></h2><p className="rv-decision-risk">{RISK_WORDS[card.risk] ?? "Risk unknown"}</p></header>
+  <p className="rv-decision-question"><VisibleText text={card.question} /></p>
+  <p className="rv-decision-recommended">Recommended: <VisibleText text={card.recommended.action + ". " + card.recommended.why} /></p>
+  <p className="rv-decision-next">Next: <VisibleText text={card.next.text} /></p>
+  {tabs === undefined ? <Chips chips={card.evidence} /> : <Tabs label={"Documents to approve for " + card.title} value={tab} onValueChange={value => { if (value === "requirements" || value === "design") setTab(value); }} items={tabs.map(item => ({ value: item.id, label: item.title + (item.approved ? " (approved)" : ""), content: <><Chips chips={item.evidence} />{needsEvidence && !openOnly && evidencePanel(item.id)}</> }))} />}
+  {tabs === undefined && needsEvidence && !openOnly && evidencePanel(undefined)}
+  {facts}
+  {!panelHere && deciding}
+  {questionsBox}
+  {readLink}
+  {panelHere ? <p className="rv-muted" role="status">{"Deciding in the open " + PANEL_DOCUMENT_WORDS[panel.open ?? panelDocument ?? "plan"].name.toLowerCase() + "."}</p> : actionsBlock}
+  {panelHere && <PlanPanelSlot taskId={card.taskId ?? ""} document={panel.open ?? panelDocument ?? "plan"} onClose={panel.close} footer={<>{deciding}{actionsBlock}</>} />}
  </article>;
 }
