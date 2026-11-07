@@ -1,16 +1,8 @@
 // TS-UX-1 (0.5.10): the seed as a plain field. A maintainer types one command line for a dependency; the broker reads it (one program), places it in the directory of the environment's own commands, refuses what a seed is
 // always refused, and stores it as an edited proposal that is a less-safe (high) change. An empty line clears it.
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, TestEnvironmentBodySchema, projectMetaKey, projectPk, projectRevisionKey, testEnvApprovalRisk, testEnvDigest, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
-import { refuseUnsafeEdit } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
-import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
-import { testEnvChangeLines } from "../../packages/broker/src/org/test-env-diff.js";
-import { TEST_SERVICES_MIN_CATALOG_REVISION, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
-import { dependencyCardLines } from "../../packages/broker/src/test-env/dependency-card-lines.js";
-import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS, projectUsesDevcontainer } from "../../packages/broker/src/test-env/devcontainer-check.js";
+import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, testEnvApprovalRisk, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
-import { pinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
@@ -27,11 +19,10 @@ const body = (dependencies: unknown[] = [dep()], over: Record<string, unknown> =
   selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, nightly: { enabled: false, cronUtc: "0 6 * * *", branch: "main" }, services: [], data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [],
   prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, capture: { screenshots: "failed", video: false, traces: false }, dependencies, ...over,
 });
-const seeded = (command = cmd("psql", ["-f", "seed.sql"])) => dep({ seeds: [{ command }] });
 
 
+import { type TestEnvDeps, readEditedProposal, readProposal } from "../../packages/broker/src/org/test-environment.js";
 import { dependencySeedsOf, setDependencySeed } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
-import { readEditedProposal, readProposal } from "../../packages/broker/src/org/test-environment.js";
 
 function bench(env: NodeJS.ProcessEnv = ON) {
   const db = new FakeDynamoDb();

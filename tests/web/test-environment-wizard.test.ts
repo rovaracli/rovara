@@ -99,7 +99,7 @@ it("explains what is needed when no look has been made, with the one button that
   expect(screen.queryByRole("button", { name: "Propose a test environment" })).toBeNull();
   fireEvent.click(await screen.findByRole("button", { name: "Look at my repositories and draft the test environment" }));
   await waitFor(() => expect(posts(none, "/setup-draft")).toHaveLength(1));
-  expect(posts(none, "/setup-draft")[0]!.body).toMatchObject({ requestId: expect.any(String) });
+  expect(typeof (posts(none, "/setup-draft")[0]!.body as { requestId: unknown }).requestId).toBe("string");
   none.close();
   const stale = setup({ read: { status: 200, body: state({ draft: { looked: true, status: "stale", notes: [], questions: [], pendingServices: [] } }) } });
   expect(await screen.findByText(/older than your project's settings/)).toBeTruthy();

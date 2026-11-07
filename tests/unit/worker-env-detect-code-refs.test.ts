@@ -53,7 +53,8 @@ describe("a dependency found from code", () => {
   });
   it("gives a bare DATABASE_URL to the one database a driver names, and assumes nothing then", async () => {
     const detection = await detect({ "package.json": JSON.stringify({ dependencies: { mysql2: "3" } }), "src/db.ts": "export const url = process.env.DATABASE_URL;\n" });
-    expect(family(detection, "mysql")).toMatchObject({ evidence: expect.arrayContaining([{ path: "src/db.ts", line: 1 }]), hints: expect.objectContaining({ envNames: ["DATABASE_URL"] }) });
+    expect(family(detection, "mysql")!.evidence.some((item) => item.path === "src/db.ts" && item.line === 1)).toBe(true);
+    expect(family(detection, "mysql")!.hints.envNames).toEqual(["DATABASE_URL"]);
     expect(family(detection, "postgres")).toBeUndefined();
     expect(detection.notes.join(" ")).not.toContain("assumed Postgres");
   });
