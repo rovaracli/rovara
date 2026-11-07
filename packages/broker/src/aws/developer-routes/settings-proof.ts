@@ -372,6 +372,21 @@ export async function putProjectSettingsChecked(deps: DeveloperRouteDependencies
   if (latest === undefined || latest.definition.revision !== body.expectedRevision) return plain();
   const current = latest.definition;
   const changesRepositories = body.addRepositories !== undefined || body.removeRepositories !== undefined;
+  // Review R3/R4 (with the test environment on or off): a command list resent exactly as the stored lines (a stored command's own timeout or env is not on its line) is not saved again, which would re-parse it
+  // with the defaults and quietly change it without proof; the stored command objects are kept byte for byte. Only a list that really changed is re-parsed. With repositories changing in the same body the
+  // lists are left as sent (they may be re-anchored by that change).
+  if (!changesRepositories) {
+    const sameLines = (sent: readonly string[] | undefined, stored: readonly ProjectCommand[]) => sent !== undefined && sent.length === stored.length && sent.every((line, index) => line.trim() === formatCommandLine(stored[index]!));
+    const keepSetup = sameLines(body.setupCommands, current.setup), keepTests = sameLines(body.testCommands, current.readiness);
+    if (keepSetup || keepTests) {
+      const rest = { ...(rawBody as Record<string, unknown>) };
+      if (keepSetup) delete rest["setupCommands"];
+      if (keepTests) delete rest["testCommands"];
+      // Nothing else in the body: an unchanged save (no revision), answered with the project as it is, as the save itself answers one.
+      if (Object.keys(rest).every((key) => key === "requestId" || key === "expectedRevision")) return { project: await getAppProjectWithProof(deps, caller, rawName), warnings: [] };
+      return putProjectSettingsChecked(deps, caller, rawName, rest, options);
+    }
+  }
   // Never the old save once commands or the dev container are in the body: whatever else is wrong with it, the save refuses it in its own words, with a check of what is saved, or a hold.
   if (caller.browserSession !== true) {
     // A key's commands are held against the repositories the project has now; a body that also changes them cannot be checked as one piece.
@@ -385,17 +400,8 @@ export async function putProjectSettingsChecked(deps: DeveloperRouteDependencies
     return heldSave(deps, caller, rawName, name, body, fields, latest);
   }
   // UX-4b review I1 (owner decision 11): where the test environment is on, setup and test commands are proved in its sandbox before they are used, so a browser save that changes them is refused
-  // here, the server's own rule, whatever the page is. The commands go to `POST .../setup-draft/typed` (the person's edited proposal: check, Prove, Approve). A body whose commands are what is there goes on.
-  // Review R3: compared as the lines a person sees and sends (a stored command's own timeout or env is not on its line), so a page that resends the commands unchanged beside a dev container change goes on.
-  if (testEnvironmentEnabled()) {
-    const sameLines = (sent: readonly string[] | undefined, stored: readonly ProjectCommand[]) => sent === undefined || (sent.length === stored.length && sent.every((line, index) => line.trim() === formatCommandLine(stored[index]!)));
-    if (!sameLines(body.setupCommands, current.setup) || !sameLines(body.testCommands, current.readiness)) throw agentXError("CONFIG_INVALID", PROOF_WORDS.provedInTestEnvironment);
-    // Review R4: the lines are the stored ones, so the stored commands are kept exactly (their own timeout and env): the lines are not saved again, which would re-parse them with the defaults.
-    if (body.setupCommands !== undefined || body.testCommands !== undefined) {
-      const { setupCommands: _setup, testCommands: _tests, ...rest } = rawBody as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
-      return putProjectSettingsChecked(deps, caller, rawName, rest, options);
-    }
-  }
+  // here, the server's own rule, whatever the page is. The commands go to `POST .../setup-draft/typed` (the person's edited proposal: check, Prove, Approve). Lines resent unchanged were dropped above.
+  if (testEnvironmentEnabled() && (body.setupCommands !== undefined || body.testCommands !== undefined)) throw agentXError("CONFIG_INVALID", PROOF_WORDS.provedInTestEnvironment);
   // A browser saves what it sent; what was saved is compared with what was there, after the save (a repository change can move where commands run).
   return browserSave(deps, caller, rawName, name, rawBody, options);
 }
