@@ -7,6 +7,7 @@ import { seedCommandProblem } from "./refused-command.js";
 
 export const SEED_OFFERED_NOTE = "A command that fills the database was found. It is offered as the test database's seed, not as a setup command: setup has no database. A seed runs against the test database, so approving it needs a second person.";
 export const SEED_NO_DATABASE_NOTE = "A command that fills the database was found, but no test database could be proposed for it, so it is not offered as a seed and stays where it was found. Add the database first.";
+export const SEED_NOT_TAKEN_NOTE = "A command that fills the database was found, but the test database could not take it, so it is not offered as a seed and stays where it was found.";
 export const SEED_LEFT_OUT_OF_SETUP_NOTE = "A command that fills the database was left out of the setup commands: the database exists only inside the test environment, so the command would fail in setup. It is offered as the test environment's seed instead.";
 export const SEED_REFUSED_NOTE = "A command that fills the database was left out: it downloads and runs code, holds something secret, or sets a variable the system owns.";
 
@@ -27,23 +28,28 @@ export function attachDraftSeeds(dependencies: readonly TestEnvDependency[], see
   const taken = allowed.slice(0, Math.max(0, TEST_ENV_DEPENDENCY_LIMITS.seeds - held.length));
   const next: TestEnvDependency = { ...target, seeds: [...held, ...taken.map((seed) => ({ command: seed.command }))] };
   const list = dependencies.map((dependency, at) => (at === index ? next : dependency));
-  if (taken.length === 0 || !TestEnvDependenciesSchema.safeParse(list).success) return { dependencies: [...dependencies], notes: [...notes, SEED_NO_DATABASE_NOTE], routed: [] };
+  if (taken.length === 0 || !TestEnvDependenciesSchema.safeParse(list).success) return { dependencies: [...dependencies], notes: [...notes, SEED_NOT_TAKEN_NOTE], routed: [] };
   return { dependencies: list, notes: [...notes, SEED_OFFERED_NOTE], routed: taken.map((seed) => seed.command) };
 }
 
 /** Whether two commands are the same one: the same directory, program and words (the time limit does not make a command another). */
 export const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && formatCommandLine(left) === formatCommandLine(right);
 
+/** A seed command a dependency took, and the repository whose setup it came from (the repository's id; none when no command of the environment runs in the command's directory). */
+export interface RoutedSeed { command: ProjectCommand; repositoryId?: string | undefined }
+
 /**
- * The setup proposal without the lines the dependency took as its seed, and nothing else: another repository's command that merely looks like a seed stays, and so does every line the dependency did not take. An
- * item left with no command is removed; a fixed note says so once. The same proposal object is returned when nothing was taken.
+ * The setup proposal without the lines the dependency took as its seed, and nothing else: only in the repository the command was routed from (another repository's command with the same words stays, as it does in the
+ * draft environment), and no other line. An item left with no command is removed; a fixed note says so once. The same proposal object is returned when nothing was taken. A command with no known repository is taken out nowhere.
  */
-export function withoutRoutedSeeds(proposal: SetupProposal, routed: readonly ProjectCommand[]): SetupProposal {
+export function withoutRoutedSeeds(proposal: SetupProposal, routed: readonly RoutedSeed[]): SetupProposal {
   if (routed.length === 0) return proposal;
-  const lines = new Set(routed.map((command) => formatCommandLine(command)));
   const line = (text: string): string => { try { return formatCommandLine(parseCommandLine(text, ".", 900)); } catch { return text; } };
+  const linesOf = (repo: string): Set<string> => new Set(routed.filter((seed) => seed.repositoryId === repo).map((seed) => formatCommandLine(seed.command)));
   let removed = false;
   const setup = proposal.setup.flatMap((item) => {
+    const lines = linesOf(item.value.repo);
+    if (lines.size === 0) return [item];
     const commands = item.value.commands.filter((text) => { const taken = lines.has(line(text)); removed ||= taken; return !taken; });
     return commands.length === 0 ? [] : [{ ...item, value: { ...item.value, commands } }];
   });

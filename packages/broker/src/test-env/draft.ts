@@ -22,7 +22,6 @@ import {
   redactText,
   testEnvLessSafeChanges,
   type OrgId,
-  type ProjectCommand,
   type TestEnvDraft,
   type TestEnvironmentBody,
 } from "@agentx/contracts";
@@ -34,7 +33,7 @@ import { testEnvironmentEnabled } from "./switch.js";
 import { refusedCommand } from "./refused-command.js";
 import { testServicesEnabled } from "./test-services-switch.js";
 import { proposeDependencies, type DependencyProposalContext } from "./dependency-proposal.js";
-import { attachDraftSeeds, sameCommand } from "./seed-routing.js";
+import { attachDraftSeeds, sameCommand, type RoutedSeed } from "./seed-routing.js";
 
 type Send = { send(command: unknown): Promise<unknown> };
 
@@ -80,7 +79,7 @@ export function sanitizeTestEnvDraft(raw: unknown, options?: DraftDependencyOpti
 }
 
 /** `sanitizeTestEnvDraft`, and the seed commands the database dependency actually took (empty when it took none: test services off, no database to hold them, or refused). Those, and only those, are not setup commands. */
-export function sanitizeWithRouting(raw: unknown, options?: DraftDependencyOptions): { draft: TestEnvDraft; routed: ProjectCommand[] } | undefined {
+export function sanitizeWithRouting(raw: unknown, options?: DraftDependencyOptions): { draft: TestEnvDraft; routed: RoutedSeed[] } | undefined {
   const parsed = TestEnvDraftSchema.safeParse(raw);
   if (!parsed.success) return undefined;
   const servicesOn = testServicesEnabled(options?.env);
@@ -111,19 +110,23 @@ export function sanitizeWithRouting(raw: unknown, options?: DraftDependencyOptio
   // Test services: the BROKER proposes dependencies from the candidates (through `chooseBacking`, real catalog software only). Only when it has the catalog to do it with; a draft kept without one (the write at the end of
   // a setup draft) holds just the candidates, and the proposal is made when the draft is read.
   let dependencyNotes: string[] = [];
-  let routed: ProjectCommand[] = [];
+  let routed: RoutedSeed[] = [];
   if (servicesOn && options?.propose !== undefined && draft.dependencies !== undefined && draft.dependencies.length > 0) {
     const proposed = proposeDependencies(draft.dependencies, { catalog: options.propose.catalog, edition: options.propose.edition, projectId: options.propose.projectId, prodDeny: environment.prodDeny });
     const seeded = attachDraftSeeds(proposed.dependencies, draft.seedCommands);
     if (seeded.dependencies.length > 0) environment.dependencies = seeded.dependencies;
     dependencyNotes = [...proposed.notes, ...seeded.notes];
-    routed = seeded.routed;
+    // Each routed command belongs to the repository whose setup holds it, or else whose commands run in its directory.
+    routed = seeded.routed.map((command) => {
+      const home = environment.repos.find((repo) => repo.setupCommands.some((setup) => sameCommand(command, setup))) ?? environment.repos.find((repo) => [...repo.setupCommands, ...repo.checks.map((check) => check.command)].some((other) => other.cwd === command.cwd));
+      return { command, ...(home === undefined ? {} : { repositoryId: home.repositoryId }) };
+    });
   }
   // TS-UX-1: a seed or migration command is taken out of the setup commands ONLY when the dependency took it as its seed. The worker leaves every such command where it found it.
   const removedAt = new Map<number, Set<number>>();
   if (routed.length > 0) {
     environment.repos = environment.repos.map((repo, at) => {
-      const gone = new Set(repo.setupCommands.flatMap((command, position) => (routed.some((seed) => sameCommand(seed, command)) ? [position] : [])));
+      const gone = new Set(repo.setupCommands.flatMap((command, position) => (routed.some((seed) => seed.repositoryId === repo.repositoryId && sameCommand(seed.command, command)) ? [position] : [])));
       if (gone.size === 0) return repo;
       removedAt.set(at, gone);
       return { ...repo, setupCommands: repo.setupCommands.filter((_, position) => !gone.has(position)) };
@@ -194,7 +197,7 @@ export function testEnvDraftEndItems(
 }
 
 /** The stored draft of a setup draft task, read again through the sanitizer (a damaged or unsafe item is "none"), or undefined. */
-export async function readTestEnvDraft(client: Send, tableName: string, orgId: OrgId, project: string, taskId: string, nowMs: number, options?: DraftDependencyOptions): Promise<{ draft: TestEnvDraft; at: string; /** The seed commands the database dependency took (never in the setup commands); empty when it took none. */ routedSeeds: ProjectCommand[]; /** The recipes the broker offered the run that made this draft (id and revision); empty when none. */ recipeOffers: Array<{ recipeId: string; revision: number }> } | undefined> {
+export async function readTestEnvDraft(client: Send, tableName: string, orgId: OrgId, project: string, taskId: string, nowMs: number, options?: DraftDependencyOptions): Promise<{ draft: TestEnvDraft; at: string; /** The seed commands the database dependency took (never in the setup commands); empty when it took none. */ routedSeeds: RoutedSeed[]; /** The recipes the broker offered the run that made this draft (id and revision); empty when none. */ recipeOffers: Array<{ recipeId: string; revision: number }> } | undefined> {
   const item = (await client.send(new GetCommand({ TableName: tableName, Key: draftKey(orgId, project, taskId), ConsistentRead: true }))) as { Item?: Record<string, unknown> };
   const stored = item.Item;
   if (stored === undefined || stored["orgId"] !== orgId || stored["project"] !== project || stored["taskId"] !== taskId || typeof stored["at"] !== "string") return undefined;

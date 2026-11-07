@@ -39,7 +39,6 @@ import {
   setupItemsOf,
   type AppProjectDetail,
   type OrgId,
-  type ProjectCommand,
   type ProjectRole,
   type ProjectSettingsBody,
   type SetupApplyResponse,
@@ -65,7 +64,7 @@ import {
   SETUP_ITEM_WORDS, citationWords, currentOf, getSetupItemApplier, githubFullNameOf, isCardKind, itemDigest, registerSetupItemApplier, unavailableReason, type SetupItemApplier,
 } from "./setup-items.js";
 import { verifyProposalDetailed, type CitationFileReader } from "./setup-proposal-verify.js";
-import { withoutRoutedSeeds } from "../test-env/seed-routing.js";
+import { withoutRoutedSeeds, type RoutedSeed } from "../test-env/seed-routing.js";
 import { addIntakeSource } from "../intake/sources.js";
 import { registerIntakeSetupApplier } from "../intake/setup-applier.js";
 import { SETUP_CONSENT_USED, consentHasExpired, consentIsUsed, giveBackConsent, useConsent } from "./setup-consent.js";
@@ -301,7 +300,7 @@ export interface SetupDraftDependencies {
    * TS-UX-1: the seed commands the test environment's draft of this setup draft (the task) actually gave to a database dependency. Only those are taken out of the setup proposal (setup has no database); a command
    * the dependency did not take (test services off, no database to hold it, refused) stays a setup command. Absent where test environments are not set up: nothing is taken out.
    */
-  routedSeeds?: ((orgId: OrgId, project: string, taskId: string) => Promise<readonly ProjectCommand[]>) | undefined;
+  routedSeeds?: ((orgId: OrgId, project: string, taskId: string) => Promise<readonly RoutedSeed[]>) | undefined;
 }
 
 /** The state with the seeds a dependency took left out of its setup proposal, so the page shows, and an apply saves, the same commands. A read that fails leaves the proposal as it was. */
