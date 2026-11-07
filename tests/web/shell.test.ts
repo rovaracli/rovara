@@ -96,3 +96,12 @@ it("sends an older /s/<id> link to the task's one address, keeping its query and
  expect(f.router.state.location.search).toBe("?decision=approve_plan:x");expect(f.router.state.location.hash).toBe("#plan");
  f.close();
 });
+it("keeps a hostile /s/ id under /app/sessions/ (review: no open redirect)", async () => {
+ for (const id of ["..%2F..%2Fapp%2Fadmin", "%2F%2Fevil.example", "ses_x%3Fq%3D1"]) {
+  const f = shell("/s/" + id);
+  await waitFor(() => expect(f.router.state.location.pathname.startsWith("/app/sessions/")).toBe(true));
+  expect(f.router.state.location.pathname.split("/").filter(part => part !== "")).toHaveLength(3);
+  expect(f.router.state.location.pathname).not.toMatch(/\/\/|evil\.example\/|\/app\/admin/u);
+  f.close();
+ }
+});

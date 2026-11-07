@@ -11,6 +11,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  const read = method === "GET" || method === "HEAD";
  if (relative === "org/service-status" || relative.startsWith("org/service-status/")) return read && relative === "org/service-status";
  // L3b / K1: the task page also reads what the agent loaded (the records and one rule file's text) and the lessons it loaded and marks one "Helpful" / "Wrong here" (exact shapes only; nothing else under tasks/ is reachable from a browser).
+ // UX2 slice 2: the task page's Resolve findings and Send back to coding (the routes re-check who may, as Slack's and the MCP tools' do).
+ if (family === "tasks" && method === "POST" && /^tasks\/[0-9a-f-]{36}\/workflow\/(?:review-findings|send-back)$/i.test(relative)) return true;
  if (family === "tasks") return (method === "POST" && /^tasks\/[0-9a-f-]{36}\/second-review-acknowledge$/i.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/continue-as-task$/i.test(relative)) || (read && /^tasks\/[0-9a-f-]{36}\/design-review\/approve$/i.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/design-review\/(?:first|skip|answers|retry|resume|approve|spend\/(?:lower-tier|raise-cap|run-unpriced|skip))$/i.test(relative)) || (read && /^tasks\/[0-9a-f-]{36}\/lessons$/.test(relative)) || (read && /^tasks\/[0-9a-f-]{36}\/loaded-knowledge(?:\/[A-Za-z0-9_-]{1,80}\/[a-z_]{1,20}(?:\.[A-Z]{1,10})?\/items\/\d{1,3}\/text)?$/.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/lessons\/[A-Za-z0-9_-]{4,64}\/feedback$/.test(relative));
  // WEB-1 (owner, 2026-11-02): the decision cards. Exact shapes only, mirroring PATH in decisions/routes.ts: read the list; press one card (approve, reject or note that its evidence was opened). Nothing else under decisions/ is reachable from a browser.
  if (family === "decisions") return (method === "GET" && relative === "decisions") || (method === "POST" && /^decisions\/[a-z_]+\/[A-Za-z0-9_-]{1,150}\/(?:approve|reject|evidence-opened|request-changes)$/u.test(relative));
@@ -25,6 +27,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  // RULING Q9: identity linking/unlinking stays in the CLI fresh-session flow; a browser may read /me. Release 0.4.16: and set its own display name (PUT /me/name, which
  // authenticateWebRequest guards with the cookie, the Origin and the CSRF token like every browser write).
  // The one exception (owner, 2026-11-05): a signed-in web user links their own Slack account, and removes that link (never another method).
+ // UX2 slice 2: the person's own notification setting (their own row only; no id in the path).
+ if (family === "me" && relative === "me/notifications") return read || method === "PUT";
  // UX1 (owner-approved platform UX, slice 1): and links their own GitHub account (any sign-in method), finished in the same browser; removing it stays in the CLI.
  if (family === "me") return (read && relative === "me") || (method === "PUT" && relative === "me/name") || ((method === "POST" || method === "DELETE") && relative === "me/identities/slack") || (method === "POST" && relative === "me/identities/github");
  if (family === "approvals" || family === "devices") return read && !relative.endsWith("/decide");
